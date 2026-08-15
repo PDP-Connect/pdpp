@@ -20,11 +20,12 @@
  * manual_action INTERACTION rather than banging on the form.
  */
 
-import type { BrowserContext, Locator, Page } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
 import { detectCloudflareChallenge } from "../platform-probes.ts";
+import { locatorIsVisible } from "./locator-helpers.ts";
 
 const LOGIN_URL = "https://www.reddit.com/login/";
 const HOME_URL = "https://www.reddit.com/";
@@ -77,6 +78,14 @@ type SendInteraction = (req: InteractionRequest) => Promise<InteractionResponse>
 interface EnsureRedditSessionArgs {
   capture?: CaptureSession | null;
   context: BrowserContext;
+  /**
+   * Runtime marker for the post-submit credential-safety invariant: fired at
+   * the exact click that sends the saved password to Reddit's real sign-in
+   * form (see `EnsureSessionArgs.onCredentialSubmit`). Never fired on the
+   * session-reuse early return, the manual hand-off paths, or the OTP
+   * resubmit — those never send the saved password.
+   */
+  onCredentialSubmit?: () => void;
   page: Page;
   sendInteraction: SendInteraction;
 }
@@ -95,7 +104,7 @@ async function hasSessionCookie(context: BrowserContext): Promise<boolean> {
  * still exist after logout. Hit old.reddit.com (stable markup) and look for
  * the logout link, which is only rendered when authenticated.
  */
-async function isSessionLive(page: Page): Promise<boolean> {
+export async function isSessionLive(page: Page): Promise<boolean> {
   try {
     await page.goto("https://old.reddit.com/", {
       waitUntil: "domcontentloaded",
@@ -116,19 +125,13 @@ async function captureLoginState(capture: CaptureSession | null | undefined, pag
   await capture.captureLocatorProbe?.(page, label, LOGIN_LOCATOR_PROBES).catch((): undefined => undefined);
 }
 
-async function locatorIsVisible(locator: Locator): Promise<boolean> {
-  return await locator
-    .first()
-    .isVisible({ timeout: 1000 })
-    .catch((): boolean => false);
-}
-
-async function clickRedditLoginSubmit(page: Page): Promise<boolean> {
+async function clickRedditLoginSubmit(page: Page, onCredentialSubmit?: () => void): Promise<boolean> {
   const { getByRole } = page as Pick<Page, "getByRole">;
   if (typeof getByRole === "function") {
     const semantic = getByRole.call(page, "button", { name: SUBMIT_BUTTON_NAME_RE }).first();
     if (await locatorIsVisible(semantic)) {
       await semantic.click();
+      onCredentialSubmit?.();
       return true;
     }
   }
@@ -136,6 +139,7 @@ async function clickRedditLoginSubmit(page: Page): Promise<boolean> {
   const fallback = page.locator(SUBMIT_SELECTOR).first();
   if (await locatorIsVisible(fallback)) {
     await fallback.click();
+    onCredentialSubmit?.();
     return true;
   }
   return false;
@@ -195,6 +199,7 @@ async function recoverRedditBlockedLogin({
 export async function ensureRedditSession({
   capture,
   context,
+  onCredentialSubmit,
   page,
   sendInteraction,
 }: EnsureRedditSessionArgs): Promise<void> {
@@ -213,7 +218,14 @@ export async function ensureRedditSession({
   await captureLoginState(capture, page, "reddit-login-page");
 
   const userIn = page.locator(USERNAME_SELECTOR).first();
-  if (!(await userIn.count().catch(() => 0))) {
+  // `count()` is a one-shot DOM snapshot with no wait; on Reddit's
+  // client-rendered login page it can read 0 before the field has painted.
+  // `waitFor` gives the render a real, bounded chance instead.
+  const usernameAppeared = await userIn
+    .waitFor({ state: "attached", timeout: 10_000 })
+    .then((): true => true)
+    .catch((): false => false);
+  if (!usernameAppeared) {
     // Cloudflare challenge, shadow DOM change, or redirect loop — hand off.
     // Earn the diagnosis via the shared detector instead of guessing "possible
     // Cloudflare challenge" from absence of inputs alone.
@@ -224,7 +236,7 @@ export async function ensureRedditSession({
   await userIn.fill(username);
   await page.locator(PASSWORD_SELECTOR).first().fill(password);
   await captureLoginState(capture, page, "reddit-login-before-submit");
-  if (!(await clickRedditLoginSubmit(page))) {
+  if (!(await clickRedditLoginSubmit(page, onCredentialSubmit))) {
     await captureLoginState(capture, page, "reddit-login-submit-missing");
     throw new Error("reddit_login_submit_missing");
   }

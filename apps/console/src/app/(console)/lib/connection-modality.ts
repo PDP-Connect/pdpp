@@ -104,13 +104,15 @@ export function canonicalConnectorKey(connectorId: string): string {
 
 /**
  * Map a canonical bare connector key to the enrollment-form key the supported
- * sets and the device-exporter deep-link expect. The only divergence today is
- * the local-collector slug: manifests use `claude-code` (hyphen), but the proven
- * enrollment path and `SUPPORTED_LOCAL_COLLECTOR_CONNECTORS` use `claude_code`
- * (underscore), mirroring the form's `COLLECTOR_RUN_CONNECTORS` literal. Every
- * other connector's bare key already equals its enrollment key. Keeping this
- * mapping here — next to the supported sets it serves — means the catalog never
- * mints a `?connector=` value the enrollment form would reject.
+ * sets and the device-exporter deep-link expect. Two local-collector slugs
+ * diverge today: manifests use `claude-code` and `google-takeout` (hyphen),
+ * but the proven enrollment path, `SUPPORTED_LOCAL_COLLECTOR_CONNECTORS`, and
+ * the bundled-connector registry (`LOCAL_COLLECTOR_DEFINITIONS`, keyed by
+ * `connector_id`) use `claude_code` and `google_takeout` (underscore),
+ * mirroring the form's `COLLECTOR_RUN_CONNECTORS` literal. Every other
+ * connector's bare key already equals its enrollment key. Keeping this
+ * mapping here — next to the supported sets it serves — means the catalog
+ * never mints a `?connector=` value the enrollment form would reject.
  */
 export function enrollmentKeyForCanonicalKey(canonicalKey: string): string {
   return sharedEnrollmentKeyForCanonicalKey(canonicalKey);

@@ -32,7 +32,7 @@
  */
 
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright";
 import { ensureChaseSession } from "../../src/auto-login/chase.ts";
@@ -48,9 +48,12 @@ import {
   browserSurfaceManagedState,
   buildBrowserSurfaceDiagnostic,
 } from "../../src/browser-surface-diagnostic.ts";
+import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
+  buildDetailGap,
+  buildFullScanCoverageMessage,
   type DetailGapMessage,
   type EmittedMessage,
   runConnector,
@@ -123,13 +126,13 @@ const DATE_REFLECT_WAIT_MS = 3000;
 const DATE_KEY_DELAY_MS = 40;
 const ERROR_MESSAGE_SLICE = 120;
 const ERROR_MESSAGE_SLICE_LONG = 160;
-const ERROR_MESSAGE_SLICE_MAX = 200;
 const HASH_SHORT_LEN = 16;
 const DOWNLOAD_RESPONSE_HINT_RE = /filename|attachment|octet-stream|x-ofx|qfx/iu;
 const CHASE_DOWNLOAD_ROUTE_RE = /downloadAccountTransactions|confirmDownloadAccountActivity/iu;
 const NO_ACTIVITY_CONFIRMATION_RE = /we couldn't find any activity that matched the date range you chose/iu;
 const CHASE_QFX_FILE_TYPE_COMBOBOX_NAME_RE = /file type/i;
 const CHASE_QFX_ACTIVITY_COMBOBOX_NAME_RE = /activity/i;
+const CHASE_QFX_DOWNLOAD_BUTTON_NAME_RE = /download/i;
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
 export const CHASE_CURRENT_ACTIVITY_ROW_SELECTOR =
@@ -213,10 +216,48 @@ export function chaseNoAccountsDiagnosticMessage(surface: ChaseAccountsSurface):
   return "No accounts discovered from dashboard. Selectors need calibration against live DOM.";
 }
 
+/** Classify with the live page facts, but persist only structural counts. */
+export function redactChaseDashboardDiagnostics(diagnostics: DashboardDiagnostics | null): DashboardDiagnostics | null {
+  return diagnostics
+    ? {
+        body_preview: "",
+        income_capture_description_count: diagnostics.income_capture_description_count,
+        income_capture_heading_count: diagnostics.income_capture_heading_count,
+        title: "",
+        url: "",
+      }
+    : null;
+}
+
+export type ChaseDurableFailureArtifact = "qfx" | "statement";
+export type ChaseDurableFailureCode =
+  | "qfx_download_failed"
+  | "qfx_parse_failed"
+  | "row_exception"
+  | "statements_scrape_failed";
+
+/** Durable failure evidence is a closed structural shape; error text stays local. */
+export function buildChaseDurableFailureDiagnostic(
+  artifact: ChaseDurableFailureArtifact,
+  failureCode: ChaseDurableFailureCode,
+  error: unknown
+): {
+  artifact: ChaseDurableFailureArtifact;
+  error_class: "Error" | "unknown";
+  failure_code: ChaseDurableFailureCode;
+} {
+  return {
+    artifact,
+    error_class: error instanceof Error ? "Error" : "unknown",
+    failure_code: failureCode,
+  };
+}
+
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
 
 interface CurrentActivitySnapshotPage {
   content: () => Promise<string>;
+  goto?: (url: string, options: { timeout: number; waitUntil: "domcontentloaded" }) => Promise<unknown>;
   locator: (selector: string) => {
     count?: () => Promise<number>;
     first: () => {
@@ -338,9 +379,39 @@ export async function snapshotDashboardHtmlForCurrentActivity(
     });
 
   const html = await page.content().catch((): string => "");
-  const parserCount = parseCurrentActivityDom(html, referenceDateIso).length;
-  const dashboardMarkerCount = countStructuralMarker(html, CHASE_DASHBOARD_MARKER_RE);
-  const activityTableMarkerCount = countStructuralMarker(html, CHASE_CURRENT_ACTIVITY_TABLE_MARKER_RE);
+  let finalHtml = html;
+  let parserCount = parseCurrentActivityDom(finalHtml, referenceDateIso).length;
+  let dashboardMarkerCount = countStructuralMarker(finalHtml, CHASE_DASHBOARD_MARKER_RE);
+  let activityTableMarkerCount = countStructuralMarker(finalHtml, CHASE_CURRENT_ACTIVITY_TABLE_MARKER_RE);
+  let readCount = 2;
+
+  // A successful account discovery can still leave the SPA with a parser-zero
+  // snapshot after browser/session transitions, including while the URL still
+  // claims the expected overview route. The row wait is only a retry trigger;
+  // one bounded full dashboard navigation gives the connector a fresh, known
+  // surface to parse without teaching the RI anything about Chase's markup.
+  // A zero-row parse after this retry remains selectors_pending in the caller.
+  if (parserCount === 0 && page.goto) {
+    waitOutcome = "unknown";
+    await page
+      .goto("https://secure.chase.com/web/auth/dashboard#/dashboard/overview", {
+        waitUntil: "domcontentloaded",
+        timeout: NAV_TIMEOUT_MS,
+      })
+      .catch((): undefined => undefined);
+    await page
+      .locator(DASHBOARD_ACCOUNT_SELECTOR)
+      .first()
+      .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
+      .catch((): undefined => undefined);
+
+    finalHtml = await page.content().catch((): string => "");
+    parserCount = parseCurrentActivityDom(finalHtml, referenceDateIso).length;
+    dashboardMarkerCount = countStructuralMarker(finalHtml, CHASE_DASHBOARD_MARKER_RE);
+    activityTableMarkerCount = countStructuralMarker(finalHtml, CHASE_CURRENT_ACTIVITY_TABLE_MARKER_RE);
+    readCount = 3;
+  }
+
   const markerCount = await page
     .locator(CHASE_CURRENT_ACTIVITY_ROW_SELECTOR)
     .count?.()
@@ -351,12 +422,12 @@ export async function snapshotDashboardHtmlForCurrentActivity(
       dashboardMarkerCount,
       managedSurface,
       parserCount,
-      readCount: 2,
+      readCount,
       route: classifyChaseCurrentActivityRoute(page.url()),
       targetCount: markerCount ?? 0,
       waitOutcome,
     }),
-    html,
+    html: finalHtml,
     rowSurfaceReady: parserCount > 0,
   };
 }
@@ -437,6 +508,39 @@ async function clickFileTypeControl(page: Page): Promise<void> {
           errMessage(selectorErr),
           ERROR_MESSAGE_SLICE
         )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`,
+        { cause: semanticErr }
+      );
+    }
+  }
+}
+
+/**
+ * Click the QFX Download button. `mds-button` is a custom element — its
+ * label and interactive target live in shadow DOM, so a host-element CSS
+ * click (`mds-button#download`) is only as reliable as the host's own
+ * click-forwarding. Mirror the two-tier strategy already used for the
+ * Activity/File Type controls: CSS id first, then the semantic role
+ * locator (`getByRole` pierces shadow DOM), so a host element that resolves
+ * but does not forward the click to its shadow-DOM button still finds the
+ * button via its accessible role.
+ */
+export async function clickDownloadButton(page: Page): Promise<void> {
+  try {
+    await page.locator("mds-button#download").click({ timeout: CLICK_TIMEOUT_MS });
+  } catch (selectorErr) {
+    try {
+      await page
+        .getByRole("button", {
+          name: CHASE_QFX_DOWNLOAD_BUTTON_NAME_RE,
+        })
+        .first()
+        .click({ timeout: CLICK_TIMEOUT_MS });
+    } catch (semanticErr) {
+      throw new Error(
+        `download_button_unavailable: selector=mds-button#download: ${truncate(
+          errMessage(selectorErr),
+          ERROR_MESSAGE_SLICE
+        )}; role=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`,
         { cause: semanticErr }
       );
     }
@@ -740,7 +844,7 @@ async function downloadQfx(
   const qfxResponseQueue = attachQfxResponseQueue(page);
   await qfxResponseQueue.ready;
   try {
-    await page.locator("mds-button#download").click({ timeout: CLICK_TIMEOUT_MS });
+    await clickDownloadButton(page);
   } catch (err) {
     await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-download-click-failed`);
     downloadQueue.detach();
@@ -818,7 +922,13 @@ async function fillDateRange(page: Page, from: string, to: string): Promise<Date
 //     Cell 3: a.id=accountsTable-0-rowN-cell3-requestThisDocumentAnchor-download
 //            (also -pdf which OPENS instead of saves)
 
-const STATEMENT_ROOT = join(homedir(), ".pdpp", "chase-statements");
+// Downloaded statement PDFs are durable: emitted records carry `pdf_path` /
+// `document_url` pointing at these files, and Chase re-encrypts each PDF on
+// re-download (so a replacement has a different hash — the old references do
+// not simply re-resolve). They live on the deployment-owned artifact root, not
+// under homedir(), which the documented single-volume deployment discards on
+// container replacement. See src/connector-artifact-root.ts.
+const STATEMENT_ROOT = resolveConnectorArtifactDir("chase", ["statements"]).root;
 
 async function navigateToStatementsPage(page: Page): Promise<void> {
   // Warm overview first — direct-nav to the documents URL can bounce through
@@ -1609,7 +1719,9 @@ export async function emitStatementIndexOnly(
   return carried;
 }
 
-export type StatementDetailOutcome = { kind: "hydrated"; id: string } | { kind: "index_only"; id: string };
+export type StatementDetailOutcome =
+  | { kind: "hydrated"; id: string }
+  | { kind: "gap"; id: string; reason: DetailGapMessage["reason"]; errorClass: string };
 
 /**
  * Emit the per-run `statements` DETAIL_COVERAGE. `outcomes` is built from
@@ -1632,16 +1744,32 @@ export async function emitStatementDetailCoverage(
   }
   const requiredKeys = outcomes.map((outcome) => outcome.id);
   const hydratedKeys = outcomes.filter((outcome) => outcome.kind === "hydrated").map((outcome) => outcome.id);
-  const optionalSkipKeys = outcomes.filter((outcome) => outcome.kind === "index_only").map((outcome) => outcome.id);
+  const gapKeys = outcomes.filter((outcome) => outcome.kind === "gap").map((outcome) => outcome.id);
+
+  for (const outcome of outcomes) {
+    if (outcome.kind === "gap") {
+      await deps.emit(
+        buildDetailGap({
+          stream: "statements",
+          parentStream: "statements",
+          recordKey: outcome.id,
+          reason: outcome.reason,
+          locator: { kind: "chase.statement", statement_id: outcome.id },
+          error: { class: outcome.errorClass },
+        })
+      );
+    }
+  }
+
   await deps.emit(
     buildDetailCoverageMessage({
       stream: "statements",
       stateStream: "statements",
       requiredKeys,
       hydratedKeys,
-      optionalSkipKeys,
+      gapKeys,
       considered: outcomes.length,
-      covered: outcomes.length,
+      covered: hydratedKeys.length,
     })
   );
 }
@@ -1741,15 +1869,14 @@ export async function emitBalancesDetailCoverage(
   );
 }
 
-export async function emitNoActivityProgress(
-  deps: Pick<EmitDeps, "emit">,
-  _account: ChaseAccount,
-  activity: ActivityKind
-): Promise<void> {
+export async function emitNoActivityProgress(deps: Pick<EmitDeps, "emit">, activity: ActivityKind): Promise<void> {
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `QFX download complete: no activity found (activity=${activity})`,
+    message:
+      activity === "all"
+        ? "Chase returned no activity for an unbounded request; treating the result as unverified"
+        : `QFX request complete: no activity found (activity=${activity})`,
   });
 }
 
@@ -1832,10 +1959,8 @@ function accountProgressDiagnostic(accountProgress?: { index: number; total: num
  *   - `hydrated`: QFX downloaded and parsed for this account. Includes the
  *     0-transaction parse — the account WAS reached; an empty ledger is
  *     real coverage, not a failure.
- *   - `no_activity`: Chase reported no activity for the requested window.
- *     This is source-limited completeness ("won't backfill"), NOT a gap —
- *     the account was reached and the source had nothing to return. Counts
- *     as hydrated coverage so it is never projected as broken.
+ *   - `no_activity`: Chase reported no activity for an explicit bounded
+ *     window. This is source-limited completeness, not a gap.
  *   - `gap`: the QFX download or parse failed transiently. A retryable
  *     DETAIL_GAP is emitted so the next run retries this account, and the
  *     key lands in `gap_keys` — partial, not complete, and not silently
@@ -1845,6 +1970,18 @@ export type AccountDetailOutcome =
   | { kind: "hydrated"; accountId: string; balanceEmitted?: boolean }
   | { kind: "no_activity"; accountId: string; balanceEmitted?: boolean }
   | { kind: "gap"; accountId: string; reason: DetailGapMessage["reason"]; errorClass: string };
+
+export function classifyNoActivityOutcome(accountId: string, activity: ActivityKind): AccountDetailOutcome {
+  if (activity === "all") {
+    return {
+      kind: "gap",
+      accountId,
+      reason: "temporary_unavailable",
+      errorClass: "unbounded_no_activity_unverified",
+    };
+  }
+  return { kind: "no_activity", accountId };
+}
 
 async function processAccountDownload(
   deps: EmitDeps,
@@ -1856,7 +1993,8 @@ async function processAccountDownload(
     deps.requested,
     deps.txState,
     deps.wantsTransactions ? "transactions" : "balances",
-    account.internal_id
+    account.internal_id,
+    deps.emittedAt
   );
   const progressLabel = accountProgressLabel(accountProgress);
   const progressMsg = {
@@ -1872,20 +2010,18 @@ async function processAccountDownload(
     : { activity: activityChoice.activity };
   const result = await downloadQfx(page, account, deps.tmpDir, deps.capture, downloadOpts);
   if ("noActivity" in result) {
-    await emitNoActivityProgress(deps, account, result.activity);
-    // Source-limited completeness: the account was reached, the source had
-    // no activity in the requested window. Coverage, not a gap.
-    return { kind: "no_activity", accountId: account.internal_id };
+    await emitNoActivityProgress(deps, result.activity);
+    return classifyNoActivityOutcome(account.internal_id, result.activity);
   }
   if (!result.downloaded) {
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "qfx_download_failed",
-      message: `QFX download failed for account ${progressLabel}: ${result.error}`,
+      message: `QFX download failed for account ${progressLabel}; retry by runtime`,
       recovery_hint: "retry_by_runtime",
       diagnostics: {
-        error: result.error,
+        ...buildChaseDurableFailureDiagnostic("qfx", "qfx_download_failed", result.error),
         ...accountProgressDiagnostic(accountProgress),
       },
     });
@@ -1905,12 +2041,10 @@ async function processAccountDownload(
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "qfx_parse_failed",
-      message: `QFX parse failed for account ${progressLabel}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
+      message: `QFX parse failed for account ${progressLabel}; retry by runtime`,
       recovery_hint: "retry_by_runtime",
       diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG),
-        artifact: "qfx",
+        ...buildChaseDurableFailureDiagnostic("qfx", "qfx_parse_failed", err),
       },
     });
     return {
@@ -2230,6 +2364,13 @@ export async function runCurrentActivity(
 
   const emitted = await emitCurrentActivityForAccount(deps, account, dashboardHtml, fingerprintCursor);
   if (emitted === 0) {
+    // Zero parsed rows is never distinguishable here from a parse/render
+    // failure (the dashboard overview always shows something when it loads
+    // correctly), so this is a SKIP, not a proven-empty scan — per
+    // buildFullScanCoverageMessage's contract, coverage must NOT be emitted
+    // on this path. A future signal that positively confirms "no recent
+    // activity" (e.g. an explicit empty-state marker) could route here
+    // instead of selectors_pending and declare considered=covered=0.
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "current_activity",
@@ -2244,6 +2385,12 @@ export async function runCurrentActivity(
       stream: "current_activity",
       message: `Emitted ${emitted} current_activity row(s) from dashboard overview`,
     });
+    // current_activity re-enumerates the full dashboard overview boundary
+    // every run (no separate detail-hydration phase), so it is a full-scan
+    // stream: considered = covered = the parsed row count. Only emitted on
+    // this genuinely successful parse — the 0-row branch above is a SKIP,
+    // not a proven-empty boundary, and must never fabricate coverage.
+    await deps.emit(buildFullScanCoverageMessage("current_activity", emitted));
   }
 
   await deps.emit({
@@ -2304,7 +2451,15 @@ async function processStatementRow(
         fingerprintCursor,
         hydrationCursor
       );
-      return { kind: isHydrated(carried) ? "hydrated" : "index_only", id };
+      // Distinguish genuinely new statements (first-time, no prior PDF pointers) from
+      // transient failures of previously hydrated statements:
+      // - Carried durable hydration (prior PDF) → count as hydrated coverage.
+      // - No carried hydration (first-time or prior failure) → emit retryable DETAIL_GAP.
+      // Per spec: transport failures are not terminal provider unavailability and must
+      // remain retryable, not optional_skip.
+      return isHydrated(carried)
+        ? { kind: "hydrated", id }
+        : { kind: "gap", id, reason: "temporary_unavailable", errorClass: "pdf_download_failed" };
     }
 
     const record = {
@@ -2347,11 +2502,8 @@ async function processStatementRow(
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "row_exception",
-      message: `Statement row processing failed: ${truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG)}`,
-      diagnostics: {
-        error_class: rowErr instanceof Error ? rowErr.constructor.name : "unknown",
-        message: truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG),
-      },
+      message: "Statement row processing failed; retry by runtime",
+      diagnostics: buildChaseDurableFailureDiagnostic("statement", "row_exception", rowErr),
     });
     return null;
   }
@@ -2435,11 +2587,8 @@ async function runStatements(
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "statements_scrape_failed",
-      message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
-      diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
-      },
+      message: "Statements scrape failed; retry by runtime",
+      diagnostics: buildChaseDurableFailureDiagnostic("statement", "statements_scrape_failed", err),
     });
   }
 }
@@ -2458,9 +2607,10 @@ if (isMainModule(import.meta.url)) {
     // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
     browser: { profileName: "chase" },
     timeRangeField: chaseTimeRangeField,
-    async ensureSession({ context, page, sendInteraction }): Promise<void> {
+    async ensureSession({ context, onCredentialSubmit, page, sendInteraction }): Promise<void> {
       await ensureChaseSession({
         context,
+        onCredentialSubmit,
         page,
         sendInteraction,
       });

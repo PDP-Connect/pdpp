@@ -10,7 +10,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker build --target core --tag "$image" .
+# CI already builds the `core` target once (docker-images.yml validate job) and
+# loads it under a known tag; set PDPP_CORE_ORACLE_SKIP_BUILD=1 with
+# PDPP_CORE_ORACLE_IMAGE pointing at that tag to prove the exact image under
+# test instead of paying for a second build.
+if [ "${PDPP_CORE_ORACLE_SKIP_BUILD:-0}" != "1" ]; then
+  docker build --target core --tag "$image" .
+fi
 docker volume create "$volume" >/dev/null
 
 docker run --rm --name "${container_prefix}-first" \

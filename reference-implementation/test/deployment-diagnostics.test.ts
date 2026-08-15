@@ -102,33 +102,45 @@ function manifestWithoutSemantic() {
 
 // ─── §2.4 — redaction ───────────────────────────────────────────────────────
 
+/**
+ * A synthetic provider-auth manifest fixture, standing in for whatever real
+ * connector manifests declare `capabilities.auth.deployment_config` with an
+ * `env_alias`. This module has zero hardcoded provider knowledge — its
+ * `deployment_config`-derived allowlist entries only exist when a manifest
+ * declares them, so these tests supply fixtures rather than relying on a
+ * baked-in provider-shaped static list.
+ */
+function fixtureProviderAuthManifest(overrides: { readonly redirectUriAlias?: string } = {}) {
+  return {
+    manifest: {
+      connector_id: "https://test.pdpp.org/connectors/fixture-oauth-provider",
+      display_name: "Fixture OAuth Provider",
+      capabilities: {
+        auth: {
+          deployment_config: [
+            { logical_key: "client_id", secret: false, env_alias: "FIXTURE_PROVIDER_CLIENT_ID" },
+            { logical_key: "client_secret", secret: true, env_alias: "FIXTURE_PROVIDER_CLIENT_SECRET" },
+            ...(overrides.redirectUriAlias
+              ? [{ logical_key: "redirect_uri", secret: false, env_alias: overrides.redirectUriAlias }]
+              : []),
+          ],
+        },
+      },
+    },
+    provenance: "polyfill-registered" as const,
+  };
+}
+
 test("buildEnvironmentReport redacts explicitly-secret allowlist entries", () => {
-  const report = buildEnvironmentReport({
-    GOOGLE_DATAPORTABILITY_CLIENT_ID: "google-client-id.apps.googleusercontent.com",
-    GOOGLE_DATAPORTABILITY_CLIENT_SECRET: "google-client-secret-should-never-appear",
-    GOOGLE_DATAPORTABILITY_REDIRECT_URI: "https://pdpp.example/_ref/provider-auth/callback",
-    NODE_ENV: "production",
-    PDPP_DCR_INITIAL_ACCESS_TOKENS: "real-token-value-should-never-appear",
-    PDPP_OWNER_PASSWORD: "owner-password-should-never-appear",
-    PDPP_RS_SEARCH_POSTGRES_BM25_BACKEND: "pg_search",
-  });
-  const googleClientIdEntry = report.find((e) => e.name === "GOOGLE_DATAPORTABILITY_CLIENT_ID");
-  assert.ok(googleClientIdEntry, "Google Data Portability client id entry is present");
-  assert.equal(googleClientIdEntry.provenance, "present");
-  assert.equal(googleClientIdEntry.value, "google-client-id.apps.googleusercontent.com");
-  assert.equal(googleClientIdEntry.secret, false);
-
-  const googleClientSecretEntry = report.find((e) => e.name === "GOOGLE_DATAPORTABILITY_CLIENT_SECRET");
-  assert.ok(googleClientSecretEntry, "Google Data Portability client secret entry is present");
-  assert.equal(googleClientSecretEntry.provenance, "redacted");
-  assert.equal(googleClientSecretEntry.value, null, "Google OAuth client secret MUST NOT reach the dashboard");
-  assert.equal(googleClientSecretEntry.secret, true);
-
-  const googleRedirectEntry = report.find((e) => e.name === "GOOGLE_DATAPORTABILITY_REDIRECT_URI");
-  assert.ok(googleRedirectEntry, "Google Data Portability redirect URI entry is present");
-  assert.equal(googleRedirectEntry.provenance, "present");
-  assert.equal(googleRedirectEntry.value, "https://pdpp.example/_ref/provider-auth/callback");
-  assert.equal(googleRedirectEntry.secret, false);
+  const report = buildEnvironmentReport(
+    {
+      NODE_ENV: "production",
+      PDPP_DCR_INITIAL_ACCESS_TOKENS: "real-token-value-should-never-appear",
+      PDPP_OWNER_PASSWORD: "owner-password-should-never-appear",
+      PDPP_RS_SEARCH_POSTGRES_BM25_BACKEND: "pg_search",
+    },
+    []
+  );
 
   const bm25BackendEntry = report.find((e) => e.name === "PDPP_RS_SEARCH_POSTGRES_BM25_BACKEND");
   assert.ok(bm25BackendEntry, "BM25 backend selector entry is present");
@@ -160,6 +172,78 @@ test("buildEnvironmentReport redacts explicitly-secret allowlist entries", () =>
   assert.ok(asPort);
   assert.equal(asPort.provenance, "absent");
   assert.equal(asPort.value, null);
+});
+
+test("buildEnvironmentReport redacts a manifest-derived deployment-config entry exactly like a static secret entry", () => {
+  const report = buildEnvironmentReport(
+    {
+      FIXTURE_PROVIDER_CLIENT_ID: "fixture-client-id",
+      FIXTURE_PROVIDER_CLIENT_SECRET: "fixture-client-secret-should-never-appear",
+    },
+    [fixtureProviderAuthManifest()]
+  );
+
+  const clientIdEntry = report.find((e) => e.name === "FIXTURE_PROVIDER_CLIENT_ID");
+  assert.ok(clientIdEntry, "manifest-derived non-secret entry is present");
+  assert.equal(clientIdEntry.provenance, "present");
+  assert.equal(clientIdEntry.value, "fixture-client-id");
+  assert.equal(clientIdEntry.secret, false);
+
+  const clientSecretEntry = report.find((e) => e.name === "FIXTURE_PROVIDER_CLIENT_SECRET");
+  assert.ok(clientSecretEntry, "manifest-derived secret entry is present");
+  assert.equal(clientSecretEntry.provenance, "redacted");
+  assert.equal(clientSecretEntry.value, null, "a manifest-declared secret MUST NOT reach the dashboard");
+  assert.equal(clientSecretEntry.secret, true);
+});
+
+test("buildEnvironmentReport applies the name-pattern redaction heuristic to a manifest-derived entry even when secret:false", () => {
+  // A manifest could under-declare `secret: false` on a key whose NAME still
+  // looks secret-shaped; SECRET_NAME_RE is the closed, generic backstop —
+  // it must still fire regardless of which list (static or manifest-derived)
+  // the candidate name came from.
+  const report = buildEnvironmentReport(
+    { FIXTURE_PROVIDER_REDIRECT_TOKEN: "should-be-redacted-by-name-pattern" },
+    [
+      {
+        manifest: {
+          connector_id: "https://test.pdpp.org/connectors/fixture-oauth-provider-2",
+          capabilities: {
+            auth: {
+              deployment_config: [
+                { logical_key: "redirect_token", secret: false, env_alias: "FIXTURE_PROVIDER_REDIRECT_TOKEN" },
+              ],
+            },
+          },
+        },
+        provenance: "polyfill-registered" as const,
+      },
+    ]
+  );
+  const entry = report.find((e) => e.name === "FIXTURE_PROVIDER_REDIRECT_TOKEN");
+  assert.ok(entry);
+  assert.equal(entry.provenance, "redacted");
+  assert.equal(entry.value, null);
+  assert.equal(entry.secret, true);
+});
+
+test("buildEnvironmentReport deduplicates the same env_alias declared by two manifests", () => {
+  const report = buildEnvironmentReport(
+    { FIXTURE_PROVIDER_CLIENT_ID: "shared-client-id" },
+    [
+      fixtureProviderAuthManifest(),
+      {
+        manifest: {
+          connector_id: "https://test.pdpp.org/connectors/fixture-oauth-sibling",
+          capabilities: {
+            auth: { deployment_config: [{ logical_key: "client_id", secret: false, env_alias: "FIXTURE_PROVIDER_CLIENT_ID" }] },
+          },
+        },
+        provenance: "polyfill-registered" as const,
+      },
+    ]
+  );
+  const matches = report.filter((e) => e.name === "FIXTURE_PROVIDER_CLIENT_ID");
+  assert.equal(matches.length, 1, "a shared env_alias must appear exactly once in the report");
 });
 
 test("buildEnvironmentReport never leaks a raw secret value", () => {
@@ -801,6 +885,33 @@ test("database block carries physical_bytes + top_relations from a Postgres foot
   // The largest relation never exceeds the whole — sanity on the test fixture
   // and the property the helper guarantees.
   assert.ok(report.database.top_relations[0].bytes <= report.database.physical_bytes);
+});
+
+test("database backend comes from the reference env in a split web/reference deployment", () => {
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: "/var/lib/postgresql/data",
+    env: { PDPP_STORAGE_BACKEND: "postgres", PDPP_DATABASE_URL: "redacted-test-url" },
+    indexState: null,
+    manifests: [],
+    physicalFootprint: { physical_bytes: null, top_relations: null },
+  });
+
+  assert.equal(report.database.backend, "postgres");
+});
+
+test("database backend remains unknown when the reference env is silent", () => {
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: "/remote/reference",
+    env: {},
+    indexState: null,
+    manifests: [],
+  });
+
+  assert.equal(report.database.backend, "unknown");
 });
 
 test("database block degrades to null/null when no footprint is supplied (SQLite/absent)", () => {

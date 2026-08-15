@@ -10,6 +10,7 @@ import { unstable_rethrow } from "next/navigation";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}../page.tsx`;
 const CONTROL_FLOW_FILE = `${HERE}control-flow.ts`;
+const CONNECTOR_SUMMARY_PAGE_FILE = `${HERE}../components/connector-summary-page.tsx`;
 
 const NAVIGATION_IMPORT = /import \{ unstable_rethrow \} from "next\/navigation";/;
 const RETHROW_WRAPPER =
@@ -21,6 +22,9 @@ const OVERVIEW_SAFE_READ_GUARDED =
   /async function safeRead<[\s\S]*?catch \(err\) \{\s*rethrowControlFlow\(err\);\s*return \{ issue, value: fallback \};/;
 // A bare `catch {` cannot name `err` to re-throw it; every overview catch binds it.
 const BARE_CATCH_RETURNING_JSX = /\} catch \{\s*\n\s*return </;
+const CONNECTOR_SUMMARY_CATCH_GUARDED =
+  /catch \(err\) \{[\s\S]{0,300}unstable_rethrow\(err\);[\s\S]{0,80}\/\/ A rejected continuation/;
+const CONNECTOR_SUMMARY_RETHROW_IMPORT = /import \{ unstable_rethrow \} from "next\/navigation";/;
 
 /**
  * Construct a `NEXT_REDIRECT`-digest error exactly as Next.js's `redirect()`
@@ -74,6 +78,12 @@ test("rethrowControlFlow is a thin wrapper over next/navigation's unstable_rethr
   const src = await readFile(CONTROL_FLOW_FILE, "utf8");
   assert.match(src, NAVIGATION_IMPORT);
   assert.match(src, RETHROW_WRAPPER);
+});
+
+test("the shared connector-summary loader does not turn login redirects into page errors", async () => {
+  const src = await readFile(CONNECTOR_SUMMARY_PAGE_FILE, "utf8");
+  assert.match(src, CONNECTOR_SUMMARY_RETHROW_IMPORT);
+  assert.match(src, CONNECTOR_SUMMARY_CATCH_GUARDED);
 });
 
 test("every dashboard overview section catch re-throws control flow before its fallback", async () => {

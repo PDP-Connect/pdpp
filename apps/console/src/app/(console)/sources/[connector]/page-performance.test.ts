@@ -19,6 +19,11 @@ const RACES_SECOND_PHASE =
   /const \[diagnostics, providerOrigin\] = await Promise\.all\(\[\s*loadConnectorDiagnostics\(/;
 const CALLS_LIST_STREAMS = /listStreams\(/;
 const AWAITS_DIAGNOSTICS_SERIALLY = /const diagnostics = await loadConnectorDiagnostics\(/;
+const DECLARED_STREAMS = /for \(const name of summary\.streams\)/;
+const RETAINED_STREAMS = /for \(const record of summary\.stream_records \?\? \[\]\)/;
+const COLLECTION_FACT_STREAMS = /for \(const entry of summary\.collection_report \?\? \[\]\)/;
+const VERDICT_STREAMS = /for \(const entry of summary\.rendered_verdict\?\.streams \?\? \[\]\)/;
+const GAP_STREAMS = /pushGapStreams\(summary\.last_run\?\.known_gaps\)/;
 
 function modelBody(src: string): string {
   const start = src.indexOf("async function loadConnectorPageModel");
@@ -44,7 +49,7 @@ test("the first phase (connection + manifests) still resolves before the second-
   const body = modelBody(src);
   // The connector/instance ids the second phase consumes come from this
   // load-bearing first `Promise.all`; it must precede the second-phase race.
-  const firstPhase = body.indexOf("await Promise.all([resolveConnectionForRecordsRoute");
+  const firstPhase = body.indexOf("await Promise.all([\n    resolveConnectionForRecordsRoute");
   const streamProjection = body.indexOf("const streams = streamsFromConnectorSummary(summary)");
   const secondPhase = body.indexOf("const [diagnostics, providerOrigin] = await Promise.all([");
   assert.ok(firstPhase >= 0, "first phase must resolve the connection and manifests together");
@@ -54,4 +59,13 @@ test("the first phase (connection + manifests) still resolves before the second-
     firstPhase < streamProjection && streamProjection < secondPhase,
     "the connection/manifests phase must resolve before stream projection and the diagnostics/provider-origin race"
   );
+});
+
+test("connection detail unions every server stream evidence source", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, DECLARED_STREAMS);
+  assert.match(src, RETAINED_STREAMS);
+  assert.match(src, COLLECTION_FACT_STREAMS);
+  assert.match(src, VERDICT_STREAMS);
+  assert.match(src, GAP_STREAMS);
 });

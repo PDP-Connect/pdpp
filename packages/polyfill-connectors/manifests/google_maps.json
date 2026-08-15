@@ -36,12 +36,6 @@
           "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DiOS&hl=en"
         },
         {
-          "label": "Import-folder handoff",
-          "platform": "server",
-          "posture": "secondary",
-          "detail": "For a large export, place the file in the configured server import folder and start the same manual import flow."
-        },
-        {
           "label": "Takeout backup probe",
           "platform": "takeout",
           "posture": "advanced",
@@ -57,9 +51,10 @@
       "import_dir_env_var": "GOOGLE_MAPS_TIMELINE_DIR",
       "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DAndroid&hl=en",
       "help_text": "Google Maps Timeline points and segments are not exposed by Google's documented Data Portability API. This source imports an owner-provided Timeline export file; no Google account sign-in is used.",
-      "large_file_fallback": "Use the server import-folder handoff for large Timeline archives instead of waiting on a browser upload.",
+      "large_file_fallback": "This connector accepts uploads up to the deployment limit shown above. There is currently no alternate upload path for larger files — ask your PDPP operator to raise the deployment limit if your export exceeds it.",
       "validation": {
         "kind": "google_maps_timeline",
+        "file_backed": true,
         "max_file_bytes": 104857600
       },
       "validation_expectations": [
@@ -81,8 +76,7 @@
       "rationale": "Google Maps Timeline imports require the owner to export a fresh Timeline JSON file from Google Maps or Android settings. Google's documented Data Portability API exposes other Maps resource groups, but not Timeline points or Timeline segments, so this connector does not authenticate to Google or refresh in the background."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
     }
   },
   "streams": [
@@ -173,6 +167,7 @@
     },
     {
       "name": "timeline_segments",
+      "required": false,
       "description": "Google Maps Timeline visits, activities, and path segments.",
       "display": {
         "label": "Your Google Maps visits and activities",
@@ -196,7 +191,7 @@
           },
           "segment_kind": {
             "type": "string",
-            "enum": ["path", "visit", "activity"],
+            "enum": ["path", "visit", "activity", "unrecognized"],
             "x_pdpp_role": "primary-title"
           },
           "source_format": {
@@ -221,6 +216,9 @@
           },
           "probability": {
             "type": ["number", "null"]
+          },
+          "unrecognized_kind": {
+            "type": ["string", "null"]
           }
         },
         "required": ["id", "start_time", "segment_kind", "source_format"]
@@ -247,5 +245,12 @@
       "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "invalid_json": "We couldn't read one of your Google Maps Timeline export files",
+    "record_too_large": "This Google Maps Timeline record is too large; re-export your Timeline and try again",
+    "timeline_points_not_found": "We couldn't find any location points to import",
+    "timeline_segments_not_found": "We couldn't find any timeline segments to import",
+    "unsupported_shape": "Your Google Maps Timeline export has an unsupported structure; re-export it as a supported JSON file"
+  }
 }

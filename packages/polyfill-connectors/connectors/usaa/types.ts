@@ -215,7 +215,7 @@ export interface HydrationResultSuccess {
 }
 
 export interface HydrationResultError {
-  diag?: Record<string, unknown> | null;
+  diag?: StatementDownloadDiagnostic | null;
   err: string;
 }
 
@@ -319,7 +319,6 @@ export interface ParseMetaOk {
 
 export interface ParseMetaUnknown {
   era: "unknown";
-  rawTextSample: string;
   year: number;
 }
 
@@ -333,10 +332,54 @@ export interface DownloadOk {
   suggestedFilename: string;
 }
 
+export interface StatementMenuDiagnostic {
+  action_count: number;
+  download_candidate_count: number;
+  item_count: number;
+  present: boolean;
+}
+
+export interface StatementResponseDiagnostic {
+  body_error_count: number;
+  candidate_count: number;
+  cdp_error: boolean;
+  cdp_ready: boolean;
+  matched_count: number;
+  source_counts: { cdp: number; playwright: number };
+  status_codes: number[];
+}
+
+/** Durable statement-download evidence. Keep this closed to structural facts. */
+export interface StatementDownloadDiagnostic {
+  bytes?: number;
+  download_empty?: boolean;
+  error_class?: "Error" | "unknown";
+  menu?: StatementMenuDiagnostic;
+  response?: StatementResponseDiagnostic;
+  response_source?: "cdp" | "playwright";
+}
+
+/**
+ * The finite set of internal failure reasons `downloadStatementFromRow` can
+ * return. `index.ts` maps each one to its own explicit, literal
+ * `pdf_download_*` SKIP_RESULT reason code (never string-templated) so the
+ * connector-completeness scan can see every code statically.
+ */
+export type DownloadFailReason =
+  | "direct_link_failed"
+  | "download_click_failed"
+  | "download_empty"
+  | "download_timeout"
+  | "no_download_menuitem"
+  | "no_options_affordance"
+  | "options_click_failed"
+  | "persist_failed"
+  | "row_missing";
+
 export interface DownloadFail {
-  diag?: Record<string, unknown> | null;
+  diag?: StatementDownloadDiagnostic | null;
   ok: false;
-  reason: string;
+  reason: DownloadFailReason;
 }
 
 export type DownloadResult = DownloadOk | DownloadFail;

@@ -77,7 +77,8 @@ export interface ConnectorHttpGovernorOptions {
   now?: () => number;
   /**
    * Conservative slow-start DISCOVERY interval (ms) the AIMD ramp enters from on
-   * a cold start. Unknown-quota API; start polite. Default:
+   * a cold start. The effective value is never below the declared provider
+   * profile floor. Unknown-quota API; start polite. Default:
    * {@link DEFAULT_PACING_INITIAL_INTERVAL_MS} (adaptive collection is on by
    * default). Pass `0` to opt OUT of pacing entirely (no pre-flight wait — the
    * pre-convergence byte-identical behavior).
@@ -108,6 +109,8 @@ export interface ConnectorHttpGovernorOptions {
   restoredIntervalMs?: number | null;
   /** Optional ratio-based retry budget (Finagle). Absent → only `maxAttempts`. */
   retryBudget?: HttpRetryBudget;
+  /** Injectable request-retry sleep (tests). Defaults to `sleep`. */
+  retrySleep?: (ms: number) => void | Promise<void>;
   /** Injectable sleep (tests). */
   sleep?: (ms: number) => void | Promise<void>;
 }
@@ -217,7 +220,9 @@ export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOption
       : options.restoredIntervalMs;
   const pacing = new ProviderPacing({
     initialIntervalMs: pacingInitialIntervalMs,
-    minIntervalMs: pacingMinIntervalMs,
+    // A zero discovery interval is the explicit pacing opt-out. Do not let the
+    // provider floor turn that disabled path into a newly introduced wait.
+    minIntervalMs: pacingEnabled ? pacingMinIntervalMs : 0,
     ...(restored === null ? {} : { restoredIntervalMs: restored }),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.sleep === undefined ? {} : { sleep: (ms: number) => Promise.resolve(options.sleep?.(ms)) }),
@@ -251,7 +256,7 @@ export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOption
         maxRetryAfterMs,
         ...(options.random === undefined ? {} : { random: options.random }),
         ...(options.retryBudget === undefined ? {} : { retryBudget: options.retryBudget }),
-        ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+        ...((options.retrySleep ?? options.sleep) === undefined ? {} : { sleep: options.retrySleep ?? options.sleep }),
         request: async () => {
           const raw = await send();
           const c = classify(raw);

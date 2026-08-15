@@ -167,12 +167,43 @@ versions, and capabilities such as `network`, `filesystem`, and `local_device`.
 Browser-bound connectors are intentionally not shipped in this package until
 each has its own publishability review.
 
-## Enroll
+## Setup (guided)
 
 Start the reference deployment and open the dashboard's local exporter
 enrollment form. Create an enrollment code for the connector id and local
-binding you want to run, then exchange that short-lived code on the host that
-has the local data:
+binding you want to run, then run `setup` on the host that has the local
+data:
+
+```bash
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector setup \
+  --base-url https://<reference-host> \
+  --code <one-time-code> \
+  --connector claude_code \
+  --device-label "<host label>" \
+  --sample 20
+```
+
+`setup` exchanges the code, writes the device id/device token/connection id
+to a local profile `.env` file under `~/.config/pdpp/collectors/`
+(`$PDPP_LOCAL_COLLECTOR_PROFILE_DIR` or `${XDG_CONFIG_HOME:-$HOME/.config}/pdpp/collectors`;
+file permissions `0600`, directory `0700` &mdash; POSIX mode bits, inert on
+Windows, where the file's protection comes from living under your own user
+profile directory instead), and prints a human-readable summary — never the
+raw device token. `--sample 20` runs a bounded 20-record proof pass
+immediately after enrolling, so you get real evidence the pairing works
+before deciding to collect the full source; omit it to only enroll and save
+credentials. Add `--json` for machine-readable output. Connector ids are
+case-insensitive and hyphens normalize to underscores (`claude-code` ==
+`claude_code`).
+
+Once `setup` has written a profile, `run --connection-id <id>` resolves
+device id/device token/connector from it automatically — see "Run" below.
+
+**Low-level alternative.** `enroll` is the scriptable primitive `setup` is
+built on: it performs the same exchange but prints the raw JSON response
+instead of writing a profile, for callers that manage credentials themselves
+(unchanged, still fully supported):
 
 ```bash
 # @pdpp/local-collector package, npx-launched pdpp-local-collector binary
@@ -192,8 +223,24 @@ lane.
 
 ## Run
 
-Run the connector with the enrollment response values supplied through
-environment variables:
+If you used `setup`, the profile it wrote is picked up automatically:
+
+```bash
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector run --connection-id <source_instance_id>
+```
+
+Live progress (phase, running record counts, a final summary) prints to
+stderr as the connector finds records — stdout stays a pure JSON result, so
+piping/parsing `run`'s output is unaffected. Pass `--quiet` to suppress
+progress lines (for example under a systemd unit, where stderr already lands
+in the journal). Pass `--sample <n>` any time to run a bounded proof pass
+instead of a full collection — it stops the connector after `n` records,
+still durably queues what it collected, and never marks the pass as a
+complete/coverage-checkpointed run.
+
+**Low-level alternative.** Supply the enrollment response values directly
+through environment variables — unchanged, still fully supported:
 
 ```bash
 # @pdpp/local-collector package, npx-launched pdpp-local-collector binary
@@ -221,6 +268,31 @@ npx -y @pdpp/local-collector run \
 `PDPP_CONNECTION_ID`, but new docs and scripts should use
 `PDPP_CONNECTION_ID`.
 
+## Connectors and logout
+
+List the connector ids this build accepts:
+
+```bash
+npx -y @pdpp/local-collector connectors
+```
+
+Revoke this device's own credential on the reference server, then remove its
+saved local profile. Deletion only happens after the server confirms the
+credential is revoked (or was already revoked); a network/server failure
+leaves local credentials in place so you can retry:
+
+```bash
+npx -y @pdpp/local-collector logout --connector claude_code
+```
+
+If the server is unreachable or decommissioned, `--local-only` skips the
+server call and deletes local credentials unconditionally — the device token
+then stays valid server-side until revoked some other way:
+
+```bash
+npx -y @pdpp/local-collector logout --connector claude_code --local-only
+```
+
 ## Recover A Stalled Collector
 
 When the dashboard says a local collector needs attention, run the recovery
@@ -241,10 +313,10 @@ under `${PDPP_LOCAL_COLLECTOR_PROFILE_DIR}` or
 `${XDG_CONFIG_HOME:-$HOME/.config}/pdpp/collectors`. When it finds one, it uses
 the profile's durable outbox path, connector id, reference base URL, device id,
 and device token. If no matching profile exists and no explicit queue was
-configured, it refuses with an operator error instead of falling back to the
-package-default outbox. That refusal is intentional: the package-default queue
-is often unrelated to the enrolled host collector and can produce a misleading
-`db.exists:false` / `matched:0` result.
+configured, it refuses with an operator error instead of inspecting an
+unscoped default outbox. That refusal is intentional: without a source identity
+and connector, the CLI cannot prove which local lane an unscoped file belongs
+to.
 
 If you installed globally with `npm i -g @pdpp/local-collector`, replace
 the `npx -y @pdpp/local-collector` prefix with `pdpp-local-collector`:
@@ -284,6 +356,29 @@ The collector keeps undrained work in a durable SQLite outbox between runs.
 That file, and any output you capture, must live on a **persistent,
 disk-backed** directory — not a RAM-backed `/tmp`.
 
+When `PDPP_COLLECTOR_QUEUE` is unset, the collector resolves one source-aware
+file below the platform user-state directory. The default roots are
+`${XDG_STATE_HOME:-$HOME/.local/state}/pdpp/collectors` on Linux/Unix,
+`$HOME/Library/Application Support/pdpp/collectors` on macOS, and
+`%LOCALAPPDATA%/pdpp/collectors` on Windows. A bundled connector uses the
+`<connector>-<source_instance_id>.sqlite` filename; a source without a
+connector uses `collector-runner-queue.<source_instance_id>.sqlite`. The path
+does not depend on the current directory, the package install directory, an
+`npx` temp directory, or a worktree.
+
+An explicit `PDPP_COLLECTOR_QUEUE` value or `--queue` flag always wins and is
+used unchanged. Existing nonempty SQLite stores under the legacy stable
+`~/.local/state/pdpp/collectors` directory remain discoverable. A unique
+package-local legacy store is copied into the canonical state directory using
+a SQLite snapshot, with the original retained. If more than one nonempty
+legacy store matches the source, the command stops and asks for `--queue`; it
+never guesses, overwrites, or deletes state.
+
+This resolver cannot recover a package-relative queue file that a reaped
+worktree already deleted. If the server still reports pending work, use the
+saved profile and normal recovery path first; records that existed only in the
+deleted local SQLite file require a new source scan.
+
 On many Linux hosts `/tmp` is a `tmpfs` mounted on RAM (the default on recent
 Ubuntu releases, sized at half of physical memory). A wrapper that points the
 outbox or a captured run summary at `/tmp` therefore: (a) silently consumes RAM
@@ -291,12 +386,12 @@ as the outbox or a large backfill summary grows, and (b) loses undrained
 backlog on reboot, so the next run re-scans and re-enqueues the same tranche
 instead of draining what was already collected.
 
-Set these explicitly in your wrapper or env file:
+You normally do not need to set the queue path. Set it explicitly only when a
+supervisor owns the location or when you are selecting a legacy store:
 
 ```bash
-# Durable outbox: a disk-backed state dir, never /tmp.
-# Linux (XDG): $XDG_STATE_HOME or ~/.local/state.
-PDPP_COLLECTOR_QUEUE="${XDG_STATE_HOME:-$HOME/.local/state}/pdpp/collector-runner-queue.json"
+# Explicit durable outbox override: a disk-backed state dir, never /tmp.
+PDPP_COLLECTOR_QUEUE="${XDG_STATE_HOME:-$HOME/.local/state}/pdpp/collector-runner-queue.sqlite"
 ```
 
 When you capture the `run` or `doctor` JSON, write it under the same persistent
@@ -351,7 +446,7 @@ EnvironmentFile=/etc/pdpp/local-collector.secret
 # Keep the durable outbox on a disk-backed path so undrained backlog survives
 # reboot and a tmpfs /tmp never holds collector state (see "Persistent State
 # And Scratch Paths" above).
-Environment=PDPP_COLLECTOR_QUEUE=/var/lib/pdpp/collector-runner-queue.json
+Environment=PDPP_COLLECTOR_QUEUE=/var/lib/pdpp/collector-runner-queue.sqlite
 ExecStart=/usr/bin/pdpp-local-collector run --connector %i
 
 # --- Durable resource limits (do not drop these) --------------------------
@@ -531,7 +626,7 @@ source "$HOME/.config/pdpp/local-collector.secret"
 # backlog survives reboot and a tmpfs /tmp never holds collector state.
 # (macOS /tmp is disk-backed today, but pinning the path keeps the wrapper
 # portable to Linux hosts where /tmp is tmpfs.)
-export PDPP_COLLECTOR_QUEUE="$HOME/Library/Application Support/pdpp/collector-runner-queue.json"
+export PDPP_COLLECTOR_QUEUE="$HOME/Library/Application Support/pdpp/collector-runner-queue.sqlite"
 mkdir -p "$(dirname "$PDPP_COLLECTOR_QUEUE")"
 exec /opt/homebrew/bin/pdpp-local-collector run --connector "$1"
 ```

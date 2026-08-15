@@ -14,7 +14,8 @@
  */
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
-import { politeDelay, runConnector } from "../../src/connector-runtime.ts";
+import { buildFullScanCoverageMessage, politeDelay, runConnector } from "../../src/connector-runtime.ts";
+import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
 import { notionPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
@@ -248,7 +249,7 @@ function toDatabaseRecord(d: NotionObject): Record<string, unknown> {
 }
 
 interface RunStreamArgs {
-  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
+  emit: (msg: EmittedMessage) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
   filter: NotionSearchFilter;
   progress: (message: string, extra?: ProgressExtra) => Promise<void>;
@@ -281,6 +282,10 @@ async function runStream(args: RunStreamArgs): Promise<void> {
     total_seen: items.length,
     cursor_present: Boolean(latest || prior),
   });
+  // The search result is the complete enumeration boundary for this stream.
+  // Emit measured full-scan evidence even when it is empty; record counts alone
+  // cannot distinguish a verified empty workspace from missing coverage proof.
+  await emit(buildFullScanCoverageMessage(streamName, items.length));
   await emit({
     type: "STATE",
     stream: streamName,

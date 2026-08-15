@@ -23,10 +23,75 @@
   "capabilities": {
     "auth": {
       "kind": "oauth",
+      "exchanger_kind": "oauth2_access_type_resource_groups",
+      "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+      "token_url": "https://oauth2.googleapis.com/token",
+      "authorization_params": {
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "false"
+      },
       "deployment_config": [
-        "GOOGLE_DATAPORTABILITY_CLIENT_ID",
-        "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
-        "GOOGLE_DATAPORTABILITY_REDIRECT_URI"
+        {
+          "logical_key": "client_id",
+          "label": "Google Data Portability OAuth client ID",
+          "secret": false,
+          "env_alias": "GOOGLE_DATAPORTABILITY_CLIENT_ID"
+        },
+        {
+          "logical_key": "client_secret",
+          "label": "Google Data Portability OAuth client secret",
+          "secret": true,
+          "env_alias": "GOOGLE_DATAPORTABILITY_CLIENT_SECRET"
+        },
+        {
+          "logical_key": "redirect_uri",
+          "label": "Google Data Portability redirect URI",
+          "secret": false,
+          "env_alias": "GOOGLE_DATAPORTABILITY_REDIRECT_URI"
+        }
+      ],
+      "env_bundle_kind": "multi_field",
+      "connection_config": [
+        {
+          "env_var": "GOOGLE_DATAPORTABILITY_ACCESS_TOKEN",
+          "bundle_field": "access_token"
+        },
+        {
+          "env_var": "GOOGLE_DATAPORTABILITY_REFRESH_TOKEN",
+          "bundle_field": "refresh_token",
+          "required": false
+        },
+        {
+          "env_var": "GOOGLE_DATAPORTABILITY_TOKEN_KIND",
+          "bundle_field": "token_kind",
+          "required": false
+        },
+        {
+          "env_var": "GOOGLE_DATAPORTABILITY_TOKEN_EXPIRES_AT",
+          "bundle_field": "expires_at",
+          "required": false
+        },
+        {
+          "env_var": "GOOGLE_DATAPORTABILITY_AUTHORIZED_RESOURCE_GROUPS",
+          "bundle_field": "authorized_resource_groups",
+          "required": false
+        },
+        {
+          "env_var": "GOOGLE_DATAPORTABILITY_ONE_TIME_RESOURCE_GROUPS",
+          "bundle_field": "one_time_resource_groups",
+          "required": false
+        },
+        {
+          "env_var": "GOOGLE_DATAPORTABILITY_TIME_BASED_RESOURCE_GROUPS",
+          "bundle_field": "time_based_resource_groups",
+          "required": false
+        },
+        {
+          "env_var": "GOOGLE_DATAPORTABILITY_DENIED_RESOURCE_GROUPS",
+          "bundle_field": "denied_resource_groups",
+          "required": false
+        }
       ],
       "resource_groups": [
         "maps.aliased_places",
@@ -60,6 +125,9 @@
       ]
     },
     "human_interaction": ["manual_action"],
+    "proven": {
+      "provider_auth_lifecycle": true
+    },
     "refresh_policy": {
       "recommended_mode": "manual",
       "interaction_posture": "manual_action_likely",
@@ -69,8 +137,8 @@
       "rationale": "Google Data Portability API exports require a deployment-level Google OAuth/Data Portability application plus owner authorization. Timeline points and segments are not documented Data Portability resources, so this source is separate from Google Maps Timeline Import."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "development",
+      "proof_gate": "Archive download and Maps resource group parsing not yet implemented. Currently only archive job metadata (control plane) is available."
     }
   },
   "external_docs": [

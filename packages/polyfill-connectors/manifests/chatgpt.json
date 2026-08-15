@@ -57,11 +57,12 @@
       "bot_detection_sensitivity": "high",
       "background_safe": true,
       "assisted_after_owner_auth": true,
+      "max_cooldown_cycles": 8,
+      "max_recovery_attempts": 3,
       "rationale": "ChatGPT requires owner-authenticated browser state. Automatic refresh is session-reuse-only; owner-mediated repair handles provider login challenges through runtime assistance evidence."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
     }
   },
   "streams": [
@@ -383,7 +384,11 @@
     },
     {
       "name": "custom_instructions",
+      "required": true,
       "description": "The user's custom instructions (the 'What would you like ChatGPT to know about you' and 'How would you like ChatGPT to respond' fields).",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your custom instructions",
         "detail": "The two free-text fields from Settings → Personalization → Custom Instructions: 'about you' context and preferred response style, plus whether they're currently enabled. Singleton — only one set per user."
@@ -438,7 +443,11 @@
     },
     {
       "name": "shared_conversations",
+      "required": true,
       "description": "Conversations the user has shared via public link.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your shared conversations",
         "detail": "Share records for conversations you've made public: the share ID, the underlying conversation, the public URL, anonymous flag, and any highlighted text."
@@ -574,5 +583,14 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "empty_detail": "We opened this conversation but found no messages to import",
+    "http_error": "We hit a network problem talking to the service",
+    "missing_mapping": "We opened this conversation but it had no message data to read",
+    "not_available": "This data isn't available through the current connection",
+    "pagination_cap_truncated": "There were more ChatGPT results than we could safely page through in one run, so we stopped early",
+    "parse_error": "ChatGPT sent back a response we couldn't read",
+    "shape_check_failed": "The data didn't look like we expected"
+  }
 }

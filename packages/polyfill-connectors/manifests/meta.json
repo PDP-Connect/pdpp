@@ -27,8 +27,7 @@
       "rationale": "Instagram (Meta) blocks repeated automated access; refresh manually."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [
@@ -143,5 +142,8 @@
       "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "instagram_graphql_wiring_pending": "Instagram support isn't wired up yet"
+  }
 }

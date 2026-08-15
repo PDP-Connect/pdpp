@@ -48,7 +48,7 @@ const NOW = "2026-07-29T00:00:00.000Z";
 const DIRTY_MARKER_UPDATE_FAULT = /injected dirty-marker update fault/;
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: CONNECTOR_ID,
   display_name: "Dirty Mark Atomicity Probe",
   protocol_version: "0.1.0",

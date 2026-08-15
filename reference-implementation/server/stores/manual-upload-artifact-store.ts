@@ -121,17 +121,26 @@ interface NormalizedPatch {
   validationJson: string | null | undefined;
 }
 
+/** Statuses that represent in-flight work with no owning process once the
+ *  server that started them has restarted -- see listInFlightOlderThan's
+ *  doc comment. */
+const IN_FLIGHT_STATUSES = ["uploaded", "validating"] as const;
+
 export interface SqliteManualUploadArtifactStore {
+  claimForSweep: (artifactId: string, cutoffIso: string, nowIso: string) => boolean;
   get: (artifactId: string) => ManualUploadArtifact | null;
   insert: (record: ManualUploadArtifactInsert) => ManualUploadArtifact | null;
   listByConnection: (connectorInstanceId: string, opts?: ListOptions) => (ManualUploadArtifact | null)[];
+  listInFlightOlderThan: (cutoffIso: string) => ManualUploadArtifact[];
   update: (artifactId: string, patch: ManualUploadArtifactPatch) => ManualUploadArtifact | null;
 }
 
 export interface PostgresManualUploadArtifactStore {
+  claimForSweep: (artifactId: string, cutoffIso: string, nowIso: string) => Promise<boolean>;
   get: (artifactId: string) => Promise<ManualUploadArtifact | null>;
   insert: (record: ManualUploadArtifactInsert) => Promise<ManualUploadArtifact | null>;
   listByConnection: (connectorInstanceId: string, opts?: ListOptions) => Promise<(ManualUploadArtifact | null)[]>;
+  listInFlightOlderThan: (cutoffIso: string) => Promise<ManualUploadArtifact[]>;
   update: (artifactId: string, patch: ManualUploadArtifactPatch) => Promise<ManualUploadArtifact | null>;
 }
 
@@ -306,6 +315,31 @@ export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtif
       return rows.map(mapRow);
     },
 
+    listInFlightOlderThan(cutoffIso: string): ManualUploadArtifact[] {
+      const rows = sqliteList(
+        `SELECT *
+           FROM manual_upload_artifacts
+          WHERE status IN (${IN_FLIGHT_STATUSES.map(() => "?").join(", ")})
+            AND updated_at < ?
+          ORDER BY updated_at ASC`,
+        [...IN_FLIGHT_STATUSES, cutoffIso]
+      );
+      return rows.map(mapRow).filter((row): row is ManualUploadArtifact => row !== null);
+    },
+
+    claimForSweep(artifactId: string, cutoffIso: string, nowIso: string): boolean {
+      const result = execDynamicSqlAcknowledged(
+        `UPDATE manual_upload_artifacts
+            SET status = 'validating',
+                updated_at = ?
+          WHERE artifact_id = ?
+            AND status IN (${IN_FLIGHT_STATUSES.map(() => "?").join(", ")})
+            AND updated_at < ?`,
+        [nowIso, artifactId, ...IN_FLIGHT_STATUSES, cutoffIso]
+      );
+      return result.changes > 0;
+    },
+
     update(artifactId: string, patch: ManualUploadArtifactPatch): ManualUploadArtifact | null {
       const next = normalizePatch(patch);
       execDynamicSqlAcknowledged(
@@ -398,6 +432,33 @@ export function createPostgresManualUploadArtifactStore(): PostgresManualUploadA
         [connectorInstanceId, limit]
       );
       return result.rows.map(mapRow);
+    },
+
+    async claimForSweep(artifactId: string, cutoffIso: string, nowIso: string): Promise<boolean> {
+      const placeholders = IN_FLIGHT_STATUSES.map((_, i) => `$${i + 3}`).join(", ");
+      const result = await postgresQuery(
+        `UPDATE manual_upload_artifacts
+            SET status = 'validating',
+                updated_at = $1
+          WHERE artifact_id = $2
+            AND status IN (${placeholders})
+            AND updated_at < $${IN_FLIGHT_STATUSES.length + 3}`,
+        [nowIso, artifactId, ...IN_FLIGHT_STATUSES, cutoffIso]
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async listInFlightOlderThan(cutoffIso: string): Promise<ManualUploadArtifact[]> {
+      const placeholders = IN_FLIGHT_STATUSES.map((_, i) => `$${i + 1}`).join(", ");
+      const result = await postgresQuery<ManualUploadArtifactRow>(
+        `SELECT *
+           FROM manual_upload_artifacts
+          WHERE status IN (${placeholders})
+            AND updated_at < $${IN_FLIGHT_STATUSES.length + 1}
+          ORDER BY updated_at ASC`,
+        [...IN_FLIGHT_STATUSES, cutoffIso]
+      );
+      return result.rows.map(mapRow).filter((row): row is ManualUploadArtifact => row !== null);
     },
 
     async update(artifactId: string, patch: ManualUploadArtifactPatch): Promise<ManualUploadArtifact | null> {

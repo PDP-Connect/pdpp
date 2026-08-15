@@ -1,6 +1,6 @@
 # Slack connector
 
-Wraps [slackdump](https://github.com/rusq/slackdump) to pull a workspace's full history into PDPP. Slackdump maintains its own SQLite archive at `~/.pdpp/slackdump/<workspace>/archive/slackdump.sqlite`; the connector reads that archive and emits RECORDs.
+Wraps [slackdump](https://github.com/rusq/slackdump) to pull a workspace's full history into PDPP. Slackdump maintains its own SQLite archive under the deployment-owned artifact root — `<root>/slack/<workspace>/archive/slackdump.sqlite`, where `<root>` is `PDPP_CONNECTOR_ARTIFACT_ROOT` (Core pins it to `/var/lib/pdpp/connector-artifacts`). The connector reads that archive and emits RECORDs. The archive is durable and expensive to rebuild, so it must sit on the deployment's persistent volume; see `src/connector-artifact-root.ts`.
 
 ## How "pull only what's missing" works
 
@@ -32,7 +32,7 @@ PDPP_SLACK_SKIP_SLACKDUMP=1 node bin/orchestrate.js run slack
 ## Operational state on disk
 
 ```
-~/.pdpp/slackdump/<workspace>/archive/
+<artifact-root>/slack/<workspace>/archive/
 ├── slackdump.sqlite      # the archive (574k message rows = 186k unique messages across sessions)
 └── __uploads/            # downloaded file attachments
 ```
@@ -65,6 +65,29 @@ than the cursor instead of the whole (unbounded, un-indexed) `MESSAGE` table on
 every run. Every run reports per-phase timing and an archive size snapshot via
 `PROGRESS` (`slackdump-subprocess`, `archive-open`, `read-and-emit`, and
 `sqlite=…B uploads=…B`) so this bound is measurable and regressions are visible.
+
+**`SLACKDUMP_TIMEOUT_MS` bounds silence, not work.** It is a *stall* budget: it
+caps how long slackdump may go without observable progress, and every observed
+advance rearms it. Progress is read from the archive itself (row/chunk counts
+plus file growth), so detection needs no cooperation from the child process and
+does not depend on a `PROGRESS` consumer being attached. A first sync of a
+multi-year workspace legitimately runs for hours at Slack's rate limits, so a
+total-runtime cap kills healthy syncs: with a 90-minute cap, real UAT runs were
+terminated mid-download after emitting 13k–17k records and banking 80k+ messages
+in the archive, leaving every stream uncommitted. Default 24h of *silence*.
+
+Two escape hatches, deliberately distinct so a stall is never confused with a
+long-but-healthy run:
+
+- `SLACKDUMP_MAX_RUNTIME_MS` — an absolute ceiling, unset (unbounded) by
+  default. Fires as `slackdump_max_runtime`.
+- `SLACKDUMP_PROGRESS_INTERVAL_MS` — how often progress is sampled and
+  reported (default 60s).
+
+Both timeout shapes classify as retryable: the archive is durable, so the next
+attempt resumes against banked work instead of restarting the dump from zero.
+When no archive path is observable there is no progress signal, so the budget
+degrades to a plain total-runtime deadline.
 
 **Scoped-archive reconciliation (channel healing) is finite by construction,
 not by a wall-clock cap.** If an unscoped run finds a previously-observed
@@ -155,12 +178,21 @@ Read via direct Slack Web API calls (see `slack-api.ts`) using the same session 
 
 See `openspec/changes/complete-slack-bundled-connector-coverage` for the evidence that these four methods are reachable with the connector's existing credential.
 
+The `d` cookie value must be percent-encoded on the wire exactly the way
+slackdump's own Go client encodes it (`slack-api.ts`'s
+`encodeSlackCookieValue`, an exact port of `net/url.QueryEscape`'s
+`encodeQueryComponent` mode — not JS's `encodeURIComponent`, which disagrees
+on space and on `!'()*`). A captured `d` cookie routinely contains
+characters outside the URL-safe set; sending it un-encoded produces a
+session Slack's cookie parser can't resolve, which surfaces as a clean
+`invalid_auth` indistinguishable from a genuinely dead credential.
+
 ## Auth
 
-Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env. Capture `SLACK_TOKEN` (an `xoxc-` token) and `SLACK_COOKIE` (the `d=...` cookie value) from a logged-in browser session against your workspace.
+Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env. Capture `SLACK_TOKEN` (the browser web-client `xoxc-` token) and `SLACK_COOKIE` (the value of the cookie named `d`, usually `xoxd-...`; paste the value without `d=` and preserve URL escapes) from a logged-in browser session against your workspace. See the official [Slackdump manual authentication guide](https://github.com/rusq/slackdump/blob/5ecece6b7fa63f6e1a71e049900b9ccc61f6b1e7/doc/login-manual.md).
 
 Slackdump resolution:
 
 - Host runs: put `slackdump` on `PATH` or set `SLACKDUMP_BIN` to the binary path.
-- Docker runs: the stock PDPP reference image does not bundle AGPL-3.0 `slackdump`. Build a derived image that installs it, or mount the binary into the container and set `SLACKDUMP_BIN` to that in-container path.
+- Docker runs: `core`, `core-browser`, `railway-core`, and `platform-core` images ship `slackdump` v4.4.2 (AGPL-3.0) bundled by default at `/usr/local/bin/slackdump`. To override, set `SLACKDUMP_BIN` to an alternative executable path or mount it as described in the reference-implementation README.
 - Missing binary failures are reported before credentials are printed; do not paste Slack tokens into logs.

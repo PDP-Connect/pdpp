@@ -29,6 +29,73 @@ test("ProviderPacing: first admit() sleeps initialIntervalMs", async () => {
   assert.equal(spy.calls[0], 200, "first admit sleeps initialIntervalMs");
 });
 
+test("ProviderPacing: inverted initial/min configuration cold-starts at the declared floor", async () => {
+  const spy = makeSpy();
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 10_000,
+    now: () => 0,
+    sleep: spy.sleep,
+  });
+
+  assert.equal(pacing.currentIntervalMs, 10_000, "cold-start state cannot be faster than minIntervalMs");
+  assert.equal(pacing.snapshot().initialIntervalMs, 10_000, "snapshot reports the effective cold-start interval");
+
+  await pacing.admit();
+
+  assert.deepEqual(spy.calls, [10_000], "the first admission waits the declared provider floor");
+});
+
+test("ProviderPacing: inverted configuration enforces the floor through GCRA idle credit", async () => {
+  const minIntervalMs = 10_000;
+  const cases = [
+    { burstToleranceMs: 0, expected: [10_000, 120_000, 130_000, 140_000] },
+    { burstToleranceMs: 2000, expected: [10_000, 118_000, 128_000, 138_000] },
+    { burstToleranceMs: 10_000, expected: [10_000, 110_000, 120_000, 130_000] },
+    // 20s of configured credit is capped to 10s: it may not buy a second
+    // zero-delay admission after the legitimate first immediate admission.
+    { burstToleranceMs: 20_000, expected: [10_000, 110_000, 120_000, 130_000] },
+  ];
+
+  await Promise.all(
+    cases.map(async ({ burstToleranceMs, expected }) => {
+      let nowMs = 0;
+      const admittedAtMs: number[] = [];
+      const pacing = new ProviderPacing({
+        initialIntervalMs: 1000,
+        minIntervalMs,
+        burstToleranceMs,
+        now: () => nowMs,
+        sleep: (ms) => {
+          nowMs += ms;
+          return Promise.resolve();
+        },
+      });
+
+      async function admitAndRecord(): Promise<void> {
+        await pacing.admit();
+        admittedAtMs.push(nowMs);
+      }
+
+      await admitAndRecord()
+        .then(() => {
+          nowMs += 100_000;
+          return admitAndRecord();
+        })
+        .then(admitAndRecord)
+        .then(admitAndRecord);
+
+      assert.deepEqual(admittedAtMs, expected, `long-idle sequence for burstToleranceMs=${burstToleranceMs}`);
+      for (let i = 2; i < admittedAtMs.length; i += 1) {
+        assert.ok(
+          (admittedAtMs[i] as number) - (admittedAtMs[i - 1] as number) >= minIntervalMs,
+          `admission ${i + 1} must be at least ${minIntervalMs}ms after admission ${i} for tolerance ${burstToleranceMs}`
+        );
+      }
+    })
+  );
+});
+
 test("ProviderPacing: unset initialIntervalMs uses a conservative default", async () => {
   const spy = makeSpy();
   const pacing = new ProviderPacing({
@@ -171,6 +238,41 @@ test("ProviderPacing: Retry-After honored exactly on next admit()", async () => 
   pacing.recordThrottle({ retryAfterMs: 5000 });
   await pacing.admit();
   assert.equal(spy.calls.at(-1), 5000, "Retry-After honored exactly");
+});
+
+test("ProviderPacing: shorter Retry-After cannot erase the sustained admission floor", async () => {
+  const sleeps: number[] = [];
+  let nowMs = 0;
+  const minIntervalMs = 10_000;
+  const pacing = new ProviderPacing({
+    initialIntervalMs: minIntervalMs,
+    minIntervalMs,
+    now: () => nowMs,
+    sleep: (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+      return Promise.resolve();
+    },
+  });
+
+  await pacing.admit();
+  const firstAdmissionAtMs = nowMs;
+  pacing.recordThrottle({ retryAfterMs: 1000 });
+  await pacing.admit();
+  const secondAdmissionAtMs = nowMs;
+  await pacing.admit();
+
+  assert.deepEqual(sleeps, [minIntervalMs, minIntervalMs, minIntervalMs]);
+  assert.equal(
+    secondAdmissionAtMs - firstAdmissionAtMs,
+    minIntervalMs,
+    "a shorter Retry-After is combined with the remaining GCRA floor debt"
+  );
+  assert.equal(
+    nowMs - secondAdmissionAtMs,
+    minIntervalMs,
+    "the combined debt is consumed once and the following admission keeps the floor"
+  );
 });
 
 test("ProviderPacing Part B: a Retry-After is a one-shot wait, NOT a steady-state interval", async () => {

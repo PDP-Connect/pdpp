@@ -505,7 +505,14 @@ Persistent mounts are defined for:
 - `packages/polyfill-connectors/.pdpp-data/` bind-mounted to `/var/lib/pdpp`,
   with `PDPP_DB_PATH` at `/var/lib/pdpp/pdpp.sqlite`
 - `PDPP_EMBEDDING_CACHE_DIR` at `/var/cache/pdpp/transformers`
-- `~/.pdpp/` for browser profiles, daemon files, and connector session state
+
+Durable connector artifacts — the Slack workspace archive, downloaded
+statement PDFs — resolve under `PDPP_CONNECTOR_ARTIFACT_ROOT`, which Core
+pins to `/var/lib/pdpp/connector-artifacts`. They are on the volume above; no
+separate mount is needed. Outside a container, with neither that variable nor
+`PDPP_DB_PATH` set, they fall back to `~/.pdpp/connector-artifacts` and each
+run says so in its log. See
+`packages/polyfill-connectors/src/connector-artifact-root.ts`.
 
 The first boot may download the default MiniLM model into the embedding cache.
 Set `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` if you want to avoid that and accept
@@ -522,19 +529,22 @@ persistent browser profiles and remain subject to upstream anti-bot behavior.
 Mount any optional local connector inputs, such as Slack archives, explicitly
 when testing those connectors.
 
-Slack imports additionally require a host-provided `slackdump` executable. The
-stock reference image intentionally does not bundle `slackdump` because it is an
-AGPL-licensed external tool. For Docker runs, set
-`PDPP_DOCKER_SLACKDUMP_DIR` in `.env.docker` to a host directory containing a
-`slackdump` executable, and keep `SLACKDUMP_BIN` pointed at the stable
-in-container path:
+Slack imports require `slackdump` v4.4.2 (AGPL-3.0). The `core`, `core-browser`,
+`railway-core`, and `platform-core` Docker images ship `slackdump` bundled by default.
+Source tree and license: bundled at `/usr/local/share/slackdump/` in the image
+(LICENSE.agpl-3.0.txt, SOURCE_URL, SLACKDUMP_BIN=/usr/local/bin/slackdump).
+
+To override with a different `slackdump` build or version, set `SLACKDUMP_BIN`
+to point at an alternative executable on `PATH` or an in-container path. For
+Docker runs, you can mount a host directory via `PDPP_DOCKER_SLACKDUMP_DIR`
+in `.env.docker`:
 
 ```env
 PDPP_DOCKER_SLACKDUMP_DIR=/home/user/go/bin
 SLACKDUMP_BIN=/opt/pdpp-tools/slackdump/slackdump
 ```
 
-Alternatively, place or symlink the executable at
+Alternatively, place or symlink an alternative executable at
 `packages/polyfill-connectors/.pdpp-tools/slackdump/slackdump`; that local
 runtime directory is gitignored and is the default compose mount source.
 

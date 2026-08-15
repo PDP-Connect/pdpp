@@ -74,8 +74,11 @@ function parseTimestampMs(value: unknown): string | null {
   if (!raw) {
     return null;
   }
+  // `> 0` not just isFinite: a "0" timestampMs is Google's "unset", and
+  // converting it would put the point at 1970-01-01 — the head of the
+  // owner's timeline — instead of leaving it absent.
   const ms = Number.parseInt(raw, 10);
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
 }
 
 function parseTimestamp(value: unknown): string | null {
@@ -188,6 +191,7 @@ function buildSegment(input: {
   semanticType?: string | null;
   sourceFormat: GoogleMapsSourceFormat;
   startTime: string;
+  unrecognizedKind?: string | null;
 }): TimelineSegmentRecord {
   return {
     id: hashId(
@@ -201,6 +205,10 @@ function buildSegment(input: {
         input.activityType ?? "",
         input.latitude?.toFixed(7) ?? "",
         input.longitude?.toFixed(7) ?? "",
+        // Only extend the hash input when this is actually an unrecognized
+        // segment, so ids for the three understood kinds stay byte-identical
+        // to those already collected (re-import must dedupe, not duplicate).
+        ...(input.unrecognizedKind ? [input.unrecognizedKind] : []),
       ].join("|")
     ),
     start_time: input.startTime,
@@ -213,6 +221,7 @@ function buildSegment(input: {
     semantic_type: input.semanticType ?? null,
     activity_type: input.activityType ?? null,
     probability: input.probability ?? null,
+    unrecognized_kind: input.unrecognizedKind ?? null,
   };
 }
 
@@ -242,6 +251,17 @@ function parseLegacyRecords(json: Record<string, unknown>): ParseResult {
   }
   return { points, segments: [] };
 }
+
+/** Keys `segmentTimes` reads — timing metadata, not a segment payload. */
+const TIMING_SEGMENT_KEYS = new Set([
+  "startTime",
+  "startTimestamp",
+  "endTime",
+  "endTimestamp",
+  "duration",
+  "startTimeTimezoneUtcOffsetMinutes",
+  "endTimeTimezoneUtcOffsetMinutes",
+]);
 
 function segmentTimes(segment: Record<string, unknown>): { endTime: string | null; startTime: string | null } {
   const duration = asObject(segment.duration);
@@ -281,9 +301,23 @@ function parseTimelinePathPoint(
   });
 }
 
+/** Payload keys a semanticSegments entry can carry that we know how to read. */
+const MODELLED_SEGMENT_KEYS = ["visit", "activity", "timelinePath"];
+
+/**
+ * Classify a semanticSegments entry by which payload sub-object it carries.
+ *
+ * `path` is claimed only when a timelinePath is actually present. Anything
+ * else — Google's `timelineMemory`, or whatever it ships next in this
+ * undocumented format — classifies as `unrecognized` rather than falling
+ * through to `path`. A mislabeled `path` segment with every location field
+ * nulled is a confident lie about the owner's data; `unrecognized` keeps the
+ * record without pretending to understand it.
+ */
 function semanticSegmentKind(
   visit: Record<string, unknown> | null,
-  activity: Record<string, unknown> | null
+  activity: Record<string, unknown> | null,
+  hasTimelinePath: boolean
 ): GoogleMapsSegmentKind {
   if (visit) {
     return "visit";
@@ -291,7 +325,17 @@ function semanticSegmentKind(
   if (activity) {
     return "activity";
   }
-  return "path";
+  return hasTimelinePath ? "path" : "unrecognized";
+}
+
+/**
+ * The provider's own payload key(s) on an unrecognized segment, preserved
+ * verbatim so the anomaly is inspectable instead of silent. Falls back to a
+ * marker when the entry carries no key beyond the timestamps.
+ */
+function unrecognizedSegmentKey(segment: Record<string, unknown>): string {
+  const keys = Object.keys(segment).filter((k) => !(MODELLED_SEGMENT_KEYS.includes(k) || TIMING_SEGMENT_KEYS.has(k)));
+  return keys.length > 0 ? keys.sort().join(",") : "(no payload key)";
 }
 
 function parseSemanticSegment(segment: Record<string, unknown>): ParseResult {
@@ -304,7 +348,7 @@ function parseSemanticSegment(segment: Record<string, unknown>): ParseResult {
   const visitLocation = parseLatLon(
     topVisit?.placeLocation ?? topVisit?.location ?? visit?.placeLocation ?? visit?.location
   );
-  const segmentKind = semanticSegmentKind(visit, activity);
+  const segmentKind = semanticSegmentKind(visit, activity, timelinePath.length > 0);
   const activityType = asString(topActivity?.type) ?? asString(activity?.activityType);
   const placeId = asString(topVisit?.placeID) ?? asString(topVisit?.placeId) ?? asString(visit?.placeId);
   const semanticType = asString(topVisit?.semanticType) ?? asString(visit?.semanticType);
@@ -327,6 +371,7 @@ function parseSemanticSegment(segment: Record<string, unknown>): ParseResult {
       semanticType,
       activityType,
       probability,
+      unrecognizedKind: segmentKind === "unrecognized" ? unrecognizedSegmentKey(segment) : null,
     });
     segmentId = seg.id;
     segments.push(seg);
@@ -471,7 +516,7 @@ function mergeResults(results: ParseResult[]): ParseResult {
 export function parseGoogleMapsExport(json: unknown): ParseResult {
   const obj = asObject(json);
   const results: ParseResult[] = [];
-  if (obj?.locations) {
+  if (Array.isArray(obj?.locations)) {
     results.push(parseLegacyRecords(obj));
   }
   const semanticSegments = Array.isArray(obj?.semanticSegments) ? obj.semanticSegments : [];
@@ -491,4 +536,16 @@ export function parseGoogleMapsExport(json: unknown): ParseResult {
     results.push(parseTimelineObject(item));
   }
   return mergeResults(results);
+}
+
+/** Parse one element from a streamed Timeline container through the same
+ * pure dispatch used by the buffer-backed parser. */
+export function parseGoogleMapsExportElement(format: GoogleMapsSourceFormat, value: unknown): ParseResult {
+  if (format === "legacy_records") {
+    return parseGoogleMapsExport({ locations: [value] });
+  }
+  if (format === "semantic_segments") {
+    return parseGoogleMapsExport({ semanticSegments: [value] });
+  }
+  return parseGoogleMapsExport([value]);
 }

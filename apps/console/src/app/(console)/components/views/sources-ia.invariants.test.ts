@@ -9,7 +9,9 @@
  *   1. A blank/partial dashboard has an obvious Add-source path (not a grant
  *      CTA, not a dead end).
  *   2. The Sources first screen shows per-source health and surfaces Sync,
- *      Reauthorize, and Revoke as separate, clearly-labeled actions.
+ *      Source details, and Revoke as separate, clearly-labeled affordances —
+ *      with navigation named for its destination, never for a credential
+ *      operation it does not perform.
  *   3. The normal Sources UI shows no developer-only strings (monorepo paths,
  *      unpublished CLI, per-account env-var jargon, internal id placeholders).
  *   4. "Connect apps" is a clearly separate read-access surface, not
@@ -34,7 +36,13 @@ const RECORDS_ADD_PAGE_FILE = `${HERE}../../sources/add/page.tsx`;
 const ROUTES_FILE = fileURLToPath(
   new URL("../../../../../../../packages/operator-ui/src/components/views/routes.ts", import.meta.url)
 );
-const SHELL_FILE = `${HERE}../shell.tsx`;
+// The live sidebar shell — `components/shell.tsx` (DashboardShell) was dead
+// code (2026-08-07 IA audit finding 1.7/1.5: zero content-page importers,
+// verified by grep) and has been deleted. `RecordroomShell`'s NAV_GROUPS is
+// the real, rendered nav every page uses.
+const SHELL_FILE = fileURLToPath(
+  new URL("../../../../../../../packages/pdpp-brand-react/src/shell-frame.tsx", import.meta.url)
+);
 const CONNECT_PAGE_FILE = `${HERE}../../connect/page.tsx`;
 const SOURCE_SETUP_CATALOG_FILE = `${HERE}../source-setup-catalog.tsx`;
 const ADD_SUPPORT_FILE = `${HERE}../../lib/source-add-support.ts`;
@@ -62,9 +70,18 @@ const RUNTIME_ADVISORY_MODEL_RE = /buildSourcesRuntimeAdvisory\(page\.runtime\)/
 const RUNTIME_ADVISORY_PROP_RE = /runtimeAdvisory=\{runtimeAdvisory\}/;
 const RUNTIME_ADVISORY_RENDER_RE = /data-testid="sources-runtime-advisory"/;
 const INSPECTION_LAYER_FIELDS_RE = /detail_gap_backlog|next_attempt_at|collection_rate|suppressed/;
-// Sync, Reauthorize, and Revoke are three separate actions in the passport foot
+// Sync, Source details, and Revoke are three separate affordances in the
+// passport foot. The middle one is a NAVIGATION to the connection detail page —
+// where reauthorization and credential controls actually live. It used to be
+// labeled "Reauthorize →" on a condition unrelated to reauthorization (manual-
+// upload support / a non-owner-runnable verdict) while pointing at the very same
+// href, so a healthy OAuth source with no pending reauth still read
+// "Reauthorize →". Pin the honest constant label and the fact that it is a
+// <Link> to detailHref, not a mutation.
 const SYNC_ACTION_RE = /Sync now/;
-const REAUTHORIZE_ACTION_RE = /Reauthorize/;
+const SOURCE_DETAILS_NAV_RE = /href=\{instance\.detailHref\}[\s\S]{0,120}Source details →/;
+// The label must NOT reintroduce a conditional swap on manual-upload/verdict state.
+const CONDITIONAL_DETAILS_LABEL_RE = /\?\s*"Source details →"\s*:|:\s*"Reauthorize →"/;
 const MANUAL_UPLOAD_ADD_EXPORT_RE = /Add another export/;
 const MANUAL_UPLOAD_REPROCESS_RE = /Reprocess all exports/;
 const MANUAL_UPLOAD_DETAILS_RE = /Source details/;
@@ -82,25 +99,23 @@ const SOURCES_PAGE_STATUS_HELPER_IMPORT_RE =
   /isActiveConnectorRunSummaryStatus[\s\S]*from "\.\.\/lib\/connector-run-summary-status\.ts"/;
 const SOURCES_PAGE_STATUS_HELPER_CALL_RE = /isActiveConnectorRunSummaryStatus\(\s*s\.last_run\.status\s*\)/;
 const LIST_CONNECTOR_MANIFESTS_RE = /listConnectorManifests\(\)/;
-const BUILD_CONNECTOR_CATALOG_RE = /buildConnectorCatalog\(manifests\)/;
+const LIST_OWNER_CONNECTOR_TEMPLATES_RE = /listOwnerConnectorTemplates\(\)/;
+const BUILD_CONNECTOR_CATALOG_RE = /buildOwnerConnectorCatalog\(manifests, templates\)/;
 const SOURCE_SETUP_CATALOG_RE = /<SourceSetupCatalog/;
 const SOURCE_SETUP_SECTION_RE = /title="Add data"/;
 const SOURCE_SEARCH_RE = /name="source_q"[\s\S]*?Search source name or connector key/;
 const SOURCE_CARD_RE = /data-testid=\{`source-setup-\$\{entry\.connectorKey\}`\}/;
 const SOURCE_ACQUISITION_PATHS_RE = /data-testid="source-acquisition-paths"/;
 const SOURCE_ACQUISITION_PATH_RE = /data-testid="source-acquisition-path"/;
-const OTHER_COVERAGE_PATHS_RE = /Other ways to add coverage/;
-const UNAVAILABLE_GROUP_RE = /Sources not available from this page/;
-const SERVER_SETUP_GROUP_RE = /Server settings needed before setup/;
-const SERVER_SETUP_SUMMARY_RE = /data-testid="server-setup-summary"/;
+const OTHER_COVERAGE_PATHS_RE = /Other ways to add data/;
 const IMPORT_OPTIONS_DISCLOSURE_RE = /Show import options/;
 const GENERIC_WHY_THIS_RE = /Why this, and what to expect/;
 const SOURCE_PROVIDER_SPECIFIC_COPY_RE =
   /\b(Amazon|Gmail|GitHub|Slack|ChatGPT|Chase|Notion|Spotify)\b|app password|personal access token/i;
 const FORBIDDEN_DEV_STRINGS_RE =
   /pnpm --dir|packages\/[a-z]|PDPP monorepo checkout|env var per account|pdpp owner-agent connectors|connector_instance_id|source_instance_id|device_token/;
-const NAV_SOURCES_RE = /label: "Sources", match: \(a\) => a === "records"/;
-const NAV_CONNECT_APPS_RE = /label: "Connect apps", match: \(a\) => a === "connect"/;
+const NAV_SOURCES_RE = /\{ label: "Sources", href: "\/sources" \}/;
+const NAV_CONNECT_APPS_RE = /\{ label: "Connect apps", href: "\/connect" \}/;
 const CONNECT_PAGE_TITLE_RE = /title="Connect apps"/;
 const CONNECT_PAGE_DESCRIPTION_RE = /grant-scoped read access[\s\S]*?go to Sources/;
 
@@ -130,6 +145,7 @@ test("Sources owns the add-source catalog route", async () => {
   const page = await readFile(RECORDS_ADD_PAGE_FILE, "utf8");
   const catalog = await readFile(SOURCE_SETUP_CATALOG_FILE, "utf8");
   assert.match(page, LIST_CONNECTOR_MANIFESTS_RE);
+  assert.match(page, LIST_OWNER_CONNECTOR_TEMPLATES_RE);
   assert.match(page, BUILD_CONNECTOR_CATALOG_RE);
   assert.match(page, SOURCE_SETUP_CATALOG_RE);
   assert.match(catalog, SOURCE_SETUP_SECTION_RE);
@@ -139,9 +155,6 @@ test("Sources owns the add-source catalog route", async () => {
   assert.match(catalog, SOURCE_ACQUISITION_PATH_RE);
   assert.match(catalog, OTHER_COVERAGE_PATHS_RE);
   assert.match(catalog, IMPORT_OPTIONS_DISCLOSURE_RE);
-  assert.match(catalog, UNAVAILABLE_GROUP_RE);
-  assert.match(catalog, SERVER_SETUP_GROUP_RE);
-  assert.match(catalog, SERVER_SETUP_SUMMARY_RE);
   assert.doesNotMatch(catalog, GENERIC_WHY_THIS_RE);
 });
 
@@ -172,12 +185,23 @@ test("Sources renders one global runtime advisory instead of per-source runtime 
   assert.match(view, RUNTIME_ADVISORY_RENDER_RE);
 });
 
-test("the sources passport foot has three distinct actions: Sync, Reauthorize, and Revoke", async () => {
+test("the sources passport foot has three distinct affordances: Sync, Source details, and Revoke", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   // (a) Sync — remotely trigger a collection run
   assert.match(src, SYNC_ACTION_RE);
-  // (b) Reauthorize — link to connection detail (never a stub mutation at the index level)
-  assert.match(src, REAUTHORIZE_ACTION_RE);
+  // (b) Source details — a NAVIGATION to the connection detail page, where
+  // reauthorization lives (never a stub mutation at the index level). One
+  // destination gets one name.
+  assert.match(
+    src,
+    SOURCE_DETAILS_NAV_RE,
+    "the detail affordance must be a Link to instance.detailHref labeled 'Source details →'"
+  );
+  assert.doesNotMatch(
+    src,
+    CONDITIONAL_DETAILS_LABEL_RE,
+    "the detail link's label must not swap on manual-upload/verdict state — the destination never changes"
+  );
   // (c) Revoke — destructive, behind a confirm ceremony
   assert.match(src, REVOKE_ACTION_RE);
   // The next_action CTA never links to the raw action_target spine field —
@@ -228,7 +252,7 @@ test("source setup presentation has no connector-specific copy or examples", asy
   assert.doesNotMatch(src, FORBIDDEN_DEV_STRINGS_RE);
 });
 
-// ── 4. "Connect AI apps" is a separate read-access surface ──────────────────
+// ── 4. "Connect apps" is a separate read-access surface ─────────────────────
 
 test("the nav names the inbound client surface 'Connect apps', distinct from Sources", async () => {
   const src = await readFile(SHELL_FILE, "utf8");

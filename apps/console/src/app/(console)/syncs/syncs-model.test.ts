@@ -20,6 +20,8 @@ import {
   describeCadence,
   describeDelta,
   describeDuration,
+  describeRecentSyncOutcome,
+  recentSyncOutcome,
 } from "./syncs-model.ts";
 
 // The false-prompt the source-pressure guard must never emit on a throttled
@@ -28,7 +30,8 @@ const RECONNECT_PROMPT_RE = /reconnect|log in/i;
 const RESUME_FALSE_REASSURANCE_RE = /fills on the next successful run|resumes normally/i;
 const RESUME_NORMALLY_RE = /resume normally/i;
 const THROTTLING_RE = /throttling/i;
-const ACTIONABILITY_RENDERED_STATUS_RE = /actionability\.renderedStatus/;
+const UNVERIFIED_ZERO_COPY_RE = /without proving the account was empty/;
+const SERVER_WORK_PROJECTION_RE = /serverWorkGroupHealth|source_work/;
 const RAW_VERDICT_TONE_RE = /rendered_verdict\.pill\.tone|verdict\.pill\.tone/;
 const SYNCS_PAGE_SOURCE = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
 const DEFERRED_RUN_NOT_LIVE_RE =
@@ -64,6 +67,7 @@ function connector(overrides: Partial<RefConnectorSummary> = {}): RefConnectorSu
     manifest_version: null,
     next_action: null,
     schedule: null,
+    source_work: "none",
     streams: ["alpha", "beta"],
     total_records: 0,
     ...overrides,
@@ -191,7 +195,28 @@ test("source-pressure cooldown produces a WAIT card, never a reconnect prompt", 
     state: "cooling_off",
   });
   const model = buildSyncsViewModel({
-    connectors: [connector({ connection_health: coolingHealth, display_name: "ChatGPT — personal" })],
+    connectors: [
+      connector({
+        connection_health: coolingHealth,
+        display_name: "ChatGPT — personal",
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          forward_statement:
+            "The source is throttling this connection, so the scheduler is spacing out automatic attempts.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [
+            action({
+              audience: "none",
+              cta: "Wait for the next attempt",
+              kind: "wait",
+              satisfied_when: { kind: "none" },
+              urgency: "verifying",
+            }),
+          ],
+        }),
+        source_work: "working",
+      }),
+    ],
     runs: [run({ event_count: 34, status: "succeeded" })],
   });
 
@@ -226,7 +251,26 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
     state: "blocked",
   });
   const model = buildSyncsViewModel({
-    connectors: [connector({ connection_health: blockedButThrottled })],
+    connectors: [
+      connector({
+        connection_health: blockedButThrottled,
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          forward_statement:
+            "The source is throttling this connection, so the scheduler is spacing out automatic attempts.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [
+            action({
+              audience: "none",
+              cta: "Wait for the next attempt",
+              kind: "wait",
+              satisfied_when: { kind: "none" },
+            }),
+          ],
+        }),
+        source_work: "working",
+      }),
+    ],
     runs: [],
   });
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
@@ -240,12 +284,23 @@ test("a genuine blocked connection (no backlog, no next attempt) DOES prompt rec
     state: "blocked",
   });
   const model = buildSyncsViewModel({
-    connectors: [connector({ connection_health: reallyBlocked })],
+    connectors: [
+      connector({
+        connection_health: reallyBlocked,
+        rendered_verdict: renderedVerdict({
+          channel: "attention",
+          forward_statement: "Reconnect this account and collection resumes.",
+          pill: { label: "Can't collect", tone: "red" },
+          required_actions: [action()],
+        }),
+        source_work: "needs_owner",
+      }),
+    ],
     runs: [],
   });
   const [card] = model.failureCards;
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
-  assert.equal(card?.summary.cta, "reconnect", "genuine credential failure keeps the reconnect CTA");
+  assert.equal(card?.summary.cta, "connection_detail", "genuine credential failure follows the server action link");
   assert.equal(model.band.needYourHand, 1, "a genuine block counts under need-your-hand");
 });
 
@@ -266,7 +321,7 @@ test("healthy connections produce no card and count their streams on schedule", 
 });
 
 test("syncs group health uses the shared source status instead of raw verdict tone", () => {
-  assert.match(SYNC_MODEL_SOURCE, ACTIONABILITY_RENDERED_STATUS_RE);
+  assert.match(SYNC_MODEL_SOURCE, SERVER_WORK_PROJECTION_RE);
   assert.doesNotMatch(
     SYNC_MODEL_SOURCE,
     RAW_VERDICT_TONE_RE,
@@ -551,6 +606,22 @@ test("a draft connection produces a PendingSetupCard, not a SyncGroup or Failure
   assert.equal(card.continueHref, "/connect/status/cin_draft");
 });
 
+test("terminal setup disposition keeps a draft out of sync groups and carries shared actionability copy", () => {
+  const model = buildSyncsViewModel({
+    connectors: [draftConnector({ terminal_setup_disposition: "unverified_zero" })],
+    runs: [],
+  });
+
+  assert.equal(model.groups.length, 0);
+  assert.equal(model.failureCards.length, 0);
+  assert.equal(model.pendingSetupCards.length, 1);
+  const [card] = model.pendingSetupCards;
+  assert.ok(card);
+  assert.equal(card.statusLabel, "needs review");
+  assert.equal(card.actionLabel, "Retry first sync");
+  assert.match(card.what, UNVERIFIED_ZERO_COPY_RE);
+});
+
 test("a draft connection counts toward needYourHand and inflates onSchedule by zero", () => {
   const model = buildSyncsViewModel({
     connectors: [draftConnector(), connector({ connection_id: "cin_healthy" })],
@@ -649,13 +720,13 @@ test("describeDuration formats sub-minute and minute spans", () => {
 test("a failing connection holds its next and marks rows failed", () => {
   const failHealth = health({ reason_code: "credentials_expired", state: "blocked" });
   const model = buildSyncsViewModel({
-    connectors: [connector({ connection_health: failHealth, schedule: schedule() })],
+    connectors: [connector({ connection_health: failHealth, schedule: schedule(), source_work: "needs_owner" })],
     runs: [run({ connection_id: "cin_test", status: "failed" })],
   });
   const [group] = model.groups;
   assert.equal(group?.health, "failing");
   assert.equal(group?.streams[0]?.failed, true);
-  assert.equal(group?.streams[0]?.next, "held");
+  assert.equal(group?.next, "held");
   assert.equal(group?.lastRunDelta, "sync failed");
 });
 
@@ -670,6 +741,7 @@ test("a broken connector does not rewrite a successful last run into sync failed
         }),
         last_run: connectorRun({ event_count: 52, run_id: "run_chase_success", status: "succeeded" }),
         last_successful_run: connectorRun({ event_count: 52, run_id: "run_chase_success", status: "succeeded" }),
+        source_work: "system_issue",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "This connector needs a code fix before it can collect again.",
@@ -698,7 +770,7 @@ test("a broken connector does not rewrite a successful last run into sync failed
     false,
     "row failure style follows the actual last run, not the current verdict"
   );
-  assert.equal(group?.streams[0]?.next, "held", "the current verdict still blocks future collection");
+  assert.equal(group?.next, "held", "the current verdict still blocks future collection");
   assert.deepEqual(group?.lastRunRhythm, ["ok"], "rhythm agrees with the successful last run");
 });
 
@@ -714,6 +786,7 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
     connectors: [
       connector({
         connection_health: terminalHealth,
+        source_work: "system_issue",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "This connector needs a code fix before it can collect again.",
@@ -757,6 +830,7 @@ test("failure cards bind retryable gaps to the rendered Retry now action", () =>
           reason_code: "retryable_gap",
           state: "degraded",
         }),
+        source_work: "system_issue",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Retry now to give the recoverable gap another run.",
@@ -789,6 +863,7 @@ test("failure cards bind stale manual refresh to Refresh now without marking hea
           reason_code: "stale_manual_refresh",
           state: "healthy",
         }),
+        source_work: "review",
         rendered_verdict: renderedVerdict({
           annotations: [{ kind: "freshness", text: "Last refreshed yesterday" }],
           channel: "advisory",
@@ -829,6 +904,7 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
           reason_code: "local_exporter_dead_letter_backlog",
           state: "degraded",
         }),
+        source_work: "needs_owner",
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "Check the collector before this source can make progress.",
@@ -869,6 +945,7 @@ test("device-local recovery counts as need-your-hand while navigating to recover
           reason_code: "local_exporter_dead_letter_backlog",
           state: "degraded",
         }),
+        source_work: "needs_owner",
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "The local collector has saved records on its host that did not upload to this server.",
@@ -911,6 +988,7 @@ test("failure cards carry shared source-work groups for Runs presentation", () =
       connector({
         connection_id: "cin_owner",
         display_name: "Owner source",
+        source_work: "needs_owner",
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "Reconnect this account and collection resumes.",
@@ -928,6 +1006,7 @@ test("failure cards carry shared source-work groups for Runs presentation", () =
       connector({
         connection_id: "cin_review",
         display_name: "Review source",
+        source_work: "review",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Run a refresh to bring this up to date.",
@@ -945,6 +1024,7 @@ test("failure cards carry shared source-work groups for Runs presentation", () =
       connector({
         connection_id: "cin_system",
         display_name: "System source",
+        source_work: "system_issue",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Latest collection completed with known coverage gaps.",
@@ -979,6 +1059,7 @@ test("syncs ranking only treats attention plus primary owner action as need-your
   const maintainerFirst = connector({
     connection_id: "cin_maintainer",
     display_name: "A maintainer-only source",
+    source_work: "system_issue",
     rendered_verdict: renderedVerdict({
       channel: "attention",
       forward_statement: "Connector code needs a fix before this can collect again.",
@@ -1004,6 +1085,7 @@ test("syncs ranking only treats attention plus primary owner action as need-your
   const ownerFirst = connector({
     connection_id: "cin_owner",
     display_name: "Z owner-required source",
+    source_work: "needs_owner",
     rendered_verdict: renderedVerdict({
       channel: "attention",
       forward_statement: "Reconnect this account and collection resumes.",
@@ -1619,4 +1701,114 @@ test("the health band counts only the failure cards actually rendered, not advis
     model.failureCards.length,
     "band needs-review count must equal the number of rendered failure cards"
   );
+});
+
+// ─── Recent syncs: the drillable run list ─────────────────────────────────────
+
+test("recent syncs list every run newest-first and links each to its run detail route", () => {
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a", display_name: "Gmail — personal" })],
+    runs: [
+      run({ connection_id: "cin_a", last_at: "2026-06-13T04:00:06Z", run_id: "run_old" }),
+      run({ connection_id: "cin_a", last_at: "2026-06-13T06:00:06Z", run_id: "run_new" }),
+    ],
+  });
+
+  assert.deepEqual(
+    model.recentSyncs.map((entry) => entry.runId),
+    ["run_new", "run_old"]
+  );
+  assert.deepEqual(
+    model.recentSyncs.map((entry) => entry.href),
+    ["/syncs/run_new", "/syncs/run_old"]
+  );
+  assert.equal(model.recentSyncs[0]?.connectionName, "Gmail — personal");
+});
+
+test("a recent sync for a connection outside the current page keeps the connector key, never an invented name", () => {
+  const model = buildSyncsViewModel({
+    connectors: [],
+    runs: [run({ connection_id: "cin_absent", connector_id: "gmail", run_id: "run_x" })],
+  });
+
+  const [entry] = model.recentSyncs;
+  assert.equal(entry?.connectionName, "gmail");
+  assert.equal(entry?.connectionId, "cin_absent");
+});
+
+test("recentSyncOutcome keeps succeeded_with_gaps distinct from a clean success", () => {
+  assert.equal(recentSyncOutcome("succeeded"), "ok");
+  assert.equal(recentSyncOutcome("succeeded_with_gaps"), "partial");
+  assert.equal(recentSyncOutcome("failed"), "failed");
+  assert.equal(recentSyncOutcome("cancelled"), "failed");
+  assert.equal(recentSyncOutcome("in_progress"), "running");
+});
+
+test("an unrecognised run status reads as unknown, never as a success", () => {
+  assert.equal(recentSyncOutcome("some_new_backend_status"), "unknown");
+  assert.equal(recentSyncOutcome("deferred"), "unknown");
+  assert.equal(describeRecentSyncOutcome("unknown"), "Unclassified");
+});
+
+test("a run reports its live flag from terminal status, and duration only when both bounds parse", () => {
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a" })],
+    runs: [
+      run({
+        connection_id: "cin_a",
+        first_at: "2026-06-13T04:00:00Z",
+        last_at: "2026-06-13T04:00:06Z",
+        run_id: "run_done",
+        status: "succeeded",
+      }),
+      run({
+        connection_id: "cin_a",
+        first_at: "2026-06-13T05:00:00Z",
+        last_at: "2026-06-13T05:00:00Z",
+        run_id: "run_live",
+        status: "in_progress",
+      }),
+    ],
+  });
+
+  const done = model.recentSyncs.find((entry) => entry.runId === "run_done");
+  const live = model.recentSyncs.find((entry) => entry.runId === "run_live");
+  assert.equal(done?.live, false);
+  assert.equal(done?.duration, "6 s");
+  assert.equal(live?.live, true);
+  assert.equal(live?.outcome, "running");
+});
+
+test("recent syncs dedupe repeated run ids from the feed", () => {
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a" })],
+    runs: [run({ connection_id: "cin_a", run_id: "run_dupe" }), run({ connection_id: "cin_a", run_id: "run_dupe" })],
+  });
+
+  assert.equal(model.recentSyncs.length, 1);
+});
+
+test("recent syncs never fabricate a record count when the feed omits one", () => {
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a" })],
+    runs: [run({ connection_id: "cin_a", event_count: Number.NaN, run_id: "run_x" })],
+  });
+
+  assert.equal(model.recentSyncs[0]?.eventCount, null);
+});
+
+test("recent syncs render every run the caller passes in — no hidden re-truncation of an already-paginated page", () => {
+  // The runs feed is now fetched as a real bounded cursor page by page.tsx
+  // (listRuns({ cursor, limit, status })); buildRecentSyncs must not silently
+  // re-slice that page down to a smaller number, or a page 2/3/etc render
+  // would show fewer rows than the server actually returned.
+  const manyRuns = Array.from({ length: 25 }, (_, i) =>
+    run({ connection_id: "cin_a", last_at: `2026-06-13T04:${String(i).padStart(2, "0")}:00Z`, run_id: `run_${i}` })
+  );
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a" })],
+    runs: manyRuns,
+  });
+
+  assert.equal(model.recentSyncs.length, 25);
 });

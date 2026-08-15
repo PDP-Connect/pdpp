@@ -3,11 +3,13 @@
 
 import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
 import { COLLECTOR_PROTOCOL_HEADER, COLLECTOR_PROTOCOL_VERSION } from "./collector-protocol.ts";
+import { retryAfterMsFromHeaders } from "./http-retry.ts";
 import { hashCanonicalJson, type LocalDeviceIngestBatchRequest } from "./local-device-envelope.ts";
 
 export const LOCAL_DEVICE_ENDPOINTS = {
   exchangeEnrollment: "/_ref/device-exporters/enroll",
   heartbeat: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/heartbeat`,
+  selfRevoke: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/self-revoke`,
   ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
   terminalCollection: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-collection`,
@@ -56,6 +58,16 @@ export interface LocalDeviceClientOptions {
 export const DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS = 120_000;
 
 export interface EnrollmentExchangeRequest {
+  /**
+   * Optional narrowing-only scope request. `undefined` (the default) sends
+   * no field at all — "no preference," letting the server's own declared
+   * boundary or honest recent-history default apply. An explicit `null` asks
+   * for a full pass. See `reference-implementation/server/
+   * enrollment-scope-narrowing.ts`: the server is the sole authority on the
+   * EFFECTIVE scope; this can only narrow what it already declared, never
+   * widen it.
+   */
+  collection_scope?: { since?: string; source_roots?: string[] } | null;
   device_label?: string;
   enrollment_code: string;
 }
@@ -78,6 +90,14 @@ export interface HeartbeatOutboxDiagnostics {
   dead_letter: number;
   leased: number;
   oldest_pending_at?: string | null;
+  /**
+   * `MIN(created_at)` over `ready` rows that have actually failed at least
+   * once (`attempt_count > 0`). Distinct from `oldest_pending_at`, which
+   * also includes a freshly-enqueued, never-failed row (e.g. a large
+   * healthy first drain) that must not be mistaken for a stuck retry.
+   * `null`/absent when nothing in the backlog has ever failed.
+   */
+  oldest_retrying_at?: string | null;
   pending: number;
   retrying: number;
   stale_leases: number;
@@ -124,6 +144,14 @@ export type IngestBatchRequest = LocalDeviceIngestBatchRequest;
 
 /** Safe, terminal per-stream evidence. Deliberately excludes paths, payloads, and reasons. */
 export interface TerminalCollectionRequest {
+  /**
+   * Fingerprint of the boundary this evidence was measured against (`unscoped`
+   * for a full pass — an absence would be indistinguishable from an old
+   * collector that never reported one). Coverage is only ever proof of the
+   * region it was measured in, so the region travels WITH the proof rather than
+   * being looked up beside it.
+   */
+  collection_scope?: string;
   connector_id: string;
   run_id: string;
   source_instance_id: string;
@@ -132,6 +160,12 @@ export interface TerminalCollectionRequest {
 
 export interface TerminalCollectionFact {
   coverage_statuses: readonly string[];
+  /**
+   * Whether the declared boundary was enforceable on this stream. `false` marks
+   * a stream collected WHOLE because its manifest declares no time field: it
+   * holds real data but proves nothing about the declared bound, so it must not
+   * be read as covering it.
+   */
   scoped?: boolean;
   stream: string;
 }
@@ -226,6 +260,12 @@ export interface RecoverLocalCollectorGapRequest {
   stream_boundary?: string;
 }
 
+export interface SelfRevokeDeviceResponse {
+  device_id: string;
+  object: "device_exporter_revocation";
+  revoked_at: string;
+}
+
 export class LocalDeviceHttpError extends Error {
   readonly body: string;
   readonly envelopeMessage: string | null;
@@ -240,8 +280,19 @@ export class LocalDeviceHttpError extends Error {
    * `error.code` field.
    */
   readonly code: string | null;
+  /**
+   * Server-declared retry delay in milliseconds, parsed structurally from
+   * the response's `Retry-After` header (seconds or HTTP-date form) via
+   * {@link retryAfterMsFromHeaders} — never parsed out of prose. `null`
+   * when the header was absent or unparseable. An explicit `Retry-After`
+   * is an authoritative signal from the server (see
+   * `ref-device-exporters.ts`'s `device_ingest_retryable` envelope) and
+   * lets the durable-outbox retry path honor the server's own timing
+   * instead of guessing via linear backoff.
+   */
+  readonly retryAfterMs: number | null;
 
-  constructor(status: number, body: string) {
+  constructor(status: number, body: string, retryAfterMs: number | null = null) {
     const parsed = parseLocalDeviceErrorEnvelope(body);
     const detail = formatLocalDeviceErrorDetail(parsed);
     super(`local device request failed: ${status}${detail}`);
@@ -251,6 +302,7 @@ export class LocalDeviceHttpError extends Error {
     this.code = parsed?.code ?? null;
     this.param = parsed?.param ?? null;
     this.envelopeMessage = parsed?.message ?? null;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -352,6 +404,19 @@ export class LocalDeviceClient {
     return this.#request(LOCAL_DEVICE_ENDPOINTS.heartbeat(this.#requireDeviceId()), {
       authenticate: true,
       body: request,
+      method: "POST",
+    });
+  }
+
+  /**
+   * Revoke this device's own credential using its own bearer token. A
+   * device may only revoke itself — the server rejects any deviceId that
+   * does not match the authenticated credential. Called by `logout` before
+   * deleting local credentials so the server-side lane closes with them.
+   */
+  selfRevoke(): Promise<SelfRevokeDeviceResponse> {
+    return this.#request(LOCAL_DEVICE_ENDPOINTS.selfRevoke(this.#requireDeviceId()), {
+      authenticate: true,
       method: "POST",
     });
   }
@@ -475,7 +540,10 @@ export class LocalDeviceClient {
 
       const text = await response.text();
       if (!response.ok) {
-        throw new LocalDeviceHttpError(response.status, text);
+        const retryAfterMs = retryAfterMsFromHeaders({
+          "retry-after": response.headers.get("retry-after") ?? undefined,
+        });
+        throw new LocalDeviceHttpError(response.status, text, retryAfterMs);
       }
       if (!text) {
         return { ok: true } as TResponse;

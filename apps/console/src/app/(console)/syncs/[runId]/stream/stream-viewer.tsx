@@ -5979,13 +5979,13 @@ export function ResolvedSurface({ connector, runId }: { connector: ConnectorCont
             {subject} is back on it.
           </p>
           <p className="pdpp-body text-foreground">
-            The browser step is complete. You can close this tab with your browser controls, or open the run timeline.
+            The browser step is complete. You can close this tab with your browser controls, or view run details.
           </p>
           <Link
             className={buttonVariants({ className: "h-12 w-full justify-center", size: "lg", variant: "default" })}
             href={`/syncs/${encodeURIComponent(runId)}`}
           >
-            Open run timeline
+            View run details (optional)
           </Link>
         </section>
       </div>
@@ -6026,7 +6026,7 @@ function UnsupportedSurface({
           <p className="pdpp-body text-foreground">This step takes a credential, not a browser.</p>
           <Link className="block w-full" href={runHref}>
             <IcButton className="h-12 w-full" size="lg" type="button">
-              Open run timeline
+              View run details (optional)
             </IcButton>
           </Link>
         </section>

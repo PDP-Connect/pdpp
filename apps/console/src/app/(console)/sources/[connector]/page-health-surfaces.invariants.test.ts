@@ -44,6 +44,10 @@ const RE_ACQUISITION_COVERAGE_TITLE = /title="Acquisition coverage"/;
 const RE_ACQUISITION_COVERAGE_RECEIPT_LINK = /\/connect\/status\//;
 const RE_ACQUISITION_COVERAGE_OWNER_COPY = /coverage receipts, not generic sync status/;
 const RE_ACQUISITION_COVERAGE_SOURCE_NEUTRAL = /\bWhatsApp\b|\bTimeline\b|\bGoogle\b/i;
+const RE_STORED_CREDENTIAL_ACTION_USES_EXPLICIT_COPY =
+  /case "stored_credential"[\s\S]*label: "Update credential"/;
+const RE_BROWSER_SESSION_ACTION_USES_SERVER_CTA =
+  /case "browser_session"[\s\S]*label: action\.cta/;
 
 // ─── Surface 1: rendered-verdict health explanation ──────────────────────────
 
@@ -120,4 +124,10 @@ test("connector detail page threads owner-only acquisition coverage into a sourc
   assert.match(src, RE_ACQUISITION_COVERAGE_RECEIPT_LINK);
   assert.match(src, RE_ACQUISITION_COVERAGE_OWNER_COPY);
   assert.doesNotMatch(sectionSrc, RE_ACQUISITION_COVERAGE_SOURCE_NEUTRAL);
+});
+
+test("connector detail page labels each reauthentication surface precisely", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, RE_STORED_CREDENTIAL_ACTION_USES_EXPLICIT_COPY);
+  assert.match(src, RE_BROWSER_SESSION_ACTION_USES_SERVER_CTA);
 });

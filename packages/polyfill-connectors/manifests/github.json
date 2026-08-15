@@ -28,7 +28,7 @@
           "secret": true,
           "autocomplete": "off",
           "help_url": "https://github.com/settings/tokens",
-          "help_text": "Create a token in GitHub developer settings, then paste it here.",
+          "help_text": "Create a GitHub personal access token with read:user, public_repo, repo, and gist access as applicable to the data you want, then paste it here.",
           "env": ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"]
         }
       ]
@@ -36,6 +36,14 @@
   },
   "capabilities": {
     "human_interaction": [],
+    "proven": {
+      "static_secret_live": {
+        "proven": true,
+        "run_id": "run_1781131195649",
+        "date": "2026-06-10",
+        "note": "completed/succeeded, env-free container; plus run_1781131489458 trigger_kind=scheduled unattended succeeded (4 records)"
+      }
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
@@ -48,14 +56,16 @@
       "rationale": "GitHub uses a personal access token with documented rate limits; hourly refresh is safe."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "tier": "supported"
     }
   },
   "streams": [
     {
       "name": "user",
+      "required": true,
       "description": "The authenticated user's stable profile and identity fields. Sampled metrics (followers, following, public_repos, public_gists) are in the user_stats stream.",
+      "compaction_class": "point_in_time_real_field",
+      "compaction_class_note": "follower/repo/gist counts are point-in-time samples carried on this record; retained history is never compactable.",
       "display": {
         "label": "Your GitHub profile",
         "detail": "Username, display name, bio, email if public, company, location, blog, twitter_username, avatar, created_at and updated_at. Follower/following/repo counts are in user_stats."
@@ -843,5 +853,12 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "github_pagination_cap_exceeded": "GitHub returned more pages than this run could safely scan, so collection stopped before claiming complete coverage",
+    "github_pagination_repeated_next": "GitHub repeated a pagination link, so collection stopped before claiming complete coverage",
+    "pr_detail_fetch_failed": "We saved these pull requests but couldn't load every detail",
+    "pr_search_cap_truncated": "There were more results than the service will return, so the oldest couldn't be collected",
+    "starred_entry_missing_repo": "We skipped a starred entry whose repository was unavailable"
+  }
 }

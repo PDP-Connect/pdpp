@@ -57,7 +57,7 @@ const POLLUTER_EVENT_SEQ = 999_999;
 
 function manifest(connectorId: string, displayName: string) {
   return {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: displayName,
     protocol_version: "0.1.0",
@@ -132,7 +132,7 @@ async function readStreamFactsEventSeq(instanceId: string): Promise<number | nul
 }
 
 if (POSTGRES_URL) {
-  test("BUG (reproduced): an unscoped fold contaminates a brand-new connection's checkpoint with an unrelated connection's fleet-wide terminal event_seq", async () => {
+  test("unscoped fold keeps a brand-new connection's checkpoint instance-scoped", async () => {
     await withTemporaryPostgresDatabase(
       {
         closeConnections: closePostgresStorage,
@@ -151,11 +151,7 @@ if (POSTGRES_URL) {
         await reconcileDirtyConnectorSummaryEvidence(null);
 
         const victimCheckpoint = await readStreamFactsEventSeq(VICTIM_INSTANCE_ID);
-        assert.equal(
-          victimCheckpoint,
-          POLLUTER_EVENT_SEQ,
-          `the victim connection (zero terminal events of its own) was stamped with the POLLUTER's fleet-wide event_seq (${POLLUTER_EVENT_SEQ}) instead of its own genuine zero-history checkpoint — this is the exact contamination that made the probe 3/4 fault-injection tests never actually attempt a write`
-        );
+        assert.equal(victimCheckpoint, 0, "the victim does not inherit the polluter's terminal high-water mark");
       }
     );
   });

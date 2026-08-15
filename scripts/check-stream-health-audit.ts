@@ -3,30 +3,21 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Stream-health coverage-evidence audit — CLI entry, not a fleet-health verdict.
+// Stream-health acceptance authority — executable, read-only owner-fleet gate.
 //
-// Fails when a required stream lacks a resolved coverage posture beneath a
-// settled connection: resting unknown/unmeasured coverage, or an
-// accepted-absence condition on a required stream (contradictory manifest).
-// Active bounded work is still reported as inconclusive, but it does not
-// suppress masked failures, and retained-size count evidence only fails
-// when the projection is reliable enough to prove an exact zero. See
-// openspec/changes/define-stream-coverage-freshness-evidence tasks.md 9.1
-// and specs/reference-connection-health/spec.md "A reproducible machine
-// audit SHALL distinguish settled failures from active or unreliable
-// evidence".
-// A PASS says only that required-stream coverage evidence passed this narrow
-// audit; owner action, runtime, lifecycle, recovery, and fleet scope are
-// composed separately by the owner fleet-health read.
+// The score is intentionally derived from the exhaustive owner connection
+// inventory crossed with production streams declared by connector manifests.
+// It requires current successful runtime evidence plus committed coverage or
+// explicit verified-empty proof. Counts, checkpoints, and rendered pills are
+// supporting projections, never proof by themselves.
 //
 // Usage:
 //   node scripts/check-stream-health-audit.ts --origin https://pdpp.example.com
 //   node scripts/check-stream-health-audit.ts --json
 //
 // This CLI only runs the live probe — it requires an origin (via --origin
-// or PDPP_ACCEPTANCE_ORIGIN). The seeded local audit lives in the unit
-// test at reference-implementation/test/stream-health-audit.test.ts
-// (`node --test` target, wired into CI separately).
+// or PDPP_ACCEPTANCE_ORIGIN). Seeded local authority regressions live in
+// scripts/stream-health-audit/authority.test.ts.
 //
 // Live owner auth (never printed) is read from the environment. `/_ref/connectors`
 // is cookie-gated, so this audit only ever sends a Cookie header — but the
@@ -41,26 +32,29 @@
 //                               route family).
 // An origin may also be supplied via PDPP_ACCEPTANCE_ORIGIN.
 //
-// No record payloads are printed — only connection labels/ids, stream
-// names, and evidence classes (strategy_declaration_missing,
-// runtime_evidence_missing, accepted_absence_on_required,
-// declared_stream_count_unavailable, active_bounded_work — see
-// scripts/stream-health-audit/live.ts for what each suggests
-// investigating).
+// No record payloads are printed — only connection ids, stream names, classes,
+// exact score fields, and the revision receipt.
 
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import type { StreamHealthConnectionResult } from "./stream-health-audit/audit.ts";
-import { runLiveStreamHealthAudit } from "./stream-health-audit/live.ts";
+import type { StreamHealthFinding } from "./stream-health-audit/authority.ts";
+import { runLiveStreamHealthAuthority } from "./stream-health-audit/live.ts";
 
 interface Args {
+  expectedRevision: string | null;
+  expectedSha: string | null;
   json: boolean;
   origin: string | null;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { json: false, origin: null };
+  const args: Args = {
+    expectedRevision: process.env.PDPP_EXPECTED_REFERENCE_REVISION?.trim() || null,
+    expectedSha: process.env.PDPP_EXPECTED_SHA?.trim() || null,
+    json: false,
+    origin: null,
+  };
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -71,19 +65,28 @@ function parseArgs(argv: string[]): Args {
       args.origin = argv[i] ?? null;
     } else if (a?.startsWith("--origin=")) {
       args.origin = a.slice("--origin=".length);
+    } else if (a === "--expected-revision") {
+      i += 1;
+      args.expectedRevision = argv[i] ?? null;
+    } else if (a?.startsWith("--expected-revision=")) {
+      args.expectedRevision = a.slice("--expected-revision=".length);
+    } else if (a === "--expected-sha") {
+      i += 1;
+      args.expectedSha = argv[i] ?? null;
+    } else if (a?.startsWith("--expected-sha=")) {
+      args.expectedSha = a.slice("--expected-sha=".length);
     }
     i += 1;
   }
   return args;
 }
 
-function renderIssueTable(rows: readonly StreamHealthConnectionResult[]): string {
-  const lines = ["connection\tstream\tevidence_class"];
-  for (const item of rows) {
-    const label = item.connection_label ?? item.connection_id ?? "<unknown>";
-    for (const stream of item.streams) {
-      lines.push(`${label}\t${stream.stream}\t${stream.class}`);
-    }
+function renderIssueTable(rows: readonly StreamHealthFinding[]): string {
+  const lines = ["connection\tstream\tclass\tscored\treason"];
+  for (const item of rows.filter((row) => row.class !== "green")) {
+    lines.push(
+      `${item.connection_id ?? "<audit>"}\t${item.stream}\t${item.class}\t${item.denominator ? "yes" : "no"}\t${item.reason}`
+    );
   }
   return lines.join("\n");
 }
@@ -95,37 +98,33 @@ async function main(): Promise<void> {
   if (!origin) {
     process.stderr.write(
       "stream-health audit: no origin supplied. Pass --origin or set PDPP_ACCEPTANCE_ORIGIN.\n" +
-        "For the seeded/local audit, run: node --test reference-implementation/test/stream-health-audit.test.ts\n"
+        "For the seeded/local authority regressions, run: node --test --import tsx scripts/stream-health-audit/authority.test.ts\n"
     );
     process.exitCode = 1;
     return;
   }
 
-  const result = await runLiveStreamHealthAudit({ origin });
+  const result = await runLiveStreamHealthAuthority({
+    expectedRevision: args.expectedRevision,
+    expectedSha: args.expectedSha,
+    origin,
+  });
 
   if (args.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  } else if (!result.fetched) {
-    process.stdout.write(`stream-health audit: INCONCLUSIVE — ${result.error}\n`);
-  } else if (result.status === "pass") {
+  } else if (result.fetched) {
+    const percentage = result.score.percentage === null ? "n/a" : `${result.score.percentage}%`;
     process.stdout.write(
-      `stream-health audit: PASS (${result.connectionCount} connection(s) checked, auth mode: ${result.authMode}, capability: ${result.authCapability})\n`
+      `stream-health audit: ${result.status.toUpperCase()} (${result.score.ratio} green production streams, ${percentage}; ${result.connectionCount} owner connection(s); revision ${result.gates.revision})\n`
     );
-  } else if (result.status === "inconclusive") {
-    process.stdout.write(
-      `stream-health audit: INCONCLUSIVE (${result.connectionCount} connection(s) checked, auth mode: ${result.authMode}, capability: ${result.authCapability})\n`
-    );
-    if (result.inconclusive.length > 0) {
-      process.stdout.write(`${renderIssueTable(result.inconclusive)}\n`);
+    if (result.status !== "pass") {
+      process.stdout.write(`${renderIssueTable(result.findings)}\n`);
     }
   } else {
     process.stdout.write(
-      `stream-health audit: FAIL (${result.failures.length} connection(s) with masked required streams)\n`
+      `stream-health audit: ${result.status.toUpperCase()} — ${result.error ?? "live evidence was not fetched"}\n`
     );
-    process.stdout.write(`${renderIssueTable(result.failures)}\n`);
-    if (result.inconclusive.length > 0) {
-      process.stdout.write(`${renderIssueTable(result.inconclusive)}\n`);
-    }
+    process.stdout.write(`${renderIssueTable(result.findings)}\n`);
   }
 
   process.exitCode = result.ok ? 0 : 1;

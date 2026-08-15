@@ -9,7 +9,7 @@ import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 
-test("codex connector fails instead of succeeding when a hard-required local source is missing", async () => {
+test("codex connector succeeds when requested local stores are absent", async () => {
   const codexHome = await mkdtemp(join(tmpdir(), "pdpp-codex-missing-"));
   const result = await runConnectorProcess({
     env: { CODEX_HOME: codexHome },
@@ -19,15 +19,9 @@ test("codex connector fails instead of succeeding when a hard-required local sou
     },
   });
 
-  assert.notEqual(result.exitCode, 0);
+  assert.equal(result.exitCode, 0);
   const done = result.messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE");
-  assert.equal(done?.status, "failed");
-  assert.match(done?.error?.message ?? "", /requested Codex local source path\(s\) are missing or unreadable/);
-  assert.match(done?.error?.message ?? "", /CODEX_SESSIONS_DIR=/);
-  // rules is optional and user-authored (Codex never creates the directory
-  // until the user writes a rule) — it must NOT appear in the fatal list,
-  // matching emitRulesStream's own graceful no-op on a missing directory.
-  assert.doesNotMatch(done?.error?.message ?? "", /CODEX_RULES_DIR=/);
+  assert.equal(done?.status, "succeeded");
 });
 
 test("codex connector succeeds when only optional rules/prompts/skills sources are missing", async () => {
@@ -53,12 +47,11 @@ test("codex connector succeeds when only optional rules/prompts/skills sources a
   assert.equal(done?.status, "succeeded");
 });
 
-test("codex emits coverage diagnostics for a missing source home before failing", async () => {
+test("codex emits coverage diagnostics for a missing source home before succeeding", async () => {
   // A host whose requested content sources are absent must still produce the
-  // durable coverage signal: every known store classified `missing`, emitted
-  // BEFORE the source-presence assert throws. Without this the run fails with
-  // zero coverage evidence and the connection-health rollup is stuck at
-  // `coverage_unknown` forever (the local run path writes no spine run).
+  // durable coverage signal: every known store is classified `missing` before
+  // the successful terminal message. Otherwise an empty local store would be
+  // indistinguishable from an unobserved one.
   const codexHome = await mkdtemp(join(tmpdir(), "pdpp-codex-missing-coverage-"));
   const result = await runConnectorProcess({
     env: { CODEX_HOME: codexHome },
@@ -70,18 +63,17 @@ test("codex emits coverage diagnostics for a missing source home before failing"
     },
   });
 
-  // The run still fails honestly on the missing content sources.
-  assert.notEqual(result.exitCode, 0);
+  assert.equal(result.exitCode, 0);
   const done = result.messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE");
-  assert.equal(done?.status, "failed");
+  assert.equal(done?.status, "succeeded");
 
-  // …but coverage diagnostics were already emitted, classifying the absent
-  // declared stores as `missing` rather than omitting the stream entirely.
+  // Coverage diagnostics classify absent stores as `missing` rather than
+  // omitting them from the observation.
   const coverage = result.messages.filter(
     (msg): msg is Extract<EmittedMessage, { type: "RECORD" }> =>
       msg.type === "RECORD" && msg.stream === "coverage_diagnostics"
   );
-  assert(coverage.length > 0, "expected coverage diagnostics to be emitted before the failure");
+  assert(coverage.length > 0, "expected coverage diagnostics before successful completion");
   assert(
     coverage.some((record) => record.data.status === "missing"),
     "expected at least one absent store to be reported as missing"
@@ -137,7 +129,7 @@ test("codex inventory streams emit safe metadata and exclude auth payloads", asy
   assert.equal(typeof (coverageState?.cursor as { fetched_at?: unknown } | undefined)?.fetched_at, "string");
   const stores = (coverageState?.cursor as { stores?: unknown } | undefined)?.stores;
   assert(Array.isArray(stores), "successful collection must emit the committed coverage snapshot");
-  assert.equal(stores.length, 14);
+  assert.equal(stores.length, 13);
   assert(!JSON.stringify(coverageState).includes("secret-token"));
   assert(!JSON.stringify(coverageState).includes("reason"));
 });

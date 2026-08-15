@@ -1,0 +1,26 @@
+{
+  "id": "F0123456789",
+  "filename": null,
+  "url": null,
+  "mode": "tombstone",
+  "data": {
+    "id": "F0123456789",
+    "created": 0,
+    "mode": "tombstone",
+    "name": null,
+    "title": null,
+    "mimetype": null,
+    "filetype": null,
+    "pretty_type": null,
+    "size": null,
+    "user": null,
+    "is_public": null,
+    "is_external": null,
+    "is_starred": null,
+    "external_type": null,
+    "permalink": null,
+    "url_private": null,
+    "original_w": null,
+    "original_h": null
+  }
+}

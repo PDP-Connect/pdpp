@@ -24,6 +24,10 @@ import {
 } from "@opendatalabs/remote-surface/leases";
 import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../../lib/spine.ts";
 import type { BrowserSurfaceLeaseStore } from "../../server/stores/browser-surface-lease-store.ts";
+import {
+  type BrowserSurfacePersistenceUnitOfWork,
+  createBrowserSurfacePersistenceUnitOfWork,
+} from "../../server/stores/browser-surface-persistence-unit-of-work.ts";
 import type { BrowserSurfaceReplacementReceiptStore } from "../../server/stores/browser-surface-replacement-ledger-store.ts";
 import { browserSurfaceLeaseEnv } from "../browser-surface-leases.ts";
 import {
@@ -67,6 +71,48 @@ interface PendingInteraction {
 interface ActiveRunInteraction {
   connector_id: string;
   pending: PendingInteraction | null;
+}
+
+/**
+ * Runs `action`, swallowing any thrown/rejected error into `onError` instead
+ * of propagating it. Several boot/cleanup paths in this module must never let
+ * a best-effort persistence or allocator call abort the caller's own control
+ * flow.
+ */
+async function runBestEffort(action: () => Promise<unknown>, onError: (message: string) => void): Promise<void> {
+  try {
+    await action();
+  } catch (err) {
+    onError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** A lease pointing at a surface_id the in-memory lease manager can no longer find is not ready. */
+function missingSurfaceProbeResult(
+  lease: BrowserSurfaceLease
+): Extract<BrowserSurfaceReadinessProbeResult, { ok: false }> {
+  return {
+    code: "browser_surface_not_ready",
+    detail: `lease ${lease.lease_id} references missing surface ${lease.surface_id || "(none)"}`,
+    ok: false,
+  };
+}
+
+/** Calls the injected readiness probe, mapping a thrown/rejected error to the typed CDP-unreachable failure shape. */
+async function runReadinessProbeCatchingThrow(
+  probe: BrowserSurfaceReadinessProbe,
+  surface: BrowserSurface
+): Promise<BrowserSurfaceReadinessProbeResult> {
+  try {
+    return await probe.probe(surface);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      code: "browser_surface_cdp_unreachable",
+      detail: `readiness probe threw: ${message}`,
+      ok: false,
+    };
+  }
 }
 
 // Shared no-op allocator used when no real BrowserSurfaceAllocator is wired.
@@ -245,10 +291,15 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     scheduleRun,
     startupControllerRunReconciliation,
   } = deps;
+  const browserSurfacePersistenceUnitOfWork =
+    browserSurfaceLeaseStore && browserSurfaceReplacementReceiptStore
+      ? createBrowserSurfacePersistenceUnitOfWork(browserSurfaceLeaseStore, browserSurfaceReplacementReceiptStore)
+      : null;
   const replacementHooks = createReplacementLifecycleHooks({
     allocator: browserSurfaceAllocator,
     leaseStore: browserSurfaceLeaseStore,
     log,
+    persistenceUnitOfWork: browserSurfacePersistenceUnitOfWork,
     receiptStore: browserSurfaceReplacementReceiptStore,
   });
   const { allocator: replacementAwareAllocator } = replacementHooks;
@@ -500,6 +551,28 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
   }
 
+  function hydratedSurfaceForReconciledLease(
+    leaseManager: BrowserSurfaceLeaseManager,
+    lease: BrowserSurfaceLease,
+    hydrateSurface: boolean
+  ): BrowserSurface | undefined {
+    if (!(hydrateSurface && lease.surface_id)) {
+      return;
+    }
+    return leaseManager.getSurface(lease.surface_id);
+  }
+
+  async function emitAndPersistOneReconciledLease(
+    leaseManager: BrowserSurfaceLeaseManager,
+    lease: BrowserSurfaceLease,
+    eventType: string,
+    hydrateSurface: boolean
+  ): Promise<void> {
+    await emitBrowserSurfaceLeaseEvent(eventType, lease.connector_id, lease.run_id, createTraceContext(), lease);
+    const surface = hydratedSurfaceForReconciledLease(leaseManager, lease, hydrateSurface);
+    await persistBrowserSurfaceLeaseMutation(lease, surface);
+  }
+
   async function emitAndPersistReconciledLeases(
     leases: readonly BrowserSurfaceLease[],
     eventType: string,
@@ -510,12 +583,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
     for (const lease of leases) {
       // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-      await emitBrowserSurfaceLeaseEvent(eventType, lease.connector_id, lease.run_id, createTraceContext(), lease);
-      const surface =
-        options.hydrateSurface && lease.surface_id
-          ? browserSurfaceLeaseManager.getSurface(lease.surface_id)
-          : undefined;
-      await persistBrowserSurfaceLeaseMutation(lease, surface);
+      await emitAndPersistOneReconciledLease(browserSurfaceLeaseManager, lease, eventType, options.hydrateSurface);
     }
   }
 
@@ -536,21 +604,24 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     });
   }
 
+  async function markSurfaceUnhealthy(
+    store: BrowserSurfaceLeaseStore,
+    invalidatedSurface: BrowserSurface
+  ): Promise<void> {
+    await store.upsertSurface({
+      ...invalidatedSurface,
+      health: "unhealthy",
+    });
+  }
+
   async function persistInvalidatedBrowserSurface(invalidatedSurface: BrowserSurface): Promise<void> {
     if (!browserSurfaceLeaseStore) {
       return;
     }
-    try {
-      await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
-        await store.upsertSurface({
-          ...invalidatedSurface,
-          health: "unhealthy",
-        });
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.warn?.(`[controller] persistence after surface invalidation failed: ${message}`);
-    }
+    await runBestEffort(
+      () => browserSurfaceLeaseStore.withLeaseTransaction((store) => markSurfaceUnhealthy(store, invalidatedSurface)),
+      (message) => log.warn?.(`[controller] persistence after surface invalidation failed: ${message}`)
+    );
   }
 
   // ─── Allocator operations ─────────────────────────────────────────────────
@@ -559,15 +630,11 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     if (!replacementAwareAllocator) {
       return;
     }
-    try {
-      await replacementAwareAllocator.stopSurface({
-        reason: "surface_failed",
-        surfaceId,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.warn?.(`[controller] allocator stopSurface(${surfaceId}) after probe ${probeCode} failed: ${message}`);
-    }
+    await runBestEffort(
+      () => replacementAwareAllocator.stopSurface({ reason: "surface_failed", surfaceId }),
+      (message) =>
+        log.warn?.(`[controller] allocator stopSurface(${surfaceId}) after probe ${probeCode} failed: ${message}`)
+    );
   }
 
   // ─── Surface invalidation ─────────────────────────────────────────────────
@@ -652,25 +719,12 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     surface: BrowserSurface | null
   ): Promise<BrowserSurfaceReadinessProbeResult> {
     if (!surface) {
-      return {
-        code: "browser_surface_not_ready",
-        detail: `lease ${lease.lease_id} references missing surface ${lease.surface_id || "(none)"}`,
-        ok: false,
-      };
+      return missingSurfaceProbeResult(lease);
     }
     if (!browserSurfaceReadinessProbe) {
       return { ok: true, pageTargetCount: 0 };
     }
-    try {
-      return await browserSurfaceReadinessProbe.probe(surface);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        code: "browser_surface_cdp_unreachable",
-        detail: `readiness probe threw: ${message}`,
-        ok: false,
-      };
-    }
+    return await runReadinessProbeCatchingThrow(browserSurfaceReadinessProbe, surface);
   }
 
   async function runBrowserSurfaceReadinessGate(
@@ -705,6 +759,25 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   // ─── Lease lifecycle ───────────────────────────────────────────────────────
 
+  async function pollUntilStartingBrowserSurfaceReady(
+    leaseManager: BrowserSurfaceLeaseManager,
+    lease: BrowserSurfaceLease
+  ): Promise<{ lease: BrowserSurfaceLease; surface?: BrowserSurface }> {
+    const allocator = replacementAwareAllocator ?? UNCONFIGURED_BROWSER_SURFACE_ALLOCATOR;
+    let current = lease;
+    while (current.status === "starting_surface") {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+      const readyResult = await ensureStartingBrowserSurfaceReady(leaseManager, current, allocator);
+      current = readyResult.lease;
+      if (current.status !== "starting_surface") {
+        return readyResult;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const surface = findSurfaceForLease(current);
+    return { lease: current, ...(surface ? { surface } : {}) };
+  }
+
   async function waitForStartingBrowserSurface(
     lease: BrowserSurfaceLease,
     connectorId: string,
@@ -715,20 +788,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     if (!browserSurfaceLeaseManager) {
       return { lease };
     }
-
-    let current = lease;
-    const allocator = replacementAwareAllocator ?? UNCONFIGURED_BROWSER_SURFACE_ALLOCATOR;
-    while (current.status === "starting_surface") {
-      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-      const readyResult = await ensureStartingBrowserSurfaceReady(browserSurfaceLeaseManager, current, allocator);
-      current = readyResult.lease;
-      if (current.status !== "starting_surface") {
-        return readyResult;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    const surface = findSurfaceForLease(current);
-    return { lease: current, ...(surface ? { surface } : {}) };
+    return await pollUntilStartingBrowserSurfaceReady(browserSurfaceLeaseManager, lease);
   }
 
   async function ensureStartingBrowserSurfaceReady(
@@ -840,6 +900,20 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     };
   }
 
+  async function completeReclaimOfPlannedSurface(
+    leaseManager: BrowserSurfaceLeaseManager,
+    lease: BrowserSurfaceLease,
+    reclaimable: BrowserSurface
+  ): Promise<{ lease: BrowserSurfaceLease; surface?: BrowserSurface; reclaimed: boolean }> {
+    const stopResult = await stopSurfaceWithRetry(reclaimable, lease);
+    if (!stopResult.ok) {
+      return { lease, reclaimed: false };
+    }
+    const reclaimed = leaseManager.completeCapacityPressureReclaim(reclaimable.surface_id);
+    await persistCapacityPressureReclaim(lease, reclaimed);
+    return buildCapacityPressureReclaimResult(lease, reclaimed);
+  }
+
   async function reclaimCapacityAndPromoteLease(
     lease: BrowserSurfaceLease
   ): Promise<{ lease: BrowserSurfaceLease; surface?: BrowserSurface; reclaimed: boolean }> {
@@ -850,13 +924,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     if (!reclaimable) {
       return { lease, reclaimed: false };
     }
-    const stopResult = await stopSurfaceWithRetry(reclaimable, lease);
-    if (!stopResult.ok) {
-      return { lease, reclaimed: false };
-    }
-    const reclaimed = browserSurfaceLeaseManager.completeCapacityPressureReclaim(reclaimable.surface_id);
-    await persistCapacityPressureReclaim(lease, reclaimed);
-    return buildCapacityPressureReclaimResult(lease, reclaimed);
+    return await completeReclaimOfPlannedSurface(browserSurfaceLeaseManager, lease, reclaimable);
   }
 
   async function promoteBrowserSurfaceLease(lease: BrowserSurfaceLease, reason: string): Promise<void> {
@@ -947,6 +1015,17 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
   }
 
+  async function emitAndPersistReleasedLease(
+    releasedLease: BrowserSurfaceLease,
+    surface: BrowserSurface | undefined,
+    connectorId: string,
+    runId: string,
+    traceContext: SpineTraceContext
+  ): Promise<void> {
+    await emitBrowserSurfaceLeaseEvent("run.browser_surface_released", connectorId, runId, traceContext, releasedLease);
+    await persistBrowserSurfaceLeaseMutation(releasedLease, surface);
+  }
+
   async function releaseBrowserSurfaceLease(
     lease: BrowserSurfaceLease,
     connectorId: string,
@@ -960,14 +1039,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       leaseId: lease.lease_id,
     });
     if (releaseResult?.lease) {
-      await emitBrowserSurfaceLeaseEvent(
-        "run.browser_surface_released",
-        connectorId,
-        runId,
-        traceContext,
-        releaseResult.lease
-      );
-      await persistBrowserSurfaceLeaseMutation(releaseResult.lease, releaseResult.surface);
+      await emitAndPersistReleasedLease(releaseResult.lease, releaseResult.surface, connectorId, runId, traceContext);
     }
     if (releaseResult?.promoted) {
       await persistAndPromoteBrowserSurfaceLeases([releaseResult.promoted], reason);
@@ -976,29 +1048,83 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   // ─── Boot reconciliation ───────────────────────────────────────────────────
 
+  async function recordExternalLossReceipts(
+    evicted: readonly BrowserSurface[],
+    receiptStore: Pick<BrowserSurfaceReplacementReceiptStore, "append"> | null = browserSurfaceReplacementReceiptStore
+  ): Promise<void> {
+    for (const surface of externalLossBoundaryRepresentatives(evicted)) {
+      if (receiptStore) {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve receipt and projection ordering.
+        await replacementHooks.recordExternalSurfaceLossWithReceiptStore(receiptStore, surface);
+      }
+    }
+  }
+
+  async function persistReconciledAllocatorSurfaces(
+    store: Pick<BrowserSurfaceLeaseStore, "upsertSurface">,
+    allocatorReconcile: AllocatorSurfaceReconciliation
+  ): Promise<void> {
+    for (const surface of allocatorReconcile.evicted) {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve receipt and projection ordering.
+      await store.upsertSurface({ ...surface, health: "unhealthy" });
+    }
+    for (const surface of allocatorReconcile.downgraded) {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+      await store.upsertSurface(surface);
+    }
+  }
+
+  function requireBrowserSurfacePersistenceUnitOfWork(): BrowserSurfacePersistenceUnitOfWork {
+    if (!browserSurfacePersistenceUnitOfWork) {
+      throw new Error("browser surface replacement receipts require a browser-surface persistence unit of work");
+    }
+    return browserSurfacePersistenceUnitOfWork;
+  }
+
+  async function persistAllocatorSurfaceReconciliationInUnitOfWork(
+    allocatorReconcile: AllocatorSurfaceReconciliation
+  ): Promise<void> {
+    await requireBrowserSurfacePersistenceUnitOfWork().withTransaction(async (stores) => {
+      await recordExternalLossReceipts(allocatorReconcile.evicted, stores.replacementReceiptStore);
+      await persistReconciledAllocatorSurfaces(stores.leaseStore, allocatorReconcile);
+    });
+  }
+
+  async function persistAllocatorSurfaceReconciliationInLeaseTransaction(
+    leaseStore: BrowserSurfaceLeaseStore,
+    allocatorReconcile: AllocatorSurfaceReconciliation
+  ): Promise<void> {
+    await leaseStore.withLeaseTransaction(async (store) => {
+      await recordExternalLossReceipts(allocatorReconcile.evicted);
+      await persistReconciledAllocatorSurfaces(store, allocatorReconcile);
+    });
+  }
+
+  function hasAllocatorSurfaceReconciliation(allocatorReconcile: AllocatorSurfaceReconciliation): boolean {
+    return allocatorReconcile.evicted.length > 0 || allocatorReconcile.downgraded.length > 0;
+  }
+
+  async function persistAllocatorSurfaceReconciliationInConfiguredStore(
+    leaseStore: BrowserSurfaceLeaseStore,
+    allocatorReconcile: AllocatorSurfaceReconciliation
+  ): Promise<void> {
+    if (browserSurfaceReplacementReceiptStore) {
+      await persistAllocatorSurfaceReconciliationInUnitOfWork(allocatorReconcile);
+      return;
+    }
+    await persistAllocatorSurfaceReconciliationInLeaseTransaction(leaseStore, allocatorReconcile);
+  }
+
   async function persistAllocatorSurfaceReconciliation(
     allocatorReconcile: AllocatorSurfaceReconciliation
   ): Promise<void> {
     if (!browserSurfaceLeaseStore) {
       return;
     }
-    if (allocatorReconcile.evicted.length === 0 && allocatorReconcile.downgraded.length === 0) {
+    if (!hasAllocatorSurfaceReconciliation(allocatorReconcile)) {
       return;
     }
-    await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
-      for (const surface of externalLossBoundaryRepresentatives(allocatorReconcile.evicted)) {
-        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve receipt and projection ordering.
-        await replacementHooks.recordExternalSurfaceLoss(surface);
-      }
-      for (const surface of allocatorReconcile.evicted) {
-        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve receipt and projection ordering.
-        await store.upsertSurface({ ...surface, health: "unhealthy" });
-      }
-      for (const surface of allocatorReconcile.downgraded) {
-        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-        await store.upsertSurface(surface);
-      }
-    });
+    await persistAllocatorSurfaceReconciliationInConfiguredStore(browserSurfaceLeaseStore, allocatorReconcile);
   }
 
   function isLiveExternalLossCandidate(surface: BrowserSurface): boolean {

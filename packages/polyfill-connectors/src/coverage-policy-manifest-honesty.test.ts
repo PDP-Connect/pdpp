@@ -72,6 +72,54 @@ test("connector manifest streams: coverage_policy uses only valid enum values", 
   assert.deepEqual(violations, [], "All declared coverage_policy values must be in the recognized enum");
 });
 
+/**
+ * `deferred` is structurally different from the other accepted-coverage
+ * policies: `inventory_only` and `unavailable`/`unsupported` describe a
+ * complete, intentional policy (the store IS the metadata-only surface, or
+ * genuinely cannot be reached on this platform). `deferred` instead promises
+ * "not yet" — a stream that is declared and defaulted on, but for which no
+ * implementation exists to ever move it past `missing`/`deferred` on a valid
+ * installation. That combination is a permanent, un-keepable promise: an
+ * advertised stream a real owner can never see turn healthy.
+ *
+ * A production connector must not advertise a stream it cannot honestly
+ * collect. Either a narrow existing implementation collects it now (so it
+ * should be `collect`/`inventory_only`), or it should not be declared at all.
+ * See the `codex.logs` / `claude_code.debug_artifacts` / `claude_code.downloads`
+ * removal that closed this defect.
+ */
+test("connector manifest streams: coverage_policy must not be the permanently-unkeepable 'deferred'", () => {
+  const violations: string[] = [];
+
+  for (const filename of readdirSync(MANIFESTS_DIR).sort()) {
+    if (!filename.endsWith(".json")) {
+      continue;
+    }
+    const manifestPath = join(MANIFESTS_DIR, filename);
+    if (!existsSync(manifestPath)) {
+      continue;
+    }
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as ConnectorManifest;
+    const connectorKey = filename.replace(/\.json$/, "");
+
+    for (const stream of manifest.streams ?? []) {
+      if (stream.coverage_policy === "deferred") {
+        violations.push(
+          `${connectorKey}.${String(stream.name)}: coverage_policy="deferred" declares a stream that can never ` +
+            "become healthy by construction. Remove it from the manifest, or implement collection now and change " +
+            'coverage_policy to "collect" or "inventory_only".'
+        );
+      }
+    }
+  }
+
+  assert.deepEqual(
+    violations,
+    [],
+    "Declared/default streams must not be permanently missing by construction (coverage_policy: 'deferred')"
+  );
+});
+
 test("connector manifest streams: accepted-coverage policy must not combine with required: true", () => {
   const violations: string[] = [];
 
@@ -216,10 +264,12 @@ const KNOWN_MISSING_REQUIRED = new Map([
   ["gmail.messages", "88c18d102254ecd8"],
   ["gmail.threads", "10a2882dc2287b8c"],
   ["gmail.labels", "7b5c8aad799a9641"],
-  ["gmail.message_bodies", "b5728d074ffa2170"],
+  // gmail.message_bodies left this map by declaring `required: false`
+  // explicitly (the encouraged shrink path) when it gained a semantic-time
+  // field. It is separately grantable and optional, so a body failure must
+  // not fail the whole connector run.
   ["gmail.attachments", "3883a623c52d9879"],
   ["google_maps.timeline_points", "8bb6f3a0b2f01651"],
-  ["google_maps.timeline_segments", "1f331e7b299d5569"],
   ["google_maps_data_portability.archive_jobs", "1bdf641fe46f4606"],
   ["google_takeout.location_history", "4541b67d9dca3a75"],
   ["google_takeout.youtube_watch_history", "a457e03d943b3122"],

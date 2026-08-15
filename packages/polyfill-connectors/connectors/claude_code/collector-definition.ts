@@ -24,7 +24,7 @@ import type { LocalCollectorDefinition } from "../../src/collector-definition.ts
  * exercises everything the connector can account for — including
  * `coverage_diagnostics`, which is what promotes a drained local collector off
  * `coverage_unknown`. The inventory streams emit metadata only (path hash,
- * size, mtime); deferred/excluded stores never read payload.
+ * size, mtime); excluded stores never read payload.
  */
 export const CLAUDE_CODE_DEFAULT_STREAMS = [
   "sessions",
@@ -36,15 +36,28 @@ export const CLAUDE_CODE_DEFAULT_STREAMS = [
   "file_history",
   "cache_inventory",
   "coverage_diagnostics",
-  "debug_artifacts",
-  "downloads",
   "backup_inventory",
   "config_inventory",
 ] as const;
+
+/**
+ * Streams an owner-declared `since` can be proven against — exactly those the
+ * `claude_code` manifest gives a `consent_time_field`
+ * (`sessions.started_at`, `messages.timestamp`, `attachments.timestamp`).
+ *
+ * Streams without a consent time field remain whole-store under a time bound;
+ * the runner keeps them in the requested inventory and marks them unscoped.
+ */
+export const CLAUDE_CODE_TIME_SCOPABLE_STREAMS = ["sessions", "messages", "attachments"] as const;
+
+export const CLAUDE_CODE_SOURCE_ROOT_SCOPABLE_STREAMS = CLAUDE_CODE_TIME_SCOPABLE_STREAMS;
 
 export const claudeCodeCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "claude_code",
   entry: "claude_code",
   bindings: { filesystem: { required: true } },
   streams: CLAUDE_CODE_DEFAULT_STREAMS,
+  enforces_source_roots: true,
+  source_root_scopable_streams: CLAUDE_CODE_SOURCE_ROOT_SCOPABLE_STREAMS,
+  time_scopable_streams: CLAUDE_CODE_TIME_SCOPABLE_STREAMS,
 };

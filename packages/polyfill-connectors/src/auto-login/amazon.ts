@@ -47,6 +47,7 @@ interface EnsureAmazonSessionArgs {
   context: BrowserContext;
   // Test hook for synthetic pages that intentionally never render a field.
   fieldTimeoutMs?: number | undefined;
+  onCredentialSubmit?: () => void;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
@@ -243,6 +244,7 @@ export async function ensureAmazonSession({
   checkpoint = noopCheckpoint,
   context: _context,
   fieldTimeoutMs,
+  onCredentialSubmit,
   page,
   sendInteraction,
 }: EnsureAmazonSessionArgs): Promise<boolean> {
@@ -334,6 +336,7 @@ export async function ensureAmazonSession({
     .first()
     .click()
     .catch((): undefined => undefined);
+  onCredentialSubmit?.();
   await page.waitForTimeout(5000);
   // Phase: password submitted.
   await checkpoint("amazon-password-submit");

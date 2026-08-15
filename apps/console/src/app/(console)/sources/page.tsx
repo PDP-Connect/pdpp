@@ -34,13 +34,14 @@ import {
   loadConnectorSummaryPage,
 } from "../components/connector-summary-page.tsx";
 import { isPagedRequest, parseConnectorSummaryPageState } from "../components/connector-summary-pager.ts";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { listConnectorManifests } from "../lib/rs-client.ts";
 import { reactivateConnectionAction, revokeConnectionAction } from "./[connector]/actions.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
+import { SOURCE_ACCESS_NOTE } from "./sources-copy.ts";
 import { SourcesView } from "./sources-view.tsx";
 import {
   buildSourcesChurnAdvisory,
@@ -50,6 +51,7 @@ import {
 } from "./sources-view-model.ts";
 
 const SOURCES_PATH = "/sources";
+const REFERENCE_REVISION = process.env.PDPP_REFERENCE_REVISION?.trim() || undefined;
 
 export const dynamic = "force-dynamic";
 
@@ -167,7 +169,7 @@ export default async function RecordsIndexPage({
 
 function SourcesHeader({ error, message, notice }: { error?: string; message?: string; notice?: string }) {
   return (
-    <header style={{ marginBottom: 24, maxWidth: 760 }}>
+    <header data-pdpp-reference-revision={REFERENCE_REVISION} style={{ marginBottom: 24, maxWidth: 760 }}>
       <h1 className="pdpp-heading text-foreground" style={{ margin: "0 0 4px" }}>
         Sources
       </h1>
@@ -179,7 +181,7 @@ function SourcesHeader({ error, message, notice }: { error?: string; message?: s
           margin: 0,
         }}
       >
-        your loading dock · each source pushes into your streams · nothing leaves
+        {SOURCE_ACCESS_NOTE}
       </p>
       {notice ? (
         <div className="rr-s-toast" data-tone="ok" role="status" style={{ marginTop: 12 }}>

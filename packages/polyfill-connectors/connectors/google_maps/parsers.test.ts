@@ -31,6 +31,20 @@ test("parseGoogleMapsExport: parses legacy Takeout Records.json points", () => {
   assert.equal(result.points[0]?.source_kind, "raw_location");
 });
 
+test("parseGoogleMapsExport: skips a zero timestampMs instead of dating the point to 1970", () => {
+  const result = parseGoogleMapsExport({
+    locations: [
+      {
+        timestampMs: "0",
+        latitudeE7: 377_749_000,
+        longitudeE7: -1_224_194_000,
+      },
+    ],
+  });
+
+  assert.deepEqual(result, { points: [], segments: [] });
+});
+
 test("parseGoogleMapsExport: skips invalid legacy coordinates", () => {
   const result = parseGoogleMapsExport({
     locations: [
@@ -149,6 +163,82 @@ test("parseGoogleMapsExport: stable ids dedupe repeated files", () => {
   const second = parseGoogleMapsExport(payload);
   assert.equal(first.points.length, 1);
   assert.equal(first.points[0]?.id, second.points[0]?.id);
+});
+
+// Google ships `timelineMemory` in the current on-device Timeline format and
+// the format is undocumented, so unmodelled payload keys are expected. The
+// record must survive, and must not claim to be a location-bearing `path`.
+test("parseGoogleMapsExport: retains an unmodelled semantic segment as unrecognized", () => {
+  const result = parseGoogleMapsExport({
+    semanticSegments: [
+      {
+        startTime: "2024-06-05T13:00:00Z",
+        endTime: "2024-06-05T14:00:00Z",
+        timelineMemory: { trip: { destinations: [{ identifier: "places/ChIJ-test" }] } },
+      },
+    ],
+  });
+
+  assert.equal(result.segments.length, 1, "the segment is retained, not dropped");
+  assert.equal(result.segments[0]?.segment_kind, "unrecognized");
+  assert.equal(result.segments[0]?.unrecognized_kind, "timelineMemory", "provider key preserved verbatim");
+  assert.equal(result.segments[0]?.start_time, "2024-06-05T13:00:00.000Z");
+});
+
+test("parseGoogleMapsExport: a timelinePath-only segment is still a real path", () => {
+  const result = parseGoogleMapsExport({
+    semanticSegments: [
+      {
+        startTime: "2024-06-05T13:00:00Z",
+        timelinePath: [{ point: "geo:37.4219999,-122.0840575", time: "2024-06-05T13:15:00Z" }],
+      },
+    ],
+  });
+
+  assert.equal(result.segments[0]?.segment_kind, "path");
+  assert.equal(result.segments[0]?.unrecognized_kind, null);
+  assert.equal(result.points.length, 1);
+});
+
+test("parseGoogleMapsExport: an unrecognized segment does not collide with a path segment", () => {
+  const [unrecognized] = parseGoogleMapsExport({
+    semanticSegments: [{ startTime: "2024-06-05T13:00:00Z", timelineMemory: { note: { note: "x" } } }],
+  }).segments;
+  const [path] = parseGoogleMapsExport({
+    semanticSegments: [
+      { startTime: "2024-06-05T13:00:00Z", timelinePath: [{ point: "geo:1,2", time: "2024-06-05T13:00:00Z" }] },
+    ],
+  }).segments;
+
+  assert.equal(unrecognized?.unrecognized_kind, "timelineMemory");
+  assert.notEqual(unrecognized?.id, path?.id, "distinct kinds at the same timestamp get distinct ids");
+});
+
+test("parseGoogleMapsExport: unknown vocabulary IDs are stable across provider key order", () => {
+  const [first] = parseGoogleMapsExport({
+    semanticSegments: [
+      {
+        startTime: "2024-06-05T13:00:00Z",
+        beta: { value: 2 },
+        alpha: { value: 1 },
+      },
+    ],
+  }).segments;
+  const [second] = parseGoogleMapsExport({
+    semanticSegments: [
+      {
+        startTime: "2024-06-05T13:00:00Z",
+        alpha: { value: 1 },
+        beta: { value: 2 },
+      },
+    ],
+  }).segments;
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(first.unrecognized_kind, "alpha,beta");
+  assert.equal(second.unrecognized_kind, "alpha,beta");
+  assert.equal(first.id, second.id);
 });
 
 test("hashId: deterministic 24-char hex output", () => {

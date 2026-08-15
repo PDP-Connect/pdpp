@@ -30,7 +30,15 @@ import {
   toSlackTime,
   tsToIso,
 } from "./parsers.ts";
-import { dmReadStatesSchema, remindersSchema, starsSchema, userGroupsSchema } from "./schemas.ts";
+import {
+  canvasesSchema,
+  channelsSchema,
+  dmReadStatesSchema,
+  filesSchema,
+  remindersSchema,
+  starsSchema,
+  userGroupsSchema,
+} from "./schemas.ts";
 import type { CanvasRow, ChannelRow, MessageRow } from "./types.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -64,10 +72,22 @@ test("tsToIso: Slack ts 'seconds.micros' → ISO, null for missing", () => {
   assert.equal(tsToIso(undefined), null);
 });
 
+test("tsToIso: zero/unparseable ts is absence, never 1970 and never a throw", () => {
+  assert.equal(tsToIso("0.000000"), null);
+  assert.equal(tsToIso("0"), null);
+  assert.equal(tsToIso("not-a-ts"), null);
+  assert.equal(tsToIso("-1.000000"), null);
+});
+
 test("epochToIso: only finite seconds produce an ISO string", () => {
   assert.equal(epochToIso(1_700_000_000), new Date(1_700_000_000 * 1000).toISOString());
   assert.equal(epochToIso(null), null);
   assert.equal(epochToIso(Number.NaN), null);
+});
+
+test("epochToIso: zero seconds is Slack's 'unset', not 1970", () => {
+  assert.equal(epochToIso(0), null);
+  assert.equal(epochToIso(-1), null);
 });
 
 test("toSlackTime: strips fractional seconds + trailing Z", () => {
@@ -115,6 +135,14 @@ test("buildChannelRecord: flattens topic/purpose + canvas/restriction flags from
   assert.equal(rec.posting_restricted, true);
   assert.equal(rec.threads_restricted, false);
   assert.deepEqual(rec.shared_team_ids, ["T456"]);
+});
+
+test("buildChannelRecord: channel blob with no created epoch (e.g. legacy DM shim) → created_at null, still passes schema validation", () => {
+  const row: ChannelRow = { id: "D1", name: null, data: '{"is_im":true}' };
+  const rec = buildChannelRecord(row);
+  assert.equal(rec.created, null);
+  assert.equal(rec.created_at, null);
+  assert.equal(channelsSchema.safeParse(rec).success, true);
 });
 
 // ─── buildChannelStatsRecord ──────────────────────────────────────────────
@@ -284,6 +312,21 @@ test("buildFileRecord: flattens core file metadata", () => {
   assert.equal(rec.url_private, "https://files.slack.com/a.pdf");
 });
 
+test("buildFileRecord: tombstoned file (mode=tombstone, no created epoch) → created_at null, still passes schema validation", () => {
+  const rec = buildFileRecord({
+    id: "F2",
+    filename: null,
+    url: null,
+    mode: "tombstone",
+    data: '{"mode":"tombstone"}',
+  });
+  assert.equal(rec.id, "F2");
+  assert.equal(rec.mode, "tombstone");
+  assert.equal(rec.created, null);
+  assert.equal(rec.created_at, null);
+  assert.equal(filesSchema.safeParse(rec).success, true);
+});
+
 test("buildChannelCanvasIndex: indexed by canvas file_id, skips channels without canvas", () => {
   const rows: ChannelRow[] = [
     { id: "C1", name: "has", data: readFixture("channel-with-canvas.json") },
@@ -317,6 +360,22 @@ test("buildCanvasRecord: overlays channel-canvas-index metadata onto file row", 
   assert.equal(rec.is_empty, false);
   assert.equal(rec.quip_thread_id, "Qthread123");
   assert.equal(rec.content_markdown, null);
+});
+
+test("buildCanvasRecord: canvas blob with no created/updated epoch → created_at and updated_at null, still passes schema validation", () => {
+  const canvas: CanvasRow = {
+    id: "F2",
+    filename: null,
+    url: null,
+    mode: "quip",
+    data: "{}",
+    channel_id: null,
+    message_id: null,
+  };
+  const rec = buildCanvasRecord(canvas, new Map());
+  assert.equal(rec.created_at, null);
+  assert.equal(rec.updated_at, null);
+  assert.equal(canvasesSchema.safeParse(rec).success, true);
 });
 
 // ─── Cursor + time-range helpers ──────────────────────────────────────

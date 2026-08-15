@@ -42,7 +42,7 @@ import type {
   MessageStructureObject,
 } from "imapflow";
 import type { DetailGapStartEntry } from "../../src/connector-runtime.ts";
-import { buildDetailCoverageMessage } from "../../src/connector-runtime.ts";
+import { buildFullScanCoverageMessage } from "../../src/connector-runtime.ts";
 import { ReferenceBlobUploadFailure, runtimeBlobUploadAvailable } from "../../src/reference-blob-uploader.ts";
 import { type EmittedRecord, makeRecordingEmit, type RecordedEvent } from "../../src/test-harness.ts";
 import {
@@ -53,18 +53,27 @@ import {
   ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES,
   type AttachmentDetailCoverage,
   type AttachmentHydrationResult,
+  AttachmentStallTimeoutError,
+  type AttachmentTransferProgress,
   addAttachmentBackfillRecordToSummary,
+  advanceMessagesBackfillCursor,
   attachmentBackfillPageByteBudget,
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
+  buildAttachmentTransferProgressMessage,
+  collectMetadata,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
+  DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES,
+  DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS,
+  DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS,
   DEFAULT_MAX_ATTACHMENT_BYTES,
   emitMessagesPass,
   type FetchBodiesFn,
   type FetchedBodies,
   formatAttachmentBackfillSummary,
   type HydrateAttachmentFn,
+  isoToImapDate,
   makeAttachmentDetailCoverage,
   makeAttachmentHydrator,
   type PerMessageDeps,
@@ -74,15 +83,21 @@ import {
   redactEmailForProgress,
   resolveAttachmentBackfillPageByteBudget,
   resolveAttachmentBackfillWindowUids,
+  resolveAttachmentProgressMinBytes,
+  resolveAttachmentProgressMinIntervalMs,
   resolveAttachmentRecoveryPageByteBudget,
+  resolveAttachmentStallTimeoutMs,
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
+  runAllMailPasses,
   runAttachmentBackfillAndRecoveryPass,
   selectAllMailFetchRange,
   selectAttachmentBackfillFetchRange,
+  selectMessagesBackfillFetchRange,
   shouldBackfillAttachments,
   trimAttachmentBackfillPageToByteBudget,
+  type UploadBodyBlobFn,
   validateAttachmentHydrationPreflight,
 } from "./index.ts";
 import type { AttachmentRecord, ProgressMessage, StreamRequest } from "./types.ts";
@@ -128,6 +143,7 @@ interface HarnessOverrides {
   nowIso?: () => string;
   requested?: Map<string, StreamRequest>;
   timeRange?: { since?: string; until?: string };
+  uploadBodyBlob?: UploadBodyBlobFn;
   wantBodies?: boolean;
   wantMessages?: boolean;
 }
@@ -155,6 +171,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
     hydrateAttachment: overrides.hydrateAttachment ?? ((_, attachment) => Promise.resolve(hydratedResult(attachment))),
     recoveredAttachmentGapIds: new Set<string>(),
     nowIso: overrides.nowIso ?? ((): string => FROZEN_NOW),
+    ...(overrides.uploadBodyBlob ? { uploadBodyBlob: overrides.uploadBodyBlob } : {}),
     requested,
     timeRange: overrides.timeRange,
     wantBodies: overrides.wantBodies ?? false,
@@ -798,6 +815,510 @@ test("resolveMaxAttachmentBytes: env override is honored only when positive inte
   );
 });
 
+test("resolveAttachmentStallTimeoutMs: env override is honored only when positive integer; otherwise falls back to default", () => {
+  assert.equal(resolveAttachmentStallTimeoutMs({}), DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS);
+  assert.equal(resolveAttachmentStallTimeoutMs({ PDPP_GMAIL_ATTACHMENT_STALL_TIMEOUT_MS: "5000" }), 5000);
+  assert.equal(
+    resolveAttachmentStallTimeoutMs({ PDPP_GMAIL_ATTACHMENT_STALL_TIMEOUT_MS: "0" }),
+    DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS,
+    "non-positive override is ignored"
+  );
+  assert.equal(
+    resolveAttachmentStallTimeoutMs({ PDPP_GMAIL_ATTACHMENT_STALL_TIMEOUT_MS: "abc" }),
+    DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS,
+    "unparseable override is ignored"
+  );
+});
+
+/** An async-iterable content source under full test control: yields
+ *  `chunks` one at a time, each after `delayMs` (0 = immediate), then either
+ *  ends cleanly or hangs forever past the last chunk depending on `hang`. */
+function scriptedContent(chunks: Buffer[], delayMs: number, hang: boolean): AsyncIterable<Buffer> {
+  const queue = [...chunks];
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next: async () => {
+          const value = queue.shift();
+          if (value === undefined) {
+            if (hang) {
+              return new Promise<never>(() => {
+                // Intentionally never settles — simulates a stalled IMAP FETCH.
+              });
+            }
+            return { done: true, value: undefined };
+          }
+          if (delayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
+          return { done: false, value };
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Root-cause coverage for gmail-attachment-convergence-0809: a live run
+ * observed attachment transfers sustaining a real, non-zero, but extremely
+ * slow rate (~4.65 KB/s, confirmed against imap.gmail.com — see the incident
+ * report) that made single attachments take 300-1000+ seconds. Before this
+ * fix, `makeAttachmentHydrator` had no bound on transfer silence at all: a
+ * source iterable that simply never resolves its next chunk (the wedge case,
+ * distinct from "slow but delivering") would hang `uploadBlob` — and the
+ * whole connector run — forever. These tests pin the FAIL-BEFORE/PASS-AFTER
+ * behavior directly against `processMessage`, the same entry point production
+ * uses, not a hand-rolled call into the hydrator's internals.
+ */
+test("processMessage: a transfer that goes fully silent is bounded by the stall timeout, not left to hang forever", async () => {
+  let stallDetected = false;
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: scriptedContent([Buffer.from("first chunk")], 0, true),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onStall: () => {
+      stallDetected = true;
+    },
+    stallTimeoutMs: 20,
+    uploadBlob: async ({ content }) => {
+      for await (const _chunk of content) {
+        // Drain until the stall guard throws.
+      }
+      throw new Error("uploadBlob must not observe a clean end-of-stream on a stalled source");
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await assert.rejects(
+    processMessage(deps, makeAttachmentMsg()),
+    AttachmentStallTimeoutError,
+    "a stalled transfer must reject with AttachmentStallTimeoutError, not hang or resolve — this must propagate out of processMessage, not be swallowed into a per-attachment 'failed' record, because onStall has already closed the shared IMAP connection and every later command in the run would fail too"
+  );
+  assert.equal(stallDetected, true, "onStall must fire so the caller can close the poisoned IMAP connection");
+});
+
+test("processMessage: a slow-but-steadily-progressing transfer is NOT mistaken for a stall", async () => {
+  // Two chunks, each delivered well under the stall budget apart. A
+  // total-duration cap would kill this; the stall budget must not, because
+  // real Gmail IMAP transfers can legitimately take minutes while still
+  // making steady progress (see the incident's measured ~4.65 KB/s floor).
+  const chunks = [Buffer.from("slow "), Buffer.from("progress")];
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: scriptedContent(chunks, 15, false),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onStall: () => {
+      throw new Error("onStall must not fire for a transfer that is only slow, never silent");
+    },
+    stallTimeoutMs: 500,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  const attachment = emitted.find((record) => record.stream === "attachments");
+  assert.ok(attachment, "expected hydrated attachment record");
+  assert.equal(attachment.data.hydration_status, "hydrated", "slow-but-live progress must complete normally");
+});
+
+test("makeAttachmentHydrator: stall-timeout error message carries only counts, no attachment identity or content", () => {
+  const error = new AttachmentStallTimeoutError(90_000, 12_345);
+  assert.match(error.message, /timeout/i, "message must match RETRYABLE_ERROR_RE so the run is retried, not abandoned");
+  assert.match(error.message, /90000/);
+  assert.match(error.message, /12345/);
+  assert.doesNotMatch(error.message, /gmmsgid|@|subject|filename/i);
+});
+
+/**
+ * REVISE coverage for gmail-attachment-convergence-0809: existing
+ * FETCH_MSG_PROGRESS (every 500 MESSAGES) says nothing while a single
+ * attachment streams for 10-17 minutes. These tests pin the in-transfer
+ * progress signal added on top of the stall-timeout fix: bounded/redacted
+ * content, cadence throttling so it can't flood the event stream, a
+ * coherent start-adjacent/complete pair, and — critically — that none of
+ * this can perturb backpressure, stall timing, or error propagation.
+ *
+ * A controllable `now()` (an injected epoch-ms clock, not real wall time)
+ * drives the cadence gate deterministically without sleeping in tests.
+ */
+function makeControllableClock(startMs: number): { advance: (ms: number) => void; now: () => number } {
+  let current = startMs;
+  return {
+    advance: (ms: number) => {
+      current += ms;
+    },
+    now: () => current,
+  };
+}
+
+/** Like `scriptedContent`, but advances a controllable clock by
+ *  `msPerChunk` before yielding each chunk — for driving the progress
+ *  cadence gate deterministically without real sleeps. */
+function clockedContent(chunks: Buffer[], msPerChunk: number, advance: (ms: number) => void): AsyncIterable<Buffer> {
+  const queue = [...chunks];
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => {
+          const value = queue.shift();
+          if (value === undefined) {
+            return Promise.resolve({ done: true, value: undefined });
+          }
+          advance(msPerChunk);
+          return Promise.resolve({ done: false, value });
+        },
+      };
+    },
+  };
+}
+
+test("makeAttachmentHydrator: a long steadily-progressing transfer emits cadence-gated progress with a coherent complete signal", async () => {
+  const clock = makeControllableClock(1_000_000);
+  const observed: AttachmentTransferProgress[] = [];
+  // 10 chunks of 100KB each = 1MB total. Clock advances 5s per chunk (50s
+  // total) — well past the 15s default interval — and each chunk exceeds the
+  // default 256KB min-bytes threshold cumulatively, so several mid-transfer
+  // observations should fire in addition to the final `complete` one.
+  const chunkBytes = 100 * 1024;
+  const chunks = Array.from({ length: 10 }, () => Buffer.alloc(chunkBytes, 1));
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: clockedContent(chunks, 5000, clock.advance),
+        expectedSize: chunks.length * chunkBytes,
+        mimeType: "application/pdf",
+      }),
+    onTransferProgress: (progress) => {
+      observed.push(progress);
+    },
+    progressNow: clock.now,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  const attachment = emitted.find((record) => record.stream === "attachments");
+  assert.equal(attachment?.data.hydration_status, "hydrated", "the transfer must still complete normally");
+  assert.ok(observed.length >= 2, "a long transfer must emit at least one mid-transfer observation plus completion");
+  const transferring = observed.filter((p) => p.phase === "transferring");
+  const complete = observed.filter((p) => p.phase === "complete");
+  assert.ok(transferring.length >= 1, "expected at least one transferring-phase observation");
+  assert.equal(complete.length, 1, "exactly one complete signal, regardless of how many mid-transfer ones fired");
+  assert.equal(
+    complete[0]?.bytesTransferred,
+    chunks.length * chunkBytes,
+    "complete signal reports the full byte count"
+  );
+  assert.equal(complete[0]?.totalBytes, chunks.length * chunkBytes, "trusted expectedSize is surfaced as totalBytes");
+  for (const p of observed) {
+    assert.ok(p.elapsedMs >= 0, "elapsed time must be non-negative and monotonic with the injected clock");
+  }
+  // Monotonic non-decreasing bytesTransferred and elapsedMs across the series.
+  for (let i = 1; i < observed.length; i += 1) {
+    const current = observed[i];
+    const previous = observed[i - 1];
+    assert.ok(current && previous);
+    assert.ok(current.bytesTransferred >= previous.bytesTransferred);
+    assert.ok(current.elapsedMs >= previous.elapsedMs);
+  }
+});
+
+test("makeAttachmentHydrator: a short transfer under one cadence window does not spam mid-transfer progress", async () => {
+  const clock = makeControllableClock(2_000_000);
+  const observed: AttachmentTransferProgress[] = [];
+  // Two small chunks, clock barely advances — nowhere near the default 15s /
+  // 256KB cadence gate. Only the unconditional `complete` signal should fire.
+  const chunks = [Buffer.from("small "), Buffer.from("attachment")];
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: clockedContent(chunks, 10, clock.advance),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onTransferProgress: (progress) => {
+      observed.push(progress);
+    },
+    progressNow: clock.now,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.equal(observed.length, 1, "a fast small transfer must emit exactly one signal: the final complete");
+  assert.equal(observed[0]?.phase, "complete");
+});
+
+test("makeAttachmentHydrator: totalBytes stays null when no trusted size was ever reported", async () => {
+  // Distinct from the cadence test above: this pins that an UNKNOWN size is
+  // never guessed or inferred from observed bytes — `makeAttachmentMsg`'s
+  // fixture attachment declares a BODYSTRUCTURE size, so that test's
+  // totalBytes is legitimately non-null. This test uses an attachment with
+  // no declared size at all.
+  const clock = makeControllableClock(2_500_000);
+  const observed: AttachmentTransferProgress[] = [];
+  const chunks = [Buffer.from("unsized")];
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: clockedContent(chunks, 10, clock.advance),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onTransferProgress: (progress) => {
+      observed.push(progress);
+    },
+    progressNow: clock.now,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const attachment: AttachmentRecord = {
+    blob_ref: null,
+    content_id: null,
+    content_sha256: null,
+    content_type: null,
+    encoding: null,
+    filename: null,
+    hydration_error: null,
+    hydration_status: "deferred",
+    id: "gmmsgid-unsized:9",
+    is_inline: false,
+    message_id: "gmmsgid-unsized",
+    message_received_at: FROZEN_NOW,
+    part_index: "9",
+    size_bytes: null,
+  };
+
+  const result = await hydrateAttachment(makeMsg({ emailId: "gmmsgid-unsized" }), attachment);
+
+  assert.equal(result.record.hydration_status, "hydrated");
+  assert.ok(observed.length >= 1);
+  for (const progress of observed) {
+    assert.equal(
+      progress.totalBytes,
+      null,
+      "no trusted size was ever reported, so totalBytes must stay null, not guessed"
+    );
+  }
+});
+
+test("enforceTransferProgress: payload never carries attachment identity, filename, subject, or content bytes", async () => {
+  const clock = makeControllableClock(3_000_000);
+  const observed: AttachmentTransferProgress[] = [];
+  const secretBytes = Buffer.from("invoice.pdf attachment from alice@example.com re: Q3 budget - CONFIDENTIAL");
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: {
+          [Symbol.asyncIterator]() {
+            let yielded = false;
+            return {
+              next: () => {
+                if (yielded) {
+                  return Promise.resolve({ done: true, value: undefined });
+                }
+                yielded = true;
+                clock.advance(20_000);
+                return Promise.resolve({ done: false, value: secretBytes });
+              },
+            };
+          },
+        },
+        expectedSize: secretBytes.byteLength,
+        mimeType: "application/pdf",
+      }),
+    onTransferProgress: (progress) => {
+      observed.push(progress);
+    },
+    progressNow: clock.now,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.ok(observed.length >= 1);
+  for (const progress of observed) {
+    // The shape itself is closed: only these four fields can ever exist.
+    assert.deepEqual(Object.keys(progress).sort(), ["bytesTransferred", "elapsedMs", "phase", "totalBytes"]);
+    const rendered = buildAttachmentTransferProgressMessage(progress);
+    assert.doesNotMatch(rendered, /invoice|alice|example\.com|budget|confidential|gmmsgid/i);
+    assert.doesNotMatch(rendered, /attachment from|re:/i);
+  }
+});
+
+test("makeAttachmentHydrator: a stalled transfer still terminates even with progress tracking wired in", async () => {
+  // The load-bearing regression: progress tracking is composed OUTSIDE the
+  // stall guard, so it must be provably inert with respect to stall
+  // detection — this pins that a stall still fires (and still closes the
+  // connection) exactly as it did before progress tracking existed.
+  const clock = makeControllableClock(4_000_000);
+  let stallDetected = false;
+  const progressObserved: AttachmentTransferProgress[] = [];
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: scriptedContent([Buffer.from("first chunk")], 0, true),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onStall: () => {
+      stallDetected = true;
+    },
+    onTransferProgress: (progress) => {
+      progressObserved.push(progress);
+    },
+    progressNow: clock.now,
+    stallTimeoutMs: 20,
+    uploadBlob: async ({ content }) => {
+      for await (const _chunk of content) {
+        // Drain until the stall guard throws.
+      }
+      throw new Error("uploadBlob must not observe a clean end-of-stream on a stalled source");
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await assert.rejects(processMessage(deps, makeAttachmentMsg()), AttachmentStallTimeoutError);
+  assert.equal(stallDetected, true, "onStall must still fire — progress tracking must not weaken stall detection");
+  // The stalled next() never resolves through to the progress wrapper (it's
+  // composed outside the stall guard, so a stalled inner next() never
+  // reaches it) — no "complete" signal is fabricated for a transfer that
+  // never legitimately finished.
+  assert.deepEqual(progressObserved, [], "a stall must not fabricate a coherent completion signal");
+});
+
+test("resolveAttachmentProgressMinIntervalMs / resolveAttachmentProgressMinBytes: env overrides honored only when positive integer", () => {
+  assert.equal(resolveAttachmentProgressMinIntervalMs({}), DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS);
+  assert.equal(
+    resolveAttachmentProgressMinIntervalMs({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS: "5000" }),
+    5000
+  );
+  assert.equal(
+    resolveAttachmentProgressMinIntervalMs({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS: "0" }),
+    DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS,
+    "non-positive override is ignored, cannot be used to flood the event stream"
+  );
+  assert.equal(
+    resolveAttachmentProgressMinIntervalMs({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS: "abc" }),
+    DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS
+  );
+
+  assert.equal(resolveAttachmentProgressMinBytes({}), DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES);
+  assert.equal(resolveAttachmentProgressMinBytes({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_BYTES: "1024" }), 1024);
+  assert.equal(
+    resolveAttachmentProgressMinBytes({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_BYTES: "0" }),
+    DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES,
+    "non-positive override is ignored, cannot be used to flood the event stream"
+  );
+});
+
+test("buildAttachmentTransferProgressMessage: renders phase/bytes/elapsed, omits total_bytes when untrusted", () => {
+  const withTotal = buildAttachmentTransferProgressMessage({
+    bytesTransferred: 524_288,
+    elapsedMs: 30_000,
+    phase: "transferring",
+    totalBytes: 4_774_421,
+  });
+  assert.match(withTotal, /phase=transferring/);
+  assert.match(withTotal, /bytes_transferred=524288/);
+  assert.match(withTotal, /total_bytes=4774421/);
+  assert.match(withTotal, /elapsed_ms=30000/);
+
+  const withoutTotal = buildAttachmentTransferProgressMessage({
+    bytesTransferred: 1024,
+    elapsedMs: 500,
+    phase: "complete",
+    totalBytes: null,
+  });
+  assert.doesNotMatch(withoutTotal, /total_bytes/, "unknown total must never be guessed or fabricated");
+});
+
 test("runtimeBlobUploadAvailable: requires an RS URL alias and owner token", () => {
   assert.equal(runtimeBlobUploadAvailable({}), false);
   assert.equal(runtimeBlobUploadAvailable({ PDPP_RS_URL: "http://rs.local" }), false);
@@ -940,9 +1461,617 @@ test("selectAllMailFetchRange: incremental runs use priorUidnext:* regardless of
     ),
     "500:*"
   );
-  // Full resync (no prior uidvalidity or uidvalidity changed): still 1:*.
-  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["attachments"])), "1:*");
-  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["messages"])), "1:*");
+  // A first run has no forward range: its bounded historical page is planned
+  // separately and must never fall back to a monolithic 1:* walk.
+  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["attachments"])), null);
+  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["messages"])), null);
+});
+
+test("selectMessagesBackfillFetchRange: first and later pages are bounded UID ranges", () => {
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { uidvalidity: 123, target_uid: 1200 },
+      uidnext: 1300,
+    }),
+    "1:500"
+  );
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { backfilled_through_uid: 500, uidvalidity: 123, target_uid: 1200 },
+      uidnext: 1300,
+    }),
+    "501:1000"
+  );
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { backfilled_through_uid: 1000, uidvalidity: 123, target_uid: 1200 },
+      uidnext: 1300,
+    }),
+    "1001:1200"
+  );
+});
+
+test("advanceMessagesBackfillCursor: page completion is monotonic and partial pages stay incomplete", () => {
+  const partial = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 500,
+    prior: { backfilled_through_uid: 0, target_uid: 1200, uidvalidity: 123 },
+  });
+  assert.deepEqual(partial, {
+    backfilled_through_uid: 500,
+    completed_at: null,
+    target_uid: 1200,
+    uidvalidity: 123,
+  });
+
+  assert.throws(
+    () =>
+      advanceMessagesBackfillCursor({
+        now: FROZEN_NOW,
+        pageEndUid: 400,
+        prior: partial,
+      }),
+    /must not regress/
+  );
+
+  const complete = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 1200,
+    prior: partial,
+  });
+  assert.equal(complete.backfilled_through_uid, 1200);
+  assert.equal(complete.completed_at, FROZEN_NOW);
+});
+
+test("messages backfill cursor resets on UIDVALIDITY change instead of reusing the old epoch", () => {
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { backfilled_through_uid: 999, uidvalidity: 456, target_uid: 1200 },
+      uidnext: 1300,
+      uidvalidity: 789,
+    }),
+    "1:500",
+    "a cursor from another UIDVALIDITY must restart at UID 1"
+  );
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { backfilled_through_uid: 999, uidvalidity: 456, target_uid: 1200 },
+      uidnext: 301,
+      uidvalidity: 789,
+    }),
+    "1:300",
+    "a new UIDVALIDITY uses the new mailbox head, not the dead epoch target"
+  );
+});
+
+test("messages backfill interruption replays one bounded page until its STATE boundary is durable", () => {
+  const prior = { backfilled_through_uid: 0, target_uid: 1200, uidvalidity: 123 };
+  const firstAttempt = selectMessagesBackfillFetchRange({ messagesBackfill: prior, uidnext: 1300 });
+  const replayAfterInterruption = selectMessagesBackfillFetchRange({ messagesBackfill: prior, uidnext: 1300 });
+  assert.equal(firstAttempt, "1:500");
+  assert.equal(replayAfterInterruption, firstAttempt);
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: advanceMessagesBackfillCursor({ now: FROZEN_NOW, pageEndUid: 500, prior }),
+      uidnext: 1300,
+    }),
+    "501:1000"
+  );
+});
+
+test("messages backfill never emits a full-coverage proof for a partial page", () => {
+  const partial = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 500,
+    prior: { backfilled_through_uid: 0, target_uid: 1200, uidvalidity: 123 },
+  });
+  assert.equal(partial.completed_at, null);
+  assert.equal("coverage_condition" in partial, false);
+});
+
+test("runAllMailPasses: first historical page is bounded, durable only at page end, and stays partial", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 1201,
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        for (const uid of [1, 2]) {
+          yield makeMsg({ uid, emailId: `msg-${uid}` });
+        }
+      },
+    };
+
+    await runAllMailPasses(
+      client,
+      makeAllMailMailbox(),
+      {},
+      {
+        emitRecord: async () => true,
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["messages", "message_bodies"]),
+      }
+    );
+
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    const state = protocolMessages.find((message) => message.type === "STATE" && message.stream === "messages");
+    assert.ok(state, "the successful page emits one messages STATE");
+    assert.deepEqual((state.cursor as Record<string, unknown>).backfill, {
+      backfilled_through_uid: 500,
+      completed_at: null,
+      target_uid: 1200,
+      uidvalidity: 123,
+    });
+    assert.equal(
+      protocolMessages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "messages"),
+      true,
+      "a bounded page proves its own detail coverage even while historical continuation remains"
+    );
+    assert.deepEqual(
+      protocolMessages.find((message) => message.type === "DETAIL_COVERAGE" && message.stream === "message_bodies"),
+      {
+        type: "DETAIL_COVERAGE",
+        reference_only: true,
+        stream: "message_bodies",
+        state_stream: "messages",
+        required_keys: [],
+        hydrated_keys: [],
+        considered: 2,
+        covered: 2,
+      },
+      "the body stream reports the same bounded parent-message pass"
+    );
+    assert.deepEqual(
+      protocolMessages.find((message) => message.type === "SKIP_RESULT" && message.stream === "messages"),
+      {
+        type: "SKIP_RESULT",
+        stream: "messages",
+        reason: "historical_backfill_pending",
+        message: "This bounded page completed; more historical work remains and will be retried by the next run.",
+        continuation: {
+          boundary: "123",
+          considered: 2,
+          covered: 2,
+          owner: "runtime",
+          remaining: true,
+          slice_start: 1,
+          slice_end: 500,
+        },
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+      },
+      "a partial page remains explicitly retryable"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: scheduled runs advance historical pages while forwarding new mail", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  const emittedRecords: Array<{ data: Record<string, unknown>; stream: string }> = [];
+  let uidNext = 1201;
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        get uidNext() {
+          return uidNext;
+        },
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        let ids: number[] = [1];
+        if (range === "1201:*") {
+          ids = [1250];
+        } else if (range === "1001:1200") {
+          ids = [1001];
+        }
+        for (const uid of ids) {
+          yield makeMsg({ uid, emailId: `msg-${uid}` });
+        }
+      },
+    };
+
+    const run = async (state: Record<string, unknown>) => {
+      protocolMessages.length = 0;
+      fetchRanges.length = 0;
+      await runAllMailPasses(client, makeAllMailMailbox(), state, {
+        emitRecord: (stream, data) => {
+          emittedRecords.push({ data, stream });
+          return Promise.resolve(true);
+        },
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["messages"]),
+      });
+      const stateMessage = protocolMessages.find(
+        (message) => message.type === "STATE" && message.stream === "messages"
+      );
+      assert.ok(stateMessage, "each scheduled run commits a messages state at a page boundary");
+      return stateMessage.cursor as Record<string, unknown>;
+    };
+
+    const first = await run({});
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    assert.deepEqual(first.all_mail, {
+      forward_uidnext: 1201,
+      highest_modseq: null,
+      uidnext: 501,
+      uidvalidity: 123,
+    });
+    uidNext = 1301;
+
+    const second = await run({ messages: first });
+    assert.deepEqual(fetchRanges, ["501:1000", "1201:*"]);
+    assert.equal((second.all_mail as Record<string, unknown>).uidnext, 1001);
+    assert.equal((second.all_mail as Record<string, unknown>).forward_uidnext, 1301);
+    assert.ok(
+      emittedRecords.some((record) => record.stream === "messages" && record.data.id === "msg-1250"),
+      "new mail in the forward range is collected while historical backfill is pending"
+    );
+
+    const third = await run({ messages: second });
+    assert.deepEqual(fetchRanges, ["1001:1200", "1301:*"]);
+    assert.equal((third.all_mail as Record<string, unknown>).uidnext, 1301);
+    assert.equal(typeof (third.backfill as Record<string, unknown>).completed_at, "string");
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: attachments-only scope keeps the bounded message lane and forward lane alive", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  let uidNext = 1201;
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachment parts");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without message bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        get uidNext() {
+          return uidNext;
+        },
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        yield makeMsg({ uid: range === "1201:*" ? 1250 : 1, emailId: "attachment-only-message" });
+      },
+    };
+
+    const run = async (state: Record<string, unknown>) => {
+      protocolMessages.length = 0;
+      fetchRanges.length = 0;
+      await runAllMailPasses(client, makeAllMailMailbox(), state, {
+        emitRecord: async () => true,
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["attachments"]),
+      });
+      const stateMessage = protocolMessages.find(
+        (message) => message.type === "STATE" && message.stream === "messages"
+      );
+      assert.ok(stateMessage, "attachments-only runs retain the messages-owned UID state");
+      return stateMessage.cursor as Record<string, unknown>;
+    };
+
+    const first = await run({});
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    assert.equal((first.all_mail as Record<string, unknown>).uidnext, 501);
+    assert.equal((first.all_mail as Record<string, unknown>).forward_uidnext, 1201);
+
+    uidNext = 1301;
+    const second = await run({ messages: first });
+    assert.deepEqual(fetchRanges, ["501:1000", "1201:*"]);
+    assert.equal((second.all_mail as Record<string, unknown>).forward_uidnext, 1301);
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: threads use the bounded page instead of starving until message history completes", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  const emittedStreams: string[] = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 1201,
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        yield makeMsg({ uid: 1, emailId: "thread-message", threadId: "thread-1" });
+      },
+    };
+
+    await runAllMailPasses(
+      client,
+      makeAllMailMailbox(),
+      {},
+      {
+        emitRecord: (stream) => {
+          emittedStreams.push(stream);
+          return Promise.resolve(true);
+        },
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["threads"]),
+      }
+    );
+
+    assert.deepEqual(fetchRanges, ["1:500", "1:500"]);
+    assert.equal(fetchRanges.includes("1:*"), false, "thread work must not reopen a monolithic scan");
+    assert.ok(emittedStreams.includes("threads"), "a bounded page emits thread records immediately");
+    assert.ok(
+      protocolMessages.some((message) => message.type === "STATE" && message.stream === "threads"),
+      "thread fingerprints advance at the same bounded page boundary"
+    );
+    assert.equal(
+      protocolMessages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "threads"),
+      true,
+      "a bounded thread page proves its own detail coverage even while historical continuation remains"
+    );
+    assert.deepEqual(
+      protocolMessages.find((message) => message.type === "SKIP_RESULT" && message.stream === "threads"),
+      {
+        type: "SKIP_RESULT",
+        stream: "threads",
+        reason: "historical_backfill_pending",
+        message: "This bounded page completed; more historical work remains and will be retried by the next run.",
+        continuation: {
+          boundary: "123",
+          considered: 1,
+          covered: 1,
+          owner: "runtime",
+          remaining: true,
+          slice_start: 1,
+          slice_end: 500,
+        },
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+      },
+      "bounded thread work remains explicitly retryable"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: a poison historical message becomes a terminal skip and advances once", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 1201,
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        yield makeMsg({ uid: 77, emailId: "" });
+      },
+    };
+
+    await runAllMailPasses(
+      client,
+      makeAllMailMailbox(),
+      {},
+      {
+        emitRecord: () => Promise.resolve(true),
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["messages"]),
+      }
+    );
+
+    const skip = protocolMessages.find((message) => message.type === "SKIP_RESULT");
+    assert.equal(skip?.reason, "historical_message_unaccounted");
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    assert.ok(
+      protocolMessages.some((message) => message.type === "STATE" && message.stream === "messages"),
+      "the terminal skip is durable evidence, so the same poison UID cannot replay forever"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: interruption during a historical page withholds its cursor for bounded replay", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 1201,
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        yield makeMsg({ uid: 1, emailId: "msg-1" });
+        throw new Error("historical page interrupted");
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        runAllMailPasses(
+          client,
+          makeAllMailMailbox(),
+          {},
+          {
+            emitRecord: async () => true,
+            emittedAt: FROZEN_NOW,
+            requested: makeRequested(["messages"]),
+          }
+        ),
+      /historical page interrupted/
+    );
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    assert.equal(
+      protocolMessages.some((message) => message.type === "STATE" && message.stream === "messages"),
+      false,
+      "an interrupted page cannot emit a durable cursor"
+    );
+    assert.equal(
+      selectMessagesBackfillFetchRange({
+        messagesBackfill: { target_uid: 1200, uidvalidity: 123 },
+        uidnext: 1201,
+      }),
+      "1:500",
+      "the unchanged durable cursor replays only the same bounded page"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
 });
 
 test("selectAttachmentBackfillFetchRange: historical range is bounded and independent of messages uidnext cursor", () => {
@@ -1183,6 +2312,7 @@ test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attac
       attachmentBackfill: { backfilled_through_uid: 250, uidvalidity: 123 },
       fullResync: false,
       highestModseqCursor: null,
+      messagesBackfill: { uidvalidity: 123, backfilled_through_uid: 0, completed_at: null },
       priorModseq: null,
       priorUidnext: 500,
       uidnext: 600,
@@ -1374,6 +2504,7 @@ test("runAttachmentBackfillAndRecoveryPass: recoveryOnly=true recovers served ga
       attachmentBackfill: { backfilled_through_uid: 250, uidvalidity: 123 },
       fullResync: false,
       highestModseqCursor: null,
+      messagesBackfill: { uidvalidity: 123, backfilled_through_uid: 0, completed_at: null },
       priorModseq: null,
       priorUidnext: 500,
       uidnext: 600,
@@ -2355,6 +3486,56 @@ test("processMessage: attachment bytes are not inlined into message_bodies", asy
   assert.equal(JSON.stringify(attachment.data).includes("secret attachment payload"), false);
 });
 
+test("processMessage: control-rich body bytes upload with field bindings and canonical nulls", async () => {
+  const bodyText = "plain\u0000body";
+  const bodyHtml = "<p>html\u0007body</p>";
+  const uploads: Array<{ bytes: Buffer; jsonPath?: string; mimeType: string; stream: string }> = [];
+  const uploadBodyBlob: UploadBodyBlobFn = async (args) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of args.content) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    uploads.push({
+      bytes: Buffer.concat(chunks),
+      ...(args.jsonPath ? { jsonPath: args.jsonPath } : {}),
+      mimeType: args.mimeType,
+      stream: args.stream,
+    });
+    return {
+      blob_id: `blob-${uploads.length}`,
+      mime_type: args.mimeType,
+      sha256: "unused",
+      size_bytes: chunks.reduce((n, chunk) => n + chunk.length, 0),
+    };
+  };
+  const { deps, emitted } = makeHarness({
+    requested: makeRequested(["message_bodies"]),
+    uploadBodyBlob,
+    fetchBodies: async () => ({ bodyHtmlFull: bodyHtml, bodyTextFull: bodyText, snippet: "plain body" }),
+    wantBodies: true,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeMsg());
+
+  const body = emitted.find((record) => record.stream === "message_bodies");
+  assert.ok(body);
+  assert.equal(body.data.body_text, null);
+  assert.equal(body.data.body_html, null);
+  assert.deepEqual(
+    uploads.map((upload) => upload.jsonPath),
+    ["/body_text", "/body_html"]
+  );
+  assert.deepEqual(
+    uploads.map((upload) => upload.bytes),
+    [Buffer.from(bodyText), Buffer.from(bodyHtml)]
+  );
+  assert.deepEqual(
+    uploads.map((upload) => upload.stream),
+    ["message_bodies", "message_bodies"]
+  );
+});
+
 test("processMessage: wantBodies=false suppresses message_bodies but still emits the messages record", async () => {
   const { deps, emitted } = makeHarness({
     wantBodies: false,
@@ -2489,6 +3670,51 @@ test("emitMessagesPass: one message throwing doesn't halt the rest of the batch"
   const msgRecords = emitted.filter((r) => r.stream === "messages");
   assert.equal(msgRecords.length, 1, "the second message emits even though the first errored");
   assert.equal(msgRecords[0]?.data.id, "good-msg");
+});
+
+test("emitMessagesPass: a stalled attachment transfer propagates instead of being swallowed like an ordinary per-message error, and no later message is attempted", async () => {
+  // Distinguishes this from the "one message throwing doesn't halt the rest
+  // of the batch" case above: an ordinary per-message error (a bad body
+  // fetch, a malformed record) is isolated and the loop continues. A stall
+  // timeout is NOT isolated, because `onStall` already closed the shared
+  // IMAP connection this loop's next iteration would try to reuse — every
+  // later message would fail too, with a confusing "connection closed"
+  // error masking the real cause. This pins that the loop stops immediately
+  // instead of grinding through the remaining metas against a dead client.
+  let attachmentHydrationAttempts = 0;
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    fetchAttachment: () => {
+      attachmentHydrationAttempts += 1;
+      return Promise.resolve({
+        content: scriptedContent([], 0, true),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      });
+    },
+    onStall: () => undefined,
+    stallTimeoutMs: 10,
+    uploadBlob: async ({ content }) => {
+      for await (const _chunk of content) {
+        // no chunks; stall fires while awaiting the first `next()`
+      }
+      throw new Error("unreachable");
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+  const metas: FetchMessageObject[] = [makeAttachmentMsg(), makeAttachmentMsg()];
+
+  await assert.rejects(emitMessagesPass(deps, metas), AttachmentStallTimeoutError);
+  assert.equal(
+    attachmentHydrationAttempts,
+    1,
+    "the second message's attachment must never be attempted against the poisoned connection"
+  );
 });
 
 test("emitMessagesPass: progress includes count and total when metadata count is known", async () => {
@@ -2779,19 +4005,10 @@ test("recordAttachmentCoverage: routes each hydration status into the honest buc
   recordAttachmentCoverage(coverage, { ...base, id: "c:1", hydration_status: "too_large" });
   recordAttachmentCoverage(coverage, { ...base, id: "d:1", hydration_status: "deferred" });
 
-  // Every attempt counts toward the denominator.
   assert.deepEqual(coverage.requiredKeys, ["a:1", "b:1", "c:1", "d:1"]);
-  // hydrated → numerator; failed → retryable gap; too_large → permanent skip.
   assert.deepEqual(coverage.hydratedKeys, ["a:1"]);
   assert.deepEqual(coverage.gapKeys, ["b:1"]);
-  assert.deepEqual(coverage.optionalSkipKeys, ["c:1"]);
-  // `deferred` is considered-but-not-attempted: denominator only, no outcome.
-  assert.ok(!coverage.hydratedKeys.includes("d:1"));
-  assert.ok(!coverage.gapKeys.includes("d:1"));
-  assert.ok(!coverage.optionalSkipKeys.includes("d:1"));
-  // The failed record is retained so a matching DETAIL_GAP can be emitted; its
-  // id is exactly the gap_keys entry, keeping the gap's record_key and the
-  // coverage key a single source of truth. Only `failed` is retained.
+  // too_large and deferred stay required, unaccounted (not in hydrated/gap).
   assert.deepEqual(
     coverage.failedRecords.map((r) => r.id),
     ["b:1"]
@@ -2806,6 +4023,35 @@ test("buildAttachmentDetailCoverageMessage: emits complete zero-attachment cover
     reference_only: true,
     stream: "attachments",
     state_stream: "messages",
+    required_keys: [],
+    hydrated_keys: [],
+    considered: 0,
+    covered: 0,
+  });
+});
+
+test("buildFullScanCoverageMessage: declares the enumerated boundary as both denominator and numerator", () => {
+  // `labels` and `threads` re-enumerate their whole boundary every run and
+  // suppress unchanged records, so the boundary size is the honest covered
+  // count — a steady-state run that emitted nothing is still fully covered.
+  assert.deepEqual(buildFullScanCoverageMessage("labels", 23), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "labels",
+    state_stream: "labels",
+    required_keys: [],
+    hydrated_keys: [],
+    considered: 23,
+    covered: 23,
+  });
+
+  // A stream that genuinely enumerated nothing declares a measured zero, which
+  // reads as covered — not as an unknown denominator.
+  assert.deepEqual(buildFullScanCoverageMessage("threads", 0), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "threads",
+    state_stream: "threads",
     required_keys: [],
     hydrated_keys: [],
     considered: 0,
@@ -2876,7 +4122,6 @@ test("processMessage: records an attempted attachment into the coverage accumula
   assert.deepEqual(coverage.requiredKeys, ["gmmsgid-1111:2"]);
   assert.deepEqual(coverage.hydratedKeys, ["gmmsgid-1111:2"]);
   assert.deepEqual(coverage.gapKeys, []);
-  assert.deepEqual(coverage.optionalSkipKeys, []);
 });
 
 test("processMessage: leaves no coverage trace and still emits when no accumulator is wired", async () => {
@@ -2898,11 +4143,11 @@ test("processMessage: leaves no coverage trace and still emits when no accumulat
   );
 });
 
-test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and skip outcomes", async () => {
+test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and unaccounted outcomes", async () => {
   const coverage = makeAttachmentDetailCoverage();
   const { deps, emitted } = makeHarness({
     attachmentCoverage: coverage,
-    // ok:1 hydrates, bad:1 fails (retryable gap), big:1 is too_large (policy skip).
+    // ok:1 hydrates, bad:1 fails (gap), big:1 is too_large (unaccounted).
     hydrateAttachment: statusStampingHydrator({
       "ok:1": "hydrated",
       "bad:1": "failed",
@@ -2919,44 +4164,24 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
     makeSingleAttachmentMsg("big"),
   ]);
 
-  // Three attachments attempted → three keys in the denominator.
   assert.deepEqual(coverage.requiredKeys, ["ok:1", "bad:1", "big:1"]);
   assert.deepEqual(coverage.hydratedKeys, ["ok:1"]);
-  // failed is a retryable gap; too_large is a permanent by-policy skip.
   assert.deepEqual(coverage.gapKeys, ["bad:1"]);
-  assert.deepEqual(coverage.optionalSkipKeys, ["big:1"]);
-
-  // Sanity: every attachment record still emitted (coverage is reference-only,
-  // it does not gate record emission).
+  // too_large stays required, unaccounted.
   assert.equal(emitted.filter((r) => r.stream === "attachments").length, 3);
 
-  // The honest DETAIL_COVERAGE wire shape the connector builds from this
-  // accumulator: required = denominator, hydrated = numerator, gaps retryable,
-  // skips by-policy, anchored to the `messages` list cursor. reference_only.
-  assert.deepEqual(
-    buildDetailCoverageMessage({
-      stream: "attachments",
-      stateStream: "messages",
-      requiredKeys: coverage.requiredKeys,
-      hydratedKeys: coverage.hydratedKeys,
-      gapKeys: coverage.gapKeys,
-      optionalSkipKeys: coverage.optionalSkipKeys,
-      considered: coverage.requiredKeys.length,
-      covered: coverage.hydratedKeys.length + coverage.optionalSkipKeys.length,
-    }),
-    {
-      type: "DETAIL_COVERAGE",
-      reference_only: true,
-      stream: "attachments",
-      state_stream: "messages",
-      required_keys: ["ok:1", "bad:1", "big:1"],
-      hydrated_keys: ["ok:1"],
-      gap_keys: ["bad:1"],
-      optional_skip_keys: ["big:1"],
-      considered: 3,
-      covered: 2,
-    }
-  );
+  // DETAIL_COVERAGE: covered = hydrated only (no unaccounted keys claimed).
+  assert.deepEqual(buildAttachmentDetailCoverageMessage(coverage), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "attachments",
+    state_stream: "messages",
+    required_keys: ["ok:1", "bad:1", "big:1"],
+    hydrated_keys: ["ok:1"],
+    gap_keys: ["bad:1"],
+    considered: 3,
+    covered: 1,
+  });
 
   // P0 invariant: every gap_keys entry MUST be backed by a matching durable
   // DETAIL_GAP. `gap_keys` alone do not satisfy the host commit-gate, which
@@ -2998,4 +4223,418 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
   // hydration_error string (which could echo upstream URLs/text) ever crosses.
   assert.equal(gaps[0]?.detail, undefined);
   assert.equal(gaps[0]?.last_error, undefined);
+});
+
+// ─── Bounded scope: collection_scope.since mapping to IMAP SINCE ──────────
+
+test("isoToImapDate: converts ISO 8601 timestamp to IMAP DD-MMM-YYYY date", () => {
+  assert.equal(isoToImapDate("2026-08-09T22:07:20.000Z"), "09-Aug-2026");
+  assert.equal(isoToImapDate("2026-01-01T00:00:00.000Z"), "01-Jan-2026");
+  assert.equal(isoToImapDate("2026-12-31T23:59:59.999Z"), "31-Dec-2026");
+});
+
+test("isoToImapDate: returns null for undefined, malformed, or unparseable input", () => {
+  assert.equal(isoToImapDate(undefined), null);
+  assert.equal(isoToImapDate(""), null);
+  assert.equal(isoToImapDate("not a date"), null);
+  assert.equal(isoToImapDate("2026-13-01"), null);
+  assert.equal(isoToImapDate("not-iso-string"), null);
+});
+
+test("isoToImapDate: handles edge-case dates (leap year, month boundaries)", () => {
+  // Leap year Feb 29
+  assert.equal(isoToImapDate("2024-02-29T00:00:00.000Z"), "29-Feb-2024");
+  // Non-leap year Feb 28
+  assert.equal(isoToImapDate("2025-02-28T00:00:00.000Z"), "28-Feb-2025");
+  // Day boundaries
+  assert.equal(isoToImapDate("2026-02-01T00:00:00.000Z"), "01-Feb-2026");
+  assert.equal(isoToImapDate("2026-02-28T23:59:59.999Z"), "28-Feb-2026");
+});
+
+// ─── Bounded scope: collectMetadata with SINCE search + post-filtering ────
+
+test("collectMetadata: cursor + since intersection preserves incremental fetch range", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const search = mock.fn(async () => {
+      // SINCE returns UIDs >= date, including older ones from full history
+      return [150, 151, 200, 201];
+    });
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const fetch = mock.fn(async function* (range: string) {
+      // Must intersect with incremental range "200:*", not replace it
+      // Expected: "200,201" (only UIDs in both search result AND range 200:*)
+      assert.equal(range, "200,201", "must intersect SINCE result with incremental range, not replace");
+      for (const uid of [200, 201]) {
+        yield makeMsg({ uid, emailId: `msg${uid}`, internalDate: new Date("2026-08-09") });
+      }
+    });
+
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
+      search,
+      fetch,
+    };
+
+    const metas = await collectMetadata(client, "200:*", "09-Aug-2026", "2026-08-09T00:00:00Z");
+
+    assert.equal(metas.length, 2, "only UIDs in both ranges should be fetched");
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: same-day pre-boundary records are filtered out (day-granular IMAP, second-precise boundary)", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const search = mock.fn(async () => {
+      // IMAP SINCE "09-Aug-2026" includes all day-granular on 2026-08-09
+      return [100, 101];
+    });
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "100,101") {
+        // UID 100: 08:00 AM (before 14:00:00 boundary) — should skip
+        yield makeMsg({ uid: 100, emailId: "early", internalDate: new Date("2026-08-09T08:00:00Z") });
+        // UID 101: 14:00 PM (at/after 14:00:00 boundary) — should keep
+        yield makeMsg({ uid: 101, emailId: "late", internalDate: new Date("2026-08-09T14:00:00Z") });
+      }
+    });
+
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
+      search,
+      fetch,
+    };
+
+    const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-09T14:00:00Z");
+
+    assert.equal(metas.length, 1, "only message at/after exact boundary should be kept");
+    assert.equal(metas[0]?.emailId as string, "late", "late message (at boundary) should be kept");
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: verified empty — IMAP search returns no UIDs", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const search = mock.fn(async () => {
+      // No messages in the declared date range
+      return [];
+    });
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    // biome-ignore lint/correctness/useYield: generator never yields by design — it throws immediately to prove the caller never reaches fetch.
+    const fetch = mock.fn(async function* () {
+      // Should never be called
+      throw new Error("fetch must not be called on empty search");
+    });
+
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
+      search,
+      fetch,
+    };
+
+    const metas = await collectMetadata(client, "1:*", "09-Aug-2030", "2026-08-09T00:00:00Z");
+
+    assert.equal(metas.length, 0, "empty search result returns empty array");
+    assert.equal(fetch.mock.callCount(), 0, "fetch not called on empty search");
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: interrupted search (exception) withholdsProof — fetch not called", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const search = mock.fn(async () => {
+      throw new Error("IMAP search failed: network timeout");
+    });
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    // biome-ignore lint/correctness/useYield: generator never yields by design — it throws immediately to prove the caller never reaches fetch.
+    const fetch = mock.fn(async function* () {
+      // Should never be called
+      throw new Error("fetch must not be called if search fails");
+    });
+
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
+      search,
+      fetch,
+    };
+
+    try {
+      await collectMetadata(client, "1:*", "09-Aug-2026", "2026-08-09T00:00:00Z");
+      assert.fail("should propagate search exception");
+    } catch (e) {
+      assert.ok(e instanceof Error);
+      assert.match((e as Error).message, /network timeout/);
+      assert.equal(fetch.mock.callCount(), 0, "fetch not called when search throws");
+    }
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: without sinceDate/sinceIso (null), full range unchanged behavior", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const search = mock.fn(async () => {
+      throw new Error("search must not be called when sinceDate is null");
+    });
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "200:*") {
+        yield makeMsg({ uid: 200, emailId: "msg200", internalDate: new Date("2026-08-08") });
+        yield makeMsg({ uid: 201, emailId: "msg201", internalDate: new Date("2026-08-09") });
+      }
+    });
+
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
+      search,
+      fetch,
+    };
+
+    // sinceDate=null, sinceIso=null → no search, no post-filter
+    const metas = await collectMetadata(client, "200:*", null, null);
+
+    assert.equal(metas.length, 2, "all messages in range returned");
+    assert.equal(search.mock.callCount(), 0, "no search when sinceDate is null");
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: offset-equivalence in boundary comparison (epoch milliseconds, not lexical)", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    const search = mock.fn(async () => [100, 101]);
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "100,101") {
+        // Both messages at 2026-08-09T14:00:00 UTC, same instant different representations
+        yield makeMsg({
+          uid: 100,
+          emailId: "utc",
+          // 14:00:00 UTC
+          internalDate: new Date("2026-08-09T14:00:00Z"),
+        });
+        yield makeMsg({
+          uid: 101,
+          emailId: "offset",
+          // Same instant as UID 100: 14:00:00 UTC = 10:00:00 EDT (-04:00)
+          internalDate: new Date("2026-08-09T10:00:00-04:00"),
+        });
+      }
+    });
+
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
+      search,
+      fetch,
+    };
+
+    // Boundary: 2026-08-09T14:00:00Z (UTC)
+    // UID 100: 2026-08-09T14:00:00Z (exact match)
+    // UID 101: 2026-08-09T10:00:00-04:00 (same instant via offset)
+    // Both should be included; epoch comparison (not lexical) proves equivalence
+    const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-09T14:00:00Z");
+
+    assert.equal(metas.length, 2, "both messages at same instant (different offsets) should be included");
+    assert.deepEqual(
+      metas.map((m) => m.emailId),
+      ["utc", "offset"]
+    );
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: missing internalDate with exact since withholdsProof and stops enumeration", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    const search = mock.fn(async () => [100, 101]);
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "100,101") {
+        // UID 100: has valid internalDate
+        yield makeMsg({ uid: 100, emailId: "valid", internalDate: new Date("2026-08-10") });
+        // UID 101: missing internalDate (IMAP does not guarantee it)
+        const msgWithoutDate = makeMsg({ uid: 101, emailId: "missing" });
+        const { internalDate: _internalDate, ...rest } = msgWithoutDate;
+        yield rest;
+      }
+    });
+
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
+      search,
+      fetch,
+    };
+
+    // exact sinceIso requires all messages to prove they're in scope.
+    // Missing internalDate throws error to prevent STATE commit.
+    try {
+      await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-10T00:00:00Z");
+      assert.fail("should throw on missing internalDate");
+    } catch (e) {
+      assert.ok(e instanceof Error, "error thrown");
+      assert.match(e.message, /UID 101/, "error identifies problematic UID");
+      assert.match(e.message, /missing/, "error indicates missing internalDate");
+    }
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: unparseable internalDate with exact since withholdsProof", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    const search = mock.fn(async () => [100, 101]);
+
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "100,101") {
+        // UID 100: valid date
+        yield makeMsg({ uid: 100, emailId: "valid", internalDate: new Date("2026-08-10") });
+        // UID 101: unparseable date string
+        yield makeMsg({ uid: 101, emailId: "invalid", internalDate: "not-a-date" });
+      }
+    });
+
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
+      search,
+      fetch,
+    };
+
+    try {
+      await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-10T00:00:00Z");
+      assert.fail("should throw on unparseable internalDate");
+    } catch (e) {
+      assert.ok(e instanceof Error, "error thrown");
+      assert.match(e.message, /UID 101/, "error identifies problematic UID");
+      assert.match(e.message, /unparseable/, "error indicates unparseable internalDate");
+    }
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+// ─── Evidence: Missing internalDate prevents STATE commit in real orchestration ───
+
+test("runAllMailPasses: missing internalDate under declared since propagates uncaught, no messages STATE emitted", async () => {
+  // ORCHESTRATION-LEVEL EVIDENCE: exercises runAllMailPasses itself (not just
+  // collectMetadata in isolation) with a fake ImapFlow client whose fetch
+  // yields a message missing internalDate under a declared collection_scope.since
+  // boundary. Proves the thrown MissingOrInvalidInternalDateError propagates all
+  // the way out of orchestration, and that the final messages STATE cursor —
+  // emitted only at the very end of runAllMailPasses, after collectMetadata,
+  // emitMessagesPass, attachment backfill, and the delta pass — never commits.
+  //
+  // EVIDENCE DISCRIMINATOR: fails against 7304ce2fe (early return), which
+  // would let orchestration proceed past collectMetadata, emit records, and
+  // commit the messages STATE cursor despite an unproven boundary. Only the
+  // exception-throwing version (9cd5f1c76+) blocks STATE commit here.
+
+  const originalWrite = globalThis.process.stdout.write;
+  const emittedLines: Array<{ type: string; stream?: string }> = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        const msg = JSON.parse(data) as { type: string; stream?: string };
+        emittedLines.push(msg.stream === undefined ? { type: msg.type } : { type: msg.type, stream: msg.stream });
+      } catch {
+        // Ignore malformed lines
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const sinceIso = "2026-08-10T00:00:00Z";
+
+    const search = mock.fn(async () => [101]);
+    // biome-ignore lint/suspicious/useAwait: stands in for ImapFlow.fetch's async-iterable-returning signature; yields synchronously.
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "101") {
+        const msg = makeMsg({ uid: 101, emailId: "test-no-date" });
+        const { internalDate: _internalDate, ...rest } = msg;
+        yield rest; // real IMAP message missing internalDate
+      }
+    });
+
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called: no attachments requested");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called: missing internalDate throws before the body pass");
+      },
+      mailbox: {
+        delimiter: "/",
+        exists: 1,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 200,
+        uidValidity: 1n,
+      },
+      search,
+      fetch,
+    };
+
+    const allMail: ListResponse = {
+      path: "[Gmail]/All Mail",
+      delimiter: "/",
+      flags: new Set<string>(),
+      specialUse: "\\All",
+    } as ListResponse;
+
+    const requested = makeRequested(["messages"]);
+    requested.set("messages", { name: "messages", time_range: { since: sinceIso } });
+    const deps = {
+      emitRecord: async () => true,
+      emittedAt: FROZEN_NOW,
+      requested,
+    };
+
+    // No prior state → full resync → fetchRange "1:*", intersected down to
+    // "101" by the declared-since search result.
+    await assert.rejects(
+      () => runAllMailPasses(client, allMail, {}, deps),
+      (e: unknown) => e instanceof Error && /UID 101/.test(e.message),
+      "runAllMailPasses must propagate the missing-internalDate error uncaught"
+    );
+
+    const records = emittedLines.filter((m) => m.type === "RECORD");
+    const messagesState = emittedLines.filter((m) => m.type === "STATE" && m.stream === "messages");
+
+    assert.equal(records.length, 0, "no RECORD messages emitted before the throw");
+    assert.equal(messagesState.length, 0, "messages STATE cursor never committed");
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
 });

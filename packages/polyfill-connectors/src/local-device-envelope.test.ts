@@ -30,7 +30,7 @@ test("buildLocalDeviceRecordEnvelope creates deterministic connector RECORD body
     record: {
       data: { z: "last", a: "first" },
       emitted_at: "2026-04-30T12:00:00.000Z",
-      key: 42,
+      key: "42",
       stream: "messages",
       type: "RECORD",
     },
@@ -44,7 +44,7 @@ test("buildLocalDeviceRecordEnvelope creates deterministic connector RECORD body
     record: {
       data: { a: "first", z: "last" },
       emitted_at: "2026-04-30T12:00:00.000Z",
-      key: 42,
+      key: "42",
       stream: "messages",
       type: "RECORD",
     },
@@ -54,6 +54,25 @@ test("buildLocalDeviceRecordEnvelope creates deterministic connector RECORD body
   assert.equal(first.body_hash, retry.body_hash);
   assert.equal(first.record_key, "42");
   assert.deepEqual(Object.keys(first.data), ["a", "z"]);
+});
+
+test("buildLocalDeviceRecordEnvelope encodes a compound key as canonical minified JSON array", () => {
+  const envelope = buildLocalDeviceRecordEnvelope({
+    batchId: "batch-1",
+    batchSeq: 7,
+    connectorId: "codex",
+    deviceId: "device-1",
+    record: {
+      data: { user_id: "user_123", date: "2026-04-01" },
+      emitted_at: "2026-04-30T12:00:00.000Z",
+      key: ["user_123", "2026-04-01"],
+      stream: "daily_summaries",
+      type: "RECORD",
+    },
+    sourceInstanceId: "source-1",
+  });
+
+  assert.equal(envelope.record_key, '["user_123","2026-04-01"]');
 });
 
 test("buildLocalDeviceIngestBatchRequest owns full-envelope hashing and wire projection", () => {

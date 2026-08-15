@@ -13,6 +13,7 @@ import { isOwnerSessionRequiredBody } from "./auth-errors.ts";
 import { describeErrorText } from "./describe-error.ts";
 import { redirectToOwnerLogin } from "./login-redirect.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
+import { isCredentialRefusal, refErrorCode } from "./static-secret-refusal.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface SourceObject {
@@ -91,9 +92,18 @@ export interface RunStatusEnvelope {
     origin: string | null;
     reason: string | null;
   } | null;
+  /**
+   * Raw `known_gaps` off the run's window-independent terminal event (same
+   * source the timeline route reads, but resolved via the `LIMIT 1`
+   * terminal-event query instead of a paginated window). `undefined` when
+   * the run has no terminal event yet. Callers normalize via
+   * `run-gaps.ts#extractKnownGapsFromEventData`.
+   */
+  known_gaps?: unknown;
+  known_gaps_summary?: unknown;
   links: { timeline: string };
   object: "run_status";
-  run_id: string;
+  run_id?: string | null;
   started_at: string | null;
   status: RunHandleStatus;
   terminal_reason: string | null;
@@ -194,6 +204,8 @@ function normalizeRunStatus(raw: unknown): RunStatusEnvelope {
     connector_id?: unknown;
     connector_instance_id?: unknown;
     failure?: unknown;
+    known_gaps?: unknown;
+    known_gaps_summary?: unknown;
     links?: unknown;
     object?: unknown;
     run_id?: unknown;
@@ -208,6 +220,8 @@ function normalizeRunStatus(raw: unknown): RunStatusEnvelope {
     connector_id: typeof r.connector_id === "string" ? r.connector_id : null,
     connector_instance_id: typeof r.connector_instance_id === "string" ? r.connector_instance_id : null,
     failure: normalizeRunFailure(r.failure),
+    known_gaps: r.known_gaps,
+    known_gaps_summary: r.known_gaps_summary,
     links: normalizeRunLinks(r.links),
     object: "run_status",
     run_id: typeof r.run_id === "string" ? r.run_id : "",
@@ -317,10 +331,15 @@ export interface RefConnectorRunSummary {
   first_at: string;
   known_gaps?: unknown[];
   last_at: string;
+  records_emitted?: number | null;
+  reported_records_emitted?: number | null;
   run_id: string;
   started_at: string;
   status: string;
+  yield_counts_present?: boolean;
 }
+
+export type RefTerminalSetupDisposition = "verified_empty" | "unverified_missing_counts" | "unverified_zero";
 
 export interface RefreshPolicy {
   assisted_after_owner_auth?: boolean;
@@ -578,6 +597,9 @@ export interface RefAcquisitionCoverageSummary {
  */
 export type RefCountState = "known" | "known_zero" | "unobserved" | "stale" | "unknown";
 
+/** Mirrors the server-owned `ConnectorSummary.source_work` projection. */
+export type RefSourceWorkGroup = "needs_owner" | "not_measured" | "review" | "system_issue" | "working" | "none";
+
 export interface RefConnectorSummary {
   /**
    * Owner/control-plane acquisition provenance for manual imports, device
@@ -623,8 +645,8 @@ export interface RefConnectorSummary {
    * state-model convergence). Derived server-side by `deriveOwnerState`
    * (`reference-implementation/runtime/owner-state.ts`); optional on the
    * mirror because a reference predating this field omits it, in which case
-   * console view-models fall back to deriving from `rendered_verdict` alone
-   * rather than inventing owner-state evidence.
+   * the console leaves server-owned work classification unavailable rather
+   * than deriving it from raw health or a second client-side taxonomy.
    */
   owner_state?: RefOwnerState | null;
   /**
@@ -636,8 +658,8 @@ export interface RefConnectorSummary {
   refresh_policy?: RefreshPolicy | null;
   /**
    * Server-owned owner-surface verdict. Current reference builds send this
-   * alongside `connection_health`; older builds omit it and the console falls
-   * back to the legacy snapshot rather than inventing a verdict.
+   * alongside `connection_health`; older builds omit it and the console fails
+   * closed rather than inventing a verdict from the legacy snapshot.
    */
   rendered_verdict?: RefRenderedVerdict | null;
   retained_bytes?: RefRetainedBytesBreakdown | null;
@@ -666,6 +688,12 @@ export interface RefConnectorSummary {
    * field omits it and the console falls back to connector-level modality.
    */
   source_kind?: string;
+  /**
+   * Server-owned work classification derived from `owner_state.resolver`.
+   * Optional only for references predating this field; the console fails closed
+   * when it is absent instead of classifying raw health locally.
+   */
+  source_work?: RefSourceWorkGroup;
   status?: string | null;
   stream_count?: number;
   stream_records?: readonly RefConnectorStreamRecord[];
@@ -676,6 +704,8 @@ export interface RefConnectorSummary {
    * the same reason as `manifest_declaration`.
    */
   terminal_facts?: RefTerminalFactsState | null;
+  /** Shared connection-scoped terminal setup disposition for a draft. */
+  terminal_setup_disposition?: RefTerminalSetupDisposition | null;
   total_records: number;
   /**
    * Orthogonal state for `total_records` (`reconcile-active-summary-evidence`
@@ -1114,8 +1144,12 @@ export interface RefCollectionRateSnapshot {
   current_interval_ms: number;
   /** Current effective rate (requests/min). */
   effective_rate_per_min: number;
-  /** Most recent back-off, or null when none. */
-  last_backoff: { at?: string | null; at_interval_ms: number; reason: string } | null;
+  /** Most recent back-off, or null when none; legacy projections may be partial. */
+  last_backoff?: {
+    at?: string | null;
+    at_interval_ms?: number | null;
+    reason?: string | null;
+  } | null;
 }
 
 export type RefRemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";
@@ -1139,7 +1173,13 @@ export interface RefConnectionHealthCondition {
   remediation: RefConnectionConditionRemediation | null;
   sensitivity: "owner" | "public" | "secret_redacted";
   severity: "blocked" | "error" | "info" | "warning";
-  status: "false" | "true" | "unknown";
+  /**
+   * `not_applicable` means the condition cannot apply to this connection at all
+   * (no local-device binding, no managed runtime surface, no schedule policy) —
+   * a settled answer, not a pending one. The reference filters these out of
+   * `supporting_condition_ids`, so they arrive in `conditions` but are not shown.
+   */
+  status: "false" | "not_applicable" | "true" | "unknown";
   type: string;
 }
 
@@ -1304,32 +1344,119 @@ export async function refFetch(
   return res.json();
 }
 
+export interface ProviderAuthInitiateResponse {
+  authorization_url: string;
+  connector_id: string;
+  expires_at: string;
+  next_step: {
+    authorization_url: string;
+    expires_at: string;
+    kind: "open_provider_auth";
+    reason: string;
+    redirect_uri: string;
+  };
+  object: "provider_auth_initiate";
+  setup_modality: "provider_authorization";
+}
+
+export async function initiateProviderAuthorization(connectorId: string): Promise<ProviderAuthInitiateResponse> {
+  return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/provider-auth-initiate`, undefined, {
+    body: "{}",
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as ProviderAuthInitiateResponse;
+}
+
+// Deployment-time provider-app configuration (e.g. a shared OAuth app's
+// client id/secret). Grouped by `identity_group` — a manifest-declared
+// grouping token for connectors that share one provider-app registration
+// (e.g. Calendar + Contacts under the same Google OAuth app) — never by
+// connector id, since the credential itself is not per-connector.
+//
+// Every field is manifest-declared for owner display: `label` (per field) and
+// `provider_identity_label` (per group) are the only copy the Console ever
+// shows — `identity_group` itself is an opaque grouping token (e.g.
+// "shared-google-oauth-app") and must never be rendered. `logical_key` is
+// similarly an opaque row identifier for posting a value back, not something
+// rendered. The env-var alias a manifest may declare for infra-as-code
+// deploys is a server-internal resolution detail and never appears in this
+// response shape at all — grep-verifiable, see provider-app-config
+// invariants tests.
+export interface ProviderAppConfigField {
+  configured: boolean;
+  label: string;
+  logical_key: string;
+  secret: boolean;
+}
+
+export interface ProviderAppConfigGroup {
+  fields: ProviderAppConfigField[];
+  identity_group: string;
+  /** Human-facing label for the group, e.g. "Google account access". Render this, never `identity_group`. */
+  provider_identity_label: string;
+}
+
+export interface ProviderAppConfigListResponse {
+  groups: ProviderAppConfigGroup[];
+  object: "provider_app_config_list";
+}
+
+export async function getProviderAppConfig(): Promise<ProviderAppConfigListResponse> {
+  return (await refFetch("/_ref/provider-app-config")) as ProviderAppConfigListResponse;
+}
+
+// Batch write for one identity group. `values` carries only the logical keys
+// the owner actually typed a new value for — a blank field in the form means
+// "leave the existing stored value alone," so the Console never sends a blank
+// string that would overwrite (or be rejected as an attempt to clear) an
+// already-configured secret. First-setup and later-rotation are the same
+// call shape; the only difference is how many keys `values` happens to carry.
+export async function setProviderAppConfig(args: {
+  identityGroup: string;
+  values: Record<string, string>;
+}): Promise<void> {
+  await refFetch("/_ref/provider-app-config", undefined, {
+    body: JSON.stringify({
+      identity_group: args.identityGroup,
+      values: args.values,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+}
+
 export { RefNotFoundError, RefRequestError };
 
-// Thrown when the owner-session static-secret capture route rejects a credential
-// at the synchronous validation moment (HTTP 400, code
-// `static_secret_credential_rejected`). The message is the provider-named,
-// owner-causal reason; nothing was stored. The Console action catches this to
-// keep the owner on the form with their non-secret context preserved, rather
-// than redirecting to a setup-status page for a connection that never started a
-// run.
+// Thrown when the owner-session static-secret capture route REFUSES a
+// credential and stores nothing. Two refusal classes reach this type:
+//
+//   * the synchronous validation moment (HTTP 400,
+//     `static_secret_credential_rejected`) — the provider itself rejected the
+//     secret; and
+//   * the replacement-authority guards (HTTP 409, the `static_secret_*` codes
+//     in the reference's `ref-error-status.ts`) — the secret may be valid, but
+//     replacing the credential on THIS connection cannot be proven safe.
+//
+// Both share the only property the Console needs: nothing was written, no run
+// started, and the owner must see why and act. `message` is the reference
+// server's own owner-causal copy, surfaced verbatim — it already names the
+// provider and the next step, so the Console never paraphrases it. `code` is
+// carried for callers that branch on the specific refusal.
+//
+// Deliberately connector-agnostic: the class is selected by HTTP status and the
+// error envelope, never by connector id. Gmail, Jellyfin, Steam, and GroupMe
+// all travel this one path.
 export class StaticSecretValidationError extends Error {
-  readonly code = "static_secret_credential_rejected";
-  constructor(message: string, cause?: unknown) {
+  readonly code: string;
+  constructor(message: string, code: string, cause?: unknown) {
     super(message, { cause });
     this.name = "StaticSecretValidationError";
+    this.code = code;
   }
 }
 
-function isCredentialRejectionBody(bodyText: string): boolean {
-  try {
-    const parsed = JSON.parse(bodyText) as { error?: { code?: unknown } | string };
-    const code = typeof parsed.error === "object" && parsed.error ? parsed.error.code : parsed.error;
-    return code === "static_secret_credential_rejected";
-  } catch {
-    return false;
-  }
-}
+// The refusal classification lives in static-secret-refusal.ts so it is
+// directly executable under node:test — this module imports `server-only`.
 
 export async function getTraceTimeline(
   traceId: string,
@@ -1762,12 +1889,107 @@ export async function getDatasetSummary(): Promise<DatasetSummary> {
   return (await refFetch("/_ref/dataset/summary")) as DatasetSummary;
 }
 
+/**
+ * Force a synchronous rebuild of the dataset-summary projection via the
+ * existing owner-authenticated `POST /_ref/dataset/summary/rebuild` route.
+ * This is the owner recovery path for a projection auto-heal has given up
+ * on (`failed` after exhausting its bounded consecutive-failure cap in
+ * `dataset-summary-read-model.ts`) — it calls the same bounded-retry
+ * rebuild directly, independent of the read path's own cooldown/cap, so an
+ * owner is never blocked from trying again immediately.
+ */
+export async function rebuildDatasetSummary(): Promise<DatasetSummary> {
+  return (await refFetch("/_ref/dataset/summary/rebuild", undefined, {
+    body: "{}",
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as DatasetSummary;
+}
+
+// `GET /_ref/dataset/size` and `GET /_ref/dataset/top` — finer-grain
+// siblings of `getDatasetSummary()`. Both are projection-backed and already
+// server-bounded (top is capped at 25 rows, `MAX_TOP_LIMIT` in
+// `retained-size-read-model.ts`); callers must not paginate past what these
+// return. Mirrors `RetainedSizeRowSchema`/`RetainedSizeTopRowSchema` in
+// `packages/reference-contract/src/reference/index.ts`.
+
+export interface RefRetainedSizeRow {
+  blob_bytes: number;
+  blob_count: number;
+  computed_at?: string | null;
+  connector_id?: string | null;
+  connector_instance_id?: string | null;
+  current_record_json_bytes: number;
+  dirty: boolean;
+  grain: string;
+  record_count: number;
+  record_family?: string | null;
+  record_history_count: number;
+  record_history_json_bytes: number;
+  stream?: string | null;
+  total_retained_bytes: number;
+}
+
+export interface RefRetainedSizeTopRow extends RefRetainedSizeRow {
+  blob_id: string | null;
+  grain_key: string;
+  measure: string;
+  rank: number;
+  record_key: string | null;
+  scope: string;
+}
+
+export interface RefRetainedSizeProjectionMeta {
+  computed_at: string | null;
+  dirty: boolean;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface RefDatasetSizeResponse {
+  grain: "global" | "connection" | "stream";
+  object: "ref_dataset_size";
+  projection: RefRetainedSizeProjectionMeta;
+  rows: RefRetainedSizeRow[];
+}
+
+export interface RefDatasetTopResponse {
+  measure: string;
+  object: "ref_dataset_top";
+  projection: RefRetainedSizeProjectionMeta;
+  rows: RefRetainedSizeTopRow[];
+  scope: "connection" | "stream" | "record" | "blob";
+}
+
+/**
+ * Retained logical bytes at one grain finer than the connector-summary
+ * table. `grain: "stream"` is the sibling the deployment page's per-source
+ * storage table does not answer today.
+ */
+export async function getDatasetSize(
+  grain: "global" | "connection" | "stream" = "global"
+): Promise<RefDatasetSizeResponse> {
+  return (await refFetch("/_ref/dataset/size", { grain })) as RefDatasetSizeResponse;
+}
+
+/**
+ * Bounded (server-capped at 25 rows) retained-size heavy hitters for one
+ * scope/measure pair. Never paginate past what this returns — the bound is
+ * intentional (`MAX_TOP_LIMIT`), not an arbitrary page size.
+ */
+export async function getDatasetTop(
+  scope: "connection" | "stream" | "record" | "blob",
+  measure = "total_retained_bytes"
+): Promise<RefDatasetTopResponse> {
+  return (await refFetch("/_ref/dataset/top", { measure, scope })) as RefDatasetTopResponse;
+}
+
 // The reference deployment diagnostics surface. Consumed by the operator-
 // facing /deployment page. Shape matches the report returned by
 // server/deployment-diagnostics.ts; the RS redacts secrets before sending,
 // and the dashboard must not re-assemble them.
 export interface DeploymentDiagnostics {
   database: {
+    backend?: "postgres" | "sqlite" | "unknown";
     path: string;
     // Read-only physical on-disk footprint (Postgres-only). `null` on a
     // SQLite backend or when the size read fails — never a fabricated `0`.
@@ -1949,6 +2171,20 @@ export type DeviceSourceInstanceOutboxState =
   | "stale"
   | "unknown";
 
+/**
+ * Presented heartbeat health for a device source instance. Mirrors
+ * `PresentedHeartbeatHealth` in
+ * `reference-implementation/server/heartbeat-lease.ts`.
+ */
+export type DeviceSourceInstanceHeartbeatHealth =
+  | "blocked"
+  | "healthy"
+  | "retrying"
+  | "stale"
+  | "starting"
+  | "stopped"
+  | "unknown";
+
 export interface DeviceSourceInstance {
   accepted_record_count?: number;
   connector_id: string;
@@ -1956,8 +2192,18 @@ export interface DeviceSourceInstance {
   created_at: string;
   device_id: string;
   display_name?: string | null;
+  heartbeat_age_ms?: number | null;
+  /**
+   * Presented health, derived server-side from heartbeat age against
+   * `heartbeat_lease_ms`. `stale` and `unknown` are derivations, never
+   * statuses a collector reports. Render THIS — a one-shot collector that was
+   * killed leaves its last status in `last_heartbeat_status` forever.
+   */
+  heartbeat_health?: DeviceSourceInstanceHeartbeatHealth;
+  heartbeat_lease_ms?: number;
   last_error?: Record<string, unknown> | null;
   last_heartbeat_at?: string | null;
+  /** Last status the collector reported. Evidence, not current health. */
   last_heartbeat_status?: string | null;
   last_ingest_at?: string | null;
   local_binding_name: string;
@@ -2009,6 +2255,7 @@ export interface StaticSecretDraftConnection {
   connector_id: string;
   connector_instance_id: string;
   credential_kind: string;
+  display_name: string;
   next_step: {
     kind: "capture_static_secret_credential";
     method: "POST";
@@ -2016,7 +2263,7 @@ export interface StaticSecretDraftConnection {
     url: string;
   };
   object: "static_secret_draft_connection";
-  status: "draft";
+  status: "active" | "draft";
 }
 
 export interface StaticSecretCredentialCapture {
@@ -2040,6 +2287,7 @@ export interface StaticSecretCredentialCapture {
     rotated_at: string | null;
     status: string | null;
   };
+  deduplicated?: boolean;
   // Non-secret account identity from a synchronous credential probe ("Connected
   // as {identity}"). Null when the connector has no probe (first-sync path).
   identity: { account_identity: string; detail: string | null } | null;
@@ -2091,6 +2339,16 @@ export interface StaticSecretSetup {
     fields: StaticSecretSetupField[];
     kind: string;
     label: string;
+    /**
+     * Whether capturing this credential at all is mandatory. `false` means a
+     * fully blank submission is a valid choice (e.g. Venmo — the connector
+     * always falls back to browser-driven sign-in with zero saved
+     * credentials); once ANY field is filled, every field still marked
+     * `required: true` on itself is enforced. See
+     * `static-secret-payload.ts`'s `bundledSecretPayload` for the
+     * enforcement.
+     */
+    required: boolean;
     submit_label: string | null;
   };
   credential_kind: string;
@@ -2133,6 +2391,7 @@ export async function captureStaticSecretCredential(input: {
   connectionId: string;
   credentialKind: string;
   secret: string;
+  setupFields?: Record<string, string>;
 }): Promise<StaticSecretCredentialCapture> {
   try {
     return (await refFetch(
@@ -2142,21 +2401,26 @@ export async function captureStaticSecretCredential(input: {
         body: JSON.stringify({
           credential_kind: input.credentialKind,
           secret: input.secret,
+          ...(input.setupFields ? { setup_fields: input.setupFields } : {}),
         }),
         headers: { "content-type": "application/json" },
         method: "POST",
       }
     )) as StaticSecretCredentialCapture;
   } catch (err) {
-    // A synchronous validation rejection (400 static_secret_credential_rejected)
-    // becomes a typed error so the action keeps the owner on the form. The
-    // message is the provider-named, owner-causal reason from the route.
-    if (err instanceof RefRequestError && err.status === 400 && isCredentialRejectionBody(err.bodyText)) {
-      // StaticSecretValidationError threads `err` through to Error's native
-      // `cause` (see its constructor above); Biome's syntactic check doesn't
-      // look inside a custom class to see that.
-      // biome-ignore lint/style/useErrorCause: see comment above.
-      throw new StaticSecretValidationError(err.message, err);
+    // A capture refusal — the 400 synchronous validation rejection, or a 409
+    // replacement-authority conflict — becomes a typed error so the action
+    // keeps the owner on the form. Nothing was stored either way. The message
+    // is the reference server's own owner-causal reason, carried verbatim.
+    if (err instanceof RefRequestError) {
+      const code = refErrorCode(err.bodyText);
+      if (isCredentialRefusal(err.status, code)) {
+        // StaticSecretValidationError threads `err` through to Error's native
+        // `cause` (see its constructor above); Biome's syntactic check doesn't
+        // look inside a custom class to see that.
+        // biome-ignore lint/style/useErrorCause: see comment above.
+        throw new StaticSecretValidationError(err.message, code ?? "static_secret_credential_rejected", err);
+      }
     }
     throw err;
   }
@@ -2173,6 +2437,10 @@ export type StaticSecretSetupStateValue =
   | "first_sync_failed"
   | "first_sync_pending"
   | "first_sync_running"
+  | "first_sync_unverified_missing_counts"
+  | "first_sync_unverified_zero"
+  | "first_sync_verified_empty"
+  /** @deprecated Kept for references that still emit the pre-disposition state. */
   | "first_sync_zero_yield"
   | "paused"
   | "revoked"
@@ -2242,6 +2510,7 @@ export interface ConnectionSetupStatus {
   };
   setup_state: StaticSecretSetupStateValue;
   status: string;
+  terminal_setup_disposition: RefTerminalSetupDisposition | null;
   updated_at: string | null;
 }
 
@@ -2351,6 +2620,16 @@ export async function getManualUploadSetup(connectorId: string): Promise<ManualU
   )) as ManualUploadSetup;
 }
 
+// Matches server/transport.ts's PDPP_MANUAL_UPLOAD_STREAM_CONTENT_TYPE.
+// Every manual-upload route that accepts a raw file body requires this
+// exact Content-Type so the RS's dedicated streaming parser (not the
+// wildcard whole-buffer parser) handles the request -- a browser fetch()
+// call with `body: file` and no explicit Content-Type would otherwise
+// default to the File object's own MIME type (commonly text/plain or
+// application/octet-stream for a .txt/.zip export), silently falling
+// through to the buffering parser for a multi-GB upload.
+const MANUAL_UPLOAD_STREAM_CONTENT_TYPE = "application/vnd.pdpp.manual-upload";
+
 async function postManualUploadFile(
   path: string,
   file: File,
@@ -2368,6 +2647,7 @@ async function postManualUploadFile(
   const init = await withOwnerSessionCookie({
     body: file,
     cache: "no-store",
+    headers: { "Content-Type": MANUAL_UPLOAD_STREAM_CONTENT_TYPE },
     method: "POST",
   });
   let res: Response;

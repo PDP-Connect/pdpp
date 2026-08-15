@@ -37,12 +37,15 @@ import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import {
   buildDetailCoverageMessage,
   buildDetailGap,
+  buildFullScanCoverageMessage,
   type DetailCoverageMessage,
   type DetailGapMessage,
   type DetailGapStartEntry,
+  describeUnexpectedFailure,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import type { ReferenceBlobUploadFn } from "../../src/reference-blob-uploader.ts";
 import {
   makeReferenceBlobUploader as makeSharedReferenceBlobUploader,
   ReferenceBlobUploadFailure,
@@ -50,6 +53,7 @@ import {
 } from "../../src/reference-blob-uploader.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
+import { isImapTransientError } from "./imap-error-classification.ts";
 import {
   type BodyPartSelection,
   bigintToCursor,
@@ -58,6 +62,7 @@ import {
   buildMessageBodyRecord,
   buildMessageRecord,
   buildThreadRecord,
+  canonicalBodyBlobCandidates,
   canonicalLabelName,
   decodeBodyPart,
   decodeBodystructureForAttachments,
@@ -83,6 +88,7 @@ import type {
   EmittedMessage,
   InteractionMessage,
   InteractionResponse,
+  MessagesBackfillCursor,
   PriorAttachmentsState,
   PriorMessagesState,
   PriorThreadsState,
@@ -95,7 +101,6 @@ import type {
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
 
 const EMAIL_AT_RE = /@/;
-const RETRYABLE_ERROR_RE = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
 // Splits an address into [local-part, domain] for progress redaction. Only the
 // last `@` is treated as the domain delimiter so quoted local-parts that embed
 // an `@` still redact (the domain is whatever follows the final `@`).
@@ -121,6 +126,16 @@ const MAX_ATTACHMENT_BYTES_ENV = "PDPP_GMAIL_MAX_ATTACHMENT_BYTES";
 const POSITIVE_INTEGER_PATTERN = /^\d+$/;
 export const DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS = 500;
 const ATTACHMENT_BACKFILL_WINDOW_UIDS_ENV = "PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS";
+// Live-incident floor (gmail-attachment-convergence-0809): sustained Gmail
+// IMAP attachment-transfer throughput measured at ~4.65 KB/s across four
+// different attachment sizes over a 2-hour window (general HTTPS from the
+// same host hit 22 MB/s; TLS handshake to imap.gmail.com was instant), so the
+// bottleneck is IMAP-side, not this codebase's network path. 90s of true
+// silence is generous headroom above the inter-chunk gaps a merely-slow (not
+// wedged) transfer at that floor rate produces, while still bounding a truly
+// stuck FETCH to a fraction of the run's cadence window.
+export const DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS = 90_000;
+const ATTACHMENT_STALL_TIMEOUT_MS_ENV = "PDPP_GMAIL_ATTACHMENT_STALL_TIMEOUT_MS";
 
 // ─── imapflow interface augmentation ────────────────────────────────────
 
@@ -271,10 +286,13 @@ export type FetchAttachmentFn = (msg: FetchMessageObject, attachment: Attachment
 export type UploadAttachmentBlobFn = (args: {
   content: AsyncIterable<Buffer | Uint8Array | string>;
   connectorId: string;
+  jsonPath?: string;
   mimeType: string;
   recordKey: string;
-  stream: "attachments";
+  stream: "attachments" | "message_bodies";
 }) => Promise<BlobRef>;
+
+export type UploadBodyBlobFn = ReferenceBlobUploadFn;
 
 type AttachmentHydrationFailureStage =
   | "blob_upload_http_4xx"
@@ -294,6 +312,15 @@ export interface AttachmentHydrationResult {
   readonly record: AttachmentRecord;
 }
 
+/**
+ * Resolves to an honest per-attachment outcome for every ordinary failure
+ * mode (download error, too-large, upload error) — callers do not need a
+ * try/catch for those. The one exception: a stall-timeout (see
+ * `AttachmentStallTimeoutError`) REJECTS instead, because by the time it
+ * fires the shared IMAP connection has already been closed and every later
+ * command in the run would fail too; that must end the run, not be
+ * swallowed into one attachment's coverage row.
+ */
 export type HydrateAttachmentFn = (
   msg: FetchMessageObject,
   attachment: AttachmentRecord
@@ -359,39 +386,25 @@ export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSumma
  *
  * Every attachment decoded from a message's BODYSTRUCTURE during the run is
  * a key we attempted to hydrate, so it lands in `requiredKeys` (the
- * denominator). Each attempted hydration then lands in exactly one outcome
- * bucket by its `hydration_status`:
- *   - `hydrated`  → `hydratedKeys` (the numerator: blob bytes committed).
- *   - `failed`    → `gapKeys` (a retryable detail gap to re-attempt next run).
- *   - `too_large` → `optionalSkipKeys` (a permanent, by-policy skip — NOT a
- *                   gap, because the next run will skip it again on the same
- *                   size cap; counting it as a gap would falsely report the
- *                   stream as never-complete).
- *
- * This is the real `considered` axis the progress-evidence contract asks for:
- * the count is observed from the run, never inferred. Streams without an
- * attempt-per-key denominator (threads, labels, message_bodies) emit no
- * coverage rather than a fabricated one.
+ * denominator). Each attempt lands in exactly one outcome by `hydration_status`:
+ *   - `hydrated` → `hydratedKeys` (the numerator: blob bytes committed).
+ *   - `failed`   → `gapKeys` (a retryable detail gap to re-attempt next run).
+ *   - `too_large` or `deferred` → unaccounted (required denominator only).
  */
 export interface AttachmentDetailCoverage {
   /**
    * Failed attachment records, retained so the run can emit one matching
-   * DETAIL_GAP per `gapKeys` entry. The host commit-gate credits a missing
-   * required key only when it is hydrated, optional-skipped, or backed by a
-   * durable pending DETAIL_GAP — `gap_keys` alone do not satisfy it. Each
-   * record's `id` is exactly the value that landed in `gapKeys`, keeping the
-   * gap's `record_key` and the coverage key a single source of truth.
+   * DETAIL_GAP per `gapKeys` entry.
    */
   failedRecords: AttachmentRecord[];
   gapKeys: string[];
   hydratedKeys: string[];
-  optionalSkipKeys: string[];
   requiredKeys: string[];
 }
 
 /** Fresh, empty accumulator for one attachments detail pass. */
 export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
-  return { failedRecords: [], gapKeys: [], hydratedKeys: [], optionalSkipKeys: [], requiredKeys: [] };
+  return { failedRecords: [], gapKeys: [], hydratedKeys: [], requiredKeys: [] };
 }
 
 /**
@@ -408,17 +421,18 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, rec
       return;
     case "failed":
       coverage.gapKeys.push(record.id);
-      // Retain the record so a matching DETAIL_GAP is emitted for this key.
-      // `gap_keys` on DETAIL_COVERAGE are not enough on their own: the host
-      // commit-gate requires a durable pending DETAIL_GAP to credit the key.
       coverage.failedRecords.push(record);
       return;
     case "too_large":
-      coverage.optionalSkipKeys.push(record.id);
+    case "deferred":
+      // Unaccounted: required-only outcomes that stay in denominator but no
+      // outcome bucket. too_large is a deployment cap (may change); deferred is
+      // not attempted this run. Neither justifies permanent skip or gap claim.
       return;
-    default:
-      // `deferred`: considered but not hydrated this run; denominator only.
-      return;
+    default: {
+      const unhandledStatus: never = record.hydration_status;
+      throw new Error(`Unhandled attachment hydration status: ${unhandledStatus}`);
+    }
   }
 }
 
@@ -441,9 +455,8 @@ export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailC
     requiredKeys: coverage.requiredKeys,
     hydratedKeys: coverage.hydratedKeys,
     gapKeys: coverage.gapKeys,
-    optionalSkipKeys: coverage.optionalSkipKeys,
     considered: coverage.requiredKeys.length,
-    covered: coverage.hydratedKeys.length + coverage.optionalSkipKeys.length,
+    covered: coverage.hydratedKeys.length,
   });
 }
 
@@ -578,17 +591,9 @@ async function emitAttachmentRecords(
       recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
     }
     const emitted = await deps.emitRecord("attachments", { ...hydrated });
-    // `emitted` only proves the record landed, not that hydration succeeded —
-    // a `failed` (and `deferred`) attachment still emits a record so the
-    // coverage denominator is honest. Only `hydrated` (a real blob fill) may
-    // acknowledge a served gap as recovered. `too_large` is deliberately
-    // excluded even though the commit-gate already treats it as covered via
-    // `optionalSkipKeys`: it is a permanent by-policy skip, never the subject
-    // of a durable DETAIL_GAP in the first place (gaps are only ever created
-    // for `failed`, see `emitAttachmentDetailGaps`), so there is nothing to
-    // recover — the pre-existing pending row (from an earlier `failed`
-    // attempt, before a size cap started applying) is already harmless and
-    // left to age/terminalize on its own.
+    // Only `hydrated` may acknowledge a served gap as recovered. Unaccounted
+    // statuses (too_large, deferred) have no durable DETAIL_GAP, so there is
+    // nothing to recover.
     if (!emitted || hydrated.hydration_status !== "hydrated") {
       continue;
     }
@@ -633,12 +638,14 @@ export interface PerMessageDeps {
   emitProgress: ProgressEmitter;
   emitProtocol: (msg: EmittedMessage) => Promise<void>;
   emitRecord: EmitRecordFn;
+  failOnError?: boolean;
   fetchBodies: FetchBodiesFn;
   hydrateAttachment: HydrateAttachmentFn;
   nowIso: () => string;
   recoveredAttachmentGapIds?: Set<string>;
   requested: Map<string, StreamRequest>;
   timeRange: { since?: string; until?: string } | undefined;
+  uploadBodyBlob?: UploadBodyBlobFn;
   wantBodies: boolean;
   wantMessages: boolean;
 }
@@ -674,6 +681,9 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
   const gmMsgid = String(msg.emailId ?? "");
   const gmThrid = String(msg.threadId ?? "");
   if (!gmMsgid) {
+    if (deps.failOnError) {
+      await emitHistoricalMessageSkip(deps, msg.uid);
+    }
     return false;
   }
 
@@ -696,6 +706,20 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
   );
 
   if (deps.wantBodies) {
+    const bodyBlobCandidates = canonicalBodyBlobCandidates({ bodyHtmlFull, bodyTextFull });
+    if (bodyBlobCandidates.length > 0 && !deps.uploadBodyBlob) {
+      throw new Error("canonical Gmail body requires blob upload");
+    }
+    for (const candidate of bodyBlobCandidates) {
+      await deps.uploadBodyBlob?.({
+        content: [candidate.content],
+        connectorId: process.env.PDPP_CONNECTOR_ID || DEFAULT_GMAIL_CONNECTOR_ID,
+        jsonPath: candidate.jsonPath,
+        mimeType: candidate.mimeType,
+        recordKey: gmMsgid,
+        stream: "message_bodies",
+      });
+    }
     await deps.emitRecord(
       "message_bodies",
       buildMessageBodyRecord({
@@ -703,6 +727,7 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
         bodyTextFull,
         gmMsgid,
         htmlCharset: selection.htmlCharset,
+        receivedAt,
         textCharset: selection.plainCharset,
       })
     );
@@ -736,7 +761,10 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
  * FETCH_MSG_PROGRESS rows. Per-message errors are logged to stderr and
  * swallowed so a single bad message doesn't halt the whole pass.
  */
-export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly FetchMessageObject[]): Promise<void> {
+export async function emitMessagesPass(
+  deps: PerMessageDeps,
+  metas: readonly FetchMessageObject[]
+): Promise<{ considered: number; covered: number }> {
   let count = 0;
   for (const msg of metas) {
     try {
@@ -755,11 +783,51 @@ export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly Fet
         });
       }
     } catch (perMsgErr) {
+      if (perMsgErr instanceof AttachmentStallTimeoutError) {
+        // NOT an ordinary per-message failure: `onStall` has already closed
+        // the shared IMAP connection (imapflow has no per-command cancel),
+        // so every later command in this run — including the next message
+        // in this very loop — would throw a confusing "connection closed"
+        // error instead of the real cause. Propagate instead of swallowing
+        // so the run ends cleanly through the normal uncaught-rejection path.
+        throw perMsgErr;
+      }
+      if (deps.failOnError) {
+        await emitHistoricalMessageSkip(deps, msg.uid);
+        continue;
+      }
       const emsg = perMsgErr instanceof Error ? (perMsgErr.stack ?? perMsgErr.message) : String(perMsgErr);
       process.stderr.write(`[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`);
       // Continue with next message; don't let one bad record halt the whole run.
     }
   }
+  return { considered: metas.length, covered: count };
+}
+
+/** Record a bounded terminal outcome so a poison UID cannot replay forever. */
+async function emitHistoricalMessageSkip(deps: PerMessageDeps, uid: number | undefined): Promise<void> {
+  await deps.emitProtocol({
+    type: "SKIP_RESULT",
+    stream: "messages",
+    reason: "historical_message_unaccounted",
+    message: "A Gmail historical message could not be represented; the UID was recorded as a terminal gap.",
+    diagnostics: { uid: typeof uid === "number" ? uid : null },
+  });
+}
+
+async function emitHistoricalContinuationSkip(
+  emitFn: (msg: EmittedMessage) => Promise<void>,
+  stream: string,
+  continuation: { boundary: string; covered: number; considered: number; slice_start: number; slice_end: number }
+): Promise<void> {
+  await emitFn({
+    type: "SKIP_RESULT",
+    stream,
+    reason: "historical_backfill_pending",
+    message: "This bounded page completed; more historical work remains and will be retried by the next run.",
+    continuation: { ...continuation, owner: "runtime", remaining: true },
+    recovery_hint: { action: "retry_by_runtime", retryable: true },
+  });
 }
 
 /** Read one START line from stdin, or reject if malformed. */
@@ -938,6 +1006,12 @@ async function emitLabelsStream(
     priorFingerprints: readPriorLabelFingerprints(state),
   });
   const mailboxes: ListResponse[] = await client.list();
+  // The full mailbox list is the stream's boundary, measured here before the
+  // fingerprint gate below decides what to emit. Every mailbox is either
+  // emitted or suppressed as unchanged — none is dropped — so `considered` and
+  // `covered` are equal and a steady-state run reads covered rather than a
+  // false partial.
+  const consideredLabels = mailboxes.length;
   for (const mb of mailboxes) {
     const name = mb.path;
     const record = {
@@ -964,6 +1038,7 @@ async function emitLabelsStream(
     stream: "labels",
     cursor: labelsCursor,
   });
+  await emit(buildFullScanCoverageMessage("labels", consideredLabels));
 }
 
 // ─── All Mail resolution + cursor ───────────────────────────────────────
@@ -978,6 +1053,7 @@ interface AllMailSession {
   attachmentBackfill: AttachmentAllMailCursor;
   fullResync: boolean;
   highestModseqCursor: number | string | null;
+  messagesBackfill: MessagesBackfillCursor;
   priorModseq: number | string | null | undefined;
   priorUidnext: number;
   uidnext: number | undefined;
@@ -1008,6 +1084,7 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
   const legacyState = state as { all_mail?: AllMailCursor };
   const priorAllMail: AllMailCursor = messagesState.all_mail ?? legacyState.all_mail ?? {};
   const priorAttachmentAllMail: AttachmentAllMailCursor = attachmentsState.all_mail ?? {};
+  const priorMessagesBackfill: MessagesBackfillCursor = messagesState.backfill ?? {};
   const priorUidvalidity = priorAllMail.uidvalidity;
   const attachmentBackfill =
     priorAttachmentAllMail.uidvalidity === uidvalidityNum
@@ -1018,10 +1095,14 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
         };
   return {
     attachmentBackfill,
+    messagesBackfill:
+      priorMessagesBackfill.uidvalidity === uidvalidityNum
+        ? priorMessagesBackfill
+        : { uidvalidity: uidvalidityNum, backfilled_through_uid: 0, completed_at: null },
     fullResync: !priorUidvalidity || priorUidvalidity !== uidvalidityNum,
     highestModseqCursor: bigintToCursor(mailbox.highestModseq),
     priorModseq: priorAllMail.highest_modseq,
-    priorUidnext: priorAllMail.uidnext ?? 1,
+    priorUidnext: priorAllMail.forward_uidnext ?? priorAllMail.uidnext ?? 1,
     uidnext: mailbox.uidNext,
     uidvalidityNum,
   };
@@ -1029,9 +1110,174 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
 
 // ─── Phase A: metadata collection ───────────────────────────────────────
 
-async function collectMetadata(client: Pick<ImapFlow, "fetch">, fetchRange: string): Promise<FetchMessageObject[]> {
+/**
+ * Parse an ISO 8601 timestamp into IMAP's date format (DD-MMM-YYYY).
+ * Returns null if the input is not a valid ISO string.
+ *
+ * IMAP's SINCE criterion matches messages with an internal date >= the
+ * specified date, and IMAP dates are day-granular (no time component).
+ * Post-filtering by exact ISO boundary is required to honor the stream's
+ * declared time_range.since, which may have time-of-day precision.
+ */
+export function isoToImapDate(iso: string | undefined): string | null {
+  if (!iso || typeof iso !== "string") {
+    return null;
+  }
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) {
+      return null;
+    }
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const month = monthNames[d.getUTCMonth()];
+    const year = d.getUTCFullYear();
+    return `${day}-${month}-${year}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Intersect two UID ranges (either "1:*" format or comma-separated list)
+ * and return the overlap as a comma-separated list.
+ *
+ * - `rangeStr` is the original range (e.g., "200:*" from incremental cursor)
+ * - `searchUids` are UIDs returned by IMAP search (sorted ascending)
+ *
+ * Returns only the UIDs that fall within both ranges.
+ */
+function intersectUidRanges(rangeStr: string, searchUids: readonly number[]): string {
+  if (searchUids.length === 0) {
+    return ""; // Empty result
+  }
+
+  // Parse the range string to determine included UIDs
+  const parts = rangeStr.split(":");
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    const start = Number(parts[0]);
+    const end = parts[1] === "*" ? Number.POSITIVE_INFINITY : Number(parts[1]);
+    if (!(Number.isNaN(start) || Number.isNaN(end))) {
+      // Range format: keep only UIDs in [start, end]
+      return searchUids.filter((uid) => uid >= start && uid <= end).join(",");
+    }
+  }
+
+  // Fallback: assume a comma-separated list, intersect with search result
+  const rangeUids = new Set(
+    rangeStr
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n))
+  );
+  return searchUids.filter((uid) => rangeUids.has(uid)).join(",");
+}
+
+/**
+ * Thrown when a message's internalDate is missing or unparseable during exact
+ * boundary filtering. This prevents the run from emitting records and committing
+ * STATE, ensuring no false complete claims are made.
+ *
+ * The message lacks proof of its position relative to the declared scope, so
+ * the entire enumeration must fail rather than silently excluding it or
+ * returning a false partial. The runtime's unhandledRejection handler will
+ * classify this error and decide retry policy based on its deterministic nature.
+ */
+class MissingOrInvalidInternalDateError extends Error {
+  constructor(uid: number | string, detail: string, options?: ErrorOptions) {
+    super(`UID ${uid}: cannot verify internalDate for exact boundary filtering: ${detail}`, options);
+    this.name = "MissingOrInvalidInternalDateError";
+  }
+}
+
+/**
+ * Compare message timestamp against declared boundary using epoch milliseconds.
+ * Returns true if message is at or after the boundary, false if before.
+ * Throws MissingOrInvalidInternalDateError if internalDate is missing or
+ * unparseable, preventing silent inclusion or false coverage claims.
+ *
+ * Lexical comparison of ISO strings fails when offsets differ; epoch comparison
+ * is timezone-safe and handles arbitrary precision correctly.
+ */
+function isAtOrAfterBoundary(
+  messageTimestamp: Date | string | undefined,
+  boundaryIso: string,
+  uid: number | string
+): boolean {
+  // Reject missing internalDate when exact boundary is declared.
+  // IMAP does not guarantee internalDate presence; without it, we cannot
+  // prove the message is in scope. Throw to prevent silent exclusion and
+  // false complete claims; retryability is preserved.
+  if (!messageTimestamp) {
+    throw new MissingOrInvalidInternalDateError(uid, "missing");
+  }
+
+  try {
+    const msgTime = new Date(messageTimestamp).getTime();
+    const boundaryTime = new Date(boundaryIso).getTime();
+
+    // Reject unparseable timestamps; can't compare without valid epoch values.
+    if (Number.isNaN(msgTime)) {
+      throw new MissingOrInvalidInternalDateError(uid, `unparseable: "${messageTimestamp}"`);
+    }
+    if (Number.isNaN(boundaryTime)) {
+      throw new Error(`boundary ISO is unparseable: "${boundaryIso}" (internal error)`);
+    }
+
+    return msgTime >= boundaryTime;
+  } catch (e) {
+    if (e instanceof MissingOrInvalidInternalDateError) {
+      throw e;
+    }
+    // biome-ignore lint/style/useErrorCause: cause IS passed via the options param, which this custom constructor forwards to super() — the linter doesn't see through the indirection.
+    throw new MissingOrInvalidInternalDateError(uid, `exception: ${e instanceof Error ? e.message : String(e)}`, {
+      cause: e,
+    });
+  }
+}
+
+export async function collectMetadata(
+  client: Pick<ImapFlow, "fetch" | "search">,
+  fetchRange: string,
+  sinceDate: string | null = null,
+  sinceIso: string | null = null
+): Promise<FetchMessageObject[]> {
+  let range = fetchRange;
+
+  // If a since boundary is declared (IMAP date format), constrain via search.
+  // Intersect the search result with the existing fetchRange to preserve
+  // cursor/resume semantics and avoid re-fetching already-seen UIDs.
+  if (sinceDate) {
+    const uidsAfterSince = await client.search({ since: sinceDate }, { uid: true });
+    if (!uidsAfterSince || uidsAfterSince.length === 0) {
+      // No messages after the declared date.
+      return [];
+    }
+    // Intersect search result with the existing range (e.g., "200:*" from
+    // incremental cursor). This preserves the cursor and prevents duplicate work.
+    range = intersectUidRanges(fetchRange, uidsAfterSince);
+    if (!range) {
+      // No overlap between incremental range and SINCE search.
+      return [];
+    }
+  }
+
   const metas: FetchMessageObject[] = [];
-  for await (const m of client.fetch(fetchRange, GMAIL_METADATA_FETCH_QUERY, { uid: true })) {
+  for await (const m of client.fetch(range, GMAIL_METADATA_FETCH_QUERY, { uid: true })) {
+    // IMAP SINCE is day-granular; post-filter on exact ISO boundary to honor
+    // the stream's declared time_range.since at the second precision. When an
+    // exact boundary is declared, every message MUST have a valid internalDate
+    // to prove it's in scope. Throws MissingOrInvalidInternalDateError if unable
+    // to verify, preventing STATE commit and preserving retryability.
+    if (sinceIso) {
+      const isInBoundary = isAtOrAfterBoundary(m.internalDate, sinceIso, m.uid ?? "unknown");
+      if (!isInBoundary) {
+        // Message before the exact boundary. Skip it; IMAP SINCE (day-granular)
+        // included it but exact scope (second-precise) excludes it.
+        continue;
+      }
+    }
+
     metas.push(m);
     if (metas.length % FETCH_HEADER_BATCH_PROGRESS === 0) {
       await emit({
@@ -1117,7 +1363,7 @@ function decodeFetchedBodies(
  * caller can still emit the envelope record.
  */
 async function fetchBodies(
-  client: ImapFlow,
+  client: Pick<ImapFlow, "fetchOne">,
   msg: FetchMessageObject,
   selection: ReturnType<typeof selectBodyParts>,
   wantBodies: boolean,
@@ -1145,9 +1391,10 @@ async function fetchBodies(
 export function selectAllMailFetchRange(
   session: { fullResync: boolean; priorUidnext: number },
   _requested: Map<string, StreamRequest>
-): string {
-  // Range is determined purely by the persisted cursor:
-  //   - Full resync (no prior uidvalidity, or it changed): 1:*.
+): string | null {
+  // Range is determined purely by the persisted forward cursor:
+  //   - Full resync (no prior uidvalidity, or it changed): no forward range;
+  //     historical work selects its own bounded UID page.
   //   - Incremental: priorUidnext:* — only UIDs we haven't seen yet.
   //
   // The earlier behavior forced 1:* whenever the run scope included
@@ -1168,9 +1415,74 @@ export function selectAllMailFetchRange(
   // activates that path so a healthy-looking messages cursor does not hide
   // durable attachment work.
   if (session.fullResync) {
-    return "1:*";
+    return null;
   }
   return `${session.priorUidnext}:*`;
+}
+
+export const DEFAULT_MESSAGES_BACKFILL_WINDOW_UIDS = 500;
+const MESSAGES_BACKFILL_WINDOW_UIDS_ENV = "PDPP_GMAIL_MESSAGES_BACKFILL_WINDOW_UIDS";
+
+function normalizeMessagesBackfillWindowUids(value: number | undefined): number {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return value;
+  }
+  return DEFAULT_MESSAGES_BACKFILL_WINDOW_UIDS;
+}
+
+export function resolveMessagesBackfillWindowUids(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[MESSAGES_BACKFILL_WINDOW_UIDS_ENV];
+  if (!(raw && POSITIVE_INTEGER_PATTERN.test(raw))) {
+    return DEFAULT_MESSAGES_BACKFILL_WINDOW_UIDS;
+  }
+  return normalizeMessagesBackfillWindowUids(Number(raw));
+}
+
+/**
+ * Select one historical message work unit. The unit is a UID interval, not a
+ * positional page: Gmail UIDs may contain holes, but a successful fetch of the
+ * interval accounts for those holes and lets the cursor advance to the exact
+ * admitted interval end.
+ */
+export function selectMessagesBackfillFetchRange(args: {
+  messagesBackfill: MessagesBackfillCursor;
+  maxWindowUids?: number;
+  uidnext: number | undefined;
+  uidvalidity?: number;
+}): string | null {
+  const cursor = args.messagesBackfill;
+  const sameEpoch = args.uidvalidity === undefined || cursor.uidvalidity === args.uidvalidity;
+  const backfilledThrough = sameEpoch ? (cursor.backfilled_through_uid ?? 0) : 0;
+  const targetUid = sameEpoch
+    ? (cursor.target_uid ?? Math.max(0, (args.uidnext ?? 1) - 1))
+    : Math.max(0, (args.uidnext ?? 1) - 1);
+  const startUid = Math.max(1, backfilledThrough + 1);
+  if (startUid > targetUid) {
+    return null;
+  }
+  const windowUids = normalizeMessagesBackfillWindowUids(args.maxWindowUids);
+  return `${startUid}:${Math.min(targetUid, startUid + windowUids - 1)}`;
+}
+
+export function advanceMessagesBackfillCursor(args: {
+  now: string;
+  pageEndUid: number;
+  prior: MessagesBackfillCursor;
+}): Required<MessagesBackfillCursor> {
+  const priorEnd = args.prior.backfilled_through_uid ?? 0;
+  const targetUid = args.prior.target_uid ?? priorEnd;
+  if (args.pageEndUid < priorEnd) {
+    throw new Error("messages backfill cursor must not regress");
+  }
+  if (args.pageEndUid > targetUid) {
+    throw new Error("messages backfill page must not pass its target");
+  }
+  return {
+    backfilled_through_uid: args.pageEndUid,
+    completed_at: args.pageEndUid >= targetUid ? args.now : null,
+    target_uid: targetUid,
+    uidvalidity: args.prior.uidvalidity ?? 0,
+  };
 }
 
 export function isAttachmentBackfillRequested(streamsToBackfill: readonly string[] | undefined): boolean {
@@ -2021,7 +2333,9 @@ function attachmentBackfillCandidateCost(meta: FetchMessageObject): number {
 }
 
 function boundedHydrationError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
+  // Attachment downloads go over IMAP too, so the same generic
+  // "Command failed" applies here — keep the server's reason, then bound it.
+  const raw = describeUnexpectedFailure(err);
   return raw.slice(0, HYDRATION_ERROR_MAX_CHARS);
 }
 
@@ -2097,6 +2411,20 @@ class AttachmentTooLargeError extends Error {
 }
 
 /**
+ * Raised when an attachment transfer goes silent (no chunk received) for
+ * longer than the stall budget. The message deliberately contains "timeout"
+ * so `isImapTransientError` (and `handleMainRejection`'s classification) marks
+ * the resulting run failure retryable without a second keyword list to keep
+ * in sync.
+ */
+export class AttachmentStallTimeoutError extends Error {
+  constructor(stallMs: number, observedBytes: number) {
+    super(`attachment transfer stalled: no data for ${stallMs}ms after ${observedBytes} bytes (timeout)`);
+    this.name = "AttachmentStallTimeoutError";
+  }
+}
+
+/**
  * Wrap an AsyncIterable so that consumed bytes are tallied and the stream
  * aborts with `AttachmentTooLargeError` the moment it exceeds the cap.
  * Used as a defense-in-depth guard against attachments whose source size
@@ -2139,19 +2467,311 @@ function enforceMaxBytes(
   };
 }
 
-export function makeAttachmentHydrator(args: {
+/**
+ * Wrap an AsyncIterable so that SILENCE (no chunk delivered) longer than
+ * `stallMs` aborts the transfer, instead of a fixed total-duration cap.
+ *
+ * A total-duration timeout is wrong here: legitimate large attachments over
+ * a slow-but-live IMAP transfer (observed live at ~4.65 KB/s — see
+ * gmail-attachment-convergence-0809 root-cause notes) can honestly take many
+ * minutes while still making steady progress. A stall budget only fires when
+ * that progress actually STOPS, which is the real distinguishing signal
+ * between "slow" and "wedged" (mirrors the test-accounting authority runner's
+ * stall-vs-total-runtime distinction).
+ *
+ * `onStall` MUST leave the source iterable unusable afterward (e.g. by
+ * force-closing the underlying IMAP connection) — imapflow has no per-command
+ * cancel; the only way to unblock an abandoned in-flight FETCH is to close
+ * the whole connection (see `fetchAttachmentPart`). This wrapper does not
+ * call `inner.return()` on stall for that reason: the source is expected to
+ * already be dead by the time `onStall` returns.
+ */
+function enforceStallTimeout(
+  content: AsyncIterable<Buffer | Uint8Array | string>,
+  stallMs: number,
+  onStall: () => void
+): AsyncIterable<Buffer | Uint8Array | string> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Buffer | Uint8Array | string> {
+      const inner = content[Symbol.asyncIterator]();
+      let observed = 0;
+      return {
+        async next() {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const stalled = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              onStall();
+              reject(new AttachmentStallTimeoutError(stallMs, observed));
+            }, stallMs);
+          });
+          try {
+            const step = await Promise.race([inner.next(), stalled]);
+            if (!step.done) {
+              const chunk = step.value;
+              observed +=
+                typeof chunk === "string" ? Buffer.byteLength(chunk) : (chunk as Buffer | Uint8Array).byteLength;
+            }
+            return step;
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+        return(value): Promise<IteratorResult<Buffer | Uint8Array | string>> {
+          if (typeof inner.return === "function") {
+            return inner.return(value);
+          }
+          return Promise.resolve({ done: true, value });
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Resolve the attachment stall budget from env, falling back to the
+ * conservative default. Non-positive or non-numeric overrides are ignored so
+ * a misconfigured env var can never silently disable the guard.
+ */
+export function resolveAttachmentStallTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[ATTACHMENT_STALL_TIMEOUT_MS_ENV];
+  if (!(raw && POSITIVE_INTEGER_PATTERN.test(raw))) {
+    return DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS;
+}
+
+/** One in-transfer progress observation, bounded and pre-redacted at the
+ *  source: no attachment id, filename, subject, sender, or content ever
+ *  reaches this shape. `totalBytes` is present only when the source already
+ *  reported a trusted expected size (BODYSTRUCTURE / IMAP FETCH metadata) —
+ *  never inferred or guessed. */
+export interface AttachmentTransferProgress {
+  bytesTransferred: number;
+  elapsedMs: number;
+  phase: "transferring" | "complete";
+  totalBytes: number | null;
+}
+
+/**
+ * Resolve the in-transfer progress cadence from env. Both a minimum elapsed
+ * time AND a minimum byte delta must be satisfied before a new progress
+ * observation fires (see `enforceTransferProgress`) — either alone is
+ * ignorable by a pathological source (a firehose of 1-byte chunks would
+ * otherwise defeat a bytes-only gate; a single giant chunk every few ms
+ * would defeat a time-only gate). Non-positive or non-numeric overrides fall
+ * back to the default so a misconfigured env var can never turn the cadence
+ * gate into a flood.
+ */
+const ATTACHMENT_PROGRESS_MIN_INTERVAL_MS_ENV = "PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS";
+const ATTACHMENT_PROGRESS_MIN_BYTES_ENV = "PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_BYTES";
+export const DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS = 15_000;
+export const DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES = 256 * 1024;
+
+function resolveBoundedEnvInt(raw: string | undefined, fallback: number): number {
+  if (!(raw && POSITIVE_INTEGER_PATTERN.test(raw))) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function resolveAttachmentProgressMinIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  return resolveBoundedEnvInt(
+    env[ATTACHMENT_PROGRESS_MIN_INTERVAL_MS_ENV],
+    DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS
+  );
+}
+
+export function resolveAttachmentProgressMinBytes(env: NodeJS.ProcessEnv = process.env): number {
+  return resolveBoundedEnvInt(env[ATTACHMENT_PROGRESS_MIN_BYTES_ENV], DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES);
+}
+
+/**
+ * Wrap an AsyncIterable so that observed chunk bytes drive a cadence-gated
+ * `onProgress` callback — bounded, redacted, and inert with respect to the
+ * transfer itself.
+ *
+ * Composed OUTSIDE `enforceStallTimeout` (see `makeAttachmentHydrator`): this
+ * wrapper never participates in stall detection, so nothing it does —
+ * including a slow or throwing `onProgress` — can affect stall timing.
+ * `onProgress` is fire-and-forget (never awaited inline in the chunk path)
+ * and any error it throws is swallowed, so it cannot add latency or turn a
+ * successful transfer into a failed one — the one exception is that a
+ * REJECTED `onProgress` promise is still observed via `.catch()`, which is
+ * enough to prevent an unhandled-rejection crash without blocking the loop.
+ *
+ * Cadence: an observation fires only once BOTH `minIntervalMs` elapsed AND
+ * `minBytes` new bytes arrived since the last one (see
+ * `resolveAttachmentProgressMinIntervalMs`/`resolveAttachmentProgressMinBytes`),
+ * so a run with many small/fast attachments cannot flood the event stream —
+ * most attachments will finish within one cadence window and emit only the
+ * `complete` signal, never a mid-transfer one. The `complete` signal always
+ * fires exactly once at end-of-stream, bypassing the cadence gate, so every
+ * transfer has a coherent start-adjacent/end pair regardless of size.
+ */
+function enforceTransferProgress(
+  content: AsyncIterable<Buffer | Uint8Array | string>,
+  args: {
+    minBytes: number;
+    minIntervalMs: number;
+    now: () => number;
+    onProgress: (progress: AttachmentTransferProgress) => void;
+    totalBytes: number | null;
+  }
+): AsyncIterable<Buffer | Uint8Array | string> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Buffer | Uint8Array | string> {
+      const inner = content[Symbol.asyncIterator]();
+      const startedAt = args.now();
+      let observed = 0;
+      let lastEmitAt = startedAt;
+      let lastEmitBytes = 0;
+      const safeEmit = (progress: AttachmentTransferProgress): void => {
+        try {
+          args.onProgress(progress);
+        } catch {
+          // A progress observer must never be able to fail the transfer.
+        }
+      };
+      return {
+        async next() {
+          const step = await inner.next();
+          if (step.done) {
+            safeEmit({
+              bytesTransferred: observed,
+              elapsedMs: args.now() - startedAt,
+              phase: "complete",
+              totalBytes: args.totalBytes,
+            });
+            return step;
+          }
+          const chunk = step.value;
+          observed += typeof chunk === "string" ? Buffer.byteLength(chunk) : (chunk as Buffer | Uint8Array).byteLength;
+          const nowMs = args.now();
+          if (nowMs - lastEmitAt >= args.minIntervalMs && observed - lastEmitBytes >= args.minBytes) {
+            lastEmitAt = nowMs;
+            lastEmitBytes = observed;
+            safeEmit({
+              bytesTransferred: observed,
+              elapsedMs: nowMs - startedAt,
+              phase: "transferring",
+              totalBytes: args.totalBytes,
+            });
+          }
+          return step;
+        },
+        return(value): Promise<IteratorResult<Buffer | Uint8Array | string>> {
+          if (typeof inner.return === "function") {
+            return inner.return(value);
+          }
+          return Promise.resolve({ done: true, value });
+        },
+      };
+    },
+  };
+}
+
+/** Bounded, non-secret PROGRESS text for one in-transfer observation: phase,
+ *  byte counters, and elapsed time only — matches
+ *  `buildServedAttachmentRecoveryProgressMessage`'s shape for the same
+ *  reason (a free-text `message` that a dashboard/log can render safely). */
+export function buildAttachmentTransferProgressMessage(progress: AttachmentTransferProgress): string {
+  const totalPart = progress.totalBytes === null ? "" : ` total_bytes=${progress.totalBytes}`;
+  return `Gmail attachment transfer phase=${progress.phase} bytes_transferred=${progress.bytesTransferred}${totalPart} elapsed_ms=${progress.elapsedMs}`;
+}
+
+/** A trusted, already-known expected size only — never inferred or guessed
+ *  from observed bytes. Prefers the IMAP download response's own reported
+ *  size (freshest), falling back to the BODYSTRUCTURE-derived size already
+ *  on the attachment record. */
+function trustedAttachmentTotalBytes(downloaded: AttachmentDownload, attachment: AttachmentRecord): number | null {
+  if (typeof downloaded.expectedSize === "number") {
+    return downloaded.expectedSize;
+  }
+  if (typeof attachment.size_bytes === "number") {
+    return attachment.size_bytes;
+  }
+  return null;
+}
+
+interface AttachmentHydratorArgs {
   connectorId: string;
   fetchAttachment: FetchAttachmentFn;
   maxBytes?: number;
+  onStall?: () => void;
+  onTransferProgress?: (progress: AttachmentTransferProgress) => void;
+  progressMinBytes?: number;
+  progressMinIntervalMs?: number;
+  progressNow?: () => number;
+  stallTimeoutMs?: number;
   uploadBlob: UploadAttachmentBlobFn;
-}): HydrateAttachmentFn {
-  const maxBytes = args.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
+}
+
+interface ResolvedAttachmentHydratorConfig {
+  maxBytes: number;
+  progressMinBytes: number;
+  progressMinIntervalMs: number;
+  progressNow: () => number;
+  stallTimeoutMs: number;
+}
+
+/** Compose the size cap, stall guard, and (optional) progress observer
+ *  around a downloaded attachment's content stream, in that fixed order —
+ *  see `enforceTransferProgress`'s doc comment for why progress MUST wrap
+ *  outside the stall guard, never inside it. Extracted from
+ *  `makeAttachmentHydrator` purely to keep that closure's cognitive
+ *  complexity under the repo's ceiling; behavior is unchanged. */
+function composeAttachmentContentGuards(
+  downloaded: AttachmentDownload,
+  attachment: AttachmentRecord,
+  args: AttachmentHydratorArgs,
+  resolved: ResolvedAttachmentHydratorConfig
+): AsyncIterable<Buffer | Uint8Array | string> {
+  const sizeGuarded = enforceMaxBytes(downloaded.content, resolved.maxBytes);
+  const stallGuarded = args.onStall
+    ? enforceStallTimeout(sizeGuarded, resolved.stallTimeoutMs, args.onStall)
+    : sizeGuarded;
+  if (!args.onTransferProgress) {
+    return stallGuarded;
+  }
+  return enforceTransferProgress(stallGuarded, {
+    minBytes: resolved.progressMinBytes,
+    minIntervalMs: resolved.progressMinIntervalMs,
+    now: resolved.progressNow,
+    onProgress: args.onTransferProgress,
+    totalBytes: trustedAttachmentTotalBytes(downloaded, attachment),
+  });
+}
+
+/**
+ * `onStall`: called at most once if a transfer stalls past `stallTimeoutMs`.
+ * MUST make the connection backing `fetchAttachment`'s returned content
+ * unusable (imapflow has no per-command cancel — see `fetchAttachmentPart`),
+ * so the caller is expected to treat the whole run as ending after this
+ * fires. Omitted in tests that don't exercise a real IMAP connection.
+ *
+ * `onTransferProgress`: cadence-gated in-transfer progress (see
+ * `enforceTransferProgress`). Composed OUTSIDE the stall guard: cannot
+ * affect stall timing, backpressure, or error propagation. Omitted entirely
+ * in tests that don't exercise it — `enforceTransferProgress` is only
+ * applied when this is provided, so a caller with no progress sink pays
+ * zero extra wrapping.
+ */
+export function makeAttachmentHydrator(args: AttachmentHydratorArgs): HydrateAttachmentFn {
+  const resolved: ResolvedAttachmentHydratorConfig = {
+    maxBytes: args.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES,
+    progressMinBytes: args.progressMinBytes ?? DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES,
+    progressMinIntervalMs: args.progressMinIntervalMs ?? DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS,
+    progressNow: args.progressNow ?? Date.now,
+    stallTimeoutMs: args.stallTimeoutMs ?? DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS,
+  };
   return async (msg, attachment) => {
-    if (typeof attachment.size_bytes === "number" && attachment.size_bytes > maxBytes) {
+    if (typeof attachment.size_bytes === "number" && attachment.size_bytes > resolved.maxBytes) {
       return hydrationFailureResult(
         attachment,
         "too_large",
-        new AttachmentTooLargeError(attachment.size_bytes, maxBytes)
+        new AttachmentTooLargeError(attachment.size_bytes, resolved.maxBytes)
       );
     }
     let downloaded: AttachmentDownload;
@@ -2160,15 +2780,15 @@ export function makeAttachmentHydrator(args: {
     } catch (err) {
       return hydrationFailureResult(attachment, "failed", err, { stage: "imap_download_failed" });
     }
-    if (typeof downloaded.expectedSize === "number" && downloaded.expectedSize > maxBytes) {
+    if (typeof downloaded.expectedSize === "number" && downloaded.expectedSize > resolved.maxBytes) {
       return hydrationFailureResult(
         attachment,
         "too_large",
-        new AttachmentTooLargeError(downloaded.expectedSize, maxBytes)
+        new AttachmentTooLargeError(downloaded.expectedSize, resolved.maxBytes)
       );
     }
     try {
-      const guarded = enforceMaxBytes(downloaded.content, maxBytes);
+      const guarded = composeAttachmentContentGuards(downloaded, attachment, args, resolved);
       const blobRef = await args.uploadBlob({
         content: guarded,
         connectorId: args.connectorId,
@@ -2193,6 +2813,17 @@ export function makeAttachmentHydrator(args: {
       if (originalError instanceof AttachmentTooLargeError) {
         return hydrationFailureResult(attachment, "too_large", originalError);
       }
+      if (originalError instanceof AttachmentStallTimeoutError) {
+        // Re-thrown, not returned as an ordinary `failed` result: `onStall`
+        // already closed the shared IMAP connection (imapflow has no
+        // per-command cancel), so every later command in this run — the next
+        // attachment, the delta pass, anything — would otherwise throw a
+        // confusing "connection closed" error instead of the real cause.
+        // Propagating here lets the run end cleanly through the normal
+        // uncaught-rejection path (`handleMainRejection`), which classifies
+        // it retryable and reports one honest reason instead of a cascade.
+        throw originalError;
+      }
       return hydrationFailureResult(attachment, "failed", err, hydrationFailureForBlobUpload(err));
     }
   };
@@ -2209,7 +2840,7 @@ interface ImapDownloadResponse {
 }
 
 export async function fetchAttachmentPart(
-  client: ImapFlow,
+  client: Pick<ImapFlow, "download">,
   msg: FetchMessageObject,
   attachment: AttachmentRecord
 ): Promise<AttachmentDownload> {
@@ -2226,7 +2857,7 @@ export async function fetchAttachmentPart(
   };
 }
 
-function buildRuntimeBlobUploader(): UploadAttachmentBlobFn {
+function buildRuntimeBlobUploader(): ReferenceBlobUploadFn {
   const rsUrl = process.env.PDPP_RS_URL || process.env.RS_URL;
   const ownerToken = process.env.PDPP_OWNER_TOKEN;
   if (!(rsUrl && ownerToken)) {
@@ -2265,7 +2896,7 @@ export function validateAttachmentHydrationPreflight(args: {
 // ─── Delta pass (flag/label changes since priorModseq) ──────────────────
 
 async function runDeltaPass(
-  client: ImapFlow,
+  client: Pick<ImapFlow, "fetch">,
   session: AllMailSession,
   requested: Map<string, StreamRequest>,
   emitRecord: EmitRecordFn,
@@ -2322,7 +2953,12 @@ async function runDeltaPass(
 
 // ─── Threads pass ───────────────────────────────────────────────────────
 
-async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn, cursor: FingerprintCursor): Promise<void> {
+async function runThreadsPass(
+  client: Pick<ImapFlow, "fetch">,
+  fetchRange: string,
+  emitRecord: EmitRecordFn,
+  cursor: FingerprintCursor
+): Promise<number> {
   await emit({
     type: "PROGRESS",
     stream: "threads",
@@ -2340,7 +2976,7 @@ async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn, cursor
     labels: true,
     bodyStructure: true,
   };
-  for await (const msg of client.fetch("1:*", threadQuery, { uid: true })) {
+  for await (const msg of client.fetch(fetchRange, threadQuery, { uid: true })) {
     const tid = String(msg.threadId ?? "");
     if (!tid) {
       continue;
@@ -2361,15 +2997,17 @@ async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn, cursor
     threadAgg.set(tid, next);
   }
   await emitChangedThreads(threadAgg.values(), cursor, emitRecord);
+  return threadAgg.size;
 }
 
 /**
  * Gate every aggregated thread through the shared fingerprint cursor and
  * emit only the records whose semantic shape moved since the prior run.
  * Pruning stale ids is the caller's responsibility — `runThreadsPass`
- * always drives a full `1:*` scan, so the orchestrator calls
- * `cursor.pruneStale()` after this returns. Threads with empty ids are
- * silently dropped: the upstream IMAP loop already filters them.
+ * receives one bounded UID range per scheduled run. Threads with empty ids are
+ * silently dropped: the upstream IMAP loop already filters them. The caller
+ * deliberately does not prune stale fingerprints on bounded pages; pruning is
+ * only sound after the historical high-water boundary is complete.
  *
  * Exported so the two-pass churn invariant can be exercised without
  * standing up an IMAP fixture.
@@ -2427,13 +3065,20 @@ interface AllMailDeps {
   streamsToBackfill?: readonly string[] | undefined;
 }
 
+// `mailbox` + `close` on top of the attachment-backfill client's
+// `search`/`fetchOne`/`fetch`, plus `download` for attachment part fetches.
+// `getMailboxLock` is deliberately excluded: `main()` acquires the lock
+// before calling into this function, so this function never needs it.
+type GmailAllMailClient = GmailAttachmentBackfillClient & Pick<ImapFlow, "close" | "download" | "mailbox">;
+
 /**
  * Drive Pass 1 (new messages or full resync), Pass 2 (flag/label deltas),
  * threads aggregation, and the final STATE emit — all inside the mailbox
  * lock. The list-mailbox lookup happens in `main()` before entering here.
  */
-async function runAllMailPasses(
-  client: ImapFlow,
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Gmail's ordered mailbox phases intentionally share one commit boundary.
+export async function runAllMailPasses(
+  client: GmailAllMailClient,
   allMail: ListResponse,
   state: Record<string, unknown>,
   deps: AllMailDeps
@@ -2449,12 +3094,37 @@ async function runAllMailPasses(
     return;
   }
 
-  // Determine fetch range.
-  // - Full resync: 1..*
-  // - Incremental: new UIDs (priorUidnext..*) + flag/label changes
-  //   (CHANGEDSINCE priorModseq).
+  // Forward progress and historical progress are separate. A first run has no
+  // forward range: it receives one bounded historical UID page below.
   const timeRange = deps.requested.get("messages")?.time_range || deps.requested.get("attachments")?.time_range;
-  const fetchRange = selectAllMailFetchRange(session, deps.requested);
+  const messageHistoryRequested =
+    deps.requested.has("messages") ||
+    deps.requested.has("message_bodies") ||
+    deps.requested.has("attachments") ||
+    deps.requested.has("threads");
+  const forwardFetchRange = selectAllMailFetchRange(session, deps.requested);
+  const historicalTargetUid =
+    session.messagesBackfill.target_uid ?? Math.max(0, (session.uidnext ?? session.priorUidnext) - 1);
+  const historicalCursor: MessagesBackfillCursor = {
+    ...session.messagesBackfill,
+    backfilled_through_uid: session.messagesBackfill.backfilled_through_uid ?? 0,
+    completed_at: session.messagesBackfill.completed_at ?? null,
+    target_uid: historicalTargetUid,
+    uidvalidity: session.uidvalidityNum,
+  };
+  const historicalFetchRange = messageHistoryRequested
+    ? selectMessagesBackfillFetchRange({
+        messagesBackfill: historicalCursor,
+        uidnext: session.uidnext,
+        uidvalidity: session.uidvalidityNum,
+        maxWindowUids: resolveMessagesBackfillWindowUids(),
+      })
+    : null;
+  // Parse declared collection_scope.since into IMAP date format (day-granular)
+  // for the bounded SINCE search criterion, and keep the exact ISO for
+  // post-filtering to honor time-of-day precision.
+  const sinceDate = timeRange?.since ? isoToImapDate(timeRange.since) : null;
+  const sinceIso = timeRange?.since ?? null;
   const attachmentBackfillRequested = shouldBackfillAttachments({
     detailGaps: deps.detailGaps,
     streamsToBackfill: deps.streamsToBackfill,
@@ -2466,6 +3136,31 @@ async function runAllMailPasses(
     connectorId: process.env.PDPP_CONNECTOR_ID || DEFAULT_GMAIL_CONNECTOR_ID,
     fetchAttachment: (msg, attachment) => fetchAttachmentPart(client, msg, attachment),
     maxBytes: resolveMaxAttachmentBytes(),
+    // imapflow has no per-command cancel (see `AttachmentStallTimeoutError`
+    // doc comment): the only way to unblock a stalled FETCH is to close the
+    // whole connection. That's a whole-run failure, not a per-attachment one
+    // — but it's a RETRYABLE one (message contains "timeout", matched by
+    // `isImapTransientError` in `handleMainRejection`), and every record this
+    // run already emitted (labels/threads/prior attachments) is durable, and
+    // the messages STATE cursor only commits at the very end of
+    // `runAllMailPasses` — so the next run resumes cleanly rather than
+    // silently poisoning a completed stream.
+    onStall: () => client.close(),
+    stallTimeoutMs: resolveAttachmentStallTimeoutMs(),
+    // Fire-and-forget by construction (`enforceTransferProgress` calls this
+    // synchronously and never awaits it) — a slow or failed PROGRESS emit can
+    // never add latency to the transfer or turn it into a failure. `.catch()`
+    // only prevents an unhandled-rejection crash; it changes nothing about
+    // whether the attachment itself succeeds.
+    onTransferProgress: (progress) => {
+      emit({
+        type: "PROGRESS",
+        stream: "attachments",
+        message: buildAttachmentTransferProgressMessage(progress),
+      }).catch((): undefined => undefined);
+    },
+    progressMinBytes: resolveAttachmentProgressMinBytes(),
+    progressMinIntervalMs: resolveAttachmentProgressMinIntervalMs(),
     uploadBlob: buildRuntimeBlobUploader(),
   });
   // Accumulate honest attachments detail-coverage across BOTH the primary pass
@@ -2502,10 +3197,13 @@ async function runAllMailPasses(
     return;
   }
 
-  await emit({
-    type: "PROGRESS",
-    message: `Fetching ${session.fullResync ? "all" : "new"} messages (${fetchRange}) from ${allMail.path}`,
-  });
+  let fetchProgressMessage = "No Gmail message UID work is pending";
+  if (historicalFetchRange) {
+    fetchProgressMessage = `Fetching bounded historical messages (${historicalFetchRange}) from ${allMail.path}`;
+  } else if (forwardFetchRange) {
+    fetchProgressMessage = `Fetching new messages (${forwardFetchRange}) from ${allMail.path}`;
+  }
+  await emit({ type: "PROGRESS", message: fetchProgressMessage });
 
   // Phase A: pull all metadata into an array up-front.
   // Phase B: for each metadata row, do any additional IMAP commands
@@ -2531,11 +3229,14 @@ async function runAllMailPasses(
     const threadCursor = openFingerprintCursor(state, {
       priorFingerprints: readPriorThreadFingerprints(state),
     });
-    await runThreadsPass(client, deps.emitRecord, threadCursor);
-    // Full `1:*` scan: drop ids absent from this run so a future
-    // re-creation of the same thread_id triggers a fresh emit instead of
-    // matching a stale fingerprint.
-    threadCursor.pruneStale();
+    const threadRanges = [historicalFetchRange, forwardFetchRange].filter((range): range is string => range !== null);
+    let historicalThreadItemsConsidered = 0;
+    for (const threadRange of threadRanges) {
+      const considered = await runThreadsPass(client, threadRange, deps.emitRecord, threadCursor);
+      if (threadRange === historicalFetchRange) {
+        historicalThreadItemsConsidered = considered;
+      }
+    }
     // The threads STATE cursor carries the next-run fingerprint map.
     // Emitted here (inside the mailbox lock) so it's persisted right
     // after the threads pass and before the messages pass; if the
@@ -2549,9 +3250,40 @@ async function runAllMailPasses(
         thread_fingerprints: threadCursor.toState(),
       },
     });
+    if (historicalFetchRange) {
+      const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);
+      await emit(
+        buildDetailCoverageMessage({
+          considered: historicalThreadItemsConsidered,
+          covered: historicalThreadItemsConsidered,
+          hydratedKeys: [],
+          requiredKeys: [],
+          stateStream: "threads",
+          stream: "threads",
+        })
+      );
+      if (historicalPageEndUid < historicalTargetUid) {
+        await emitHistoricalContinuationSkip(emit, "threads", {
+          boundary: String(historicalCursor.uidvalidity),
+          considered: historicalThreadItemsConsidered,
+          covered: historicalThreadItemsConsidered,
+          slice_start: Number(historicalFetchRange.split(":")[0]),
+          slice_end: historicalPageEndUid,
+        });
+      }
+    }
   }
 
-  const metas = await collectMetadata(client, fetchRange);
+  const historicalMetas: FetchMessageObject[] = [];
+  const forwardMetas: FetchMessageObject[] = [];
+  const metas: FetchMessageObject[] = [];
+  if (historicalFetchRange) {
+    historicalMetas.push(...(await collectMetadata(client, historicalFetchRange, sinceDate, sinceIso)));
+  }
+  if (forwardFetchRange) {
+    forwardMetas.push(...(await collectMetadata(client, forwardFetchRange, sinceDate, sinceIso)));
+  }
+  metas.push(...historicalMetas, ...forwardMetas);
   await emit({
     type: "PROGRESS",
     stream: "messages",
@@ -2562,16 +3294,34 @@ async function runAllMailPasses(
     emitProtocol: emit,
     emitProgress: (m) => emit(m),
     emitRecord: deps.emitRecord,
+    failOnError: false,
     fetchBodies: fetchBodiesBound,
     hydrateAttachment,
     recoveredAttachmentGapIds,
     nowIso,
+    uploadBodyBlob: buildRuntimeBlobUploader(),
     requested: deps.requested,
     timeRange,
     wantBodies: deps.requested.has("message_bodies"),
     wantMessages: deps.requested.has("messages"),
   };
-  await emitMessagesPass(perMessageDeps, metas);
+  const historicalMessageCoverage = await emitMessagesPass(
+    { ...perMessageDeps, failOnError: historicalFetchRange !== null },
+    historicalMetas
+  );
+  const forwardMessageCoverage = await emitMessagesPass(perMessageDeps, forwardMetas);
+  if (deps.requested.has("message_bodies")) {
+    await emit(
+      buildDetailCoverageMessage({
+        considered: historicalMessageCoverage.considered + forwardMessageCoverage.considered,
+        covered: historicalMessageCoverage.covered + forwardMessageCoverage.covered,
+        hydratedKeys: [],
+        requiredKeys: [],
+        stateStream: "messages",
+        stream: "message_bodies",
+      })
+    );
+  }
 
   await runAttachmentBackfillAndRecoveryPass({
     allMail,
@@ -2601,16 +3351,64 @@ async function runAllMailPasses(
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
   await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
 
+  if (messageHistoryRequested && historicalFetchRange) {
+    const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);
+    await emit(
+      buildDetailCoverageMessage({
+        considered: historicalMessageCoverage.considered,
+        covered: historicalMessageCoverage.covered,
+        hydratedKeys: [],
+        requiredKeys: [],
+        stateStream: "messages",
+        stream: "messages",
+      })
+    );
+    if (historicalPageEndUid < historicalTargetUid) {
+      await emitHistoricalContinuationSkip(emit, "messages", {
+        boundary: String(historicalCursor.uidvalidity),
+        considered: historicalMessageCoverage.considered,
+        covered: historicalMessageCoverage.covered,
+        slice_start: Number(historicalFetchRange.split(":")[0]),
+        slice_end: historicalPageEndUid,
+      });
+    }
+  }
+
   // Keep the cursor value (possibly string if out of safe-integer range) on STATE.
+  let nextMessagesBackfill: MessagesBackfillCursor | null = null;
+  if (messageHistoryRequested) {
+    if (historicalFetchRange) {
+      nextMessagesBackfill = advanceMessagesBackfillCursor({
+        now: nowIso(),
+        pageEndUid: Number(historicalFetchRange.split(":")[1]),
+        prior: historicalCursor,
+      });
+    } else if (historicalCursor.completed_at === null) {
+      nextMessagesBackfill = advanceMessagesBackfillCursor({
+        now: nowIso(),
+        pageEndUid: historicalTargetUid,
+        prior: historicalCursor,
+      });
+    } else {
+      nextMessagesBackfill = historicalCursor;
+    }
+  }
+  const nextForwardUidnext = session.uidnext;
+  const nextUidnext =
+    nextMessagesBackfill && nextMessagesBackfill.completed_at === null
+      ? (nextMessagesBackfill.backfilled_through_uid ?? 0) + 1
+      : nextForwardUidnext;
   await emit({
     type: "STATE",
     stream: "messages",
     cursor: {
       all_mail: {
         uidvalidity: session.uidvalidityNum,
-        uidnext: session.uidnext,
+        uidnext: nextUidnext,
+        forward_uidnext: nextForwardUidnext,
         highest_modseq: session.highestModseqCursor ?? null,
       },
+      ...(nextMessagesBackfill ? { backfill: nextMessagesBackfill } : {}),
     },
   });
 }
@@ -2647,11 +3445,10 @@ function makeEmitRecord(
       return false;
     }
 
-    const key: string | number = typeof keyCandidate === "number" ? keyCandidate : canonical;
     await emit({
       type: "RECORD",
       stream,
-      key,
+      key: canonical,
       data: validation.data,
       emitted_at: emittedAt,
     });
@@ -2762,8 +3559,14 @@ async function main(): Promise<void> {
 // Named (not inline) so its own internal `emit(...).catch(...)` isn't a
 // promise chain nested inside another chain's callback.
 function handleMainRejection(e: unknown): void {
-  const msg = e instanceof Error ? e.message : String(e);
-  const retryable = RETRYABLE_ERROR_RE.test(msg);
+  // imapflow raises a bare `new Error("Command failed")` for EVERY IMAP NO/BAD
+  // response and puts the server's actual explanation on side fields. Reading
+  // `.message` alone made a revoked app password, a rate limit, and IMAP being
+  // disabled all arrive as the same contentless string. This path emits DONE
+  // directly, so it has to do that extraction itself rather than inheriting the
+  // runtime's.
+  const msg = describeUnexpectedFailure(e);
+  const retryable = isImapTransientError(e);
   const trace = e instanceof Error ? (e.stack ?? msg) : msg;
   process.stderr.write(`[gmail] main rejected: ${trace}\n`);
   emit({

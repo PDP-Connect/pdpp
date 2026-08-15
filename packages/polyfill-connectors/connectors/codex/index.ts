@@ -50,13 +50,23 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
+import {
+  dateDirectoryInRange,
+  type EnumerationScope,
+  enumerationScopeFingerprint,
+  isPathWithinSourceRoots,
+  readEnumerationScope,
+  scopeBoundsEnumeration,
+} from "../../src/collection-scope-enumeration.ts";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime-protocol.ts";
 import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildCoverageDiagnosticsStateSnapshot,
+  buildDerivedCoverageRecord,
   buildLocalSourceInventory,
+  type CoverageRecord,
   type KnownLocalStore,
   listDirectoryInventory,
   openInventoryFingerprintCursor,
@@ -213,13 +223,6 @@ export const CODEX_KNOWN_LOCAL_STORES: KnownLocalStore[] = [
     reason: "user-specific local convention; diagnostics only, not a general Codex stream",
   },
   {
-    store: "logs",
-    relativePath: "logs",
-    stream: "logs",
-    classification: "defer",
-    reason: "logs require deterministic redaction before collection",
-  },
-  {
     store: "config",
     relativePath: "config.toml",
     stream: "config_inventory",
@@ -330,11 +333,16 @@ async function hashFilePrefix(path: string, guardBytes: number): Promise<string 
 
 // ─── Rollout directory walking ──────────────────────────────────────────
 
+// Distinguish ENOENT (legitimate absence) from other errors (unreadable/permission failure)
 async function listIfExists(dir: string): Promise<string[] | null> {
   try {
     return await readdir(dir);
-  } catch {
-    return null;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err?.code === "ENOENT") {
+      return null;
+    }
+    throw e;
   }
 }
 
@@ -358,7 +366,8 @@ async function* walkDayFiles(
 async function* walkMonthDays(
   monthPath: string,
   year: string,
-  month: string
+  month: string,
+  scope?: EnumerationScope | null
 ): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
   const days = await listIfExists(monthPath);
   if (days === null) {
@@ -368,13 +377,19 @@ async function* walkMonthDays(
     if (!TWO_DIGIT_DIR_RE.test(d)) {
       continue;
     }
+    // A civil day strictly before the boundary day cannot hold an in-range
+    // record, so the whole day is skipped without listing or opening any file.
+    if (!dateDirectoryInRange({ day: d, month, year }, scope)) {
+      continue;
+    }
     yield* walkDayFiles(join(monthPath, d), year, month, d);
   }
 }
 
 async function* walkYearMonths(
   yearPath: string,
-  year: string
+  year: string,
+  scope?: EnumerationScope | null
 ): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
   const months = await listIfExists(yearPath);
   if (months === null) {
@@ -384,13 +399,17 @@ async function* walkYearMonths(
     if (!TWO_DIGIT_DIR_RE.test(m)) {
       continue;
     }
-    yield* walkMonthDays(join(yearPath, m), year, m);
+    if (!dateDirectoryInRange({ month: m, year }, scope)) {
+      continue;
+    }
+    yield* walkMonthDays(join(yearPath, m), year, m, scope);
   }
 }
 
 // Recursively walk the yyyy/mm/dd hierarchy and yield rollout-*.jsonl paths.
-async function* walkRollouts(
-  baseDir: string
+export async function* walkRollouts(
+  baseDir: string,
+  scope?: EnumerationScope | null
 ): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
   const years = await listIfExists(baseDir);
   if (years === null) {
@@ -400,7 +419,10 @@ async function* walkRollouts(
     if (!YEAR_DIR_RE.test(y)) {
       continue;
     }
-    yield* walkYearMonths(join(baseDir, y), y);
+    if (!dateDirectoryInRange({ year: y }, scope)) {
+      continue;
+    }
+    yield* walkYearMonths(join(baseDir, y), y, scope);
   }
 }
 
@@ -1145,10 +1167,16 @@ interface ScanRolloutsArgs {
   requested: Map<string, StreamScope>;
   rolloutAggregates: Map<string, RolloutAggregate>;
   scanStartedAtMs: number;
+  scope?: EnumerationScope | null;
 }
 
 interface ScanRolloutsResult {
+  functionCallsEmitted: number;
+  functionCallsExamined: number;
+  messagesEmitted: number;
+  messagesExamined: number;
   parsedFiles: number;
+  scanOutcome: "complete" | "unreadable" | "parse_error";
 }
 
 /** Carry a file's prior cursor forward verbatim into the next STATE, and keep
@@ -1159,6 +1187,32 @@ function carryFileCursorForward(args: ScanRolloutsArgs, path: string, mtime: num
     args.newFileCursors[path] = prior;
   }
   args.newMtimes[path] = mtime;
+}
+
+/** Report `Codex phase=index sessions_dir_readable=false` and return the empty scan result. */
+async function reportMissingSessionsBase(scanOutcomeOnBaseError: "unreadable" | null): Promise<ScanRolloutsResult> {
+  emit({
+    type: "PROGRESS",
+    message: "Codex phase=index pass=index sessions_dir_readable=false",
+  });
+  await waitForEmitDrain();
+  // If we caught an error, it's unreadable; if not, ENOENT = complete
+  return {
+    parsedFiles: 0,
+    messagesEmitted: 0,
+    messagesExamined: 0,
+    functionCallsEmitted: 0,
+    functionCallsExamined: 0,
+    scanOutcome: scanOutcomeOnBaseError || "complete",
+  };
+}
+
+/** The examined-record counts a rollout file's carried-forward cursor vouches for. */
+function examinedCountsFromCursor(cursor: RolloutFileCursor | undefined): { functionCalls: number; messages: number } {
+  return {
+    functionCalls: cursor?.function_call_count ?? 0,
+    messages: cursor?.message_count ?? 0,
+  };
 }
 
 /**
@@ -1297,29 +1351,84 @@ async function processRolloutEntry(
 }
 
 async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult> {
-  const baseExists = (await listIfExists(args.baseDir)) !== null;
-  if (!baseExists) {
-    emit({
-      type: "PROGRESS",
-      message: "Codex phase=index pass=index sessions_dir_readable=false",
-    });
-    await waitForEmitDrain();
-    return { parsedFiles: 0 };
+  let baseExists = false;
+  let scanOutcomeOnBaseError: "unreadable" | null = null;
+
+  try {
+    baseExists = (await listIfExists(args.baseDir)) !== null;
+  } catch {
+    // listIfExists distinguishes ENOENT (returns null) from other errors (throws)
+    scanOutcomeOnBaseError = "unreadable";
   }
+
+  if (!baseExists) {
+    return await reportMissingSessionsBase(scanOutcomeOnBaseError);
+  }
+
+  // Local wrapper to track emissions without mutating args
+  const originalEmit = args.emitRecord;
+  let messagesEmitted = 0;
+  let functionCallsEmitted = 0;
+  const countingEmit = (stream: string, data: RecordData): void => {
+    if (stream === "messages") {
+      messagesEmitted += 1;
+    }
+    if (stream === "function_calls") {
+      functionCallsEmitted += 1;
+    }
+    originalEmit(stream, data);
+  };
+
   let totalRollouts = 0;
   let parsedRollouts = 0;
-  for await (const entry of walkRollouts(args.baseDir)) {
-    totalRollouts += 1;
-    if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
-      parsedRollouts += 1;
+  let scanOutcome: "complete" | "unreadable" | "parse_error" = "complete";
+  let messagesExamined = 0;
+  let functionCallsExamined = 0;
+
+  try {
+    for await (const entry of walkRollouts(args.baseDir, args.scope)) {
+      if (!isPathWithinSourceRoots(entry.path, args.scope)) {
+        continue;
+      }
+      totalRollouts += 1;
+      try {
+        const result = await processRolloutEntry(entry, { ...args, emitRecord: countingEmit }, totalRollouts);
+        if (result === "parsed") {
+          parsedRollouts += 1;
+        }
+        // A "parsed" file was just examined; a "skipped" file may still carry
+        // examined counts forward from a prior run's cursor — either way, the
+        // cursor at this path (fresh or carried-forward) is the source of truth.
+        if (result === "parsed" || result === "skipped") {
+          const counts = examinedCountsFromCursor(args.newFileCursors[entry.path]);
+          messagesExamined += counts.messages;
+          functionCallsExamined += counts.functionCalls;
+        }
+      } catch {
+        // Any error during parsing (without code or other) makes scan incomplete
+        scanOutcome = "parse_error";
+        break;
+      }
     }
+  } catch {
+    // Enumeration error (e.g., directory traversal failure) makes scan incomplete
+    scanOutcome = "unreadable";
   }
+
   emit({
     type: "PROGRESS",
     message: `Codex phase=index pass=index total_items=${totalRollouts} parsed_items=${parsedRollouts}`,
   });
   await waitForEmitDrain();
-  return { parsedFiles: parsedRollouts };
+
+  return {
+    parsedFiles: parsedRollouts,
+    messagesEmitted,
+    messagesExamined,
+    functionCallsEmitted,
+    functionCallsExamined,
+    scanOutcome,
+  };
 }
 
 // ─── Session emission ───────────────────────────────────────────────────
@@ -1485,12 +1594,30 @@ function buildResourceFilters(requested: Map<string, StreamScope>): Map<string, 
   return resFilters;
 }
 
+// Check if path is a readable directory; returns true/false/error code for distinction
 async function isReadableDirectory(path: string): Promise<boolean> {
   try {
     const st = await stat(path);
     return st.isDirectory();
   } catch {
     return false;
+  }
+}
+
+// Check if path exists as a directory and is readable; return error code if not
+async function checkDirectoryReadable(path: string): Promise<"ok" | "not_found" | "unreadable"> {
+  try {
+    const st = await stat(path);
+    if (st.isDirectory()) {
+      return "ok";
+    }
+    return "unreadable"; // exists but is not a directory
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err?.code === "ENOENT") {
+      return "not_found";
+    }
+    return "unreadable"; // EACCES, EIO, etc.
   }
 }
 
@@ -1504,17 +1631,27 @@ async function isReadableFile(path: string): Promise<boolean> {
 }
 
 async function assertRequestedCodexSources(dirs: CodexDirs, requested: Map<string, StreamScope>): Promise<void> {
-  const missing: string[] = [];
+  // Distinguish ENOENT (legitimately absent) from EACCES/EIO (actual I/O failures).
+  // ENOENT allows coverage_diagnostics to emit verified_empty evidence.
+  // EACCES/EIO is an actual error that should be reported.
+  const unreadable: string[] = [];
   const needsRollouts = requested.has("messages") || requested.has("function_calls");
 
-  if (needsRollouts && !(await isReadableDirectory(dirs.baseDir))) {
-    missing.push(`CODEX_SESSIONS_DIR=${dirs.baseDir}`);
+  if (needsRollouts) {
+    const status = await checkDirectoryReadable(dirs.baseDir);
+    if (status === "unreadable") {
+      unreadable.push(`CODEX_SESSIONS_DIR=${dirs.baseDir}`);
+    }
   }
   if (requested.has("sessions")) {
     const hasRollouts = await isReadableDirectory(dirs.baseDir);
     const hasThreadsDb = await isReadableFile(dirs.stateDbPath);
     if (!(hasRollouts || hasThreadsDb)) {
-      missing.push(`CODEX_SESSIONS_DIR=${dirs.baseDir} or CODEX_STATE_DB=${dirs.stateDbPath}`);
+      // Both missing — check if unreadable (not just absent)
+      const rolloutStatus = await checkDirectoryReadable(dirs.baseDir);
+      if (rolloutStatus === "unreadable") {
+        unreadable.push(`CODEX_SESSIONS_DIR=${dirs.baseDir}`);
+      }
     }
   }
   // rules/prompts/skills are optional, user-authored directories that Codex
@@ -1523,10 +1660,9 @@ async function assertRequestedCodexSources(dirs: CodexDirs, requested: Map<strin
   // emitRulesStream/emitPromptsStream/emitSkillsStream already no-op safely
   // on a missing directory. Requiring them here was fatal-on-every-fresh-
   // install: any host without a manually-created empty rules/prompts dir
-  // failed its very first run. Only sources with no graceful empty-result
-  // path (sessions) stay a hard precondition.
-  if (missing.length > 0) {
-    throw new Error(`requested Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`);
+  // failed its very first run. Only actual I/O failures (not ENOENT) are errors.
+  if (unreadable.length > 0) {
+    throw new Error(`requested Codex local source path(s) are unreadable: ${unreadable.join(", ")}`);
   }
 }
 
@@ -1575,7 +1711,7 @@ function emitStateCursors({
       emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
     }
   }
-  // Inventory streams (history, session_index, logs, shell_snapshots,
+  // Inventory streams (history, session_index, shell_snapshots,
   // config_inventory, cache_inventory) own their STATE inside the fingerprint
   // gate (emitLocalInventoryStreams) and must NOT get a bare clobbering STATE
   // here. coverage_diagnostics is emitted after all collection output drains,
@@ -1683,6 +1819,42 @@ async function emitCoverageDiagnostics(input: {
   }
 }
 
+/**
+ * Commit the STATE snapshot for the STATIC (inventory-classified) coverage
+ * rows only, right after the inventory pass — before rollout scanning ever
+ * starts. `bufferedState.coverage_diagnostics` is last-wins per stream, so a
+ * later {@link emitDerivedCoverage} call in a run that goes on to finish
+ * simply supersedes this snapshot with the richer static+derived one.
+ *
+ * Exists because a run that ends early — a sample-limit abort, a mid-scan
+ * failure — never reaches {@link emitDerivedCoverage}, which used to be the
+ * ONLY place `coverage_diagnostics` STATE was written. The inventory pass
+ * that classifies `shell_snapshots`/`history`/etc. has nothing to do with
+ * rollout scanning and already succeeded by this point, so its proof must
+ * not be held hostage by a scan that hasn't even started yet: without this,
+ * a store whose classification correctly changed (e.g. `missing` →
+ * `inventory_only`) never gets a chance to refresh in the durable checkpoint
+ * on any run that doesn't run to full completion, even though a fresh
+ * `coverage_diagnostics` RECORD for it was already emitted and durably
+ * ingested — a permanent split between the live per-store diagnostic and
+ * the committed coverage-axis proof.
+ */
+async function emitStaticCoverageState(input: {
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
+  nowIso: () => string;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  if (!input.requested.has("coverage_diagnostics")) {
+    return;
+  }
+  emit({
+    type: "STATE",
+    stream: "coverage_diagnostics",
+    cursor: { fetched_at: input.nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(input.inventory.coverage) },
+  });
+  await waitForEmitDrain();
+}
+
 /** Emit one inventory stream's records under a fingerprint gate that excludes
  *  incidental `mtime_epoch`/`size_bytes`, then write a per-stream STATE cursor
  *  carrying the fingerprints forward. Inventory enumeration is a full scan, so
@@ -1722,7 +1894,6 @@ export const CODEX_GATED_INVENTORY_STREAMS = [
   "shell_snapshots",
   "config_inventory",
   "cache_inventory",
-  "logs",
 ] as const;
 
 /** Resolve one gated inventory stream's records: `shell_snapshots` is a live
@@ -1772,27 +1943,13 @@ async function emitLocalInventoryStreams(input: {
   }
 }
 
-// ─── main ───────────────────────────────────────────────────────────────
-
-async function main(): Promise<void> {
-  const startMsg = await readStartMessage();
-  if (startMsg.type !== "START") {
-    return fail("Expected START");
-  }
-
-  const requested = buildRequestedMap(startMsg);
-  if (!requested.size) {
-    return fail("START.scope.streams is required");
-  }
-
-  const resFilters = buildResourceFilters(requested);
-  const dirs = resolveCodexDirs();
-  const fileMtimes = readFileMtimes(startMsg);
-  const fileCursors = readPriorFileCursors(startMsg);
-
-  let total = 0;
-  const nowIso = (): string => new Date().toISOString();
-  const emittedAt = nowIso();
+/** Factory: returns the emitRecord closure + a live-updating emitted-count ref. */
+function makeCodexEmitRecord(deps: {
+  emittedAt: string;
+  resFilters: ReadonlyMap<string, ReadonlySet<string> | null>;
+}): { counters: { total: number }; emitRecord: (s: string, d: RecordData) => void } {
+  const { emittedAt, resFilters } = deps;
+  const counters = { total: 0 };
   const emitRecord = (s: string, d: RecordData): void => {
     // biome-ignore lint/suspicious/noEqualsToNull: id is string | number | null | undefined; == null intentionally covers both a missing id and an explicit null.
     if (d.id == null) {
@@ -1816,12 +1973,101 @@ async function main(): Promise<void> {
     emit({
       type: "RECORD",
       stream: s,
-      key: d.id,
+      key: String(d.id),
       data: d,
       emitted_at: emittedAt,
     });
-    total += 1;
+    counters.total += 1;
   };
+  return { counters, emitRecord };
+}
+
+/**
+ * Builds derived (rollout-scanned) coverage_diagnostics records for the
+ * requested streams, emits them alongside the static inventory coverage,
+ * then flushes the combined snapshot as the stream's STATE cursor.
+ */
+async function emitDerivedCoverage(input: {
+  emitRecord: (s: string, d: RecordData) => void;
+  enumerationScope: ReturnType<typeof readEnumerationScope>;
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
+  nowIso: () => string;
+  requested: Map<string, StreamScope>;
+  rolloutScan: ScanRolloutsResult;
+}): Promise<void> {
+  const { emitRecord, enumerationScope, inventory, nowIso, requested, rolloutScan } = input;
+  const derivedRecords: CoverageRecord[] = [];
+  const scopeFingerprint = enumerationScopeFingerprint(enumerationScope);
+  const scanComplete = rolloutScan.scanOutcome === "complete";
+  const incompleteReason = scanComplete ? undefined : `rollout enumeration failed: ${rolloutScan.scanOutcome}`;
+
+  if (requested.has("messages")) {
+    derivedRecords.push(
+      buildDerivedCoverageRecord({
+        connectorId: "codex",
+        emitted: rolloutScan.messagesEmitted,
+        examined: rolloutScan.messagesExamined,
+        incompleteReason,
+        label: "message",
+        scanComplete,
+        scopeFingerprint,
+        stream: "messages",
+      })
+    );
+  }
+
+  if (requested.has("function_calls")) {
+    derivedRecords.push(
+      buildDerivedCoverageRecord({
+        connectorId: "codex",
+        emitted: rolloutScan.functionCallsEmitted,
+        examined: rolloutScan.functionCallsExamined,
+        incompleteReason,
+        label: "function_call",
+        scanComplete,
+        scopeFingerprint,
+        stream: "function_calls",
+      })
+    );
+  }
+
+  // Emit derived records
+  for (const record of derivedRecords) {
+    emitRecord("coverage_diagnostics", record);
+    await waitForEmitDrain();
+  }
+
+  // Emit STATE with snapshot including both static and derived records.
+  const allCoverageRecords: readonly CoverageRecord[] = [...inventory.coverage, ...derivedRecords];
+  emit({
+    type: "STATE",
+    stream: "coverage_diagnostics",
+    cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(allCoverageRecords) },
+  });
+  await waitForEmitDrain();
+}
+
+// ─── main ───────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const startMsg = await readStartMessage();
+  if (startMsg.type !== "START") {
+    return fail("Expected START");
+  }
+
+  const requested = buildRequestedMap(startMsg);
+  if (!requested.size) {
+    return fail("START.scope.streams is required");
+  }
+
+  const resFilters = buildResourceFilters(requested);
+  const dirs = resolveCodexDirs();
+  const fileMtimes = readFileMtimes(startMsg);
+  const fileCursors = readPriorFileCursors(startMsg);
+
+  const nowIso = (): string => new Date().toISOString();
+  const emittedAt = nowIso();
+  const { counters, emitRecord } = makeCodexEmitRecord({ emittedAt, resFilters });
 
   const needRollouts = requested.has("sessions") || requested.has("messages") || requested.has("function_calls");
 
@@ -1852,9 +2098,37 @@ async function main(): Promise<void> {
   // surface an honest `missing` coverage row, not abort the run with zero
   // coverage evidence — see emitCoverageDiagnostics. The inventory walk reads
   // only path metadata, never payload, so it is safe on a partial/empty home.
-  const inventory = await buildLocalSourceInventory("codex", dirs.codexHome, CODEX_KNOWN_LOCAL_STORES);
+  const enumerationScope = readEnumerationScope(requested, ["sessions", "messages", "function_calls"]);
+  // The measured boundary is stamped onto the coverage records themselves,
+  // so it commits atomically with the evidence it qualifies.
+  const inventory = await buildLocalSourceInventory(
+    "codex",
+    dirs.codexHome,
+    CODEX_KNOWN_LOCAL_STORES,
+    enumerationScopeFingerprint(enumerationScope)
+  );
   await emitCoverageDiagnostics({ emitRecord, inventory, requested });
+  // Commit the static coverage proof now, independent of everything that
+  // follows — see emitStaticCoverageState. assertRequestedCodexSources can
+  // still throw right after this, and a sample-limit abort can still kill
+  // the process during rollout scanning; either way this snapshot already
+  // reached bufferedState and survives as the checkpoint if nothing later
+  // supersedes it.
+  await emitStaticCoverageState({ inventory, nowIso, requested });
   await assertRequestedCodexSources(dirs, requested);
+
+  // The owner-declared boundary rides on the stream scopes the runtime already
+  // threads through. Applied at ENUMERATION: the rollout tree is laid out as
+  // yyyy/mm/dd, so a `since` prunes whole years, months, and days before they
+  // are listed, and `source_roots` skips out-of-root files before they open.
+  if (scopeBoundsEnumeration(enumerationScope)) {
+    emit({
+      type: "PROGRESS",
+      message: `Codex phase=index pass=index enumeration_bounded=true since=${
+        enumerationScope?.since ? "set" : "unset"
+      } roots=${enumerationScope?.source_roots?.length ?? 0}`,
+    });
+  }
 
   await emitLocalInventoryStreams({
     codexHome: dirs.codexHome,
@@ -1865,8 +2139,16 @@ async function main(): Promise<void> {
     state: startMsg.state || {},
   });
 
+  let rolloutScan: ScanRolloutsResult = {
+    parsedFiles: 0,
+    messagesEmitted: 0,
+    messagesExamined: 0,
+    functionCallsEmitted: 0,
+    functionCallsExamined: 0,
+    scanOutcome: "complete",
+  };
   if (needRollouts) {
-    const rolloutScan = await scanRollouts({
+    rolloutScan = await scanRollouts({
       activeQuietMs: resolveActiveRolloutQuietMs(),
       baseDir: dirs.baseDir,
       fileCursors,
@@ -1877,6 +2159,7 @@ async function main(): Promise<void> {
       emitRecord,
       rolloutAggregates,
       scanStartedAtMs,
+      scope: enumerationScope,
     });
     parsedRolloutFiles = rolloutScan.parsedFiles;
   }
@@ -1908,15 +2191,10 @@ async function main(): Promise<void> {
   await waitForEmitDrain();
 
   if (requested.has("coverage_diagnostics")) {
-    emit({
-      type: "STATE",
-      stream: "coverage_diagnostics",
-      cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(inventory.coverage) },
-    });
-    await waitForEmitDrain();
+    await emitDerivedCoverage({ emitRecord, enumerationScope, inventory, nowIso, requested, rolloutScan });
   }
 
-  emit({ type: "DONE", status: "succeeded", records_emitted: total });
+  emit({ type: "DONE", status: "succeeded", records_emitted: counters.total });
   flushAndExit(0);
 }
 

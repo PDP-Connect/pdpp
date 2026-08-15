@@ -7,7 +7,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../../../components/shell.tsx";
+import { ServerUnreachable } from "../../../../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import { type FieldHealth, type StreamHealth, streamHealth } from "../../../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
@@ -123,8 +123,8 @@ function StreamHealthReport({
         </p>
         {health.limited && (
           <p className="pdpp-caption mt-2 text-muted-foreground">
-            Sample limited to {health.sampleLimit.toLocaleString()} records; results are not authoritative for the full{" "}
-            {health.totalRecords.toLocaleString()}-record stream. Raise via{" "}
+            Measured from a {health.sampleLimit.toLocaleString()}-record sample of this{" "}
+            {health.totalRecords.toLocaleString()}-record stream. Raise it with{" "}
             <code className="rounded bg-muted px-1 font-mono">?sample=N</code> (max {MAX_SAMPLE.toLocaleString()}).
           </p>
         )}
@@ -164,7 +164,7 @@ function StreamHealthReport({
         </div>
         {!cursorField && (
           <p className="pdpp-caption mt-2 text-muted-foreground italic">
-            Manifest declares no cursor_field for this stream.
+            This stream tracks freshness by ingestion time only; its manifest declares no cursor field.
           </p>
         )}
       </Section>
@@ -258,13 +258,12 @@ function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: s
           Stream health is not available for <code className="font-mono">{streamName}</code>.
         </p>
         <p className="pdpp-caption mt-2 text-muted-foreground">
-          The connector no longer advertises a stream named <code className="font-mono">{streamName}</code>. It may have
-          been renamed or retired in a newer manifest, or the stream list is showing a stale entry that has not yet been
-          reconciled. Return to{" "}
+          The connector's current manifest no longer lists <code className="font-mono">{streamName}</code> — it was
+          likely renamed or retired, or this link is a stale entry. Open{" "}
           <Link className="underline underline-offset-2" href={`/sources/${encodeURIComponent(connectionId)}`}>
             the connection page
           </Link>{" "}
-          to see currently available streams.
+          for the streams available now.
         </p>
       </div>
     </RecordroomShellWithPalette>

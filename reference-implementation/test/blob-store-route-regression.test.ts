@@ -27,7 +27,11 @@ import { fileURLToPath } from "node:url";
 
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
-import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { ingestRecords, recordIndexWorkStatsForTests, withRecordIndexWorkForTests } from "../server/records.ts";
+import {
+  createSqliteConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -107,6 +111,26 @@ async function withHarness(fn: (urls: { asUrl: string; rsUrl: string }) => Promi
   }
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: (() => void) | undefined;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  assert.ok(resolve, "Promise executor runs synchronously, so resolve is always assigned here");
+  return { promise, resolve };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("timed out waiting for the deterministic test condition");
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: Polling is intentionally sequential for a deterministic gate.
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
 interface ConnectorManifest {
   connector_id: string;
   [key: string]: unknown;
@@ -160,6 +184,79 @@ test("GET /v1/blobs/:blob_id returns 404 blob_not_found for unknown blob_id", as
     const body = (await resp.json()) as { error?: { code?: string } };
     assert.equal(body.error?.code, "blob_not_found");
   });
+});
+
+test("POST /v1/blobs stays live while same-instance batch indexing waits", async () => {
+  const previous = {
+    indexLimit: process.env.PDPP_INGEST_INDEX_WORK_LIMIT,
+    lockWait: process.env.PDPP_INGEST_LOCK_WAIT_MS,
+  };
+  process.env.PDPP_INGEST_INDEX_WORK_LIMIT = "1";
+  process.env.PDPP_INGEST_LOCK_WAIT_MS = "100";
+  try {
+    await withHarness(async ({ asUrl, rsUrl }) => {
+      const manifest = loadGmailManifest();
+      await registerConnector(asUrl, manifest);
+      const ownerToken = await issueOwnerToken(asUrl);
+      const storageConnectorId = "gmail";
+      const connectorInstanceId = makeDefaultAccountConnectorInstanceId("owner_local", storageConnectorId);
+      const indexEntered = deferred();
+      const indexRelease = deferred();
+      const heldIndexPermit = withRecordIndexWorkForTests(async () => {
+        indexEntered.resolve();
+        await indexRelease.promise;
+      });
+      let batch: Promise<Awaited<ReturnType<typeof ingestRecords>>> | undefined;
+      try {
+        await indexEntered.promise;
+        batch = ingestRecords({ connector_id: storageConnectorId, connector_instance_id: connectorInstanceId }, [
+          {
+            data: { id: "thread-liveness-1", subject: "index wait" },
+            emitted_at: "2026-08-07T00:00:00.000Z",
+            key: "thread-liveness-1",
+            stream: "threads",
+          },
+        ]);
+        await waitFor(() => recordIndexWorkStatsForTests().queued >= 1);
+
+        const upload = await fetch(
+          `${rsUrl}/v1/blobs?${new URLSearchParams({
+            connector_id: manifest.connector_id,
+            connector_instance_id: connectorInstanceId,
+            record_key: "attachment-liveness-1",
+            stream: "attachments",
+          })}`,
+          {
+            body: Buffer.from("blob-liveness", "utf8"),
+            headers: {
+              Authorization: `Bearer ${ownerToken}`,
+              "Content-Type": "text/plain",
+            },
+            method: "POST",
+          }
+        );
+        assert.equal(upload.status, 200, `blob upload must not wait on derived indexes (${await upload.text()})`);
+
+        indexRelease.resolve();
+        const outcomes = await batch;
+        assert.equal(outcomes[0]?.accepted, true);
+      } finally {
+        indexRelease.resolve();
+        await Promise.allSettled([heldIndexPermit, ...(batch ? [batch] : [])]);
+      }
+    });
+  } finally {
+    if (previous.indexLimit === undefined) {
+      delete process.env.PDPP_INGEST_INDEX_WORK_LIMIT;
+    } else {
+      process.env.PDPP_INGEST_INDEX_WORK_LIMIT = previous.indexLimit;
+    }
+    if (previous.lockWait === undefined) {
+      delete process.env.PDPP_INGEST_LOCK_WAIT_MS;
+    } else {
+      process.env.PDPP_INGEST_LOCK_WAIT_MS = previous.lockWait;
+    }
+  }
 });
 
 test("GET /v1/blobs/:blob_id returns 404 when blob exists but no visible record references it", async () => {

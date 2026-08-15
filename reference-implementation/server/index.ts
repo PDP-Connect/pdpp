@@ -21,7 +21,12 @@ import {
   getPdppCliPackageInfo,
   PDPP_CLI_DEFAULT_CLIENT_ID,
 } from "../../packages/cli/src/package-info.ts";
-import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.ts";
+import type { ProviderAuthManifestLike } from "../../packages/polyfill-connectors/src/provider-auth-adapter.ts";
+import {
+  evaluateStreamHealthAuthority,
+  type OwnerSourcesDomEvidence,
+  type StreamHealthAuthorityResult,
+} from "../../scripts/stream-health-audit/authority.ts";
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../lib/controller-boot.ts";
 import { exec, getOne, referenceQueries, transaction } from "../lib/db.ts";
 import {
@@ -73,6 +78,7 @@ import { NekoSurfaceAllocatorClient } from "../runtime/neko-surface-allocator.ts
 import { isClosedPipeWriteError } from "../runtime/pipe-errors.ts";
 import { hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
 import { projectRunAutomationPolicy } from "../runtime/run-automation-policy.ts";
+import { matchesRecoveryInstance } from "../runtime/scheduler/recovery-instance-scope.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import {
@@ -132,11 +138,12 @@ import {
   listGrantedConnectionsForStream,
   projectBindingForWire,
 } from "./connection-identity.ts";
+import { connectionConfigEntriesFromManifest } from "./connection-setup-plan.ts";
 import {
   type ConnectorInstanceWriteOwnership,
   withConnectorInstanceWrite,
 } from "./connector-instance-write-coordinator.ts";
-import { canonicalConnectorKey, isInternalConnectorId } from "./connector-key.ts";
+import { canonicalConnectorKey, isInternalConnectorId, legacyLocalAliasMap } from "./connector-key.ts";
 import { createResumableConnectorMaintenanceSweep } from "./connector-maintenance-sweep.ts";
 import {
   getConnectorSummaryEvidence,
@@ -148,6 +155,7 @@ import {
 import { createConnectorSummaryReconcileObservationSink } from "./connector-summary-reconcile-observability.ts";
 import {
   applyDatasetSummaryBlobDelta,
+  ensureDatasetSummaryProjectionHealthy,
   getDatasetSummaryProjection,
   listStreamProjections,
   rebuildDatasetSummaryProjection,
@@ -161,6 +169,7 @@ import {
 } from "./deployment-diagnostics.ts";
 import { composeFleetHealthVerdict } from "./fleet-health.ts";
 import { deriveReferenceFreshness } from "./freshness.ts";
+import { LOCAL_COLLECTOR_PROVEN_KEYS } from "./generated/connector-registry.generated.ts";
 import {
   encodeHostedMcpSelection,
   encodeHostedMcpStreamSelection,
@@ -216,18 +225,18 @@ import {
   postgresQuery,
   resolveStorageBackend,
 } from "./postgres-storage.ts";
-import {
-  configuredGoogleDataPortabilityProviderAuthConnectorKeys,
-  createGoogleDataPortabilityProviderAuthExchanger,
-} from "./provider-auth/google-data-portability.ts";
+import { createGenericProviderAuthDispatch } from "./provider-auth/generic-dispatch.ts";
 import { buildRecordVersionStatsEnvelope } from "./record-version-stats.ts";
 import {
   aggregateRecordsAcrossBindings,
+  assertSqliteConnectorInstanceWritableWithinTransaction,
   classifyIngestFailure,
   deleteAllRecords,
   deleteConnectionRecordRowsPostgres,
   deleteConnectionRecordRowsSqlite,
   deleteRecord,
+  drainConnectorInstanceIndexWork,
+  enqueueDeviceIndexMaintenance,
   enumerateConnectionStreams,
   getDatasetBlobBytes,
   getDatasetRecordChangesBytes,
@@ -239,6 +248,7 @@ import {
   getRecordFieldWindowAcrossBindings,
   getSyncState,
   ingestRecord,
+  ingestRecords,
   listAllStreams,
   listDatasetSummaryStreamProjectionSeeds,
   listDatasetTopConnectorCandidates,
@@ -297,6 +307,7 @@ import { mountAsPar } from "./routes/as-par.ts";
 import { mountAsPolyfillConnectorDetail, mountAsPolyfillConnectorRegister } from "./routes/as-polyfill-connectors.ts";
 import { mountClientMetadata } from "./routes/client-metadata.ts";
 import { mountHostedUiCss } from "./routes/hosted-ui-asset.ts";
+import { mountOwnerConnectionCollectionScope } from "./routes/owner-connection-collection-scope.ts";
 import { mountOwnerConnectionDelete } from "./routes/owner-connection-delete.ts";
 import { mountOwnerConnectionDiagnostics } from "./routes/owner-connection-diagnostics.ts";
 import { mountOwnerConnectionIntent } from "./routes/owner-connection-intent.ts";
@@ -305,7 +316,7 @@ import { mountOwnerConnectionRevoke } from "./routes/owner-connection-revoke.ts"
 import { mountOwnerConnectionRun } from "./routes/owner-connection-run.ts";
 import { mountOwnerConnectionSchedule } from "./routes/owner-connection-schedule.ts";
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from "./routes/owner-connections.ts";
-import { mountOwnerConnectorTemplates } from "./routes/owner-connector-templates.ts";
+import { mountOwnerConnectorTemplates, parseUatConnectorAllowlist } from "./routes/owner-connector-templates.ts";
 import { mountOwnerControl } from "./routes/owner-control.ts";
 import {
   mountRefApprovals,
@@ -320,7 +331,11 @@ import {
   mountRefSchedules,
   mountRefSearch,
 } from "./routes/ref-admin.ts";
-import { mountRefBrowserEnrollmentShell } from "./routes/ref-browser-enrollment-shell.ts";
+import {
+  type BrowserEnrollmentShellSourceBinding,
+  mountRefBrowserEnrollmentShell,
+  promoteBrowserEnrollmentShellBinding,
+} from "./routes/ref-browser-enrollment-shell.ts";
 import {
   mountRefConnectionDelete,
   mountRefConnectionDetail,
@@ -369,6 +384,7 @@ import {
   mountRefDeviceExporterLocalCollectorGaps,
   mountRefDeviceExporterLocalCollectorGapsRecovered,
   mountRefDeviceExporterRevoke,
+  mountRefDeviceExporterSelfRevoke,
   mountRefDeviceExporterSourceInstanceStateGet,
   mountRefDeviceExporterSourceInstanceStatePut,
   mountRefDeviceExporterSourceInstances,
@@ -385,7 +401,17 @@ import {
   mountRefGrantPackagesList,
   mountRefGrantPackagesRevoke,
 } from "./routes/ref-grants.ts";
-import { mountRefManualUploadDraftConnection } from "./routes/ref-manual-upload-draft-connection.ts";
+import {
+  type ManualUploadDraftSourceBinding,
+  mountRefManualUploadDraftConnection,
+  promoteManualUploadDraftBinding,
+  reconcileAbandonedManualUploadArtifactsAtBoot,
+} from "./routes/ref-manual-upload-draft-connection.ts";
+import {
+  mountRefProviderAppConfigGet,
+  mountRefProviderAppConfigPost,
+  type ProviderIdentityGroupDescriptor,
+} from "./routes/ref-provider-app-config.ts";
 import {
   createInProcessPendingAuthStore,
   mountRefProviderAuthCallback,
@@ -397,7 +423,11 @@ import { mountRefRunStatus } from "./routes/ref-run-status.ts";
 import { mountRefGrants, mountRefRuns, mountRefTraces } from "./routes/ref-spine-correlations.ts";
 import { mountRefGrantTimeline, mountRefRunTimeline, mountRefTraceTimeline } from "./routes/ref-spine-timelines.ts";
 import { mountRefStaticSecretCredentialCapture } from "./routes/ref-static-secret-credentials.ts";
-import { mountRefStaticSecretDraftConnection } from "./routes/ref-static-secret-draft-connection.ts";
+import {
+  mountRefStaticSecretDraftConnection,
+  promoteStaticSecretDraftBinding,
+  type StaticSecretDraftSourceBinding,
+} from "./routes/ref-static-secret-draft-connection.ts";
 import { mountRefStaticSecretSetupStatus } from "./routes/ref-static-secret-setup-status.ts";
 import {
   mountAsAuthorizationServerMetadata,
@@ -419,8 +449,14 @@ import {
   mountRefWebPushListSubscriptions,
   mountRefWebPushTest,
 } from "./routes/web-push.ts";
-import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from "./search.ts";
+import {
+  computeLexicalIndexState,
+  getLexicalIndexBackfillProgress,
+  lexicalIndexBackfillForManifest,
+  runLexicalSearch,
+} from "./search.ts";
 import { runHybridSearch } from "./search-hybrid.ts";
+import { triggerSearchIndexDirtySelfHeal } from "./search-index-reconcile.ts";
 import {
   computeIndexState as computeSemanticIndexState,
   configureSemanticBackend,
@@ -486,6 +522,11 @@ import {
   createPresentationScreenStateStore,
   type PresentationScreenStateStore,
 } from "./stores/presentation-screen-state-store.ts";
+import {
+  createDeploymentConfigResolver,
+  createPostgresProviderAppConfigStore,
+  createSqliteProviderAppConfigStore,
+} from "./stores/provider-app-config-store.ts";
 import { resolveProviderAuthRunEnv } from "./stores/provider-auth-run-credentials.ts";
 import {
   createRecordRejectionStore,
@@ -501,6 +542,7 @@ import {
   runStartupRunHistoryBackfillToCompletion,
 } from "./stores/run-history-backfill-stage.ts";
 import { getDefaultSchedulerStore, type SchedulerStore } from "./stores/scheduler-store.ts";
+import { countDirtySearchIndexScopes } from "./stores/search-index-dirty-store.ts";
 import { getDefaultSourceWebhookEventStore } from "./stores/source-webhook-event-store.ts";
 import { resolveStaticSecretRunEnv } from "./stores/static-secret-run-credentials.ts";
 import {
@@ -689,6 +731,7 @@ interface ServerOpts {
   configuredProviderAuthConnectorKeys?: readonly string[];
   /** Operator-owned connector child environment policy; defaults to the JSON env contract. */
   connectorEnvironmentPolicy?: ConnectorEnvironmentPolicy | null;
+  connectionScopedRunEnvResolver?: ReturnType<typeof buildConnectionScopedRunEnvResolver>;
   connectorInstanceId?: string;
   connectorPathResolver?: ((connectorId: string, manifest?: ConnectorManifest) => string | null) | null;
   controller?: Controller | null;
@@ -892,10 +935,14 @@ const STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE = 25;
 // but does not resume — the cursor cannot resume an interrupted fold").
 // Each round is itself bounded by STARTUP_SUMMARY_EVIDENCE_MAX_DURATION_MS,
 // so this is a genuine outer bound on total startup-acceleration work (an
-// owner with an unusually large connection set stops accelerating after
-// this many rounds and falls back to the per-request barrier for the rest —
-// design.md "Startup is acceleration, not authority": never the correctness
-// gate regardless of how many rounds actually ran).
+// owner with an unusually large connection set stops accelerating after this
+// many rounds). Terminal-gate revision (2026-07-29) removed the per-request
+// repair barrier that used to cover whatever startup did not reach — ordinary
+// GET is now read-only, so a connection this cap leaves unrepaired is instead
+// covered by the recurring CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS periodic
+// tick below, never by a per-request fallback (design.md "Startup is
+// acceleration, not authority" still holds: startup is acceleration, but what
+// now backstops it is the periodic sweep, not the request path).
 const STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS = 20;
 // Terminal-gate revision (2026-07-29): periodic tick interval for the
 // connector-maintenance sweep (browser-enrollment-shell retirement, due-
@@ -1027,6 +1074,31 @@ export function shouldAutoReconcilePolyfillManifests({
   return looksLikePolyfillDeploymentDbPath(dbPath);
 }
 
+export async function collectValidRegisteredConnectorManifests({
+  logger,
+  listConnectorIds = listRegisteredConnectorIds,
+  loadManifest = getConnectorManifest,
+}: {
+  logger: LoggerLike;
+  listConnectorIds?: () => Promise<string[]>;
+  loadManifest?: (connectorId: string) => Promise<ConnectorManifest | null>;
+}) {
+  const manifests: { connectorId: string; manifest: ConnectorManifest }[] = [];
+  const connectorIds = await listConnectorIds();
+  for (const connectorId of connectorIds) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+      const manifest = await loadManifest(connectorId);
+      if (manifest) {
+        manifests.push({ connectorId, manifest });
+      }
+    } catch (err) {
+      logger.warn({ connectorId, err }, "skipping retrieval startup backfill for connector with invalid manifest");
+    }
+  }
+  return manifests;
+}
+
 async function collectRetrievalStartupBackfillManifests({
   nativeManifest,
   logger,
@@ -1037,22 +1109,8 @@ async function collectRetrievalStartupBackfillManifests({
   if (nativeManifest) {
     return [nativeManifest];
   }
-
-  // biome-ignore lint/suspicious/noEvolvingTypes: This runtime-untyped boundary requires staged type narrowing.
-  const manifests = [];
-  const connectorIds = await listRegisteredConnectorIds();
-  for (const connectorId of connectorIds) {
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-      const manifest = await getConnectorManifest(connectorId);
-      if (manifest) {
-        manifests.push(manifest);
-      }
-    } catch (err) {
-      logger.warn({ connectorId, err }, "skipping retrieval startup backfill for connector with invalid manifest");
-    }
-  }
-  return manifests;
+  const registered = await collectValidRegisteredConnectorManifests({ logger });
+  return registered.map(({ manifest }) => manifest);
 }
 
 async function runRetrievalStartupBackfill({
@@ -1234,46 +1292,47 @@ function generateReferenceSecret(prefix: string, bytes = 24) {
   return `${prefix}_${randomBytes(bytes).toString("base64url")}`;
 }
 
-// Keyed by canonical connector_key. The local-collector manifest files
-// retain their historical snake_case filenames (`claude_code.json`), but the
-// catalog row, the connector_instances row, and the record storage target all
-// use the canonical key (`claude-code`, `codex`) so a legacy-alias enroll
-// cannot fork the connector type away from its canonical identity.
-const REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS = new Map([
-  ["claude-code", { displayName: "Claude Code", entryName: "claude_code.json" }],
-  ["codex", { displayName: "OpenAI Codex CLI", entryName: "codex.json" }],
-]);
+// Canonical local-collector connector_key -> its manifest's filename. Both
+// sides are manifest-derived, never hand-listed: LOCAL_COLLECTOR_PROVEN_KEYS
+// is every manifest declaring capabilities.proven.local_collector, and
+// legacyLocalAliasMap() carries the historical snake_case bundle id those
+// manifest files are still named after (`claude_code.json`). The catalog row,
+// the connector_instances row, and the record storage target all use the
+// canonical key (`claude-code`) so a legacy-alias enroll cannot fork the
+// connector type away from its canonical identity.
+const REFERENCE_LOCAL_CONNECTOR_MANIFEST_FILENAMES: ReadonlyMap<string, string> = new Map(
+  LOCAL_COLLECTOR_PROVEN_KEYS.map((connectorKey) => {
+    const legacyAlias = Object.entries(legacyLocalAliasMap()).find(([, canonical]) => canonical === connectorKey)?.[0];
+    return [connectorKey, `${legacyAlias ?? connectorKey}.json`];
+  })
+);
 
 function readReferenceLocalConnectorCatalogManifest(connectorId: string) {
   const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
-  const local = REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.get(connectorKey);
-  if (!local) {
+  const entryName = REFERENCE_LOCAL_CONNECTOR_MANIFEST_FILENAMES.get(connectorKey);
+  if (!entryName) {
     return null;
   }
   try {
     const raw = readFileSync(
-      new URL(`../../packages/polyfill-connectors/manifests/${local.entryName}`, import.meta.url),
+      new URL(`../../packages/polyfill-connectors/manifests/${entryName}`, import.meta.url),
       "utf8"
     );
     const manifest = JSON.parse(raw);
     return {
       ...manifest,
       connector_id: connectorKey,
-      display_name: manifest.display_name || local.displayName,
+      // The manifest is the only source of the owner-facing name; there is no
+      // RI-side fallback string to disagree with it.
+      display_name: manifest.display_name || connectorKey,
     };
   } catch {
     return {
       connector_id: connectorKey,
-      display_name: local.displayName,
+      display_name: connectorKey,
       streams: [],
     };
   }
-}
-
-function listReferenceLocalConnectorCatalogManifests() {
-  return Array.from(REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.keys())
-    .map((connectorId) => readReferenceLocalConnectorCatalogManifest(connectorId))
-    .filter(Boolean);
 }
 
 async function ensureReferenceConnectorCatalogEntry(
@@ -1958,6 +2017,10 @@ function createRequestAcquisitionBatchStore() {
   return isPostgresStorageBackend() ? createPostgresAcquisitionBatchStore() : createSqliteAcquisitionBatchStore();
 }
 
+function createRequestProviderAppConfigStore() {
+  return isPostgresStorageBackend() ? createPostgresProviderAppConfigStore() : createSqliteProviderAppConfigStore();
+}
+
 function createRequestManualUploadArtifactStore() {
   return isPostgresStorageBackend()
     ? createPostgresManualUploadArtifactStore()
@@ -2079,6 +2142,203 @@ function buildControllerManualUploadRunEnvResolver() {
   };
 }
 
+/**
+ * Every registered manifest, keyed by canonical connector key. Shared by
+ * both the identity-group resolvers below and mirrors
+ * `collectConnectorTemplates`'s (owner-connector-templates.ts) enumerate-
+ * then-tolerate-invalid-manifests pattern: one connector's malformed
+ * manifest must not hide every other connector's provider-app config group.
+ */
+async function collectRegisteredManifestsByConnectorKey(): Promise<Map<string, ConnectorManifest>> {
+  const byConnectorKey = new Map<string, ConnectorManifest>();
+  for (const connectorId of await listRegisteredConnectorIds()) {
+    const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+      const manifest = await getConnectorManifest(connectorKey);
+      if (manifest) {
+        byConnectorKey.set(connectorKey, manifest as unknown as ConnectorManifest);
+      }
+    } catch {
+      // A malformed registered manifest should not hide every other
+      // connector's provider-app config group.
+    }
+  }
+  return byConnectorKey;
+}
+
+function providerIdentityGroupDescriptorFromManifests(
+  identityGroup: string,
+  manifests: readonly ConnectorManifest[]
+): ProviderIdentityGroupDescriptor {
+  const fieldsByLogicalKey = new Map<string, ProviderIdentityGroupDescriptor["fields"][number]>();
+  let providerIdentityLabel: string | null = null;
+  for (const manifest of manifests) {
+    const auth = (manifest as unknown as { capabilities?: { auth?: Record<string, unknown> | null } }).capabilities
+      ?.auth;
+    if (!providerIdentityLabel && typeof auth?.provider_identity_label === "string") {
+      providerIdentityLabel = auth.provider_identity_label.trim() || null;
+    }
+    for (const entry of connectionConfigDeploymentFieldsFromManifest(manifest)) {
+      if (!fieldsByLogicalKey.has(entry.logicalKey)) {
+        fieldsByLogicalKey.set(entry.logicalKey, entry);
+      }
+    }
+  }
+  return {
+    fields: Array.from(fieldsByLogicalKey.values()),
+    identityGroup,
+    providerIdentityLabel,
+  };
+}
+
+/** `deployment_config` normalized to the route's field shape, reusing
+ * connection-setup-plan.ts's manifest-shape acceptance (bare string, legacy
+ * `{key,...}`, or current `{logical_key,...}`) so this never re-derives its
+ * own parsing of the same manifest data. */
+function connectionConfigDeploymentFieldsFromManifest(
+  manifest: ConnectorManifest
+): readonly { envAlias: string | null; label: string; logicalKey: string; secret: boolean }[] {
+  const declared = (manifest as unknown as { capabilities?: { auth?: { deployment_config?: unknown } | null } })
+    .capabilities?.auth?.deployment_config;
+  if (!Array.isArray(declared)) {
+    return [];
+  }
+  const out: { envAlias: string | null; label: string; logicalKey: string; secret: boolean }[] = [];
+  for (const entry of declared) {
+    if (typeof entry === "string") {
+      if (entry.trim()) {
+        out.push({ envAlias: null, label: entry.trim(), logicalKey: entry.trim(), secret: false });
+      }
+      continue;
+    }
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const logicalKey =
+      typeof record.logical_key === "string" && record.logical_key.trim()
+        ? record.logical_key.trim()
+        : typeof record.key === "string" && record.key.trim()
+          ? record.key.trim()
+          : null;
+    if (!logicalKey) {
+      continue;
+    }
+    out.push({
+      envAlias: typeof record.env_alias === "string" && record.env_alias.trim() ? record.env_alias.trim() : null,
+      label: typeof record.label === "string" && record.label.trim() ? record.label.trim() : logicalKey,
+      logicalKey,
+      secret: record.secret === true,
+    });
+  }
+  return out;
+}
+
+function manifestProviderIdentityGroup(manifest: ConnectorManifest): string | null {
+  const raw = (manifest as unknown as { capabilities?: { auth?: { provider_identity_group?: unknown } | null } })
+    .capabilities?.auth?.provider_identity_group;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+/**
+ * Resolves every manifest sharing the given `provider_identity_group` into
+ * one descriptor (union of declared `deployment_config` fields, first
+ * non-empty `provider_identity_label` wins). Absent/unknown group -> null.
+ * This is the ONLY place the RI groups connectors by identity_group — the
+ * route itself carries no connector/provider-specific knowledge, per
+ * ref-provider-app-config.ts's own contract.
+ */
+async function resolveProviderIdentityGroup(identityGroup: string): Promise<ProviderIdentityGroupDescriptor | null> {
+  const manifests = Array.from((await collectRegisteredManifestsByConnectorKey()).values()).filter(
+    (manifest) => manifestProviderIdentityGroup(manifest) === identityGroup
+  );
+  return manifests.length > 0 ? providerIdentityGroupDescriptorFromManifests(identityGroup, manifests) : null;
+}
+
+/** Every distinct `provider_identity_group` any registered manifest
+ * declares, each already resolved to its descriptor. */
+async function listProviderIdentityGroups(): Promise<readonly ProviderIdentityGroupDescriptor[]> {
+  const manifestsByGroup = new Map<string, ConnectorManifest[]>();
+  for (const manifest of (await collectRegisteredManifestsByConnectorKey()).values()) {
+    const group = manifestProviderIdentityGroup(manifest);
+    if (!group) {
+      continue;
+    }
+    const existing = manifestsByGroup.get(group);
+    if (existing) {
+      existing.push(manifest);
+    } else {
+      manifestsByGroup.set(group, [manifest]);
+    }
+  }
+  return Array.from(manifestsByGroup.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([identityGroup, manifests]) => providerIdentityGroupDescriptorFromManifests(identityGroup, manifests));
+}
+
+/**
+ * Builds the one generic, manifest-driven `ProviderAuthExchanger` every
+ * OAuth connector routes through — replaces the retired per-provider
+ * exchangers (google-data-portability.ts, google-oauth-account.ts). Never
+ * returns null: readiness is decided per-connector by
+ * connection-setup-plan.ts's deployment-readiness check (manifest
+ * deployment_config against env + the provider-app-config store), not by
+ * whether ANY provider happens to be configured at process start.
+ */
+function buildGenericProviderAuthExchanger(
+  credentialStoreFactory: () => ReturnType<typeof createRequestConnectorInstanceCredentialStore>
+): ProviderAuthExchanger {
+  const deploymentConfigResolver = createDeploymentConfigResolver({ store: createRequestProviderAppConfigStore() });
+  return createGenericProviderAuthDispatch({
+    credentialStoreFactory,
+    deploymentConfigResolver,
+    resolveManifest: async (connectorId: string) =>
+      (await getConnectorManifest(connectorId)) as unknown as ProviderAuthManifestLike | null,
+  });
+}
+
+/**
+ * Resolves a manifest's declared deployment_config entries against the SAME
+ * DB-first, env-fallback resolver the real OAuth exchange uses
+ * (createDeploymentConfigResolver), merged OVER process.env (never
+ * replacing it — a manifest with no provider_identity_group, or a
+ * deployment_config entry neither the store nor the resolver's env fallback
+ * has anything for, must still read from the real process environment
+ * exactly as it did before this resolver existed). Keyed the way
+ * connection-setup-plan.ts's buildDeploymentReadiness reads it
+ * (`env[entry.envAlias ?? entry.logicalKey]`). Used only for the initiate
+ * route's readiness check, so a Console-configured provider-app-config store
+ * value satisfies deployment readiness exactly as it will win at
+ * token-exchange time — DB overrides env, not the other way around, so this
+ * resolver must always consult the store even when the env var is already
+ * set.
+ */
+async function resolveProviderAuthDeploymentEnv(
+  manifest: unknown
+): Promise<Readonly<Record<string, string | undefined>>> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  const identityGroup = manifestProviderIdentityGroup(manifest as ConnectorManifest);
+  if (!identityGroup) {
+    return env;
+  }
+  const entries = connectionConfigDeploymentFieldsFromManifest(manifest as ConnectorManifest);
+  if (entries.length === 0) {
+    return env;
+  }
+  const resolver = createDeploymentConfigResolver({ store: createRequestProviderAppConfigStore() });
+  await Promise.all(
+    entries.map(async (entry) => {
+      const key = entry.envAlias ?? entry.logicalKey;
+      const value = await resolver({ envAlias: entry.envAlias, identityGroup, logicalKey: entry.logicalKey });
+      if (value) {
+        env[key] = value;
+      }
+    })
+  );
+  return env;
+}
+
 function buildControllerProviderAuthRunEnvResolver() {
   return async ({
     connectorId,
@@ -2089,11 +2349,21 @@ function buildControllerProviderAuthRunEnvResolver() {
     connectorInstanceId: string;
     ownerSubjectId: string;
   }) => {
-    const connectorInstance = await createRequestConnectorInstanceStore().get(connectorInstanceId);
+    const [connectorInstance, manifest] = await Promise.all([
+      createRequestConnectorInstanceStore().get(connectorInstanceId),
+      resolveRegisteredConnectorManifest(connectorId).catch(() => null),
+    ]);
+    const connectionConfig = connectionConfigEntriesFromManifest(
+      manifest as unknown as Parameters<typeof connectionConfigEntriesFromManifest>[0]
+    );
     return resolveProviderAuthRunEnv({
+      connectionConfig,
       connectorId,
       connectorInstanceId,
       credentialStore: createRequestConnectorInstanceCredentialStore(),
+      legacyBundleFieldAliases:
+        (manifest as { capabilities?: { auth?: { legacy_bundle_field_aliases?: Record<string, string> | null } } })
+          ?.capabilities?.auth?.legacy_bundle_field_aliases ?? null,
       ownerSubjectId,
       sourceBinding: connectorInstance?.sourceBinding ?? null,
     });
@@ -2678,6 +2948,78 @@ async function resolveRegisteredConnectorManifest(connectorId: string) {
     throw Object.assign(new Error(`Unknown connector: ${connectorId}`), { code: "not_found" });
   }
   return manifest;
+}
+
+// Keyed by the current setup binding kind; each builder returns the durable
+// replacement binding. A new setup-binding kind only needs an entry here.
+const SETUP_BINDING_PROMOTIONS: Record<
+  string,
+  (currentBinding: Record<string, unknown>, now: string) => Record<string, unknown>
+> = {
+  browser_enrollment_shell: (binding, now) =>
+    promoteBrowserEnrollmentShellBinding(
+      binding as unknown as BrowserEnrollmentShellSourceBinding,
+      now
+    ) as unknown as Record<string, unknown>,
+  manual_upload_draft: (binding, now) =>
+    promoteManualUploadDraftBinding(binding as unknown as ManualUploadDraftSourceBinding, now) as unknown as Record<
+      string,
+      unknown
+    >,
+  static_secret_draft: (binding, now) =>
+    promoteStaticSecretDraftBinding(binding as unknown as StaticSecretDraftSourceBinding, now) as unknown as Record<
+      string,
+      unknown
+    >,
+};
+
+interface ActivateDraftConnectionStore {
+  activateDraft: (connectorInstanceId: string) => unknown | Promise<unknown>;
+  get: (
+    connectorInstanceId: string
+  ) =>
+    | { status?: string; sourceBinding?: unknown }
+    | null
+    | Promise<{ status?: string; sourceBinding?: unknown } | null>;
+  promoteSetupBinding: (
+    connectorInstanceId: string,
+    args: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
+  ) => { instance: unknown; promoted: boolean } | Promise<{ instance: unknown; promoted: boolean }>;
+}
+
+// Extracted from its `rsMutationContext.activateDraftConnection` call site
+// so it's unit-testable against a fake store without a full server — see
+// test/activate-draft-connection.test.ts.
+type ActivationScheduleAttacher = (
+  instance: { connectorId?: string; connectorInstanceId?: string; status?: string } | null | undefined
+) => Promise<unknown>;
+
+export async function activateDraftConnection(
+  connectorInstanceId: string,
+  store: ActivateDraftConnectionStore,
+  attachSchedule: ActivationScheduleAttacher
+): Promise<unknown> {
+  const current = await store.get(connectorInstanceId);
+  const bindingKind =
+    current?.sourceBinding && typeof current.sourceBinding === "object"
+      ? (current.sourceBinding as { kind?: unknown }).kind
+      : null;
+  const promotion = typeof bindingKind === "string" ? SETUP_BINDING_PROMOTIONS[bindingKind] : undefined;
+  const now = new Date().toISOString();
+  const { instance, promoted } =
+    current?.status === "draft" && promotion
+      ? await store.promoteSetupBinding(connectorInstanceId, {
+          fromKind: bindingKind as string,
+          sourceBinding: promotion(current.sourceBinding as Record<string, unknown>, now),
+          updatedAt: now,
+        })
+      : { instance: await store.activateDraft(connectorInstanceId), promoted: true };
+  if (!promoted) {
+    return null;
+  }
+  return await attachSchedule(
+    instance as { connectorId?: string; connectorInstanceId?: string; status?: string } | null | undefined
+  );
 }
 
 function createActivationScheduleAttacher(controller: unknown) {
@@ -3460,7 +3802,31 @@ async function buildConnectorDiscoveryItem({
   return item;
 }
 
-function decorateBlobRefValue(blobRef: unknown): unknown {
+/**
+ * Options threaded through `decorateBlobRefValue`/`decorateRecordBlobRefs`.
+ * `withBlobSize` is opt-in and defaults to false/unchanged behavior:
+ * `decorateRecordBlobRefs` decorates both the records-LIST route
+ * (`buildRecordsListDeps` in `routes/rs-read.ts`, one call per row of a
+ * page) and the single-record-DETAIL route (`mountRsRecordDetail`). Adding
+ * a per-blob DB lookup unconditionally would turn the list route into an
+ * N-per-page fan-out; only the detail route passes `withBlobSize: true`.
+ * See docs/inbox/findings-storage-granularity.md §6 for the bounded-page-
+ * join-is-fine-but-don't-widen-it-further distinction this preserves.
+ *
+ * With `withBlobSize` false/omitted, both functions stay fully synchronous
+ * (return the plain decorated value, not a Promise) — the records-LIST
+ * dependency contract (`RecordsListDependencies.decorateRecord` in
+ * `operations/rs-records-list/index.ts`) is unchanged and does not need to
+ * become async. Only `withBlobSize: true` returns a `Promise`, matching the
+ * `MaybeAsync<T>` convention `BlobStore` already uses.
+ */
+interface DecorateBlobRefOptions {
+  withBlobSize?: boolean;
+}
+
+type MaybeAsync<T> = T | Promise<T>;
+
+function decorateBlobRefValue(blobRef: unknown, options: DecorateBlobRefOptions = {}): MaybeAsync<unknown> {
   if (!blobRef || typeof blobRef !== "object") {
     return blobRef;
   }
@@ -3468,13 +3834,24 @@ function decorateBlobRefValue(blobRef: unknown): unknown {
   if (typeof ref.blob_id !== "string" || !ref.blob_id) {
     return blobRef;
   }
-  return {
+  const blobId = ref.blob_id;
+  const decorated: Record<string, unknown> = {
     ...ref,
-    fetch_url: `/v1/blobs/${encodeURIComponent(ref.blob_id as string)}`,
+    fetch_url: `/v1/blobs/${encodeURIComponent(blobId)}`,
   };
+  if (!options.withBlobSize) {
+    return decorated;
+  }
+  // Single indexed point lookup keyed by `blob_id` (primary key on `blobs`),
+  // already known from the ref — not a table scan, not a join across all
+  // blobs. See `BlobStore.loadBlobSize`.
+  return Promise.resolve(createBlobStore().loadBlobSize(blobId)).then((sizeBytes) => {
+    decorated.size_bytes = sizeBytes;
+    return decorated;
+  });
 }
 
-function decorateRecordBlobRefs(record: unknown): unknown {
+function decorateRecordBlobRefs(record: unknown, options: DecorateBlobRefOptions = {}): MaybeAsync<unknown> {
   if (!record || typeof record !== "object") {
     return record;
   }
@@ -3483,23 +3860,57 @@ function decorateRecordBlobRefs(record: unknown): unknown {
   if (rec.data && typeof rec.data === "object" && !Array.isArray(rec.data)) {
     const data = rec.data as Record<string, unknown>;
     if (data.blob_ref) {
-      next.data = {
-        ...data,
-        blob_ref: decorateBlobRefValue(data.blob_ref),
-      };
+      const decoratedRef = decorateBlobRefValue(data.blob_ref, options);
+      if (decoratedRef instanceof Promise) {
+        const withData = decoratedRef.then((blob_ref) => ({ ...data, blob_ref }));
+        return withData.then((decoratedData) => decorateRecordExpanded(rec, next, decoratedData, options));
+      }
+      next.data = { ...data, blob_ref: decoratedRef };
+      return decorateRecordExpanded(rec, next, next.data, options);
     }
   }
-  if (rec.expanded && typeof rec.expanded === "object" && !Array.isArray(rec.expanded)) {
-    next.expanded = Object.fromEntries(
-      Object.entries(rec.expanded as Record<string, unknown>).map(([name, value]) => {
-        if (value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).data)) {
-          const v = value as Record<string, unknown>;
-          return [name, { ...v, data: (v.data as unknown[]).map(decorateRecordBlobRefs) }];
-        }
-        return [name, decorateRecordBlobRefs(value)];
-      })
-    );
+  return decorateRecordExpanded(rec, next, next.data, options);
+}
+
+/**
+ * Decorate `rec.expanded` sub-records after `data.blob_ref` (if any) has
+ * already been resolved into `next.data`/`resolvedData`. Split out of
+ * `decorateRecordBlobRefs` so that function can return synchronously in the
+ * (default, `withBlobSize: false`) common case without a Promise wrapper —
+ * only entering `async` territory once `options.withBlobSize` is set.
+ */
+function decorateRecordExpanded(
+  rec: Record<string, unknown>,
+  next: Record<string, unknown>,
+  resolvedData: unknown,
+  options: DecorateBlobRefOptions
+): MaybeAsync<unknown> {
+  next.data = resolvedData;
+  if (!(rec.expanded && typeof rec.expanded === "object" && !Array.isArray(rec.expanded))) {
+    return next;
   }
+  const entries = Object.entries(rec.expanded as Record<string, unknown>).map(([name, value]) => {
+    if (value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).data)) {
+      const v = value as Record<string, unknown>;
+      const decoratedItems = (v.data as unknown[]).map((item) => decorateRecordBlobRefs(item, options));
+      if (decoratedItems.some((item) => item instanceof Promise)) {
+        return Promise.all(decoratedItems).then((data) => [name, { ...v, data }] as const);
+      }
+      return [name, { ...v, data: decoratedItems }] as const;
+    }
+    const decorated = decorateRecordBlobRefs(value, options);
+    if (decorated instanceof Promise) {
+      return decorated.then((resolved) => [name, resolved] as const);
+    }
+    return [name, decorated] as const;
+  });
+  if (entries.some((entry) => entry instanceof Promise)) {
+    return Promise.all(entries).then((resolvedEntries) => {
+      next.expanded = Object.fromEntries(resolvedEntries);
+      return next;
+    });
+  }
+  next.expanded = Object.fromEntries(entries as readonly (readonly [string, unknown])[]);
   return next;
 }
 
@@ -3660,8 +4071,18 @@ async function persistContentAddressedBlob({
   mimeType: string;
   data: Buffer;
 }) {
-  return withConnectorInstanceWrite(connectorInstanceId, (ownership) =>
-    persistContentAddressedBlobWithinFence({
+  return withConnectorInstanceWrite(connectorInstanceId, (ownership) => {
+    // The connector-instance existence/status re-check (closing the
+    // delete-or-revoke/write TOCTOU) runs INSIDE each backend's own durable
+    // write transaction, never here pre-fence: `withConnectorInstanceWrite`
+    // is in-process only (SQLite) or ends before the transaction-scoped
+    // advisory lock is even acquired (Postgres), so a check performed here
+    // would leave the exact async gap this fence exists to close. See
+    // postgresPersistContentAddressedBlobWithinFence's unconditional
+    // assertPostgresConnectorInstanceWritable call and
+    // assertSqliteConnectorInstanceWritableWithinTransaction's call site
+    // below. See harden-connector-instance-write-fence-transaction-native.
+    return persistContentAddressedBlobWithinFence({
       connectorId,
       connectorInstanceId,
       coordinatorOwnership: ownership,
@@ -3669,8 +4090,8 @@ async function persistContentAddressedBlob({
       mimeType,
       recordKey,
       stream,
-    })
-  );
+    });
+  });
 }
 
 async function persistContentAddressedBlobWithinFence({
@@ -3698,6 +4119,11 @@ async function persistContentAddressedBlobWithinFence({
       data,
       mimeType,
       recordKey,
+      // Only the HTTP blob-write route reaches this function (see the
+      // docstrings above and on postgresPersistContentAddressedBlob) — every
+      // call here is an external write that must be refused if the
+      // connection was deleted concurrently.
+      requireConnectionAdmission: true,
       stream,
     });
     if (stored.binding_inserted) {
@@ -3716,6 +4142,13 @@ async function persistContentAddressedBlobWithinFence({
   const blobId = `blob_sha256_${sha256}`;
   const sizeBytes = data.byteLength;
   const stored = transaction(() => {
+    // Only the HTTP blob-write route reaches this function (see the
+    // docstrings above and on postgresPersistContentAddressedBlob) — every
+    // call here is an external write that must be refused if the connection
+    // was deleted or revoked concurrently. Inside the SAME synchronous
+    // transaction as the insert below, mirroring the Postgres arm's
+    // in-transaction call.
+    assertSqliteConnectorInstanceWritableWithinTransaction(connectorInstanceId);
     const insertResult = exec(referenceQueries.blobsInsertBlob, [
       blobId,
       connectorId,
@@ -3910,6 +4343,58 @@ const defaultNekoWindowSettleProbe = (url: string) => fetch(url);
 
 function resolveNekoWindowSettleProbe(probe: ((url: string) => Promise<Response>) | null | undefined) {
   return probe ?? defaultNekoWindowSettleProbe;
+}
+
+function authorityRevisionSha(revision: string | null): string | null {
+  if (!revision || revision.endsWith(".dirty")) {
+    return null;
+  }
+  return revision.split("+").at(-1) ?? null;
+}
+
+async function evaluateOwnerStreamCoverageAuthority({
+  referenceRevision,
+  summaries,
+}: {
+  referenceRevision: string;
+  summaries: readonly unknown[];
+}): Promise<Pick<StreamHealthAuthorityResult, "status">> {
+  const connectorIds = new Set<string>();
+  for (const summary of summaries) {
+    if (summary && typeof summary === "object" && !Array.isArray(summary)) {
+      const connectorId = (summary as Record<string, unknown>).connector_id;
+      if (typeof connectorId === "string" && connectorId.trim()) {
+        connectorIds.add(connectorId.trim());
+      }
+    }
+  }
+  const manifests = await Promise.all(
+    [...connectorIds].map(async (connectorId) => {
+      try {
+        return await resolveRegisteredConnectorManifest(connectorId);
+      } catch {
+        return { connector_id: connectorId, streams: [] };
+      }
+    })
+  );
+  // Summary JSON is not rendered Sources evidence. Sources is master-detail:
+  // all source markers render, but stream rows render only for the selected
+  // source. Do not fabricate DOM rows from the summary projection.
+  const dom: OwnerSourcesDomEvidence | null = null;
+  const authority = evaluateStreamHealthAuthority({
+    auth: { authenticated: true, mode: "owner-session", resolved: true },
+    connections: summaries,
+    dom,
+    manifests,
+    paginationComplete: true,
+    revision: {
+      dom: referenceRevision,
+      expected: referenceRevision,
+      sha: authorityRevisionSha(referenceRevision),
+      summaries: referenceRevision,
+    },
+  });
+  return { status: authority.coverageStatus };
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
@@ -5065,6 +5550,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
     buildRecordVersionStatsEnvelope,
     createRequestAbortSignal,
     createRequestConnectorInstanceStore,
+    ensureDatasetSummaryProjectionHealthy,
     getDatasetBlobBytes,
     getDatasetRecordChangesBytes,
     getDatasetRecordsAggregate,
@@ -5177,10 +5663,11 @@ export function buildAsApp(opts: ServerOpts = {}) {
         ownerSubjectId,
         visibleConnections: inventory,
       });
+      const streamHealth = await evaluateOwnerStreamCoverageAuthority({ referenceRevision, summaries });
       return composeFleetHealthVerdict({
-        coverageAudit: auditStreamHealth(summaries),
         inventory,
         runtime: getRuntimeStatus(),
+        streamHealth,
         summaries,
       });
     },
@@ -5254,7 +5741,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
       if (!(page.includeFleetHealth && page.connectorId === null && page.cursor === null && !summaryPage.has_more)) {
         return envelope;
       }
-      const fullSummaries = summaryPage.data as unknown as Parameters<typeof auditStreamHealth>[0];
+      const fullSummaries = summaryPage.data;
       // Reachable only from the unfiltered, no-profile branch (the guard
       // above requires `page.connectorId === null` AND `page.profile` was
       // never set to reach this fleet-health composition), so `inventory`
@@ -5266,9 +5753,9 @@ export function buildAsApp(opts: ServerOpts = {}) {
       return {
         ...envelope,
         fleet_health: composeFleetHealthVerdict({
-          coverageAudit: auditStreamHealth(fullSummaries),
           inventory: fleetInventory,
           runtime: getRuntimeStatus(),
+          streamHealth: await evaluateOwnerStreamCoverageAuthority({ referenceRevision, summaries: fullSummaries }),
           summaries: fullSummaries as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["summaries"],
         }),
       };
@@ -5441,9 +5928,11 @@ export function buildAsApp(opts: ServerOpts = {}) {
     createRequestAcquisitionBatchStore,
     createRequestConnectorInstanceCredentialStore,
     createRequestConnectorInstanceStore,
+    getLatestRunHistoryForProductByConnectionId: (connectorInstanceId: string) =>
+      getDefaultSchedulerStore().getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId) ?? null,
     getOwnerSubjectId,
-    getRunStartedAt: async (runId: string) => (await getRunStartedEvent(runId))?.occurred_at ?? null,
-    getRunTerminalStatus,
+    getProductRunHistoryForConnectionRunId: (connectorInstanceId: string, runId: string) =>
+      getDefaultSchedulerStore().getProductRunHistoryForConnectionRunId?.(connectorInstanceId, runId) ?? null,
     handleError,
     pdppError,
     requireOwnerSession: ownerAuth.requireOwnerSession,
@@ -5455,18 +5944,17 @@ export function buildAsApp(opts: ServerOpts = {}) {
   // The in-process pending-auth store is scoped to this RS process instance and
   // survives only for the PENDING_AUTH_TTL_SECONDS window (10 minutes).
   const pendingAuthStore = createInProcessPendingAuthStore();
-  const defaultProviderAuthConnectorKeys = configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env);
   const providerAuthExchanger =
-    opts.providerAuthExchanger ??
-    (defaultProviderAuthConnectorKeys.length > 0
-      ? createGoogleDataPortabilityProviderAuthExchanger({
-          credentialStoreFactory: createRequestConnectorInstanceCredentialStore,
-        })
-      : null);
+    opts.providerAuthExchanger ?? buildGenericProviderAuthExchanger(createRequestConnectorInstanceCredentialStore);
   const providerAuthCtx = {
     canonicalConnectorKey,
     // Connector keys for which provider-app deployment config is in place.
-    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? defaultProviderAuthConnectorKeys,
+    // Every provider-authorization connector today declares its own
+    // manifest deployment_config, so connection-setup-plan.ts's readiness
+    // check is always answered from the manifest/env/provider-app-config
+    // store — this allowlist is the fallback for a manifest declaring NONE,
+    // which no registered connector currently does.
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
     createRequestConnectorInstanceStore: () => {
       const store = createRequestConnectorInstanceStore();
       return {
@@ -5498,6 +5986,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
       const explicitAsBaseUrl = opts.asPublicUrl || (opts.ignoreAmbientPublicUrls ? null : process.env.AS_PUBLIC_URL);
       return resolvePublicUrl(req as Parameters<typeof resolvePublicUrl>[0], explicitAsBaseUrl);
     },
+    resolveDeploymentEnv: resolveProviderAuthDeploymentEnv,
     resolveRegisteredConnectorManifest,
     setReferenceTraceId,
   };
@@ -5505,6 +5994,46 @@ export function buildAsApp(opts: ServerOpts = {}) {
     mountRefProviderAuthInitiate(app, providerAuthCtx as unknown as Parameters<typeof mountRefProviderAuthInitiate>[1]);
     mountRefProviderAuthCallback(app, providerAuthCtx as unknown as Parameters<typeof mountRefProviderAuthCallback>[1]);
   }
+
+  // Deployment-level provider-app registration config (e.g. a shared OAuth
+  // client id/secret), grouped by manifest-declared provider_identity_group.
+  // Zero connector/provider-specific knowledge here — resolveProviderIdentityGroup
+  // and listProviderIdentityGroups are the only place the RI groups
+  // connectors by manifest data; the route itself just reads/writes
+  // logical_key/label pairs the manifest declared.
+  const providerAppConfigCtx = {
+    // The route's injected ProviderAppConfigStore interface takes setMany's
+    // values as a plain Record<logicalKey, value> (its own client-facing
+    // shape); the real store takes an array of {logicalKey,value} entries
+    // (its own write-path shape, shared with the single-entry `set`). This
+    // adapter is the only place that bridges the two.
+    createRequestProviderAppConfigStore: () => {
+      const store = createRequestProviderAppConfigStore();
+      return {
+        listConfiguredKeys: (identityGroup: string) => store.listConfiguredKeys(identityGroup),
+        setMany: (args: { identityGroup: string; values: Readonly<Record<string, string>>; updatedAt: string }) =>
+          store.setMany({
+            identityGroup: args.identityGroup,
+            updatedAt: args.updatedAt,
+            values: Object.entries(args.values).map(([logicalKey, value]) => ({ logicalKey, value })),
+          }),
+      };
+    },
+    handleError,
+    isEnvAliasSatisfied: (envAlias: string) => Boolean(process.env[envAlias]?.trim()),
+    listProviderIdentityGroups,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolveProviderIdentityGroup,
+  };
+  mountRefProviderAppConfigGet(
+    app,
+    providerAppConfigCtx as unknown as Parameters<typeof mountRefProviderAppConfigGet>[1]
+  );
+  mountRefProviderAppConfigPost(
+    app,
+    providerAppConfigCtx as unknown as Parameters<typeof mountRefProviderAppConfigPost>[1]
+  );
 
   mountRefDeployment(app, refAdminContext as unknown as Parameters<typeof mountRefDeployment>[1]);
 
@@ -5522,6 +6051,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
     deviceExporterStore,
     emitSpineEvent,
     enforceCollectorProtocolVersion,
+    enqueueDeviceIndexMaintenance,
     ensureReferenceConnectorCatalogEntry,
     generateReferenceSecret,
     generateSpineId,
@@ -5546,7 +6076,6 @@ export function buildAsApp(opts: ServerOpts = {}) {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     sanitizeDeviceExporterDiagnostic,
     sanitizeLocalCollectorGapDetails,
-    withConnectorInstanceWrite,
   };
 
   mountRefDeviceExporterEnrollmentCodes(
@@ -5572,6 +6101,10 @@ export function buildAsApp(opts: ServerOpts = {}) {
   mountRefDeviceExporterRevoke(
     app,
     refDeviceExportersContext as unknown as Parameters<typeof mountRefDeviceExporterRevoke>[1]
+  );
+  mountRefDeviceExporterSelfRevoke(
+    app,
+    refDeviceExportersContext as unknown as Parameters<typeof mountRefDeviceExporterSelfRevoke>[1]
   );
   mountRefDeviceExporterHeartbeat(
     app,
@@ -5989,13 +6522,13 @@ function buildRsApp(opts: ServerOpts = {}) {
   // before mountRsReadQueries) and mountRsBlobsUpload / mountRsMutation
   // (registered after) share the same context object.
   const rsMutationContext = {
-    // First-ingest activation for static-secret drafts: flip draft → active
-    // once a record lands. No-op on a non-draft row. See
-    // add-static-secret-owner-session-connect-path design Decision 5.
-    activateDraftConnection: async (connectorInstanceId: string) => {
-      const instance = await createRequestConnectorInstanceStore().activateDraft(connectorInstanceId);
-      return await attachActivationScheduleForConnection(instance);
-    },
+    // See add-static-secret-owner-session-connect-path design Decision 5.
+    activateDraftConnection: (connectorInstanceId: string) =>
+      activateDraftConnection(
+        connectorInstanceId,
+        createRequestConnectorInstanceStore(),
+        attachActivationScheduleForConnection
+      ),
     buildMutationContext,
     buildStateContext,
     classifyIngestFailure,
@@ -6039,6 +6572,18 @@ function buildRsApp(opts: ServerOpts = {}) {
         receipt_id: receipt.receiptId,
       };
     },
+    ingestRecords: (
+      target: unknown,
+      records: readonly unknown[],
+      afterRecord: ((record: unknown, outcome: unknown) => Promise<void>) | undefined,
+      options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+    ) =>
+      ingestRecords(
+        target as Parameters<typeof ingestRecords>[0],
+        records as Parameters<typeof ingestRecords>[1],
+        afterRecord,
+        options
+      ),
     // Same cache the mutation routes below already invalidate on every other
     // connection-mutating action (revoke, reactivate, schedule, run, rename,
     // delete). `maybeActivateDraftAfterIngest` (rs-mutation.ts) calls this
@@ -6165,12 +6710,12 @@ function buildRsApp(opts: ServerOpts = {}) {
       opts.asPublicUrl ||
       (opts.ignoreAmbientPublicUrls ? null : process.env.AS_ISSUER || process.env.AS_PUBLIC_URL),
     resolveHybridCapabilityOverride: () => opts.hybridRetrievalCapability || null,
-    resolveLexicalCapability: () => {
+    resolveLexicalCapability: async () => {
       if (opts.lexicalRetrievalCapability) {
         return opts.lexicalRetrievalCapability;
       }
       if (opts.lexicalRetrievalSupported !== false) {
-        return buildLexicalRetrievalCapability();
+        return buildLexicalRetrievalCapability({ indexState: await computeLexicalIndexState() });
       }
       return null;
     },
@@ -6235,6 +6780,7 @@ function buildRsApp(opts: ServerOpts = {}) {
     buildSourceDescriptor,
     buildStreamMetadataEntry,
     canonicalConnectorKey,
+    countSearchIndexDirtyScopes: countDirtySearchIndexScopes,
     createBlobStore,
     decorateRecordBlobRefs,
     emitQueryReceived,
@@ -6282,6 +6828,7 @@ function buildRsApp(opts: ServerOpts = {}) {
     runLexicalSearch,
     runSemanticSearch,
     setReferenceTraceId,
+    triggerSearchIndexDirtySelfHeal,
     validateRequestedQueryFieldParams,
   };
   mountRsReadQueries(app, rsReadContext as unknown as Parameters<typeof mountRsReadQueries>[1]);
@@ -6388,6 +6935,40 @@ function buildRsApp(opts: ServerOpts = {}) {
         options
       ),
   } as unknown as Parameters<typeof mountOwnerConnectionSchedule>[1]);
+
+  // The owner's read/write surface for a local connection's declared collection
+  // boundary. Without this the scope machinery is unreachable and every run is
+  // unscoped by construction, so a "complete" claim is always a whole-corpus
+  // claim. Persisting through `putSyncState` writes the reserved
+  // `$collection_scope` entry the collector already reads at run start, so the
+  // same write both stores the boundary and delivers it.
+  mountOwnerConnectionCollectionScope(
+    app as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[0],
+    {
+      declassifyCollectionProof: async ({
+        connectorInstanceId,
+        reason,
+      }: {
+        connectorInstanceId: string;
+        reason: string;
+      }) => {
+        invalidateConnectorSummariesCache();
+        await markConnectorSummaryEvidenceDirty?.({ connectorInstanceId, reason });
+      },
+      getOwnerTokenSubjectId,
+      getSyncState,
+      handleError,
+      pdppError,
+      putSyncState,
+      referenceLocalDeviceStorageTarget: (connectorId: string, connectorInstanceId: string) => ({
+        connector_id: canonicalConnectorKey(connectorId) ?? connectorId,
+        connector_instance_id: connectorInstanceId,
+      }),
+      requireOwner,
+      requireToken,
+      resolveOwnerConnectorNamespace,
+    } as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[1]
+  );
 
   // POST /v1/owner/connections/:connectionId/run and
   // POST /v1/owner/connectors/:connectorId/run are the bearer-authed owner-agent
@@ -6666,23 +7247,24 @@ function buildRsApp(opts: ServerOpts = {}) {
   // GET /v1/owner/connector-templates is the bearer-authed owner-agent template
   // catalog. It separates connector implementation metadata from configured
   // connection instances, embeds related connection summaries, and reports
-  // template-level `initiate_connection` support truthfully: proven
-  // local-collector templates can create an enrollment intent; browser-bound and
-  // API/network-only templates name the missing primitive instead of pretending
-  // an owner bearer can add a provider account.
+  // template-level `initiate_connection` support truthfully: only registered
+  // templates whose server-owned listing, proof, readiness, and planner
+  // contract support an owner action receive a supported intent.
   mountOwnerConnectorTemplates(app, {
     canonicalConnectorKey,
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
     createRequestConnectorInstanceStore,
     getConnectorManifest: (connectorId: string) => getConnectorManifest(connectorId),
     getOwnerTokenSubjectId,
     handleError,
-    listReferenceLocalConnectorCatalogManifests,
     listRegisteredConnectorIds,
     projectStorageDisplayName,
     requireOwner,
     requireToken,
     resolveResource: (req: unknown) =>
       resolvePublicUrl(req as Parameters<typeof resolvePublicUrl>[0], explicitResource),
+    uatExposeUnlistedConnectors: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT === "1",
+    uatConnectorAllowlist: parseUatConnectorAllowlist(process.env.PDPP_UAT_CONNECTOR_ALLOWLIST),
   } as unknown as Parameters<typeof mountOwnerConnectorTemplates>[1]);
 
   // GET /v1/owner/control is the bearer-authed owner-agent control entrypoint:
@@ -6846,19 +7428,41 @@ export async function startServer(opts: ServerOpts = {}) {
 
   // Boot-epoch reconciliation — STAGE 6.
   // Walk the spine for orphaned run.started events from prior incarnations
-  // and emit run.abandoned for each. Runs synchronously before HTTP routes
-  // mount, so the dashboard never sees a half-reconciled state. Throws on
-  // any non-idempotency error; we propagate up so startServer rejects and
-  // traffic does not begin. See docs/run-reconciliation-design-brief.md §3.4.
+  // and emit run.abandoned for each, then re-project any run_history row
+  // still claiming `running` against an already-terminal spine. Runs
+  // synchronously before HTTP routes mount, so the dashboard never sees a
+  // half-reconciled state and no connection is refused a new run by a
+  // stale active-run read. Throws on any non-idempotency error; we
+  // propagate up so startServer rejects and traffic does not begin. See
+  // docs/run-reconciliation-design-brief.md §3.4.
   const reconciled = await reconcileOrphanedRunsAtBoot(bootEpoch);
-  if (reconciled.selected > 0) {
+  if (reconciled.selected > 0 || reconciled.repaired > 0) {
     logger.info(
       {
         abandoned: reconciled.abandoned,
         controller_id: bootEpoch.controller_id,
+        repaired: reconciled.repaired,
         selected: reconciled.selected,
       },
-      "boot-time orphan reconciliation: emitted run.abandoned events for prior-incarnation orphans"
+      "boot-time orphan reconciliation: terminalised prior-incarnation orphans and repaired run_history drift"
+    );
+  }
+
+  // H5: manual-upload artifacts left stuck at uploaded/validating by a
+  // process that died mid-upload/mid-validation (crash, OOM, kill -9, an
+  // unclean deploy restart) sit non-terminal forever with nothing else to
+  // revisit them; terminalize them once at boot, same shape as the
+  // orphaned-run reconciliation above. Not gated behind the polyfill-
+  // manifest-reconcile enable/disable switch below -- this sweep only
+  // touches this process's own DB rows by staleness, never overwrites
+  // manifests, so it's safe to always run.
+  const abandonedUploads = await reconcileAbandonedManualUploadArtifactsAtBoot({
+    createRequestManualUploadArtifactStore,
+  } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0]);
+  if (abandonedUploads.swept > 0) {
+    logger.info(
+      { swept: abandonedUploads.swept },
+      "boot-time manual-upload reconciliation: terminalised artifacts abandoned by a prior process incarnation"
     );
   }
 
@@ -6900,6 +7504,7 @@ export async function startServer(opts: ServerOpts = {}) {
         : !!opts.reconcilePolyfillManifests;
     const summary = await reconcilePolyfillManifests({
       enabled: reconcileEnabled,
+      includeUnlisted: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT === "1",
       log: (msg) => logger.info(msg),
     });
     if (summary.scanned > 0) {
@@ -7064,6 +7669,7 @@ export async function startServer(opts: ServerOpts = {}) {
     invoke: ((args: unknown) => Promise<void>) | null;
     releaseLease: ((args: unknown) => Promise<void>) | null;
   } = { invoke: null, releaseLease: null };
+  const connectionScopedRunEnvResolver = opts.connectionScopedRunEnvResolver ?? buildConnectionScopedRunEnvResolver();
   const controller = createController({
     ...(configuredAsPublicUrl === null ? {} : { asPublicUrl: configuredAsPublicUrl }),
     ...(connectorEnvironmentPolicy.approvedBindings.length > 0
@@ -7082,6 +7688,7 @@ export async function startServer(opts: ServerOpts = {}) {
               ownerSubjectId,
             })
           : await admitOwnerRunConnection({
+              allowDraft: runAdmission === "setup",
               connectorId,
               connectorInstanceId,
               connectorInstanceStore: createRequestConnectorInstanceStore(),
@@ -7111,7 +7718,7 @@ export async function startServer(opts: ServerOpts = {}) {
     markStaticSecretCredentialRejected:
       buildControllerStaticSecretCredentialRejectionMarker() as import("../runtime/controller.ts").MarkStaticSecretCredentialRejected,
     resolveStaticSecretRunEnv:
-      buildConnectionScopedRunEnvResolver() as import("../runtime/controller.ts").StaticSecretRunEnvResolver,
+      connectionScopedRunEnvResolver as import("../runtime/controller.ts").StaticSecretRunEnvResolver,
     runtimeContext,
     streamingTargetNonceHooks: {
       clearNonce: (args) => runTargetRegistry.clearNonce(args),
@@ -7166,7 +7773,9 @@ export async function startServer(opts: ServerOpts = {}) {
     runEvidenceSweep: (args) =>
       runBoundedSummaryEvidenceSweep({
         ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
+        ...(args.firstTranche === undefined ? {} : { firstTranche: args.firstTranche }),
         maxDurationMs: args.maxDurationMs,
+        ...(args.lease ? { maintenanceLease: args.lease } : {}),
         pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
       }),
     runHistoryBackfillStage,
@@ -7287,6 +7896,12 @@ export async function startServer(opts: ServerOpts = {}) {
   // (it lazily imports the connector package's probe + live transport). Tests
   // may inject their own via `opts.staticSecretCredentialProber`.
   const staticSecretCredentialProber = opts.staticSecretCredentialProber ?? (await buildStaticSecretCredentialProber());
+  // See the sibling AS-app construction above: every provider-authorization
+  // connector today declares its own manifest deployment_config, so this
+  // allowlist is only the fallback for a manifest declaring none.
+  const configuredProviderAuthConnectorKeys = opts.configuredProviderAuthConnectorKeys ?? [];
+  const providerAuthExchanger =
+    opts.providerAuthExchanger ?? buildGenericProviderAuthExchanger(createRequestConnectorInstanceCredentialStore);
 
   const asApp = buildAsApp({
     acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,
@@ -7337,10 +7952,10 @@ export async function startServer(opts: ServerOpts = {}) {
     webPushSubscriptionStore: webPushStore,
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
     cancelScheduledRun: (runId: string) => schedulerManager?.cancelRun?.(runId) ?? null,
-    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
+    configuredProviderAuthConnectorKeys,
     logger,
     onScheduleMutation: () => schedulerManager?.refresh(),
-    providerAuthExchanger: opts.providerAuthExchanger ?? null,
+    providerAuthExchanger,
     runTargetRegistry,
     staticSecretAutoResume: opts.staticSecretAutoResume,
   } as unknown as ServerOpts);
@@ -7389,6 +8004,7 @@ export async function startServer(opts: ServerOpts = {}) {
     asIssuer: configuredAsIssuer || asPublicUrl,
     asPort,
     asPublicUrl,
+    configuredProviderAuthConnectorKeys,
     controller,
     hostedRecordRejectionAfterInsertBeforeCommit: opts.hostedRecordRejectionAfterInsertBeforeCommit,
     hybridRetrievalCapability: opts.hybridRetrievalCapability,
@@ -7477,14 +8093,8 @@ export async function startServer(opts: ServerOpts = {}) {
         return false;
       },
       listConnectors: async () => {
-        const ids = await listRegisteredConnectorIds();
-        const rows = await Promise.all(
-          (ids as string[]).map(async (connectorId: string) => ({
-            connector_id: connectorId,
-            manifest: await getConnectorManifest(connectorId),
-          }))
-        );
-        return rows;
+        const manifests = await collectValidRegisteredConnectorManifests({ logger });
+        return manifests.map(({ connectorId, manifest }) => ({ connector_id: connectorId, manifest }));
       },
       log: (msg) => logger.info(msg),
     });
@@ -7495,6 +8105,7 @@ export async function startServer(opts: ServerOpts = {}) {
 
   schedulerManager = createReferenceSchedulerManager({
     connectorEnvironmentPolicy,
+    connectionScopedRunEnvResolver,
     connectorPathResolver: opts.connectorPathResolver || resolveDefaultConnectorPath,
     controller,
     logger,
@@ -7546,11 +8157,16 @@ export async function startServer(opts: ServerOpts = {}) {
   // STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS total rounds so an
   // unusually large connection set (or one connection with an unusually
   // large terminal history) cannot serialize startup acceleration
-  // indefinitely. The per-request observation barrier remains the actual
-  // correctness backstop regardless of how many rounds run or whether any
-  // round fails (design.md "Startup is acceleration, not authority") — a
-  // connection this multi-round pass still does not reach is repaired by
-  // the next real read, never lost.
+  // indefinitely. Correction (2026-08-12): this comment previously claimed
+  // "the per-request observation barrier remains the actual correctness
+  // backstop" — that barrier was removed from ordinary GET by the
+  // 2026-07-29 terminal-gate revision (see `ref-control.ts`'s
+  // `loadConnectorSummaryProjectionDeps`). The actual backstop for a
+  // connection this multi-round startup pass still does not reach is the
+  // recurring periodic sweep (`CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS`
+  // below), never a per-request repair — design.md "Startup is
+  // acceleration, not authority" still holds, just with the periodic sweep
+  // as the authority instead of the request path.
   const startupSummaryEvidenceSweepDone = new Promise<void>((resolve) => {
     setImmediate(() => {
       // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
@@ -7579,7 +8195,7 @@ export async function startServer(opts: ServerOpts = {}) {
           if (last?.incomplete && last.resumeAfterId) {
             logger.info(
               { resumeAfterId: last.resumeAfterId, rounds: rounds.length },
-              "startup summary-evidence observation stopped after the resume-round cap; the per-request barrier covers the remainder"
+              "startup summary-evidence observation stopped after the resume-round cap; the periodic maintenance sweep covers the remainder"
             );
           }
         })
@@ -7936,6 +8552,7 @@ export function isManagedNekoSurfaceApproved(
 }
 
 function createReferenceSchedulerManager({
+  connectionScopedRunEnvResolver = buildConnectionScopedRunEnvResolver(),
   controller,
   connectorEnvironmentPolicy,
   logger,
@@ -7946,6 +8563,7 @@ function createReferenceSchedulerManager({
   webPushConfig = resolveWebPushConfig(),
   webPushSubscriptionStore = createWebPushSubscriptionStore(),
 }: {
+  connectionScopedRunEnvResolver?: ServerOpts["connectionScopedRunEnvResolver"];
   controller: Controller;
   connectorEnvironmentPolicy?: ConnectorEnvironmentPolicy;
   logger: LoggerLike;
@@ -7988,7 +8606,6 @@ function createReferenceSchedulerManager({
   // runs MUST resolve credentials/import bindings identically: a connection row
   // satisfies both, and a scheduled launch never falls back to process-global
   // setup material when a connection-scoped binding exists.
-  const connectionScopedRunEnvResolver = buildConnectionScopedRunEnvResolver();
   const resolveScheduledConnectionScopedRunEnv = ({
     connectorId,
     connectorInstanceId,
@@ -8086,6 +8703,7 @@ function createReferenceSchedulerManager({
           }
           const handle = await controller.runNow(connectorId, {
             connectorInstanceId: opts.connectorInstanceId,
+            ownerSubjectId: opts.ownerSubjectId,
             ownerToken: opts.ownerToken,
             priorityClass: opts.priorityClass,
             recoveryOnly: opts.recoveryOnly === true,
@@ -8229,7 +8847,7 @@ function createReferenceSchedulerManager({
               continue;
             }
             // Scope to this connection's instance (same guard as the pressure probe).
-            if ((row.connector_instance_id || connectorId) !== instanceKey) {
+            if (!matchesRecoveryInstance(row.connector_instance_id, instanceKey, connectorId)) {
               continue;
             }
             count += 1;
@@ -8270,7 +8888,7 @@ function createReferenceSchedulerManager({
           }
           // `listPendingGapsForConnector` spans every instance of the connector
           // type; keep only this connection's gaps so cooldown stays per-source.
-          if ((row.connector_instance_id || connectorId) !== instanceKey) {
+          if (!matchesRecoveryInstance(row.connector_instance_id, instanceKey, connectorId)) {
             continue;
           }
           gaps.push({
@@ -8542,6 +9160,55 @@ function createReferenceSchedulerManager({
   return { cancelRun, refresh, start: refresh, stop };
 }
 
+export interface ShutdownStorageCloseDependencies {
+  readonly closeDb: () => void;
+  readonly closePostgresStorage: () => Promise<void>;
+  readonly drainConnectorInstanceIndexWork: (timeoutMs?: number) => Promise<void>;
+  readonly onDrainTimeout?: (err: unknown) => void;
+}
+
+export type ShutdownStorageCloseOutcome = { readonly closed: true } | { readonly closed: false; readonly err: unknown };
+
+/**
+ * Pure (dependency-injected, no process.exit/no module-scope state) decision
+ * boundary for the drain-then-close half of CLI shutdown: drain the deferred
+ * lexical/semantic index-maintenance lane, then close EITHER storage backend
+ * only if that drain actually succeeded. A deferred job can be running
+ * against SQLite or Postgres depending on the active backend, so both
+ * closeDb() and closePostgresStorage() are equally unsafe to run out from
+ * under one -- on a drain timeout, NEITHER may run.
+ *
+ * process.exit(1) on the caller's timeout branch does NOT let an in-flight
+ * job "finish naturally": Node's process.exit reclaims file descriptors and
+ * tears down the event loop immediately, so any in-flight query is aborted
+ * at whatever point it happened to be, same as a hard kill. What skipping
+ * closeDb()/closePostgresStorage() here actually buys is narrower: this
+ * process never itself issues a controlled close on a handle a job is
+ * using, so the specific "[db] No database is open" failure mode (this
+ * process's OWN close racing this process's OWN deferred job) cannot
+ * occur -- it does not make the in-flight job safe, only removes this
+ * process as the cause of that specific defect.
+ *
+ * Extracted as a pure function (rather than left inline in the CLI-only
+ * entrypoint block below, which only runs under `node server/index.ts` and
+ * cannot be exercised by an import-time test) specifically so this
+ * drain-gates-close invariant is provable at a real boundary instead of by
+ * reading the source.
+ */
+export async function shutdownStorageClose(
+  deps: ShutdownStorageCloseDependencies
+): Promise<ShutdownStorageCloseOutcome> {
+  try {
+    await deps.drainConnectorInstanceIndexWork(2000);
+  } catch (err) {
+    deps.onDrainTimeout?.(err);
+    return { closed: false, err };
+  }
+  await deps.closePostgresStorage();
+  deps.closeDb();
+  return { closed: true };
+}
+
 // ─── CLI entrypoint ──────────────────────────────────────────────────────────
 //
 // Process-level handlers (uncaughtException, unhandledRejection, SIGTERM,
@@ -8717,9 +9384,22 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
         )
       : Promise.resolve();
     await Promise.allSettled([...httpDrains, Promise.race([awaitStartupTasks, backfillDeadline]), drainConnectors]);
-    await closePostgresStorage();
-    closeDb();
-    process.exit(0);
+    // See shutdownStorageClose's own doc comment for the drain-gates-close
+    // invariant and why exit(1) here does not mean the in-flight job
+    // finishes safely -- only that this process is not the one that raced
+    // it with a controlled close.
+    const closeOutcome = await shutdownStorageClose({
+      closeDb,
+      closePostgresStorage,
+      drainConnectorInstanceIndexWork,
+      onDrainTimeout: (err) => {
+        cliLogger.warn(
+          { err },
+          "deferred index work did not drain before shutdown; skipping storage close to avoid closing a handle under an active job"
+        );
+      },
+    });
+    process.exit(closeOutcome.closed ? 0 : 1);
   };
   process.on("SIGTERM", exitOnSignal("SIGTERM"));
   process.on("SIGINT", exitOnSignal("SIGINT"));

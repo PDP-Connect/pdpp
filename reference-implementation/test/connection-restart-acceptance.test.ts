@@ -48,6 +48,7 @@ import {
   getDefaultConnectorAttentionStore,
   resetDefaultConnectorAttentionStoreCache,
 } from "../server/stores/connector-attention-store.ts";
+import type { ActiveRunRecord } from "../server/stores/scheduler-store.ts";
 
 const NOW_ISO = "2026-05-19T12:00:00.000Z";
 const PRIOR_SUCCESS_ISO = "2026-05-19T10:00:00.000Z";
@@ -236,13 +237,14 @@ test(
     const snapshot = projectConnectorSummaryConnectionHealth({
       attentionRecords: [],
       freshness: { captured_at: PRIOR_SUCCESS_ISO, status: "current" },
-      lastRun: failedRun({ failure_reason: "http_502" }),
+      lastRun: succeededRun(),
       lastSuccessfulRun: succeededRun(),
       nowIso: NOW_ISO,
       schedule: {
         active_run_id: null,
         enabled: true,
         last_error_code: "http_502",
+        last_finished_at: "2026-05-19T11:00:00.000Z",
         last_successful_at: PRIOR_SUCCESS_ISO,
         next_due_at: "2026-05-19T12:30:00.000Z",
         scheduler_backoff: {
@@ -347,3 +349,189 @@ test(
     assert.equal(snapshotB.next_action, null);
   })
 );
+
+// ─── P1-1: active progress must never erase settled health authority ────────
+//
+// `healthClassifyingRun`/`coverageClassifyingRun` (ref-control.ts) now read
+// `latestSettledRun` — the newest TERMINAL run — as the health/failure
+// classification authority, never `lastRun` (which may be a still-active
+// retry that has not settled). Before the fix, an active retry silently
+// erased an intervening settled failure by falling back straight to
+// `lastSuccessfulRun`. These fixtures model the run-history shape the new
+// store reads (`getLatestSettledRunHistoryForProductByConnectionId` /
+// `listLatestSettledRunHistoryForProductByConnectionIds`) actually produce:
+// `lastRun` is the literal newest row (possibly active/in-progress/
+// cancelled), `latestSettledRun` is the newest row with `status <>
+// 'running'`, and `lastSuccessfulRun` is the newest succeeded row.
+
+function activeRun(overrides: Partial<ConnectorRunSummary> = {}): ConnectorRunSummary {
+  return {
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: null,
+    finished_at: null,
+    first_at: NOW_ISO,
+    known_gaps: [],
+    last_at: NOW_ISO,
+    recovery_only: false,
+    run_id: "run_active_retry",
+    started_at: NOW_ISO,
+    status: "in_progress",
+    terminal_reason: null,
+    ...overrides,
+  };
+}
+
+function activeRunRecord(overrides: Partial<ActiveRunRecord> = {}): ActiveRunRecord {
+  return {
+    connector_id: "chatgpt",
+    connector_instance_id: "cin_a",
+    run_generation: 1,
+    run_id: "run_active_retry",
+    scenario_id: "default",
+    started_at: NOW_ISO,
+    trace_id: "trace_active_retry",
+    ...overrides,
+  };
+}
+
+function cancelledRun(overrides: Partial<ConnectorRunSummary> = {}): ConnectorRunSummary {
+  return {
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: null,
+    finished_at: NOW_ISO,
+    first_at: NOW_ISO,
+    known_gaps: [],
+    last_at: NOW_ISO,
+    recovery_only: false,
+    run_id: "run_owner_cancelled",
+    started_at: NOW_ISO,
+    status: "cancelled",
+    terminal_reason: "owner_cancelled",
+    ...overrides,
+  };
+}
+
+// Sequence 1 — success -> active refresh (regression guard, must keep passing).
+test("P1-1 sequence 1: success -> active refresh stays healthy + syncing", () => {
+  const success = succeededRun();
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    activeRun: activeRunRecord(),
+    attentionRecords: [],
+    freshness: { captured_at: PRIOR_SUCCESS_ISO, status: "current" },
+    lastRun: activeRun(),
+    lastSuccessfulRun: success,
+    latestSettledRun: success,
+    nowIso: NOW_ISO,
+    schedule: { active_run_id: "run_active_retry", enabled: true },
+  });
+  assert.equal(snapshot.state, "healthy");
+  assert.equal(snapshot.badges.syncing, true);
+  assert.equal(snapshot.last_success_at, PRIOR_SUCCESS_ISO);
+});
+
+// Sequence 2 — success -> failure -> active retry (THE CORE FIX): the
+// settled failure must be visible as degraded, not erased by the active
+// retry falling back to the old success.
+test("P1-1 sequence 2: success -> failure -> active retry surfaces degraded, not healthy", () => {
+  const failure = failedRun({ failure_reason: "auth_expired", run_id: "run_settled_failure" });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    activeRun: activeRunRecord(),
+    attentionRecords: [],
+    freshness: { captured_at: PRIOR_SUCCESS_ISO, status: "current" },
+    lastRun: activeRun(),
+    lastSuccessfulRun: succeededRun(),
+    latestSettledRun: failure,
+    nowIso: NOW_ISO,
+    schedule: { active_run_id: "run_active_retry", enabled: true },
+  });
+  assert.notEqual(snapshot.state, "healthy", "the settled failure must not be erased by the active retry");
+  assert.equal(snapshot.reason_code, "auth_expired");
+  assert.equal(snapshot.badges.syncing, true, "the active retry still drives the syncing badge");
+});
+
+// Sequence 3 — first-ever active run, no settled evidence at all (regression
+// guard): never a fabricated failure or success.
+test("P1-1 sequence 3: first-ever active run with no settled evidence is unknown/initializing, never fabricated", () => {
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    activeRun: activeRunRecord(),
+    attentionRecords: [],
+    freshness: { status: "unknown" },
+    lastRun: activeRun(),
+    lastSuccessfulRun: null,
+    latestSettledRun: null,
+    nowIso: NOW_ISO,
+    schedule: { active_run_id: "run_active_retry", enabled: true },
+  });
+  assert.notEqual(snapshot.state, "needs_attention");
+  assert.equal(snapshot.last_success_at, null);
+  assert.equal(snapshot.reason_code, null);
+  assert.equal(snapshot.badges.syncing, true);
+});
+
+// Sequence 4 — failure -> active -> success: once the active run terminates
+// as success, health must flip back to healthy (regression guard).
+test("P1-1 sequence 4: failure -> active -> success flips back to healthy once settled", () => {
+  const newSuccess = succeededRun({ last_at: NOW_ISO, run_id: "run_new_success", started_at: NOW_ISO });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [],
+    freshness: { captured_at: NOW_ISO, status: "current" },
+    lastRun: newSuccess,
+    lastSuccessfulRun: newSuccess,
+    latestSettledRun: newSuccess,
+    nowIso: NOW_ISO,
+    schedule: { active_run_id: null, enabled: true },
+  });
+  assert.equal(snapshot.state, "healthy");
+  assert.equal(snapshot.last_success_at, NOW_ISO);
+});
+
+// Sequence 5 — failure -> active -> cancellation: an owner-cancelled
+// settled run must fall back to the prior success (per
+// `isOwnerCancelledRun`'s existing documented behavior), never re-surface
+// the old failure and never fabricate healthy from the cancellation itself.
+test("P1-1 sequence 5: failure -> active -> owner cancellation preserves prior-success fallback, not the old failure", () => {
+  const priorSuccess = succeededRun();
+  const cancelled = cancelledRun();
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [],
+    freshness: { captured_at: PRIOR_SUCCESS_ISO, status: "current" },
+    lastRun: cancelled,
+    lastSuccessfulRun: priorSuccess,
+    latestSettledRun: cancelled,
+    nowIso: NOW_ISO,
+    schedule: { active_run_id: null, enabled: true },
+  });
+  assert.equal(snapshot.state, "healthy", "owner-cancel falls back to the prior success, per isOwnerCancelledRun");
+  assert.equal(snapshot.last_success_at, PRIOR_SUCCESS_ISO);
+  assert.notEqual(
+    snapshot.reason_code,
+    cancelled.terminal_reason,
+    "the cancellation's own reason must never surface as the health reason"
+  );
+});
+
+// Sequence 6 — failure -> orphaned active run: a `running` row with no live
+// lease/active-run record. At the SQL layer `latestSettledRun` only ever
+// reflects `status <> 'running'`, so an orphan not yet swept resolves to the
+// failure before it (a sound, if temporarily stale, answer) — never
+// silently promoted to healthy.
+test("P1-1 sequence 6: failure -> orphaned active run resolves to the settled failure, not healthy", () => {
+  const failure = failedRun({ failure_reason: "auth_expired", run_id: "run_settled_failure" });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    // No `activeRun`/`active_run_id` — the orphan has no live lease.
+    attentionRecords: [],
+    freshness: { captured_at: PRIOR_SUCCESS_ISO, status: "current" },
+    lastRun: activeRun({ run_id: "run_orphaned" }),
+    lastSuccessfulRun: succeededRun(),
+    // The orphan's literal DB status is still `running` until a maintenance
+    // sweep resolves it, so `latestSettledRun` has not advanced past the
+    // last real failure.
+    latestSettledRun: failure,
+    nowIso: NOW_ISO,
+    schedule: { active_run_id: null, enabled: true },
+  });
+  assert.notEqual(snapshot.state, "healthy", "an orphaned active run must never silently promote to healthy");
+  assert.equal(snapshot.reason_code, "auth_expired");
+});

@@ -219,37 +219,76 @@ async function fetchJson(
   return { body, resp, status: resp.status };
 }
 
+// TEST_PROVIDER_MANIFEST declares deployment_config: ["TEST_PROVIDER_CLIENT_ID",
+// "TEST_PROVIDER_CLIENT_SECRET"] (bare-string legacy shape). connection-setup-plan.ts's
+// buildDeploymentReadiness answers deployment readiness from the manifest's
+// OWN declared entries against the observed environment whenever the
+// manifest declares any — configuredProviderAuthConnectorKeys is only the
+// fallback for a manifest declaring NONE, so it cannot make this connector
+// "ready" by itself. A real deployment satisfies these via env or the
+// provider-app-config store; the test satisfies them via env, scoped to
+// exactly the withServer() call so no state leaks between tests.
+const TEST_PROVIDER_DEPLOYMENT_ENV = Object.freeze({
+  TEST_PROVIDER_CLIENT_ID: "test-provider-client-id",
+  TEST_PROVIDER_CLIENT_SECRET: "test-provider-client-secret",
+});
+
+async function withDeploymentEnv<T>(values: Record<string, string>, operation: () => Promise<T>): Promise<T> {
+  const previous = new Map(Object.keys(values).map((key) => [key, process.env[key]]));
+  try {
+    for (const [key, value] of Object.entries(values)) {
+      process.env[key] = value;
+    }
+    return await operation();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 // Start a server with the given exchanger and configured provider keys.
+// `deploymentConfigured` (default true) sets TEST_PROVIDER_CLIENT_ID/
+// TEST_PROVIDER_CLIENT_SECRET for the whole call (server startup through fn)
+// so connection-setup-plan.ts's manifest-driven deployment readiness reads
+// ready for test_provider — pass false for a test that specifically wants
+// needs_config (deployment config missing).
 async function withServer(
   exchanger: ProviderAuthExchanger,
-  { configuredKeys = ["test_provider"] }: { configuredKeys?: string[] },
+  { configuredKeys = ["test_provider"], deploymentConfigured = true }: { configuredKeys?: string[]; deploymentConfigured?: boolean },
   fn: (handles: { asUrl: string; rsUrl: string; server: TestServer }) => Promise<void>
 ): Promise<void> {
-  const server = await startServer({
-    asPort: 0,
-    autoEnrollEligibleSchedules: false,
-    configuredProviderAuthConnectorKeys: configuredKeys,
-    dbPath: ":memory:",
-    ownerAuthPassword: "",
-    ownerAuthSubjectId: OWNER_SUBJECT_ID,
-    providerAuthExchanger: exchanger,
-    quiet: true,
-    rsPort: 0,
-  });
-  const asUrl = `http://localhost:${server.asPort}`;
-  const rsUrl = `http://localhost:${server.rsPort}`;
-  try {
-    // Register the test provider connector.
-    const registration = await fetch(`${asUrl}/connectors`, {
-      body: JSON.stringify(TEST_PROVIDER_MANIFEST),
-      headers: { "Content-Type": "application/json" },
-      method: "POST",
+  await withDeploymentEnv(deploymentConfigured ? TEST_PROVIDER_DEPLOYMENT_ENV : {}, async () => {
+    const server = await startServer({
+      asPort: 0,
+      autoEnrollEligibleSchedules: false,
+      configuredProviderAuthConnectorKeys: configuredKeys,
+      dbPath: ":memory:",
+      ownerAuthPassword: "",
+      ownerAuthSubjectId: OWNER_SUBJECT_ID,
+      providerAuthExchanger: exchanger,
+      quiet: true,
+      rsPort: 0,
     });
-    assert.equal(registration.status, 201, `provider test fixture registration (${await registration.text()})`);
-    await fn({ asUrl, rsUrl, server });
-  } finally {
-    await closeServer(server);
-  }
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    try {
+      // Register the test provider connector.
+      const registration = await fetch(`${asUrl}/connectors`, {
+        body: JSON.stringify(TEST_PROVIDER_MANIFEST),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(registration.status, 201, `provider test fixture registration (${await registration.text()})`);
+      await fn({ asUrl, rsUrl, server });
+    } finally {
+      await closeServer(server);
+    }
+  });
 }
 
 // The test server uses ownerAuthPassword: '' (open auth), so the owner session
@@ -289,8 +328,9 @@ test("PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS includes test_provider", () 
 
 test("provider-auth initiation is blocked when deployment config is missing", async () => {
   const exchanger = buildTestExchanger();
-  // Pass an empty configured-keys list so the planner sees needs_config.
-  await withServer(exchanger, { configuredKeys: [] }, async ({ asUrl, rsUrl: _rsUrl }) => {
+  // Pass an empty configured-keys list AND leave the manifest's own
+  // deployment_config env vars unset so the planner sees needs_config.
+  await withServer(exchanger, { configuredKeys: [], deploymentConfigured: false }, async ({ asUrl, rsUrl: _rsUrl }) => {
     const session = OPEN_SESSION_COOKIE;
     const { status, body } = await initiateProviderAuth(asUrl, session, "test_provider");
     assert.equal(status, 503, `expected 503, got ${status}: ${JSON.stringify(body)}`);
@@ -400,6 +440,67 @@ test("callback with unrecognized state does not create a connection", async () =
     assert.equal(exchanger.calls.exchange.length, 0);
     const connections = await createSqliteConnectorInstanceStore().listByOwner(OWNER_SUBJECT_ID);
     assert.equal(connections.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Callback: redirect_uri mismatch
+// ---------------------------------------------------------------------------
+
+test("callback whose recomputed redirect_uri differs from the one used at initiate is rejected before code exchange", async () => {
+  const exchanger = buildTestExchanger();
+  await withServer(exchanger, {}, async ({ asUrl }) => {
+    const session = OPEN_SESSION_COOKIE;
+    const { body: initBody } = await initiateProviderAuth(asUrl, session, "test_provider");
+    assert.equal(initBody.object, "provider_auth_initiate");
+    const initiatedRedirectUri = initBody.next_step.redirect_uri;
+    assert.ok(initiatedRedirectUri, "initiate must record the redirect_uri it used");
+
+    const stateToken = requiredStateToken(
+      exchanger.calls.initiate[exchanger.calls.initiate.length - 1]?.state
+    );
+
+    // The callback recomputes redirect_uri from ITS OWN request
+    // (resolveCallbackBaseUrl reads x-forwarded-host with no explicit
+    // asPublicUrl configured for this test server) -- spoofing a different
+    // forwarded host here reproduces a real-world redirect_uri drift (e.g. a
+    // rotated/misconfigured public base URL, or a forged callback request
+    // presenting a different origin than the one the owner actually
+    // authorized against).
+    const { status, body } = await fetchJson(
+      `${asUrl}/_ref/provider-auth/callback?code=somecode&state=${stateToken}`,
+      { headers: { "x-forwarded-host": "attacker.example", "x-forwarded-proto": "https" } }
+    );
+
+    assert.equal(status, 400, `expected 400, got ${status}: ${JSON.stringify(body)}`);
+    assert.equal(body?.error?.code, "provider_auth_redirect_uri_mismatch");
+    assert.equal(exchanger.calls.exchange.length, 0, "code exchange must never be attempted on a redirect_uri mismatch");
+    const connections = await createSqliteConnectorInstanceStore().listByOwner(OWNER_SUBJECT_ID);
+    assert.equal(connections.length, 0, "no connection may be created on a redirect_uri mismatch");
+
+    // The state token is consumed (replay protection) even on this rejection
+    // path -- a second attempt with the same state must also fail, not
+    // silently retry against the original (correct) redirect_uri.
+    const retry = await fetchJson(`${asUrl}/_ref/provider-auth/callback?code=somecode&state=${stateToken}`);
+    assert.equal(retry.status, 400);
+    assert.equal(retry.body?.error?.code, "provider_auth_state_invalid");
+  });
+});
+
+test("callback whose recomputed redirect_uri matches the one used at initiate proceeds normally", async () => {
+  const exchanger = buildTestExchanger();
+  await withServer(exchanger, {}, async ({ asUrl }) => {
+    const session = OPEN_SESSION_COOKIE;
+    const { body: initBody } = await initiateProviderAuth(asUrl, session, "test_provider");
+    const stateToken = requiredStateToken(
+      exchanger.calls.initiate[exchanger.calls.initiate.length - 1]?.state
+    );
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/provider-auth/callback?code=somecode&state=${stateToken}`);
+
+    assert.equal(status, 201, `expected 201, got ${status}: ${JSON.stringify(body)}`);
+    assert.equal(exchanger.calls.exchange.length, 1);
+    assert.equal(exchanger.calls.exchange[0]?.redirectUri, initBody.next_step.redirect_uri);
   });
 });
 

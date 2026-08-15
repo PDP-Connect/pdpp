@@ -13,20 +13,33 @@
 // Public facade (what runtime/index.js imports):
 //   Functions: boundString, boundStringList, boundGapString,
 //              boundConnectorErrorMessage, boundConsideredCount,
-//              normalizeRecoveryHint, normalizeGapScope,
-//              buildCollectionFacts, buildKnownGap
-//   Constants: VIOLATION_LIST_MAX, GAP_STRING_MAX, RECOVERY_ACTIONS
+//              normalizeRecoveryHint, isValidRecoveryHintShape,
+//              normalizeGapScope, buildCollectionFacts, buildKnownGap
+//   Constants: VIOLATION_LIST_MAX, GAP_STRING_MAX, RECOVERY_ACTIONS,
+//              BROWSER_SURFACE_KINDS (exported read-only for the manifest
+//              parity test only — see test/connector-gap-bounding-browser-
+//              surface-kind-manifest-parity.test.ts; no runtime consumer)
 //
 // Private (not exported): projectDiagnosticsNode, classifyKnownGapSeverity,
 //   normalizeConsideredInDiagnostics, GAP_SEVERITIES, INFORMATIONAL_GAP_REASONS,
 //   TRANSIENT_GAP_REASONS, VIOLATION_STRING_MAX, GAP_LIST_MAX,
 //   CONNECTOR_ERROR_MESSAGE_MAX, GAP_DIAGNOSTICS_BYTES_MAX,
-//   GAP_DIAGNOSTICS_DEPTH_MAX, GAP_DIAGNOSTICS_LIST_MAX, inferRecoveryAction.
+//   GAP_DIAGNOSTICS_DEPTH_MAX, GAP_DIAGNOSTICS_LIST_MAX, inferRecoveryAction,
+//   BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND (a manifest-selectable index into
+//   a closed set of RI-owned, provider-name-free posture/validation
+//   algorithms — see hasSurfaceSpecificCounts / deriveBrowserSurfacePosture /
+//   isBrowserSurfacePhase).
 //
 // No back-edge: this module must NOT import runtime/index.js.
 // No Playwright/CDP/raw-DOM terms. Closed connector evidence is revalidated
 // here before it can enter the durable spine.
 
+import {
+  optionalContinuationField,
+  projectRuntimeSkip,
+  type RuntimeContinuationFact,
+  selectAuthoritativeSkip,
+} from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import { isNullish } from "../lib/nullish.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 
@@ -58,7 +71,32 @@ const BROWSER_SURFACE_FIELDS = [
   "verified_empty_marker_count",
   "wait_outcome",
 ];
-const BROWSER_SURFACE_KINDS = new Set(["chase_current_activity", "usaa_transaction_export"]);
+// Manifest-derived: each entry equals a shipped connector manifest's
+// `capabilities.browser_surface_kind`. Kept as a hand-maintained Set (not a
+// live manifest scan) because this module must stay free of node:fs — it is
+// on the connector-evidence spine-validation hot path (runtime/index.ts).
+// test/connector-gap-bounding-browser-surface-kind-manifest-parity.test.ts
+// pins this Set against the real manifests directory, so a manifest gaining
+// or losing this field without updating the Set fails CI. Same shape as
+// BROWSER_BOUND_CONNECTORS in server/connection-setup-plan.ts — see
+// docs/inbox/report-clusters-bc-completion.md.
+export const BROWSER_SURFACE_KINDS = new Set(["chase_current_activity", "usaa_transaction_export"]);
+
+// A CLOSED set of generic evidence variants. Each variant names a structural
+// marker-count SHAPE and a fixed, RI-owned validation/posture-derivation
+// algorithm (see hasSurfaceSpecificCounts / deriveBrowserSurfacePosture /
+// isBrowserSurfacePhase below) — never a provider or connector name. A
+// manifest's `capabilities.browser_surface_kind` value SELECTS one of these
+// variants via this map; it cannot introduce a new variant, alter which
+// fields are structural for a variant, or change the derivation logic. Any
+// `browser_surface_kind` not present here fails closed (validation rejects
+// the evidence) rather than falling back to a default variant — this map
+// must stay in sync with BROWSER_SURFACE_KINDS 1:1, enforced by the same
+// manifest-parity test.
+const BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND = new Map([
+  ["chase_current_activity", "dashboard_activity_coverage"],
+  ["usaa_transaction_export", "account_detail_coverage"],
+]);
 const BROWSER_SURFACE_MANAGED_STATES = new Set(["isolated", "legacy_remote", "managed", "unknown"]);
 const BROWSER_SURFACE_POSTURES = new Set(["recognized", "verified_empty", "parser_zero", "unexpected"]);
 const BROWSER_SURFACE_ROUTES = new Set(["expected", "interstitial", "unknown"]);
@@ -86,6 +124,35 @@ export const RECOVERY_ACTIONS = new Set([
   "not_retriable",
   "unknown",
 ]);
+
+/**
+ * Shared shape check for a connector-declared recovery hint: either a bare
+ * string from `RECOVERY_ACTIONS`, or `{ action, retryable? }` with the same
+ * constraints. When the hint is an object, `action` is mandatory; empty objects
+ * and objects containing only `retryable` are protocol violations. One
+ * vocabulary and one validator for every wire location a connector may declare
+ * a recovery hint (`SKIP_RESULT.recovery_hint`, `DONE.error.recovery_hint`) —
+ * a connector requests an ACTION this way; it never gets to pick one by shaping
+ * its `code` or free-form `message` text.
+ */
+export function isValidRecoveryHintShape(value: unknown): boolean {
+  if (isNullish(value)) {
+    return true;
+  }
+  if (typeof value === "string") {
+    return RECOVERY_ACTIONS.has(value);
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const hint = value as { action?: unknown; retryable?: unknown };
+  return (
+    Object.keys(value).every((key) => key === "action" || key === "retryable") &&
+    typeof hint.action === "string" &&
+    RECOVERY_ACTIONS.has(hint.action) &&
+    (isNullish(hint.retryable) || typeof hint.retryable === "boolean")
+  );
+}
 
 // ── BOUNDING FUNCTIONS ────────────────────────────────────────────────────────
 
@@ -142,6 +209,30 @@ export function boundConnectorErrorMessage(value: unknown): string | null {
     return text;
   }
   return `${text.slice(0, CONNECTOR_ERROR_MESSAGE_MAX - 1)}…`;
+}
+
+// Mirrors packages/polyfill-connectors/src/connector-runtime.ts's
+// CONNECTOR_ERROR_CODE_RE — the two run in different processes (connector
+// child vs. RS-side runtime) so cannot literally share a module, but the
+// contract MUST match: short, lowercase, snake_case only.
+const CONNECTOR_ERROR_CODE_RE = /^[a-z][a-z0-9_]{1,63}$/;
+
+/**
+ * Validate a connector-declared `error.code` before it is copied verbatim
+ * onto `connector_error_code` (see `buildTerminalConnectorFields` below).
+ * Unlike `boundConnectorErrorMessage`, this does NOT redact/truncate —
+ * `code` is a typed, non-secret channel by contract, so anything that
+ * doesn't already match the strict charset/length is untrustworthy and
+ * dropped (fails closed to `null`) rather than passed through in any form.
+ * A dropped code still leaves the (redacted) `message` field for the owner
+ * to read — this only withholds the free-form value from the unredacted
+ * column, it never surfaces it elsewhere.
+ */
+export function boundConnectorErrorCode(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  return CONNECTOR_ERROR_CODE_RE.test(value) ? value : null;
 }
 
 export function boundGapStringList(values: unknown): string[] | null {
@@ -231,15 +322,17 @@ function boundBrowserSurfaceDiagnostic(value: unknown): Record<string, unknown> 
   return output;
 }
 
-/** Reject non-zero fields that belong only to the other connector surface. */
+/** Reject non-zero fields that belong only to the sibling evidence variant. */
 function hasSurfaceSpecificCounts(input: Record<string, unknown>): boolean {
-  if (input.surface === "chase_current_activity") {
+  const variant = BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND.get(input.surface as string);
+  if (variant === "dashboard_activity_coverage") {
     return (
       input.account_detail_marker_count === 0 &&
       input.navigation_marker_count === 0 &&
       input.transaction_marker_count === 0
     );
   }
+  // account_detail_coverage
   return (
     input.activity_table_marker_count === 0 &&
     input.dashboard_marker_count === 0 &&
@@ -248,12 +341,18 @@ function hasSurfaceSpecificCounts(input: Record<string, unknown>): boolean {
   );
 }
 
-/** Derive durable posture from validated counts; caller-authored posture is not trusted. */
+/**
+ * Derive durable posture from validated counts; caller-authored posture is
+ * not trusted. Each evidence variant is a closed, RI-owned algorithm — a
+ * manifest may only SELECT a variant (BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND),
+ * never author or parameterize the derivation logic itself.
+ */
 function deriveBrowserSurfacePosture(
   input: Record<string, unknown>
 ): "recognized" | "verified_empty" | "parser_zero" | "unexpected" {
+  const variant = BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND.get(input.surface as string);
   const targetCount = input.target_count as number;
-  if (input.surface === "chase_current_activity") {
+  if (variant === "dashboard_activity_coverage") {
     const parserCount = input.parser_count as number;
     const emptyMarkerCount = input.verified_empty_marker_count as number;
     const structuralMarkerCount =
@@ -270,6 +369,7 @@ function deriveBrowserSurfacePosture(
     return "unexpected";
   }
 
+  // account_detail_coverage
   const structuralMarkerCount =
     (input.account_detail_marker_count as number) +
     (input.navigation_marker_count as number) +
@@ -277,10 +377,16 @@ function deriveBrowserSurfacePosture(
   return targetCount > 0 || structuralMarkerCount > 0 ? "recognized" : "unexpected";
 }
 
+/**
+ * Each evidence variant fixes its own phase label as part of the closed,
+ * RI-owned algorithm (see deriveBrowserSurfacePosture doc comment) — the
+ * manifest selects a variant, it does not author the phase value.
+ */
 function isBrowserSurfacePhase(surface: unknown, phase: unknown): boolean {
+  const variant = BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND.get(surface as string);
   return (
-    (surface === "chase_current_activity" && phase === "final_snapshot") ||
-    (surface === "usaa_transaction_export" && phase === "no_export_affordance")
+    (variant === "dashboard_activity_coverage" && phase === "final_snapshot") ||
+    (variant === "account_detail_coverage" && phase === "no_export_affordance")
   );
 }
 
@@ -372,6 +478,7 @@ interface DetailCoverageEntry {
 }
 
 interface KnownGap {
+  continuation?: unknown;
   kind: string;
   reason?: string;
   recovery_hint?: unknown;
@@ -385,6 +492,8 @@ interface BuildCollectionFactsInput {
   durableDetailGaps: KnownGap[];
   emittedByStream: Map<string, number>;
   knownGaps: KnownGap[];
+  /** Manifest-declared checkpoint parents for a shared detail stream. */
+  manifestDetailParentStreamsByStream?: Map<string, ReadonlySet<string>>;
   /**
    * Manifest-declared checkpoint parent per stream (`state_stream`). Co-emitted
    * streams that ride a parent list stream's cursor and emit no DETAIL_COVERAGE
@@ -454,6 +563,7 @@ export function buildCollectionFacts({
   durableDetailGaps,
   detailCoverageByStateStream,
   manifestStateStreamByStream,
+  manifestDetailParentStreamsByStream,
   newState,
   committedStateStreams,
   persistState,
@@ -484,17 +594,27 @@ export function buildCollectionFacts({
   //     stream's cursor: they emit no DETAIL_COVERAGE, so the mapping is declared
   //     in the manifest via `state_stream` and threaded in here. DETAIL_COVERAGE
   //     wins when both are present.
-  const streamToStateStream = new Map<string, string>();
+  const streamToStateStreams = new Map<string, Set<string>>();
+  for (const [stream, parents] of manifestDetailParentStreamsByStream || new Map()) {
+    // Checkpoint facts describe this run's scope. The runtime separately
+    // retains the complete manifest parent set for ambiguity checks.
+    const inScopeParents = new Set([...parents].filter((parent) => scopeByStream.has(parent)));
+    if (inScopeParents.size) {
+      streamToStateStreams.set(stream, inScopeParents);
+    }
+  }
   for (const [stateStream, entries] of detailCoverageByStateStream) {
     for (const entry of entries) {
-      if (entry?.stream && !streamToStateStream.has(entry.stream)) {
-        streamToStateStream.set(entry.stream, stateStream);
+      if (entry?.stream) {
+        const parents = streamToStateStreams.get(entry.stream) || new Set<string>();
+        parents.add(stateStream);
+        streamToStateStreams.set(entry.stream, parents);
       }
     }
   }
   for (const [stream, stateStream] of manifestStateStreamByStream || []) {
-    if (!streamToStateStream.has(stream)) {
-      streamToStateStream.set(stream, stateStream);
+    if (!streamToStateStreams.has(stream)) {
+      streamToStateStreams.set(stream, new Set([stateStream]));
     }
   }
 
@@ -502,72 +622,80 @@ export function buildCollectionFacts({
   const committed = committedStateStreams instanceof Set ? committedStateStreams : new Set(committedStateStreams || []);
   const stagedStateStreams = new Set(Object.keys(newState || {}));
 
-  const checkpointForStateStream = (stateStream: string): string => {
+  const checkpointForStateStreams = (stateStreams: ReadonlySet<string>): string => {
     if (!persistState) {
       return "disabled";
     }
-    if (committed.has(stateStream)) {
+    if ([...stateStreams].every((stateStream) => committed.has(stateStream))) {
       return "committed";
     }
-    if (stagedStateStreams.has(stateStream)) {
+    if ([...stateStreams].some((stateStream) => !(committed.has(stateStream) || stagedStateStreams.has(stateStream)))) {
+      return "not_staged";
+    }
+    if ([...stateStreams].some((stateStream) => stagedStateStreams.has(stateStream))) {
       return "not_committed";
     }
     return "not_staged";
   };
 
-  // First declared considered (DETAIL_COVERAGE.considered) wins, else the
-  // required-keys count, else unknown (omitted). Never derived from collected.
+  const coverageEntriesForStream = (stream: string): DetailCoverageEntry[] =>
+    [...detailCoverageByStateStream.values()].flatMap((entries) => entries.filter((entry) => entry?.stream === stream));
+
+  const hasCoverageReportForEveryStateStream = (stream: string): boolean => {
+    const expectedParents = streamToStateStreams.get(stream);
+    if (!expectedParents?.size) {
+      return true;
+    }
+    return [...expectedParents].every((parent) =>
+      (detailCoverageByStateStream.get(parent) || []).some((entry) => entry?.stream === stream)
+    );
+  };
+
+  // Every independently checkpointed parent contributes to the detail
+  // stream's denominator. A missing parent count keeps the aggregate unknown;
+  // it must never be replaced with another parent's smaller denominator.
   const declaredConsideredForStream = (stream: string): number | null => {
-    let requiredKeysFallback: number | null = null;
-    for (const entries of detailCoverageByStateStream.values()) {
-      for (const entry of entries) {
-        if (entry?.stream !== stream) {
-          continue;
-        }
-        if (typeof entry.considered === "number") {
-          return entry.considered;
-        }
-        if (requiredKeysFallback === null && Array.isArray(entry.requiredKeys)) {
-          requiredKeysFallback = entry.requiredKeys.length;
-        }
+    if (!hasCoverageReportForEveryStateStream(stream)) {
+      return null;
+    }
+    const entries = coverageEntriesForStream(stream);
+    if (!entries.length) {
+      return null;
+    }
+    let total = 0;
+    for (const entry of entries) {
+      if (typeof entry.considered === "number") {
+        total += entry.considered;
+      } else if (Array.isArray(entry.requiredKeys)) {
+        total += entry.requiredKeys.length;
+      } else {
+        return null;
       }
     }
-    return requiredKeysFallback;
+    return total;
   };
 
-  // First declared covered count (DETAIL_COVERAGE.covered) wins, else unknown
-  // (omitted). Mirrors declaredConsideredForStream. The projection compares
-  // `considered` against `covered` when present so a full-sync stream that
-  // suppressed every unchanged record reads `complete`. Never inferred from
-  // collected; there is no required-keys fallback (covered is a run-outcome count,
-  // not a declared key set).
+  // Covered is similarly additive only when every parent declared it. One
+  // parent's count cannot prove another parent's work.
   const declaredCoveredForStream = (stream: string): number | null => {
-    for (const entries of detailCoverageByStateStream.values()) {
-      for (const entry of entries) {
-        if (entry?.stream !== stream) {
-          continue;
-        }
-        if (typeof entry.covered === "number") {
-          return entry.covered;
-        }
-      }
+    if (!hasCoverageReportForEveryStateStream(stream)) {
+      return null;
     }
-    return null;
+    const entries = coverageEntriesForStream(stream);
+    if (!entries.length || entries.some((entry) => typeof entry.covered !== "number")) {
+      return null;
+    }
+    return entries.reduce((total, entry) => total + (entry.covered as number), 0);
   };
 
-  const skipForStream = (stream: string): { reason: string | undefined; recovery_action?: string } | null => {
-    const gap = knownGaps.find((candidate) => candidate.kind === "skip_result" && candidate.stream === stream);
+  const skipForStream = (
+    stream: string
+  ): { reason: string; recovery_action?: string; continuation?: RuntimeContinuationFact } | null => {
+    const gap = selectAuthoritativeSkip(knownGaps, stream);
     if (!gap) {
       return null;
     }
-    const action =
-      gap.recovery_hint && typeof gap.recovery_hint === "object"
-        ? (gap.recovery_hint as { action?: string }).action
-        : null;
-    return {
-      reason: gap.reason,
-      ...(action ? { recovery_action: action } : {}),
-    };
+    return projectRuntimeSkip(gap);
   };
 
   const pendingDetailGapsForStream = (stream: string): number =>
@@ -576,7 +704,9 @@ export function buildCollectionFacts({
   const streams = inScopeStreams.map((stream) => {
     const considered = declaredConsideredForStream(stream);
     const covered = declaredCoveredForStream(stream);
-    const stateStream = streamToStateStream.get(stream) || stream;
+    const streamSkip = skipForStream(stream);
+    const continuation = streamSkip?.continuation;
+    const stateStreams = streamToStateStreams.get(stream) || new Set([stream]);
     return {
       collected: emittedByStream.get(stream) || 0,
       stream,
@@ -586,9 +716,10 @@ export function buildCollectionFacts({
       // Optional covered count (task 4.4): omit when unknown. When present the
       // projection compares `considered` against this instead of `collected`.
       ...(covered === null ? {} : { covered }),
-      checkpoint: checkpointForStateStream(stateStream),
+      checkpoint: checkpointForStateStreams(stateStreams),
+      ...(continuation ? { collection_scope: continuation.boundary } : {}),
       pending_detail_gaps: pendingDetailGapsForStream(stream),
-      skipped: skipForStream(stream),
+      skipped: streamSkip,
     };
   });
 
@@ -746,6 +877,9 @@ function classifyKnownGapSeverity({
 // ── KNOWN GAP BUILDER ─────────────────────────────────────────────────────────
 
 interface BuildKnownGapInput {
+  continuation?:
+    | import("../../packages/polyfill-connectors/src/connector-runtime-protocol.ts").RuntimeContinuationFact
+    | null;
   diagnostics?: unknown;
   explicitSelection?: boolean;
   interactionKind?: string | null;
@@ -771,6 +905,7 @@ export function buildKnownGap({
   severity = null,
   unsupportedInDefaultScope = false,
   diagnostics = null,
+  continuation = null,
 }: BuildKnownGapInput): Record<string, unknown> {
   const safeReason = boundGapString(reason) || "unknown";
   const safeMessage = boundGapString(message);
@@ -796,5 +931,6 @@ export function buildKnownGap({
       reason: safeReason,
     }),
     ...(boundedDiagnostics ? { diagnostics: boundedDiagnostics } : {}),
+    ...optionalContinuationField(continuation),
   };
 }

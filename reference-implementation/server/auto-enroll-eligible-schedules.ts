@@ -137,20 +137,16 @@ function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {
 }
 
 interface ListingFacts {
-  readonly listed: boolean | null;
-  readonly status: string | null;
+  readonly tier: string | null;
 }
 
 function getListingFacts(caps: ManifestCapabilities): ListingFacts {
   const listing = caps.public_listing;
   if (!listing || typeof listing !== "object" || Array.isArray(listing)) {
-    return { listed: null, status: null };
+    return { tier: null };
   }
   const l = listing as Record<string, unknown>;
-  return {
-    listed: typeof l.listed === "boolean" ? l.listed : null,
-    status: typeof l.status === "string" ? l.status : null,
-  };
+  return { tier: typeof l.tier === "string" ? l.tier : null };
 }
 
 function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | null {
@@ -291,11 +287,8 @@ function checkPolicyEligibility(caps: ManifestCapabilities): PolicyEligibility {
     return { eligible: false, reason: "assisted_after_owner_auth=true" };
   }
   const listing = getListingFacts(caps);
-  if (listing.listed !== true) {
-    return { eligible: false, reason: `public_listing.listed=${listing.listed ?? "<missing>"}` };
-  }
-  if (listing.status !== "proven") {
-    return { eligible: false, reason: `public_listing.status=${listing.status ?? "<missing>"}` };
+  if (listing.tier !== "supported") {
+    return { eligible: false, reason: `public_listing.tier=${listing.tier ?? "<missing>"}` };
   }
   return { eligible: true };
 }

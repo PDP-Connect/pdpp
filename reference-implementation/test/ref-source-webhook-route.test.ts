@@ -20,6 +20,7 @@ import {
 } from "../server/stores/connector-instance-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 type TestServer = Awaited<ReturnType<typeof startServer>>;
 type JsonObject = Record<string, unknown>;
@@ -77,7 +78,13 @@ async function withHarness(
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
   const sourceId = spotifyManifest.connector_id;
   process.env.PDPP_SOURCE_WEBHOOK_SECRETS = `spotify:${secret}:${sourceId}`;
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {

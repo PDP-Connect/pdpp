@@ -30,7 +30,7 @@ const CONNECTOR_ID = "https://test.pdpp.dev/connectors/summary-facts-monotonic-p
 const INSTANCE_ID = "cin_summary_facts_monotonic_pg";
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: CONNECTOR_ID,
   display_name: "Summary Facts Monotonic Probe (Postgres)",
   protocol_version: "0.1.0",

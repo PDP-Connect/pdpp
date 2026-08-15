@@ -135,6 +135,12 @@ function bodyOf(response: JsonResponse): Record<string, unknown> {
   return response.body;
 }
 
+function streamCursorState(response: JsonResponse): Record<string, unknown> {
+  const state = bodyOf(response).state;
+  assert.ok(state && typeof state === "object" && !Array.isArray(state), "response state must be an object");
+  return Object.fromEntries(Object.entries(state as Record<string, unknown>).filter(([key]) => !key.startsWith("$")));
+}
+
 function stringField(record: Record<string, unknown>, field: string): string {
   const value = record[field];
   assert.equal(typeof value, "string", `${field} must be a string`);
@@ -604,7 +610,8 @@ test("PUT then GET round-trips per-stream cursors with last-write-wins merge sem
   await withServer(async ({ asUrl }) => {
     const device = await enrollDevice(asUrl, "laptop-a");
 
-    // First read: empty state, no rows.
+    // Enrollment has already persisted the reserved collection boundary, but
+    // no connector stream has a cursor yet.
     const initial = await getJson(
       stateUrl(asUrl, device.device_id, device.source_instance_id),
       authHeaders(device.device_token)
@@ -614,8 +621,10 @@ test("PUT then GET round-trips per-stream cursors with last-write-wins merge sem
     assert.equal(bodyOf(initial).device_id, device.device_id);
     assert.equal(bodyOf(initial).connector_instance_id, device.connector_instance_id);
     assert.equal(bodyOf(initial).source_instance_id, device.source_instance_id);
-    assert.deepEqual(bodyOf(initial).state, {});
-    assert.equal(bodyOf(initial).updated_at, null);
+    assert.deepEqual(streamCursorState(initial), {});
+    const initialState = bodyOf(initial).state as Record<string, unknown>;
+    assert.ok(initialState.$collection_scope, "enrollment must persist its effective collection scope");
+    assert.ok(bodyOf(initial).updated_at);
 
     // First write: messages cursor only.
     const firstPut = await putJson(
@@ -624,7 +633,11 @@ test("PUT then GET round-trips per-stream cursors with last-write-wins merge sem
       authHeaders(device.device_token)
     );
     assert.equal(firstPut.status, 200);
-    assert.deepEqual(bodyOf(firstPut).state, { messages: { cursor: "m-1" } });
+    assert.deepEqual(streamCursorState(firstPut), { messages: { cursor: "m-1" } });
+    assert.deepEqual(
+      (bodyOf(firstPut).state as Record<string, unknown>).$collection_scope,
+      initialState.$collection_scope
+    );
 
     // Second write: adds attachments and bumps messages — last-write-wins per stream.
     const secondPut = await putJson(
@@ -633,7 +646,7 @@ test("PUT then GET round-trips per-stream cursors with last-write-wins merge sem
       authHeaders(device.device_token)
     );
     assert.equal(secondPut.status, 200);
-    assert.deepEqual(bodyOf(secondPut).state, {
+    assert.deepEqual(streamCursorState(secondPut), {
       attachments: { uid_low: 100 },
       messages: { cursor: "m-2" },
     });
@@ -645,7 +658,7 @@ test("PUT then GET round-trips per-stream cursors with last-write-wins merge sem
       authHeaders(device.device_token)
     );
     assert.equal(finalRead.status, 200);
-    assert.deepEqual(bodyOf(finalRead).state, {
+    assert.deepEqual(streamCursorState(finalRead), {
       attachments: { uid_low: 100 },
       messages: { cursor: "m-2" },
     });
@@ -667,7 +680,7 @@ test("PUT device state is safe to replay for at-least-once local delivery", asyn
 
     const readBack = await getJson(url, authHeaders(device.device_token));
     assert.equal(readBack.status, 200);
-    assert.deepEqual(bodyOf(readBack).state, body.state);
+    assert.deepEqual(streamCursorState(readBack), body.state);
 
     const storageConnectorId = localDeviceConnectorId(device.connector_id);
     const rows = getDb()
@@ -713,8 +726,8 @@ test("Two-device isolation: same connector id, different source instances, separ
       authHeaders(second.device_token)
     );
 
-    assert.deepEqual(bodyOf(firstRead).state, { messages: { cursor: "first-cursor" } });
-    assert.deepEqual(bodyOf(secondRead).state, { messages: { cursor: "second-cursor" } });
+    assert.deepEqual(streamCursorState(firstRead), { messages: { cursor: "first-cursor" } });
+    assert.deepEqual(streamCursorState(secondRead), { messages: { cursor: "second-cursor" } });
 
     // Underlying state rows are stored under the bare canonical connector key
     // ('codex'), the same key API-collected records use. Isolation between the
@@ -780,8 +793,8 @@ test("Single device with two source instances keeps state rows independent", asy
 
     const readA = await getJson(stateUrl(asUrl, a.device_id, a.source_instance_id), authHeaders(a.device_token));
     const readB = await getJson(stateUrl(asUrl, b.device_id, b.source_instance_id), authHeaders(b.device_token));
-    assert.deepEqual(bodyOf(readA).state, { sessions: { hwm: 1 } });
-    assert.deepEqual(bodyOf(readB).state, { sessions: { hwm: 2 } });
+    assert.deepEqual(streamCursorState(readA), { sessions: { hwm: 1 } });
+    assert.deepEqual(streamCursorState(readB), { sessions: { hwm: 2 } });
   });
 });
 

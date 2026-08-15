@@ -15,6 +15,7 @@ import {
   listRetainedSizeConnections,
   listRetainedSizeRecordFamilies,
   listRetainedSizeStreams,
+  listRetainedSizeStreamsByInstanceIds,
   listRetainedSizeTop,
   markRetainedSizeConnectionDirty,
   markRetainedSizeDirty,
@@ -421,6 +422,55 @@ test("listRetainedSizeStreams: connectorId filter narrows by connector_id, not b
       connectorInstanceId: alpha.connector_id,
     });
     assert.deepEqual(wrongSlot, [], "connectorInstanceId filter must NOT match a connector_id value");
+  }));
+
+test("listRetainedSizeStreamsByInstanceIds: exact-id page grouping dedupes ids and skips unknown instances", () =>
+  withTempDb(async () => {
+    const alpha = {
+      connector_id: "alpha.connector",
+      connector_instance_id: "cin_alpha_a",
+    };
+    const beta = {
+      connector_id: "beta.connector",
+      connector_instance_id: "cin_beta_b",
+    };
+    await ingestRecord(alpha, {
+      data: { id: "a-msg" },
+      emitted_at: "2026-01-01T00:00:00.000Z",
+      key: "a-msg",
+      stream: "messages",
+    });
+    await ingestRecord(alpha, {
+      data: { id: "a-file" },
+      emitted_at: "2026-01-01T00:00:00.000Z",
+      key: "a-file",
+      stream: "files",
+    });
+    await ingestRecord(beta, {
+      data: { id: "b-msg" },
+      emitted_at: "2026-01-01T00:00:00.000Z",
+      key: "b-msg",
+      stream: "messages",
+    });
+    await rebuildRetainedSize();
+
+    assert.deepEqual(await listRetainedSizeStreamsByInstanceIds([]), new Map());
+
+    const grouped = await listRetainedSizeStreamsByInstanceIds([
+      alpha.connector_instance_id,
+      alpha.connector_instance_id,
+      "",
+      "cin_never_ingested",
+      beta.connector_instance_id,
+    ]);
+    assert.deepEqual([...grouped.keys()].sort(), [alpha.connector_instance_id, beta.connector_instance_id]);
+    const alphaStreams = mustExist(grouped.get(alpha.connector_instance_id), "alpha stream group must exist");
+    assert.deepEqual(alphaStreams.map((row) => row.stream).sort(), ["files", "messages"]);
+    const betaStreams = mustExist(grouped.get(beta.connector_instance_id), "beta stream group must exist");
+    assert.deepEqual(
+      betaStreams.map((row) => ({ connector_id: row.connector_id, stream: row.stream })),
+      [{ connector_id: beta.connector_id, stream: "messages" }]
+    );
   }));
 
 test("listRetainedSizeStreams: connectorId and stream filters compose", () =>

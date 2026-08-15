@@ -186,6 +186,7 @@ export interface RawGizmo {
 
 export interface RawGizmoWrapper {
   gizmo?: unknown;
+  info?: unknown;
   resource?: { gizmo?: unknown } | unknown;
 }
 

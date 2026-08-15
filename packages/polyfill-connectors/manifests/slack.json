@@ -22,6 +22,7 @@
         "install_hint": "go install github.com/rusq/slackdump/v4/cmd/slackdump@latest",
         "detect": {
           "executable": "slackdump",
+          "executable_env_override": "SLACKDUMP_BIN",
           "args": ["version"],
           "exit_code": 0
         }
@@ -41,7 +42,7 @@
     "credential_capture": {
       "kind": "secret_bundle",
       "label": "Slack workspace credentials",
-      "description": "Paste the session credentials from your Slack browser session. These are captured and sealed per-connection; the deployment does not need env vars.",
+      "description": "Slackdump uses a logged-in Slack web session, not an OAuth app token: enter your workspace subdomain, the xoxc web-client session token, and the value of the browser cookie named d. These are captured and sealed per-connection; the deployment does not need env vars.",
       "submit_label": "Create Slack connection and start first sync",
       "fields": [
         {
@@ -58,23 +59,24 @@
         },
         {
           "name": "slack_token",
-          "label": "Slack session token (xoxc-…)",
+          "label": "Slack web-client session token (xoxc-…)",
           "type": "password",
           "required": true,
           "secret": true,
           "autocomplete": "off",
-          "help_url": "https://github.com/rusq/slackdump/wiki/How-to-get-your-Slack-credentials",
-          "help_text": "Copy the xoxc-… token from your browser's Slack JS context. See the runbook link for exact steps.",
+          "help_url": "https://github.com/rusq/slackdump/blob/5ecece6b7fa63f6e1a71e049900b9ccc61f6b1e7/doc/login-manual.md",
+          "help_text": "In Slack on the web, open Developer Tools → Console and run JSON.parse(localStorage.localConfig_v2).teams[document.location.pathname.match(/^\\/client\/([A-Z0-9]+)/)[1]].token. Paste the returned xoxc-… value.",
           "env": ["SLACK_TOKEN"]
         },
         {
           "name": "slack_cookie",
-          "label": "Slack 'd' cookie",
+          "label": "Slack browser d cookie value (xoxd-…)",
           "type": "password",
           "required": true,
           "secret": true,
           "autocomplete": "off",
-          "help_text": "Copy the 'd' cookie from your browser while logged in to Slack. Same runbook as above.",
+          "help_url": "https://github.com/rusq/slackdump/blob/5ecece6b7fa63f6e1a71e049900b9ccc61f6b1e7/doc/login-manual.md",
+          "help_text": "In Developer Tools → Application/Storage → Cookies, select your Slack domain, find the cookie named exactly d, and copy its Value. Paste the value only (usually starts xoxd-), not d=; preserve %2F/%2B escapes.",
           "env": ["SLACK_COOKIE"]
         }
       ]
@@ -82,6 +84,14 @@
   },
   "capabilities": {
     "human_interaction": ["credentials"],
+    "proven": {
+      "static_secret_live": {
+        "proven": true,
+        "run_id": "run_1781131204868",
+        "date": "2026-06-10",
+        "note": "completed/succeeded, env-free container"
+      }
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 1800,
@@ -91,17 +101,20 @@
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
       "background_safe": true,
-      "rationale": "Slack credentials are durable and the Docker reference deployment includes the slackdump runtime; refresh moderately."
+      "rationale": "Slack credentials are durable. Slackdump v4.4.2 (AGPL-3.0, https://github.com/rusq/slackdump/tree/v4.4.2) is bundled in core-browser Docker image; refresh moderately."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "tier": "supported"
     }
   },
   "streams": [
     {
       "name": "workspace",
+      "required": true,
       "description": "Authenticated Slack workspace: team identity, authenticated user/bot identity, enterprise affiliation, primary URL.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Slack workspace",
         "detail": "Workspace name, domain, team ID, the authenticated user (whose session this is), and enterprise parent (if any)."
@@ -173,7 +186,10 @@
     },
     {
       "name": "channels",
+      "required": true,
       "description": "Public/private channels, DMs, and group DMs visible to the authenticated user. Structural and identity fields only; member count is in the channel_stats stream.",
+      "compaction_class": "point_in_time_real_field",
+      "compaction_class_note": "num_members is a point-in-time sample carried on this record; retained history is never compactable.",
       "display": {
         "label": "Your Slack channels",
         "detail": "Channel name, type flags (is_im/is_mpim/is_private/is_shared/is_archived), creator, topic and purpose (with last-set time), created-at. Member counts are in channel_stats."
@@ -375,7 +391,11 @@
     },
     {
       "name": "channel_memberships",
+      "required": true,
       "description": "Channel ↔ user edges where slackdump could enumerate members.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Channel memberships",
         "detail": "For each channel we could see the membership of, one row per user. Includes DMs (channel member is the DM counterpart)."
@@ -426,7 +446,11 @@
     },
     {
       "name": "users",
+      "required": true,
       "description": "Users (human + bot) visible to the authenticated principal.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "People and bots in your Slack workspace",
         "detail": "Username, real name, display name, email (when visible), timezone, bot flag, admin/owner flags, deletion status."
@@ -919,7 +943,11 @@
     },
     {
       "name": "files",
+      "required": true,
       "description": "File attachments referenced in messages. Metadata only by default.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Files shared in Slack",
         "detail": "Filename, mimetype, size, upload time, uploader, public/private flags, title."
@@ -1502,5 +1530,9 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "optional_stream_failed": "We couldn't collect one part of your Slack data, so we skipped it",
+    "source_partition_missing": "Some previously seen Slack channels are missing from this export, so message coverage is incomplete"
+  }
 }

@@ -68,7 +68,12 @@
 
 import { isNullish } from "../lib/nullish.ts";
 import type { ConnectionHealthSnapshot } from "./connection-health.ts";
-import type { RenderedVerdict, ScheduleEvidence } from "./rendered-verdict.ts";
+import {
+  hasOwnerBlockingAction,
+  isPassiveScheduledRecovery,
+  type RenderedVerdict,
+  type ScheduleEvidence,
+} from "./rendered-verdict.ts";
 
 /**
  * The closed internal resolver enum. Exhaustive: every reachable
@@ -87,6 +92,30 @@ export type OwnerStateResolver =
   | "retired"
   | "setup_in_progress"
   | "system_degraded";
+
+/**
+ * Server-owned owner-console work bucket. This is a presentation boundary,
+ * not a second health state machine: it is a total mapping from the closed
+ * resolver above, so clients never classify raw health or verdict fields.
+ */
+export type SourceWorkGroup = "needs_owner" | "not_measured" | "review" | "system_issue" | "working" | "none";
+
+const SOURCE_WORK_GROUP_BY_RESOLVER: Readonly<Record<OwnerStateResolver, SourceWorkGroup>> = {
+  blocked_maintainer: "system_issue",
+  collecting: "working",
+  healthy: "none",
+  needs_owner: "needs_owner",
+  not_measured: "not_measured",
+  owner_paused: "review",
+  refresh_due: "review",
+  retired: "none",
+  setup_in_progress: "needs_owner",
+  system_degraded: "system_issue",
+};
+
+export function sourceWorkGroupFromOwnerState(resolver: OwnerStateResolver): SourceWorkGroup {
+  return SOURCE_WORK_GROUP_BY_RESOLVER[resolver];
+}
 
 /**
  * Who acts next for this owner state. Mirrors `RequiredAction.audience` but
@@ -277,6 +306,18 @@ export function ownerStateCausalEvidenceFrom(
  * to exactly one resolver — the exhaustive cross-product test below proves
  * this holds for the fixture matrix.
  */
+/**
+ * A draft connection with no run currently in flight — the generic
+ * "setup in progress" reading is only honest while there is nothing more
+ * specific to report. A draft WITH an active run instead falls through to
+ * the `progress.active` check below (`collecting`), and a draft with an
+ * open owner-attention action already returned `needs_owner` above this
+ * call site — see the design-gate comment there.
+ */
+function isDraftAwaitingFirstActivity(evidence: OwnerStateEvidence): boolean {
+  return evidence.lifecycle?.status === "draft" && !evidence.progress.active;
+}
+
 function resolveOwnerStateResolver(
   verdict: RenderedVerdict,
   snapshot: ConnectionHealthSnapshot,
@@ -291,31 +332,44 @@ function resolveOwnerStateResolver(
     return "retired";
   }
 
+  // A maintainer defect is specific and actionable even before first ingest.
+  if (primary?.audience === "maintainer") {
+    return "blocked_maintainer";
+  }
+
+  // An idle draft has no more specific owner-facing runtime state yet.
+  // Resolve it before generic setup attention; active drafts continue below
+  // to either their exact owner action or collecting state.
+  if (isDraftAwaitingFirstActivity(evidence)) {
+    return "setup_in_progress";
+  }
+
+  // For an active draft, a genuine owner-attention defect outranks collecting:
+  // a durable interaction request (e.g. an OTP challenge mid first-sync) is
+  // specific, actionable evidence
+  // (fr-setup-status-lifecycle-0806 — a Chase draft mid-OTP-wait was
+  // reading `needs_owner`'s own copy as generic "Finish connecting this
+  // source," discarding the exact required action). Checked before the
+  // generic "collecting" state, mirroring the existing "attention outranks
+  // a paused schedule" precedent below.
+  if (hasOwnerBlockingAction(verdict)) {
+    return "needs_owner";
+  }
   // Setup in progress: ONLY from explicit lifecycle evidence (the connector-
   // instance row's own `status`), same discipline as `retired` (design gate
   // #2's sibling). A `draft` connection has not completed its first
   // credential capture / browser enrollment and has never ingested, so its
   // health/schedule/coverage shape is not yet meaningful — checked before
-  // every other resolver so a draft never reads as `needs_owner`,
-  // `not_measured`, or (worse) `healthy`. See
-  // fix-pending-connection-discovery design.
-  if (evidence.lifecycle?.status === "draft") {
-    return "setup_in_progress";
-  }
-
-  // A genuine defect (owner-attention, maintainer code_fix) always outranks
-  // a merely-paused schedule: a disabled schedule must never mask a more
-  // urgent credential failure or maintainer-blocked coverage gap underneath
-  // it. Check these BEFORE `owner_paused` (owner review, 2026-07-09: "a
-  // disabled schedule must not mask a more urgent credential or maintainer
-  // failure").
-  if (verdict.channel === "attention" && primary && primary.audience === "owner") {
-    return "needs_owner";
-  }
-  if (primary?.audience === "maintainer") {
-    return "blocked_maintainer";
-  }
-
+  // the remaining resolvers so a draft never reads as `not_measured` or
+  // (worse) `healthy`. See fix-pending-connection-discovery design.
+  //
+  // For an active draft, checked AFTER `needs_owner` and BEFORE the
+  // `progress.active` check below: a run in flight with no interaction
+  // requested yet must read `collecting` (see the `progress.active` check
+  // below), never a generic "needs you" — but a draft run in flight WITH an
+  // open interaction request must resolve `needs_owner` (already returned
+  // above) with the exact requested action, not `setup_in_progress`'s
+  // generic "Finish connecting this source" copy.
   // Owner-paused schedule: a schedule row exists, was disabled, and the
   // connection has a prior success — and (per the two checks above) no
   // higher-priority owner-attention or maintainer defect is already present.
@@ -367,9 +421,16 @@ function resolveOwnerStateResolver(
     return "refresh_due";
   }
 
-  // Any remaining amber/red tone is real system-side trouble the owner did
-  // not cause and (per the actions above) cannot single-handedly resolve.
-  if (verdict.pill.tone === "amber" || verdict.pill.tone === "red") {
+  // Passive scheduled recovery is an amber/calm advisory, not system
+  // degradation. All higher-priority owner and maintainer branches above have
+  // already claimed their states, so this preserves their precedence.
+  const systemDegradedForTone = {
+    amber: !isPassiveScheduledRecovery(snapshot, verdict),
+    green: false,
+    grey: false,
+    red: true,
+  }[verdict.pill.tone];
+  if (systemDegradedForTone) {
     return "system_degraded";
   }
 

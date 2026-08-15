@@ -44,6 +44,12 @@ const ISLAND_RESEEDS_RE = /useEffect\(\(\) => \{\s*setValue\(currentLabel\);\s*\
 const ISLAND_REFRESHES_RE = /router\.refresh\(\)/;
 const ISLAND_DISABLES_EMPTY_RE = /disabled=\{isPending \|\| !value\.trim\(\)\}/;
 const ISLAND_HIDES_WHEN_NULL_RE = /if \(connectionId === null\) \{\s*return null;\s*\}/;
+// SLVP touch-target bar (red-team P2 #5): the visible pencil button measured
+// 24x24px at 390x844, well under the 44px bar. The fix grows the hit area
+// via a `::before` pseudo-element (`inset-[-10px]`) rather than the visible
+// box, so this pins the technique, not just a bigger className.
+const ISLAND_HIT_AREA_RE = /before:absolute before:inset-\[-10px\] before:content-\[''\]/;
+const ISLAND_VISIBLE_BOX_RE = /h-6 w-6/;
 
 const PAGE_SEED_RE = /isFallbackConnectionLabel\(\{[\s\S]*?\}\)\s*\?\s*""\s*:\s*\(summary\.display_name \?\? ""\)/;
 const PAGE_RENDERS_ISLAND_RE = /<RenameConnection/;
@@ -98,6 +104,13 @@ test("rename island disables save on an empty label", async () => {
 test("rename island hides itself when there is no addressable connection", async () => {
   const src = await readFile(ISLAND_FILE, "utf8");
   assert.match(src, ISLAND_HIDES_WHEN_NULL_RE);
+});
+
+test("rename button's hit area meets the 44px touch-target bar without resizing the visible 24x24 icon box", async () => {
+  const src = await readFile(ISLAND_FILE, "utf8");
+  assert.match(src, ISLAND_HIT_AREA_RE);
+  // 24px box + 10px expansion each side = 44px hit area.
+  assert.match(src, ISLAND_VISIBLE_BOX_RE);
 });
 
 // The "label needed" hint's cross-row ambiguity rule (a fallback label like

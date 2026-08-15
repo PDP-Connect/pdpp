@@ -6,9 +6,11 @@ import {
   classifyRecordKind,
   type DeclaredFieldRoles,
   type DeclaredFieldTypes,
+  deriveSourceDisplayNameFallback,
   EMPTY_DECLARED_FIELD_ROLES,
   type FieldRole,
   formatConnectorNameForDisplay,
+  isFallbackConnectionLabel,
   parseFieldRole,
 } from "@pdpp/display";
 import { validateListEnvelope } from "@pdpp/list-envelope";
@@ -197,11 +199,16 @@ function toConnectionFacet(summary: RefConnectorIdentitySummary): ExplorerConnec
 }
 
 function connectorSummaryDisplayName(summary: RefConnectorIdentitySummary): string {
-  return formatConnectorNameForDisplay({
+  const displayInput = {
     connectorId: summary.connector_id,
     displayName: summary.display_name,
     name: summary.connector_display_name,
-  });
+  };
+  const display = formatConnectorNameForDisplay(displayInput);
+  if (isFallbackConnectionLabel(displayInput)) {
+    return deriveSourceDisplayNameFallback(displayInput);
+  }
+  return display;
 }
 
 function summaryByConnectionId(
@@ -1612,7 +1619,8 @@ async function loadTimeRangeFeed(
  */
 function detectSingleStreamDoor(
   filtered: Array<{ connector_id: string; stream: string }>,
-  filteredSummaries: RefConnectorIdentitySummary[]
+  filteredSummaries: RefConnectorIdentitySummary[],
+  streamDisplayLabels: ReadonlyMap<string, string>
 ): ExplorerStreamDoor | null {
   if (filtered.length === 0) {
     return null;
@@ -1633,12 +1641,22 @@ function detectSingleStreamDoor(
     return null;
   }
   const [summary] = matchingSummaries;
+  const connectorKey = manifestConnectorKey({ connector_id: sharedConnector } as { connector_id: string });
+  const streamLabel = resolveStreamDisplayLabel(streamDisplayLabels, connectorKey, sharedStream);
   return {
     connectionId: summary.connection_id,
     connectorId: sharedConnector,
-    displayName: `${connectorSummaryDisplayName(summary)} - ${sharedStream}`,
+    displayName: `${connectorSummaryDisplayName(summary)} - ${streamLabel}`,
     stream: sharedStream,
   };
+}
+
+export function resolveStreamDisplayLabel(
+  streamDisplayLabels: ReadonlyMap<string, string>,
+  connectorId: string,
+  streamName: string
+): string {
+  return streamDisplayLabels.get(searchTimestampMetadataKey(connectorId, streamName)) ?? streamName;
 }
 
 /**
@@ -1859,6 +1877,7 @@ async function loadSearchFeed(
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
   declaredFieldRoles: ReadonlyMap<string, DeclaredFieldRoles>,
   selectedConnectionIds: ReadonlySet<string>,
+  streamDisplayLabels: ReadonlyMap<string, string>,
   // EXCLUDE scope ("is not" / `-con:`/`-stream:`): drop excluded hits BEFORE counts/
   // descriptors are built so "everything except X" is honest in search too.
   exclude: { instanceIds: ReadonlySet<string>; streams: ReadonlySet<string> },
@@ -1946,7 +1965,7 @@ async function loadSearchFeed(
 
   // Detect single-entity case (all hits share same connection+stream) for the
   // per-source browse door and for Most-recent single-stream pagination.
-  const streamDoor = detectSingleStreamDoor(filtered, filteredSummaries);
+  const streamDoor = detectSingleStreamDoor(filtered, filteredSummaries, streamDisplayLabels);
 
   // ── Most-recent mode: chronological, exhaustively pageable ─────────────────
   //
@@ -2067,7 +2086,7 @@ async function loadSearchFeed(
         stream: hit.stream,
       };
     });
-    const fallbackDoor = detectSingleStreamDoor(fallbackFiltered, filteredSummaries);
+    const fallbackDoor = detectSingleStreamDoor(fallbackFiltered, filteredSummaries, streamDisplayLabels);
     const fallbackNextCursor = fallbackPage.next_cursor ?? null;
     return {
       // keyword_pageable ordered by time: multi-stream Most-recent path uses
@@ -2183,6 +2202,8 @@ async function dispatchFeed(args: {
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>;
   /** Declared presentation ROLES per connector::stream (parallel to declaredFieldTypes). */
   declaredFieldRoles: ReadonlyMap<string, DeclaredFieldRoles>;
+  /** Human stream labels keyed by connector::stream. */
+  streamDisplayLabels: ReadonlyMap<string, string>;
   filterConnectionSet: ReadonlySet<string>;
   /** EXCLUDED connection ids (facet "is not" / `-con:`). Applied on the recent lens. */
   excludeConnectionSet: ReadonlySet<string>;
@@ -2213,6 +2234,7 @@ async function dispatchFeed(args: {
     manifestFieldNames,
     declaredFieldTypes,
     declaredFieldRoles,
+    streamDisplayLabels,
     filterConnectionSet,
     excludeConnectionSet,
     excludeStreamSet,
@@ -2242,6 +2264,7 @@ async function dispatchFeed(args: {
       declaredFieldTypes,
       declaredFieldRoles,
       filterConnectionSet,
+      streamDisplayLabels,
       exclude,
       dataSource
     );
@@ -2314,12 +2337,15 @@ interface ManifestMetadata {
    * object/array), mirroring how the records list page filters declared fields.
    */
   serverFilterableFields: Map<string, Set<string>>;
+  /** Stream display labels from manifest display.label, keyed by connector::stream. */
+  streamDisplayLabels: Map<string, string>;
   timestampMetadata: Map<string, SearchTimestampMetadata>;
 }
 
 interface ManifestStream {
   consent_time_field?: unknown;
   cursor_field?: unknown;
+  display?: { label?: string };
   fields?: unknown;
   name: string;
   schema?: { properties?: Record<string, unknown>; fields?: unknown };
@@ -2480,10 +2506,14 @@ function indexManifestStream(
     declaredFieldTypes: Map<string, DeclaredFieldTypes>;
     manifestFieldNames: Map<string, readonly string[]>;
     serverFilterableFields: Map<string, Set<string>>;
+    streamDisplayLabels: Map<string, string>;
     timestampMetadata: Map<string, SearchTimestampMetadata>;
   }
 ): void {
   const key = searchTimestampMetadataKey(connectorId, stream.name);
+  if (stream.display?.label) {
+    maps.streamDisplayLabels.set(key, stream.display.label);
+  }
   maps.timestampMetadata.set(key, {
     consent_time_field: typeof stream.consent_time_field === "string" ? stream.consent_time_field : null,
     cursor_field: typeof stream.cursor_field === "string" ? stream.cursor_field : null,
@@ -2539,6 +2569,7 @@ async function buildManifestMetadata(dataSource: DashboardDataSource): Promise<M
     declaredFieldTypes: new Map<string, DeclaredFieldTypes>(),
     manifestFieldNames: new Map<string, readonly string[]>(),
     serverFilterableFields: new Map<string, Set<string>>(),
+    streamDisplayLabels: new Map<string, string>(),
     timestampMetadata: new Map<string, SearchTimestampMetadata>(),
   };
   for (const manifest of await dataSource.listConnectorManifests()) {
@@ -3077,6 +3108,7 @@ export async function assembleExplorerData(
       since,
       snapshotAnchorParam: rawAnchor,
       summaries,
+      streamDisplayLabels: manifestMetadata.streamDisplayLabels,
       timestampMetadata,
       until,
       upcomingTrail,

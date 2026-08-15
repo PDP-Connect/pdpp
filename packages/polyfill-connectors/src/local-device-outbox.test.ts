@@ -735,6 +735,10 @@ test("LocalDeviceOutbox.summary aggregates large queues with one SQL pass", asyn
     assert.equal(summary.ready, 225);
     assert.equal(summary.deadLetter, 0);
     assert.ok(summary.oldestReadyAt);
+    // oldestReadyAt covers all 225 ready rows (175 never-failed + 50 retried);
+    // oldestRetryingAt is scoped to only the 50 that actually failed once via
+    // failRetryable (attempt_count > 0) and must not be null here.
+    assert.ok(summary.oldestRetryingAt);
     // The aggregate summary must agree with the slow per-row computation:
     const items = outbox.list({ sourceInstanceId });
     const slow = {
@@ -749,6 +753,70 @@ test("LocalDeviceOutbox.summary aggregates large queues with one SQL pass", asyn
     assert.equal(summary.deadLetter, slow.deadLetter);
     // Avoid unused-var warning
     assert.equal(longLease.length, 5);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("LocalDeviceOutbox.summary: a never-failed backlog has oldestReadyAt but no oldestRetryingAt", async () => {
+  // Simulates a large healthy first drain: rows enqueued and still ready,
+  // none of them has ever failed (attempt_count stays 0 for all of them).
+  // oldestReadyAt ages with the queue; oldestRetryingAt must stay null,
+  // since age alone is not retry/failure evidence.
+  const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
+  try {
+    const sourceInstanceId = "src-never-failed";
+    for (let index = 0; index < 10; index += 1) {
+      outbox.enqueue({
+        id: `${sourceInstanceId}:record_batch:${index}`,
+        kind: "record_batch",
+        payload: { records: [{ key: `m-${index}` }] },
+        sourceInstanceId,
+      });
+    }
+    const summary = outbox.summary({ sourceInstanceId });
+    assert.equal(summary.ready, 10);
+    assert.ok(summary.oldestReadyAt);
+    assert.equal(summary.oldestRetryingAt, null);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("LocalDeviceOutbox.summary: a row that fails once then a fresh row is enqueued keeps oldestRetryingAt scoped to the failed row", async () => {
+  const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
+  try {
+    const sourceInstanceId = "src-mixed";
+    outbox.enqueue({
+      id: `${sourceInstanceId}:record_batch:failed`,
+      kind: "record_batch",
+      payload: { records: [{ key: "m-failed" }] },
+      sourceInstanceId,
+    });
+    const [claim] = outbox.claimReady({ holder: "w1", leaseMs: 60_000, sourceInstanceId });
+    assert.ok(claim);
+    outbox.failRetryable({
+      error: "503",
+      holder: "w1",
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+      retryBackoffMs: 0,
+    });
+    outbox.enqueue({
+      id: `${sourceInstanceId}:record_batch:fresh`,
+      kind: "record_batch",
+      payload: { records: [{ key: "m-fresh" }] },
+      sourceInstanceId,
+    });
+    const summary = outbox.summary({ sourceInstanceId });
+    assert.equal(summary.ready, 2);
+    // Both rows are ready, so oldestReadyAt is the earlier of the two
+    // (the failed row, enqueued first).
+    assert.ok(summary.oldestReadyAt);
+    // oldestRetryingAt must equal oldestReadyAt here since the failed row
+    // IS the oldest ready row — but critically it is derived independently,
+    // scoped by attempt_count > 0, not merely copied from oldestReadyAt.
+    assert.equal(summary.oldestRetryingAt, summary.oldestReadyAt);
   } finally {
     outbox.close();
   }

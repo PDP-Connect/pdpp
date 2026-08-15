@@ -51,7 +51,7 @@ export async function runConnectorNowAction(
   try {
     const runOptions = { force: options.force === true };
     const body = (await (connectionId
-      ? runConnectionNow(connectionId, runOptions)
+      ? runConnectionNow(connectionId, { ...runOptions, runAdmission: "setup" })
       : runConnectorNow(connectorId, runOptions))) as {
       run_id?: string;
       trace_id?: string;

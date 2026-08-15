@@ -233,6 +233,30 @@ test(
 );
 
 test(
+  "SQLite: an unscoped fold carries one absolute duration deadline across instance folds",
+  withTempDb(async () => {
+    seedSqliteConnection("cin_unscoped_deadline");
+    await rebuildConnectorSummaryEvidence();
+    seedSqliteTerminalEvents("cin_unscoped_deadline", 1);
+
+    const originalNow = Date.now;
+    let calls = 0;
+    Date.now = () => {
+      const early = calls < 2;
+      calls += 1;
+      return early ? 0 : 1000;
+    };
+    try {
+      const result = await foldConnectorSummaryStreamFacts(null, { maxDurationMs: 1 });
+      assert.equal(result.incomplete, true, "the outer budget expires before the nested instance fold starts");
+      assert.equal(result.eventsRead, 0, "an expired outer budget must not receive a fresh per-instance budget");
+    } finally {
+      Date.now = originalNow;
+    }
+  })
+);
+
+test(
   "SQLite: runBoundedSummaryEvidenceSweep reports the WHOLE sweep incomplete and skips complete pruning when a page's fold does not converge",
   withTempDb(async () => {
     seedSqliteConnection("cin_sweep_budget");
@@ -477,6 +501,36 @@ test("real PostgreSQL: foldConnectorSummaryStreamFacts respects an explicit maxE
   }
 });
 
+test("real PostgreSQL: an unscoped fold carries one absolute duration deadline across instance folds", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  await initPostgresStorage(postgresStorageConfig());
+  try {
+    await cleanupPostgres();
+    await seedPostgresConnection("cin_unscoped_deadline_pg");
+    await rebuildConnectorSummaryEvidence();
+    await seedPostgresTerminalEvents("cin_unscoped_deadline_pg", 1);
+
+    const originalNow = Date.now;
+    let calls = 0;
+    Date.now = () => {
+      const early = calls < 2;
+      calls += 1;
+      return early ? 0 : 1000;
+    };
+    try {
+      const result = await foldConnectorSummaryStreamFacts(null, { maxDurationMs: 1 });
+      assert.equal(result.incomplete, true, "the outer budget expires before the nested instance fold starts");
+      assert.equal(result.eventsRead, 0, "an expired outer budget must not receive a fresh per-instance budget");
+    } finally {
+      Date.now = originalNow;
+    }
+  } finally {
+    await cleanupPostgres();
+    await closePostgresStorage();
+  }
+});
+
 test("real PostgreSQL: runBoundedSummaryEvidenceSweep reports incomplete and skips complete pruning when a page's fold does not converge, then resumes", {
   skip: !POSTGRES_URL,
 }, async () => {
@@ -557,7 +611,7 @@ test("real PostgreSQL: the 25-row first-page starvation shape folds before slow 
     await postgresQuery("UPDATE connector_summary_evidence SET dirty = 1 WHERE connector_id = $1", ["c1_pg_budget"]);
     await postgresQuery(
       `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
-         BEGIN PERFORM pg_sleep(0.08); RETURN NEW; END;
+         BEGIN PERFORM pg_sleep(0.5); RETURN NEW; END;
        $$`
     );
     await postgresQuery(
@@ -567,7 +621,13 @@ test("real PostgreSQL: the 25-row first-page starvation shape folds before slow 
     );
     const observations: ConnectorSummaryReconcileObservation[] = [];
     setConnectorSummaryReconcileObservationSink((emitted) => observations.push(emitted));
-    const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 300, pageSize: 25 });
+    // Leave deterministic room for the 25-participant fold to finish before
+    // the deliberately slow generic-repair phase consumes the round. The
+    // earlier 300ms/80ms pair made this oracle race the PostgreSQL listener:
+    // sometimes the fold reached all 25 participants, and sometimes the
+    // deadline cut it off before the last few. Five seconds still bounds the
+    // round while 25 half-second repairs cannot all fit after the fold.
+    const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 5000, pageSize: 25 });
     assert.equal(first.incomplete, true, "slow generic repairs exhaust the remaining bounded round");
     assert.equal(first.resumeAfterId, null, "an incomplete first page retries from its durable NULL cursor");
     const checkpoints = await postgresQuery(
@@ -595,7 +655,13 @@ test("real PostgreSQL: the 25-row first-page starvation shape folds before slow 
     await postgresQuery(`DROP FUNCTION IF EXISTS ${functionName}()`);
     const restarted = await runBoundedSummaryEvidenceSweep({
       afterId: first.resumeAfterId,
-      maxDurationMs: 300,
+      // The first round intentionally uses a tight deadline while the slow
+      // writer trigger is installed. Once that trigger is removed, this
+      // restart is testing durable NULL-cursor resumption, not whether an
+      // arbitrary 300ms budget also covers the page's final empty-page census
+      // on a loaded PostgreSQL listener. The earlier value made this oracle
+      // timing-sensitive even when every admitted repair had completed.
+      maxDurationMs: 60_000,
       pageSize: 25,
     });
     assert.equal(restarted.incomplete, false, "restart from the durable NULL first-page cursor converges");

@@ -27,8 +27,7 @@
       "rationale": "DoorDash order history is browser-scraped; treat as manual to avoid bot-detection signals."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [
@@ -167,5 +166,8 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "doordash_graphql_wiring_pending": "DoorDash support isn't wired up yet"
+  }
 }

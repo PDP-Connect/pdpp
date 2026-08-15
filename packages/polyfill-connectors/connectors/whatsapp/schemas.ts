@@ -17,12 +17,17 @@
  *                  hydration_error, blob_ref }
  *
  * Shape notes:
- *   - `id` (chat) is a 16-hex sha256 slice of the filename; message `id` is
- *     `${chatId}:${index}`.
+ *   - `id` (chat) is a 16-hex sha256 slice of the sorted participant set plus
+ *     the earliest message's sent_at — stable across re-exports with a
+ *     different filename. Message `id` is `${chatId}:${contentHash}`, a
+ *     16-hex sha256 slice of author+sent_at+content — stable across
+ *     reordering or prepended history in a re-export, unlike an array index.
  *   - `title`, `author`, `content` are free-form human text → pdppSafeText.
  *     `author` is a trimmed regex capture and can be empty string; `content`
  *     can be empty (e.g. an attachment-only line) — pdppSafeText permits "".
- *   - `sent_at` is always an ISO string: parseDateTime() or nowIso() fallback.
+ *   - `sent_at` is always an ISO string, and always a real parsed export
+ *     timestamp — a line whose date won't parse folds into the preceding
+ *     message rather than being stamped with the run's clock.
  *   - date-range fields on `chats` are the first/last message sent_at, so
  *     they are ISO strings or null (empty chat).
  */
@@ -32,8 +37,8 @@ import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Module-scoped regexes (Biome useTopLevelRegex).
-const CHAT_ID_RE = /^[0-9a-f]{16}$/; // 16-hex sha256 slice of filename
-const MESSAGE_ID_RE = /^[0-9a-f]{16}:\d+$/; // "<chatId>:<index>"
+const CHAT_ID_RE = /^[0-9a-f]{16}$/; // 16-hex sha256 slice of participants+first message time
+const MESSAGE_ID_RE = /^[0-9a-f]{16}:[0-9a-f]{16}$/; // "<chatId>:<contentHash>"
 const ATTACHMENT_ID_RE = /^[0-9a-f]{16}:attachment:[0-9a-f]{16}$/;
 const ISO_DT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 

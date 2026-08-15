@@ -27,8 +27,7 @@
       "rationale": "Claude.ai conversations are browser-scraped behind a login wall; background polling risks lockouts."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [
@@ -219,5 +218,8 @@
       "coverage_strategy": "full_inventory",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "claude_api_wiring_pending": "Claude API support isn't wired up yet"
+  }
 }

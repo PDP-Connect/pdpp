@@ -13,6 +13,7 @@
     "./connection-setup-plan": "./server/connection-setup-plan.ts",
     "./owner-session": "./server/owner-session.ts",
     "./deployment-diagnostics": "./server/deployment-diagnostics.ts",
+    "./manual-upload-limits": "./server/manual-upload-limits.ts",
     "./operations/as-authorization-server-metadata": "./operations/as-authorization-server-metadata/index.ts",
     "./operations/ref-spine-correlations-list": "./operations/ref-spine-correlations-list/index.ts",
     "./operations/ref-spine-events-page": "./operations/ref-spine-events-page/index.ts",
@@ -33,6 +34,7 @@
     "./operations/ref-dataset-summary": "./operations/ref-dataset-summary/index.ts"
   },
   "scripts": {
+    "generate:connector-registry": "node --experimental-strip-types scripts/generate-connector-registry.ts",
     "//dev": "Default dev is quiet again. Use `pnpm dev:trace-gc` only when investigating native/V8 crash behavior under load. Diagnostic reports go to ../tmp/node-reports/ and exclude env/network sections so connector credentials are not persisted.",
     "dev": "sh -c 'mkdir -p ../tmp/node-reports && node --env-file-if-exists=../.env.local --import ./server/dev-env-defaults.ts --report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=../tmp/node-reports server/index.ts'",
     "dev:trace-gc": "sh -c 'mkdir -p ../tmp/node-reports && node --env-file-if-exists=../.env.local --import ./server/dev-env-defaults.ts --report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=../tmp/node-reports --trace-gc --trace-gc-verbose server/index.ts'",
@@ -46,6 +48,8 @@
     "test:semantic-multilingual-smoke": "PDPP_MULTILINGUAL_MINILM_SMOKE=1 node --import tsx ../scripts/test-scratch/run-command.ts -- node --test --test-timeout=240000 --test-name-pattern \"multilingual-minilm profile\" test/semantic-retrieval.test.ts",
     "test:live-cdp": "PDPP_TEST_LIVE_CDP=1 node --import tsx ../scripts/test-scratch/run-command.ts -- node --test test/run-interaction-stream-cdp-live.test.ts",
     "test:live-neko": "PDPP_TEST_LIVE_NEKO=1 node --import tsx ../scripts/test-scratch/run-command.ts -- node --test --import tsx test/run-interaction-stream-neko-live.test.ts",
+    "test:manual-upload-no-whole-file-read": "node --experimental-test-module-mocks --expose-gc --test --import tsx test/manual-upload-whatsapp-no-whole-file-read.test.ts",
+    "test:run-generation-fencing-terminal-write-failure": "node --import tsx ../scripts/test-scratch/run-command.ts -- node --experimental-test-module-mocks --test --import tsx test/run-generation-fencing-terminal-write-failure.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",
@@ -69,6 +73,7 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
+    "@babel/parser": "7.29.2",
     "@biomejs/biome": "2.5.7",
     "@types/pg": "8.21.0",
     "jsdom": "^30.0.1",

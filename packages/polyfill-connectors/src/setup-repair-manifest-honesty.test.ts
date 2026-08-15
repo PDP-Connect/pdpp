@@ -24,9 +24,6 @@ const LIVE_STATE_PATTERNS: readonly RegExp[] = [
 interface Manifest {
   capabilities?: {
     human_interaction?: unknown;
-    public_listing?: {
-      status?: unknown;
-    };
     refresh_policy?: {
       assisted_after_owner_auth?: unknown;
       background_safe?: unknown;
@@ -139,13 +136,12 @@ test("static-secret manifests declare stable credential capture shape only", () 
   );
 });
 
-test("automatic needs-human-auth manifests are explicitly session-reuse/assisted policy, not generic background auth", () => {
+test("automatic human-interaction manifests are explicitly session-reuse/assisted policy, not generic background auth", () => {
   const offenders: string[] = [];
   for (const name of MANIFEST_NAMES) {
     const manifest = readManifest(name);
-    const listingStatus = manifest.capabilities?.public_listing?.status;
     const policy = manifest.capabilities?.refresh_policy;
-    if (listingStatus !== "needs_human_auth") {
+    if (!(policy?.interaction_posture === "manual_action_likely" || policy?.interaction_posture === "otp_likely")) {
       continue;
     }
     const claimsAutomatic = policy?.recommended_mode === "automatic" || policy?.background_safe === true;
@@ -157,7 +153,7 @@ test("automatic needs-human-auth manifests are explicitly session-reuse/assisted
   assert.deepEqual(
     offenders,
     [],
-    "needs-human-auth manifests may be automatic/background-safe only when explicitly marked assisted-after-owner-auth"
+    "manifests requiring human interaction may be automatic/background-safe only when explicitly marked assisted-after-owner-auth"
   );
 });
 

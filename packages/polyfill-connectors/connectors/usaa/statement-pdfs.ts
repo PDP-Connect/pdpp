@@ -6,7 +6,7 @@
  *
  * Phase A: for each row in /my/documents, drive the "Options" kebab -> "Download"
  * menu to trigger the PDF download. Save each PDF to
- *   ~/.pdpp/usaa-statements/<account_id>/<YYYY-MM>-<hash>.pdf
+ *   <connector-artifact-root>/usaa/statements/<account_id>/<YYYY-MM>-<hash>.pdf
  * and return an array of hydrated-statement records (pdf_path, pdf_sha256,
  * document_url as file://) alongside pdf bytes.
  *
@@ -25,15 +25,16 @@
  */
 
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright";
 import {
   attachBodyResponseQueue,
+  type BodyResponseDiagnostics,
   type BodyResponseQueue,
   isLikelyPdfResponseBody,
   waitForOptionalBodyResponse,
 } from "../../src/browser-artifact-response.ts";
+import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { readPlaywrightDownloadBuffer } from "../../src/playwright-download.ts";
 import {
@@ -54,24 +55,30 @@ import {
 } from "./parsers.ts";
 import type {
   DownloadFail,
+  DownloadFailReason,
   DownloadResult,
   HydratedStatement,
   ParsedStatementTxn,
   ParseMeta,
   StatementClosing,
+  StatementDownloadDiagnostic,
+  StatementResponseDiagnostic,
   StatementRow,
   StatementTxnRecord,
 } from "./types.ts";
 
-const STATEMENT_ROOT = join(homedir(), ".pdpp", "usaa-statements");
+// Downloaded statement PDFs are durable: emitted records carry `pdf_path` /
+// `document_url` pointing at these files. They live on the deployment-owned
+// artifact root, not under homedir(), which the documented single-volume
+// deployment discards on container replacement. See
+// src/connector-artifact-root.ts.
+const STATEMENT_ROOT = resolveConnectorArtifactDir("usaa", ["statements"]).root;
 
 // ─── Selector regexes (kept here; Node-side, not pure data) ──────────────
 const OPTIONS_BUTTON_TEXT_RE = /^\s*(Options|More|\.{3})\s*$/i;
 const DOWNLOAD_MENU_ITEM_RE = /download/i;
 const DOWNLOAD_BUTTON_TEXT_RE = /^\s*Download( PDF)?\s*$/i;
 const DOCUMENTS_PATH_RE = /\/my\/documents/;
-const MENU_WS_RE = /\s+/g;
-const WS_CLEANUP_RE = /\s+/g;
 const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
 
 // ─── Timing constants ────────────────────────────────────────────────────
@@ -82,9 +89,6 @@ const DOCUMENTS_RELOAD_SETTLE_MS = 5000;
 const CLICK_TIMEOUT_MS = 5000;
 const OPTIONS_MENU_SETTLE_MS = 500;
 const ROW_JITTER_MS = 400;
-const MAX_ERROR_MSG = 160;
-const MAX_MENU_HTML_SAMPLE = 500;
-const MAX_RAW_TEXT_SAMPLE = 800;
 
 // ─── Tiny helpers ────────────────────────────────────────────────────────
 
@@ -92,8 +96,55 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function errMsg(err: unknown): string {
-  return (err instanceof Error ? err.message : String(err)).slice(0, MAX_ERROR_MSG);
+function structuralErrorClass(error: unknown): "Error" | "unknown" {
+  return error instanceof Error ? "Error" : "unknown";
+}
+
+function structuralErrorDiagnostic(error: unknown): StatementDownloadDiagnostic {
+  return { error_class: structuralErrorClass(error) };
+}
+
+export function buildUsaaStatementMenuDiagnostic({
+  downloadCandidateCount,
+  menuActionCount,
+  menuItemCount,
+  menuPresent,
+}: {
+  downloadCandidateCount: number;
+  menuActionCount: number;
+  menuItemCount: number;
+  menuPresent: boolean;
+}): StatementDownloadDiagnostic {
+  return {
+    menu: {
+      action_count: menuActionCount,
+      download_candidate_count: downloadCandidateCount,
+      item_count: menuItemCount,
+      present: menuPresent,
+    },
+  };
+}
+
+export function summarizeUsaaStatementResponseDiagnostics(diagnostics: BodyResponseDiagnostics): {
+  response: StatementResponseDiagnostic;
+} {
+  const sourceCounts = { cdp: 0, playwright: 0 };
+  for (const candidate of diagnostics.candidates) {
+    sourceCounts[candidate.source] += 1;
+  }
+  return {
+    response: {
+      body_error_count: diagnostics.candidates.filter((candidate) => candidate.reason === "body_error").length,
+      candidate_count: diagnostics.candidates.length,
+      cdp_error: diagnostics.cdpError !== null,
+      cdp_ready: diagnostics.cdpReady,
+      matched_count: diagnostics.candidates.filter((candidate) => candidate.reason === "matched").length,
+      source_counts: sourceCounts,
+      status_codes: [...new Set(diagnostics.candidates.map((candidate) => candidate.status))]
+        .filter((status) => Number.isInteger(status))
+        .slice(0, 8),
+    },
+  };
 }
 
 function attachPdfResponseQueue(page: Page): BodyResponseQueue {
@@ -162,7 +213,7 @@ async function consumeDownloadOrResponse({
 }: {
   downloadQueue: DownloadQueue;
   responseQueue: BodyResponseQueue;
-}): Promise<{ buffer: Buffer; diag?: Record<string, unknown>; suggestedFilename: string } | null> {
+}): Promise<{ buffer: Buffer; diag?: StatementDownloadDiagnostic; suggestedFilename: string } | null> {
   const responsePromise = responseQueue.waitForNextResponse({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   try {
@@ -187,7 +238,11 @@ async function consumeDownloadOrResponse({
       if (response) {
         return {
           buffer: response.body,
-          diag: { download_error: errMsg(err), response_source: response.source },
+          diag: {
+            bytes: response.body.length,
+            error_class: structuralErrorClass(err),
+            response_source: response.source,
+          },
           suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
         };
       }
@@ -197,7 +252,7 @@ async function consumeDownloadOrResponse({
     if (response) {
       return {
         buffer: response.body,
-        diag: { download_empty: true, response_source: response.source },
+        diag: { bytes: response.body.length, download_empty: true, response_source: response.source },
         suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
       };
     }
@@ -206,8 +261,8 @@ async function consumeDownloadOrResponse({
     return {
       buffer: Buffer.alloc(0),
       diag: {
-        error: errMsg(err),
-        response_diagnostics: responseQueue.diagnostics(),
+        error_class: structuralErrorClass(err),
+        response: summarizeUsaaStatementResponseDiagnostics(responseQueue.diagnostics()).response,
       },
       suggestedFilename: "statement.pdf",
     };
@@ -239,7 +294,7 @@ async function downloadViaDirectLink(page: Page, row: Locator): Promise<Download
     return {
       ok: false,
       reason: "direct_link_failed",
-      diag: { error: errMsg(err) },
+      diag: structuralErrorDiagnostic(err),
     };
   } finally {
     downloadQueue.detach();
@@ -256,27 +311,42 @@ async function openOptionsMenu(optBtn: Locator): Promise<DownloadFail | null> {
     return {
       ok: false,
       reason: "options_click_failed",
-      diag: { error: errMsg(err) },
+      diag: structuralErrorDiagnostic(err),
     };
   }
 }
 
-/** Capture menu HTML + dismiss the menu when no Download menuitem was found. */
+/** Capture structural menu facts + dismiss the menu when no Download menuitem was found. */
 async function noDownloadMenuitemFailure(page: Page): Promise<DownloadFail> {
-  const menuHtml = await page
+  const menuCount = await page
     .locator('[role="menu"]')
-    .first()
-    .innerHTML()
-    .catch(() => null);
+    .count()
+    .catch(() => 0);
+  const menuItemCount = await page
+    .locator('[role="menu"] [role="menuitem"]')
+    .count()
+    .catch(() => 0);
+  const menuActionCount = await page
+    .locator('[role="menu"] a, [role="menu"] button')
+    .count()
+    .catch(() => 0);
+  const downloadCandidateCount = await page
+    .locator('[role="menu"] [role="menuitem"], [role="menu"] a, [role="menu"] button')
+    .filter({ hasText: DOWNLOAD_MENU_ITEM_RE })
+    .count()
+    .catch(() => 0);
   await page.keyboard.press("Escape").catch(() => {
     /* ignore */
   });
   return {
     ok: false,
     reason: "no_download_menuitem",
-    diag: {
-      menu_html: menuHtml ? menuHtml.replace(MENU_WS_RE, " ").slice(0, MAX_MENU_HTML_SAMPLE) : null,
-    },
+    diag: buildUsaaStatementMenuDiagnostic({
+      downloadCandidateCount,
+      menuActionCount,
+      menuItemCount,
+      menuPresent: menuCount > 0,
+    }),
   };
 }
 
@@ -296,7 +366,7 @@ async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<Dow
     return {
       ok: false,
       reason: "download_click_failed",
-      diag: { error: errMsg(err) },
+      diag: structuralErrorDiagnostic(err),
     };
   }
   try {
@@ -318,7 +388,7 @@ async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<Dow
     return {
       ok: false,
       reason: "download_timeout",
-      diag: { error: errMsg(err) },
+      diag: structuralErrorDiagnostic(err),
     };
   } finally {
     downloadQueue.detach();
@@ -403,7 +473,9 @@ async function ensureOnDocumentsPage(page: Page): Promise<void> {
 
 interface HydrateCallbacks {
   onProgress?: ((p: { index: number; total: number; title: string | null }) => void) | undefined;
-  onSkip?: ((p: { statement: StatementRow; reason: string; diag: Record<string, unknown> | null }) => void) | undefined;
+  onSkip?:
+    | ((p: { statement: StatementRow; reason: DownloadFailReason; diag: StatementDownloadDiagnostic | null }) => void)
+    | undefined;
 }
 
 /** Persist a single downloaded PDF and append to the hydrated list. */
@@ -432,7 +504,7 @@ async function persistHydratedStatement(
       onSkip({
         statement,
         reason: "persist_failed",
-        diag: { error: errMsg(err) },
+        diag: structuralErrorDiagnostic(err),
       });
     }
   }
@@ -489,7 +561,11 @@ export async function hydrateStatementPdfs({
   page: Page;
   statements: StatementRow[];
   onProgress?: (p: { index: number; total: number; title: string | null }) => void;
-  onSkip?: (p: { statement: StatementRow; reason: string; diag: Record<string, unknown> | null }) => void;
+  onSkip?: (p: {
+    statement: StatementRow;
+    reason: DownloadFailReason;
+    diag: StatementDownloadDiagnostic | null;
+  }) => void;
 }): Promise<HydratedStatement[]> {
   const hydrated: HydratedStatement[] = [];
   if (!statements.length) {
@@ -530,10 +606,9 @@ export function fileUrlForPath(p: string): string {
  *   - Columns: Trans Date | Post Date | Description | Amount
  *   - Section "Transactions" per card-holder
  *
- * We try each parser in order. If none match we emit SKIP_RESULT with the
- * first ~800 chars of raw text so the next iteration has evidence to
- * extend the parser. This mirrors the defensive pattern used elsewhere in
- * the USAA connector.
+ * We try each parser in order. If none match we emit a structural SKIP_RESULT
+ * with the parser era and statement year; raw statement text never enters the
+ * durable diagnostic payload.
  */
 
 // Statement text extraction reuses the shared `pdf-parse` path so the USAA
@@ -615,9 +690,9 @@ function buildStatementRecords(
  *   accountId, accountName, period (YYYY-MM for provenance), originalDescription
  *   fallback.
  *
- * Returns { txns: Array<TxnRecord>, parseMeta: { era, rawTextSample, year } }.
+ * Returns { txns: Array<TxnRecord>, parseMeta: { era, year } }.
  * When no parser matches, txns is [] and parseMeta.era === "unknown"; the
- * connector surfaces a SKIP_RESULT with the text sample.
+ * connector surfaces a bounded structural SKIP_RESULT without statement text.
  */
 export async function parsePdfStatement({
   buffer,
@@ -640,8 +715,6 @@ export async function parsePdfStatement({
       parseMeta: {
         era: "unknown",
         year: closing.closingYear,
-        // Trim to keep SKIP_RESULT lines within JSONL-sane bounds.
-        rawTextSample: text.replace(WS_CLEANUP_RE, " ").slice(0, MAX_RAW_TEXT_SAMPLE),
       },
     };
   }

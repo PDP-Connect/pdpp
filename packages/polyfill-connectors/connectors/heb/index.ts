@@ -352,7 +352,16 @@ async function reportEmptyPageDiagnostics(
     stream: "orders",
     reason: classification.reason,
     message: `H-E-B list page ${pageNum}: empty page is not a proven terminal page (${classification.reason}).`,
-    diagnostics: { ...diag, max_page_resolution: maxPageResolution },
+    diagnostics: {
+      any_card: diag.any_card,
+      body_preview: "",
+      incapsula_block: diag.incapsula_block,
+      max_page_resolution: maxPageResolution,
+      order_cards: diag.order_cards,
+      password_form: diag.password_form,
+      title: "",
+      url: "",
+    },
   });
   return classification;
 }
@@ -362,36 +371,55 @@ async function reportEmptyPageDiagnostics(
 export interface OrderItemsCoverage {
   gap: string[];
   hydrated: string[];
-  optionalSkip: string[];
   required: string[];
 }
 
 export function newOrderItemsCoverage(): OrderItemsCoverage {
-  return { gap: [], hydrated: [], optionalSkip: [], required: [] };
+  return { gap: [], hydrated: [], required: [] };
+}
+
+/**
+ * Per-run, `orders` list-stream coverage accumulator — a distinct denominator
+ * from `OrderItemsCoverage` (that one tracks the `order_items` detail-page
+ * enrichment; this one tracks the `orders` list stream itself, so
+ * `orders`/`checkpoint_window` can report honest evidence even on a run that
+ * skips order_items entirely — H-E-B usage is genuinely light and orders-only
+ * scans are a real steady-state).
+ *
+ * Every list-page order `runForwardScan` reaches `emitOrderAndItems` for is
+ * "considered" (the denominator). An order is "covered" once the connector
+ * made a real accounting decision for its `orders` record: either it
+ * emitted, or the per-order fingerprint cursor deliberately suppressed a
+ * byte-identical re-scrape. An order whose date never parses never reaches
+ * `emitOrderAndItems`, so it is recorded separately as `dateDropped` —
+ * considered, but not covered.
+ */
+export interface OrdersCoverage {
+  considered: string[];
+  covered: string[];
+  dateDropped: string[];
+}
+
+export function newOrdersCoverage(): OrdersCoverage {
+  return { considered: [], covered: [], dateDropped: [] };
 }
 
 /**
  * The detail-hydration outcome for one considered order.
  *  - `hydrated` — the detail page fetched and parsed.
- *  - `gap`      — the detail fetch was attempted but degraded.
- *  - `skipped`  — the order was never enumerable for detail hydration by an
- *                 explicit policy reason (currently: its list-page order date
- *                 did not parse, so it never reaches the detail lane). This is
- *                 still recorded in `required` — the order WAS enumerated by
- *                 the parent list scan — so it never silently vanishes from
- *                 the coverage denominator (mirrors Amazon's
- *                 classifyDetailOutcome `optional_skip` accounting).
+ *  - `gap`      — the detail fetch was attempted but degraded, or the order
+ *                 never reached the detail lane (e.g., unparseable order date).
+ * Both outcomes remain in the required denominator — the order was enumerated
+ * by the parent list scan and must not silently vanish from coverage.
  */
-export type DetailOutcome = "hydrated" | "gap" | "skipped";
+export type DetailOutcome = "hydrated" | "gap";
 
 export function recordDetailOutcome(coverage: OrderItemsCoverage, orderId: string, outcome: DetailOutcome): void {
   coverage.required.push(orderId);
   if (outcome === "hydrated") {
     coverage.hydrated.push(orderId);
-  } else if (outcome === "gap") {
-    coverage.gap.push(orderId);
   } else {
-    coverage.optionalSkip.push(orderId);
+    coverage.gap.push(orderId);
   }
 }
 
@@ -434,6 +462,7 @@ export interface EmitDeps extends HydrationDeps {
   emitRecord: BrowserCollectContext["emitRecord"];
   emittedAt: string;
   orderItemsCoverage: OrderItemsCoverage | undefined;
+  ordersCoverage: OrdersCoverage | undefined;
   ordersFingerprintCursor: FingerprintCursor | undefined;
   progress: BrowserCollectContext["progress"];
   sendInteraction: BrowserCollectContext["sendInteraction"];
@@ -701,6 +730,13 @@ async function emitOrderAndItems(
     if (!deps.ordersFingerprintCursor || deps.ordersFingerprintCursor.shouldEmit(orderRecord)) {
       await deps.emitRecord("orders", orderRecord);
     }
+    // A fingerprint-suppressed re-scrape and a fresh emit are both a real
+    // accounting decision for this order's `orders` record, so both count as
+    // covered.
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.covered.push(listOrder.orderId);
+    }
   }
   if (deps.wantsItems && detail) {
     for (const [itemIndex, item] of detail.items.entries()) {
@@ -758,12 +794,20 @@ export async function processListOrder(
       message: `Order ${listOrder.orderId}: order date "${listOrder.orderDateRaw ?? ""}" did not parse.`,
       diagnostics: { order_id: listOrder.orderId },
     });
-    // The order was enumerated by the parent list scan, so it must still be
-    // classified — an unparseable date never reaches the detail lane, but it
-    // must not vanish from the required/coverage denominator (design doc:
-    // every order classifies hydrated | gap | skipped).
-    if (deps.orderItemsCoverage) {
-      recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, "skipped");
+    // Unparseable order dates cannot reach the detail hydration lane. When
+    // order_items are in scope, emit a DETAIL_GAP (not a policy skip) backed
+    // by actionable evidence; the order was enumerated by the list scan, so
+    // it must still join the required denominator.
+    if (deps.wantsItems && deps.orderItemsCoverage) {
+      recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, "gap");
+      await deps.emit(buildHebDetailGap(listOrder.orderId, "temporary_unavailable", "parse_missing", undefined));
+    }
+    // The list scan still enumerated this order, so the `orders` denominator
+    // must not silently drop it: considered, but not covered (no accounting
+    // decision was made for its `orders` record).
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.dateDropped.push(listOrder.orderId);
     }
     return;
   }
@@ -865,10 +909,20 @@ async function loadListPage(
   waitForHydration?: () => Promise<void>
 ): Promise<LoadedListPage | "terminal"> {
   const url = `https://www.heb.com/my-account/your-orders?page=${pageNum}`;
-  const navError = await page
+  const navigation = await page
     .goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS })
-    .then((): undefined => undefined)
-    .catch((e: unknown): unknown => e);
+    .then(() => ({ ok: true as const }))
+    .catch((error: unknown) => ({ error, ok: false as const }));
+  if (!navigation.ok) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "list_page_navigation_failed",
+      message: `H-E-B list page ${pageNum}: navigation failed; refusing to parse stale page content or advance the cursor.`,
+      diagnostics: { error_class: navigation.error instanceof Error ? "Error" : "unknown" },
+    });
+    throw new Error("heb_empty_list_page_navigation_failed", { cause: navigation.error });
+  }
   await (waitForHydration ?? hydrationWait)();
   await page
     .waitForSelector('a[href*="/my-account/order-history/HEB"]', {
@@ -894,17 +948,6 @@ async function loadListPage(
       throw new Error(`heb_empty_list_page_${reason}`);
     }
     return { maxPage: maxPageResolution.value, orders };
-  }
-  if (navError) {
-    const message = navError instanceof Error ? navError.message : String(navError);
-    await emit({
-      type: "SKIP_RESULT",
-      stream: "orders",
-      reason: "list_page_navigation_failed",
-      message: `H-E-B list page ${pageNum}: goto() failed (${message}) and the page then had no order cards; refusing to treat this as end-of-history.`,
-      diagnostics: { navError: message },
-    });
-    throw new Error("heb_empty_list_page_navigation_failed");
   }
   const classification = await reportEmptyPageDiagnostics(page, pageNum, emit);
   if (classification.action === "terminal") {
@@ -936,9 +979,30 @@ export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItem
     requiredKeys: coverage.required,
     hydratedKeys: coverage.hydrated,
     gapKeys: coverage.gap,
-    optionalSkipKeys: coverage.optionalSkip,
     considered: coverage.required.length,
-    covered: coverage.hydrated.length + coverage.optionalSkip.length,
+    covered: coverage.hydrated.length,
+  });
+}
+
+/**
+ * Emit the run-level `orders` DETAIL_COVERAGE once after the forward scan,
+ * using the shared `emitDetailCoverage` helper self-referentially (`stream`
+ * and `stateStream` both `"orders"` — there is no separate detail-hydration
+ * phase for the list stream itself, mirroring the pattern used for USAA's
+ * `inbox_messages` and GitHub's `declareListConsidered` streams). Always
+ * emits when the caller invokes it (orders in scope), including a
+ * zero-considered steady-state run, so an account with no orders this run
+ * (H-E-B usage is often genuinely light) still reads as measured, not
+ * unknown.
+ */
+export async function emitOrdersCoverage(deps: EmitDeps, coverage: OrdersCoverage): Promise<void> {
+  await emitDetailCoverage(deps, {
+    stream: "orders",
+    stateStream: "orders",
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered: coverage.considered.length,
+    covered: coverage.covered.length,
   });
 }
 
@@ -997,8 +1061,8 @@ if (isMainModule(import.meta.url)) {
       }
       return true;
     },
-    async ensureSession({ page, sendInteraction, capture, checkpoint }): Promise<void> {
-      const ok = await ensureHebSession({ capture, checkpoint, page, sendInteraction });
+    async ensureSession({ page, sendInteraction, capture, checkpoint, onCredentialSubmit }): Promise<void> {
+      const ok = await ensureHebSession({ capture, checkpoint, onCredentialSubmit, page, sendInteraction });
       if (!ok) {
         throw new Error("heb_session_required");
       }
@@ -1020,6 +1084,9 @@ if (isMainModule(import.meta.url)) {
         ? openFingerprintCursor(state.orders, { excludeFromFingerprint: ["fetched_at"] })
         : undefined;
       const orderItemsCoverage = wantsItems ? newOrderItemsCoverage() : undefined;
+      // `orders` list-stream coverage is only meaningful when `orders` itself
+      // is in scope — mirrors the `wantsItems`-gated accumulator above.
+      const ordersCoverage = wantsOrders ? newOrdersCoverage() : undefined;
 
       const flags: RunFlags = {
         detailAttempts: 0,
@@ -1033,6 +1100,7 @@ if (isMainModule(import.meta.url)) {
         emitRecord,
         emittedAt,
         orderItemsCoverage,
+        ordersCoverage,
         ordersFingerprintCursor,
         progress,
         sendInteraction,
@@ -1074,6 +1142,12 @@ if (isMainModule(import.meta.url)) {
 
       if (orderItemsCoverage) {
         await emitOrderItemsCoverage(deps, orderItemsCoverage);
+      }
+      // Same honesty posture as order_items: emit once the forward scan
+      // completes, including the zero-considered steady-state case, so the
+      // `orders` list stream is never left permanently unmeasured.
+      if (ordersCoverage) {
+        await emitOrdersCoverage(deps, ordersCoverage);
       }
     },
   });

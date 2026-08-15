@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { listOperations, validateRequest } from "@pdpp/reference-contract";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 const REGEXP_1 = /text\/html/;
 const REGEXP_2 = /Pending interaction/;
@@ -256,6 +257,7 @@ async function withHarness(
   const connectorPath = buildEchoConnectorFixture(tmpDir, options || {});
   const server = (await startServer({
     asPort: 0,
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
     connectorPathResolver: () => connectorPath,
     dbPath: ":memory:",
     quiet: true,
@@ -277,6 +279,7 @@ async function withHarness(
 async function withCustomHarness(connectorPath: string, fn: (ctx: HarnessContext) => Promise<void>): Promise<void> {
   const server = (await startServer({
     asPort: 0,
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
     connectorPathResolver: () => connectorPath,
     dbPath: ":memory:",
     quiet: true,

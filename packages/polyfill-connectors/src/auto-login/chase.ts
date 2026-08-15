@@ -60,6 +60,7 @@ const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
 
 interface EnsureChaseSessionArgs {
   context: BrowserContext;
+  onCredentialSubmit?: () => void;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
@@ -303,7 +304,12 @@ async function submitChaseOtp({
   return { loggedIn: true, page };
 }
 
-export async function ensureChaseSession({ context, page, sendInteraction }: EnsureChaseSessionArgs): Promise<boolean> {
+export async function ensureChaseSession({
+  context,
+  onCredentialSubmit,
+  page,
+  sendInteraction,
+}: EnsureChaseSessionArgs): Promise<boolean> {
   const surface = watchChaseBrowserSurface(context);
   let activePage = page;
   let sessionProbe = await probeChaseSession(context, activePage);
@@ -353,6 +359,7 @@ export async function ensureChaseSession({ context, page, sendInteraction }: Ens
   await passField.fill(password);
 
   await activePage.locator('button#signin-button, button[type="submit"]').first().click({ timeout: 5000 });
+  onCredentialSubmit?.();
 
   // After submit, Chase either advances to the challenge page or loads the
   // dashboard. Wait for a recognizable post-submit state rather than a fixed

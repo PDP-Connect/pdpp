@@ -73,6 +73,12 @@ test("scheduled static-secret credential rejection suppresses repeated automatic
   let resolveCalls = 0;
 
   const scheduler = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+      Promise.resolve({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? "cin_rejected_static_secret",
+        ownerSubjectId: ownerSubjectId ?? "owner-repair",
+      }),
     connectors: [
       {
         connectorId: "chatgpt",
@@ -81,6 +87,7 @@ test("scheduled static-secret credential rejection suppresses repeated automatic
         intervalMs: 25,
         manifest: BACKGROUND_SAFE_MANIFEST,
         maxRetries: 0,
+        ownerSubjectId: "owner-repair",
         ownerToken: "owner-token",
       },
     ],

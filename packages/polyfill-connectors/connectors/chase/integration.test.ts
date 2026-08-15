@@ -54,6 +54,7 @@ import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  buildChaseDurableFailureDiagnostic,
   CHASE_CURRENT_ACTIVITY_ROW_SELECTOR,
   CHASE_QFX_ACTIVITY_SELECT_SELECTOR,
   CHASE_QFX_ACTIVITY_SELECT_SELECTORS,
@@ -74,7 +75,9 @@ import {
   filterAccountsByScope,
   isLikelyChaseQfxResponse,
   isLikelyPdfResponseBody,
+  redactChaseDashboardDiagnostics,
   runCurrentActivity,
+  runTransactionsAndBalances,
   snapshotDashboardHtmlForCurrentActivity,
   statementRowOutsideTimeRange,
 } from "./index.ts";
@@ -249,6 +252,95 @@ test("zero-account collection captures the interstitial checkpoint before emitti
   assert.deepEqual(skip.diagnostics, evaluation.diagnostics);
   assert.equal(evaluation.diagnostics?.income_capture_heading_count, 1);
   assert.equal(evaluation.diagnostics?.income_capture_description_count, 1);
+});
+
+test("Chase dashboard diagnostics retain interstitial counts but redact page text, title, and URL", () => {
+  const redacted = redactChaseDashboardDiagnostics({
+    body_preview: "CUSTOMER NAME and account ending 1234",
+    income_capture_description_count: 1,
+    income_capture_heading_count: 2,
+    title: "Income for Customer Name",
+    url: "https://secure.chase.com/dashboard?account=private",
+  });
+
+  assert.deepEqual(redacted, {
+    body_preview: "",
+    income_capture_description_count: 1,
+    income_capture_heading_count: 2,
+    title: "",
+    url: "",
+  });
+  assert.doesNotMatch(JSON.stringify(redacted), /CUSTOMER|1234|chase\.com|private/);
+});
+
+test("Chase dashboard redaction drops unknown provider diagnostic keys", () => {
+  const redacted = redactChaseDashboardDiagnostics({
+    body_preview: "private body",
+    income_capture_description_count: 1,
+    income_capture_heading_count: 1,
+    title: "private title",
+    url: "https://secure.chase.com/private",
+    provider_secret: "must not cross the durable boundary",
+  } as DashboardDiagnostics & { provider_secret: string });
+
+  assert.deepEqual(redacted, {
+    body_preview: "",
+    income_capture_description_count: 1,
+    income_capture_heading_count: 1,
+    title: "",
+    url: "",
+  });
+  assert.doesNotMatch(JSON.stringify(redacted), /provider_secret|private/);
+});
+
+test("Chase durable failure diagnostics keep only structural recovery facts", () => {
+  const diagnostic = buildChaseDurableFailureDiagnostic(
+    "qfx",
+    "qfx_download_failed",
+    new Error("https://secure.chase.com/private/path?account=owner; header=private label")
+  );
+
+  assert.deepEqual(diagnostic, {
+    artifact: "qfx",
+    error_class: "Error",
+    failure_code: "qfx_download_failed",
+  });
+  assert.doesNotMatch(JSON.stringify(diagnostic), /secure\.chase\.com|private\/path|account=owner|header=private/);
+});
+
+test("runTransactionsAndBalances: QFX failure emits only the allowlisted durable diagnostic", async () => {
+  const { deps, messages } = makeHarness();
+  const privateError = "https://secure.chase.com/private/path?account=owner; header=private label";
+  const page = {
+    getByRole: () => ({
+      first: () => ({
+        click: async (): Promise<never> => Promise.reject(new Error(privateError)),
+      }),
+    }),
+    goto: async (): Promise<null> => null,
+    locator: () => ({
+      first: () => ({
+        click: async (): Promise<never> => Promise.reject(new Error(privateError)),
+        waitFor: async (): Promise<void> => undefined,
+      }),
+    }),
+  } as never;
+
+  await runTransactionsAndBalances(deps, page, [makeAccount()]);
+
+  const skip = messages.find(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.reason === "qfx_download_failed"
+  );
+  assert.ok(skip);
+  assert.deepEqual(skip.diagnostics, {
+    account_index: 1,
+    account_total: 1,
+    artifact: "qfx",
+    error_class: "unknown",
+    failure_code: "qfx_download_failed",
+  });
+  assert.doesNotMatch(JSON.stringify(messages), /secure\.chase\.com|private\/path|account=owner|header=private/);
 });
 
 test("income-capture checkpoint probes only observed structure and never guesses an action", () => {
@@ -589,7 +681,7 @@ test("emitNoActivityProgress: reports checked/no-activity without advancing curs
       INTACC123: { max_seen_date: "2026-04-10", last_activity: "since_last_statement" },
     },
   });
-  await emitNoActivityProgress(deps, makeAccount(), "date_range");
+  await emitNoActivityProgress(deps, "date_range");
 
   assert.equal(emitted.length, 0, "no transaction records emit for a Chase no-activity confirmation");
   assert.equal(deps.maxSeenByAccount.INTACC123?.max_seen_date, "2026-04-10", "no-activity must not advance max_seen");
@@ -750,6 +842,21 @@ test("runCurrentActivity: single account + parseable overview HTML → emits row
   assert.equal(skips.length, 0, "single-account + parseable rows: no SKIP_RESULT");
   const state = messages.find((m) => m.type === "STATE" && m.stream === "current_activity");
   assert.ok(state, "STATE for current_activity must emit at end of branch");
+
+  // A successful, populated enumeration must declare full-scan coverage:
+  // considered = covered = the parsed row count, so the Collection Report
+  // proves `complete` instead of leaving current_activity at `unknown`
+  // forever (the reported defect for run_1786335882008).
+  const coverage = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      m.type === "DETAIL_COVERAGE" && m.stream === "current_activity"
+  );
+  assert.ok(coverage, "expected a DETAIL_COVERAGE message for current_activity on a successful populated scan");
+  assert.equal(coverage.state_stream, "current_activity", "full-scan coverage is self-referential");
+  assert.equal(coverage.considered, 5, "considered must equal the enumerated row count");
+  assert.equal(coverage.covered, 5, "covered must equal considered on a full-scan stream");
+  assert.deepEqual(coverage.required_keys, [], "full-scan coverage carries no per-key detail lane");
+  assert.deepEqual(coverage.hydrated_keys, []);
 });
 
 test("runCurrentActivity: multiple filtered accounts → ambiguous_multi_account_overview SKIP, zero records", async () => {
@@ -871,6 +978,48 @@ test("runCurrentActivity: parser-zero diagnostic is persisted without changing s
     surfaceDiagnostic,
     "the durable skip keeps only the shared structural diagnostic"
   );
+
+  // An interrupted/failed scan (zero rows is indistinguishable from a parse
+  // failure here) must NEVER fabricate coverage — proving 15 records were
+  // "retained" on a prior successful run says nothing about THIS run's
+  // boundary, so a selectors_pending skip must carry no DETAIL_COVERAGE.
+  const coverage = messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "current_activity");
+  assert.equal(coverage, undefined, "selectors_pending must never emit DETAIL_COVERAGE (no false coverage)");
+});
+
+test("runCurrentActivity: ambiguous multi-account skip never emits DETAIL_COVERAGE (no false coverage)", async () => {
+  const { deps, messages } = makeHarness({
+    requestedStreams: [{ name: "current_activity" }],
+    wantsAccounts: false,
+    wantsBalances: false,
+    wantsStatements: false,
+    wantsTransactions: false,
+  });
+  const html = readFileSync(join(FIXTURE_DIR, "current-activity-dashboard-overview-real.html"), "utf8");
+  const a = makeAccount({ internal_id: "A1", name: "Account A" });
+  const b = makeAccount({ internal_id: "B2", name: "Account B" });
+  await runCurrentActivity(deps, html, [a, b]);
+
+  const coverage = messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "current_activity");
+  assert.equal(
+    coverage,
+    undefined,
+    "attribution is ambiguous, not proven — ambiguous_multi_account_overview must never emit DETAIL_COVERAGE"
+  );
+});
+
+test("runCurrentActivity: empty filteredAccounts no-op never emits DETAIL_COVERAGE (no false coverage)", async () => {
+  const { deps, messages } = makeHarness({
+    requestedStreams: [{ name: "current_activity" }],
+    wantsAccounts: false,
+    wantsBalances: false,
+    wantsStatements: false,
+    wantsTransactions: false,
+  });
+  await runCurrentActivity(deps, "<html><body></body></html>", []);
+
+  const coverage = messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "current_activity");
+  assert.equal(coverage, undefined, "no accounts in scope means nothing was enumerated — no coverage to declare");
 });
 
 const REFERENCE_DATE_ISO = "2026-07-10";
@@ -991,6 +1140,152 @@ test("snapshotDashboardHtmlForCurrentActivity: rowSurfaceReady is false when the
   );
   assert.equal(snapshot.diagnostic.posture, "unexpected");
   assert.equal(snapshot.diagnostic.verified_empty_marker_count, 0, "no source-verified empty marker is claimed");
+});
+
+test("snapshotDashboardHtmlForCurrentActivity: unexpected route gets one fresh dashboard navigation before declaring a gap", async () => {
+  let navigated = false;
+  let waitedForRows = false;
+  const page = {
+    goto(url: string, options: { state?: string; timeout: number; waitUntil: string }) {
+      assert.equal(url, "https://secure.chase.com/web/auth/dashboard#/dashboard/overview");
+      assert.equal(options.waitUntil, "domcontentloaded");
+      navigated = true;
+      return Promise.resolve();
+    },
+    locator(selector: string) {
+      return {
+        count: () => Promise.resolve(5),
+        first() {
+          return {
+            waitFor(options: { state: string; timeout: number }) {
+              if (selector === CHASE_CURRENT_ACTIVITY_ROW_SELECTOR) {
+                waitedForRows = true;
+                return Promise.reject(new Error("rows were absent on the stale document"));
+              }
+              assert.notEqual(selector, CHASE_CURRENT_ACTIVITY_ROW_SELECTOR);
+              assert.equal(options.state, "attached");
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+    content() {
+      return Promise.resolve(
+        navigated
+          ? readFileSync(join(FIXTURE_DIR, "current-activity-dashboard-overview-real.html"), "utf8")
+          : readFileSync(join(FIXTURE_DIR, "current-activity-download-form-no-rows.html"), "utf8")
+      );
+    },
+    url() {
+      return navigated
+        ? "https://secure.chase.com/web/auth/dashboard#/dashboard/overview"
+        : "https://secure.chase.com/web/auth/dashboard#/dashboard/accountDetails/downloadAccountTransactions";
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
+
+  assert.equal(waitedForRows, true);
+  assert.equal(navigated, true);
+  assert.equal(snapshot.rowSurfaceReady, true);
+  assert.equal(snapshot.diagnostic.read_count, 3);
+  assert.equal(snapshot.diagnostic.route, "expected");
+  assert.equal(snapshot.diagnostic.wait_outcome, "unknown");
+  assert.match(snapshot.html, /mds-activity-table__row/);
+});
+
+test("snapshotDashboardHtmlForCurrentActivity: parser-zero expected route gets one fresh dashboard navigation", async () => {
+  let navigated = false;
+  let rowWaits = 0;
+  const page = {
+    goto(url: string, options: { timeout: number; waitUntil: string }) {
+      assert.equal(url, "https://secure.chase.com/web/auth/dashboard#/dashboard/overview");
+      assert.equal(options.waitUntil, "domcontentloaded");
+      navigated = true;
+      return Promise.resolve();
+    },
+    locator(selector: string) {
+      return {
+        count: () => Promise.resolve(navigated ? 5 : 0),
+        first() {
+          return {
+            waitFor() {
+              if (selector === CHASE_CURRENT_ACTIVITY_ROW_SELECTOR) {
+                rowWaits += 1;
+                return Promise.reject(new Error("row locator did not prove readiness"));
+              }
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+    content() {
+      return Promise.resolve(
+        readFileSync(
+          join(
+            FIXTURE_DIR,
+            navigated ? "current-activity-dashboard-overview-real.html" : "current-activity-download-form-no-rows.html"
+          ),
+          "utf8"
+        )
+      );
+    },
+    url() {
+      return "https://secure.chase.com/web/auth/dashboard#/dashboard/overview";
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
+
+  assert.equal(rowWaits, 1);
+  assert.equal(navigated, true);
+  assert.equal(snapshot.rowSurfaceReady, true);
+  assert.equal(snapshot.diagnostic.read_count, 3);
+  assert.equal(snapshot.diagnostic.route, "expected");
+  assert.equal(snapshot.diagnostic.wait_outcome, "unknown");
+  assert.match(snapshot.html, /mds-activity-table__row/);
+});
+
+test("snapshotDashboardHtmlForCurrentActivity: parser-zero expected route stays parser-zero when refresh remains empty", async () => {
+  let navigated = false;
+  const emptyHtml = readFileSync(join(FIXTURE_DIR, "current-activity-known-table-parser-zero.html"), "utf8");
+  const page = {
+    goto() {
+      navigated = true;
+      return Promise.resolve();
+    },
+    locator(selector: string) {
+      return {
+        count: () => Promise.resolve(0),
+        first() {
+          return {
+            waitFor() {
+              if (selector === CHASE_CURRENT_ACTIVITY_ROW_SELECTOR) {
+                return Promise.resolve();
+              }
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+    content() {
+      return Promise.resolve(emptyHtml);
+    },
+    url() {
+      return "https://secure.chase.com/web/auth/dashboard#/dashboard/overview";
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
+
+  assert.equal(navigated, true);
+  assert.equal(snapshot.rowSurfaceReady, false);
+  assert.equal(snapshot.diagnostic.parser_count, 0);
+  assert.equal(snapshot.diagnostic.posture, "parser_zero");
+  assert.equal(snapshot.diagnostic.verified_empty_marker_count, 0);
 });
 
 test("snapshotDashboardHtmlForCurrentActivity: a known table with changed rows is parser_zero", async () => {

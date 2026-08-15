@@ -1,1 +1,0 @@
-Synthetic downloaded artifact. Contains FIXTURE_FAKE_DOWNLOAD_SECRET_DO_NOT_COLLECT.

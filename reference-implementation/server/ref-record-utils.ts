@@ -7,6 +7,8 @@
 // module specifically so ref-control can stay an orchestrator and
 // these utilities can be tested in isolation.
 
+import { coerceSemanticTimeValue } from "./semantic-time-coercion.ts";
+
 // Hoisted regexes (Biome's useTopLevelRegex rule; Node avoids
 // recompiling the pattern per call).
 const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -59,7 +61,10 @@ export function pickSemanticTimestamp(
   const candidates = uniqueFields([manifestStream?.consent_time_field, manifestStream?.cursor_field]);
   for (const field of candidates) {
     const value = data[field];
-    if (typeof value === "string" && value.trim()) {
+    // Coerced through the shared ingest guard so a provider sentinel (a `0`
+    // meaning "never played") is reported as NO semantic timestamp rather than
+    // as 1970-01-01 — the read path must not resurrect what ingest rejected.
+    if (typeof value === "string" && value.trim() && coerceSemanticTimeValue(value)) {
       return { field, value: value.trim() };
     }
   }

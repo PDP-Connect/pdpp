@@ -259,9 +259,11 @@ URLs. The shape:
 
 - Connector fetches bytes from the source under its existing
   authenticated session.
-- Connector uploads to `POST /v1/blobs?connector_id=…&stream=…&record_key=…`
+- Connector uploads to `POST /v1/blobs?connector_id=…&stream=…&record_key=…&mime_type=…`
   using the streaming uploader from `connectors/gmail/index.ts`
-  (`makeReferenceBlobUploader`).
+  (`makeReferenceBlobUploader`). The helper uses a binary-safe transport
+  content type; do not hand-roll an upload that sends provider bytes through
+  a text parser.
 - Connector emits a record with `blob_ref` (`blob_id`, `mime_type`,
   `size_bytes`, `sha256`), `content_sha256`, and `hydration_status`
   (`hydrated | failed | deferred | too_large`, plus `unavailable` /

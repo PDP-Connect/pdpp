@@ -38,6 +38,7 @@ export type TerminalNonGrantReason =
   | "owner_cancel_forced"
   | "owner_cancelled"
   | "run_timed_out"
+  | "scheduler_dispatch_wedged"
   | "permission_error";
 
 export type TerminalReason = TerminalGrantFailureReason | TerminalNonGrantReason;
@@ -91,7 +92,7 @@ export interface ConnectorSchedule {
   readonly manifest: SchedulerManifest;
   readonly maxRetries?: number;
   /** Owner admitted with this exact connection at scheduler refresh. */
-  readonly ownerSubjectId?: string;
+  readonly ownerSubjectId: string;
   readonly ownerToken: string;
 }
 
@@ -243,6 +244,14 @@ export type GetLastSuccessfulRunAtHandler = (
   connectorInstanceId?: string
 ) => Promise<number | null> | number | null;
 
+export type HasLegacySchedulerEventMarkerHandler = (
+  connectorId: string,
+  connectorInstanceId: string,
+  prefix: string,
+  reasonClass: string,
+  sinceCompletedAt: string | null
+) => Promise<boolean> | boolean;
+
 /**
  * Returns true when the connector is a managed (browser-surface-leased)
  * connector. The scheduler uses this to DEFER a scheduled tick when the
@@ -270,6 +279,7 @@ export type IsManagedConnectorHandler = (connectorId: string) => boolean;
 export type ResolveStaticSecretRunEnv = (args: {
   connectorId: string;
   connectorInstanceId: string;
+  ownerSubjectId: string;
 }) => Promise<Record<string, string> | null>;
 
 /**
@@ -392,9 +402,13 @@ export interface SchedulerOptions {
    * Maximum no-progress budget for a direct scheduler connector attempt.
    *
    * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` when set, otherwise four hours.
-   * `Infinity` disables the scheduler attempt watchdog. Valid connector
-   * progress resets the budget, so long-running attempts are allowed when they
-   * continue publishing progress. Managed browser-surface runs route through
+   * `0` or `Infinity` disables the scheduler attempt watchdog. An empty or
+   * whitespace-only `PDPP_MAX_RUN_WALL_CLOCK_MS` is treated as UNSET (falls
+   * to the four-hour default), never as `0` -- `Number("")` coerces to `0`,
+   * and this budget treats `0` as "disabled," so a blank env var must not
+   * silently disable the watchdog. Valid connector progress resets the
+   * budget, so long-running attempts are allowed when they continue
+   * publishing progress. Managed browser-surface runs route through
    * controller.runNow and use the controller watchdog.
    */
   maxRunWallClockMs?: number;
@@ -426,6 +440,7 @@ export interface SchedulerOptions {
     | "deleteActiveRun"
     | "listLastRunTimes"
     | "listRunHistory"
+    | "hasLegacySchedulerEventMarker"
     | "upsertActiveRun"
     | "upsertLastRunTime"
   >;

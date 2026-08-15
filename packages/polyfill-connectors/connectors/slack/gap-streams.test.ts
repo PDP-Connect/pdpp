@@ -19,7 +19,7 @@ import {
   runUsersStream,
   type StreamDeps,
 } from "./index.ts";
-import { resetSlackApiGovernor } from "./slack-api.ts";
+import { resetSlackApiGovernor, SlackApiAuthError } from "./slack-api.ts";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_SET_TIMEOUT = globalThis.setTimeout;
@@ -48,7 +48,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 interface Captured {
-  considered: Array<{ considered: number; stream: string }>;
+  considered: Array<{ considered: number; covered: number | undefined; stream: string }>;
   records: Array<{ data: unknown; stream: string }>;
 }
 
@@ -57,7 +57,7 @@ function fakeDeps(db: DatabaseSync, captured: Captured, requested: readonly stri
     db,
     emit: (msg) => {
       if (msg.type === "DETAIL_COVERAGE") {
-        captured.considered.push({ stream: msg.stream, considered: msg.considered ?? 0 });
+        captured.considered.push({ stream: msg.stream, considered: msg.considered ?? 0, covered: msg.covered });
       }
       return Promise.resolve();
     },
@@ -86,6 +86,7 @@ test("runStarsStream: emits one RECORD per starred item and declares considered"
   assert.equal(captured.records.length, 1);
   assert.equal(captured.records[0]?.stream, "stars");
   assert.equal(captured.considered[0]?.considered, 1);
+  assert.equal(captured.considered[0]?.covered, 1);
 });
 
 test("runStarsStream: zero stars still completes and declares considered=0", async () => {
@@ -95,6 +96,7 @@ test("runStarsStream: zero stars still completes and declares considered=0", asy
   await runStarsStream(fakeDeps(db, captured, ["stars"]), "xoxc-fake", "d-fake");
   assert.equal(captured.records.length, 0);
   assert.equal(captured.considered[0]?.considered, 0);
+  assert.equal(captured.considered[0]?.covered, 0);
 });
 
 test("runUserGroupsStream: emits one RECORD per user group", async () => {
@@ -232,11 +234,65 @@ test("runOptionalStream: a retryable failure (rate limit) is flagged retryable i
 test("runOptionalStream: a non-retryable failure (auth) is flagged non-retryable in the recovery hint", async () => {
   const { emit, messages } = captureEmitted();
 
-  await runOptionalStream(emit, "stars", () => Promise.reject(new Error("slack_auth_failed")));
+  await runOptionalStream(emit, "stars", () => Promise.reject(new SlackApiAuthError("invalid_auth")));
 
   const [msg] = messages;
   const hint = (msg as { recovery_hint?: { retryable?: boolean } }).recovery_hint;
   assert.equal(hint?.retryable, false);
+});
+
+test("runOptionalStream: an auth failure requests credential refresh instead of a runtime retry", async () => {
+  // reference-implementation/server/connector-coverage-policy.ts's
+  // mapSkipCoverageCondition checks `recovery_hint.action === "retry_by_runtime"`
+  // BEFORE inspecting the skip reason text at all — so an unconditional
+  // "retry_by_runtime" action on every optional-stream failure would project
+  // a durable slack_auth_failed 401 as `retryable_gap` (the same "will
+  // self-heal" coverage condition a transient 429 gets), even though retrying
+  // the same call against the same rejected session can never succeed.
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "stars", () => Promise.reject(new SlackApiAuthError("invalid_auth")));
+
+  const [msg] = messages;
+  const hint = (msg as { recovery_hint?: { action?: string } }).recovery_hint;
+  assert.equal(hint?.action, "refresh_credentials");
+});
+
+test("runOptionalStream: the recovery_hint diagnostics carries the specific Slack-reported error code", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "stars", () => Promise.reject(new SlackApiAuthError("token_revoked")));
+
+  const [msg] = messages;
+  const { diagnostics } = msg as { diagnostics?: { slack_api_error_code?: string } };
+  assert.equal(diagnostics?.slack_api_error_code, "token_revoked");
+});
+
+test("runOptionalStream: classification is by error TYPE, not message text — a plain Error with the same message string is NOT treated as an auth failure", async () => {
+  // Proves the classification genuinely depends on `instanceof SlackApiAuthError`
+  // and not on matching `.message` against a regex — a plain Error carrying
+  // the identical "slack_auth_failed" string (e.g. a bug that constructs the
+  // wrong error type, or an unrelated failure that happens to share the
+  // string) must still be treated as a transient/unclassified failure, not
+  // silently absorbed into the non-retryable auth path.
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "stars", () => Promise.reject(new Error("slack_auth_failed")));
+
+  const [msg] = messages;
+  const hint = (msg as { recovery_hint?: { action?: string; retryable?: boolean } }).recovery_hint;
+  assert.equal(hint?.action, "retry_by_runtime");
+  assert.equal(hint?.retryable, false);
+});
+
+test("runOptionalStream: a retryable failure (rate limit) still carries action:retry_by_runtime", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "reminders", () => Promise.reject(new Error("slack_rate_limited")));
+
+  const [msg] = messages;
+  const hint = (msg as { recovery_hint?: { action?: string } }).recovery_hint;
+  assert.equal(hint?.action, "retry_by_runtime");
 });
 
 function seedUser(db: DatabaseSync, id: string): void {

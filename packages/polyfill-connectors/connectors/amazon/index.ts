@@ -20,7 +20,7 @@
  */
 
 import pRetry, { AbortError } from "p-retry";
-import type { Page } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
 import {
   type BrowserCollectContext,
@@ -465,11 +465,26 @@ export interface RunFlags {
   detailAttempts: number;
   detailCaptured: boolean;
   failedDetailCaptured: boolean;
-  /** Set once a detail attempt lands on Amazon's sign-in/challenge flow. The
-   *  authenticated session is dead for the rest of this run, so remaining
-   *  detail attempts are deferred (a connector-local blast-radius stop) rather
-   *  than hammering sign-in once per order. This is NOT cross-run scheduling —
-   *  the runtime owns whether/when the next run retries. */
+  /** One-shot budget: at most one mid-run automated session-repair attempt
+   *  per run (see `attemptAutomatedSessionRepair`), regardless of how many
+   *  detail fetches subsequently land on sign-in. Distinct from
+   *  `sessionRepairRequired` — that flag starts `false` and is set `true`
+   *  exactly once, by whichever sign-in bounce reaches it first (there is no
+   *  code path that clears it back to `false` once set); this one is the
+   *  same shape (starts `false`, set `true` at most once) but guards a
+   *  different decision (spend vs. don't-spend the repair attempt, not
+   *  latch vs. don't-latch the terminal state). */
+  repairAttempted: boolean;
+  /** Set once a detail attempt lands on Amazon's sign-in/challenge flow AND
+   *  either the one-shot repair attempt was ineligible/failed, or the budget
+   *  was already spent by an earlier bounce this run — there is no code path
+   *  that clears this back to `false`, so once set it stays set for the rest
+   *  of the run (a write-once latch, not a flag a successful repair resets).
+   *  The authenticated session is dead for the rest of this run, so
+   *  remaining detail attempts are deferred (a connector-local blast-radius
+   *  stop) rather than hammering sign-in once per order. This is NOT
+   *  cross-run scheduling — the runtime owns whether/when the next run
+   *  retries. */
   sessionRepairRequired: boolean;
   temporaryDetailFailures: number;
 }
@@ -489,33 +504,57 @@ export interface RunFlags {
  * spans every scraped year and is reported once after the year loop:
  *   - `required`  — every order considered for detail hydration (denominator).
  *   - `hydrated`  — orders whose detail page fetched and parsed (numerator).
- *   - `gap`       — orders whose detail fetch was attempted but degraded (null).
- *   - `optionalSkip` — orders whose detail was skipped by explicit policy
- *                      (`PDPP_AMAZON_SKIP_DETAIL=1`), a scope choice, not a gap.
+ *   - `gap`       — orders whose detail fetch was attempted but degraded (null, or deferred by policy).
  */
 export interface OrderItemsCoverage {
   gap: string[];
   hydrated: string[];
-  optionalSkip: string[];
   required: string[];
 }
 
 export function newOrderItemsCoverage(): OrderItemsCoverage {
-  return { gap: [], hydrated: [], optionalSkip: [], required: [] };
+  return { gap: [], hydrated: [], required: [] };
+}
+
+/**
+ * Per-run, `orders` list-stream coverage accumulator — a distinct denominator
+ * from `OrderItemsCoverage` (that one tracks the `order_items` detail-page
+ * enrichment; this one tracks the `orders` list stream itself, so
+ * `orders`/`checkpoint_window` can report honest evidence even on a run that
+ * skips order_items entirely).
+ *
+ * Every list-page order the year loop reaches `emitOrderAndItems` for is
+ * "considered" (the denominator), whether or not `wantsOrders` is in scope —
+ * the list scan enumerated it. An order is "covered" once the connector made
+ * a real accounting decision for its `orders` record: either it emitted, or
+ * the per-order fingerprint cursor deliberately suppressed a byte-identical
+ * re-scrape (still a real decision, not a drop). An order whose date never
+ * parses never reaches `emitOrderAndItems`, so it is recorded separately as
+ * `dateDropped` — considered, but not covered, since no accounting decision
+ * was made for it.
+ */
+export interface OrdersCoverage {
+  considered: string[];
+  covered: string[];
+  dateDropped: string[];
+}
+
+export function newOrdersCoverage(): OrdersCoverage {
+  return { considered: [], covered: [], dateDropped: [] };
 }
 
 /** The detail-hydration outcome for one considered order. */
-export type DetailOutcome = "hydrated" | "gap" | "skipped";
+export type DetailOutcome = "hydrated" | "gap" | "unaccounted";
 
 /**
- * Classify one order's detail outcome. Detail skipped by explicit policy is an
- * `optional_skip` (a scope choice); an attempted detail that came back null is
- * a degraded `gap`; a parsed detail is `hydrated`. Pure so the branch is unit
- * testable without driving the browser detail stack.
+ * Classify one order's detail outcome. Policy-deferred orders
+ * (PDPP_AMAZON_SKIP_DETAIL=1) are "unaccounted": required but not in any
+ * outcome set. Per spec, required_keys absent from outcomes defer the
+ * checkpoint. Attempted-but-failed is gap (backed by DETAIL_GAP).
  */
 export function classifyDetailOutcome(skipDetail: boolean, detail: OrderDetail | null): DetailOutcome {
   if (skipDetail) {
-    return "skipped";
+    return "unaccounted";
   }
   return detail ? "hydrated" : "gap";
 }
@@ -534,9 +573,8 @@ export function recordDetailOutcome(coverage: OrderItemsCoverage, orderId: strin
     coverage.hydrated.push(orderId);
   } else if (outcome === "gap") {
     coverage.gap.push(orderId);
-  } else {
-    coverage.optionalSkip.push(orderId);
   }
+  // "unaccounted" orders: required but not in hydrated or gap, per spec
 }
 
 /**
@@ -604,11 +642,67 @@ function readRecoverableAmazonOrderDetailGap(
   return { gapId: gap.gap_id, orderDate, orderId, recordKey: gap.record_key ?? orderId };
 }
 
-function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promise<DetailFetchResult> {
+/** Injectable override for `attemptAutomatedSessionRepair`'s call to the
+ *  real `ensureAmazonSession` — lets tests substitute a fake reauth without
+ *  driving the full interactive login flow against a stub Page. Mirrors
+ *  the USAA connector's `EmitDeps.reauthenticate` seam. */
+export type AmazonReauthFn = (input: {
+  context: BrowserContext;
+  page: Page;
+  sendInteraction: BrowserCollectContext["sendInteraction"];
+}) => Promise<boolean>;
+
+/**
+ * Attempt exactly one mid-run session repair via `ensureAmazonSession` (or
+ * `reauthenticate`, if injected), then retry the exact same order-detail
+ * fetch once. Gated to the credentialed (`AMAZON_USERNAME`/
+ * `AMAZON_PASSWORD`) automated login path only — `ensureAmazonSession`
+ * probes first and no-ops when the session is still live, but its
+ * NO-credentials fallback opens an interactive owner hand-off that can
+ * block up to 30 minutes and consume an OTP interaction slot; that path
+ * stays reserved for `ensureSession` at run start, never triggered
+ * speculatively mid-run from here. Returns null (no repair attempted, or
+ * credentials absent) so the caller falls through to the existing terminal
+ * `session_repair_required` behavior unchanged.
+ */
+async function attemptAutomatedSessionRepair(
+  page: Page,
+  context: BrowserContext,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
+  flags: RunFlags,
+  orderId: string,
+  reauthenticate: AmazonReauthFn = ensureAmazonSession
+): Promise<DetailFetchResult | null> {
+  if (flags.repairAttempted) {
+    return null;
+  }
+  flags.repairAttempted = true;
+  const email = process.env.AMAZON_USERNAME;
+  const password = process.env.AMAZON_PASSWORD;
+  if (!(email && password)) {
+    return null;
+  }
+  const recovered = await reauthenticate({ context, page, sendInteraction }).catch((): boolean => false);
+  if (!recovered) {
+    return null;
+  }
+  return fetchOrderDetail(page, orderId);
+}
+
+async function resolveOrderDetail(
+  page: Page,
+  context: BrowserContext | undefined,
+  sendInteraction: BrowserCollectContext["sendInteraction"] | undefined,
+  flags: RunFlags,
+  orderId: string,
+  reauthenticate?: AmazonReauthFn
+): Promise<DetailFetchResult> {
   if (flags.sessionRepairRequired) {
-    // The session died earlier this run. Do not touch the browser again — the
-    // gap re-defers as owner-repair so the owner is asked to reconnect instead
-    // of the run hammering sign-in once per remaining order.
+    // The session died earlier this run and the one-shot automated repair
+    // (if eligible) already failed or was never eligible. Do not touch the
+    // browser again — the gap re-defers as owner-repair so the owner is
+    // asked to reconnect instead of the run hammering sign-in once per
+    // remaining order.
     return Promise.resolve({
       failureKind: "session_repair_required",
       reason: reasonForDetailFailure("session_repair_required"),
@@ -630,7 +724,19 @@ function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promi
     });
   }
   flags.detailAttempts += 1;
-  return fetchOrderDetail(page, orderId);
+  const result = await fetchOrderDetail(page, orderId);
+  if (!(result.status === "failed" && result.failureKind === "session_repair_required" && context && sendInteraction)) {
+    return result;
+  }
+  const repaired = await attemptAutomatedSessionRepair(
+    page,
+    context,
+    sendInteraction,
+    flags,
+    orderId,
+    reauthenticate ?? ensureAmazonSession
+  );
+  return repaired ?? result;
 }
 
 /**
@@ -670,10 +776,18 @@ async function captureFailedDetailOnce(
 
 export interface AmazonDetailRecoveryDeps {
   capture: CaptureDep;
+  /** Threaded through to `resolveOrderDetail`'s mid-run session-repair
+   *  attempt. Optional so legacy callers/tests that don't exercise the
+   *  repair path can omit it — see `EmitDeps.context`. */
+  context?: BrowserContext | undefined;
   detailGaps: readonly BrowserCollectContext["detailGaps"][number][];
   emit: EmitFn;
   emitRecord: EmitRecordFn;
+  /** Test-only override for `attemptAutomatedSessionRepair`'s reauth call.
+   *  Production callers omit it (falls back to the real `ensureAmazonSession`). */
+  reauthenticate?: AmazonReauthFn | undefined;
   requestDetailGapPage?: BrowserCollectContext["requestDetailGapPage"] | undefined;
+  sendInteraction?: BrowserCollectContext["sendInteraction"] | undefined;
 }
 
 async function recoverPendingOrderItemDetailGapPage(
@@ -693,7 +807,14 @@ async function recoverPendingOrderItemDetailGapPage(
       }
       continue;
     }
-    const result = await resolveOrderDetail(page, flags, locator.orderId);
+    const result = await resolveOrderDetail(
+      page,
+      deps.context,
+      deps.sendInteraction,
+      flags,
+      locator.orderId,
+      deps.reauthenticate
+    );
     if (result.status === "hydrated") {
       for (const item of result.detail.items) {
         await deps.emitRecord("order_items", buildOrderItemRecord(locator.orderId, locator.orderDate, item));
@@ -786,15 +907,44 @@ export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItem
     requiredKeys: coverage.required,
     hydratedKeys: coverage.hydrated,
     gapKeys: coverage.gap,
-    optionalSkipKeys: coverage.optionalSkip,
     considered: coverage.required.length,
-    covered: coverage.hydrated.length + coverage.optionalSkip.length,
+    covered: coverage.hydrated.length,
+  });
+}
+
+/**
+ * Emit the run-level `orders` DETAIL_COVERAGE once after the year loop, using
+ * the shared `emitDetailCoverage` helper self-referentially (`stream` and
+ * `stateStream` both `"orders"` — there is no separate detail-hydration phase
+ * for the list stream itself, so `requiredKeys`/`hydratedKeys` stay empty and
+ * the denominator/numerator live entirely in `considered`/`covered`, mirroring
+ * the pattern used for USAA's `inbox_messages` and GitHub's `declareListConsidered`
+ * streams). Always emits when the caller invokes it (orders in scope) —
+ * including a zero-considered steady-state run — for the same reason
+ * `emitOrderItemsCoverage` always emits: a completed sweep that considered
+ * zero orders is a real measured zero, not silence.
+ */
+export async function emitOrdersCoverage(deps: EmitDeps, coverage: OrdersCoverage): Promise<void> {
+  await emitDetailCoverage(deps, {
+    stream: "orders",
+    stateStream: "orders",
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered: coverage.considered.length,
+    covered: coverage.covered.length,
   });
 }
 
 /** Per-run dependencies threaded through processListOrder → emitOrderAndItems. */
 export interface EmitDeps {
   capture: CaptureDep;
+  /** Threaded through to `resolveOrderDetail`'s mid-run session-repair
+   *  attempt (see `attemptAutomatedSessionRepair`). Optional so legacy
+   *  callers/tests that don't exercise the repair path can omit it — when
+   *  absent, a sign-in bounce falls straight through to the existing
+   *  terminal `session_repair_required` behavior, unchanged from before
+   *  this fix. */
+  context?: BrowserContext | undefined;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
@@ -817,12 +967,24 @@ export interface EmitDeps {
    *  processListOrder records each considered order's detail outcome here and
    *  collect() emits one DETAIL_COVERAGE after the year loop. */
   orderItemsCoverage?: OrderItemsCoverage | undefined;
+  /** Run-level `orders` list-stream coverage accumulator. Optional so legacy
+   *  callers/tests that only exercise emit ordering can omit it; when present,
+   *  processListOrder records each considered order's list-accounting outcome
+   *  here and collect() emits one self-referential DETAIL_COVERAGE after the
+   *  year loop. */
+  ordersCoverage?: OrdersCoverage | undefined;
   /** Per-order fingerprint cursor (excludes the run-clock `fetched_at`).
    *  Shared across all years for the whole orders stream because order ids
    *  are globally unique. Optional so legacy callers/tests emit
    *  unconditionally. */
   ordersFingerprintCursor?: FingerprintCursor | undefined;
   progress: BrowserCollectContext["progress"];
+  /** Test-only override for `attemptAutomatedSessionRepair`'s reauth call.
+   *  Production callers omit it (falls back to the real `ensureAmazonSession`). */
+  reauthenticate?: AmazonReauthFn | undefined;
+  /** Threaded through to `resolveOrderDetail`'s mid-run session-repair
+   *  attempt alongside `context`. Optional for the same reason. */
+  sendInteraction?: BrowserCollectContext["sendInteraction"] | undefined;
   skipDetail: boolean;
   wantsItems: boolean;
   wantsOrders: boolean;
@@ -864,6 +1026,14 @@ export async function emitOrderAndItems(
     const orderRecord = buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt);
     if (!deps.ordersFingerprintCursor || deps.ordersFingerprintCursor.shouldEmit(orderRecord)) {
       await deps.emitRecord("orders", orderRecord);
+    }
+    // A fingerprint-suppressed re-scrape and a fresh emit are both a real
+    // accounting decision for this order's `orders` record, so both count as
+    // covered — only a date that never parses (handled below, before this
+    // function is reached) is considered-but-not-covered.
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.covered.push(listOrder.orderId);
     }
   }
   if (deps.wantsItems) {
@@ -907,8 +1077,9 @@ async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<Lis
  * selectors matched nothing.
  */
 async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: number, emit: EmitFn): Promise<void> {
-  const diag = await page
-    .evaluate((noOrdersTextPattern): ListPageDiagnostics => {
+  let diag: ListPageDiagnostics;
+  try {
+    diag = await page.evaluate((noOrdersTextPattern): ListPageDiagnostics => {
       // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
       const CAPTCHA_RE = /captcha|robot|unusual traffic/i;
       const NO_ORDERS_RE = new RegExp(noOrdersTextPattern, "i");
@@ -925,8 +1096,17 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
         no_orders_text: NO_ORDERS_RE.test(document.body?.innerText || "").toString(),
         body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 240),
       };
-    }, AMAZON_NO_ORDERS_TEXT_PATTERN)
-    .catch((): ListPageDiagnostics | null => null);
+    }, AMAZON_NO_ORDERS_TEXT_PATTERN);
+  } catch (error) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "renderer_diagnostics_failed",
+      message: `Amazon year ${year} startIndex=${startIndex}: renderer diagnostics failed; refusing to advance the cursor.`,
+      diagnostics: { error_class: error instanceof Error ? "Error" : "unknown" },
+    });
+    throw new Error("amazon_empty_list_page_renderer_diagnostics_failed", { cause: error });
+  }
   const classification = classifyEmptyListPageDiagnostics(diag, startIndex);
   if (classification.action === "terminal") {
     return;
@@ -946,7 +1126,7 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       stream: "orders",
       reason: "selector_drift",
       message: `Year ${year} startIndex=${startIndex}: order containers visible on page but .order-card/.js-order-card selector matched 0. Screenshot=${shotPath}`,
-      diagnostics: diag,
+      diagnostics: redactAmazonListPageDiagnostics(diag),
     });
   } else {
     await emit({
@@ -954,10 +1134,16 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       stream: "orders",
       reason: classification.reason,
       message: `Year ${year} startIndex=${startIndex}: empty Amazon list page is not a proven terminal page; refusing to advance the cursor.`,
-      diagnostics: diag ?? { missing_diagnostics: true },
+      diagnostics: diag ? redactAmazonListPageDiagnostics(diag) : { missing_diagnostics: true },
     });
   }
   throw new Error(`amazon_empty_list_page_${classification.reason}`);
+}
+
+/** Browser text, titles, and URLs are useful for local classification but are
+ * not durable connector evidence. Keep only structural facts in SKIP_RESULT. */
+export function redactAmazonListPageDiagnostics(diag: ListPageDiagnostics): ListPageDiagnostics {
+  return { ...diag, body_preview: "", title: "", url: "" };
 }
 
 export function classifyEmptyListPageDiagnostics(
@@ -965,9 +1151,7 @@ export function classifyEmptyListPageDiagnostics(
   startIndex: number
 ): EmptyListPageClassification {
   if (!diag) {
-    return startIndex > 0
-      ? { action: "terminal", reason: "pagination_exhausted" }
-      : { action: "abort", reason: "empty_first_page_without_diagnostics" };
+    return { action: "abort", reason: "renderer_diagnostics_failed" };
   }
   const captcha = diag.captcha === "true";
   if (diag.sign_in_form || captcha || SIGNIN_URL_RE.test(diag.url)) {
@@ -990,7 +1174,7 @@ export function classifyEmptyListPageDiagnostics(
  * list signal, optionally capture a fixture, and return the shape-checked
  * orders. On zero orders, emits drift diagnostics before returning [].
  */
-async function scrapeListPage(
+export async function scrapeListPage(
   page: Page,
   capture: CaptureDep,
   year: number,
@@ -998,12 +1182,21 @@ async function scrapeListPage(
   emit: EmitFn
 ): Promise<ListPageOrder[]> {
   const url = `https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=${startIndex}`;
-  await page
-    .goto(url, {
+  try {
+    await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: NAV_TIMEOUT_MS,
-    })
-    .catch((): undefined => undefined);
+    });
+  } catch (error) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "list_page_navigation_failed",
+      message: "Amazon list-page navigation failed; refusing to reuse the previous page as current data.",
+      diagnostics: { error_class: error instanceof Error ? error.constructor.name : "unknown" },
+    });
+    throw new Error("amazon_list_page_navigation_failed", { cause: error });
+  }
   // Wait for list-page signal. `.order-card` is the standard container
   // in modern layouts; `#ordersContainer` catches legacy. Either appears
   // when the orders list has rendered.
@@ -1075,7 +1268,14 @@ async function resolveDetailForListOrder(
   if (deps.skipDetail) {
     return resolution;
   }
-  const result = await resolveOrderDetail(page, flags, listOrder.orderId);
+  const result = await resolveOrderDetail(
+    page,
+    deps.context,
+    deps.sendInteraction,
+    flags,
+    listOrder.orderId,
+    deps.reauthenticate
+  );
   if (result.status === "hydrated") {
     resolution.detail = result.detail;
     return resolution;
@@ -1099,7 +1299,14 @@ export async function processListOrder(
   if (!orderDate) {
     // A list row whose date does not parse never reaches the detail lane, so it
     // is not counted toward order-item coverage; runYear already accounts for
-    // it via the bounded per-year drop SKIP_RESULT.
+    // it via the bounded per-year drop SKIP_RESULT. It was still enumerated by
+    // the list scan, so the `orders` coverage denominator must not silently
+    // drop it: considered, but not covered (no accounting decision was made
+    // for its `orders` record).
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.dateDropped.push(listOrder.orderId);
+    }
     return false;
   }
   // The current (and previous) year is re-listed on every run — orders are
@@ -1125,6 +1332,13 @@ export async function processListOrder(
     if (deps.orderItemsCoverage) {
       recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, "hydrated");
     }
+    // The list scan still enumerated this order and the fingerprint match is
+    // itself a real accounting decision (list surface unchanged since a prior
+    // durable emit) — considered and covered, even though nothing re-emits.
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.covered.push(listOrder.orderId);
+    }
     return true;
   }
   const { detail, detailGapReason, detailFailureKind } = await resolveDetailForListOrder(page, deps, flags, listOrder);
@@ -1143,16 +1357,10 @@ export async function processListOrder(
     deps.hydratedOrders?.set(listOrder.orderId, currentListFingerprint);
   }
   if (deps.orderItemsCoverage) {
-    // The list-page items still emit in every case; this only records whether
-    // the order's detail enrichment was hydrated, degraded, or policy-skipped.
     const outcome = classifyDetailOutcome(deps.skipDetail, detail);
     recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, outcome);
-    // A degraded (attempted-but-null) detail must back its coverage `gap_key`
-    // with a durable pending DETAIL_GAP, or the run fails at state-commit (see
-    // buildOrderDetailGap). One gap per gap order — processListOrder runs once
-    // per order, and these emit during the year loop, strictly before the
-    // run-level DETAIL_COVERAGE. A policy skip (`optional_skip`) and a hydration
-    // emit no gap.
+    // Attempted-but-failed detail emits a durable DETAIL_GAP so the gap_key is
+    // backed and the checkpoint is satisfiable on recovery.
     if (outcome === "gap") {
       await deps.emit(
         buildOrderDetailGap(listOrder.orderId, detailGapReason, detailFailureKind ?? undefined, orderDate)
@@ -1366,11 +1574,12 @@ if (isMainModule(import.meta.url)) {
     // Persistent profile keeps cookies and session state across runs; browser
     // mode is selected by the deployment, not by this connector.
     browser: { profileName: "amazon" },
-    async ensureSession({ capture, checkpoint, context, page, sendInteraction }): Promise<void> {
+    async ensureSession({ capture, checkpoint, context, onCredentialSubmit, page, sendInteraction }): Promise<void> {
       await ensureAmazonSession({
         ...(capture ? { capture } : {}),
         checkpoint,
         context,
+        onCredentialSubmit,
         page,
         sendInteraction,
       });
@@ -1381,7 +1590,7 @@ if (isMainModule(import.meta.url)) {
       }
     },
     async collect(ctx: BrowserCollectContext): Promise<void> {
-      const { scope, state, emitRecord, emit, progress, capture, emittedAt, page } = ctx;
+      const { scope, state, emitRecord, emit, progress, capture, emittedAt, page, context, sendInteraction } = ctx;
       const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
       const wantsItems = requested.has("order_items");
       const wantsOrders = requested.has("orders");
@@ -1389,6 +1598,7 @@ if (isMainModule(import.meta.url)) {
         detailAttempts: 0,
         detailCaptured: false,
         failedDetailCaptured: false,
+        repairAttempted: false,
         sessionRepairRequired: false,
         temporaryDetailFailures: 0,
       };
@@ -1402,10 +1612,12 @@ if (isMainModule(import.meta.url)) {
         page,
         {
           capture,
+          context,
           detailGaps: ctx.detailGaps,
           emit,
           emitRecord,
           requestDetailGapPage: ctx.requestDetailGapPage,
+          sendInteraction,
         },
         flags,
         { recoveryOnly: ctx.recoveryOnly === true, wantsItems }
@@ -1465,15 +1677,21 @@ if (isMainModule(import.meta.url)) {
       // `order_items` stream is in scope. When it is not requested, the
       // accumulator stays undefined and processListOrder records nothing.
       const orderItemsCoverage = wantsItems ? newOrderItemsCoverage() : undefined;
+      // `orders` list-stream coverage is only meaningful when `orders` itself
+      // is in scope — mirrors the `wantsItems`-gated accumulator above.
+      const ordersCoverage = wantsOrders ? newOrdersCoverage() : undefined;
       const deps: EmitDeps = {
         capture,
+        context,
         emit,
         emitRecord,
         emittedAt,
         hydratedOrders,
         orderItemsCoverage,
+        ordersCoverage,
         ordersFingerprintCursor,
         progress,
+        sendInteraction,
         skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
         wantsItems,
         wantsOrders,
@@ -1534,6 +1752,12 @@ if (isMainModule(import.meta.url)) {
       // order_items is out of scope or no order was considered.
       if (orderItemsCoverage) {
         await emitOrderItemsCoverage(deps, orderItemsCoverage);
+      }
+      // Same honesty posture as order_items: emit once the year sweep
+      // completes, including the zero-considered steady-state case, so the
+      // `orders` list stream is never left permanently unmeasured.
+      if (ordersCoverage) {
+        await emitOrdersCoverage(deps, ordersCoverage);
       }
     },
   });

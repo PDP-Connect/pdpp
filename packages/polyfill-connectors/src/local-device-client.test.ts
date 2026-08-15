@@ -161,6 +161,23 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
   }
 });
 
+test("LocalDeviceClient sends bearer-authenticated self-revoke with no body", async () => {
+  const seen: SeenRequest[] = [];
+  const server = await startJsonServer(seen);
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    await client.selfRevoke();
+
+    assert.equal(seen[0]?.method, "POST");
+    assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.selfRevoke("device-1"));
+    assert.equal(seen[0]?.authorization, "Bearer device-token");
+    assert.equal(seen[0]?.collectorProtocol, COLLECTOR_PROTOCOL_VERSION);
+    assert.equal(seen[0]?.body, null);
+  } finally {
+    await server.close();
+  }
+});
+
 test("LocalDeviceClient GET source-instance state hits the device-scoped state route with the bearer", async () => {
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
@@ -334,6 +351,73 @@ test("LocalDeviceClient state methods surface 404 unknown source instance", asyn
   }
 });
 
+test("LocalDeviceHttpError captures Retry-After structurally, not parsed from message prose", async () => {
+  // The exact incident shape: a 503 device_ingest_retryable envelope with
+  // `Retry-After: 1` (reference-implementation/server/routes/ref-device-exporters.ts
+  // sets this on connector_instance_busy admission saturation). Before this
+  // fix, the header was discarded entirely — retryAfterMs was unreachable to
+  // any caller regardless of how the message text was parsed.
+  const server = await startStatusServer(
+    503,
+    '{"error":{"code":"device_ingest_retryable","message":"Device ingest is temporarily unavailable; retry the same batch"}}',
+    { "retry-after": "1" }
+  );
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    await assert.rejects(
+      () =>
+        client.ingestBatch({
+          batch_id: "b1",
+          batch_seq: 1,
+          body_hash: "hash-1",
+          connector_id: "c1",
+          device_id: "device-1",
+          records: [],
+          source_instance_id: "s1",
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof LocalDeviceHttpError);
+        if (err instanceof LocalDeviceHttpError) {
+          assert.equal(err.status, 503);
+          assert.equal(err.code, "device_ingest_retryable");
+          assert.equal(err.retryAfterMs, 1000, "Retry-After: 1 (second) parses to 1000ms structurally");
+        }
+        return true;
+      }
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("LocalDeviceHttpError has a null retryAfterMs when the server sends no Retry-After header", async () => {
+  const server = await startStatusServer(500, '{"error":{"code":"internal_error"}}');
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    await assert.rejects(
+      () =>
+        client.ingestBatch({
+          batch_id: "b1",
+          batch_seq: 1,
+          body_hash: "hash-1",
+          connector_id: "c1",
+          device_id: "device-1",
+          records: [],
+          source_instance_id: "s1",
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof LocalDeviceHttpError);
+        if (err instanceof LocalDeviceHttpError) {
+          assert.equal(err.retryAfterMs, null);
+        }
+        return true;
+      }
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 test("LocalDeviceClient aborts a stalled request with LocalDeviceRequestTimeoutError instead of hanging", async () => {
   // Server accepts the connection but never responds, mimicking a reference
   // server stalled mid-request (e.g. during a projection rebuild). Without a
@@ -436,9 +520,13 @@ async function startJsonServer(seen: SeenRequest[]): Promise<{ close: () => Prom
   };
 }
 
-async function startStatusServer(status: number, body: string): Promise<{ close: () => Promise<void>; url: string }> {
+async function startStatusServer(
+  status: number,
+  body: string,
+  headers: Record<string, string> = {}
+): Promise<{ close: () => Promise<void>; url: string }> {
   const server = createServer((_req: IncomingMessage, res: ServerResponse) => {
-    res.writeHead(status, { "content-type": "application/json" });
+    res.writeHead(status, { "content-type": "application/json", ...headers });
     res.end(body);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

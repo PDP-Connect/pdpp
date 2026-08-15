@@ -1,0 +1,33 @@
+{
+  "response": {
+    "count": 2,
+    "direct_messages": [
+      {
+        "id": "dmsg.1234567890",
+        "user_id": "user123",
+        "created_at": 1609459200,
+        "text": "Hey, how are you doing?",
+        "name": "Alice",
+        "avatar_url": "https://i.groupme.com/user123.jpeg",
+        "attachments": [],
+        "system": false
+      },
+      {
+        "id": "dmsg.1234567891",
+        "user_id": "user456",
+        "created_at": 1609459210,
+        "text": "I'm doing great, thanks!",
+        "name": "Bob",
+        "avatar_url": "https://i.groupme.com/user456.jpeg",
+        "attachments": [
+          {
+            "type": "emoji",
+            "url": "https://i.groupme.com/emoji.png",
+            "picture_url": "https://i.groupme.com/emoji.png"
+          }
+        ],
+        "system": false
+      }
+    ]
+  }
+}

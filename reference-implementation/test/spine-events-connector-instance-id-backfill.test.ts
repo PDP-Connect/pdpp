@@ -68,7 +68,7 @@ function requireRow<T>(row: T | null | undefined): T {
 const NOW = "2026-07-17T00:00:00.000Z";
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: "spine-backfill-target",
   display_name: "Spine Backfill Target",
   protocol_version: "0.1.0",
@@ -77,7 +77,7 @@ const MANIFEST = {
 };
 
 const UNRELATED_MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: "spine-backfill-unrelated",
   display_name: "Spine Backfill Unrelated",
   protocol_version: "0.1.0",

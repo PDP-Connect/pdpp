@@ -26,6 +26,10 @@ import type {
 /**
  * ChatGPT times are unix seconds (number). Some responses use ISO strings.
  * Normalize both to ISO-8601; swallow malformed inputs.
+ *
+ * A non-positive epoch is a sentinel for "no time", not the instant
+ * 1970-01-01 — returning null keeps "unknown" falsifiable downstream instead
+ * of sorting a timeless record to the beginning of time.
  */
 export function tsToIso(v: unknown): string | null {
   if (v === null || v === undefined) {
@@ -33,6 +37,9 @@ export function tsToIso(v: unknown): string | null {
   }
   try {
     if (typeof v === "number" && Number.isFinite(v)) {
+      if (v <= 0) {
+        return null;
+      }
       const d = new Date(v * 1000);
       return Number.isNaN(d.getTime()) ? null : d.toISOString();
     }
@@ -442,13 +449,22 @@ export function buildMemoryRecord(m: RawMemoryEntry): RecordData | null {
 
 // ─── Custom GPTs (gizmos) ───────────────────────────────────────────────
 
+/** A candidate counts only if it's a plain object — arrays don't carry gizmo fields under any observed wrapper shape. */
+function isWrapperCandidate(value: unknown): value is RawGizmo {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /**
- * /gizmos/mine returns one of several wrapper shapes per item:
+ * /gizmos/mine returns one of several wrapper shapes per item, in priority order:
  *   { resource: { gizmo: {...} } }   (newer)
- *   { resource: {...} }              (some tenants)
  *   { gizmo: {...} }                 (rarer)
+ *   { info: {...}, list: {...} }     (live shape drift, run_1786417045973 —
+ *                                      `list` is listing-only metadata, e.g.
+ *                                      is_starred; intentionally not read)
+ *   { resource: {...} }              (some tenants)
  *   {...} flat                        (oldest)
- * Normalize all four into a bare gizmo object.
+ * Picks the first *object-valued* candidate so a malformed/scalar higher-priority
+ * field can't mask a valid lower-priority one.
  */
 export function unwrapGizmo(raw: unknown): RawGizmo | null {
   const rawObj = raw as RawGizmoWrapper | null | undefined;
@@ -457,12 +473,9 @@ export function unwrapGizmo(raw: unknown): RawGizmo | null {
   }
   const resourceGizmo = (rawObj.resource as { gizmo?: unknown } | null | undefined)?.gizmo;
   const resourceFlat = rawObj.resource as unknown;
-  const direct = rawObj.gizmo;
-  const picked = resourceGizmo ?? direct ?? resourceFlat ?? raw;
-  if (!picked || typeof picked !== "object") {
-    return null;
-  }
-  return picked as RawGizmo;
+  const { gizmo: direct, info } = rawObj;
+  const candidates = [resourceGizmo, direct, info, resourceFlat, raw];
+  return candidates.find(isWrapperCandidate) ?? null;
 }
 
 /** Pick `is_public` from the boolean flag or from the string `sharing` enum. */

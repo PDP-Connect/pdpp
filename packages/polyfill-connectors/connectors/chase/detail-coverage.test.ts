@@ -283,11 +283,11 @@ test("emitStatementDetailCoverage: all statement PDFs hydrated -> complete state
   });
 });
 
-test("emitStatementDetailCoverage: index-only statements are optional detail skips, not gaps", async () => {
+test("emitStatementDetailCoverage: PDF download failure emits DETAIL_GAP, not optional_skip_keys", async () => {
   const { deps, messages } = makeHarness();
   const outcomes: StatementDetailOutcome[] = [
     { kind: "hydrated", id: "STMT-1" },
-    { kind: "index_only", id: "STMT-2" },
+    { kind: "gap", id: "STMT-2", reason: "temporary_unavailable", errorClass: "pdf_download_failed" },
   ];
   await emitStatementDetailCoverage(deps, outcomes);
 
@@ -295,10 +295,42 @@ test("emitStatementDetailCoverage: index-only statements are optional detail ski
   assert.ok(coverage, "expected a DETAIL_COVERAGE message");
   assert.deepEqual(coverage.required_keys, ["STMT-1", "STMT-2"]);
   assert.deepEqual(coverage.hydrated_keys, ["STMT-1"]);
-  assert.deepEqual(coverage.optional_skip_keys, ["STMT-2"], "missing local PDF bytes are optional detail evidence");
-  assert.equal(coverage.gap_keys, undefined, "optional PDF misses must not create retryable or terminal gaps");
+  assert.deepEqual(
+    coverage.gap_keys,
+    ["STMT-2"],
+    "missing local PDF bytes due to transport failure is a retryable gap"
+  );
+  assert.equal(coverage.optional_skip_keys, undefined, "transport failures must not populate optional_skip_keys");
   assert.equal(coverage.considered, 2, "both statement index rows were enumerated");
-  assert.equal(coverage.covered, 2, "both statement metadata records were accounted for");
+  assert.equal(coverage.covered, 1, "only hydrated statements count as covered; gaps are partial");
+
+  const gaps = messages.filter((m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP");
+  assert.equal(gaps.length, 1, "one DETAIL_GAP emitted for the failed PDF");
+  assert.ok(
+    gaps.some((g) => g.record_key === "STMT-2"),
+    "gap keyed by statement ID"
+  );
+});
+
+test("emitStatementDetailCoverage: gap outcome with no carried hydration remains a retryable gap", async () => {
+  // A first-time statement (no prior PDF pointers) whose PDF download fails this run
+  // is a genuine first-time gap that must be retried.
+  const { deps, messages } = makeHarness();
+  const outcomes: StatementDetailOutcome[] = [
+    { kind: "gap", id: "NEW-STMT", reason: "temporary_unavailable", errorClass: "pdf_download_failed" },
+  ];
+  await emitStatementDetailCoverage(deps, outcomes);
+
+  const coverage = coverageOf(messages);
+  assert.ok(coverage);
+  assert.deepEqual(coverage.required_keys, ["NEW-STMT"]);
+  assert.deepEqual(coverage.hydrated_keys, []);
+  assert.deepEqual(coverage.gap_keys, ["NEW-STMT"], "first-time statement with failed PDF is a retryable gap");
+  assert.equal(coverage.covered, 0, "gap outcome does not count as covered");
+
+  const gaps = messages.filter((m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP");
+  assert.equal(gaps.length, 1);
+  assert.ok(gaps.some((g) => g.record_key === "NEW-STMT" && g.reason === "temporary_unavailable"));
 });
 
 test("emitStatementDetailCoverage: emits nothing when statements are out of scope", async () => {

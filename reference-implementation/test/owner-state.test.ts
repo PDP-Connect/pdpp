@@ -371,6 +371,61 @@ test("gate: no lifecycle evidence never resolves setup_in_progress, even for a n
   assert.notEqual(state.resolver, "setup_in_progress");
 });
 
+// ─── gate: Chase-shaped draft mid-first-sync (fr-setup-status-lifecycle-0806)
+//
+// Discriminates the exact UAT sequence: connection cin_c2f766b7166a6184adf021aa
+// emits `run.started`, then ~1 minute later `run.interaction_required`
+// (kind=otp). Before the interaction event lands, the Sources UI must render
+// connecting/working — never "needs you" — even though the connection is
+// still a draft. Once the interaction lands, it must render the exact owner
+// action, not the generic draft "Finish connecting this source" copy.
+
+test("gate: draft + active run + no open attention resolves collecting (run.started-only window), never setup_in_progress", () => {
+  const snap = snapshot({ last_success_at: null, state: "idle" });
+  const { state } = ownerStateFor(snap, [], {
+    active: true,
+    lifecycle: { status: "draft" },
+    schedule: null,
+    source: "active_progress",
+  });
+  assert.equal(state.resolver, "collecting");
+  assert.notEqual(state.resolver, "setup_in_progress");
+  assert.equal(state.owner_of_state, "system");
+});
+
+test("gate: draft + active run + open OTP attention resolves needs_owner with the exact action, not the generic draft copy", () => {
+  const snap = snapshot({
+    axes: { attention: "open" },
+    last_success_at: null,
+    state: "needs_attention",
+  });
+  const { state, verdict } = ownerStateFor(snap, [], {
+    active: true,
+    lifecycle: { status: "draft" },
+    schedule: null,
+    source: "active_progress",
+  });
+  assert.equal(state.resolver, "needs_owner");
+  assert.notEqual(state.resolver, "setup_in_progress");
+  assert.equal(state.owner_of_state, "owner");
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const primaryAction = verdict.required_actions[0];
+  assert.ok(primaryAction, "expected a primary required action");
+  assert.equal(primaryAction.kind, "add_info");
+  assert.equal(primaryAction.surface?.kind, "provider_interaction");
+});
+
+test("gate: draft + no active run + no attention still resolves the generic setup_in_progress (nothing else to say yet)", () => {
+  const snap = snapshot({ last_success_at: null, state: "idle" });
+  const { state } = ownerStateFor(snap, [], {
+    active: false,
+    lifecycle: { status: "draft" },
+    schedule: null,
+    source: "none",
+  });
+  assert.equal(state.resolver, "setup_in_progress");
+});
+
 test("gate: never-run (idle, no prior success) resolves to healthy, system-owned, observed", () => {
   const snap = snapshot({ last_success_at: null, state: "idle" });
   const { state } = ownerStateFor(snap, [], { schedule: scheduleRow(), source: "last_successful_freshness" });
@@ -554,8 +609,18 @@ test("exhaustive cross-product: every (state, coverage, schedule, last_success, 
               // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
               // biome-ignore lint/suspicious/noImplicitAnyLet: localized test assertion preserves its explicit contract.
               let state2;
+              // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
+              // biome-ignore lint/suspicious/noImplicitAnyLet: localized test assertion preserves its explicit contract.
+              let verdict1;
               try {
-                ({ state: state1 } = crossProductCase(state, coverage, schedule, lastSuccessAt, lifecycle, active));
+                ({ state: state1, verdict: verdict1 } = crossProductCase(
+                  state,
+                  coverage,
+                  schedule,
+                  lastSuccessAt,
+                  lifecycle,
+                  active
+                ));
                 ({ state: state2 } = crossProductCase(state, coverage, schedule, lastSuccessAt, lifecycle, active));
               } catch {
                 // A small number of state/coverage combinations violate the
@@ -590,12 +655,46 @@ test("exhaustive cross-product: every (state, coverage, schedule, last_success, 
                 assert.equal(state1.owner_of_state, "owner");
                 assert.equal(state1.posture, "observed");
               }
+              // A draft with an active run and no open owner-attention action
+              // must read `collecting`, not the generic `setup_in_progress`
+              // copy (fr-setup-status-lifecycle-0806: a Chase draft between
+              // `run.started` and `run.interaction_required` must render
+              // connecting/working, never needs-you). A draft with an open
+              // owner-attention action must read `needs_owner` with the
+              // exact requested action, never the generic draft copy. Only a
+              // draft with neither resolves the generic `setup_in_progress`.
               if (lifecycle?.status === "draft") {
-                assert.equal(
-                  state1.resolver,
-                  "setup_in_progress",
-                  "draft lifecycle must always resolve setup_in_progress"
-                );
+                const primary1 = verdict1.required_actions[0] ?? null;
+                const hasOwnerAttention = verdict1.channel === "attention" && primary1?.audience === "owner";
+                const hasMaintainerAction = primary1?.audience === "maintainer";
+                // `owner_paused` requires a real disabled schedule row plus a
+                // prior success — not a realistic draft shape, but reachable
+                // in this synthetic matrix, and it legitimately outranks a
+                // bare `progress.active` per the existing "paused must not
+                // mask an active/urgent state" precedence; exclude it here
+                // rather than assert a resolver this module never claimed.
+                const ownerPausedEligible = schedule?.enabled === false && lastSuccessAt !== null;
+                if (hasMaintainerAction) {
+                  assert.equal(
+                    state1.resolver,
+                    "blocked_maintainer",
+                    "draft with a maintainer-audience primary action must resolve blocked_maintainer"
+                  );
+                } else if (!(active || ownerPausedEligible)) {
+                  assert.equal(
+                    state1.resolver,
+                    "setup_in_progress",
+                    "idle draft must resolve setup_in_progress before generic owner attention"
+                  );
+                } else if (hasOwnerAttention) {
+                  assert.equal(
+                    state1.resolver,
+                    "needs_owner",
+                    "draft with open owner attention must resolve needs_owner"
+                  );
+                } else if (active && !ownerPausedEligible) {
+                  assert.equal(state1.resolver, "collecting", "draft with an active run must resolve collecting");
+                }
               }
               // Design gate #3: owner_paused/refresh-schedule requires a real
               // schedule row that is disabled — never an absent (manual) schedule.

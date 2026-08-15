@@ -83,9 +83,11 @@ function connectionControlPath(connectionId: string, suffix: string): string {
   return `/_ref/connections/${encodeURIComponent(connectionId)}${suffix}`;
 }
 
-interface RunNowOptions {
+export type RunAdmission = "browser_enrollment" | "setup";
+
+export interface RunNowOptions {
   force?: boolean;
-  runAdmission?: "browser_enrollment";
+  runAdmission?: RunAdmission;
 }
 
 async function runNowAt(path: string, options: RunNowOptions = {}) {

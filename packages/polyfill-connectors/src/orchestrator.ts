@@ -85,9 +85,21 @@ const KNOWN_CONNECTORS: Record<string, ConnectorPaths> = {
     connectorPath: join(CONNECTORS_DIR, "apple_health", "index.ts"),
     manifestPath: join(MANIFEST_DIR, "apple_health.json"),
   },
+  apple_photos: c("apple_photos"),
   ical: c("ical"),
   chase: c("chase"),
+  apple_contacts: c("apple_contacts"),
+  google_messages: c("google_messages"),
+  google_calendar: c("google_calendar"),
+  google_contacts: c("google_contacts"),
+  groupme: c("groupme"),
+  jellyfin: c("jellyfin"),
+  netflix_export: c("netflix_export"),
+  steam: c("steam"),
+  venmo: c("venmo"),
 };
+
+export const KNOWN_CONNECTOR_NAMES: string[] = Object.keys(KNOWN_CONNECTORS);
 
 export function getConnectorPaths(name: string): ConnectorPaths {
   const paths = KNOWN_CONNECTORS[name];
@@ -105,6 +117,25 @@ export interface Manifest {
 export function readManifest(name: string): Manifest {
   const { manifestPath } = getConnectorPaths(name);
   return JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
+}
+
+/**
+ * The connector set `bin/register-all.ts`'s smoke test registers: every
+ * connector in the registry. Lifecycle tier controls what the owner is
+ * offered; it does not remove a manifest from developer registration smoke
+ * tests. Registering a Development manifest does not call its provider or
+ * claim that its upstream remains available.
+ *
+ * This is the ONLY filter — manual-upload, local-device, and unlisted
+ * connectors stay included, matching prior behavior: register-all's job is
+ * "does the manifest parse and register", not "is this connector
+ * owner-visible or auto-schedulable".
+ */
+export function selectRegisterAllConnectors(
+  connectorNames: readonly string[],
+  _readManifestFn: (name: string) => Manifest
+): string[] {
+  return [...connectorNames];
 }
 
 interface AsFetchResult {

@@ -23,9 +23,9 @@ const CHAT_RECORD = {
   last_message_date: "2024-06-06T09:10:00.000Z",
 };
 
-// A message record exactly as index.ts emits it: "<chatId>:<index>" id.
+// A message record exactly as index.ts emits it: "<chatId>:<contentHash>" id.
 const MESSAGE_RECORD = {
-  id: "0123456789abcdef:0",
+  id: "0123456789abcdef:fedcba9876543210",
   chat_id: "0123456789abcdef",
   author: "Alice",
   content: "hey, are we still on for tomorrow?",
@@ -47,7 +47,7 @@ const ATTACHMENT_RECORD = {
   filename: "IMG-20240605-WA0001.jpg",
   hydration_error: null,
   hydration_status: "hydrated",
-  message_id: "0123456789abcdef:0",
+  message_id: "0123456789abcdef:fedcba9876543210",
   size_bytes: 3,
 };
 
@@ -96,7 +96,7 @@ test("attachments schema accepts a deferred media record without blob_ref", () =
   assert.ok(result.success, JSON.stringify(result.error?.issues));
 });
 
-test("messages schema rejects a malformed id (not <chatId>:<index>)", () => {
+test("messages schema rejects a malformed id (not <chatId>:<contentHash>)", () => {
   assert.equal(messagesSchema.safeParse({ ...MESSAGE_RECORD, id: "no-colon" }).success, false);
 });
 

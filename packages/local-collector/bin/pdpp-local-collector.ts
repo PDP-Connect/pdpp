@@ -25,11 +25,29 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md.
  */
 
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/collector-registry.ts";
+import {
+  buildConnectScopeRequest,
+  type ConnectScopeChoice,
+  ConnectScopeValidationError,
+  describeConnectScopeChoice,
+  normalizeSourceRoots,
+  validateSinceLocally,
+} from "../src/connect-scope.ts";
+import { resolveCollectorQueuePath } from "../src/durable-state.ts";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
 import {
   type BundledConnectorEntry,
@@ -39,8 +57,11 @@ import {
   COLLECTOR_PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES,
   type CollectorConnectorSpec,
+  collectorScopeFingerprint,
   createBundledConnectorRegistry,
   deriveLocalCollectorLifecycleState,
+  type EmittedMessage,
+  type EnrollmentExchangeResponse,
   enrollCollector,
   getBundledConnectorFrom,
   isMainModule,
@@ -56,6 +77,7 @@ import {
   type LocalDeviceOutboxPruneSentResult,
   type LocalDeviceOutboxSummary,
   LocalDeviceRequestTimeoutError,
+  readCollectionScopeFromState,
   runCollectorConnector,
 } from "../src/runner.ts";
 
@@ -78,9 +100,20 @@ export const BUNDLED_CONNECTOR_IDS: readonly string[] = bundledConnectorIds(BUND
 export const BUNDLED_CONNECTOR_VERSIONS: Readonly<Record<string, string>> =
   bundledConnectorVersions(BUNDLED_CONNECTORS);
 
-/** Lookup helper. Returns null when the id is not bundled. */
+/**
+ * Normalize an operator-typed connector id to the registry's canonical form:
+ * lowercase, hyphens folded to underscores. Connector ids are always
+ * `snake_case` (`claude_code`), but `--connector claude-code` or
+ * `CLAUDE_CODE` is an unambiguous, natural typo — refusing it with an opaque
+ * "not bundled" error is a discoverability tax, not a safety boundary.
+ */
+export function normalizeConnectorId(connectorId: string): string {
+  return connectorId.trim().toLowerCase().replaceAll("-", "_");
+}
+
+/** Lookup helper. Returns null when the id is not bundled (after normalization). */
 export function getBundledConnector(connectorId: string): BundledConnectorEntry | null {
-  return getBundledConnectorFrom(BUNDLED_CONNECTORS, connectorId);
+  return getBundledConnectorFrom(BUNDLED_CONNECTORS, normalizeConnectorId(connectorId));
 }
 
 /**
@@ -91,12 +124,6 @@ export function getBundledConnector(connectorId: string): BundledConnectorEntry 
  */
 const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
 
-const DEFAULT_QUEUE_PATH = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  ".pdpp-data",
-  "collector-runner-queue.json"
-);
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
 const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
 const LOCAL_COLLECTOR_PROFILE_DIR_ENV = "PDPP_LOCAL_COLLECTOR_PROFILE_DIR";
@@ -271,6 +298,7 @@ function hasRepoOnlySiblings(packageRoot: string): boolean {
 }
 
 export interface CliOptions {
+  allHistory?: boolean;
   apply?: boolean;
   args?: string[];
   baseUrl: string;
@@ -284,7 +312,11 @@ export interface CliOptions {
     | "recover"
     | "retry-dead-letters"
     | "prune-sent"
-    | "compact";
+    | "compact"
+    | "setup"
+    | "connect"
+    | "connectors"
+    | "logout";
   connector?: string;
   deadLetterKind?: LocalDeviceOutboxKind;
   deviceId?: string;
@@ -293,27 +325,91 @@ export interface CliOptions {
   entrypointCommand?: string;
   explicitOptions?: ReadonlySet<string>;
   force?: boolean;
+  json?: boolean;
   keepCount?: number;
   limit?: number;
+  localOnly?: boolean;
   maxDrainPasses?: number;
   olderThanDays?: number;
   profile?: string;
   queuePath: string;
+  queuePathExplicit?: boolean;
+  quiet?: boolean;
+  /** connect's --recent [days]: an explicit day count of 0 is meaningful ("just given, use the default"), so this is a count, not a boolean. */
+  recentDays?: number;
   runId?: string;
+  sample?: number;
+  since?: string;
   sourceInstanceId?: string;
+  sourceRoots?: string[];
   streams?: string[];
   streamsToBackfill?: string[];
 }
 
-const HELP_TEXT = `pdpp-local-collector — PDPP local collector runner.
+export const HELP_TEXT = `pdpp-local-collector — PDPP local collector runner.
 
 Ownership: the local device/host supervisor decides when filesystem-class
 collectors run. The reference server owns enrollment, ingestion, state, health
 diagnostics, and optional desired-freshness/request-run signals; it does not
 start local processes.
 
-Subcommands:
-  advertise                       Print runtime capabilities and protocol version.
+Guided setup (start here):
+  setup   --base-url <url>        Exchange a one-time enrollment code for device
+          --code <code>             credentials, save them to a local profile file
+          --connector <id>          (no manual env vars to copy), and optionally
+          [--device-label <label>]  run a bounded proof pass to verify the pairing
+          [--sample <n>]            works before collecting the full source.
+          [--profile <name>]        Optional profile file name (default: connector id).
+          [--json]                  Machine-readable output instead of human text.
+  connect --base-url <url>        Same enrollment-code exchange as setup, plus a
+          --code <code>             collection-horizon REQUEST: --recent (30 days
+          --connector <id>          if no --recent/--all/--since given), --all
+          [--recent <days>]         (explicit full history), or --since/
+          [--all]                   --source-roots (custom boundary). This is a
+          [--since <iso>]           REQUEST, not a guarantee: the server is the
+          [--source-roots a,b]      sole authority and narrows-only against
+          [--device-label <label>]  whatever it already declared — a request that
+          [--sample <n>]            would WIDEN a server boundary is rejected, not
+          [--profile <name>]        silently clamped. Exactly one of --recent/
+          [--force]                 --all/--since+--source-roots may be given; give
+          [--json]                  none to defer entirely to the server (which
+                                     itself defaults to recent history, never an
+                                     implicit full pass, when nothing is declared).
+                                     --since is validated locally before any request
+                                     is sent; --source-roots entries that look like
+                                     paths are ~-expanded, resolved, and must exist
+                                     on this host. If a profile already exists at the
+                                     target name, connect refuses to overwrite it
+                                     unless --force is given, which revokes the
+                                     existing device credential server-side first,
+                                     then overwrites the profile with the new one.
+  connectors                      List connector ids this build accepts.
+  logout  --connector <id>        Revoke this device's own credential on the
+          [--profile <name>]        reference server, then delete the local profile
+          [--local-only]            for a connector/profile name. Deletion only
+                                     happens after the server confirms the
+                                     credential is revoked (or was already
+                                     revoked) — a network/server failure leaves
+                                     local credentials in place so you can retry.
+                                     --local-only skips the server call entirely
+                                     and deletes local credentials unconditionally;
+                                     use it only when the server is unreachable or
+                                     decommissioned, since the device token stays
+                                     live on the server until revoked some other way.
+
+Everyday commands:
+  run     --connection-id <id>    Run a bundled filesystem-class connector. Live
+          [--connector <id>]        progress prints to stderr as records are found
+          [--sample <n>]            (suppress with --quiet). --sample <n> stops
+          [--quiet]                 after n records — a bounded proof pass instead
+                                     of collecting the whole source; --device-id/
+                                     --device-token/--base-url are read from the
+                                     matching local profile when omitted (see
+                                     setup/enroll), or from PDPP_LOCAL_DEVICE_ID/
+                                     PDPP_LOCAL_DEVICE_TOKEN/PDPP_REFERENCE_BASE_URL.
+          [--streams a,b,c]
+          [--backfill-streams attachments]
+          [--run-id <id>]
   status                          Print local durable outbox health as JSON.
           [--queue <path>]
           [--connection-id <id>]
@@ -324,6 +420,13 @@ Subcommands:
           [--connection-id <id>]
           [--source-instance-id <id>]
           [--profile <name>]        Optional profile name under the collector profile dir.
+
+Advanced / low-level:
+  advertise                       Print runtime capabilities and protocol version.
+  enroll  --base-url <url>        Exchange a one-time enrollment code for a
+          --code <code>             device id + device token; prints raw JSON.
+          [--device-label <label>]  Scriptable primitive setup is built on — use
+                                     setup for the guided path.
   retry-dead-letters              Requeue local dead-letter outbox rows.
           [--queue <path>]
           [--connection-id <id>]
@@ -351,20 +454,9 @@ Subcommands:
           [--apply]                Dry-run by default; --apply rebuilds after a DB backup.
           [--force]                Apply is refused while unsent (ready/leased/dead-letter) rows
                                    exist; --force compacts anyway (VACUUM is lossless either way).
-  enroll  --base-url <url>        Exchange a one-time enrollment code for a
-          --code <code>             device id + device token.
-          [--device-label <label>]
-  run     --base-url <url>        Run a bundled filesystem-class connector
-          --connector claude_code|codex
-          --device-id <id>
-          --device-token <token>
-          --connection-id <id>
-          [--source-instance-id <id>]
-          [--streams a,b,c]
-          [--backfill-streams attachments]
-          [--run-id <id>]
 
-Public connectors: ${BUNDLED_CONNECTOR_IDS.join(", ")}.
+Public connectors: ${BUNDLED_CONNECTOR_IDS.join(", ")}. Connector ids are case-insensitive
+and hyphens normalize to underscores (claude-code == claude_code).
 Connection id is the stable source identity for one device/account/home binding;
 enrollment responses currently return it as source_instance_id.
 Browser-bound connectors stay in the monorepo until each has its own
@@ -390,8 +482,129 @@ function writeStdout(value: string): void {
   process.stdout.write(value);
 }
 
+/**
+ * Minimum interval between record-count progress lines. `run` can stream
+ * tens of thousands of RECORD messages per second on a large local archive;
+ * printing one line per record would itself become the bottleneck and flood
+ * the terminal. PROGRESS/phase-change messages always print immediately —
+ * this throttle only applies to the running record tally.
+ */
+const PROGRESS_MIN_INTERVAL_MS = 500;
+
+/**
+ * Build a live, human-readable progress reporter for `run`/`setup`.
+ *
+ * Writes to stderr so stdout stays a pure JSON result the caller can safely
+ * pipe or parse (`--json` automation contract, unchanged). This is the fix
+ * for the discriminating friend-UAT failure: `run` on a large local archive
+ * produced zero terminal output for minutes while the child scanned files —
+ * the connector was already emitting RECORD/PROGRESS/DONE messages over
+ * stdout the whole time, but nothing surfaced them to the operator. This
+ * reporter is a read-only tap (see {@link EmittedMessage} / `onMessage`) —
+ * it cannot change what gets collected or ingested, only what the operator
+ * sees while it happens.
+ */
+function formatProgressLine(message: Extract<EmittedMessage, { type: "PROGRESS" }>): string {
+  const countPart = typeof message.count === "number" ? ` ${message.count}` : "";
+  const totalPart = typeof message.total === "number" ? `/${message.total}` : "";
+  return `${message.message}${countPart}${totalPart}\n`;
+}
+
+function formatDoneLine(message: Extract<EmittedMessage, { type: "DONE" }>): string {
+  if (message.status === "succeeded") {
+    return `Scan complete: ${message.records_emitted} record(s) emitted.\n`;
+  }
+  const reason = message.error ? message.error.message : "unknown error";
+  return `Scan ended with an error: ${reason}.\n`;
+}
+
+function createRunProgressReporter(write: (line: string) => void = (line) => process.stderr.write(line)): {
+  onMessage: (message: EmittedMessage) => void;
+} {
+  let recordCount = 0;
+  let lastPrintedAt = 0;
+  let lastStream: string | null = null;
+
+  const onRecord = (message: Extract<EmittedMessage, { type: "RECORD" }>): void => {
+    recordCount += 1;
+    if (message.stream !== lastStream) {
+      lastStream = message.stream;
+      write(`Scanning ${message.stream}… (${recordCount} record(s) found so far)\n`);
+      lastPrintedAt = Date.now();
+      return;
+    }
+    const now = Date.now();
+    if (now - lastPrintedAt >= PROGRESS_MIN_INTERVAL_MS) {
+      write(`  ${recordCount} record(s) found so far (${lastStream})…\n`);
+      lastPrintedAt = now;
+    }
+  };
+
+  const onMessage = (message: EmittedMessage): void => {
+    if (message.type === "RECORD") {
+      onRecord(message);
+      return;
+    }
+    if (message.type === "PROGRESS") {
+      write(formatProgressLine(message));
+      return;
+    }
+    if (message.type === "STATE") {
+      write(`Checkpointed progress for ${message.stream}.\n`);
+      return;
+    }
+    if (message.type === "ASSISTANCE") {
+      write(`Needs your attention: ${message.message}\n`);
+      return;
+    }
+    if (message.type === "DONE") {
+      write(formatDoneLine(message));
+    }
+  };
+
+  return { onMessage };
+}
+
 function writeJson(value: unknown): void {
   writeStdout(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** Dispatch for the credential-lifecycle commands: enroll, setup, connectors, logout. */
+async function runOnboardingCommand(options: CliOptions): Promise<void> {
+  if (options.command === "enroll") {
+    if (!options.code) {
+      throw new CollectorUsageError("enroll requires --code <one-time-code>");
+    }
+    const response = await enrollCollector({
+      baseUrl: options.baseUrl,
+      code: options.code,
+      ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
+    });
+    writeJson(response);
+    return;
+  }
+
+  if (options.command === "setup") {
+    await runSetup(options);
+    return;
+  }
+
+  if (options.command === "connect") {
+    await runConnect(options);
+    return;
+  }
+
+  if (options.command === "connectors") {
+    writeJson({ connectors: BUNDLED_CONNECTOR_IDS, object: "local_collector_connector_list" });
+    return;
+  }
+
+  // options.command === "logout"
+  const result = await runLogout(options);
+  writeJson(result);
+  if (!result.removed) {
+    process.exitCode = 1;
+  }
 }
 
 async function main(): Promise<void> {
@@ -422,7 +635,7 @@ async function main(): Promise<void> {
   }
 
   if (options.command === "retry-dead-letters") {
-    const result = retryLocalOutboxDeadLetters(options);
+    const result = retryLocalOutboxDeadLetters(resolveInspectionOptions(options));
     writeJson(result);
     return;
   }
@@ -434,13 +647,13 @@ async function main(): Promise<void> {
   }
 
   if (options.command === "prune-sent") {
-    const result = pruneSentOutboxRows(options);
+    const result = pruneSentOutboxRows(resolveInspectionOptions(options));
     writeJson(result);
     return;
   }
 
   if (options.command === "compact") {
-    const result = compactOutbox(options);
+    const result = compactOutbox(resolveInspectionOptions(options));
     writeJson(result);
     // A refused apply is an operator error (unsent work present); exit non-zero
     // so a supervising script does not mistake the refusal for a successful
@@ -451,26 +664,76 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (options.command === "enroll") {
-    if (!options.code) {
-      throw new CollectorUsageError("enroll requires --code <one-time-code>");
-    }
-    const response = await enrollCollector({
-      baseUrl: options.baseUrl,
-      code: options.code,
-      ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
-    });
-    writeJson(response);
+  if (
+    options.command === "enroll" ||
+    options.command === "setup" ||
+    options.command === "connect" ||
+    options.command === "connectors" ||
+    options.command === "logout"
+  ) {
+    await runOnboardingCommand(options);
     return;
   }
 
-  const result = await runCollectorOnce(options);
+  // `run` fills gaps from a matching local collector profile when one
+  // exists (explicit flags/env vars always win — see applyProfileEnv), so a
+  // profile `setup` wrote covers device-id/device-token/connector without
+  // manual env vars. UNLIKE status/doctor/recover's resolveInspectionOptions,
+  // this is best-effort and never refuses when no profile matches: today's
+  // automation (device-id/token/connector supplied entirely via flags or
+  // PDPP_LOCAL_DEVICE_ID/PDPP_LOCAL_DEVICE_TOKEN env vars, no profile file on
+  // disk) must keep working exactly as before.
+  const resolvedRunOptions = resolveRunProfileOptions(options);
+
+  if (options.command === "run" && resolvedRunOptions.sample) {
+    const sampleResult = await runCollectorSample(resolvedRunOptions);
+    writeJson(sampleResult);
+    return;
+  }
+
+  const result = await runCollectorOnce(resolvedRunOptions);
   writeJson(summarizeRunResultForCli(result));
 }
 
 type CollectorRunResult = Awaited<ReturnType<typeof runCollectorConnector>>;
 
-function runCollectorOnce(options: CliOptions): Promise<CollectorRunResult> {
+/** Sentinel so the sample-abort catch in {@link runCollectorSample} only swallows aborts it triggered itself. */
+class SampleLimitReachedAbort extends Error {}
+
+/** Sentinel so {@link runCollectorOnce}'s interrupt-abort catch only swallows aborts it triggered itself. */
+export class CollectorInterruptedAbort extends Error {}
+
+/**
+ * Install real SIGINT/SIGTERM handling for the duration of a plain `run`,
+ * reusing the identical abort/flush mechanism `--sample <n>` already relies
+ * on (`abortSignal` into `runCollectorConnector` → `streamConnectorIntoOutbox`
+ * flushes already-parsed records to the durable outbox before the abort
+ * propagates — see `collector-runner.ts`). Before this, Ctrl+C during plain
+ * `run` had no handler at all: the terminal's process-group SIGINT killed
+ * the CLI and its connector child with no flush and no recorded gap, purely
+ * by accident of process-group membership, not by design.
+ *
+ * The handler calls `controller.abort(...)` and returns — it does NOT call
+ * `process.exit()` itself. That lets the normal `runCollectorConnector`
+ * await/catch flow in the caller run to completion (flush happens inside
+ * `streamConnectorIntoOutbox`, then the CLI's usual `writeJson`/exit-code
+ * path takes over), exactly like `runCollectorSample`'s internal abort.
+ * Listeners are removed in `finally` so a `recover` drain loop that calls
+ * `runCollectorOnce` many times does not accumulate handlers.
+ */
+export function installInterruptAbort(controller: AbortController): () => void {
+  const onSignal = (): void => {
+    controller.abort(new CollectorInterruptedAbort());
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  return () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  };
+}
+
+export async function runCollectorOnce(options: CliOptions): Promise<CollectorRunResult> {
   if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
     throw new CollectorUsageError(
       "run requires --device-id <id>, --device-token <token>, and --connection-id/--source-instance-id <id>"
@@ -481,18 +744,647 @@ function runCollectorOnce(options: CliOptions): Promise<CollectorRunResult> {
   }
 
   const spec = buildConnectorSpec(options);
-  return runCollectorConnector({
+  const reporter = options.quiet ? null : createRunProgressReporter();
+  const controller = new AbortController();
+  const removeInterruptHandlers = installInterruptAbort(controller);
+  try {
+    return await runCollectorConnector({
+      abortSignal: controller.signal,
+      baseUrl: options.baseUrl,
+      connector: spec,
+      deviceId: options.deviceId,
+      deviceToken: options.deviceToken,
+      ...(reporter ? { onMessage: reporter.onMessage } : {}),
+      queuePath: resolveOutboxPath(options),
+      ...(options.runId ? { runId: options.runId } : {}),
+      sourceInstanceId: options.sourceInstanceId,
+    });
+  } finally {
+    removeInterruptHandlers();
+  }
+}
+
+export interface SampleRunOutput {
+  connector: string;
+  note: string;
+  object: "local_collector_sample";
+  records_seen: number;
+  sample_limit: number;
+  status: LocalOutboxStatusOutput;
+}
+
+/**
+ * Bounded proof/verification mode: run the connector but stop after
+ * `options.sample` records have been seen, instead of scanning and queuing
+ * the entire local source. Lets an operator confirm a connector works
+ * end-to-end (reads real records, reaches the reference server) without
+ * ingesting a huge archive on the first try — the exact gap in the
+ * friend-UAT discriminator, where `run` scanned a large archive for minutes
+ * with no way to stop short of a full pass.
+ *
+ * Implementation: reuses the SAME abort path `run`'s Ctrl+C interrupt
+ * safety already relies on (`CollectorRunConfig.abortSignal` — see
+ * `collector-runner.ts`'s `streamConnectorIntoOutbox`, which flushes any
+ * already-parsed records to the durable outbox before the abort
+ * propagates). Records collected before the sample cap are genuinely
+ * durable, not discarded; they are also never marked as a complete,
+ * coverage-checkpointed run — the connector's `DONE`/checkpoint state is
+ * intentionally never reached, so a sample can never be mistaken for a
+ * full collection by `status`/`doctor`.
+ */
+export async function runCollectorSample(options: CliOptions): Promise<SampleRunOutput> {
+  if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
+    throw new CollectorUsageError(
+      "run requires --device-id <id>, --device-token <token>, and --connection-id/--source-instance-id <id>"
+    );
+  }
+  if (!options.connector) {
+    throw new CollectorUsageError("run requires --connector <connector-id>");
+  }
+  const sampleLimit = options.sample;
+  if (!sampleLimit || sampleLimit <= 0) {
+    throw new CollectorUsageError("--sample requires a positive integer");
+  }
+
+  const spec = buildConnectorSpec(options);
+  const reporter = options.quiet ? null : createRunProgressReporter();
+  const controller = new AbortController();
+  let recordsSeen = 0;
+  const onMessage = (message: EmittedMessage): void => {
+    reporter?.onMessage(message);
+    if (message.type === "RECORD") {
+      recordsSeen += 1;
+      if (recordsSeen >= sampleLimit) {
+        controller.abort(new SampleLimitReachedAbort());
+      }
+    }
+  };
+
+  try {
+    await runCollectorConnector({
+      abortSignal: controller.signal,
+      baseUrl: options.baseUrl,
+      connector: spec,
+      deviceId: options.deviceId,
+      deviceToken: options.deviceToken,
+      onMessage,
+      queuePath: resolveOutboxPath(options),
+      ...(options.runId ? { runId: options.runId } : {}),
+      sourceInstanceId: options.sourceInstanceId,
+    });
+    // The connector finished (or drained a small backlog) before the sample
+    // cap was ever reached — an honest full pass, just a small source.
+  } catch (error) {
+    if (!(controller.signal.aborted && controller.signal.reason instanceof SampleLimitReachedAbort)) {
+      throw error;
+    }
+  }
+
+  const status = inspectLocalOutboxStatus(resolveInspectionOptions(options));
+  return {
+    connector: spec.connector_id,
+    note:
+      recordsSeen >= sampleLimit
+        ? `Sample stopped after ${recordsSeen} record(s) (limit ${sampleLimit}). These records are durably queued but this is NOT a complete collection — the connector was stopped before finishing its scan, so no coverage checkpoint was recorded. Run \`run\` (without --sample) to collect the full source, or \`recover --apply\` to drain what was already queued.`
+        : `The connector finished on its own after ${recordsSeen} record(s), under the ${sampleLimit} sample limit — this was a complete pass, not a truncated one.`,
+    object: "local_collector_sample",
+    records_seen: recordsSeen,
+    sample_limit: sampleLimit,
+    status,
+  };
+}
+
+export interface SetupOutput {
+  connector: string;
+  device_id: string;
+  note: string;
+  object: "local_collector_setup";
+  profile_path: string;
+  sample: SampleRunOutput | null;
+  source_instance_id: string;
+}
+
+export interface RunSetupDeps {
+  enroll?: typeof enrollCollector;
+  runSample?: (options: CliOptions) => Promise<SampleRunOutput>;
+}
+
+/**
+ * The guided, one-command onboarding path: exchange a one-time enrollment
+ * code for device credentials, persist them as a profile `.env` file
+ * (`0600`, dir `0700`) so `run`/`recover`/`status`/`doctor` resolve them by
+ * `--connection-id` without any manual env-var copying, then — unless
+ * `--sample` is omitted — run a bounded proof pass so the operator sees real
+ * evidence the pairing works before deciding to collect the full source.
+ *
+ * This directly targets the friend-UAT discriminator: enrollment used to
+ * print a JSON blob the operator had to hand-copy into three environment
+ * variables before `run` would do anything, and `run` itself gave zero
+ * feedback while it silently scanned a large archive. `setup` collapses that
+ * into one command with a durable, secure credential home and immediate,
+ * bounded, human-legible proof of collection.
+ *
+ * `enroll` and manual env vars are NOT removed — they remain the scriptable
+ * primitive `setup` is built on, and existing automation that already
+ * exports `PDPP_LOCAL_DEVICE_ID`/`PDPP_LOCAL_DEVICE_TOKEN`/
+ * `PDPP_CONNECTION_ID` keeps working unchanged (profile-file resolution only
+ * activates when a matching profile exists; explicit flags/env vars still
+ * win — see {@link resolveInspectionOptions}/{@link applyProfileEnv}).
+ */
+export async function runSetup(options: CliOptions, deps: RunSetupDeps = {}): Promise<SetupOutput> {
+  const enroll = deps.enroll ?? enrollCollector;
+  const runSample = deps.runSample ?? runCollectorSample;
+
+  if (!options.code) {
+    throw new CollectorUsageError("setup requires --code <one-time-code>");
+  }
+  if (!options.connector) {
+    throw new CollectorUsageError(
+      `setup requires --connector <connector-id>. Supported: ${BUNDLED_CONNECTOR_IDS.join(", ")}.`
+    );
+  }
+  const normalizedConnector = normalizeConnectorId(options.connector);
+  if (!getBundledConnector(normalizedConnector)) {
+    throw new CollectorUsageError(
+      `connector '${options.connector}' is not bundled with pdpp-local-collector. ` +
+        `Supported: ${BUNDLED_CONNECTOR_IDS.join(", ")}.`
+    );
+  }
+
+  const enrollment = await enroll({
     baseUrl: options.baseUrl,
-    connector: spec,
-    deviceId: options.deviceId,
-    deviceToken: options.deviceToken,
-    queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId),
-    ...(options.runId ? { runId: options.runId } : {}),
-    sourceInstanceId: options.sourceInstanceId,
+    code: options.code,
+    ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
   });
+
+  const profileName = options.profile ?? normalizedConnector;
+  const profilePath = writeLocalCollectorProfile({
+    baseUrl: options.baseUrl,
+    connectorId: normalizedConnector,
+    deviceId: enrollment.device_id,
+    deviceToken: enrollment.device_token,
+    name: profileName,
+    sourceInstanceId: enrollment.source_instance_id,
+  });
+
+  let sample: SampleRunOutput | null = null;
+  if (options.sample) {
+    const sampleOptions: CliOptions = {
+      ...options,
+      connector: normalizedConnector,
+      deviceId: enrollment.device_id,
+      deviceToken: enrollment.device_token,
+      sourceInstanceId: enrollment.source_instance_id,
+    };
+    sample = await runSample(sampleOptions);
+  }
+
+  const output: SetupOutput = {
+    connector: normalizedConnector,
+    device_id: enrollment.device_id,
+    note: sample
+      ? `Enrolled and wrote credentials to ${profilePath} (permissions restricted to your user). Ran a bounded proof pass: ${sample.note} Run \`pdpp-local-collector run --connection-id ${enrollment.source_instance_id}\` to collect the full source.`
+      : `Enrolled and wrote credentials to ${profilePath} (permissions restricted to your user). Run \`pdpp-local-collector run --connection-id ${enrollment.source_instance_id}\` to collect, or add --sample <n> next time to verify first with a bounded proof pass.`,
+    object: "local_collector_setup",
+    profile_path: profilePath,
+    sample,
+    source_instance_id: enrollment.source_instance_id,
+  };
+
+  if (options.json) {
+    writeJson(output);
+    return output;
+  }
+  writeStdout(`✓ Enrolled ${normalizedConnector} (device ${enrollment.device_id}).\n`);
+  writeStdout(`✓ Credentials saved to ${profilePath} (readable only by you).\n`);
+  if (sample) {
+    writeStdout(`✓ ${sample.note}\n`);
+  }
+  writeStdout(
+    `\nNext: pdpp-local-collector run --connection-id ${enrollment.source_instance_id}\n` +
+      "(the profile above is picked up automatically — no env vars to set by hand)\n"
+  );
+  return output;
+}
+
+/**
+ * Read `connect`'s scope flags off parsed options into one
+ * {@link ConnectScopeChoice}, refusing to guess when more than one is given.
+ * `--recent`/`--all`/`--since`+`--source-roots` are mutually exclusive —
+ * combining them would leave it ambiguous which boundary the operator
+ * actually meant, and silently picking one would be exactly the kind of
+ * fabricated-intent bug this whole feature exists to prevent.
+ *
+ * `--since`/`--source-roots` are also validated LOCALLY here, before any
+ * server request is built: `--since` must parse as a date/time, and each
+ * `--source-roots` entry that looks like a filesystem path (has a `/`, is
+ * absolute, or starts with `~`) is `~`-expanded, resolved to an absolute
+ * path, and checked to exist on this host. The server has no filesystem to
+ * check a root against — it only validates request shape — so failing here
+ * turns a silently-ignored typo into an immediate, actionable error instead
+ * of a round trip that ends in a scoped connection that collects nothing.
+ */
+export function resolveConnectScopeChoice(options: CliOptions): ConnectScopeChoice {
+  const requested = [
+    options.recentDays === undefined ? null : "recent",
+    options.allHistory ? "all" : null,
+    options.since || options.sourceRoots ? "custom" : null,
+  ].filter((v): v is string => v !== null);
+  if (requested.length > 1) {
+    throw new CollectorUsageError(
+      `connect accepts only one of --recent, --all, --since/--source-roots, got: ${requested.join(", ")}`
+    );
+  }
+  if (options.recentDays !== undefined) {
+    return { kind: "recent", recentDays: options.recentDays };
+  }
+  if (options.allHistory) {
+    return { kind: "all" };
+  }
+  if (options.since || options.sourceRoots) {
+    try {
+      return {
+        kind: "custom",
+        ...(options.since ? { since: validateSinceLocally(options.since) } : {}),
+        ...(options.sourceRoots ? { sourceRoots: normalizeSourceRoots(options.sourceRoots) } : {}),
+      };
+    } catch (error) {
+      if (error instanceof ConnectScopeValidationError) {
+        throw new CollectorUsageError(error.message, { cause: error });
+      }
+      throw error;
+    }
+  }
+  return { kind: "unspecified" };
+}
+
+export interface ConnectOutput {
+  connector: string;
+  device_id: string;
+  note: string;
+  object: "local_collector_connect";
+  profile_path: string;
+  requested_scope: string;
+  sample: SampleRunOutput | null;
+  source_instance_id: string;
+}
+
+export interface RunConnectDeps {
+  enroll?: typeof enrollCollector;
+  now?: () => string;
+  revokeExistingProfile?: (input: { baseUrl: string; deviceId: string; deviceToken: string }) => Promise<unknown>;
+  runSample?: (options: CliOptions) => Promise<SampleRunOutput>;
+}
+
+/**
+ * `connect`: the same enrollment-code exchange `setup` performs, extended
+ * with an optional narrowing-only scope request
+ * (`--recent [days]`/`--all`/`--since`+`--source-roots`).
+ *
+ * This command holds no new credential and mints nothing: it consumes the
+ * SAME one-time enrollment code an owner already minted out of band (a
+ * dashboard, an owner-agent script — exactly how `setup`/`enroll` obtain one
+ * today). The scope flags below are a REQUEST forwarded verbatim to the
+ * enroll route; the server is the sole authority on the EFFECTIVE boundary
+ * (narrows a server-declared one, or applies the honest recent-history
+ * default when neither side declares anything — see
+ * `reference-implementation/server/enrollment-scope-narrowing.ts`). A
+ * request that would WIDEN a server-declared boundary is rejected by the
+ * server with a typed 400, and this command surfaces that rejection as a
+ * `CollectorUsageError` rather than silently falling back to any local
+ * notion of "complete."
+ *
+ * Exactly one of `--recent`, `--all`, `--since`/`--source-roots` may be
+ * given; passing none at all sends no `collection_scope` field, deferring
+ * entirely to the server.
+ *
+ * A repeated `connect` at the same profile name (default: the connector id)
+ * refuses by default when a profile already exists there: overwriting it
+ * silently would orphan the OLD device credential live and un-revoked on
+ * the server while the local record of it — the only thing that could have
+ * revoked it — is gone. `--force` makes the intent explicit and makes it
+ * safe: the existing credential is revoked server-side FIRST (same
+ * self-revoke `logout` uses), and only after that succeeds does `connect`
+ * proceed to consume the new code and overwrite the profile. If the revoke
+ * fails, `connect` aborts before enrolling — the one-time code is not
+ * consumed and nothing is overwritten, so a failed `--force` leaves the
+ * operator able to retry.
+ */
+type RevokeExistingProfileFn = (input: { baseUrl: string; deviceId: string; deviceToken: string }) => Promise<unknown>;
+
+/**
+ * `connect`'s overwrite guard: refuse to clobber an existing profile at
+ * `profileName` unless `--force` is given, and when it is, revoke that
+ * profile's device credential server-side BEFORE returning — so the caller
+ * only proceeds to consume the new one-time code once the old credential is
+ * confirmed gone. Extracted out of {@link runConnect} to keep that
+ * function's branching within the repo's cognitive-complexity budget; the
+ * behavior (and its tests) are unchanged by the extraction.
+ */
+async function guardConnectProfileOverwrite(
+  profileName: string,
+  force: boolean | undefined,
+  revokeExistingProfile: RevokeExistingProfileFn
+): Promise<void> {
+  const existingProfilePath = existingCollectorProfilePath(profileName);
+  if (!existingProfilePath) {
+    return;
+  }
+  if (!force) {
+    throw new CollectorUsageError(
+      `connect found an existing profile at ${existingProfilePath}. Connecting again would overwrite it and ` +
+        "leave its device credential live and un-revoked on the server, with no local record left to revoke " +
+        "it later. Pass --force to revoke the existing credential first, then connect and overwrite the profile."
+    );
+  }
+  const existingEnv = parseCollectorProfileEnv(readFileSync(existingProfilePath, "utf8"));
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches applyProfileEnv's established idiom.
+  const existingBaseUrl = existingEnv.PDPP_REFERENCE_BASE_URL?.trim();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches applyProfileEnv's established idiom.
+  const existingDeviceId = existingEnv.PDPP_LOCAL_DEVICE_ID?.trim();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches applyProfileEnv's established idiom.
+  const existingDeviceToken = existingEnv.PDPP_LOCAL_DEVICE_TOKEN?.trim();
+  if (!(existingBaseUrl && existingDeviceId && existingDeviceToken)) {
+    return;
+  }
+  try {
+    await revokeExistingProfile({
+      baseUrl: existingBaseUrl,
+      deviceId: existingDeviceId,
+      deviceToken: existingDeviceToken,
+    });
+  } catch (error) {
+    const alreadyGone = error instanceof LocalDeviceHttpError && (error.status === 401 || error.status === 403);
+    if (alreadyGone) {
+      // Already revoked/invalid server-side: nothing further to revoke, safe to proceed.
+      return;
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CollectorUsageError(
+      `connect --force could not confirm the existing credential at ${existingProfilePath} was revoked ` +
+        `server-side (${detail}). Nothing was overwritten and the one-time code was not consumed — retry ` +
+        "once the server is reachable.",
+      { cause: error }
+    );
+  }
+}
+
+export async function runConnect(options: CliOptions, deps: RunConnectDeps = {}): Promise<ConnectOutput> {
+  const enroll = deps.enroll ?? enrollCollector;
+  const runSample = deps.runSample ?? runCollectorSample;
+  const now = deps.now ?? (() => new Date().toISOString());
+  const revokeExistingProfile: RevokeExistingProfileFn =
+    deps.revokeExistingProfile ??
+    ((input) =>
+      new LocalDeviceClient({
+        baseUrl: input.baseUrl,
+        deviceId: input.deviceId,
+        deviceToken: input.deviceToken,
+      }).selfRevoke());
+
+  if (!options.code) {
+    throw new CollectorUsageError("connect requires --code <one-time-code>");
+  }
+  if (!options.connector) {
+    throw new CollectorUsageError(
+      `connect requires --connector <connector-id>. Supported: ${BUNDLED_CONNECTOR_IDS.join(", ")}.`
+    );
+  }
+  const normalizedConnector = normalizeConnectorId(options.connector);
+  if (!getBundledConnector(normalizedConnector)) {
+    throw new CollectorUsageError(
+      `connector '${options.connector}' is not bundled with pdpp-local-collector. ` +
+        `Supported: ${BUNDLED_CONNECTOR_IDS.join(", ")}.`
+    );
+  }
+
+  const profileName = options.profile ?? normalizedConnector;
+  await guardConnectProfileOverwrite(profileName, options.force, revokeExistingProfile);
+
+  const scopeChoice = resolveConnectScopeChoice(options);
+  const nowIso = now();
+  const collectionScope = buildConnectScopeRequest(scopeChoice, nowIso);
+  const requestedScopeDescription = describeConnectScopeChoice(scopeChoice, nowIso);
+
+  let enrollment: EnrollmentExchangeResponse;
+  try {
+    enrollment = await enroll({
+      baseUrl: options.baseUrl,
+      ...(collectionScope === undefined ? {} : { collectionScope }),
+      code: options.code,
+      ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
+    });
+  } catch (error) {
+    if (error instanceof LocalDeviceHttpError && error.status === 400) {
+      throw new CollectorUsageError(
+        `connect could not enroll with the requested scope (${requestedScopeDescription}): ` +
+          `${error.envelopeMessage ?? error.message}`,
+        { cause: error }
+      );
+    }
+    throw error;
+  }
+
+  const profilePath = writeLocalCollectorProfile({
+    baseUrl: options.baseUrl,
+    connectorId: normalizedConnector,
+    deviceId: enrollment.device_id,
+    deviceToken: enrollment.device_token,
+    name: profileName,
+    sourceInstanceId: enrollment.source_instance_id,
+  });
+
+  let sample: SampleRunOutput | null = null;
+  if (options.sample) {
+    const sampleOptions: CliOptions = {
+      ...options,
+      connector: normalizedConnector,
+      deviceId: enrollment.device_id,
+      deviceToken: enrollment.device_token,
+      sourceInstanceId: enrollment.source_instance_id,
+    };
+    sample = await runSample(sampleOptions);
+  }
+
+  const nextCommand = `pdpp-local-collector run --connection-id ${enrollment.source_instance_id}`;
+  const output: ConnectOutput = {
+    connector: normalizedConnector,
+    device_id: enrollment.device_id,
+    note: sample
+      ? `Enrolled with requested scope: ${requestedScopeDescription}. Credentials saved to ${profilePath} ` +
+        `(permissions restricted to your user). Ran a bounded proof pass: ${sample.note} Run \`${nextCommand}\` ` +
+        "to collect the rest of the declared boundary."
+      : `Enrolled with requested scope: ${requestedScopeDescription}. Credentials saved to ${profilePath} ` +
+        `(permissions restricted to your user). Run \`${nextCommand}\` to collect, or add --sample <n> next time ` +
+        "to verify first with a bounded proof pass.",
+    object: "local_collector_connect",
+    profile_path: profilePath,
+    requested_scope: requestedScopeDescription,
+    sample,
+    source_instance_id: enrollment.source_instance_id,
+  };
+
+  if (options.json) {
+    writeJson(output);
+    return output;
+  }
+  writeStdout(`✓ Requested scope: ${requestedScopeDescription}\n`);
+  writeStdout(`✓ Enrolled ${normalizedConnector} (device ${enrollment.device_id}).\n`);
+  writeStdout(`✓ Credentials saved to ${profilePath} (readable only by you).\n`);
+  if (sample) {
+    writeStdout(`✓ ${sample.note}\n`);
+  }
+  writeStdout(`\nNext: ${nextCommand}\n(the profile above is picked up automatically — no env vars to set by hand)\n`);
+  return output;
+}
+
+export interface LogoutOutput {
+  object: "local_collector_logout";
+  path: string;
+  removed: boolean;
+  revoke_note: string;
+  revoked: boolean;
+}
+
+export interface RunLogoutDeps {
+  /** Injectable seam for tests; defaults to a real {@link LocalDeviceClient}. */
+  selfRevoke?: (input: { baseUrl: string; deviceId: string; deviceToken: string }) => Promise<unknown>;
+}
+
+/**
+ * Revoke this device's own server-side credential, then delete the local
+ * profile `.env` file for a connector/profile name (the `logout`/
+ * credential-removal half of the `setup` lifecycle). Deletion only happens
+ * AFTER the server confirms the credential is gone — either freshly revoked
+ * or already revoked from a prior attempt — so a `logout` that fails
+ * halfway never leaves an operator believing the server-side lane is closed
+ * when it is not. On an ambiguous failure (network error, timeout, or an
+ * unexpected server response) this fails closed: local credentials are left
+ * in place so the operator can retry, rather than silently deleting the
+ * only record of a token that may still be live server-side.
+ *
+ * `--local-only` skips the server call entirely (see {@link CliOptions.localOnly})
+ * for the unreachable/decommissioned-server escape hatch — deliberately not
+ * named "logout" in the flag itself, since it does not close the
+ * server-side lane and an operator must know that.
+ */
+export async function runLogout(options: CliOptions, deps: RunLogoutDeps = {}): Promise<LogoutOutput> {
+  const name = options.profile ?? (options.connector ? normalizeConnectorId(options.connector) : null);
+  if (!name) {
+    throw new CollectorUsageError("logout requires --profile <name> or --connector <connector-id>");
+  }
+
+  const profileDir = process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
+  const fileName = safeProfileFileName(name);
+  const path = join(profileDir, fileName);
+
+  if (!existsSync(path)) {
+    return {
+      object: "local_collector_logout",
+      path,
+      removed: false,
+      revoke_note: "No local profile found; nothing to revoke or delete.",
+      revoked: false,
+    };
+  }
+
+  if (options.localOnly) {
+    const result = removeLocalCollectorProfile({ name });
+    return {
+      object: "local_collector_logout",
+      ...result,
+      revoke_note:
+        "--local-only skipped the server-side revoke. The device token may still be valid against the " +
+        "reference deployment until revoked some other way (server admin, or a future logout once reachable).",
+      revoked: false,
+    };
+  }
+
+  let env: Record<string, string>;
+  try {
+    env = parseCollectorProfileEnv(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new CollectorUsageError(
+      `logout could not read the local profile at ${path}: ${error instanceof Error ? error.message : String(error)}. ` +
+        "Refusing to delete an unreadable profile; pass --local-only to force local deletion without a server-side revoke.",
+      { cause: error }
+    );
+  }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches the established idiom in applyProfileEnv above.
+  const baseUrl = env.PDPP_REFERENCE_BASE_URL?.trim();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches the established idiom in applyProfileEnv above.
+  const deviceId = env.PDPP_LOCAL_DEVICE_ID?.trim();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches the established idiom in applyProfileEnv above.
+  const deviceToken = env.PDPP_LOCAL_DEVICE_TOKEN?.trim();
+  if (!(baseUrl && deviceId && deviceToken)) {
+    throw new CollectorUsageError(
+      `logout found a local profile at ${path} that is missing device credentials needed to revoke it server-side. ` +
+        "Pass --local-only to delete it locally without a server-side revoke."
+    );
+  }
+
+  const selfRevoke =
+    deps.selfRevoke ??
+    ((input: { baseUrl: string; deviceId: string; deviceToken: string }) =>
+      new LocalDeviceClient({
+        baseUrl: input.baseUrl,
+        deviceId: input.deviceId,
+        deviceToken: input.deviceToken,
+      }).selfRevoke());
+
+  try {
+    await selfRevoke({ baseUrl, deviceId, deviceToken });
+  } catch (error) {
+    if (error instanceof LocalDeviceHttpError && (error.status === 401 || error.status === 403)) {
+      // Unambiguous: this credential is already invalid/revoked server-side
+      // (or was never valid for this device). There is nothing further a
+      // retry could revoke, so proceeding to delete the local copy is safe
+      // and keeps logout idempotent across repeated calls.
+      const result = removeLocalCollectorProfile({ name });
+      return {
+        object: "local_collector_logout",
+        ...result,
+        revoke_note: "Device credential was already revoked (or invalid) server-side; deleted local credentials.",
+        revoked: true,
+      };
+    }
+    // Ambiguous failure — network error, timeout, or an unexpected server
+    // response. Fail closed: keep local credentials so the operator can
+    // retry once the server is reachable, instead of deleting the only
+    // local record of a token that may still be live.
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CollectorUsageError(
+      `logout could not confirm the device credential was revoked server-side (${detail}). Local credentials at ` +
+        `${path} were left in place — retry once the server is reachable, or pass --local-only to delete them ` +
+        "without a confirmed server-side revoke (the token then remains live until revoked some other way).",
+      { cause: error }
+    );
+  }
+
+  const result = removeLocalCollectorProfile({ name });
+  return {
+    object: "local_collector_logout",
+    ...result,
+    revoke_note: "Device credential revoked server-side; deleted local credentials.",
+    revoked: true,
+  };
 }
 
 export interface LocalCollectorRunOutput extends Omit<CollectorRunResult, "flushedState" | "priorState"> {
+  /**
+   * One honest, operator-facing line stating whether THIS run committed
+   * terminal coverage evidence — i.e. whether the connector exhaustively
+   * enumerated the declared boundary and the server now holds proof of it —
+   * or whether the run was partial (interrupted, sample-limited, or stopped
+   * by the per-run scan budget) and therefore recorded no completion claim.
+   * Drawn from the exact same gate `collector-runner.ts` uses to decide
+   * whether to call `reportTerminalCollection`
+   * (`done.status === "succeeded" && !scanBudgetExceeded &&
+   * completeness !== null`), so this note can never say "complete" when the
+   * server was never told so. Identical logic for every connector — no
+   * connector-id branch decides this sentence.
+   */
+  coverage_note: string;
   /**
    * One honest, operator-facing line describing the drain outcome of this
    * invocation. A successful connector pass (`done.status === "succeeded"`)
@@ -559,6 +1451,7 @@ export function summarizeRunResultForCli(result: CollectorRunResult): LocalColle
   const drained = openWork === 0;
   return {
     ...result,
+    coverage_note: runCoverageNote(result),
     drain_note: runDrainNote(result, summary, drained),
     drained,
     flushedState: summarizeCollectorState(result.flushedState),
@@ -609,6 +1502,42 @@ function runDrainNote(result: CollectorRunResult, summary: LocalDeviceOutboxSumm
     ? " The connector was stopped by the per-run enqueue budget, so more source work likely remains; re-run to continue."
     : "";
   return `Run succeeded on the source but the outbox is NOT fully drained: ${parts.join(", ")}.${scanNote}`;
+}
+
+/**
+ * One honest line on whether this run's completion is provable, not just
+ * "the process exited zero". Mirrors `collector-runner.ts`'s own
+ * `reportTerminalCollection` gate exactly, so this text and the server's
+ * committed evidence can never disagree: a `--sample`/interrupted/
+ * budget-stopped pass never claims exhaustive coverage of the declared
+ * boundary, regardless of how many records it happened to collect.
+ */
+function runCoverageNote(result: CollectorRunResult): string {
+  if (result.scanBudgetExceeded) {
+    return (
+      "Coverage NOT committed: the connector was stopped by the per-run scan budget before it finished " +
+      "enumerating the declared boundary. Re-run to continue; only a run that finishes without hitting the " +
+      "budget can commit a completion claim."
+    );
+  }
+  if (result.done?.status !== "succeeded") {
+    return (
+      "Coverage NOT committed: this run did not finish (interrupted or the connector exited without " +
+      "reporting success). Records already collected before the stop were still delivered, but no completion " +
+      "claim was recorded for the declared boundary — re-run to finish the enumeration."
+    );
+  }
+  if (!result.completeness) {
+    return (
+      "Coverage NOT committed: the connector finished but reported no coverage diagnostics for this pass, " +
+      "so no completion claim was recorded."
+    );
+  }
+  return result.completeness.fullyAccounted
+    ? "Coverage committed: the connector exhaustively enumerated the declared boundary and every requested " +
+        "stream is fully accounted for."
+    : `Coverage committed, but ${result.completeness.unaccountedStores.length} store(s) are unaccounted for ` +
+        `(${result.completeness.unaccountedStores.join(", ")}) — see \`doctor\` for detail.`;
 }
 
 function pendingOpenWork(summary: LocalDeviceOutboxSummary): number {
@@ -717,6 +1646,20 @@ export interface LocalOutboxStatusOutput {
     name: string;
     version: string;
   };
+  /**
+   * The owner-declared collection boundary in force for this lane, as the
+   * server last delivered it, so an operator can see WHAT a "complete" run on
+   * this connection is complete *within*.
+   *
+   * `active` is the boundary's fingerprint (`unscoped` for a full pass — an
+   * absence would be indistinguishable from "we did not look"). `unknown: true`
+   * means the lane has no local record of a delivered scope yet, which is the
+   * honest answer before the first run rather than a claimed full corpus.
+   */
+  scope: {
+    active: string;
+    unknown: boolean;
+  };
   source: {
     connection_id: string | null;
     source_instance_id: string | null;
@@ -729,6 +1672,13 @@ export interface LocalCollectorReferenceRouteCheck {
   error_class?: string;
   http_status?: number;
   missing?: Array<"device_id" | "device_token" | "source_instance_id">;
+  /**
+   * The owner-declared boundary in force for this connection, read from the
+   * same state payload this probe already fetches. `unscoped` is a real value
+   * (a full pass); the field is absent only when the probe could not reach the
+   * server, so a failed check never implies an unbounded collection.
+   */
+  scope?: string;
   status: "ok" | "fail" | "unknown";
 }
 
@@ -840,7 +1790,7 @@ export function inspectLocalOutboxStatus(
       record_batches: inspection.recordBatchCount,
     },
     db: {
-      configured: Boolean(options.queuePath),
+      configured: true,
       exists,
       path: dbPath,
     },
@@ -862,6 +1812,12 @@ export function inspectLocalOutboxStatus(
       name: LOCAL_COLLECTOR_PACKAGE_NAME,
       version: resolveLocalCollectorPackageVersion(),
     },
+    // `status` reads the durable outbox alone and never calls the server (see
+    // `doctor` for the reachability probe), so it cannot observe the declared
+    // boundary. Saying so is the honest answer: the alternative — defaulting the
+    // display to `unscoped` — would assert a full-corpus pass that nothing here
+    // measured. `doctor` fills this in from the live state read.
+    scope: { active: "unknown", unknown: true },
     source: {
       connection_id: options.sourceInstanceId ?? null,
       source_instance_id: options.sourceInstanceId ?? null,
@@ -910,10 +1866,15 @@ export async function inspectLocalReferenceRoute(
         deviceToken,
         requestTimeoutMs: REFERENCE_ROUTE_DOCTOR_TIMEOUT_MS,
       });
-    await client.getSourceInstanceState({ sourceInstanceId });
+    const projection = await client.getSourceInstanceState({ sourceInstanceId });
+    // The state read the probe already performs is the same one that carries the
+    // owner-declared boundary, so `doctor` can state the active scope without an
+    // extra round-trip. This is the surface that answers "complete within WHAT?"
+    // for an operator looking at a green lane.
     return {
       base_url: baseUrl,
       check: "device_source_state",
+      scope: collectorScopeFingerprint(readCollectionScopeFromState(projection.state)),
       status: "ok",
     };
   } catch (error) {
@@ -1297,6 +2258,103 @@ function safeProfileFileName(name: string): string {
   return PROFILE_ENV_EXTENSION.test(trimmed) ? trimmed : `${trimmed}.env`;
 }
 
+/** Absolute path of an existing profile file for `name`, or `null` when none exists. Used by `connect`'s overwrite guard. */
+function existingCollectorProfilePath(name: string): string | null {
+  const profileDir = process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
+  const path = join(profileDir, safeProfileFileName(name));
+  return existsSync(path) ? path : null;
+}
+
+/**
+ * Serialize a profile `.env` file body. Values are double-quoted so a base
+ * URL or label containing spaces/special characters round-trips through
+ * {@link parseCollectorProfileEnv} unambiguously. Never includes a trailing
+ * comment or metadata field that could be mistaken for a secret value.
+ */
+function serializeCollectorProfileEnv(env: Readonly<Record<string, string>>): string {
+  const lines = Object.entries(env).map(([key, value]) => {
+    const escaped = value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    return `${key}="${escaped}"`;
+  });
+  return `${lines.join("\n")}\n`;
+}
+
+export interface WriteLocalCollectorProfileInput {
+  baseUrl: string;
+  connectorId: string;
+  deviceId: string;
+  deviceToken: string;
+  name: string;
+  profileDir?: string;
+  sourceInstanceId: string;
+}
+
+/**
+ * Persist an enrollment result as a profile `.env` file so `run`/`recover`
+ * can resolve it by source-instance id without the operator hand-copying
+ * `device_id`/`device_token`/`source_instance_id` into shell env vars. This
+ * is the write side of {@link findLocalCollectorProfiles}, which already
+ * reads this exact file shape for `recover`/`status`/`doctor` — `setup` is
+ * the first command to author one.
+ *
+ * Directory is created `0700` and the file `0600` (owner read/write only),
+ * matching the existing secret-adjacent write pattern in
+ * `collector-runner.ts`'s connector-protocol debug dump. `mode` on
+ * `mkdirSync`/`writeFileSync` only applies at CREATION — POSIX `open()`
+ * does not `chmod` an existing path on truncate-and-rewrite — so both are
+ * followed by an explicit `chmodSync` to reset the mode even when the
+ * directory/file already existed with weaker permissions (e.g. `connect
+ * --force` reusing a profile left at `0644` by a manual `chmod`, an older
+ * build, or a restored backup). `chmod`/POSIX mode bits are inert on
+ * Windows, where NTFS ACLs (not mode bits) govern access; the file still
+ * lands under the user's own profile directory there.
+ */
+export function writeLocalCollectorProfile(input: WriteLocalCollectorProfileInput): string {
+  const profileDir =
+    input.profileDir?.trim() || process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
+  mkdirSync(profileDir, { mode: 0o700, recursive: true });
+  if (process.platform !== "win32") {
+    chmodSync(profileDir, 0o700);
+  }
+  const fileName = safeProfileFileName(input.name);
+  const path = join(profileDir, fileName);
+  const body = serializeCollectorProfileEnv({
+    PDPP_REFERENCE_BASE_URL: input.baseUrl,
+    PDPP_COLLECTOR_CONNECTOR: input.connectorId,
+    PDPP_LOCAL_DEVICE_ID: input.deviceId,
+    PDPP_LOCAL_DEVICE_TOKEN: input.deviceToken,
+    PDPP_CONNECTION_ID: input.sourceInstanceId,
+  });
+  writeFileSync(path, body, { mode: 0o600 });
+  if (process.platform !== "win32") {
+    chmodSync(path, 0o600);
+  }
+  return path;
+}
+
+/**
+ * Delete a profile `.env` file by name (the `logout`/credential-removal
+ * lifecycle). Only removes the local file — it does NOT revoke the device
+ * token server-side; a stale token remains valid against the reference
+ * deployment until that deployment's own admin revokes it. Returns false
+ * (not an error) when the profile was already absent, so `logout` is
+ * idempotent.
+ */
+export function removeLocalCollectorProfile(input: { name: string; profileDir?: string }): {
+  path: string;
+  removed: boolean;
+} {
+  const profileDir =
+    input.profileDir?.trim() || process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
+  const fileName = safeProfileFileName(input.name);
+  const path = join(profileDir, fileName);
+  if (!existsSync(path)) {
+    return { path, removed: false };
+  }
+  rmSync(path);
+  return { path, removed: true };
+}
+
 export function findLocalCollectorProfiles(input: {
   profileDir?: string;
   profileName?: string | null;
@@ -1345,12 +2403,14 @@ function applyProfileEnv(options: CliOptions, profile: LocalCollectorProfile): C
   const { env } = profile;
   const explicit = options.explicitOptions;
   const keep = (flag: string): boolean => explicit?.has(flag) === true;
+  const profileQueuePath = Object.hasOwn(env, "PDPP_COLLECTOR_QUEUE") ? env.PDPP_COLLECTOR_QUEUE : undefined;
+  const configuredQueuePath = hasExplicitQueuePath(options);
   const next: CliOptions = {
     ...options,
     // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     baseUrl: keep("--base-url") ? options.baseUrl : env.PDPP_REFERENCE_BASE_URL?.trim() || options.baseUrl,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
-    queuePath: keep("--queue") ? options.queuePath : env.PDPP_COLLECTOR_QUEUE?.trim() || options.queuePath,
+    queuePath: configuredQueuePath ? options.queuePath : (profileQueuePath ?? options.queuePath),
+    queuePathExplicit: configuredQueuePath || profileQueuePath !== undefined,
   };
   const sourceInstanceId = profile.source_instance_id ?? options.sourceInstanceId;
   // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
@@ -1405,12 +2465,12 @@ function resolveRecoveryOptions(options: CliOptions): {
     };
   }
 
-  const configuredQueue = options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
+  const configuredQueue = hasExplicitQueuePath(options);
   if (!configuredQueue) {
     throw new CollectorUsageError(
       `recover could not find a local collector profile for source_instance_id '${sourceInstanceId}'. ` +
         "Run this on the collector host after enrollment, pass --profile <name>, or set PDPP_COLLECTOR_QUEUE/--queue explicitly. " +
-        "Refusing to inspect the package default queue because it is often unrelated to the enrolled collector."
+        "Refusing to inspect an unscoped default queue because it may be unrelated to the enrolled collector."
     );
   }
 
@@ -1423,13 +2483,13 @@ function resolveRecoveryOptions(options: CliOptions): {
 
 export function resolveInspectionOptions(options: CliOptions): CliOptions {
   const sourceInstanceId = options.sourceInstanceId?.trim();
-  if (!sourceInstanceId || options.explicitOptions?.has("--queue") === true) {
+  if (hasExplicitQueuePath(options)) {
     return options;
   }
 
   const lookup = findLocalCollectorProfiles({
     profileName: options.profile ?? null,
-    sourceInstanceId,
+    sourceInstanceId: sourceInstanceId ?? null,
   });
   if (lookup.matches.length > 1) {
     throw new CollectorUsageError(
@@ -1441,15 +2501,62 @@ export function resolveInspectionOptions(options: CliOptions): CliOptions {
     return applyProfileEnv(options, lookup.matches[0] as LocalCollectorProfile);
   }
 
-  const configuredQueue = options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
+  // An explicit profile is already an identity selector. Requiring the
+  // source-instance id as well makes the documented `doctor --profile NAME`
+  // path silently fall back to the unrelated default queue, which is unsafe
+  // for read-only health diagnosis and also loses the profile's base URL.
+  if (options.profile) {
+    throw new CollectorUsageError(
+      `${options.command} could not find local collector profile '${options.profile}'. ` +
+        "Check --profile <name> or pass --queue <path> explicitly."
+    );
+  }
+
+  if (!sourceInstanceId) {
+    return options;
+  }
+
+  const configuredQueue = hasExplicitQueuePath(options);
   if (!configuredQueue) {
     throw new CollectorUsageError(
       `${options.command} could not find a local collector profile for source_instance_id '${sourceInstanceId}'. ` +
         "Run this on the collector host after enrollment, pass --profile <name>, or set PDPP_COLLECTOR_QUEUE/--queue explicitly. " +
-        "Refusing to inspect the package default queue because it is often unrelated to the enrolled collector."
+        "Refusing to inspect an unscoped default queue because it may be unrelated to the enrolled collector."
     );
   }
 
+  return options;
+}
+
+/**
+ * `run`'s profile-fill: best-effort ONLY. Unlike {@link resolveInspectionOptions}
+ * (which refuses when a `--connection-id` has no matching profile and no
+ * queue was configured — appropriate for status/doctor/recover, which are
+ * pure inspection and would otherwise silently read an unrelated default
+ * queue), `run` must keep working exactly as before for automation that
+ * supplies device-id/device-token/connector entirely via flags or env vars
+ * with no profile file on disk. A missing/ambiguous profile is simply a
+ * no-op here — `runCollectorOnce`'s own required-field check is what
+ * ultimately reports a genuinely incomplete invocation.
+ */
+export function resolveRunProfileOptions(options: CliOptions): CliOptions {
+  const sourceInstanceId = options.sourceInstanceId?.trim();
+  if (!sourceInstanceId || hasExplicitQueuePath(options)) {
+    return options;
+  }
+  const lookup = findLocalCollectorProfiles({
+    profileName: options.profile ?? null,
+    sourceInstanceId,
+  });
+  if (lookup.matches.length === 1) {
+    return applyProfileEnv(options, lookup.matches[0] as LocalCollectorProfile);
+  }
+  if (lookup.matches.length > 1) {
+    throw new CollectorUsageError(
+      `run found ${lookup.matches.length} local collector profiles for source_instance_id '${sourceInstanceId}'. ` +
+        "Pass --profile <name> to disambiguate."
+    );
+  }
   return options;
 }
 
@@ -1937,11 +3044,23 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
     throw new CollectorUsageError(`run requires --streams <a,b,c> for connector ${options.connector}`);
   }
   return {
-    connector_id: options.connector,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: bundled is null on the custom-command path (customAllowed); options.connector is the fallback connector_id there.
+    connector_id: bundled?.connector_id ?? options.connector,
     streams,
     ...(options.streamsToBackfill ? { streamsToBackfill: options.streamsToBackfill } : {}),
     command,
     args,
+    // Which streams a declared `since` can be proven against. Carried from the
+    // connector's own definition so the runtime enforces a boundary without
+    // knowing any connector; absent for a custom-command dev entry, which then
+    // simply runs unscoped rather than guessing.
+    ...(bundled?.time_scopable_streams ? { timeScopableStreams: bundled.time_scopable_streams } : {}),
+    ...(bundled?.source_root_scopable_streams
+      ? { sourceRootScopableStreams: bundled.source_root_scopable_streams }
+      : {}),
+    // Only a connector that declared it prunes by root may have a roots
+    // boundary honoured; otherwise it is declassified, never falsely claimed.
+    ...(bundled?.enforces_source_roots ? { enforcesSourceRoots: true } : {}),
     // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established behavior; this diagnostic requires a semantic refactor outside the closure scope.
     runtime_requirements: { bindings: bundled?.bindings ?? {} },
   };
@@ -1962,16 +3081,22 @@ export function parseArgs(args: string[]): CliOptions {
     command !== "recover" &&
     command !== "retry-dead-letters" &&
     command !== "prune-sent" &&
-    command !== "compact"
+    command !== "compact" &&
+    command !== "setup" &&
+    command !== "connect" &&
+    command !== "connectors" &&
+    command !== "logout"
   ) {
     throw new CollectorUsageError(
-      "usage: pdpp-local-collector <enroll|run|advertise|status|doctor|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]"
+      "usage: pdpp-local-collector <setup|connect|run|status|doctor|logout|connectors|advertise|enroll|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]"
     );
   }
+  const configuredQueuePath = process.env.PDPP_COLLECTOR_QUEUE;
   const options: CliOptions = {
     baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:7662",
     command,
-    queuePath: process.env.PDPP_COLLECTOR_QUEUE ?? DEFAULT_QUEUE_PATH,
+    queuePath: configuredQueuePath ?? "",
+    queuePathExplicit: configuredQueuePath !== undefined,
   };
   const explicitOptions = new Set<string>();
   options.explicitOptions = explicitOptions;
@@ -2021,6 +3146,22 @@ function applyFlagOption(options: CliOptions, arg: string): boolean {
     options.force = true;
     return true;
   }
+  if (arg === "--quiet") {
+    options.quiet = true;
+    return true;
+  }
+  if (arg === "--json") {
+    options.json = true;
+    return true;
+  }
+  if (arg === "--local-only") {
+    options.localOnly = true;
+    return true;
+  }
+  if (arg === "--all") {
+    options.allHistory = true;
+    return true;
+  }
   return false;
 }
 
@@ -2058,6 +3199,7 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     },
     "--queue": (next) => {
       options.queuePath = next;
+      options.queuePathExplicit = true;
     },
     "--profile": (next) => {
       options.profile = next;
@@ -2088,6 +3230,21 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     },
     "--max-drain-passes": (next) => {
       options.maxDrainPasses = parsePositiveInteger("--max-drain-passes", next);
+    },
+    "--sample": (next) => {
+      options.sample = parsePositiveInteger("--sample", next);
+    },
+    "--label": (next) => {
+      options.deviceLabel = next;
+    },
+    "--recent": (next) => {
+      options.recentDays = parsePositiveInteger("--recent", next);
+    },
+    "--since": (next) => {
+      options.since = next;
+    },
+    "--source-roots": (next) => {
+      options.sourceRoots = parseCsv(next);
     },
   };
   const set = setters[arg];
@@ -2138,19 +3295,22 @@ function parseCsv(value: string): string[] {
     .filter(Boolean);
 }
 
-export function scopedDefaultQueuePath(queuePath: string, defaultQueuePath: string, connectionId: string): string {
-  if (queuePath !== defaultQueuePath) {
-    return queuePath;
-  }
-  const extension = extname(defaultQueuePath);
-  const stem = basename(defaultQueuePath, extension);
-  return join(dirname(defaultQueuePath), `${stem}.${safeQueuePathSegment(connectionId)}${extension}`);
+function resolveOutboxPath(options: CliOptions): string {
+  return resolveCollectorQueuePath({
+    configuredPath: options.queuePath,
+    configuredPathIsExplicit: hasExplicitQueuePath(options),
+    connectorId: options.connector ? normalizeConnectorId(options.connector) : null,
+    sourceInstanceId: options.sourceInstanceId,
+  });
 }
 
-function resolveOutboxPath(options: CliOptions): string {
-  return options.sourceInstanceId
-    ? scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId)
-    : options.queuePath;
+function hasExplicitQueuePath(options: CliOptions): boolean {
+  // Direct programmatic callers historically passed a nonempty queuePath
+  // without the parser's provenance bit. Treat that shape as explicit while
+  // parser/profile defaults use the explicit false/undefined empty sentinel.
+  return (
+    options.queuePathExplicit === true || (options.queuePathExplicit === undefined && options.queuePath.trim() !== "")
+  );
 }
 
 interface LocalOutboxInspection {
@@ -2188,16 +3348,13 @@ function emptyOutboxSummary(): LocalDeviceOutboxSummary {
     deadLetter: 0,
     leased: 0,
     oldestReadyAt: null,
+    oldestRetryingAt: null,
     ready: 0,
     retrying: 0,
     staleLeases: 0,
     succeeded: 0,
     total: 0,
   };
-}
-
-function safeQueuePathSegment(value: string): string {
-  return encodeURIComponent(value).replaceAll("%", "_");
 }
 
 if (isMainModule(import.meta.url)) {

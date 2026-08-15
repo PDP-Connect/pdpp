@@ -190,6 +190,7 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
     fleetHealth: null,
     grants: GRANTS,
     hrefs,
+    notificationsSetup: "not_configured",
     now: NOW,
     overviewLoadIssues: [],
     pendingApprovals: [],

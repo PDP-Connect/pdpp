@@ -34,7 +34,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-evidence-engine.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
-import { ingestRecord } from "../server/records.ts";
+import { deleteRecord, ingestRecord } from "../server/records.ts";
 import {
   getConnectorDetail,
   invalidateConnectorSummariesCache,
@@ -48,7 +48,7 @@ interface JsonRecord {
 
 function manifestFor(connectorId: string): JsonRecord {
   return {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: "Total Records State Probe",
     protocol_version: "0.1.0",
@@ -96,6 +96,24 @@ function seedInstance(instanceId: string, connectorId: string): void {
 
 function storageTarget(connectorId: string, instanceId: string): JsonRecord {
   return { connector_id: connectorId, connector_instance_id: instanceId };
+}
+
+/**
+ * Establish a PROVEN exact zero for the probe stream: an absent canonical
+ * row on its own proves nothing (it is `unobserved` — see
+ * `connector-summary-count-state-proof.test.ts`), so the stream is
+ * canonically observed via the real ingest path and then emptied. That is
+ * what makes the zero snapshots below genuinely `known_zero` rather than
+ * merely uncollected.
+ */
+async function seedProvenZeroStream(connectorId: string, instanceId: string): Promise<void> {
+  await ingestRecord(storageTarget(connectorId, instanceId), {
+    data: { id: "msg_seed" },
+    emitted_at: NOW,
+    key: "msg_seed",
+    stream: "messages",
+  });
+  await deleteRecord(storageTarget(connectorId, instanceId), "messages", "msg_seed");
 }
 
 async function listBypassCache() {
@@ -206,6 +224,7 @@ test("list surface: total_records_state reads 'known_zero' for a genuinely curre
     const instanceId = "cin_trs_zero";
     seedConnector(connectorId, manifestFor(connectorId));
     seedInstance(instanceId, connectorId);
+    await seedProvenZeroStream(connectorId, instanceId);
     await reconcileConnectorSummaryEvidence(null);
 
     const summary = summaryFor(await listBypassCache(), instanceId);
@@ -223,6 +242,7 @@ test("list + detail surfaces: a repair failure on a prior-ZERO snapshot downgrad
     const instanceId = "cin_trs_zero_fail";
     seedConnector(connectorId, manifestFor(connectorId));
     seedInstance(instanceId, connectorId);
+    await seedProvenZeroStream(connectorId, instanceId);
     await reconcileConnectorSummaryEvidence(null);
     const before = summaryFor(await listBypassCache(), instanceId);
     assert.equal(before.total_records, 0);

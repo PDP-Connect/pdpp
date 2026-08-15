@@ -42,6 +42,7 @@ import {
   type DetailGapMessage,
   type EmittedMessage,
   emitDetailCoverage,
+  emitDetailGap,
   type InteractionRequest,
   type InteractionResponse,
   nowIso,
@@ -60,6 +61,7 @@ import {
   type StatementHydration,
   type StatementHydrationCursor,
 } from "../../src/statement-hydration-carry-forward.ts";
+import { computeInboxCoverage, type InboxCoverageRow } from "./inbox-coverage.ts";
 import {
   buildAccountRecord,
   buildAccountStatsRecord,
@@ -67,6 +69,7 @@ import {
   buildCreditCardBillingRecord,
   buildCreditCardBillingStatsRecord,
   buildInboxMessageRecord,
+  creditCardId,
   hashId,
   isoDate,
   mmddyyyy,
@@ -86,6 +89,7 @@ import type {
   DiagnosticInfo,
   DocRow,
   DownloadDiagnostics,
+  DownloadFailReason,
   DriveExportOptions,
   HydrationResult,
   HydrationResultSuccess,
@@ -94,12 +98,41 @@ import type {
   LocatedExportPage,
   NoExportAffordanceObservation,
   PageDiagnostics,
+  ParseMeta,
   StatementRecord,
   TransactionsPriorState,
   TransactionsStreamCursor,
 } from "./types.ts";
 
+// Explicit, literal-per-branch mapping from the statement-PDF download
+// driver's internal DownloadFailReason to the SKIP_RESULT reason code this
+// connector emits. Every value here is a plain string literal (never a
+// template composed from the helper's own reason) so the connector
+// reason-code completeness scan can see every emitted code statically — see
+// packages/polyfill-connectors/src/reason-display-messages.ts.
+const PDF_DOWNLOAD_SKIP_REASON: Record<DownloadFailReason, string> = {
+  direct_link_failed: "pdf_download_direct_link_failed",
+  download_click_failed: "pdf_download_click_failed",
+  download_empty: "pdf_download_empty",
+  download_timeout: "pdf_download_timeout",
+  no_download_menuitem: "pdf_download_no_download_menuitem",
+  no_options_affordance: "pdf_download_no_options_affordance",
+  options_click_failed: "pdf_download_options_click_failed",
+  persist_failed: "pdf_download_persist_failed",
+  row_missing: "pdf_download_row_missing",
+};
+
 const validateRecord = validateRecordRaw as ValidateRecord;
+
+/** Keep unknown-PDF diagnostics useful for recovery without persisting
+ * statement text, which can contain names, merchants, amounts, and balances. */
+export function buildPdfTemplateUnknownDiagnostics(statementId: string, parseMeta: ParseMeta): Record<string, unknown> {
+  return {
+    parser_era: parseMeta.era,
+    statement_id: statementId,
+    year: parseMeta.year,
+  };
+}
 
 // ─── Module-scope regexes ────────────────────────────────────────────────
 
@@ -168,6 +201,8 @@ const NON_STATEMENT_TITLE_RE = /(TERMS\b|AGREEMENT\b|NOTICE\b|DISCLOSURE\b|CONDI
 export interface EmitDeps {
   browserSurface?: BrowserSurfaceManagedState;
   capture?: BrowserCollectContext["capture"];
+  /** The run-scoped credential bundle resolved by the runtime. */
+  credentials?: Readonly<Record<string, string>>;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   reauthenticate?: (input: {
@@ -306,6 +341,22 @@ export async function emitAccountsStream(
       type: "STATE",
       stream: "account_stats",
       cursor: { observed_on: observedOn, fetched_at: nowIso() },
+    });
+    // `account_stats` is `singleton_presence`: a daily snapshot re-derived
+    // from the same full account-dashboard scan every run. buildAccountStatsRecord
+    // never drops a row, so every enumerated account is accounted for —
+    // `considered === covered === accounts.length`, including 0/0 on a
+    // genuinely empty account list (verified-empty, not unmeasured). Without
+    // this, the STATE commit above is a checkpoint with no measurement behind
+    // it, and the Collection Report reads `unknown` forever regardless of how
+    // many successful runs commit it (define-connector-progress-evidence-contract).
+    await emitDetailCoverage(deps, {
+      stream: "account_stats",
+      stateStream: "account_stats",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: accounts.length,
+      covered: accounts.length,
     });
   }
   if (!emitEntity) {
@@ -482,8 +533,8 @@ export async function emitExportFailure(
   let baseMessage = "USAA transaction export affordance was not found on the observed browser surface";
   if (!isNoExportAffordance) {
     baseMessage = lastDiag
-      ? `Export ladder exhausted (${outcome}): ${formatDiagnosticInfo(lastDiag)}`
-      : "Export dialog didn't produce a download across all ranges and the source never reported an empty account — outcome unknown (transient pressure or shifted selectors)";
+      ? `Export ladder exhausted (${outcome}); ${formatDiagnosticInfo(lastDiag)}`
+      : "Export dialog did not produce a download across all ranges; outcome unknown (transient pressure or shifted selectors)";
   }
   const ccSuffix = isCreditCard
     ? ' (credit-card export flow not verified live 2026-04-19 — see design-notes/usaa.md "Fallback path: DOM scrape")'
@@ -506,57 +557,58 @@ export async function emitExportFailure(
     ? noExportAffordanceDiagnostic(lastDiag, deps.browserSurface ?? "unknown")
     : null;
   const baseDiagnostics = !isNoExportAffordance && lastDiag ? sanitizeDiagnosticInfo(lastDiag) : null;
+  const durableDiagnostics: Record<string, unknown> = noExportDiagnostic
+    ? { browser_surface: noExportDiagnostic }
+    : { outcome };
+  if (baseDiagnostics) {
+    for (const [key, value] of Object.entries(baseDiagnostics)) {
+      durableDiagnostics[key] = value;
+    }
+  }
   await deps.emit({
     type: "SKIP_RESULT",
     stream: "transactions",
     reason,
     message: `${baseMessage}${ccSuffix}`,
-    diagnostics: noExportDiagnostic ? { browser_surface: noExportDiagnostic } : { outcome, ...(baseDiagnostics ?? {}) },
+    diagnostics: durableDiagnostics,
   });
 }
 
-function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
-  const sanitized: DiagnosticInfo = {
-    ...diag,
-    diag: diag.diag
-      ? {
-          ...diag.diag,
-          dialog_html_preview: null,
-          export_candidates: diag.diag.export_candidates.map((candidate) => ({
-            ...candidate,
-            id: null,
-            text: "",
-          })),
-          nav_candidates: diag.diag.nav_candidates.map((candidate) => ({
-            ...candidate,
-            id: null,
-            text: "",
-          })),
-          title: "",
-          url: "",
-        }
-      : diag.diag,
-  };
-  if (diag.artifact !== undefined) {
-    sanitized.artifact = diag.artifact
-      ? {
-          ...diag.artifact,
-          candidates: diag.artifact.candidates.map((candidate) => ({
-            ...candidate,
-            contentDisposition: "",
-            url: "",
-          })),
-        }
-      : diag.artifact;
+function sanitizeDiagnosticInfo(diag: DiagnosticInfo): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = { phase: diag.phase };
+  if (diag.diag) {
+    sanitized.page = {
+      dialogs_open: diag.diag.dialogs_open,
+      export_candidate_count: diag.diag.export_candidates.length,
+      has_utility_bar: diag.diag.has_utility_bar,
+      nav_candidate_count: diag.diag.nav_candidates.length,
+    };
   }
-  if (diag.download !== undefined) {
-    sanitized.download = diag.download
-      ? {
-          ...diag.download,
-          suggestedFilename: null,
-          url: null,
-        }
-      : diag.download;
+  if (diag.artifact) {
+    const sourceCounts = { cdp: 0, playwright: 0 };
+    for (const candidate of diag.artifact.candidates) {
+      sourceCounts[candidate.source] += 1;
+    }
+    sanitized.artifact = {
+      body_error_count: diag.artifact.candidates.filter((candidate) => candidate.reason === "body_error").length,
+      candidate_count: diag.artifact.candidates.length,
+      cdp_error: diag.artifact.cdpError !== null,
+      cdp_ready: diag.artifact.cdpReady,
+      matched_count: diag.artifact.candidates.filter((candidate) => candidate.reason === "matched").length,
+      source_counts: sourceCounts,
+      status_codes: [...new Set(diag.artifact.candidates.map((candidate) => candidate.status))]
+        .filter((status) => Number.isInteger(status))
+        .slice(0, 8),
+    };
+  }
+  if (diag.download) {
+    sanitized.download = {
+      bytes: typeof diag.download.bytes === "number" ? diag.download.bytes : null,
+      has_download_failure: Boolean(diag.download.downloadFailure),
+      has_save_as_error: Boolean(diag.download.saveAsError),
+      has_stream_error: Boolean(diag.download.streamError),
+      source: diag.download.source ?? null,
+    };
   }
   return sanitized;
 }
@@ -573,21 +625,7 @@ function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
     `artifact cdpReady=${artifact.cdpReady ? "true" : "false"} candidates=${inspected} matched=${matched} bodyErrors=${bodyErrors}`,
   ];
   if (artifact.cdpError) {
-    parts.push(`cdpError=${artifact.cdpError.slice(0, ID_TEXT_SNIP)}`);
-  }
-  const [firstCandidate] = artifact.candidates;
-  if (firstCandidate) {
-    const firstParts = [
-      firstCandidate.source,
-      String(firstCandidate.status),
-      firstCandidate.reason,
-      `${firstCandidate.bodyBytes ?? 0}B`,
-      firstCandidate.contentType || "no-content-type",
-    ];
-    if (firstCandidate.bodyError) {
-      firstParts.push(`bodyError=${firstCandidate.bodyError.slice(0, ID_TEXT_SNIP)}`);
-    }
-    parts.push(`firstCandidate=${firstParts.join(",")}`);
+    parts.push("cdpError=true");
   }
   return parts.join(" ");
 }
@@ -605,13 +643,13 @@ function summarizeDownloadDiagnostics(diag: DiagnosticInfo): string | null {
     parts.push(`source=${dl.source}`);
   }
   if (dl.saveAsError) {
-    parts.push(`saveAsError=${dl.saveAsError.slice(0, ID_TEXT_SNIP)}`);
+    parts.push("hasSaveAsError=true");
   }
   if (dl.streamError) {
-    parts.push(`streamError=${dl.streamError.slice(0, ID_TEXT_SNIP)}`);
+    parts.push("hasStreamError=true");
   }
   if (dl.downloadFailure) {
-    parts.push(`downloadFailure=${dl.downloadFailure.slice(0, ID_TEXT_SNIP)}`);
+    parts.push("hasDownloadFailure=true");
   }
   return parts.length ? `download ${parts.join(",")}` : null;
 }
@@ -627,10 +665,24 @@ function formatDiagnosticInfo(diag: DiagnosticInfo): string {
   if (download) {
     parts.push(download);
   }
-  if (diag.error) {
-    parts.push(`error=${diag.error.slice(0, ID_TEXT_SNIP)}`);
-  }
   return parts.join("; ");
+}
+
+type UsaaFailureCode =
+  | "credit_card_billing_scrape_failed"
+  | "hydrate_crashed"
+  | "inbox_scrape_failed"
+  | "pdf_parse_failed"
+  | "statements_scrape_failed";
+
+function failureDiagnostic(
+  failureCode: UsaaFailureCode,
+  error: unknown
+): { error_class: "Error" | "unknown"; failure_code: UsaaFailureCode } {
+  return {
+    error_class: error instanceof Error ? "Error" : "unknown",
+    failure_code: failureCode,
+  };
 }
 
 /**
@@ -858,11 +910,49 @@ export function readPriorInboxMessageFingerprints(state: Record<string, unknown>
 
 // ─── Account extraction from the /my/usaa dashboard ───────────────────────
 
-async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
-  await page.goto("https://www.usaa.com/my/usaa", {
-    waitUntil: "domcontentloaded",
-    timeout: DASHBOARD_NAV_TIMEOUT_MS,
-  });
+/**
+ * Extract the dashboard account list. Exported purely so its mid-run
+ * session-repair wiring is directly testable with a mocked Page/
+ * BrowserContext. See singleton-checkpoint-coverage-wiring.test.ts.
+ *
+ * `streamState` is threaded in (constructed by the caller BEFORE this runs —
+ * accounts is the FIRST stream `collect()` reaches) so a dashboard-stage
+ * session death latches `sessionDeadMidRun` immediately: every downstream
+ * stream reads `accounts` from this call's return value regardless of
+ * whether extraction actually succeeded, so without this latch a dead
+ * session here would silently proceed through transactions/statements/
+ * inbox/credit-card-billing with an empty account list, each independently
+ * discovering the same dead session and re-spending (or, pre-fix, uselessly
+ * re-attempting) repair — the root of the N-logins defect this run-scoped
+ * budget closes. See `UsaaRunState`.
+ */
+export async function extractAccounts(
+  deps: EmitDeps,
+  context: BrowserContext,
+  page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
+  streamState: UsaaRunState
+): Promise<DashboardAccount[]> {
+  const nav = await gotoOrRepairSession(
+    deps,
+    context,
+    page,
+    sendInteraction,
+    "https://www.usaa.com/my/usaa",
+    { timeout: DASHBOARD_NAV_TIMEOUT_MS },
+    "accounts",
+    streamState
+  );
+  if (!nav.ok) {
+    streamState.sessionDeadMidRun = true;
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "accounts",
+      reason: "session_dead_reauth_failed",
+      message: "USAA session expired before accounts could be extracted and re-auth failed.",
+    });
+    return [];
+  }
   await page
     .waitForSelector(DASHBOARD_SELECTOR_WAIT, {
       timeout: DASHBOARD_SELECTOR_TIMEOUT_MS,
@@ -1450,18 +1540,61 @@ interface StatementsSubDeps extends EmitDeps {
   page: Page;
 }
 
-interface TransactionsStreamState {
+/**
+ * Run-scoped state shared across every USAA stream (accounts, transactions,
+ * statements, inbox, credit-card billing) — constructed once in `collect()`
+ * BEFORE the first stream runs, so every stream (including the very first,
+ * `extractAccounts`) can both latch a session death for later streams to see
+ * and consult the shared repair budget before spending a bank login.
+ *
+ * `sessionRepairAttempted` is the fix for the N-cards-N-logins defect: at
+ * most one automated `ensureUsaaSession`/`reauthenticate` call is allowed per
+ * run, no matter how many of the five stream entry points (or, within
+ * credit-card billing, how many individual cards) hit a logon bounce.
+ * `gotoOrRepairSession` is the sole spender of this budget — see there.
+ */
+export interface UsaaRunState {
   sessionDeadMidRun: boolean;
+  sessionRepairAttempted: boolean;
 }
 
+/** Backward-compatible alias: this state started out transactions-specific
+ *  and is now the shared run-scoped state threaded through every stream. */
+type TransactionsStreamState = UsaaRunState;
+
+/** Latch `streamState.sessionDeadMidRun` from a stream's session-alive
+ *  result. Extracted so `collect()`'s per-stream gating reads as one call
+ *  per stream instead of a repeated inline `if (!x) { ...= true }`. */
+function latchSessionDead(streamState: TransactionsStreamState, sessionAlive: boolean): void {
+  if (!sessionAlive) {
+    streamState.sessionDeadMidRun = true;
+  }
+}
+
+/**
+ * `streamState.sessionRepairAttempted` is the same RUN-scoped budget
+ * `gotoOrRepairSession` spends — shared here so the transactions export
+ * ladder cannot drive its own automated bank login independently of every
+ * other stream. Without this check, this path's "≤1 login per run" property
+ * held only because the ladder's own latch (`onSessionDead`) happens to stop
+ * the loop before a second call could occur — an emergent property of call
+ * ordering, not a local one. Checking the shared budget here makes the
+ * guarantee true by construction, the same way it already is in
+ * `gotoOrRepairSession`.
+ */
 async function reauthAfterSessionLapse(
   deps: EmitDeps,
   context: BrowserContext,
   page: Page,
   sendInteraction: BrowserCollectContext["sendInteraction"],
   _accountName: string | null,
+  streamState: UsaaRunState,
   observation?: NoExportAffordanceObservation
 ): Promise<boolean> {
+  if (streamState.sessionRepairAttempted) {
+    return false;
+  }
+  streamState.sessionRepairAttempted = true;
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
@@ -1471,7 +1604,13 @@ async function reauthAfterSessionLapse(
     if (deps.reauthenticate) {
       await deps.reauthenticate({ context, page, sendInteraction });
     } else {
-      await ensureUsaaSession({ capture: deps.capture ?? null, context, page, sendInteraction });
+      await ensureUsaaSession({
+        capture: deps.capture ?? null,
+        context,
+        ...(deps.credentials === undefined ? {} : { credentials: deps.credentials }),
+        page,
+        sendInteraction,
+      });
     }
     return true;
   } catch {
@@ -1490,6 +1629,85 @@ async function reauthAfterSessionLapse(
     });
     return false;
   }
+}
+
+/**
+ * Navigate to `url`; if the final URL bounces to USAA's logon/OAuth-authorize
+ * flow (`LOGON_REDIRECT_RE`) — the same mid-run session-death signal the
+ * transactions export ladder already detects (`SessionDeadRedirectError`,
+ * above) — re-run the connector's existing session-establishment flow
+ * exactly once (`ensureUsaaSession`, idempotent: no-ops when the cookie is
+ * still live) and retry the SAME navigation exactly once. A second redirect,
+ * or a failed repair, reports session death to the caller instead of looping
+ * or silently scraping the logon page as if it were data.
+ *
+ * `streamState.sessionRepairAttempted` is a RUN-scoped budget, not a
+ * per-call one: this is the sole spender, and it is shared across every one
+ * of this run's five stream entry points (accounts, transactions, statements,
+ * inbox, and — critically — once per CARD in the credit-card billing loop,
+ * which calls this function once per card). Without a run-scoped budget here,
+ * a session that dies once before the credit-card loop would otherwise drive
+ * one full automated bank login per remaining card. If the budget is already
+ * spent (a prior call this run already attempted repair, whether it
+ * succeeded or failed), a subsequent logon bounce returns `{ ok: false }`
+ * immediately after detecting the bounce — it neither calls
+ * `ensureUsaaSession`/`reauthenticate` again nor spends the post-repair retry
+ * navigation. The caller must treat that identically to "repair attempted
+ * and failed."
+ *
+ * Distinct from `SessionDeadRedirectError`/`reauthAfterSessionLapse` above
+ * (which is transactions-specific and threads a `NoExportAffordanceObservation`
+ * for its own diagnostic) — this is the shared, stream-agnostic version used
+ * by accounts/statements/inbox/credit-card navigation, which have no
+ * equivalent export-dialog diagnostic to capture.
+ */
+export async function gotoOrRepairSession(
+  deps: EmitDeps,
+  context: BrowserContext,
+  page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
+  url: string,
+  navOptions: { timeout: number },
+  streamForProgress: string,
+  streamState: UsaaRunState,
+  /** Set when the caller already navigated to `url` and confirmed the
+   *  logon bounce itself (e.g. `navigateToCardOrGap`, which needs the
+   *  distinct "goto rejected" vs "goto landed on logon" cases either way) —
+   *  skips this function's own redundant first navigation. */
+  alreadyLandedOnLogon = false
+): Promise<{ ok: true } | { ok: false }> {
+  if (!alreadyLandedOnLogon) {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: navOptions.timeout });
+    if (!LOGON_REDIRECT_RE.test(page.url())) {
+      return { ok: true };
+    }
+  }
+  if (streamState.sessionRepairAttempted) {
+    return { ok: false };
+  }
+  streamState.sessionRepairAttempted = true;
+  await deps.emit({
+    type: "PROGRESS",
+    stream: streamForProgress,
+    message: "Session lapsed mid-run; re-authenticating before retry",
+  });
+  try {
+    if (deps.reauthenticate) {
+      await deps.reauthenticate({ context, page, sendInteraction });
+    } else {
+      await ensureUsaaSession({
+        capture: deps.capture ?? null,
+        context,
+        ...(deps.credentials === undefined ? {} : { credentials: deps.credentials }),
+        page,
+        sendInteraction,
+      });
+    }
+  } catch {
+    return { ok: false };
+  }
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: navOptions.timeout });
+  return LOGON_REDIRECT_RE.test(page.url()) ? { ok: false } : { ok: true };
 }
 
 interface ExportLadderResult {
@@ -1514,6 +1732,7 @@ interface LadderAttemptArgs {
   sendInteraction: BrowserCollectContext["sendInteraction"];
   settleDelayMs?: number;
   sinceDate: string;
+  streamState: UsaaRunState;
   todayIso: string;
 }
 
@@ -1540,6 +1759,7 @@ export async function runSingleLadderAttempt({
   attemptOrdinal,
   attemptTotal,
   sinceDate,
+  streamState,
   todayIso,
   onDiagnostics,
   onSessionDead,
@@ -1566,19 +1786,26 @@ export async function runSingleLadderAttempt({
     return exportResult.kind === "empty" ? { kind: "empty" } : { kind: "retry" };
   } catch (err) {
     if (err instanceof SessionDeadRedirectError) {
-      const ok = await reauthAfterSessionLapse(deps, context, page, sendInteraction, a.name, err.observation);
+      const ok = await reauthAfterSessionLapse(
+        deps,
+        context,
+        page,
+        sendInteraction,
+        a.name,
+        streamState,
+        err.observation
+      );
       if (ok) {
         return { kind: "retry" };
       }
       onSessionDead();
       return { kind: "session_dead" };
     }
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "export_error",
-      message: `Export error: account ${accountOrdinal}/${accountTotal}, window ${attemptOrdinal}/${attemptTotal}: ${msg.slice(0, ID_TEXT_SNIP)}`,
+      message: `Export error: account ${accountOrdinal}/${accountTotal}, window ${attemptOrdinal}/${attemptTotal}; retry by runtime`,
     });
     return { kind: "retry" };
   }
@@ -1598,6 +1825,7 @@ async function tryExportLadder(
   accountTotal: number,
   candidateStarts: readonly string[],
   todayIso: string,
+  streamState: UsaaRunState,
   onSessionDead: () => void
 ): Promise<ExportLadderResult> {
   // Wrap in an object so TS tracks the mutation performed by the onDiagnostics
@@ -1622,6 +1850,7 @@ async function tryExportLadder(
       attemptOrdinal: i + 1,
       attemptTotal: candidateStarts.length,
       sinceDate,
+      streamState,
       todayIso,
       onDiagnostics,
       onSessionDead,
@@ -2011,6 +2240,7 @@ async function processAccountTransactions(
     accountTotal,
     candidateStarts,
     todayIso,
+    streamState,
     () => {
       streamState.sessionDeadMidRun = true;
     }
@@ -2200,7 +2430,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
           .emit({
             type: "SKIP_RESULT",
             stream: "statements",
-            reason: `pdf_download_${reason}`,
+            reason: PDF_DOWNLOAD_SKIP_REASON[reason],
             message: `Statement PDF download skipped at row ${statement.rowIndex + 1}: ${reason}`,
             diagnostics: diag,
           })
@@ -2217,12 +2447,12 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
       });
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "hydrate_crashed",
-      message: msg.slice(0, ID_TEXT_SNIP),
+      message: "Statement PDF hydration failed; retry by runtime",
+      diagnostics: failureDiagnostic("hydrate_crashed", err),
     });
   }
   return { attempts, successes, results };
@@ -2263,11 +2493,7 @@ async function processPdfStatementRow(
         stream: "transactions",
         reason: "pdf_template_unknown",
         message: `PDF statement parse skipped at row ${row.rowIndex + 1}: no parser matched (era=${parseMeta.era})`,
-        diagnostics: {
-          statement_id: row.id,
-          year: parseMeta.year,
-          raw_text_sample: "rawTextSample" in parseMeta ? parseMeta.rawTextSample : null,
-        },
+        diagnostics: buildPdfTemplateUnknownDiagnostics(row.id, parseMeta),
       });
       return;
     }
@@ -2285,12 +2511,12 @@ async function processPdfStatementRow(
     }
     counters.parsedStatements += 1;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "pdf_parse_failed",
-      message: `PDF statement parse failed at row ${row.rowIndex + 1}: ${msg.slice(0, ID_TEXT_SNIP)}`,
+      message: `PDF statement parse failed at row ${row.rowIndex + 1}; retry by runtime`,
+      diagnostics: failureDiagnostic("pdf_parse_failed", err),
     });
   }
 }
@@ -2322,24 +2548,55 @@ async function emitPdfStatementTransactions(
   });
 }
 
-async function runStatementsStream(
+/**
+ * Exported purely so its mid-run session-repair wiring is directly
+ * testable with a mocked Page/BrowserContext. See
+ * singleton-checkpoint-coverage-wiring.test.ts.
+ *
+ * Return value means "no USAA logon bounce was observed navigating this
+ * stream" — NOT "the session is definitively alive." The catch block below
+ * returns `true` for any non-navigation scrape error (DOM parse failure,
+ * network blip mid-scrape, etc.) without re-checking `page.url()`, since
+ * those are unrelated to session death. A caller relying on this value to
+ * mean "confirmed alive" would be wrong in that catch path; it correctly
+ * means only "not confirmed dead."
+ */
+export async function runStatementsStream(
   deps: StatementsSubDeps,
+  context: BrowserContext,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
   accounts: readonly DashboardAccount[],
   requested: BrowserCollectContext["requested"],
+  streamState: UsaaRunState,
   statementsFingerprintCursor?: FingerprintCursor,
   transactionsFingerprintCursor?: FingerprintCursor,
   statementsHydrationCursor?: StatementHydrationCursor
-): Promise<void> {
+): Promise<boolean> {
   try {
     await deps.emit({
       type: "PROGRESS",
       stream: "statements",
       message: "Fetching statements index",
     });
-    await deps.page.goto("https://www.usaa.com/my/documents", {
-      waitUntil: "domcontentloaded",
-      timeout: DOCUMENTS_NAV_TIMEOUT_MS,
-    });
+    const nav = await gotoOrRepairSession(
+      deps,
+      context,
+      deps.page,
+      sendInteraction,
+      "https://www.usaa.com/my/documents",
+      { timeout: DOCUMENTS_NAV_TIMEOUT_MS },
+      "statements",
+      streamState
+    );
+    if (!nav.ok) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "statements",
+        reason: "session_dead_reauth_failed",
+        message: "USAA session expired mid-run and re-auth failed. Statements skipped.",
+      });
+      return false;
+    }
     await politeDelay(DOCUMENTS_SETTLE_DELAY_MS);
 
     const docs = await scrapeStatementsIndex(deps.page);
@@ -2364,18 +2621,16 @@ async function runStatementsStream(
     if (requested.has("transactions")) {
       await emitPdfStatementTransactions(deps, indexRows, summary.results, accounts, transactionsFingerprintCursor);
     }
+    return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "scrape_failed",
-      message: msg.slice(0, ID_TEXT_SNIP),
-      diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: msg.slice(0, ID_TEXT_SNIP),
-      },
+      message: "Statements scrape failed; retry by runtime",
+      diagnostics: failureDiagnostic("statements_scrape_failed", err),
     });
+    return true;
   }
 }
 
@@ -2408,17 +2663,49 @@ function scrapeInboxRows(page: Page): Promise<InboxRow[]> {
   });
 }
 
-async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, unknown>): Promise<void> {
+/**
+ * Exported (in addition to being called from `collect()`) purely so its
+ * DETAIL_COVERAGE emit-path wiring is directly testable with a mocked Page —
+ * never emit coverage after a caught scrape failure, only after a
+ * successful enumeration. See singleton-checkpoint-coverage.test.ts.
+ *
+ * Return value semantics match `runStatementsStream`: "no logon bounce was
+ * observed," not "confirmed alive" — a caught non-navigation scrape error
+ * also returns `true`.
+ */
+export async function runInboxStream(
+  deps: EmitDeps,
+  context: BrowserContext,
+  page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
+  state: Record<string, unknown>,
+  streamState: UsaaRunState
+): Promise<boolean> {
   try {
     await deps.emit({
       type: "PROGRESS",
       stream: "inbox_messages",
       message: "Fetching inbox",
     });
-    await page.goto("https://www.usaa.com/my/inbox", {
-      waitUntil: "domcontentloaded",
-      timeout: INBOX_NAV_TIMEOUT_MS,
-    });
+    const nav = await gotoOrRepairSession(
+      deps,
+      context,
+      page,
+      sendInteraction,
+      "https://www.usaa.com/my/inbox",
+      { timeout: INBOX_NAV_TIMEOUT_MS },
+      "inbox_messages",
+      streamState
+    );
+    if (!nav.ok) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "inbox_messages",
+        reason: "session_dead_reauth_failed",
+        message: "USAA session expired mid-run and re-auth failed. Inbox skipped.",
+      });
+      return false;
+    }
     await politeDelay(DOCUMENTS_SETTLE_DELAY_MS);
     const msgs = await scrapeInboxRows(page);
     await deps.emit({
@@ -2437,8 +2724,10 @@ async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, 
       priorFingerprints: readPriorInboxMessageFingerprints(state),
     });
     const year = new Date().getFullYear();
+    const resolvedRows: InboxCoverageRow[] = [];
     for (const m of msgs) {
       const record = buildInboxMessageRecord(m, year, nowIso());
+      resolvedRows.push({ resolved: record !== null });
       if (!record) {
         continue;
       }
@@ -2458,18 +2747,31 @@ async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, 
       stream: "inbox_messages",
       cursor,
     });
+    // `inbox_messages` is `checkpoint_window`: a full re-scan of the inbox
+    // page every run. See inbox-coverage.ts for why `covered` is an objective
+    // per-row accounting rather than `msgs.length` — a row dropped for an
+    // unparseable date must lower `covered` below `considered`, reading an
+    // honest `partial`, not a false `complete`. `considered: 0` when the
+    // inbox genuinely holds nothing is verified-empty, not unmeasured.
+    const inboxCoverage = computeInboxCoverage(resolvedRows);
+    await emitDetailCoverage(deps, {
+      stream: "inbox_messages",
+      stateStream: "inbox_messages",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: inboxCoverage.considered,
+      covered: inboxCoverage.covered,
+    });
+    return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "inbox_messages",
       reason: "scrape_failed",
-      message: msg.slice(0, ID_TEXT_SNIP),
-      diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: msg.slice(0, ID_TEXT_SNIP),
-      },
+      message: "Inbox scrape failed; retry by runtime",
+      diagnostics: failureDiagnostic("inbox_scrape_failed", err),
     });
+    return true;
   }
 }
 
@@ -2520,17 +2822,162 @@ export function readPriorCreditCardBillingFingerprints(state: Record<string, unk
  *  (`credit_card_billing`) and the observation (`credit_card_billing_stats`)
  *  are independently scoped. `observedOn` is the UTC sample date. The entity
  *  cursor is only supplied when the entity is requested. */
-interface CreditCardBillingEmitOptions {
+export interface CreditCardBillingEmitOptions {
   emitEntity: boolean;
   emitStats: boolean;
   fingerprintCursor: FingerprintCursor | undefined;
   observedOn: string;
 }
 
-async function runCreditCardBillingStream(
+/** The credit-card boundary both streams enumerate: dashboard accounts whose
+ *  type matches USAA's credit-card route. Exported so the coverage
+ *  `considered`/`covered` arithmetic (`considered === covered ===
+ *  creditCardAccounts(accounts).length`, including 0 when the owner holds no
+ *  credit cards) is independently unit-testable without driving a live page
+ *  through `runCreditCardBillingStream`'s multi-second per-card settle delay. */
+export function creditCardAccounts(accounts: readonly DashboardAccount[]): DashboardAccount[] {
+  return accounts.filter((a) => CREDIT_CARD_TYPE_RE.test(a.account_type));
+}
+
+/** Emit a retryable DETAIL_GAP for one card whose page navigation failed,
+ *  on whichever of the two credit-card streams are requested this run.
+ *  Mirrors the statement PDF gap pattern (statement-coverage.ts's
+ *  `temporary_unavailable`) — a navigation failure is always retried on the
+ *  next run, so it is recoverable, not terminal. */
+async function emitCreditCardNavFailureGaps(
+  deps: EmitDeps,
+  cardId: string,
+  { emitEntity, emitStats }: Pick<CreditCardBillingEmitOptions, "emitEntity" | "emitStats">
+): Promise<void> {
+  if (emitEntity) {
+    await emitDetailGap(deps, {
+      stream: "credit_card_billing",
+      recordKey: cardId,
+      reason: "temporary_unavailable",
+      locator: { kind: "usaa.credit_card_billing", card_id: cardId },
+    });
+  }
+  if (emitStats) {
+    await emitDetailGap(deps, {
+      stream: "credit_card_billing_stats",
+      recordKey: cardId,
+      reason: "temporary_unavailable",
+      locator: { kind: "usaa.credit_card_billing_stats", card_id: cardId },
+    });
+  }
+}
+
+/** Outcome of navigating to one card's page:
+ *   - `ok`: navigation succeeded (first try, or after a logon-bounce repair);
+ *     scraping may proceed.
+ *   - `nav_failed`: a plain navigation failure (timeout, network error, or a
+ *     landed page that is neither the card page nor a logon bounce) — no
+ *     evidence the session itself is dead. The caller must gap this one card
+ *     and CONTINUE to the rest; per M9 (a reverse-mutant regression check),
+ *     converting this case to a loop `break` is the WRONG fix and regresses
+ *     "a card whose navigation fails does NOT scrape/attribute the wrong
+ *     page — gapped, excluded from covered, siblings still correct."
+ *   - `session_dead`: the navigation landed on USAA's logon page AND the
+ *     shared run-scoped repair budget (`gotoOrRepairSession`) either had
+ *     already been spent by an earlier stream/card, or was spent here and
+ *     failed. The session is dead for the rest of the run — the caller must
+ *     gap this card AND stop iterating the remaining cards, since each
+ *     further card would otherwise land on the same dead logon page (never a
+ *     real card page) and be misreported as an independent plain nav
+ *     failure. */
+type CardNavOutcome = "nav_failed" | "ok" | "session_dead";
+
+/** Navigate to one card's page. On any non-`ok` outcome, reports the failure
+ *  as a retryable DETAIL_GAP for this card. The caller must NOT proceed to
+ *  scrape on a failed navigation, since that would attribute whatever page
+ *  happens to be loaded (the prior card, the dashboard, the USAA logon page,
+ *  an error page) to this card's id. A logon-page bounce triggers the same
+ *  one-shot-per-RUN repair-and-retry as the other USAA streams
+ *  (`gotoOrRepairSession`, budgeted via `streamState`) before falling back to
+ *  the gap — see `CardNavOutcome` for how the caller must react to each
+ *  outcome. */
+async function navigateToCardOrGap(
+  deps: EmitDeps,
+  context: BrowserContext,
+  page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
+  a: DashboardAccount,
+  cardId: string,
+  streamState: UsaaRunState,
+  options: Pick<CreditCardBillingEmitOptions, "emitEntity" | "emitStats">
+): Promise<CardNavOutcome> {
+  const url = `https://www.usaa.com${a.account_url}`;
+  const navigated = await page
+    .goto(url, { waitUntil: "domcontentloaded", timeout: ACCOUNT_NAV_TIMEOUT_MS })
+    .then((): true => true)
+    .catch((): false => false);
+  const landedOnLogon = navigated && LOGON_REDIRECT_RE.test(page.url());
+  if (navigated && !landedOnLogon) {
+    return "ok";
+  }
+  if (landedOnLogon) {
+    const nav = await gotoOrRepairSession(
+      deps,
+      context,
+      page,
+      sendInteraction,
+      url,
+      { timeout: ACCOUNT_NAV_TIMEOUT_MS },
+      "credit_card_billing",
+      streamState,
+      /* alreadyLandedOnLogon */ true
+    );
+    if (nav.ok) {
+      return "ok";
+    }
+    await emitCreditCardNavFailureGaps(deps, cardId, options);
+    return "session_dead";
+  }
+  await emitCreditCardNavFailureGaps(deps, cardId, options);
+  return "nav_failed";
+}
+
+/** Scrape and emit one successfully-navigated card's billing detail onto
+ *  whichever of the two credit-card streams are requested. Entity gate: a
+ *  per-card fingerprint that excludes the run-clock `fetched_at`. After the
+ *  Family-2 split the entity body carries only card identity/settings
+ *  (account_id, nickname, credit_limit_cents, APRs, card_holders), so it
+ *  re-emits only on a real settings change — a balance/rewards/cycle-status
+ *  tick no longer versions it. The volatile per-cycle fields go to
+ *  `credit_card_billing_stats`, keyed `{card_id}:{observed_on}` so same-day
+ *  re-pulls are idempotent and a later day appends a new point in the
+ *  series. */
+async function emitCreditCardBillingForCard(
   deps: EmitDeps,
   page: Page,
+  a: DashboardAccount,
+  options: CreditCardBillingEmitOptions
+): Promise<void> {
+  const { emitEntity, emitStats, fingerprintCursor, observedOn } = options;
+  await politeDelay(CC_SETTLE_DELAY_MS);
+  const billing = await scrapeCreditCardBilling(page);
+  if (emitEntity) {
+    const rec = buildCreditCardBillingRecord(a, billing, nowIso());
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+      await deps.emitRecord("credit_card_billing", rec);
+    }
+  }
+  if (emitStats) {
+    await deps.emitRecord("credit_card_billing_stats", buildCreditCardBillingStatsRecord(a, billing, observedOn));
+  }
+}
+
+/** Exported (in addition to being called from `collect()`) purely so its
+ *  DETAIL_COVERAGE emit-path wiring is directly testable with a mocked Page —
+ *  never emit coverage after a caught scrape failure, only after a
+ *  successful enumeration. See singleton-checkpoint-coverage.test.ts. */
+export async function runCreditCardBillingStream(
+  deps: EmitDeps,
+  context: BrowserContext,
+  page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
   accounts: readonly DashboardAccount[],
+  streamState: UsaaRunState,
   options: CreditCardBillingEmitOptions
 ): Promise<void> {
   const { emitEntity, emitStats, fingerprintCursor, observedOn } = options;
@@ -2540,32 +2987,41 @@ async function runCreditCardBillingStream(
       stream: "credit_card_billing",
       message: "Fetching credit card billing details",
     });
-    const cards = accounts.filter((a) => CREDIT_CARD_TYPE_RE.test(a.account_type));
+    const cards = creditCardAccounts(accounts);
+    // Cards whose per-card page navigation failed (plain nav failure OR the
+    // session died): excluded from `covered` on both streams (see
+    // navigateToCardOrGap / emitCreditCardNavFailureGaps). `considered`
+    // below is always the full `cards.length`, so cards never reached
+    // because the loop broke early on a session death are still accounted
+    // for — added to this set below, not silently dropped from the
+    // denominator.
+    const navFailedIds = new Set<string>();
     for (const a of cards) {
-      await page
-        .goto(`https://www.usaa.com${a.account_url}`, {
-          waitUntil: "domcontentloaded",
-          timeout: ACCOUNT_NAV_TIMEOUT_MS,
-        })
-        .catch((): undefined => undefined);
-      await politeDelay(CC_SETTLE_DELAY_MS);
-      const billing = await scrapeCreditCardBilling(page);
-      // Entity gate: a per-card fingerprint that excludes the run-clock
-      // `fetched_at`. After the Family-2 split the entity body carries only
-      // card identity/settings (account_id, nickname, credit_limit_cents,
-      // APRs, card_holders), so it re-emits only on a real settings change —
-      // a balance/rewards/cycle-status tick no longer versions it. The
-      // volatile per-cycle fields go to `credit_card_billing_stats`, keyed
-      // `{card_id}:{observed_on}` so same-day re-pulls are idempotent and a
-      // later day appends a new point in the series.
-      if (emitEntity) {
-        const rec = buildCreditCardBillingRecord(a, billing, nowIso());
-        if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
-          await deps.emitRecord("credit_card_billing", rec);
-        }
+      const cardId = creditCardId(a);
+      const outcome = await navigateToCardOrGap(deps, context, page, sendInteraction, a, cardId, streamState, {
+        emitEntity,
+        emitStats,
+      });
+      if (outcome === "ok") {
+        await emitCreditCardBillingForCard(deps, page, a, options);
+        continue;
       }
-      if (emitStats) {
-        await deps.emitRecord("credit_card_billing_stats", buildCreditCardBillingStatsRecord(a, billing, observedOn));
+      navFailedIds.add(cardId);
+      if (outcome === "session_dead") {
+        // The run-scoped repair budget (gotoOrRepairSession/streamState) is
+        // now spent and failed: every remaining card would land on the same
+        // dead logon page, not its own real card page. Gap every remaining
+        // card up front (a plain `continue` would silently re-attempt a nav
+        // per remaining card against a session already known dead) and stop
+        // — this is the fix for the N-cards-N-logins defect: at most one
+        // automated bank login attempt across the whole credit-card loop
+        // (indeed across the whole run), never one per card.
+        streamState.sessionDeadMidRun = true;
+        for (const remaining of cards.slice(cards.indexOf(a) + 1)) {
+          navFailedIds.add(creditCardId(remaining));
+          await emitCreditCardNavFailureGaps(deps, creditCardId(remaining), { emitEntity, emitStats });
+        }
+        break;
       }
     }
     if (emitStats) {
@@ -2573,6 +3029,23 @@ async function runCreditCardBillingStream(
         type: "STATE",
         stream: "credit_card_billing_stats",
         cursor: { observed_on: observedOn, fetched_at: nowIso() },
+      });
+      // `credit_card_billing_stats` is `singleton_presence`, re-derived from the
+      // same full credit-card-account boundary (`cards`) every run.
+      // buildCreditCardBillingStatsRecord never drops a row, so every card in
+      // the boundary is accounted for except one whose navigation failed this
+      // run (excluded above, reported as a DETAIL_GAP instead) —
+      // `considered === cards.length`, `covered === considered -
+      // navFailedIds.size`, including 0/0 when the account genuinely holds no
+      // credit cards (verified-empty). See the matching account_stats comment
+      // in emitAccountsStream for why a bare STATE commit is not proof alone.
+      await emitDetailCoverage(deps, {
+        stream: "credit_card_billing_stats",
+        stateStream: "credit_card_billing_stats",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: cards.length,
+        covered: cards.length - navFailedIds.size,
       });
     }
     if (!emitEntity) {
@@ -2598,17 +3071,28 @@ async function runCreditCardBillingStream(
       stream: "credit_card_billing",
       cursor,
     });
+    // `credit_card_billing` is `checkpoint_window`: a full re-scan of the
+    // credit-card accounts every run. buildCreditCardBillingRecord never
+    // drops a row (unlike inbox_messages' date-parse guard), so every card
+    // enumerated this run is accounted for except one whose navigation
+    // failed (excluded above) — `considered === cards.length`, `covered ===
+    // considered - navFailedIds.size`, including 0/0 when there are no
+    // credit cards (verified-empty, not unmeasured).
+    await emitDetailCoverage(deps, {
+      stream: "credit_card_billing",
+      stateStream: "credit_card_billing",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: cards.length,
+      covered: cards.length - navFailedIds.size,
+    });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "credit_card_billing",
       reason: "scrape_failed",
-      message: msg.slice(0, ID_TEXT_SNIP),
-      diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: msg.slice(0, ID_TEXT_SNIP),
-      },
+      message: "Credit-card billing scrape failed; retry by runtime",
+      diagnostics: failureDiagnostic("credit_card_billing_scrape_failed", err),
     });
   }
 }
@@ -2620,11 +3104,14 @@ async function runCreditCardBillingStream(
  *  budget. */
 async function maybeRunCreditCardBillingStreams(
   deps: EmitDeps,
+  context: BrowserContext,
   page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
   accounts: readonly DashboardAccount[],
   state: Record<string, unknown>,
   requested: RequestedScopes,
-  emittedAt: string
+  emittedAt: string,
+  streamState: UsaaRunState
 ): Promise<void> {
   const wantsCardBilling = requested.has("credit_card_billing");
   const wantsCardBillingStats = requested.has("credit_card_billing_stats");
@@ -2637,7 +3124,7 @@ async function maybeRunCreditCardBillingStreams(
         priorFingerprints: readPriorCreditCardBillingFingerprints(state),
       })
     : undefined;
-  await runCreditCardBillingStream(deps, page, accounts, {
+  await runCreditCardBillingStream(deps, context, page, sendInteraction, accounts, streamState, {
     emitEntity: wantsCardBilling,
     emitStats: wantsCardBillingStats,
     fingerprintCursor: billingFingerprintCursor,
@@ -2657,162 +3144,204 @@ if (isMainModule(import.meta.url)) {
     name: "usaa",
     retryablePattern: USAA_RETRYABLE_PATTERN,
     validateRecord,
+    auth: { kind: "env", required: ["USAA_USERNAME", "USAA_PASSWORD"] },
     browser: { profileName: "usaa" },
     async ensureSession({
       capture,
       context,
+      credentials,
+      onCredentialSubmit,
       page,
       sendInteraction,
     }: {
       capture?: EmitDeps["capture"];
       context: BrowserContext;
+      credentials: Readonly<Record<string, string>>;
+      onCredentialSubmit: () => void;
       page: Page;
       sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
     }): Promise<void> {
       await ensureUsaaSession({
         capture: capture ?? null,
         context,
+        credentials,
+        onCredentialSubmit,
         page,
         sendInteraction,
       });
     },
-    async collect(ctx: BrowserCollectContext): Promise<void> {
-      const {
-        state,
-        requested,
-        context,
-        page,
-        emit,
-        emitRecord,
-        progress,
-        capture,
-        sendInteraction,
-        emittedAt,
-        browserSurface,
-      } = ctx;
-      const deps: EmitDeps = {
-        browserSurface: browserSurfaceManagedState(browserSurface),
-        capture,
-        emit,
-        emitRecord,
-        servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
-      };
-
-      // ACCOUNTS — extract from dashboard; emit optionally based on requested.
-      await progress("Extracting accounts from dashboard");
-      if (capture) {
-        await capture.captureDom(page, "dashboard-accounts");
-      }
-      const accounts = await extractAccounts(page);
-      await progress(`Found ${accounts.length} account(s)`);
-
-      await maybeRunAccountsStreams(deps, accounts, state, requested, emittedAt);
-
-      // Signal raised by the transactions loop when a page redirects to
-      // /my/logon mid-run — meaning USAA's session has lapsed.
-      const streamState: TransactionsStreamState = { sessionDeadMidRun: false };
-
-      // Per-transaction fingerprint cursor (excludes the run-clock
-      // `fetched_at`). One cursor shared across BOTH transaction emit paths
-      // (CSV export + PDF-statement parse) for the whole stream — record
-      // ids (`hashId(accountId|date|amount|original|#ord)`) are globally
-      // unique and the two paths hash the same logical transaction to the
-      // same id. Only opened when transactions are requested. NOT pruned:
-      // transactions is a partial scan (see emitCsvTransactions).
-      const transactionsFingerprintCursor = requested.has("transactions")
-        ? openFingerprintCursor(state.transactions, {
-            excludeFromFingerprint: ["fetched_at"],
-            priorFingerprints: readPriorTransactionFingerprints(state),
-          })
-        : undefined;
-
-      // TRANSACTIONS — drive Export per account where applicable. Capture
-      // the advanced per-account watermark cursor so the final transactions
-      // STATE write below preserves the incremental `last_date` progress
-      // (not just the fingerprint map).
-      let transactionsCursorAfterCsv: TransactionsStreamCursor =
-        (state.transactions as TransactionsPriorState | undefined) ?? {};
-      if (requested.has("transactions")) {
-        transactionsCursorAfterCsv = await runTransactionsStream(
-          deps,
-          context,
-          page,
-          sendInteraction,
-          accounts,
-          state,
-          requested,
-          streamState,
-          transactionsFingerprintCursor
-        );
-      }
-
-      // STATEMENTS — scrape /my/documents + hydrate PDFs + (optionally) parse txns.
-      // Per-statement fingerprint cursor (excludes the run-clock `fetched_at`)
-      // so unchanged statements stop appending a new version every run. Only
-      // opened when `statements` is requested; a transactions-only run does
-      // not touch the statements STATE. The PDF-statement transaction parse
-      // shares the transactions fingerprint cursor.
-      if ((requested.has("statements") || requested.has("transactions")) && !streamState.sessionDeadMidRun) {
-        const statementsFingerprintCursor = requested.has("statements")
-          ? openFingerprintCursor(state.statements, {
-              // Content-gated: when the record carries a positive content
-              // fingerprint (pdf_text_sha256 + pdf_page_count), the blob/
-              // acquisition-identity fields are excluded too, so an RC4-style
-              // re-encryption re-download with unchanged content is a no-op;
-              // when the content fields are absent (legacy/index-only), only
-              // `fetched_at` is excluded (conservative fallback).
-              resolveExcludeFromFingerprint: statementFingerprintExcludeKeys,
-              priorFingerprints: readPriorStatementFingerprints(state),
-            })
-          : undefined;
-        // Carry-forward of prior hydrated PDF pointers: seeded from the prior
-        // statements STATE so a transient re-download failure re-emits the
-        // prior content-addressed pointers instead of null.
-        const statementsHydrationCursor = requested.has("statements")
-          ? openStatementHydrationCursor(readPriorStatementHydration(state.statements))
-          : undefined;
-        await runStatementsStream(
-          { ...deps, page },
-          accounts,
-          requested,
-          statementsFingerprintCursor,
-          transactionsFingerprintCursor,
-          statementsHydrationCursor
-        );
-      }
-
-      // Persist the merged per-transaction fingerprint map (CSV + PDF paths)
-      // once both have run, on top of the advanced per-account watermarks.
-      // The per-account STATE writes inside runTransactionsStream only saw
-      // the CSV-so-far map; this final write is authoritative and carries
-      // the PDF-path fingerprints forward too. NOT pruned (partial scan).
-      // Skipped if the session died mid-run so we never narrow a map a
-      // partial run could not fully rebuild.
-      if (requested.has("transactions") && !streamState.sessionDeadMidRun && transactionsFingerprintCursor) {
-        await emit({
-          type: "STATE",
-          stream: "transactions",
-          cursor: withTransactionFingerprints(transactionsCursorAfterCsv, transactionsFingerprintCursor),
-        });
-      }
-
-      // INBOX_MESSAGES — scrape /my/inbox.
-      if (requested.has("inbox_messages") && !streamState.sessionDeadMidRun) {
-        await runInboxStream(deps, page, state);
-      }
-
-      // CREDIT_CARD_BILLING — entity (identity/settings) + optional
-      // `credit_card_billing_stats` observation. See
-      // `maybeRunCreditCardBillingStreams`.
-      if (!streamState.sessionDeadMidRun) {
-        await maybeRunCreditCardBillingStreams(deps, page, accounts, state, requested, emittedAt);
-      }
-
-      await emitDeferredStreams(emit, requested);
-
-      if (streamState.sessionDeadMidRun) {
-        throw new Error("usaa session expired mid-run; re-run with fresh auth to complete");
-      }
-    },
+    collect: collectUsaa,
   });
+}
+
+/**
+ * Orchestrate every USAA stream for one run. Exported (in addition to being
+ * wired as `runConnector`'s `collect`) purely so the cross-stream
+ * session-death latch/budget behavior is directly testable end-to-end with a
+ * mocked Page/BrowserContext, without needing to drive `runConnector`'s CLI
+ * entry point. See `singleton-checkpoint-coverage-wiring.test.ts`'s
+ * `collectUsaa` block for the collect()-level proof that a statements/inbox
+ * session death actually suppresses later streams (not just the per-stream
+ * unit behavior already covered in `late-auth-self-heal.test.ts`).
+ */
+export async function collectUsaa(ctx: BrowserCollectContext): Promise<void> {
+  const {
+    state,
+    requested,
+    context,
+    page,
+    emit,
+    emitRecord,
+    progress,
+    capture,
+    sendInteraction,
+    emittedAt,
+    browserSurface,
+  } = ctx;
+  const deps: EmitDeps = {
+    browserSurface: browserSurfaceManagedState(browserSurface),
+    capture,
+    credentials: ctx.credentials,
+    emit,
+    emitRecord,
+    servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
+  };
+
+  // Run-scoped state shared across every stream below, constructed
+  // BEFORE the first stream (accounts) runs — see `UsaaRunState`. This
+  // is both the cross-stream "session died, skip the rest" latch AND the
+  // sole run-scoped budget for automated session repair, so a session
+  // death detected at ANY stage (including the very first dashboard
+  // load) is visible to every later stage and spends the same one-shot
+  // repair budget instead of each stage/card independently attempting
+  // (and, pre-fix, re-attempting) a bank login.
+  const streamState: UsaaRunState = { sessionDeadMidRun: false, sessionRepairAttempted: false };
+
+  // ACCOUNTS — extract from dashboard; emit optionally based on requested.
+  await progress("Extracting accounts from dashboard");
+  if (capture) {
+    await capture.captureDom(page, "dashboard-accounts");
+  }
+  const accounts = await extractAccounts(deps, context, page, sendInteraction, streamState);
+  await progress(`Found ${accounts.length} account(s)`);
+
+  await maybeRunAccountsStreams(deps, accounts, state, requested, emittedAt);
+
+  // Per-transaction fingerprint cursor (excludes the run-clock
+  // `fetched_at`). One cursor shared across BOTH transaction emit paths
+  // (CSV export + PDF-statement parse) for the whole stream — record
+  // ids (`hashId(accountId|date|amount|original|#ord)`) are globally
+  // unique and the two paths hash the same logical transaction to the
+  // same id. Only opened when transactions are requested. NOT pruned:
+  // transactions is a partial scan (see emitCsvTransactions).
+  const transactionsFingerprintCursor = requested.has("transactions")
+    ? openFingerprintCursor(state.transactions, {
+        excludeFromFingerprint: ["fetched_at"],
+        priorFingerprints: readPriorTransactionFingerprints(state),
+      })
+    : undefined;
+
+  // TRANSACTIONS — drive Export per account where applicable. Capture
+  // the advanced per-account watermark cursor so the final transactions
+  // STATE write below preserves the incremental `last_date` progress
+  // (not just the fingerprint map).
+  let transactionsCursorAfterCsv: TransactionsStreamCursor =
+    (state.transactions as TransactionsPriorState | undefined) ?? {};
+  if (requested.has("transactions")) {
+    transactionsCursorAfterCsv = await runTransactionsStream(
+      deps,
+      context,
+      page,
+      sendInteraction,
+      accounts,
+      state,
+      requested,
+      streamState,
+      transactionsFingerprintCursor
+    );
+  }
+
+  // STATEMENTS — scrape /my/documents + hydrate PDFs + (optionally) parse txns.
+  // Per-statement fingerprint cursor (excludes the run-clock `fetched_at`)
+  // so unchanged statements stop appending a new version every run. Only
+  // opened when `statements` is requested; a transactions-only run does
+  // not touch the statements STATE. The PDF-statement transaction parse
+  // shares the transactions fingerprint cursor.
+  if ((requested.has("statements") || requested.has("transactions")) && !streamState.sessionDeadMidRun) {
+    const statementsFingerprintCursor = requested.has("statements")
+      ? openFingerprintCursor(state.statements, {
+          // Content-gated: when the record carries a positive content
+          // fingerprint (pdf_text_sha256 + pdf_page_count), the blob/
+          // acquisition-identity fields are excluded too, so an RC4-style
+          // re-encryption re-download with unchanged content is a no-op;
+          // when the content fields are absent (legacy/index-only), only
+          // `fetched_at` is excluded (conservative fallback).
+          resolveExcludeFromFingerprint: statementFingerprintExcludeKeys,
+          priorFingerprints: readPriorStatementFingerprints(state),
+        })
+      : undefined;
+    // Carry-forward of prior hydrated PDF pointers: seeded from the prior
+    // statements STATE so a transient re-download failure re-emits the
+    // prior content-addressed pointers instead of null.
+    const statementsHydrationCursor = requested.has("statements")
+      ? openStatementHydrationCursor(readPriorStatementHydration(state.statements))
+      : undefined;
+    latchSessionDead(
+      streamState,
+      await runStatementsStream(
+        { ...deps, page },
+        context,
+        sendInteraction,
+        accounts,
+        requested,
+        streamState,
+        statementsFingerprintCursor,
+        transactionsFingerprintCursor,
+        statementsHydrationCursor
+      )
+    );
+  }
+
+  // Persist the merged per-transaction fingerprint map (CSV + PDF paths)
+  // once both have run, on top of the advanced per-account watermarks.
+  // The per-account STATE writes inside runTransactionsStream only saw
+  // the CSV-so-far map; this final write is authoritative and carries
+  // the PDF-path fingerprints forward too. NOT pruned (partial scan).
+  // Skipped if the session died mid-run so we never narrow a map a
+  // partial run could not fully rebuild.
+  if (requested.has("transactions") && !streamState.sessionDeadMidRun && transactionsFingerprintCursor) {
+    await emit({
+      type: "STATE",
+      stream: "transactions",
+      cursor: withTransactionFingerprints(transactionsCursorAfterCsv, transactionsFingerprintCursor),
+    });
+  }
+
+  // INBOX_MESSAGES — scrape /my/inbox.
+  if (requested.has("inbox_messages") && !streamState.sessionDeadMidRun) {
+    latchSessionDead(streamState, await runInboxStream(deps, context, page, sendInteraction, state, streamState));
+  }
+
+  // CREDIT_CARD_BILLING — entity (identity/settings) + optional
+  // `credit_card_billing_stats` observation. See
+  // `maybeRunCreditCardBillingStreams`.
+  if (!streamState.sessionDeadMidRun) {
+    await maybeRunCreditCardBillingStreams(
+      deps,
+      context,
+      page,
+      sendInteraction,
+      accounts,
+      state,
+      requested,
+      emittedAt,
+      streamState
+    );
+  }
+
+  await emitDeferredStreams(emit, requested);
+
+  if (streamState.sessionDeadMidRun) {
+    throw new Error("usaa session expired mid-run; re-run with fresh auth to complete");
+  }
 }

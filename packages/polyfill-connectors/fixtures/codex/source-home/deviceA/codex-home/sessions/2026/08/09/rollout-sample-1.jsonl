@@ -1,0 +1,4 @@
+{"type":"session_meta","timestamp":"2026-08-09T10:00:00Z","payload":{"id":"session-1","thread_id":"thread-1"}}
+{"type":"response_item","timestamp":"2026-08-09T10:00:01Z","payload":{"type":"message","role":"user","content":"Hello"}}
+{"type":"response_item","timestamp":"2026-08-09T10:00:02Z","payload":{"type":"function_call","id":"call-1","name":"test_function","arguments":{}}}
+{"type":"response_item","timestamp":"2026-08-09T10:00:03Z","payload":{"type":"message","role":"assistant","content":"Hi there"}}

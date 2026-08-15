@@ -32,6 +32,7 @@ import {
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { reconcilePolyfillManifests } from "../server/polyfill-manifest-reconcile.ts";
 import { ingestRecord as ingestRecordUntyped } from "../server/records.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const REGEXP_1 = /seed-flip/;
 const REGEXP_2 = /2 record/;
@@ -45,7 +46,7 @@ const REGEXP_3 = /seed-flip/;
 // rather than mirroring the full protocol schema.
 interface Manifest {
   capabilities?: {
-    public_listing?: { listed?: boolean; status?: string };
+    public_listing?: { tier?: "supported" | "preview" | "development" };
     [key: string]: unknown;
   };
   connector_id: string;
@@ -60,6 +61,10 @@ const registerConnector = registerConnectorUntyped as (
 const getConnectorManifest = getConnectorManifestUntyped as (connectorId: string) => Promise<Manifest | null>;
 const ingestRecord = ingestRecordUntyped as (
   connectorId: string,
+  record: { stream: string; key: string; data: Record<string, unknown>; emitted_at: string }
+) => Promise<unknown>;
+const ingestRecordForInstance = ingestRecordUntyped as (
+  storageTarget: { connector_id: string; connector_instance_id: string },
   record: { stream: string; key: string; data: Record<string, unknown>; emitted_at: string }
 ) => Promise<unknown>;
 
@@ -436,6 +441,293 @@ test(
   })
 );
 
+// ─── Generic, connector-agnostic record-identity-generation transition ─────
+//
+// RI holds ZERO connector/provider knowledge. Instead of a hardcoded
+// (connectorId, fromVersion, toVersion) allowlist (the prior
+// isBreakingIdSchemeTransition design -- see git history for the WhatsApp
+// case that motivated this), a connector AUTHOR declares
+// `capabilities.record_identity.generation: <integer>` in their OWN
+// manifest and bumps it whenever their record_key derivation changes in a
+// way that breaks idempotency against previously-emitted records. RI's
+// reconcile logic only ever compares two integers -- a shipped manifest's
+// declared generation vs. each INSTANCE's own last-reconciled checkpoint
+// (`connector_instances.record_identity_generation`) -- with zero
+// awareness of what "generation" means for any given connector.
+//
+// Critically, invalidation is PER INSTANCE, never connector-wide: only
+// instances whose checkpoint is behind the shipped generation are touched
+// (via deleteAllRecordsForConnector's instanceIdFilter); sibling instances
+// of the same connector type that are already caught up are left
+// completely untouched, including their data.
+
+const GENERATION_CONNECTOR_ID = "generation-fixture";
+const GENERATION_STORAGE_CONNECTOR_ID = "generation-fixture";
+
+function generationManifestV1(overrides: Partial<Manifest> = {}): Manifest {
+  const connectorId = overrides.connector_id ?? GENERATION_CONNECTOR_ID;
+  return {
+    connector_id: connectorId,
+    connector_key: connectorId,
+    display_name: "Generation fixture connector",
+    manifest_uri: `https://registry.pdpp.dev/connectors/${connectorId}`,
+    protocol_version: "0.1.0",
+    runtime_requirements: { bindings: { filesystem: { required: true } } },
+    streams: [
+      {
+        name: "items",
+        primary_key: ["id"],
+        schema: {
+          properties: { content: { type: "string" }, id: { type: "string" } },
+          required: ["id"],
+          type: "object",
+        },
+        selection: { fields: true, resources: true },
+        semantics: "append_only",
+      },
+    ],
+    version: "0.1.0",
+    ...overrides,
+  };
+}
+
+function generationManifestV2(overrides: Partial<Manifest> = {}): Manifest {
+  return generationManifestV1({
+    capabilities: { record_identity: { generation: 1 } },
+    version: "0.2.0",
+    ...overrides,
+  });
+}
+
+async function ingestOldGenerationItems(storageTarget: { connector_id: string; connector_instance_id: string }) {
+  const items = [
+    { content: "first", id: "old-scheme:0" },
+    { content: "second", id: "old-scheme:1" },
+  ];
+  for (const data of items) {
+    // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
+    await ingestRecordForInstance(storageTarget, {
+      data,
+      emitted_at: "2026-06-05T09:15:22Z",
+      key: data.id,
+      stream: "items",
+    });
+  }
+}
+
+function seedGenerationInstance(
+  connectorInstanceId: string,
+  sourceBindingKey: string,
+  connectorId: string = GENERATION_STORAGE_CONNECTOR_ID
+): Promise<unknown> {
+  const store = createSqliteConnectorInstanceStore();
+  return Promise.resolve(
+    store.upsert({
+      connectorId,
+      connectorInstanceId,
+      createdAt: "2026-06-01T00:00:00Z",
+      displayName: connectorInstanceId,
+      ownerSubjectId: "owner-generation-test",
+      sourceBinding: { account_hint: sourceBindingKey },
+      sourceBindingKey,
+      sourceKind: "account",
+      status: "active",
+      updatedAt: "2026-06-01T00:00:00Z",
+    })
+  );
+}
+
+function recordIdentityGeneration(connectorInstanceId: string): number {
+  const row = getDb()
+    .prepare("SELECT record_identity_generation AS generation FROM connector_instances WHERE connector_instance_id = ?")
+    .get(connectorInstanceId) as { generation: number } | undefined;
+  assert.ok(row, `expected a connector_instances row for ${connectorInstanceId}`);
+  return row.generation;
+}
+
+test(
+  "reconciliation invalidates prior-generation records for an instance behind the shipped manifest's declared record_identity.generation",
+  withTmpDb(async ({ dir }) => {
+    await registerConnector(generationManifestV1());
+    await seedGenerationInstance("cin_gen_solo", "solo@example.com");
+    assert.equal(recordIdentityGeneration("cin_gen_solo"), 0, "baseline: fresh instance checkpoint starts at 0");
+
+    await ingestOldGenerationItems({
+      connector_id: GENERATION_STORAGE_CONNECTOR_ID,
+      connector_instance_id: "cin_gen_solo",
+    });
+    assert.equal(recordCount(GENERATION_STORAGE_CONNECTOR_ID), 2, "baseline: old-generation items persisted");
+
+    const manifestsDir = writeManifestsDir(dir, "polyfill", { "generation-fixture.json": generationManifestV2() });
+    const referenceFixturesDir = writeManifestsDir(dir, "reference", {});
+
+    const lines: string[] = [];
+    const summary = await reconcilePolyfillManifests({
+      enabled: true,
+      log: (line) => lines.push(line),
+      manifestsDir,
+      referenceFixturesDir,
+    });
+
+    assert.equal(
+      recordCount(GENERATION_STORAGE_CONNECTOR_ID),
+      0,
+      "old-generation records are invalidated, not left to duplicate"
+    );
+    assert.equal(summary.invalidatedConnectors, 1);
+    assert.equal(summary.invalidatedRecords, 2);
+    assert.equal(summary.updated, 1, "manifest was re-registered to v0.2.0");
+    assert.equal(summary.errors, 0);
+    assert.equal(recordIdentityGeneration("cin_gen_solo"), 1, "instance checkpoint advances to the shipped generation");
+
+    const persisted = await mustGetConnectorManifest(GENERATION_CONNECTOR_ID);
+    assert.equal(persisted.version, "0.2.0");
+
+    const invalidationLine = lines.find((line) => line.includes("invalidated"));
+    assert.ok(invalidationLine, "reconciliation emits an invalidation log line for the generation transition");
+  })
+);
+
+test(
+  "reconciliation with two instances of the same connector invalidates ONLY the instance behind the declared generation; the caught-up sibling and its data survive untouched",
+  withTmpDb(async ({ dir }) => {
+    // cin_gen_behind is created under manifest v1 (declared generation 0
+    // implicitly) and ingests data under the OLD scheme.
+    await registerConnector(generationManifestV1());
+    await seedGenerationInstance("cin_gen_behind", "behind@example.com");
+    await ingestOldGenerationItems({
+      connector_id: GENERATION_STORAGE_CONNECTOR_ID,
+      connector_instance_id: "cin_gen_behind",
+    });
+
+    // The connector's manifest is bumped to v2 (generation 1) and
+    // reconciled once, invalidating cin_gen_behind and advancing its
+    // checkpoint to 1.
+    const manifestsDirV2 = writeManifestsDir(dir, "polyfill-v2", {
+      "generation-fixture.json": generationManifestV2(),
+    });
+    await reconcilePolyfillManifests({
+      enabled: true,
+      log: () => {
+        /* intentionally empty */
+      },
+      manifestsDir: manifestsDirV2,
+      referenceFixturesDir: writeManifestsDir(dir, "reference-v2", {}),
+    });
+    assert.equal(recordCount(GENERATION_STORAGE_CONNECTOR_ID), 0, "cin_gen_behind's old-generation data is gone");
+    assert.equal(recordIdentityGeneration("cin_gen_behind"), 1);
+
+    // cin_gen_caught_up is created AFTER the manifest is already at
+    // generation 1 -- its checkpoint is seeded to 1 at creation time (see
+    // insert.sql), NOT left at the column default of 0. It ingests real
+    // data under the CURRENT (generation-1) scheme.
+    await seedGenerationInstance("cin_gen_caught_up", "caught-up@example.com");
+    assert.equal(
+      recordIdentityGeneration("cin_gen_caught_up"),
+      1,
+      "an instance created after the manifest already declared generation 1 is seeded at 1, not 0"
+    );
+    await ingestRecordForInstance(
+      { connector_id: GENERATION_STORAGE_CONNECTOR_ID, connector_instance_id: "cin_gen_caught_up" },
+      {
+        data: { content: "current-scheme", id: "current-scheme:0" },
+        emitted_at: "2026-06-06T09:15:22Z",
+        key: "current-scheme:0",
+        stream: "items",
+      }
+    );
+    assert.equal(recordCount(GENERATION_STORAGE_CONNECTOR_ID), 1, "baseline: only the caught-up instance has data");
+
+    // An UNRELATED manifest edit (a new description) bumps content but not
+    // the declared generation. Reconciliation fires (manifest changed) and
+    // must find zero instances behind generation 1 -- the caught-up
+    // instance is not touched, and cin_gen_behind (already at 1) is not
+    // touched again either.
+    const evolved = generationManifestV2({ display_name: "Generation fixture connector (v2, copy revised)" });
+    const manifestsDirV3 = writeManifestsDir(dir, "polyfill-v3", { "generation-fixture.json": evolved });
+    const summary = await reconcilePolyfillManifests({
+      enabled: true,
+      log: () => {
+        /* intentionally empty */
+      },
+      manifestsDir: manifestsDirV3,
+      referenceFixturesDir: writeManifestsDir(dir, "reference-v3", {}),
+    });
+
+    assert.equal(summary.updated, 1, "manifest copy edit still re-registers");
+    assert.equal(
+      summary.invalidatedConnectors,
+      0,
+      "no instance is behind generation 1 -- the caught-up sibling must NOT be invalidated"
+    );
+    assert.equal(summary.invalidatedRecords, 0);
+    assert.equal(
+      recordCount(GENERATION_STORAGE_CONNECTOR_ID),
+      1,
+      "the caught-up instance's current-generation record survives untouched"
+    );
+    assert.equal(recordIdentityGeneration("cin_gen_behind"), 1, "already-reconciled sibling checkpoint is unchanged");
+    assert.equal(recordIdentityGeneration("cin_gen_caught_up"), 1, "caught-up instance checkpoint is unchanged");
+
+    // Prove the sibling is not just present in the DB but genuinely still
+    // collectable (not left in some half-torn-down state).
+    await ingestRecordForInstance(
+      { connector_id: GENERATION_STORAGE_CONNECTOR_ID, connector_instance_id: "cin_gen_caught_up" },
+      {
+        data: { content: "still collectable", id: "current-scheme:1" },
+        emitted_at: "2026-06-07T09:15:22Z",
+        key: "current-scheme:1",
+        stream: "items",
+      }
+    );
+    assert.equal(recordCount(GENERATION_STORAGE_CONNECTOR_ID), 2, "caught-up instance remains fully collectable");
+  })
+);
+
+test(
+  "reconciliation does NOT invalidate an unrelated connector's records when a different connector declares record_identity.generation",
+  withTmpDb(async ({ dir }) => {
+    const otherConnectorId = "some-other-connector";
+    await registerConnector(generationManifestV1({ connector_id: otherConnectorId, connector_key: otherConnectorId }));
+    await seedGenerationInstance("cin_other", "other@example.com", otherConnectorId);
+    await ingestRecordForInstance(
+      { connector_id: otherConnectorId, connector_instance_id: "cin_other" },
+      {
+        data: { content: "hi", id: "unrelated:0" },
+        emitted_at: "2026-06-05T09:15:22Z",
+        key: "unrelated:0",
+        stream: "items",
+      }
+    );
+    assert.equal(recordCount(otherConnectorId), 1);
+
+    // A DIFFERENT connector (generation-fixture) declares generation 1 in
+    // this same reconcile pass; the unrelated connector's own manifest is
+    // untouched (still generation 0 implicitly) and must not be affected.
+    const manifestsDir = writeManifestsDir(dir, "polyfill", {
+      "generation-fixture.json": generationManifestV2(),
+    });
+    const referenceFixturesDir = writeManifestsDir(dir, "reference", {});
+
+    const summary = await reconcilePolyfillManifests({
+      enabled: true,
+      log: () => {
+        /* intentionally empty */
+      },
+      manifestsDir,
+      referenceFixturesDir,
+    });
+
+    // generation-fixture.json is unlisted (no capabilities.public_listing),
+    // so reconciliation skips auto-registering it rather than updating it
+    // -- irrelevant to what this test proves either way.
+    assert.equal(summary.skipped, 1, "generation-fixture is unlisted and not yet registered, so it is skipped");
+    assert.equal(summary.invalidatedConnectors, 0, "an unrelated connector must not be touched");
+    assert.equal(summary.invalidatedRecords, 0);
+    assert.equal(recordCount(otherConnectorId), 1, "the unrelated connector's record survives");
+  })
+);
+
 test(
   "reconciliation preserves records when the persisted manifest content matches the shipped manifest",
   withTmpDb(async ({ dir }) => {
@@ -546,7 +838,7 @@ test(
   "reconciliation skips unlisted connectors that are not yet registered (no record invalidation, no auto-seed)",
   withTmpDb(async ({ dir }) => {
     // The shipped fixture used here does not declare
-    // `capabilities.public_listing.listed: true`, so reconciliation MUST
+    // `capabilities.public_listing.tier: "supported"`, so reconciliation MUST
     // NOT auto-seed it. This preserves the long-standing "don't surprise
     // owners with a custom-looking connector_id" guarantee for unlisted /
     // unproven manifests and keeps the destructive invalidation path
@@ -579,14 +871,14 @@ test(
   "reconciliation auto-registers listed=true first-party manifests so the operator catalog can show them on a fresh DB",
   withTmpDb(async ({ dir }) => {
     // Catalog completeness: a first-party manifest that declares
-    // `capabilities.public_listing.listed: true` must be present in the
+    // `capabilities.public_listing.tier: "supported"` must be present in the
     // connectors table on startup so `GET /_ref/connectors` and the
     // reference dashboard can surface it before the first schedule or run
     // row exists. See
     // openspec/changes/add-connector-public-listing-honesty/.
     const listedManifest = shippedPolyfillManifest({
       capabilities: {
-        public_listing: { listed: true, status: "proven" },
+        public_listing: { tier: "supported" },
         refresh_policy: {
           background_safe: false,
           rationale: "Listed first-party manifest must be visible on the operator catalog even with no schedule.",
@@ -615,11 +907,55 @@ test(
     const persisted = await mustGetConnectorManifest(CONNECTOR_ID);
     assert.ok(persisted, "connector is persisted in the DB after reconciliation");
     assert.equal(persisted.connector_id, CONNECTOR_ID);
-    assert.equal(persisted.capabilities?.public_listing?.listed, true);
+    assert.equal(persisted.capabilities?.public_listing?.tier, "supported");
 
     const registeredLine = lines.find((line) => line.includes("registered listed first-party manifest"));
     assert.ok(registeredLine, "reconciliation emits a register log line");
     assert.match(registeredLine, REGEXP_3);
+  })
+);
+
+test(
+  "explicit UAT reconciliation registers an unlisted shipped manifest without changing the default",
+  withTmpDb(async ({ dir }) => {
+    const manifestsDir = writeManifestsDir(dir, "polyfill", {
+      "seed-flip.json": shippedPolyfillManifest({
+        capabilities: { public_listing: { tier: "development" } },
+      }),
+    });
+    const referenceFixturesDir = writeManifestsDir(dir, "reference", {});
+
+    const summary = await reconcilePolyfillManifests({
+      enabled: true,
+      includeUnlisted: true,
+      manifestsDir,
+      referenceFixturesDir,
+    });
+
+    assert.equal(summary.registered, 1);
+    assert.equal(summary.skipped, 0);
+    assert.ok(await getConnectorManifest(CONNECTOR_ID));
+  })
+);
+
+test(
+  "explicit UAT reconciliation registers any valid Development manifest",
+  withTmpDb(async ({ dir }) => {
+    const manifestsDir = writeManifestsDir(dir, "polyfill", {
+      "seed-flip.json": shippedPolyfillManifest({
+        capabilities: { public_listing: { tier: "development" } },
+      }),
+    });
+    const summary = await reconcilePolyfillManifests({
+      enabled: true,
+      includeUnlisted: true,
+      manifestsDir,
+      referenceFixturesDir: writeManifestsDir(dir, "reference", {}),
+    });
+
+    assert.equal(summary.registered, 1);
+    assert.equal(summary.skipped, 0);
+    assert.ok(await getConnectorManifest(CONNECTOR_ID));
   })
 );
 
@@ -631,7 +967,7 @@ test(
     // listed=false stays invisible to the operator catalog on a fresh DB.
     const hiddenManifest = shippedPolyfillManifest({
       capabilities: {
-        public_listing: { listed: false, status: "unproven" },
+        public_listing: { tier: "development" },
         refresh_policy: {
           background_safe: false,
           rationale: "Unproven; hidden from the operator catalog until a credentialed run.",

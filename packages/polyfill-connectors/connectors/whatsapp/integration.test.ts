@@ -169,7 +169,7 @@ test("WhatsApp connector imports zip media as deferred attachment records when b
     assert.equal(attachment.size_bytes, 4);
     assert.equal(attachment.hydration_status, "deferred");
     assert.match(String(attachment.content_sha256), /^[0-9a-f]{64}$/);
-    assert.match(String(attachment.message_id), /^[0-9a-f]{16}:1$/);
+    assert.match(String(attachment.message_id), /^[0-9a-f]{16}:[0-9a-f]{16}$/);
 
     assert.equal(records(messages, "chats").length, 1);
     assert.equal(records(messages, "messages").length, 2);
@@ -214,6 +214,35 @@ test("WhatsApp connector emits privacy-safe structured progress for manual impor
 
     const progressText = progress.map((message) => message.message).join("\n");
     assert.doesNotMatch(progressText, /Alice export|WhatsApp Chat - Alice|IMG-20240605-WA0001\.jpg/);
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("WhatsApp connector declares chat and message coverage from the parsed export inventory", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-chat-coverage-"));
+  try {
+    await writeMediaZip(importRoot);
+    const { messages } = await runWhatsAppImport(importRoot);
+    const coverage = detailCoverage(messages);
+
+    // One export file parsed into one chat, so the discovery walk considered
+    // one chat and accounted for it.
+    const chats = coverage.find((message) => message.stream === "chats");
+    assert.ok(chats, "expected chats DETAIL_COVERAGE");
+    assert.equal(chats.state_stream, "chats");
+    assert.equal(chats.considered, 1);
+    assert.equal(chats.covered, 1);
+    assert.deepEqual(chats.required_keys, []);
+    assert.deepEqual(chats.hydrated_keys, []);
+
+    // VALID_EXPORT carries two parsed lines; the denominator is the parsed
+    // count, not the emitted count.
+    const parsed = coverage.find((message) => message.stream === "messages");
+    assert.ok(parsed, "expected messages DETAIL_COVERAGE");
+    assert.equal(parsed.state_stream, "messages");
+    assert.equal(parsed.considered, 2);
+    assert.equal(parsed.covered, 2);
   } finally {
     await rm(importRoot, { force: true, recursive: true });
   }
@@ -273,6 +302,55 @@ test("WhatsApp connector reports unsupported scoped imports on a declared stream
   }
 });
 
+test("WhatsApp connector's collect() rejects an export past the message-count cap as a SKIP_RESULT, not a crash (H1)", async () => {
+  // Real subprocess run (not a direct import) proves the collection path,
+  // not just validation: an export that would OOM the whole process during
+  // accumulation instead produces a normal SKIP_RESULT and a succeeded DONE
+  // -- the subprocess exits cleanly, it never aborts.
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-msg-cap-"));
+  try {
+    const lines = [
+      "[6/5/24, 9:15:22 AM] Alice: one",
+      "[6/5/24, 9:16:00 AM] Alice: two",
+      "[6/5/24, 9:17:00 AM] Alice: three",
+      "[6/5/24, 9:18:00 AM] Alice: four",
+    ].join("\n");
+    await writeFile(join(importRoot, "WhatsApp Chat - Alice.txt"), lines);
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: WHATSAPP_ENTRYPOINT,
+      env: {
+        PDPP_OWNER_TOKEN: "",
+        PDPP_RS_URL: "",
+        RS_URL: "",
+        WHATSAPP_EXPORT_DIR: importRoot,
+        WHATSAPP_MAX_MESSAGE_COUNT: "3",
+      },
+      start: {
+        scope: { streams: [{ name: "chats" }, { name: "messages" }] },
+        type: "START",
+      },
+    });
+    const skips = result.messages.filter(
+      (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => message.type === "SKIP_RESULT"
+    );
+    assert.equal(skips.length, 1);
+    assert.equal(skips[0]?.reason, "import_exceeds_bounded_read_policy");
+    const done = result.messages.at(-1);
+    assert.equal(done?.type, "DONE");
+    if (done?.type === "DONE") {
+      assert.equal(done.status, "succeeded");
+    }
+    const chatRecords = result.messages.filter(
+      (message): message is Extract<EmittedMessage, { type: "RECORD" }> =>
+        message.type === "RECORD" && message.stream === "chats"
+    );
+    assert.equal(chatRecords.length, 0, "the over-cap export must not produce a chat record");
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
 test("WhatsApp connector hydrates zip media through the reference blob endpoint", async () => {
   const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-media-"));
   try {
@@ -280,10 +358,11 @@ test("WhatsApp connector hydrates zip media through the reference blob endpoint"
     await withBlobServer(
       async (req) => {
         assert.equal(req.headers.authorization, "Bearer owner-token");
-        assert.equal(req.headers["content-type"], "image/jpeg");
+        assert.equal(req.headers["content-type"], "application/octet-stream");
         assert.equal(req.url?.startsWith("/v1/blobs?"), true);
         const url = new URL(req.url ?? "", "http://127.0.0.1");
         assert.equal(url.searchParams.get("connector_id"), "https://registry.pdpp.dev/connectors/whatsapp");
+        assert.equal(url.searchParams.get("mime_type"), "image/jpeg");
         assert.equal(url.searchParams.get("connector_instance_id"), "cin_whatsapp_media");
         assert.equal(url.searchParams.get("stream"), "attachments");
         assert.match(url.searchParams.get("record_key") ?? "", /^[0-9a-f]{16}:attachment:[0-9a-f]{16}$/);
@@ -292,7 +371,7 @@ test("WhatsApp connector hydrates zip media through the reference blob endpoint"
         return {
           body: {
             blob_id: `blob_sha256_${sha256}`,
-            mime_type: req.headers["content-type"],
+            mime_type: url.searchParams.get("mime_type"),
             object: "blob",
             sha256,
             size_bytes: body.byteLength,

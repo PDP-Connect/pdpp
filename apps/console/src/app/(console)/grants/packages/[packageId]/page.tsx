@@ -23,7 +23,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../../components/shell.tsx";
+import { ServerUnreachable } from "../../../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
   type CumulativeClientAccess,
@@ -31,6 +31,7 @@ import {
   getCumulativeClientAccess,
   getGrantPackage,
 } from "../../../lib/ref-client.ts";
+import { technicalClientCaption } from "../../client-caption.ts";
 import { revokePackageAction } from "./revoke-action.ts";
 
 export const dynamic = "force-dynamic";
@@ -122,7 +123,9 @@ export default async function GrantPackageDetailPage({
             <StatusBadge status={pkg.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
           </dd>
           <dt>Client</dt>
-          <dd className="break-all font-mono text-foreground">{pkg.client_id}</dd>
+          <dd className="break-all font-mono text-foreground" title={pkg.client_id}>
+            {technicalClientCaption(pkg.client_id) ?? pkg.client_id}
+          </dd>
           {pkg.parent_package_id ? (
             <>
               <dt>Extends</dt>
@@ -136,7 +139,7 @@ export default async function GrantPackageDetailPage({
               </dd>
             </>
           ) : null}
-          <dt>Subject</dt>
+          <dt title="The owner identity this package's access is granted on behalf of">Subject</dt>
           <dd className="break-all font-mono text-foreground">{pkg.subject_id}</dd>
           <dt>Created</dt>
           <dd>
@@ -180,7 +183,7 @@ export default async function GrantPackageDetailPage({
 
       {hasLineage && cumulative ? (
         <Section
-          description={`Reference-experimental. This client holds ${cumulative.active_child_count} active child grant(s) across ${cumulative.package_count} linked package(s) (incremental add-source lineage). Each child grant remains independently revocable; the link carries no source authority.`}
+          description={`Reference-experimental. This client holds ${cumulative.active_child_count} active child grant(s) across ${cumulative.package_count} linked package(s). Each child grant remains independently revocable; the link carries no source authority.`}
           title="Cumulative client access"
         >
           <DataList>

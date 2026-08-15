@@ -42,8 +42,10 @@ export {
   buildCollectorStartMessage,
   buildLocalDeviceOutboxId,
   buildLocalDeviceRecordEnvelope,
+  COLLECTION_SCOPE_STATE_KEY,
   COLLECTOR_COVERAGE_STATUSES,
   COLLECTOR_PROTOCOL_VERSION,
+  type CollectionScope,
   type CollectorChildContext,
   type CollectorCompletenessSummary,
   type CollectorConnectorSpec,
@@ -56,6 +58,7 @@ export {
   type ConnectorRuntimeRequirements,
   canonicalJson,
   classifyDeadLetterError,
+  collectorScopeFingerprint,
   deriveLocalCollectorLifecycleState,
   diffRequiredBindings,
   drainCollectorQueue,
@@ -101,6 +104,8 @@ export {
   type RuntimeBindingName,
   RuntimeCapabilityMismatchError,
   type RuntimeCapabilityProfile,
+  readCollectionScopeFromState,
+  resolveScopedStreamTimeRanges,
   resourceSet,
   runCollectorConnector,
   type StartMessage,
@@ -138,14 +143,24 @@ export interface LocalCollectorDefinition {
   readonly bindings: Readonly<Record<string, { required: boolean }>>;
   /** Stable connector id (matches the manifest + ingest envelope). */
   readonly connector_id: string;
+  /** Whether the connector enforces path roots at enumeration time. */
+  readonly enforces_source_roots?: boolean;
   /**
    * The connector's directory name under `connectors/`. The runtime resolves
    * the spawnable entry from it (`connectors/<entry>/index.{js,ts}`); the
    * definition stays a pure value and never carries a path.
    */
   readonly entry: string;
+  /** Streams whose enumeration honors declared source roots. */
+  readonly source_root_scopable_streams?: readonly string[];
   /** Default stream set; operators can override with `--streams`. */
   readonly streams: readonly string[];
+  /**
+   * Streams an owner-declared `since` can be PROVEN against (mirrors the
+   * connector manifest's `consent_time_field`). Streams outside this set are
+   * collected whole rather than narrowed against a field they do not have.
+   */
+  readonly time_scopable_streams?: readonly string[];
 }
 
 /**
@@ -168,8 +183,14 @@ export interface BundledConnectorEntry {
   readonly command: string;
   /** Stable connector id (matches the manifest + ingest envelope). */
   readonly connector_id: string;
+  /** Whether the connector enforces path roots at enumeration time. */
+  readonly enforces_source_roots?: boolean;
+  /** Streams whose enumeration honors declared source roots. */
+  readonly source_root_scopable_streams?: readonly string[];
   /** Default stream set; operators can override with `--streams`. */
   readonly streams: readonly string[];
+  /** Streams an owner-declared `since` can be proven against. */
+  readonly time_scopable_streams?: readonly string[];
 }
 
 /** A frozen, id-keyed registry of runnable bundled connector entries. */
@@ -206,6 +227,19 @@ function toBundledEntry(definition: LocalCollectorDefinition): BundledConnectorE
     args: Object.freeze([resolvedEntry]) as readonly string[],
     bindings: definition.bindings,
     streams: Object.freeze([...definition.streams]) as readonly string[],
+    ...(definition.time_scopable_streams
+      ? {
+          time_scopable_streams: Object.freeze([...definition.time_scopable_streams]) as readonly string[],
+        }
+      : {}),
+    ...(definition.source_root_scopable_streams
+      ? {
+          source_root_scopable_streams: Object.freeze([
+            ...definition.source_root_scopable_streams,
+          ]) as readonly string[],
+        }
+      : {}),
+    ...(definition.enforces_source_roots ? { enforces_source_roots: true } : {}),
   });
 }
 

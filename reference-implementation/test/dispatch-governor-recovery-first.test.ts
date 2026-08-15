@@ -57,6 +57,7 @@ function schedule(overrides = {}) {
     connectorPath: "/unused",
     intervalMs: 60_000,
     manifest: {},
+    ownerSubjectId: "owner_local",
     ownerToken: "owner-token",
     ...overrides,
   };

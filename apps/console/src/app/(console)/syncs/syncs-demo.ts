@@ -7,8 +7,9 @@
  *
  * Rendered ONLY when the route is hit with `?demo=...`; the real data path is
  * untouched otherwise. The two failure cards are derived by running the REAL
- * {@link deriveFailureSummary} over hand-built health snapshots, so the demo
- * proves the actual guard rather than hard-coding copy:
+ * {@link deriveFailureSummary} over hand-built health snapshots plus
+ * server-shaped rendered verdicts, so the demo exercises formatting without
+ * reintroducing a raw-health fallback classifier:
  *   - a source-pressure cooldown (`cooling_off` + `source_pressure`) → the
  *     WAIT card (no reconnect button, next-attempt time stands in), and
  *   - a genuine `blocked` connection (no source-pressure backlog) → the
@@ -18,20 +19,18 @@
  */
 
 import { deriveFailureSummary } from "../lib/connection-evidence.ts";
-import type { RefConnectionHealthSnapshot } from "../lib/ref-client.ts";
+import type { RefConnectionHealthSnapshot, RefRenderedVerdict } from "../lib/ref-client.ts";
 import type { FailureCard, SyncRhythmTick, SyncRow, SyncsViewModel } from "./syncs-model.ts";
 
 const OK_RHYTHM: SyncRhythmTick[] = ["ok", "ok", "ok", "ok", "ok"];
 const FAIL_RHYTHM: SyncRhythmTick[] = ["ok", "ok", "ok", "ok", "fail"];
 const COOLING_RHYTHM: SyncRhythmTick[] = ["ok", "ok", "ok", "ok", "ok"];
 
-function row(partial: Partial<SyncRow> & Pick<SyncRow, "stream" | "cadence" | "browseHref">): SyncRow {
+function row(partial: Partial<SyncRow> & Pick<SyncRow, "stream" | "browseHref">): SyncRow {
   return {
     collectedThisRun: null,
     coverageCondition: null,
     failed: false,
-    next: "—",
-    nextAt: null,
     streamSkipped: false,
     ...partial,
   };
@@ -72,13 +71,72 @@ const COOLING_HEALTH: RefConnectionHealthSnapshot = {
   unknown_reasons: [],
 } as RefConnectionHealthSnapshot;
 
+const BLOCKED_VERDICT = {
+  annotations: [],
+  channel: "attention",
+  detail: {},
+  forward_statement: "Reconnect this account to resume collection.",
+  pill: { label: "Can't collect", tone: "red" },
+  progress: {
+    gaps_drained_last_run: null,
+    headline: "Collection needs attention.",
+    last_refreshed_at: null,
+    mode: "manual",
+    records_committed_last_run: null,
+    retained_records: null,
+  },
+  required_actions: [
+    {
+      affects: [],
+      audience: "owner",
+      cta: "Reconnect this account",
+      kind: "reauth",
+      satisfied_when: { kind: "credential_present_and_unrejected" },
+      terminal: true,
+      urgency: "now",
+    },
+  ],
+  streams: [],
+  trace: null,
+} as RefRenderedVerdict;
+
+const COOLING_VERDICT = {
+  annotations: [],
+  channel: "advisory",
+  detail: {},
+  forward_statement: "The source is throttling this connection; it will retry automatically.",
+  pill: { label: "Degraded", tone: "amber" },
+  progress: {
+    gaps_drained_last_run: null,
+    headline: "Waiting for the next attempt.",
+    last_refreshed_at: null,
+    mode: "scheduled",
+    records_committed_last_run: null,
+    retained_records: null,
+  },
+  required_actions: [
+    {
+      affects: [],
+      audience: "none",
+      cta: "No action needed",
+      kind: "wait",
+      satisfied_when: { kind: "none" },
+      terminal: false,
+      urgency: "soon",
+    },
+  ],
+  streams: [],
+  trace: null,
+} as RefRenderedVerdict;
+
 function demoCard(input: {
   name: string;
   connectionId: string;
   connectorId: string;
   health: RefConnectionHealthSnapshot;
+  verdict: RefRenderedVerdict;
 }): FailureCard {
-  const summary = deriveFailureSummary(input.health);
+  const summary = deriveFailureSummary(input.health, input.verdict);
   if (!summary) {
     throw new Error(`demo health for ${input.name} did not produce a failure summary`);
   }
@@ -89,6 +147,7 @@ const FIRST_MERIDIAN = demoCard({
   connectionId: "cin_fm_206b11",
   connectorId: "first_meridian",
   health: BLOCKED_HEALTH,
+  verdict: BLOCKED_VERDICT,
   name: "First Meridian — checking",
 });
 
@@ -96,6 +155,7 @@ const CHATGPT = demoCard({
   connectionId: "cin_cg_91a0fe",
   connectorId: "chatgpt",
   health: COOLING_HEALTH,
+  verdict: COOLING_VERDICT,
   name: "ChatGPT — personal",
 });
 
@@ -106,6 +166,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
   groups: [
     {
       activeRunId: null,
+      cadence: "daily",
       connectionId: "cin_nh_e3391c",
       connectorId: "northstar_hr",
       health: "ok",
@@ -114,23 +175,19 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
       lastRunDuration: "18 s",
       lastRunRhythm: OK_RHYTHM,
       name: "Northstar HR",
+      next: "Jun 14 · 06:00Z",
+      nextAt: "2026-06-14T06:00:00Z",
       streams: [
         row({
           browseHref: "/explore?connection=cin_nh_e3391c&stream=pay_statements",
-          cadence: "with payroll",
           collectedThisRun: 2,
           coverageCondition: "complete",
-          next: "Jun 14 · 06:00Z",
-          nextAt: "2026-06-14T06:00:00Z",
           stream: "pay_statements",
         }),
         row({
           browseHref: "/explore?connection=cin_nh_e3391c&stream=employment",
-          cadence: "daily",
           collectedThisRun: 0,
           coverageCondition: "complete",
-          next: "Jun 14 · 06:00Z",
-          nextAt: "2026-06-14T06:00:00Z",
           stream: "employment",
         }),
       ],
@@ -138,6 +195,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     },
     {
       activeRunId: null,
+      cadence: "daily",
       connectionId: "cin_cg_91a0fe",
       connectorId: "chatgpt",
       health: "failing",
@@ -146,14 +204,13 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
       lastRunDuration: "41 s",
       lastRunRhythm: COOLING_RHYTHM,
       name: "ChatGPT — personal",
+      next: "2026-06-13T09:00:00Z",
+      nextAt: "2026-06-13T09:00:00Z",
       streams: [
         row({
           browseHref: "/explore?connection=cin_cg_91a0fe&stream=conversations",
-          cadence: "daily",
           collectedThisRun: 34,
           coverageCondition: "partial",
-          next: "2026-06-13T09:00:00Z",
-          nextAt: "2026-06-13T09:00:00Z",
           stream: "conversations",
         }),
       ],
@@ -161,6 +218,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     },
     {
       activeRunId: null,
+      cadence: "daily",
       connectionId: "cin_fm_206b11",
       connectorId: "first_meridian",
       health: "failing",
@@ -169,19 +227,17 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
       lastRunDuration: "2 s",
       lastRunRhythm: FAIL_RHYTHM,
       name: "First Meridian — checking",
+      next: "held",
+      nextAt: null,
       streams: [
         row({
           browseHref: "/explore?connection=cin_fm_206b11&stream=transactions",
-          cadence: "daily",
           failed: true,
-          next: "held",
           stream: "transactions",
         }),
         row({
           browseHref: "/explore?connection=cin_fm_206b11&stream=balances",
-          cadence: "daily",
           failed: true,
-          next: "held",
           stream: "balances",
         }),
       ],
@@ -189,6 +245,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     },
     {
       activeRunId: null,
+      cadence: "every 15 min",
       connectionId: "cin_gm_410c2b",
       connectorId: "gmail",
       health: "ok",
@@ -197,14 +254,13 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
       lastRunDuration: "6 s",
       lastRunRhythm: OK_RHYTHM,
       name: "Gmail — personal",
+      next: "2026-06-13T05:45:00Z",
+      nextAt: "2026-06-13T05:45:00Z",
       streams: [
         row({
           browseHref: "/explore?connection=cin_gm_410c2b&stream=messages",
-          cadence: "every 15 min",
           collectedThisRun: 38,
           coverageCondition: "complete",
-          next: "2026-06-13T05:45:00Z",
-          nextAt: "2026-06-13T05:45:00Z",
           stream: "messages",
         }),
       ],
@@ -212,6 +268,60 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     },
   ],
   pendingSetupCards: [],
+  recentSyncs: [
+    {
+      at: "2026-06-13T06:00:18Z",
+      connectionId: "cin_nh_e3391c",
+      connectionName: "Northstar HR",
+      connectorId: "northstar_hr",
+      duration: "18 s",
+      eventCount: 2,
+      href: "/syncs/run_nh_88c1",
+      live: false,
+      outcome: "ok",
+      runId: "run_nh_88c1",
+      status: "succeeded",
+    },
+    {
+      at: "2026-06-13T05:00:06Z",
+      connectionId: "cin_gm_410c2b",
+      connectionName: "Gmail — personal",
+      connectorId: "gmail",
+      duration: "6 s",
+      eventCount: 38,
+      href: "/syncs/run_gm_41f0",
+      live: false,
+      outcome: "ok",
+      runId: "run_gm_41f0",
+      status: "succeeded",
+    },
+    {
+      at: "2026-06-13T04:10:41Z",
+      connectionId: "cin_cg_91a0fe",
+      connectionName: "ChatGPT — personal",
+      connectorId: "chatgpt",
+      duration: "41 s",
+      eventCount: 34,
+      href: "/syncs/run_cg_7b20",
+      live: false,
+      outcome: "partial",
+      runId: "run_cg_7b20",
+      status: "succeeded_with_gaps",
+    },
+    {
+      at: "2026-06-11T05:00:02Z",
+      connectionId: "cin_fm_206b11",
+      connectionName: "First Meridian — checking",
+      connectorId: "first_meridian",
+      duration: "2 s",
+      eventCount: 0,
+      href: "/syncs/run_fm_1d94",
+      live: false,
+      outcome: "failed",
+      runId: "run_fm_1d94",
+      status: "failed",
+    },
+  ],
   totalGroupCount: 4,
   totalReviewCardCount: 2,
   totalStreamCount: 6,

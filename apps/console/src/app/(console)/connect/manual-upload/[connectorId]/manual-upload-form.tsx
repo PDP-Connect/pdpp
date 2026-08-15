@@ -4,7 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { IcButton } from "@pdpp/brand-react";
-import { type FormEvent, useState } from "react";
+import { type SyntheticEvent, useState } from "react";
+import { connectionNameFieldContract } from "../../../lib/source-setup-form-contract.ts";
 
 interface ManualUploadSetupForForm {
   accepted_file_extensions: string[];
@@ -336,7 +337,13 @@ function sendRawFile<T>(
   file: File,
   options: {
     connectionId?: string | null;
-    contentType?: string;
+    /** Required, not defaulted: the RS's streaming-only manual-upload routes
+     *  gate on this exact content type, and a silent
+     *  "application/octet-stream" fallback here previously fell through to
+     *  the wildcard whole-buffer parser undetected (final-redteam-0810 #2,
+     *  the Preview button specifically). A missing value must fail to
+     *  compile, not silently downgrade every future caller to that path. */
+    contentType: string;
     displayName?: string | null;
     onProgress: (percent: number | null) => void;
   }
@@ -354,7 +361,7 @@ function sendRawFile<T>(
     xhr.open("POST", url.toString());
     xhr.withCredentials = true;
     xhr.setRequestHeader("Accept", "application/json");
-    xhr.setRequestHeader("Content-Type", options.contentType ?? "application/octet-stream");
+    xhr.setRequestHeader("Content-Type", options.contentType);
     xhr.upload.onprogress = (event) => {
       options.onProgress(event.lengthComputable ? Math.round((event.loaded / event.total) * 100) : null);
     };
@@ -433,8 +440,9 @@ async function pollArtifactStatus(
 
 async function startImportRun(connectionId: string): Promise<{ run_id?: string | null }> {
   const res = await fetch(`/_ref/connections/${encodeURIComponent(connectionId)}/run`, {
+    body: JSON.stringify({ run_admission: "setup" }),
     credentials: "same-origin",
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   const text = await res.text();
@@ -461,7 +469,7 @@ interface PreparedSubmission {
   target: UploadTarget;
 }
 
-function submitIntent(event: FormEvent<HTMLFormElement>): PreparedSubmission["intent"] {
+function submitIntent(event: SyntheticEvent<HTMLFormElement>): PreparedSubmission["intent"] {
   const { submitter } = event.nativeEvent as SubmitEvent;
   return submitter instanceof HTMLButtonElement && submitter.value === "preview" ? "preview" : "import";
 }
@@ -480,7 +488,7 @@ function selectedFilesError(files: File[], setup: ManualUploadSetupForForm): str
 }
 
 function prepareSubmission(
-  event: FormEvent<HTMLFormElement>,
+  event: SyntheticEvent<HTMLFormElement>,
   setup: ManualUploadSetupForForm
 ): { error: string } | PreparedSubmission {
   const form = event.currentTarget;
@@ -533,6 +541,7 @@ async function previewManualUpload(
     file,
     {
       connectionId: target.connectionId,
+      contentType: "application/vnd.pdpp.manual-upload",
       displayName: target.displayName,
       onProgress: (percent) =>
         setState(uploadProgress(file, { currentFile: 1, percent, phase: "uploading", totalFiles: 1 })),
@@ -647,8 +656,9 @@ export function ManualUploadForm({
   const acceptLabel = accepted.length > 0 ? accepted.join(", ") : "supported export file";
   const acceptAttribute = [...setup.accepted_file_names, ...setup.accepted_file_extensions].join(",");
   const hasValidator = setup.validation_expectations.length > 0;
+  const connectionName = connectionNameFieldContract(setup.display_name);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) {
       return;
@@ -684,8 +694,7 @@ export function ManualUploadForm({
         </div>
       ) : (
         <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-          Choose whether this file starts a new source or belongs with one you already created. PDPP can suggest a label
-          from the file, but the choice stays yours.
+          Choose whether this file starts a new source or belongs with one you already created.
         </div>
       )}
       {targetConnectionId ? null : (
@@ -724,17 +733,16 @@ export function ManualUploadForm({
       )}
       {targetConnectionId ? null : (
         <label className="grid gap-1" htmlFor="manual-upload-display-name">
-          <span className="pdpp-eyebrow">New source label</span>
+          <span className="pdpp-eyebrow">{connectionName.label}</span>
           <input
             className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             id="manual-upload-display-name"
-            name="display_name"
-            placeholder={`Leave blank to use the ${setup.display_name} label PDPP detects`}
+            maxLength={connectionName.maxLength}
+            name={connectionName.name}
+            placeholder={connectionName.placeholder}
             type="text"
           />
-          <span className="pdpp-caption text-muted-foreground">
-            Used only when creating a new source. You can rename the source later.
-          </span>
+          <span className="pdpp-caption text-muted-foreground">{connectionName.helpText}</span>
         </label>
       )}
       <label className="grid gap-1" htmlFor="manual-upload-file">
@@ -760,7 +768,7 @@ export function ManualUploadForm({
                 rel="noreferrer"
                 target="_blank"
               >
-                Export instructions
+                Export instructions in a new tab
               </a>
             </>
           ) : null}
@@ -769,8 +777,8 @@ export function ManualUploadForm({
       </label>
       {hasValidator ? (
         <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-          PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. If a file does not
-          pass, nothing from that file is imported.
+          PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. Only files that pass
+          are imported.
         </div>
       ) : null}
       {state.ok === false && state.message ? (

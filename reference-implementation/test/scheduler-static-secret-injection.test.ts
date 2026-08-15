@@ -598,7 +598,7 @@ test("scheduled runs inject store credentials env-absent for every static-secret
       const { connectorPath, snapshotPath } = writeEnvSnapshotConnector(tmpDir, connectorId, envVarNames);
       const completedRuns: RunRecord[] = [];
       const interactions: EscalationInteraction[] = [];
-      const resolverCalls: { connectorId: string; connectorInstanceId: string }[] = [];
+      const resolverCalls: { connectorId: string; connectorInstanceId: string; ownerSubjectId: string }[] = [];
 
       const scheduler = createScheduler({
         admitRunConnection: (input) =>
@@ -614,6 +614,7 @@ test("scheduled runs inject store credentials env-absent for every static-secret
             connectorPath,
             intervalMs: 60_000,
             manifest: BACKGROUND_SAFE_MANIFEST,
+            ownerSubjectId: "scheduler_static_secret_user",
             ownerToken,
           },
         ],
@@ -651,7 +652,9 @@ test("scheduled runs inject store credentials env-absent for every static-secret
       assert.ok(record, `${connectorId}: a completed run record was captured`);
       assert.equal(record.status, "succeeded", `${connectorId}: scheduled run must succeed from the store row`);
       assert.deepEqual(interactions, [], `${connectorId}: no credentials_required interaction may surface`);
-      assert.deepEqual(resolverCalls, [{ connectorId, connectorInstanceId }]);
+      assert.deepEqual(resolverCalls, [
+        { connectorId, connectorInstanceId, ownerSubjectId: "scheduler_static_secret_user" },
+      ]);
 
       const childEnv = JSON.parse(readFileSync(snapshotPath, "utf8"));
       assert.deepEqual(
@@ -1263,6 +1266,7 @@ test("a store row suppresses credentials_required on the scheduled path (and its
             connectorPath,
             intervalMs: 60_000,
             manifest: BACKGROUND_SAFE_MANIFEST,
+            ownerSubjectId: "scheduler_creds_required_user",
             ownerToken,
           },
         ],
@@ -1326,6 +1330,12 @@ test("scheduled launch defers for owner repair when source-scoped credential is 
   const completedRuns: RunRecord[] = [];
 
   const scheduler = createScheduler({
+    admitRunConnection: (input) =>
+      Promise.resolve({
+        connectorId: input.connectorId,
+        connectorInstanceId: input.connectorInstanceId ?? "cin_github_missing",
+        ownerSubjectId: input.ownerSubjectId ?? "owner_local",
+      }),
     connectors: [
       {
         connectorId: "github",
@@ -1333,6 +1343,7 @@ test("scheduled launch defers for owner repair when source-scoped credential is 
         connectorPath,
         intervalMs: 60_000,
         manifest: BACKGROUND_SAFE_MANIFEST,
+        ownerSubjectId: "owner_local",
         ownerToken: "owner-token",
       },
     ],

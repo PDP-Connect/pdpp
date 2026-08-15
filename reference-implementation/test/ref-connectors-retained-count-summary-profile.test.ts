@@ -137,7 +137,7 @@ function withBothBackends(name: string, fn: () => Promise<void>): void {
 
 async function seedConnector(connectorId: string, streams: readonly string[] = ["messages"]): Promise<void> {
   const manifest = {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: `Retained Count Test ${connectorId}`,
     protocol_version: "0.1.0",
@@ -223,6 +223,34 @@ async function seedRecord(options: {
     .run(options.connectorId, options.connectorInstanceId, options.stream, options.key, "{}", options.emittedAt);
 }
 
+/**
+ * Seed a stream that was canonically OBSERVED and is now empty — the only
+ * shape that proves an exact zero. A `version_counter` entry is what records
+ * the observation (ingest allocates one); without it an empty stream is
+ * merely `unobserved`, not a proven zero. See
+ * `connector-summary-count-state-proof.test.ts`.
+ */
+async function seedObservedEmptyStream(options: {
+  connectorId: string;
+  connectorInstanceId: string;
+  stream: string;
+}): Promise<void> {
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES($1, $2, $3, 1)`,
+      [options.connectorId, options.connectorInstanceId, options.stream]
+    );
+    return;
+  }
+  getDb()
+    .prepare(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES (?, ?, ?, 1)`
+    )
+    .run(options.connectorId, options.connectorInstanceId, options.stream);
+}
+
 async function seedAcquisitionBatch(options: {
   connectorId: string;
   connectorInstanceId: string;
@@ -297,6 +325,13 @@ withBothBackends("retained_count_summary profile: unobserved (no evidence row ye
 withBothBackends("retained_count_summary profile: known_zero when evidence exists but has no records", async () => {
   await seedConnector(CONNECTOR_A);
   await seedInstance({ connectorId: CONNECTOR_A, connectorInstanceId: "cin_rcs_zero", displayName: "Zero" });
+  // The stream was observed and holds no records — a PROVEN zero, as
+  // distinct from the never-observed connection the test above covers.
+  await seedObservedEmptyStream({
+    connectorId: CONNECTOR_A,
+    connectorInstanceId: "cin_rcs_zero",
+    stream: "messages",
+  });
   await reconcileConnectorSummaryEvidence(null);
 
   const row = await getConnectorSummaryForRoute("cin_rcs_zero", null, { profile: "retained_count_summary" });

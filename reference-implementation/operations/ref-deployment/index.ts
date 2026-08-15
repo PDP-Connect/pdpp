@@ -57,7 +57,7 @@ export interface RefDeploymentEnvEntry {
  * have produced a value of this shape.
  */
 export interface RefDeploymentReport {
-  readonly database: { readonly path: string };
+  readonly database: { readonly backend: "postgres" | "sqlite" | "unknown"; readonly path: string };
   readonly environment: readonly RefDeploymentEnvEntry[];
   readonly lexical: Readonly<Record<string, unknown>>;
   readonly manifests: readonly Readonly<Record<string, unknown>>[];

@@ -29,7 +29,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-
 import { buildAgentVersion } from "./collector-build-info.ts";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import {
@@ -91,8 +90,29 @@ const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
 const SCAN_BATCH_LIMIT_DETAIL_RE =
   /enqueued\s+\d+\s+batches\s+>=\s+(?:run batch limit|(?:maxEnqueuedBatchesPerRun|\[REDACTED\]))\s+(\d+)/;
 const CONNECTOR_PROTOCOL_DEBUG_DIR_ENV = "PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR";
+/**
+ * Matches the REDACTED, PERSISTED `last_error` text a dead-letter row was
+ * already written with — the only place this regex may still be used. Once a
+ * row is dead-lettered, `failOutboxItem`'s sanitized message string is all
+ * that survives in SQLite; there is no structured status/code left to
+ * inspect, so `requeueTransientLocalDeviceDeadLetters` (the next-run
+ * self-heal path, driven by {@link LocalDeviceOutbox.requeueDeadLetters})
+ * has no choice but to pattern-match the legacy persisted prose. A LIVE
+ * failure (still holding its original `Error` instance) must classify via
+ * {@link classifyLocalDeviceFailure} instead — see the note there for why
+ * prose-matching a live error is the wrong layer.
+ */
 const TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE =
   /^(?:local device request failed: (?:408|429|5\d\d)(?:\b|$)|local device request timed out after\b|fetch failed\b|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)/i;
+
+/**
+ * Transport-level error codes that indicate the request never reached (or
+ * never got a response from) the server — the same vocabulary
+ * `describeThrownTransportError` (`http-retry.ts`) documents: Node's
+ * `fetch` reports every connect/DNS/reset/timeout fault as a contentless
+ * `TypeError: fetch failed` and puts the real fault on `.cause.code`.
+ * Structured, not prose — matched against `.code`, never `.message`.
+ */
 const TRANSIENT_NETWORK_ERROR_CODES = new Set([
   "ECONNREFUSED",
   "ECONNRESET",
@@ -105,6 +125,28 @@ const TRANSIENT_NETWORK_ERROR_CODES = new Set([
   "UND_ERR_SOCKET",
 ]);
 
+/**
+ * Classify a LIVE (still-thrown) local-device failure as explicit-transient
+ * using structured fields only — never the error's message text.
+ *
+ * `failOutboxItem` previously ran `TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE`
+ * against the same sanitized message it was about to persist. That is
+ * brittle in both directions: (1) a connector or proxy that folds an
+ * unrelated string containing "503" or "ETIMEDOUT" into an error message
+ * would be misclassified as transient even though nothing structured says
+ * so, and (2) `LocalDeviceHttpError` already carries a typed `status`
+ * (`408`/`429`/`5xx`) and `LocalDeviceRequestTimeoutError` is its own typed
+ * class — re-deriving that from prose throws away information the error
+ * object already has. This function reads only typed fields:
+ * `LocalDeviceHttpError.status`, `LocalDeviceRequestTimeoutError`'s type
+ * itself, and a bounded walk of `.cause.code` for network-transport faults
+ * (mirroring `describeThrownTransportError`'s walk). It does NOT match on
+ * `error.message`/`error.code` string content and does NOT broaden to any
+ * error type outside these three structured shapes — an unrecognized error
+ * (including a network error whose `.cause` lacks a known `.code`) is
+ * classified non-transient, so it still exhausts `maxAttempts` and
+ * dead-letters rather than retrying forever.
+ */
 function classifyLocalDeviceFailure(error: unknown): boolean {
   if (error instanceof LocalDeviceHttpError) {
     return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status < 600);
@@ -140,7 +182,16 @@ function classifyLocalDeviceFailure(error: unknown): boolean {
  *   from monopolizing a runner invocation.
  * - `retryBackoffMs`: bounded backoff base; per-attempt grows linearly.
  * - `maxAttempts`: after this many failed attempts, the row dead-letters
- *   so it stops occupying drain bandwidth.
+ *   so it stops occupying drain bandwidth. Does not apply to an error the
+ *   server explicitly marked retryable (see `maxRetryAfterMs`) — those stay
+ *   durably `ready`/backed-off instead of consuming this terminal budget,
+ *   because the server already told the client authoritatively to retry.
+ * - `maxRetryAfterMs`: ceiling on how long a single explicit-retryable
+ *   failure (`device_ingest_retryable`/408/429/5xx/timeout — see
+ *   `TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE`) is allowed to back off
+ *   before the next attempt, honoring the server's `Retry-After` up to this
+ *   bound. Keeps a large or malicious `Retry-After` from stalling the row
+ *   past one drain's `maxDrainDurationMs` budget indefinitely.
  * - `maxQueueDepth`: ceiling on pending-or-retrying outbox depth per
  *   source instance. When pending work crosses this ceiling the runner
  *   skips spawning a new connector child and surfaces an honest
@@ -160,6 +211,7 @@ export interface CollectorOutboxPolicy {
   maxDrainIterations: number;
   maxEnqueuedBatchesPerRun: number;
   maxQueueDepth: number;
+  maxRetryAfterMs: number;
   retryBackoffMs: number;
 }
 
@@ -171,6 +223,7 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy> = 
   maxDrainIterations: 256,
   maxEnqueuedBatchesPerRun: 10_000,
   maxQueueDepth: 10_000,
+  maxRetryAfterMs: 60_000,
   retryBackoffMs: 30_000,
 });
 
@@ -450,15 +503,73 @@ const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 export interface CollectorEnrollmentConfig {
   baseUrl: string;
   code: string;
+  /**
+   * Narrowing-only scope request forwarded verbatim to the enroll route.
+   * `undefined` sends no `collection_scope` field ("no preference"); an
+   * explicit `null` requests a full pass. See `EnrollmentExchangeRequest`.
+   */
+  collectionScope?: { since?: string; source_roots?: string[] } | null;
   deviceLabel?: string;
 }
 
 export async function enrollCollector(config: CollectorEnrollmentConfig): Promise<EnrollmentExchangeResponse> {
   const client = new LocalDeviceClient({ baseUrl: config.baseUrl });
   return await client.exchangeEnrollment({
+    ...(config.collectionScope === undefined ? {} : { collection_scope: config.collectionScope }),
     enrollment_code: config.code,
     ...(config.deviceLabel ? { deviceLabel: config.deviceLabel } : {}),
   });
+}
+
+/**
+ * An owner-declared collection boundary, as the collector sees it.
+ *
+ * Structurally mirrors `@pdpp/reference-contract`'s `CollectionScope` (which
+ * owns the normalization/fingerprint/proof-validity rules the RI and
+ * conformance tooling share). It is restated here rather than imported because
+ * the published collector bundle deliberately carries no dependency on the
+ * reference contract — the same reason connectors restate other wire shapes.
+ * The server is the authority for what a scope MEANS; the collector's job is to
+ * receive it and stay inside it.
+ */
+export interface CollectionScope {
+  readonly since?: string | null;
+  readonly source_roots?: readonly string[] | null;
+}
+
+/**
+ * Reserved `connector_state` key carrying the connection's owner-declared
+ * boundary down to the collector on the existing state read.
+ *
+ * `$`-prefixed so it can never collide with a manifest stream name. It is NOT a
+ * stream cursor and must be stripped before `START.state` is built, or the
+ * connector would receive it as one.
+ */
+export const COLLECTION_SCOPE_STATE_KEY = "$collection_scope";
+
+/**
+ * Extract the server-declared boundary from the prior-state projection.
+ *
+ * The scope is delivered on the SAME read that already fetches stream cursors,
+ * so a scoped run needs no extra round-trip and no new endpoint. A connection
+ * that declared nothing yields `null` — an honest full pass.
+ */
+export function readCollectionScopeFromState(
+  priorState: Readonly<Record<string, unknown>> | null | undefined
+): CollectionScope | null {
+  const entry = priorState?.[COLLECTION_SCOPE_STATE_KEY];
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return null;
+  }
+  const { scope } = entry as { scope?: unknown };
+  if (typeof scope !== "object" || scope === null || Array.isArray(scope)) {
+    return null;
+  }
+  const { since, source_roots } = scope as CollectionScope;
+  return {
+    ...(typeof since === "string" ? { since } : {}),
+    ...(Array.isArray(source_roots) ? { source_roots: [...source_roots] } : {}),
+  };
 }
 
 export interface CollectorConnectorSpec extends ConnectorPlacementInput {
@@ -467,14 +578,37 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
   readonly command: string;
   /** Stable connector id used for ingest envelopes. */
   readonly connector_id: string;
+  /**
+   * Whether the connector declared it ENFORCES path roots at enumeration time.
+   * Gates whether a roots boundary may be reported as `scoped` coverage; a
+   * connector that has not implemented root pruning gets its roots scope
+   * declassified rather than falsely claimed.
+   */
+  readonly enforcesSourceRoots?: boolean;
   /** Optional extra env passed to the connector child process. */
   readonly env?: NodeJS.ProcessEnv;
   /** Optional stream resources for scoped connector runs. */
   readonly resources?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * The owner-declared collection boundary this run must stay inside, as
+   * resolved from the durable per-connection scope. `null`/absent is a full
+   * pass — itself a declared boundary, recorded as `unscoped` on the evidence.
+   */
+  readonly scope?: CollectionScope | null;
+  /** Streams whose enumeration honors source roots. */
+  readonly sourceRootScopableStreams?: readonly string[];
   /** Streams the collector should request from the connector. */
   readonly streams: readonly string[];
   /** Optional explicit stream backfills requested from the connector. */
   readonly streamsToBackfill?: readonly string[];
+  /**
+   * Streams the connector declared a `since` can be PROVEN against (mirrors the
+   * manifest's `consent_time_field`; see `LocalCollectorDefinition`). Streams
+   * outside this set remain in the requested inventory and are collected whole
+   * under a scoped run rather than being narrowed against a field they do not
+   * have.
+   */
+  readonly timeScopableStreams?: readonly string[];
 }
 
 export interface CollectorRunConfig {
@@ -512,6 +646,16 @@ export interface CollectorRunConfig {
   connector: CollectorConnectorSpec;
   deviceId: string;
   deviceToken: string;
+  /**
+   * Optional observer invoked for every protocol message the connector
+   * child emits (RECORD, STATE, PROGRESS, DONE, etc.), in emission order,
+   * before the message is applied to the durable outbox. Purely a
+   * read-only tap for live progress reporting (e.g. the CLI's terminal
+   * output) — it MUST NOT be relied on for correctness, is never awaited,
+   * and any error it throws is swallowed so a reporting bug cannot break
+   * the run.
+   */
+  onMessage?: (message: EmittedMessage) => void;
   /**
    * Path to the durable SQLite outbox. The legacy `queuePath` field is
    * accepted as a fallback when this is omitted so existing call sites
@@ -790,10 +934,19 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     startingHeartbeatSent = true;
 
     scanStarted = true;
+    // The SERVER is the authority on the declared boundary: it is persisted with
+    // the connection and delivered on the state read, so it cannot be widened by
+    // a local flag or lost when the CLI process goes away. A caller-supplied
+    // scope only applies when the connection declared none.
+    const declaredScope = readCollectionScopeFromState(priorState) ?? config.connector.scope ?? null;
+    const scopedConfig: CollectorRunConfig = {
+      ...config,
+      connector: { ...config.connector, scope: declaredScope },
+    };
     const streamResult = await streamConnectorIntoOutbox({
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
       batchSize: config.batchSize ?? 100,
-      config,
+      config: scopedConfig,
       outbox,
       policy,
       priorState,
@@ -815,12 +968,20 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     });
 
     const afterRecordsSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    const scopedTimeRanges = resolveScopedStreamTimeRanges(declaredScope, config.connector.timeScopableStreams);
+    const scopedRoots = resolveScopedSourceRoots(declaredScope);
     const terminalFacts =
       done?.status === "succeeded" &&
       !streamResult.scanBudgetExceeded &&
       streamResult.coverageByStore &&
       Object.hasOwn(bufferedState, COVERAGE_DIAGNOSTICS_STREAM)
-        ? buildTerminalCollectionFacts(streamResult.coverageByStore)
+        ? buildTerminalCollectionFacts(
+            streamResult.coverageByStore,
+            scopedTimeRanges,
+            scopedRoots,
+            config.connector.enforcesSourceRoots === true,
+            config.connector.sourceRootScopableStreams
+          )
         : null;
     const checkpointResult = await maybeCommitCheckpoint({
       afterRecordsSummary,
@@ -831,7 +992,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       outbox,
       policy,
       terminalFacts,
-      terminalRunBoundary: "unscoped",
+      terminalRunBoundary: collectorScopeFingerprint(declaredScope),
       terminalRunConnectorInstanceId: priorStateProjection.connectorInstanceId,
     });
 
@@ -1195,7 +1356,11 @@ export function summarizeCollectorCompleteness(
  * whether an observed absence is accepted; the runner must not invent policy.
  */
 export function buildTerminalCollectionFacts(
-  coverageByStore: ReadonlyMap<string, { status: CollectorCoverageStatus; stream: string | null }>
+  coverageByStore: ReadonlyMap<string, { status: CollectorCoverageStatus; stream: string | null }>,
+  timeRanges: CollectorStreamTimeRanges = {},
+  sourceRoots: readonly string[] = [],
+  enforcesSourceRoots = false,
+  sourceRootScopableStreams: readonly string[] = []
 ): readonly TerminalCollectionFact[] {
   const statusesByStream = new Map<string, CollectorCoverageStatus[]>();
   for (const entry of coverageByStore.values()) {
@@ -1206,9 +1371,27 @@ export function buildTerminalCollectionFacts(
     statuses.push(entry.status);
     statusesByStream.set(entry.stream, statuses);
   }
+  // Path roots bound enumeration for every stream — but ONLY when the connector
+  // positively declared it enforces them. Supplying roots to a connector that
+  // never implemented root pruning would otherwise mark every stream `scoped`
+  // while the run walked the whole corpus: a fabricated watermark. For such a
+  // connector the roots boundary is declassified here (data still collected, no
+  // stream claims the bound) rather than silently honoured.
+  const rootsBounded = sourceRoots.length > 0 && enforcesSourceRoots;
+  const rootScopedStreams = new Set(sourceRootScopableStreams);
+  const scopedRun = rootsBounded || Object.keys(timeRanges).length > 0;
   return [...statusesByStream.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([stream, statuses]) => ({ stream, coverage_statuses: [...statuses].sort() }));
+    .map(([stream, statuses]) => ({
+      stream,
+      coverage_statuses: [...statuses].sort(),
+      // Only meaningful on a scoped run. `false` is the honest marker for a
+      // stream the bound could not be enforced on: it was collected whole, so
+      // its coverage must never be read as proving the declared boundary.
+      ...(scopedRun
+        ? { scoped: Object.hasOwn(timeRanges, stream) || (rootsBounded && rootScopedStreams.has(stream)) }
+        : {}),
+    }));
 }
 
 /**
@@ -1321,7 +1504,20 @@ async function streamConnectorIntoOutbox(
     coverageByStore.set(entry.store, { status: entry.status, stream: entry.stream });
   };
 
+  const notifyOnMessage = (message: EmittedMessage): void => {
+    if (!input.config.onMessage) {
+      return;
+    }
+    try {
+      input.config.onMessage(message);
+    } catch {
+      // The observer is a read-only reporting tap (e.g. CLI progress
+      // output); a bug in it must never break the run.
+    }
+  };
+
   const handleMessage = (message: EmittedMessage): void => {
+    notifyOnMessage(message);
     if (done !== null) {
       throw new Error(`${input.config.connector.connector_id} emitted ${message.type} after terminal DONE`);
     }
@@ -1408,7 +1604,14 @@ async function streamConnectorIntoOutbox(
         input.config.connector.streams,
         input.config.connector.streamsToBackfill,
         input.priorState,
-        input.config.connector.resources
+        input.config.connector.resources,
+        resolveScopedStreamTimeRanges(input.config.connector.scope, input.config.connector.timeScopableStreams),
+        // Roots only reach the connector when it declared it enforces them, so
+        // an unsupported connector cannot silently receive a boundary it will
+        // ignore while the run still looks bounded.
+        input.config.connector.enforcesSourceRoots === true
+          ? resolveScopedSourceRoots(input.config.connector.scope)
+          : []
       )
     )}\n`
   );
@@ -1766,17 +1969,116 @@ async function safeHeartbeat(
   }
 }
 
+/**
+ * Per-stream time bounds for a scoped run, keyed by stream name.
+ *
+ * The runner does not decide which streams a bound applies to — that is the
+ * connector's declared `time_scopable_streams`, mirrored from its manifest's
+ * `consent_time_field`. The runner's job is transport: put the declared bound
+ * on exactly those streams, so the connector runtime's existing generic
+ * emission gate (`connector-runtime.ts`) enforces it without any connector
+ * knowledge here.
+ */
+export type CollectorStreamTimeRanges = Readonly<Record<string, { readonly since: string }>>;
+
+/**
+ * Stable identity for a declared boundary, stamped onto terminal evidence.
+ *
+ * MUST stay byte-identical to `@pdpp/reference-contract`'s
+ * `collectionScopeFingerprint` — the server compares the two to decide whether
+ * stored proof still describes the currently-declared scope, so any drift would
+ * silently invalidate valid proof (or, worse, validate stale proof). A
+ * cross-implementation test pins them together.
+ *
+ * `unscoped` is a real value: a full pass is a declared boundary too, so
+ * introducing a bound over one is detectable as a change.
+ */
+export function collectorScopeFingerprint(scope: CollectionScope | null | undefined): string {
+  const since = typeof scope?.since === "string" ? scope.since.trim() : "";
+  const validSince = since && !Number.isNaN(Date.parse(since)) ? since : "";
+  const roots = Array.isArray(scope?.source_roots)
+    ? [
+        ...new Set(scope.source_roots.filter((root) => typeof root === "string" && root.trim()).map((r) => r.trim())),
+      ].sort()
+    : [];
+  const parts: string[] = [];
+  if (validSince) {
+    parts.push(`since=${validSince}`);
+  }
+  if (roots.length > 0) {
+    parts.push(`roots=${roots.join(",")}`);
+  }
+  return parts.length > 0 ? parts.join(";") : "unscoped";
+}
+
+/**
+ * Resolve an owner-declared boundary into the per-stream bounds a START may
+ * carry, given what the connector declared it can prove a bound against.
+ *
+ * The asymmetry is the honesty rule, not an oversight: a `since` lands ONLY on
+ * streams in `timeScopableStreams`. Putting one on a stream with no time field
+ * would hand the runtime's emission gate a field the record does not have — the
+ * bound would match everything while the run reported itself as scoped, which
+ * is a fabricated boundary. Such streams are collected whole and reported as
+ * out-of-scope instead.
+ */
+export function resolveScopedStreamTimeRanges(
+  scope: CollectionScope | null | undefined,
+  timeScopableStreams: readonly string[] = []
+): CollectorStreamTimeRanges {
+  const since = typeof scope?.since === "string" ? scope.since.trim() : "";
+  if (!since || Number.isNaN(Date.parse(since))) {
+    return {};
+  }
+  const ranges: Record<string, { since: string }> = {};
+  for (const stream of timeScopableStreams) {
+    ranges[stream] = { since };
+  }
+  return Object.freeze(ranges);
+}
+
+/**
+ * Resolve the owner-declared path roots a run must stay inside.
+ *
+ * Unlike a time bound, roots apply to every stream a connector enumerates:
+ * membership is decidable from the path itself, so no manifest time field is
+ * needed to prove it. Empty means no path narrowing.
+ */
+export function resolveScopedSourceRoots(scope: CollectionScope | null | undefined): readonly string[] {
+  if (!Array.isArray(scope?.source_roots)) {
+    return [];
+  }
+  return [
+    ...new Set(scope.source_roots.filter((root) => typeof root === "string" && root.trim()).map((r) => r.trim())),
+  ].sort();
+}
+
 export function buildCollectorStartMessage(
   streams: readonly string[],
   streamsToBackfill: readonly string[] = [],
   priorState?: Readonly<Record<string, unknown>> | null,
-  resources: Readonly<Record<string, readonly string[]>> = {}
+  resources: Readonly<Record<string, readonly string[]>> = {},
+  timeRanges: CollectorStreamTimeRanges = {},
+  sourceRoots: readonly string[] = []
 ): StartMessage {
   const start: StartMessage = {
     scope: {
       streams: streams.map((name): StreamScope => {
         const streamResources = resources[name]?.filter((value) => typeof value === "string" && value.length > 0);
-        return streamResources && streamResources.length > 0 ? { name, resources: streamResources } : { name };
+        const timeRange = timeRanges[name];
+        return {
+          name,
+          ...(streamResources && streamResources.length > 0 ? { resources: streamResources } : {}),
+          // Only streams the caller proved scopable carry a bound. A stream
+          // absent from `timeRanges` is collected whole rather than silently
+          // narrowed against a field it does not have.
+          ...(timeRange ? { time_range: { since: timeRange.since } } : {}),
+          // Path roots ride on EVERY stream, unlike a time bound: root
+          // membership is a decidable property of the path, so it needs no
+          // per-stream `consent_time_field` to be provable. This is what lets a
+          // connector prune subtrees before it opens anything.
+          ...(sourceRoots.length > 0 ? { source_roots: [...sourceRoots] } : {}),
+        };
       }),
     },
     type: "START",
@@ -1785,7 +2087,13 @@ export function buildCollectorStartMessage(
     start.streamsToBackfill = [...streamsToBackfill];
   }
   if (priorState && Object.keys(priorState).length > 0) {
-    start.state = { ...priorState };
+    // The reserved scope entry rides on the same state read as the cursors but
+    // is not one: handing it to the connector would present a policy envelope
+    // as a stream checkpoint.
+    const { [COLLECTION_SCOPE_STATE_KEY]: _scope, ...cursors } = priorState;
+    if (Object.keys(cursors).length > 0) {
+      start.state = cursors;
+    }
   }
   return start;
 }
@@ -2031,13 +2339,25 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
   const startedAt = Date.now();
   for (let i = 0; i < input.policy.maxDrainIterations; i += 1) {
     throwIfAborted(input.abortSignal);
-    if (Date.now() - startedAt >= input.policy.maxDrainDurationMs) {
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= input.policy.maxDrainDurationMs) {
       result.durationBudgetExceeded = true;
       return result;
     }
     const claimed = claimReadyOutboxItems(input);
     if (claimed.length === 0) {
-      return result;
+      const outcome = resolveEmptyClaimOutcome(input, elapsedMs);
+      if (outcome.kind === "exit") {
+        return result;
+      }
+      if (outcome.kind === "budget_exceeded") {
+        result.durationBudgetExceeded = true;
+        return result;
+      }
+      if (outcome.kind === "wait") {
+        await waitMs_(outcome.waitMs, input.abortSignal);
+      }
+      continue;
     }
     result.iterations += 1;
     for (const item of claimed) {
@@ -2045,6 +2365,82 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
     }
   }
   return result;
+}
+
+type EmptyClaimOutcome =
+  | { kind: "budget_exceeded" }
+  | { kind: "exit" }
+  | { kind: "recheck" }
+  | { kind: "wait"; waitMs: number };
+
+/**
+ * Decide how the drain loop proceeds when no ready row was claimable.
+ *
+ * `nextRetryTime` only reports rows strictly in the future
+ * (`next_attempt_at > now`). A row whose backoff elapsed in the gap
+ * between that clock read and `claimReadyOutboxItems`'s own (earlier)
+ * clock read is neither claimable-yet by that stale read nor "in the
+ * future" by this fresh one, so it falls through both checks.
+ * Re-checking claimability with a fresh clock read before giving up
+ * closes that race instead of abandoning a due row. The recheck uses
+ * the claim path's own gate so a permanently unclaimable head (a
+ * checkpoint held back by a dead-lettered predecessor) still exits
+ * instead of spinning out the iteration budget.
+ */
+function resolveEmptyClaimOutcome(input: DrainCollectorOutboxInput, elapsedMs: number): EmptyClaimOutcome {
+  const nextRetry = input.outbox.nextRetryTime(
+    input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {}
+  );
+  if (!nextRetry) {
+    return claimableReadyOutboxItem(input) ? { kind: "recheck" } : { kind: "exit" };
+  }
+  const nextRetryMs = new Date(nextRetry).getTime();
+  const nowMs = Date.now();
+  if (nextRetryMs <= nowMs) {
+    return { kind: "recheck" };
+  }
+  const waitMs = nextRetryMs - nowMs;
+  const remainingBudgetMs = input.policy.maxDrainDurationMs - elapsedMs;
+  if (waitMs >= remainingBudgetMs) {
+    return { kind: "budget_exceeded" };
+  }
+  return { kind: "wait", waitMs };
+}
+
+function waitMs_(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    let finished = false;
+    let timer: NodeJS.Timeout | undefined;
+    const cleanup = () => {
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    };
+    const onAbort = () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cleanup();
+      reject(signal?.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
+    };
+    timer = setTimeout(() => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function claimReadyOutboxItems(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem[] {
@@ -2069,6 +2465,11 @@ function nextReadyOutboxItem(input: DrainCollectorOutboxInput): LocalDeviceOutbo
   return input.outbox.peekReady(input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {});
 }
 
+/**
+ * The head of the ready queue if this drain may claim it right now:
+ * `null` when nothing is ready, or when the head is a checkpoint held
+ * back by a non-succeeded record_batch/gap predecessor.
+ */
 function claimableReadyOutboxItem(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem | null {
   const nextReady = nextReadyOutboxItem(input);
   if (!nextReady) {
@@ -2152,12 +2553,17 @@ function failOutboxItem(
       result.deadLettered += 1;
       return;
     }
+    const serverRetryAfterMs = error instanceof LocalDeviceHttpError ? error.retryAfterMs : null;
+    const retryBackoffMs =
+      isExplicitTransient && serverRetryAfterMs !== null
+        ? Math.min(serverRetryAfterMs, input.policy.maxRetryAfterMs)
+        : input.policy.retryBackoffMs * (item.attempt_count + 1);
     input.outbox.failRetryable({
       error: message,
       holder: input.holderId,
       id: item.id,
       leaseEpoch: item.lease_epoch,
-      retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
+      retryBackoffMs,
     });
     result.failed += 1;
   } catch (transitionError) {
@@ -2574,6 +2980,7 @@ export function buildHeartbeatOutboxDiagnostics(
     dead_letter: summary.deadLetter,
     leased: summary.leased,
     oldest_pending_at: summary.oldestReadyAt,
+    oldest_retrying_at: summary.oldestRetryingAt,
     pending: summary.ready,
     retrying: summary.retrying,
     stale_leases: summary.staleLeases,

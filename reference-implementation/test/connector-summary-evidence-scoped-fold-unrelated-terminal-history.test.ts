@@ -72,7 +72,7 @@ interface StreamLatestFactsMap {
 }
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: "scoped-fold-target",
   display_name: "Scoped Fold Target",
   protocol_version: "0.1.0",
@@ -81,7 +81,7 @@ const MANIFEST = {
 };
 
 const UNRELATED_MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: "scoped-fold-unrelated",
   display_name: "Scoped Fold Unrelated",
   protocol_version: "0.1.0",
@@ -105,7 +105,7 @@ function withTempDb(fn: () => Promise<void>) {
 }
 
 interface ScopedFoldManifest {
-  capabilities: { public_listing: { listed: boolean; status: string } };
+  capabilities: { public_listing: { tier: string } };
   connector_id: string;
   display_name: string;
   protocol_version: string;

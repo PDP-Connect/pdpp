@@ -215,7 +215,8 @@ async function registerManifest(asUrl: string, manifest: Manifest): Promise<void
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
-  assert.equal(resp.status, 201, `register ${manifest.connector_id}`);
+  const responseBody = await resp.text();
+  assert.equal(resp.status, 201, `register ${manifest.connector_id}: ${responseBody}`);
 }
 
 interface SeedRecord {

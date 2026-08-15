@@ -79,18 +79,70 @@ test("canonicalConnectorKey accepts native bare slugs", () => {
 });
 
 test("canonicalConnectorKey maps legacy snake_case local aliases to canonical hyphenated keys", () => {
-  // Pin the exact alias set so a silent expansion of the legacy table
-  // (which would create new owner-visible aliases) breaks the test.
+  // Pin the exact alias set so a silent expansion of the generated table
+  // (which would create new owner-visible aliases) breaks the test. The set
+  // is generated from LOCAL_COLLECTOR_DEFINITIONS cross-referenced against
+  // each connector's manifest connector_key — see
+  // connector-registry.generated.ts — so it includes one entry per bundled
+  // local-collector connector, identity mappings included.
   assert.deepEqual(legacyLocalAliasMap(), {
+    apple_photos: "apple-photos",
     claude_code: "claude-code",
     codex: "codex",
+    google_messages: "google-messages",
+    google_takeout: "google-takeout",
+    imessage: "imessage",
   });
   assert.equal(canonicalConnectorKey("claude_code"), "claude-code");
   assert.equal(canonicalConnectorKey("codex"), "codex");
+  assert.equal(canonicalConnectorKey("google_takeout"), "google-takeout");
+  assert.equal(canonicalConnectorKey("apple_photos"), "apple-photos");
+  assert.equal(canonicalConnectorKey("google_messages"), "google-messages");
+  assert.equal(canonicalConnectorKey("imessage"), "imessage");
   assert.equal(isLegacyLocalAlias("claude_code"), true);
   assert.equal(isLegacyLocalAlias("codex"), true);
+  assert.equal(isLegacyLocalAlias("google_takeout"), true);
+  assert.equal(isLegacyLocalAlias("apple_photos"), true);
+  assert.equal(isLegacyLocalAlias("google_messages"), true);
+  assert.equal(isLegacyLocalAlias("imessage"), true);
   assert.equal(isLegacyLocalAlias("gmail"), false);
   assert.equal(isLegacyLocalAlias(""), false);
+});
+
+test("bundled local-collector connector ids all resolve to a canonical key the manifest catalog also resolves (alias/canonical equivalence)", async () => {
+  // Discriminator for the enrollment-boundary identity bug this branch fixed:
+  // every id LOCAL_COLLECTOR_DEFINITIONS bundles (what --connector actually
+  // receives, and what the enrollment-codes route's raw connector_id param
+  // carries) must canonicalize to the SAME key the connector's own manifest
+  // declares as connector_key — proving the enrollment boundary and the
+  // manifest catalog agree, not just that each individually parses. A
+  // connector whose bundle id and manifest key differ without an alias here
+  // reproduces the "no registered manifest declares a 'filesystem' or
+  // 'browser' binding" 400 the google_takeout enroll smoke hit.
+  const { LOCAL_COLLECTOR_DEFINITIONS } = await import("../../packages/polyfill-connectors/src/collector-registry.ts");
+  for (const definition of LOCAL_COLLECTOR_DEFINITIONS) {
+    const manifestPath = new URL(
+      `../../packages/polyfill-connectors/manifests/${definition.entry}.json`,
+      import.meta.url
+    );
+    const manifestText = readFileSync(fileURLToPath(manifestPath), "utf8");
+    const manifest = JSON.parse(manifestText) as { connector_key?: string; connector_id?: string };
+    const manifestCanonicalKey = manifest.connector_key ?? canonicalConnectorKey(manifest.connector_id);
+    const bundleIdCanonicalKey = canonicalConnectorKey(definition.connector_id);
+    assert.ok(
+      manifestCanonicalKey,
+      `${definition.connector_id}: manifest must declare a resolvable connector_key/connector_id`
+    );
+    assert.ok(
+      bundleIdCanonicalKey,
+      `${definition.connector_id}: bundle connector_id must canonicalize (add a LEGACY_LOCAL_ALIASES entry if it uses a directory-name id distinct from its manifest's connector_key)`
+    );
+    assert.equal(
+      bundleIdCanonicalKey,
+      manifestCanonicalKey,
+      `${definition.connector_id}: bundled connector_id canonicalizes to '${bundleIdCanonicalKey}' but the manifest's own key is '${manifestCanonicalKey}' — the enrollment boundary and the manifest catalog would disagree`
+    );
+  }
 });
 
 test("canonicalConnectorKey accepts URL-shaped first-party ids", () => {
@@ -256,6 +308,21 @@ function readRegistryBackedManifests(dir: string) {
   }
   return manifests;
 }
+
+test("shipped registry manifests use the canonical .dev origin", () => {
+  for (const dir of [POLYFILL_MANIFESTS_DIR, REFERENCE_MANIFESTS_DIR]) {
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".json")) {
+        continue;
+      }
+      const manifest = JSON.parse(readFileSync(join(dir, name), "utf8")) as { connector_id?: unknown };
+      const connectorId = typeof manifest.connector_id === "string" ? manifest.connector_id.trim() : "";
+      if (connectorId.startsWith("https://registry.pdpp.")) {
+        assert.ok(connectorId.startsWith(REGISTRY_PREFIX), `${name} must use ${REGISTRY_PREFIX}`);
+      }
+    }
+  }
+});
 
 test("registry-backed first-party manifests declare connector_key and manifest_uri", () => {
   for (const dir of [POLYFILL_MANIFESTS_DIR, REFERENCE_MANIFESTS_DIR]) {

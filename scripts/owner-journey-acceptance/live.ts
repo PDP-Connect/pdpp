@@ -18,18 +18,14 @@ import { fetchAllConnectorSummaries } from "../lib/ref-connectors-page-follow.ts
 import { type Finding, lineOf, scanForbiddenStrings } from "./scan.ts";
 import { FORBIDDEN_STRING_RULES } from "./surface-manifest.ts";
 
-const BARIA_HIDDEN_TRUE_PATTERN = /\baria-hidden=(["'])true\1/i;
-const REFRESH_NOW_RUN_PATTERN =
-  /\b(Refresh now|Run a refresh|Recover|Retry|Reconnect|Reauthorize|Review|Set schedule|Sync now)\b/i;
 const BREFRESH_PATTERN = /\brefresh\b/i;
 const BCLIENT_CLI_PATTERN = /\bclient\s+cli_[a-z0-9]+\b/i;
 const BCLIENT_HTTPS_PATTERN = /\bclient\s+https?:\/\/[^\s]+/i;
 const BGRANTS_ARE_WITHIN_THEIR_PATTERN = /\bGrants are within their limits\b/i;
 const BBACKUPS_ARE_PATTERN = /\bbackups are on\b/i;
 const SOURCE_ISSUES_REVIEW_HERE_PATTERN =
-  /No source issues to review here|Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
+  /No source issues to review here|Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing|All assessed sources are healthy\./i;
 const BSTART_SESSION_PATTERN = /\bStart session\b/i;
-const CONNECT_BROWSER_SESSION_AMAZON_PATTERN = /\/connect\/browser-session\/amazon\/start/;
 const BSCHEDULES_PATTERN = /\bSchedules\b/i;
 const BSCHEDULED_CONNECTIONS_BNO_SCHEDULED_PATTERN = /\bScheduled connections\b|\bNo scheduled connections yet\b/i;
 const BSCHEDULED_BUNSCHEDULED_PATTERN = /\bscheduled\b.*\bunscheduled\b/i;
@@ -45,6 +41,31 @@ const FAILURES_OPEN_RUNS_PATTERN = /\b0 failures\s*·\s*Open runs\b/i;
 const BWITH_GAPS_PATTERN = /\bwith gaps\b/i;
 const BPARTIAL_PATTERN = /\bpartial\b/i;
 const TRAILING_SLASHES_PATTERN = /\/+$/;
+const ROOT_PATH_PREFIX_PATTERN = /^\//;
+const HTML_SCRIPT_TAG_PATTERN = /<script\b[^>]*>[\s\S]*?<\/script>/gi;
+const HTML_STYLE_TAG_PATTERN = /<style\b[^>]*>[\s\S]*?<\/style>/gi;
+const HTML_TAG_PATTERN = /<[^>]+>/g;
+const HTML_NBSP_PATTERN = /&nbsp;/gi;
+const HTML_AMP_PATTERN = /&amp;/gi;
+const HTML_APOSTROPHE_PATTERN = /&#x27;|&#39;/gi;
+const HTML_QUOTE_PATTERN = /&quot;/gi;
+const HTML_LESS_THAN_PATTERN = /&lt;/gi;
+const HTML_GREATER_THAN_PATTERN = /&gt;/gi;
+const DOM_WHITESPACE_PATTERN = /\s+/g;
+const DOM_CLASS_SPLIT_PATTERN = /\s+/;
+const DOM_TAG_NAME_PATTERN = /^[a-z][a-z0-9:-]*/i;
+const DOM_SELF_CLOSING_PATTERN = /\/\s*>$/;
+const DOM_END_MARKER_PATTERN = />$/;
+const LOGIN_ACTION_PATTERN = /login|sign[-_ ]?in/i;
+const LOGIN_TEXT_PATTERN = /\b(?:owner )?(?:sign in|log in|login)\b/i;
+const REGEXP_ESCAPE_PATTERN = /[.*+?^${}()|[\]\\]/g;
+const RENDERED_BROKEN_PATTERN = /\b(?:degraded|can't collect|needs attention)\b/i;
+const SETUP_SURFACE_PATH_PATTERN = /^\/(connect\/(?:browser-session|manual-upload)\/[^/?#]+)/i;
+const NEXT_PAGE_LABEL_PATTERN = /^Next page\b/i;
+const START_SESSION_FORM_PATTERN = /<form\b[^>]*\bstart/i;
+const OWNER_SETUP_TEXT_PATTERN = /\b(?:connect|source|setup|session|credential|upload|repair|open|start)\b/i;
+const SOURCE_LIST_CONTENT_PATTERN = /\bNo sources yet\b|\brecords?\b[\s\S]*\bstreams?\b/i;
+const SOURCE_DETAIL_CONTENT_PATTERN = /\b(?:source|records|streams|run|diagnostic|collection)\b/i;
 
 interface FetchResponseLike {
   headers: { get?: (name: string) => string | null; getSetCookie?: () => string[] };
@@ -63,9 +84,6 @@ type Connector = Record<string, unknown>;
 export const LIVE_SURFACES: readonly { path: string; tier: string }[] = [
   { path: "/", tier: "normal" },
   { path: "/connect", tier: "normal" },
-  { path: "/connect/browser-session/amazon", tier: "normal" },
-  { path: "/connect/manual-upload/google-maps", tier: "normal" },
-  { path: "/connect/manual-upload/whatsapp", tier: "normal" },
   { path: "/sources", tier: "normal" },
   { path: "/sources/add", tier: "normal" },
   { path: "/explore", tier: "normal" },
@@ -135,35 +153,289 @@ function resolveOwnerAuthForLive({
 
 function htmlToText(html: string): string {
   return String(html)
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&#x27;|&#39;/gi, "'")
-    .replace(/&quot;/gi, '"')
-    .replace(/\s+/g, " ")
+    .replace(HTML_SCRIPT_TAG_PATTERN, " ")
+    .replace(HTML_STYLE_TAG_PATTERN, " ")
+    .replace(HTML_TAG_PATTERN, " ")
+    .replace(HTML_NBSP_PATTERN, " ")
+    .replace(HTML_AMP_PATTERN, "&")
+    .replace(HTML_APOSTROPHE_PATTERN, "'")
+    .replace(HTML_QUOTE_PATTERN, '"')
+    .replace(DOM_WHITESPACE_PATTERN, " ")
     .trim();
 }
 
-function htmlToProseText(html: string): string {
-  return htmlToText(String(html).replace(/<(pre|code|kbd|samp)\b[^>]*>[\s\S]*?<\/\1>/gi, " "));
+interface ResolvedDomNode {
+  attrs: Partial<Record<string, string>>;
+  children: ResolvedDomNode[];
+  parent: ResolvedDomNode | null;
+  tag: string;
+  text: string;
+}
+
+const DOM_TOKEN_PATTERN = /<!--[\s\S]*?-->|<![^>]*>|<\/?[a-z][^>]*>|[^<]+/gi;
+const DOM_ATTRIBUTE_PATTERN = /([a-z_:][a-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/gi;
+const VOID_DOM_TAGS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
+const SKIP_DOM_TEXT_TAGS = new Set(["script", "style", "template"]);
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(HTML_NBSP_PATTERN, " ")
+    .replace(HTML_AMP_PATTERN, "&")
+    .replace(HTML_APOSTROPHE_PATTERN, "'")
+    .replace(HTML_QUOTE_PATTERN, '"')
+    .replace(HTML_LESS_THAN_PATTERN, "<")
+    .replace(HTML_GREATER_THAN_PATTERN, ">");
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this tiny parser keeps the acceptance oracle independent of a browser or HTML dependency.
+function parseResolvedDom(html: string): ResolvedDomNode {
+  const root: ResolvedDomNode = { attrs: {}, children: [], parent: null, tag: "#document", text: "" };
+  const stack: ResolvedDomNode[] = [root];
+  for (const match of String(html).matchAll(DOM_TOKEN_PATTERN)) {
+    const token = match[0] ?? "";
+    const current = stack.at(-1) ?? root;
+    if (token.startsWith("<!--") || token.startsWith("<!")) {
+      continue;
+    }
+    if (token.startsWith("</")) {
+      const tag = token.slice(2).match(DOM_TAG_NAME_PATTERN)?.[0]?.toLowerCase();
+      if (!tag) {
+        continue;
+      }
+      const openIndex = stack.findLastIndex((node) => node.tag === tag);
+      if (openIndex > 0) {
+        stack.splice(openIndex);
+      }
+      continue;
+    }
+    if (token.startsWith("<")) {
+      const tag = token.slice(1).match(DOM_TAG_NAME_PATTERN)?.[0]?.toLowerCase();
+      if (!tag) {
+        continue;
+      }
+      const attrs: Partial<Record<string, string>> = {};
+      const attrSource = token
+        .slice(1 + tag.length)
+        .replace(DOM_SELF_CLOSING_PATTERN, "")
+        .replace(DOM_END_MARKER_PATTERN, "");
+      for (const attr of attrSource.matchAll(DOM_ATTRIBUTE_PATTERN)) {
+        const name = (attr[1] ?? "").toLowerCase();
+        if (!name) {
+          continue;
+        }
+        attrs[name] = decodeHtml(attr[2] ?? attr[3] ?? attr[4] ?? "");
+      }
+      const node: ResolvedDomNode = { attrs, children: [], parent: current, tag, text: "" };
+      current.children.push(node);
+      if (!(VOID_DOM_TAGS.has(tag) || DOM_SELF_CLOSING_PATTERN.test(token))) {
+        stack.push(node);
+      }
+      continue;
+    }
+    current.text += decodeHtml(token);
+  }
+  return root;
+}
+
+function domElements(root: ResolvedDomNode): ResolvedDomNode[] {
+  const result: ResolvedDomNode[] = [];
+  const visit = (node: ResolvedDomNode) => {
+    if (node.tag !== "#document") {
+      result.push(node);
+    }
+    for (const child of node.children) {
+      visit(child);
+    }
+  };
+  visit(root);
+  return result;
+}
+
+function domHasClass(node: ResolvedDomNode, className: string): boolean {
+  return (node.attrs.class ?? "").split(DOM_CLASS_SPLIT_PATTERN).includes(className);
+}
+
+function domIsHidden(node: ResolvedDomNode): boolean {
+  for (let current: ResolvedDomNode | null = node; current; current = current.parent) {
+    if (current.attrs["aria-hidden"]?.toLowerCase() === "true") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function domVisibleText(node: ResolvedDomNode): string {
+  if (domIsHidden(node) || SKIP_DOM_TEXT_TAGS.has(node.tag)) {
+    return "";
+  }
+  return [node.text, ...node.children.map((child) => domVisibleText(child))]
+    .join(" ")
+    .replace(DOM_WHITESPACE_PATTERN, " ")
+    .trim();
+}
+
+function visibleDomElements(root: ResolvedDomNode): ResolvedDomNode[] {
+  return domElements(root).filter((node) => !domIsHidden(node));
+}
+
+function isLoginDocument(root: ResolvedDomNode): boolean {
+  const elements = visibleDomElements(root);
+  return (
+    elements.some((node) => node.tag === "form" && LOGIN_ACTION_PATTERN.test(node.attrs.action ?? "")) ||
+    LOGIN_TEXT_PATTERN.test(domVisibleText(root))
+  );
+}
+
+const RESOLVED_SURFACE_SKELETON_PATTERNS: readonly RegExp[] = [
+  /\b(?:Loading(?:…|\.{3})|Skeleton)\b/i,
+  /class=["'][^"']*(?:skeleton|animate-pulse|shimmer)[^"']*["']/i,
+  /data-testid=["'][^"']*skeleton[^"']*["']/i,
+];
+interface ResolvedSurfaceRequirement {
+  label: string;
+  pattern: RegExp;
+}
+
+const RESOLVED_SURFACE_REQUIREMENTS: Readonly<Record<string, readonly ResolvedSurfaceRequirement[]>> = {
+  "/": [
+    { label: "Where you stand title", pattern: /\bWhere you stand\b/i },
+    { label: "source attention block", pattern: /\bSource attention\b/i },
+    { label: "notifications block", pattern: /\bNotifications\b/i },
+  ],
+  "/audit": [{ label: "Audit title", pattern: /\bAudit\b/i }],
+  "/connect": [{ label: "Connect apps title", pattern: /\bConnect apps\b/i }],
+  "/device-exporters": [
+    { label: "device exporters title", pattern: /\b(?:Local device exporters|Enrolled devices)\b/i },
+  ],
+  "/explore": [
+    { label: "Explore title", pattern: BEXPLORE_PATTERN },
+    { label: "record query controls", pattern: SEARCH_NAMES_FIELDS_AND_PATTERN },
+    { label: "record filters", pattern: BFILTERS_PATTERN },
+    { label: "record sort controls", pattern: BNEWEST_BOLDEST_PATTERN },
+  ],
+  "/grants": [{ label: "Grants title", pattern: /\bGrants\b/i }],
+  "/search": [{ label: "search controls", pattern: /\b(?:Search|trace|grant|run)\b/i }],
+  "/schedules": [
+    { label: "Schedules title", pattern: BSCHEDULES_PATTERN },
+    { label: "schedule section", pattern: BSCHEDULED_CONNECTIONS_BNO_SCHEDULED_PATTERN },
+    { label: "scheduled/unscheduled counts", pattern: BSCHEDULED_BUNSCHEDULED_PATTERN },
+  ],
+  "/sources": [
+    { label: "Sources title", pattern: BSOURCES_PATTERN },
+    { label: "source list or empty state", pattern: SOURCE_LIST_CONTENT_PATTERN },
+  ],
+  "/sources/add": [{ label: "Add source title", pattern: /\bAdd source\b/i }],
+  "/syncs": [{ label: "Syncs title", pattern: /\bSyncs\b/i }],
+};
+
+function resolvedSurfaceRequirements(path: string): readonly ResolvedSurfaceRequirement[] {
+  const declared = RESOLVED_SURFACE_REQUIREMENTS[path];
+  if (declared) {
+    return declared;
+  }
+  if (path.startsWith("/sources/") && path !== "/sources/add") {
+    return [{ label: "source detail content", pattern: SOURCE_DETAIL_CONTENT_PATTERN }];
+  }
+  return [];
+}
+
+function resolvedSurfaceSkeletonMarkers(root: ResolvedDomNode): string[] {
+  const visibleText = domVisibleText(root);
+  const markers: string[] = [];
+  for (const pattern of RESOLVED_SURFACE_SKELETON_PATTERNS) {
+    if (pattern.source.includes("Loading") || pattern.source.includes("Skeleton")) {
+      const match = pattern.exec(visibleText);
+      pattern.lastIndex = 0;
+      if (match?.[0]) {
+        markers.push(match[0]);
+      }
+      continue;
+    }
+    for (const node of visibleDomElements(root)) {
+      const attrs = Object.entries(node.attrs)
+        .map(([name, value]) => `${name}="${value}"`)
+        .join(" ");
+      const match = pattern.exec(attrs);
+      pattern.lastIndex = 0;
+      if (match?.[0]) {
+        markers.push(match[0]);
+        break;
+      }
+    }
+  }
+  return markers;
+}
+
+export interface ResolvedOwnerSurfaceCheck {
+  missing: readonly string[];
+  ok: boolean;
+  path: string;
+  skeletonMarkers: readonly string[];
+  status: number;
+}
+
+/**
+ * Deterministic render oracle for server responses. It reads only visible
+ * text plus visible skeleton markers; RSC scripts and styles do not count as
+ * proof that a React surface resolved.
+ */
+export function inspectResolvedOwnerSurface({
+  html,
+  path,
+  status,
+  requiredText = [],
+}: {
+  html: string;
+  path: string;
+  status: number;
+  requiredText?: readonly ResolvedSurfaceRequirement[];
+}): ResolvedOwnerSurfaceCheck {
+  const root = parseResolvedDom(html);
+  const text = domVisibleText(root);
+  const missing = [...resolvedSurfaceRequirements(path), ...requiredText]
+    .filter((requirement) => {
+      requirement.pattern.lastIndex = 0;
+      const matches = requirement.pattern.test(text);
+      requirement.pattern.lastIndex = 0;
+      return !matches;
+    })
+    .map((requirement) => requirement.label);
+  const skeletonMarkers = resolvedSurfaceSkeletonMarkers(root);
+  return {
+    missing,
+    ok:
+      status >= 200 &&
+      status < 300 &&
+      text.length > 0 &&
+      !isLoginDocument(root) &&
+      missing.length === 0 &&
+      skeletonMarkers.length === 0,
+    path,
+    skeletonMarkers,
+    status,
+  };
 }
 
 function visibleMonogramInitials(html: string): string[] {
-  const out: string[] = [];
-  const re = /<span\b([^>]*\bclass=(["'])[^"']*\bpdpp-monogram\b[^"']*\2[^>]*)>([\s\S]*?)<\/span>/gi;
-  for (const match of String(html).matchAll(re)) {
-    const attrs = match[1] ?? "";
-    if (BARIA_HIDDEN_TRUE_PATTERN.test(attrs)) {
-      continue;
-    }
-    const initials = htmlToText(match[3] ?? "");
-    if (initials) {
-      out.push(initials);
-    }
-  }
-  return out;
+  return visibleDomElements(parseResolvedDom(html))
+    .filter((node) => node.tag === "span" && domHasClass(node, "pdpp-monogram"))
+    .map((node) => domVisibleText(node))
+    .filter((initials) => initials.length > 0);
 }
 
 function asArrayList(raw: unknown): Connector[] {
@@ -213,27 +485,6 @@ function nextStepTextCandidates(action: Connector): string[] {
   ]);
 }
 
-function owesOwnerNextStepFromRaw(connector: Connector): boolean {
-  if (connector.revoked_at) {
-    return false;
-  }
-  const health = connector.connection_health as Connector | undefined;
-  if (health?.reason_code === "stale_manual_refresh") {
-    return true;
-  }
-  if ((health?.axes as Connector | undefined)?.outbox === "stalled") {
-    return true;
-  }
-  if ((connector.schedule as Connector | undefined)?.human_attention_needed === true) {
-    return true;
-  }
-  return false;
-}
-
-function detailHasOwnerActionVerb(text: string): boolean {
-  return REFRESH_NOW_RUN_PATTERN.test(text);
-}
-
 function renderedVerdict(connector: Connector): Connector | null {
   const verdict = connector.rendered_verdict;
   return verdict && typeof verdict === "object" ? (verdict as Connector) : null;
@@ -250,18 +501,27 @@ function connectorLabel(connector: Connector): string {
 }
 
 function sourceCountPhrase(connector: Connector): string | null {
-  const records = Number(connector.total_records);
-  const rawStreamCount =
-    connector.stream_count ?? (Array.isArray(connector.streams) ? (connector.streams as unknown[]).length : null);
+  const totalRecordsState = String(connector.total_records_state ?? "").toLowerCase();
+  // Sources shows the manifest-declared stream roster. `stream_count` is a
+  // different protocol fact: streams with retained evidence, which is
+  // legitimately zero for a fresh draft whose declared streams are visible.
+  const rawStreamCount = Array.isArray(connector.streams)
+    ? (connector.streams as unknown[]).length
+    : connector.stream_count;
   const streams = Number(rawStreamCount);
-  if (!(Number.isFinite(records) && Number.isFinite(streams))) {
+  if (!Number.isFinite(streams)) {
     return null;
   }
-  const recordCount = Math.max(0, Math.floor(records));
   const streamCount = Math.max(0, Math.floor(streams));
-  return `${recordCount.toLocaleString()} ${recordCount === 1 ? "record" : "records"} · ${streamCount.toLocaleString()} ${
-    streamCount === 1 ? "stream" : "streams"
-  }`;
+  const records = Number(connector.total_records);
+  let recordsLabel = "records unavailable";
+  if (totalRecordsState !== "unobserved" && totalRecordsState !== "unknown" && Number.isFinite(records)) {
+    const recordCount = Math.max(0, Math.floor(records));
+    const recordNoun = recordCount === 1 ? "record" : "records";
+    const qualifier = totalRecordsState === "stale" ? " (unverified)" : "";
+    recordsLabel = `${recordCount.toLocaleString()} ${recordNoun}${qualifier}`;
+  }
+  return `${recordsLabel} · ${streamCount.toLocaleString()} ${streamCount === 1 ? "stream" : "streams"}`;
 }
 
 function connectorRouteId(connector: Connector): string | null {
@@ -269,9 +529,26 @@ function connectorRouteId(connector: Connector): string | null {
   return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 
+const SERVER_SOURCE_WORK_GROUPS = new Set(["needs_owner", "not_measured", "review", "system_issue", "working", "none"]);
+
+function serverSourceWork(connector: Connector): string | null {
+  const value = connector.source_work;
+  return typeof value === "string" && SERVER_SOURCE_WORK_GROUPS.has(value) ? value : null;
+}
+
 function isMaterialSourceIssue(connector: Connector): boolean {
   if (connector.revoked_at) {
     return false;
+  }
+  const serverWork = serverSourceWork(connector);
+  if (!serverWork) {
+    return true;
+  }
+  if (serverWork) {
+    if (serverWork === "none" || serverWork === "working") {
+      return false;
+    }
+    return serverWork !== "review" || !isHealthyRefreshAdvisory(connector);
   }
   const verdict = renderedVerdict(connector);
   if (!verdict) {
@@ -294,6 +571,13 @@ function isHealthyRefreshAdvisory(connector: Connector): boolean {
   if (connector.revoked_at) {
     return false;
   }
+  const serverWork = serverSourceWork(connector);
+  if (!serverWork) {
+    return false;
+  }
+  if (serverWork && serverWork !== "review") {
+    return false;
+  }
   const verdict = renderedVerdict(connector);
   if (verdict?.channel !== "advisory") {
     return false;
@@ -306,6 +590,203 @@ function isHealthyRefreshAdvisory(connector: Connector): boolean {
     ? (verdict.required_actions as Connector[]).map((action) => `${action?.kind ?? ""} ${action?.cta ?? ""}`).join(" ")
     : "";
   return BREFRESH_PATTERN.test(`${verdict.forward_statement ?? ""} ${actionText}`);
+}
+
+interface DashboardRenderedRow {
+  anchors: readonly { href: string; text: string }[];
+  text: string;
+}
+
+interface UnavailableSourceWork {
+  href: string;
+  label: string;
+  reason: string;
+}
+
+function renderedDashboardRows(html: string): DashboardRenderedRow[] {
+  const root = parseResolvedDom(html);
+  return visibleDomElements(root)
+    .filter((node) => domHasClass(node, "rr-attn__row"))
+    .map((node) => ({
+      anchors: visibleDomElements(node)
+        .filter((child) => child.tag === "a" && typeof child.attrs.href === "string")
+        .map((child) => ({ href: child.attrs.href ?? "", text: domVisibleText(child) })),
+      text: domVisibleText(node),
+    }));
+}
+
+function rowRepresents(row: DashboardRenderedRow, issue: { forwardStatement: string; label: string }): boolean {
+  if (!row.text.includes(issue.label)) {
+    return false;
+  }
+  return issue.forwardStatement.length === 0 || row.text.includes(issue.forwardStatement);
+}
+
+interface RenderedSourceRow {
+  id: string | null;
+  label: string | null;
+  text: string;
+}
+
+function renderedSourceRows(pages: readonly string[]): readonly RenderedSourceRow[] {
+  const rows: RenderedSourceRow[] = [];
+  const seen = new Set<string>();
+  for (const html of pages) {
+    const root = parseResolvedDom(html);
+    for (const node of visibleDomElements(root)) {
+      if (!domHasClass(node, "rr-s-item")) {
+        continue;
+      }
+      const key = `${node.attrs["data-source-id"] ?? ""}|${node.attrs["data-source-label"] ?? ""}|${domVisibleText(node)}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      rows.push({
+        id: node.attrs["data-source-id"] ?? null,
+        label: node.attrs["data-source-label"] ?? null,
+        text: domVisibleText(node),
+      });
+    }
+  }
+  return rows;
+}
+
+function exactVisibleActionNodes(html: string, label: string): ResolvedDomNode[] {
+  const root = parseResolvedDom(html);
+  return visibleDomElements(root).filter((node) => domVisibleText(node) === label);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(REGEXP_ESCAPE_PATTERN, "\\$&");
+}
+
+function hrefPath(href: string, base: string): string | null {
+  try {
+    return new URL(href, base).pathname;
+  } catch {
+    return null;
+  }
+}
+
+function expectedActionHrefMatches(action: Connector, href: string, base: string, routeId: string): boolean {
+  const path = hrefPath(href, base);
+  const surface = (action.surface as Connector | undefined)?.kind;
+  const connectionTargetMatches = (() => {
+    try {
+      const url = new URL(href, base);
+      return url.searchParams.get("connectionId") === routeId || url.searchParams.get("connection_id") === routeId;
+    } catch {
+      return false;
+    }
+  })();
+  if (action.kind === "add_info") {
+    const runId = (action.target as Connector | undefined)?.run_id;
+    return typeof runId === "string" && path === `/syncs/${encodeURIComponent(runId)}`;
+  }
+  if (action.kind === "reauth") {
+    if (surface === "browser_session") {
+      return path?.startsWith("/connect/browser-session/") === true && connectionTargetMatches;
+    }
+    if (surface === "stored_credential") {
+      return path?.startsWith("/connect/static-secret/") === true && connectionTargetMatches;
+    }
+    return path?.startsWith("/sources/") === true || path?.startsWith("/connect/") === true;
+  }
+  return path === `/sources/${encodeURIComponent(routeId)}`;
+}
+
+export interface DashboardSourceTrustOracle {
+  healthyRefreshAdvisories: readonly { forwardStatement: string; label: string }[];
+  materialIssues: readonly { forwardStatement: string; label: string }[];
+  overstatedHealthyAdvisories: readonly { forwardStatement: string; label: string }[];
+  projectionDisagreements: readonly { label: string; reason: string }[];
+  rawIssues: readonly { label: string; reason: string }[];
+  sourceWorkUnavailable: readonly UnavailableSourceWork[];
+  unrepresentedMaterialIssues: readonly { forwardStatement: string; label: string }[];
+  unrepresentedRawIssues: readonly { label: string; reason: string }[];
+  unrepresentedSourceWorkUnavailable: readonly UnavailableSourceWork[];
+  unsupportedAllClearClaim: string | null;
+}
+
+/**
+ * Compare the connector API's trust claims with resolved dashboard text. This
+ * is intentionally provider-neutral: the API supplies labels and actions, and
+ * the rendered page either discloses them or fails the oracle.
+ */
+export function evaluateDashboardSourceTrust(
+  connectors: readonly Connector[],
+  dashboardHtml: string
+): DashboardSourceTrustOracle {
+  // Claims must come from the resolved accessibility/render tree. Raw HTML
+  // text can include hidden template/script content and would let a fixture
+  // pass without proving that the owner can see the claim.
+  const dashboardText = domVisibleText(parseResolvedDom(dashboardHtml));
+  const rows = renderedDashboardRows(dashboardHtml);
+  const materialIssues = connectors.filter(isMaterialSourceIssue).map((connector) => ({
+    label: connectorLabel(connector),
+    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
+  }));
+  const healthyRefreshAdvisories = connectors.filter(isHealthyRefreshAdvisory).map((connector) => ({
+    label: connectorLabel(connector),
+    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
+  }));
+  const rawIssues = connectors.filter(isRawMaterialSourceIssue).map((connector) => ({
+    label: connectorLabel(connector),
+    reason: String(
+      (connector?.connection_health as Connector | undefined)?.reason_code ??
+        (connector?.last_run as Connector | undefined)?.failure_reason ??
+        "raw source issue"
+    ),
+  }));
+  const sourceWorkUnavailable = connectors
+    .filter((connector) => !(connector.revoked_at || serverSourceWork(connector)))
+    .map((connector) => {
+      const routeId = connectorRouteId(connector);
+      return {
+        href: routeId === null ? "" : `/sources/${encodeURIComponent(routeId)}`,
+        label: connectorLabel(connector),
+        reason: "source_work missing or unavailable",
+      };
+    });
+  const projectionDisagreements = rawIssues
+    .map((issue) => {
+      const connector = connectors.find((candidate) => connectorLabel(candidate) === issue.label);
+      const serverWork = connector ? serverSourceWork(connector) : null;
+      if (serverWork === "none") {
+        return {
+          label: issue.label,
+          reason: "source_work=none",
+        };
+      }
+      return null;
+    })
+    .filter((issue): issue is { label: string; reason: string } => issue !== null);
+  const unsupportedAllClearClaim =
+    dashboardText.match(BGRANTS_ARE_WITHIN_THEIR_PATTERN)?.[0] ??
+    dashboardText.match(BBACKUPS_ARE_PATTERN)?.[0] ??
+    null;
+  const overstatedHealthyAdvisories = healthyRefreshAdvisories.filter((issue) => {
+    const row = rows.find((candidate) => candidate.text.includes(issue.label));
+    const renderedAsBroken = Boolean(row && RENDERED_BROKEN_PATTERN.test(row.text));
+    const renderedWithRefreshStatement = Boolean(row && rowRepresents(row, issue));
+    return renderedAsBroken || renderedWithRefreshStatement;
+  });
+  return {
+    healthyRefreshAdvisories,
+    materialIssues,
+    overstatedHealthyAdvisories,
+    projectionDisagreements,
+    sourceWorkUnavailable,
+    rawIssues,
+    unsupportedAllClearClaim,
+    unrepresentedMaterialIssues: materialIssues.filter((issue) => !rows.some((row) => rowRepresents(row, issue))),
+    unrepresentedRawIssues: rawIssues.filter((issue) => !rows.some((row) => row.text.includes(issue.label))),
+    unrepresentedSourceWorkUnavailable: sourceWorkUnavailable.filter(
+      (issue) =>
+        !rows.some((row) => row.text.includes(issue.label) && row.anchors.some((anchor) => anchor.href === issue.href))
+    ),
+  };
 }
 
 function isRawMaterialSourceIssue(connector: Connector): boolean {
@@ -396,17 +877,170 @@ function runLiveGrantCaptionChecks({ htmlByPath }: { htmlByPath: Map<string, str
   return { findings, checks };
 }
 
+interface DeclaredSetupSurface {
+  path: string;
+  tier: string;
+}
+
+function declaredSetupSurfaces(html: string): DeclaredSetupSurface[] {
+  const root = parseResolvedDom(html);
+  const seen = new Set<string>();
+  const surfaces: DeclaredSetupSurface[] = [];
+  for (const node of visibleDomElements(root)) {
+    if (node.tag !== "a") {
+      continue;
+    }
+    const href = node.attrs.href ?? "";
+    const match = href.match(SETUP_SURFACE_PATH_PATTERN);
+    if (!match?.[1]) {
+      continue;
+    }
+    const path = `/${match[1]}`;
+    if (seen.has(path)) {
+      continue;
+    }
+    seen.add(path);
+    surfaces.push({ path, tier: "normal" });
+  }
+  return surfaces;
+}
+
+function renderedNextPageHref(html: string, base: string): string | null {
+  const root = parseResolvedDom(html);
+  for (const node of visibleDomElements(root)) {
+    if (node.tag !== "a" || !NEXT_PAGE_LABEL_PATTERN.test(domVisibleText(node))) {
+      continue;
+    }
+    const { href } = node.attrs;
+    if (!href) {
+      continue;
+    }
+    try {
+      const url = new URL(href, base);
+      return `${url.pathname}${url.search}`;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function fetchRenderedContinuationPages({
+  base,
+  findings,
+  fetchImpl,
+  header,
+  html,
+  path,
+  statusByPath,
+  surfaces,
+  htmlByPath,
+}: {
+  base: string;
+  findings: Finding[];
+  fetchImpl: FetchImpl;
+  header: Record<string, string>;
+  html: string;
+  htmlByPath: Map<string, string>;
+  path: string;
+  statusByPath: Map<string, number>;
+  surfaces: LiveSurfaceResult[];
+}): Promise<string[]> {
+  const pages = [html];
+  const seen = new Set<string>([path]);
+  let currentHtml = html;
+  for (let page = 0; page < 200; page += 1) {
+    const nextPath = renderedNextPageHref(currentHtml, base);
+    if (!nextPath || seen.has(nextPath)) {
+      break;
+    }
+    seen.add(nextPath);
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: each rendered continuation depends on the prior page's next link.
+      const res = await fetchImpl(`${base}${nextPath}`, {
+        headers: { accept: "text/html", ...header },
+        redirect: "manual",
+      });
+      const nextHtml = await res.text();
+      statusByPath.set(nextPath, res.status);
+      const resolved = inspectResolvedOwnerSurface({ html: nextHtml, path, status: res.status });
+      const reached = resolved.ok;
+      const surfaceFindings = reached
+        ? scanForbiddenStrings({
+            path: `live:${nextPath}`,
+            src: nextHtml,
+            tier: "normal",
+            rules: FORBIDDEN_STRING_RULES,
+          }).map((finding) => ({ ...finding, live: true, line: finding.line || lineOf(nextHtml, 0) }))
+        : [];
+      findingsForRenderedContinuation(surfaces, nextPath, res.status, nextHtml, reached, surfaceFindings);
+      findings.push(...surfaceFindings);
+      if (!reached) {
+        findings.push({
+          ruleId: "live-owner-surface-not-reached",
+          class: "live-probe-inconclusive",
+          path: `live:${nextPath}`,
+          line: 0,
+          excerpt: [...resolved.missing, ...resolved.skeletonMarkers].join(", ") || `status ${res.status}`,
+          rationale:
+            "Every rendered continuation page must be an authenticated, resolved owner DOM. A broken or shell-only next page is not an honest pagination boundary.",
+        });
+        break;
+      }
+      htmlByPath.set(`${path}::${nextPath}`, nextHtml);
+      pages.push(nextHtml);
+      currentHtml = nextHtml;
+    } catch (err) {
+      findings.push({
+        ruleId: "live-owner-pagination-fetch-failed",
+        class: "live-probe-inconclusive",
+        path: `live:${nextPath}`,
+        line: 0,
+        excerpt: err instanceof Error ? err.message : String(err),
+        rationale:
+          "A rendered Next page must resolve as an authenticated owner page. A fetch failure is not an honest end of pagination and cannot pass as a complete source or dashboard render.",
+      });
+      break;
+    }
+  }
+  return pages;
+}
+
+function findingsForRenderedContinuation(
+  surfaces: LiveSurfaceResult[],
+  path: string,
+  status: number,
+  html: string,
+  reachedOwnerSurface: boolean,
+  surfaceFindings: readonly Finding[]
+): void {
+  surfaces.push({
+    bytes: html.length,
+    findingCount: surfaceFindings.length,
+    path,
+    reachedOwnerSurface,
+    status,
+    tier: "normal",
+  });
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is the live semantic-probe orchestrator running ~10 independent trust-claim checks against the rendered dashboard — carried over unchanged from the .mjs source.
 async function runLiveSemanticChecks({
   base,
   header,
   fetchImpl,
   htmlByPath,
+  renderedPagesByPath,
+  setupSurfaces,
+  surfaceStatusByPath,
 }: {
   base: string;
   fetchImpl: FetchImpl;
   header: Record<string, string>;
   htmlByPath: Map<string, string>;
+  renderedPagesByPath: Map<string, readonly string[]>;
+  setupSurfaces: readonly DeclaredSetupSurface[];
+  surfaceStatusByPath: Map<string, number>;
 }): Promise<{ checks: { detail: string; id: string; status: string }[]; findings: Finding[] }> {
   const findings: Finding[] = [];
   const checks: { detail: string; id: string; status: string }[] = [];
@@ -440,27 +1074,20 @@ async function runLiveSemanticChecks({
   }
 
   const connectors = asArrayList(connectorsPaged.data);
-  const sourceIssues = connectors.filter(isMaterialSourceIssue).map((connector) => ({
-    label: connectorLabel(connector),
-    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
-  }));
-  const healthyRefreshAdvisories = connectors.filter(isHealthyRefreshAdvisory).map((connector) => ({
-    label: connectorLabel(connector),
-    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
-  }));
-  const rawSourceIssues = connectors.filter(isRawMaterialSourceIssue).map((connector) => ({
-    label: connectorLabel(connector),
-    reason:
-      (connector?.connection_health as Connector | undefined)?.reason_code ??
-      (connector?.last_run as Connector | undefined)?.failure_reason ??
-      "raw source issue",
-  }));
-  const dashboardText = htmlToText(htmlByPath.get("/") ?? "");
-  const dashboardVisibleMonograms = visibleMonogramInitials(htmlByPath.get("/") ?? "");
-  const unsupportedAllClearClaim =
-    dashboardText.match(BGRANTS_ARE_WITHIN_THEIR_PATTERN)?.[0] ??
-    dashboardText.match(BBACKUPS_ARE_PATTERN)?.[0] ??
-    null;
+  const dashboardHtml = htmlByPath.get("/") ?? "";
+  const dashboardText = domVisibleText(parseResolvedDom(dashboardHtml));
+  const dashboardSourceTrust = evaluateDashboardSourceTrust(connectors, dashboardHtml);
+  const {
+    materialIssues: sourceIssues,
+    overstatedHealthyAdvisories,
+    rawIssues: rawSourceIssues,
+    projectionDisagreements,
+    unrepresentedSourceWorkUnavailable,
+    unsupportedAllClearClaim,
+    unrepresentedMaterialIssues,
+    unrepresentedRawIssues,
+  } = dashboardSourceTrust;
+  const dashboardVisibleMonograms = visibleMonogramInitials(dashboardHtml);
   if (unsupportedAllClearClaim) {
     findings.push({
       ruleId: "dashboard-unsupported-all-clear-claim",
@@ -499,15 +1126,6 @@ async function runLiveSemanticChecks({
     }
   }
 
-  const overstatedHealthyAdvisories = healthyRefreshAdvisories.filter((issue) => {
-    const renderedAsBroken =
-      dashboardText.includes(`${issue.label} is degraded`) || dashboardText.includes(`${issue.label} can't collect`);
-    const renderedWithRefreshStatement =
-      issue.forwardStatement.length > 0 &&
-      dashboardText.includes(issue.label) &&
-      dashboardText.includes(issue.forwardStatement);
-    return renderedAsBroken || renderedWithRefreshStatement;
-  });
   if (overstatedHealthyAdvisories.length > 0) {
     findings.push({
       ruleId: "dashboard-healthy-advisory-overstated",
@@ -523,40 +1141,64 @@ async function runLiveSemanticChecks({
     });
   }
 
-  if (sourceIssues.length > 0) {
-    const representedIssue = sourceIssues.some((issue) => dashboardText.includes(issue.label));
-    if (!representedIssue) {
-      findings.push({
-        ruleId: "dashboard-source-issue-missing",
-        class: "dashboard-trust-claim",
-        path: "live:/",
-        line: 0,
-        excerpt: sourceIssues
-          .map((issue) => issue.label)
-          .slice(0, 5)
-          .join(", "),
-        rationale:
-          "The dashboard reference data contains material source issues, but none of their source labels appear on the rendered dashboard. The owner needs a visible issue row, not a silent calm state.",
-      });
-    }
+  if (sourceIssues.length > 0 && unrepresentedMaterialIssues.length > 0) {
+    findings.push({
+      ruleId: "dashboard-source-issue-missing",
+      class: "dashboard-trust-claim",
+      path: "live:/",
+      line: 0,
+      excerpt: unrepresentedMaterialIssues
+        .map((issue) => issue.label)
+        .slice(0, 5)
+        .join(", "),
+      rationale:
+        "The dashboard reference data contains material source issues, but one or more source labels are absent from the rendered dashboard. The owner needs a visible row for every issue, not a silent calm state.",
+    });
   }
 
-  if (rawSourceIssues.length > 0) {
-    const representedRawIssue = rawSourceIssues.some((issue) => dashboardText.includes(issue.label));
-    if (!representedRawIssue) {
-      findings.push({
-        ruleId: "dashboard-raw-source-issue-missing",
-        class: "dashboard-trust-claim",
-        path: "live:/",
-        line: 0,
-        excerpt: rawSourceIssues
-          .map((issue) => `${issue.label}:${issue.reason}`)
-          .slice(0, 5)
-          .join(", "),
-        rationale:
-          "Raw connection-health evidence contains a material source issue, but none of those source labels appear on the rendered dashboard. The dashboard must disclose broken-source facts even if a rendered verdict projection regresses.",
-      });
-    }
+  if (rawSourceIssues.length > 0 && unrepresentedRawIssues.length > 0) {
+    findings.push({
+      ruleId: "dashboard-raw-source-issue-missing",
+      class: "dashboard-trust-claim",
+      path: "live:/",
+      line: 0,
+      excerpt: unrepresentedRawIssues
+        .map((issue) => `${issue.label}:${issue.reason}`)
+        .slice(0, 5)
+        .join(", "),
+      rationale:
+        "Raw connection-health evidence contains material source issues, but one or more source labels are absent from the rendered dashboard. The dashboard must disclose every broken-source fact even if a rendered verdict projection regresses.",
+    });
+  }
+
+  if (projectionDisagreements.length > 0) {
+    findings.push({
+      ruleId: "dashboard-source-health-projection-disagreement",
+      class: "dashboard-trust-claim",
+      path: "live:/_ref/connectors",
+      line: 0,
+      excerpt: projectionDisagreements
+        .map((issue) => `${issue.label} (${issue.reason})`)
+        .slice(0, 5)
+        .join(", "),
+      rationale:
+        "Raw health is diagnostic evidence, not a second client-side classifier. A raw material issue that disagrees with the server-owned source_work/rendered verdict must fail closed until the server projection is corrected.",
+    });
+  }
+
+  if (unrepresentedSourceWorkUnavailable.length > 0) {
+    findings.push({
+      ruleId: "dashboard-source-work-unavailable",
+      class: "dashboard-trust-claim",
+      path: "live:/_ref/connectors",
+      line: 0,
+      excerpt: unrepresentedSourceWorkUnavailable
+        .map((issue) => issue.label)
+        .slice(0, 5)
+        .join(", "),
+      rationale:
+        "The server-owned source_work projection is missing or invalid. The dashboard must retain that source as an explicit unavailable row; it must never silently drop the connector or classify it as healthy from a connector-specific fallback.",
+    });
   }
 
   checks.push({
@@ -566,6 +1208,8 @@ async function runLiveSemanticChecks({
         f.ruleId === "dashboard-source-issue-all-clear" ||
         f.ruleId === "dashboard-source-issue-missing" ||
         f.ruleId === "dashboard-raw-source-issue-missing" ||
+        f.ruleId === "dashboard-source-health-projection-disagreement" ||
+        f.ruleId === "dashboard-source-work-unavailable" ||
         f.ruleId === "dashboard-healthy-advisory-overstated" ||
         f.ruleId === "dashboard-unsupported-all-clear-claim"
     )
@@ -582,80 +1226,118 @@ async function runLiveSemanticChecks({
         : "dashboard monogram initials are decorative",
   });
 
-  const browserSessionPath = "/connect/browser-session/amazon";
-  const browserSessionHtml = htmlByPath.get(browserSessionPath) ?? "";
-  const browserSessionText = htmlToText(browserSessionHtml);
-  const exposesDirectNewBrowserSource =
-    BSTART_SESSION_PATTERN.test(browserSessionText) && CONNECT_BROWSER_SESSION_AMAZON_PATTERN.test(browserSessionHtml);
-  if (exposesDirectNewBrowserSource) {
+  const browserSetupSurfaces = setupSurfaces.filter((surface) => surface.path.includes("/browser-session/"));
+  const directNewBrowserSources = browserSetupSurfaces.filter((surface) => {
+    const html = htmlByPath.get(surface.path) ?? "";
+    return BSTART_SESSION_PATTERN.test(domVisibleText(parseResolvedDom(html))) && START_SESSION_FORM_PATTERN.test(html);
+  });
+  for (const surface of directNewBrowserSources) {
     findings.push({
       ruleId: "browser-session-direct-new-source",
       class: "dashboard-setup-integrity",
-      path: `live:${browserSessionPath}`,
+      path: `live:${surface.path}`,
       line: 0,
       excerpt: "Start session",
       rationale:
-        "A direct browser-session setup URL must not expose a new-source start control. Without an explicit add-another flow, it can silently create duplicate unnamed browser-backed sources.",
+        "A declared browser setup surface must not expose a new-source start control without an explicit add-another flow. The check follows the rendered setup roster and does not encode provider names.",
     });
   }
   checks.push({
     id: "browser-session-direct-new-source",
-    status: exposesDirectNewBrowserSource ? "fail" : "pass",
-    detail: exposesDirectNewBrowserSource
-      ? "direct browser-session page can start a new source"
-      : "direct browser-session page does not expose a new-source start control",
+    status: directNewBrowserSources.length > 0 ? "fail" : "pass",
+    detail: (() => {
+      if (directNewBrowserSources.length > 0) {
+        return `${directNewBrowserSources.length} declared browser setup surface(s) can start a new source`;
+      }
+      if (browserSetupSurfaces.length > 0) {
+        return `${browserSetupSurfaces.length} declared browser setup surface(s) have repair-only guidance`;
+      }
+      return "no declared browser setup surfaces to probe";
+    })(),
   });
 
-  const contentExpectations = [
-    {
-      id: "schedules-content-rendered",
-      path: "/schedules",
-      title: "Schedules",
-      required: [
-        { label: "Schedules title", pattern: BSCHEDULES_PATTERN },
-        { label: "schedule section", pattern: BSCHEDULED_CONNECTIONS_BNO_SCHEDULED_PATTERN },
-        { label: "scheduled/unscheduled counts", pattern: BSCHEDULED_BUNSCHEDULED_PATTERN },
-      ],
-    },
-    {
-      id: "explore-content-rendered",
-      path: "/explore",
-      title: "Explore",
-      required: [
-        { label: "Explore title", pattern: BEXPLORE_PATTERN },
-        {
-          label: "record query controls",
-          pattern: SEARCH_NAMES_FIELDS_AND_PATTERN,
-        },
-        { label: "record filters", pattern: BFILTERS_PATTERN },
-        { label: "record sort controls", pattern: BNEWEST_BOLDEST_PATTERN },
-      ],
-    },
-  ];
+  const contentExpectations = Array.from(
+    new Map(
+      [...LIVE_SURFACES, ...setupSurfaces].map((surface) => [
+        surface.path,
+        { ...surface, id: `${surface.path.replace(ROOT_PATH_PREFIX_PATTERN, "") || "dashboard"}-content-rendered` },
+      ])
+    ).values()
+  );
   for (const expectation of contentExpectations) {
-    const pageText = htmlToText(htmlByPath.get(expectation.path) ?? "");
-    const missing = expectation.required.filter((item) => !item.pattern.test(pageText));
-    if (missing.length > 0) {
+    const isDeclaredSetup =
+      expectation.path.includes("/connect/browser-session/") || expectation.path.includes("/connect/manual-upload/");
+    const resolved = inspectResolvedOwnerSurface({
+      html: htmlByPath.get(expectation.path) ?? "",
+      path: expectation.path,
+      requiredText: isDeclaredSetup
+        ? [
+            {
+              label: "declared setup controls",
+              pattern: OWNER_SETUP_TEXT_PATTERN,
+            },
+          ]
+        : [],
+      status: surfaceStatusByPath.get(expectation.path) ?? 0,
+    });
+    const unresolved = [...resolved.missing, ...resolved.skeletonMarkers.map((marker) => `skeleton marker ${marker}`)];
+    if (unresolved.length > 0 || !resolved.ok) {
       findings.push({
         ruleId: expectation.id,
         class: "dashboard-content-missing",
         path: `live:${expectation.path}`,
         line: 0,
-        excerpt: missing.map((item) => item.label).join(", "),
-        rationale: `${expectation.title} must render its core owner controls on the live surface. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
+        excerpt: unresolved.length > 0 ? unresolved.join(", ") : "empty or unresolved response",
+        rationale: `${expectation.path} must render an authenticated, resolved owner DOM without a visible loading skeleton. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
       });
+    }
+    let contentDetail: string;
+    if (resolved.ok) {
+      contentDetail = `${expectation.path} rendered resolved core owner controls`;
+    } else if (unresolved.length > 0) {
+      contentDetail = `missing ${unresolved.join(", ")}`;
+    } else {
+      contentDetail = "empty or unresolved response";
     }
     checks.push({
       id: expectation.id,
-      status: missing.length > 0 ? "fail" : "pass",
-      detail:
-        missing.length > 0
-          ? `missing ${missing.map((item) => item.label).join(", ")}`
-          : `${expectation.title} rendered core owner controls`,
+      status: resolved.ok ? "pass" : "fail",
+      detail: contentDetail,
     });
   }
 
-  const recordsText = htmlToText(htmlByPath.get("/sources") ?? "");
+  const sourcePages = renderedPagesByPath.get("/sources") ?? [htmlByPath.get("/sources") ?? ""];
+  const sourceRows = renderedSourceRows(sourcePages);
+  const sourceRowForConnector = (connector: Connector): RenderedSourceRow | null => {
+    const routeId = connectorRouteId(connector);
+    const label = connectorLabel(connector);
+    // Prefer durable row identity. A label-only fallback is acceptable for
+    // older renders, but it must still be scoped to one rendered row rather
+    // than the page-wide text blob.
+    if (routeId !== null) {
+      return sourceRows.find((row) => row.id === routeId) ?? null;
+    }
+    return sourceRows.find((row) => row.label === label) ?? sourceRows.find((row) => row.text.includes(label)) ?? null;
+  };
+  const sourceRowsLookRendered =
+    sourceRows.length > 0 || sourcePages.some((page) => renderedNextPageHref(page, base) !== null);
+  const missingRenderedSourceRows = sourceRowsLookRendered
+    ? connectors
+        .filter((connector) => !connector.revoked_at)
+        .filter((connector) => sourceRowForConnector(connector) === null)
+        .map((connector) => ({ connector, label: connectorLabel(connector) }))
+    : [];
+  for (const missing of missingRenderedSourceRows) {
+    findings.push({
+      ruleId: "records-source-row-missing",
+      class: "dashboard-data-claim",
+      path: "live:/sources",
+      line: 0,
+      excerpt: missing.label,
+      rationale:
+        "Every non-revoked connector returned by the reference summary must appear in the rendered Sources row set. A continuation link without its resolved rows is silent omission, not honest pagination.",
+    });
+  }
   const recordsCountFindings: Finding[] = [];
   let checkedSourceCounts = 0;
   for (const connector of connectors) {
@@ -663,7 +1345,8 @@ async function runLiveSemanticChecks({
       continue;
     }
     const label = connectorLabel(connector);
-    if (!recordsText.includes(label)) {
+    const row = sourceRowForConnector(connector);
+    if (!row) {
       continue;
     }
     const expectedCountPhrase = sourceCountPhrase(connector);
@@ -671,7 +1354,7 @@ async function runLiveSemanticChecks({
       continue;
     }
     checkedSourceCounts += 1;
-    if (!recordsText.includes(expectedCountPhrase)) {
+    if (!row.text.includes(expectedCountPhrase)) {
       const finding = {
         ruleId: "records-source-count-mismatch",
         class: "dashboard-data-claim",
@@ -685,7 +1368,12 @@ async function runLiveSemanticChecks({
       findings.push(finding);
     }
   }
-  if (connectors.length > 0 && checkedSourceCounts === 0 && BSOURCES_PATTERN.test(recordsText)) {
+  if (
+    connectors.length > 0 &&
+    sourceRows.length > 0 &&
+    checkedSourceCounts === 0 &&
+    BSOURCES_PATTERN.test(domVisibleText(parseResolvedDom(sourcePages.join("\n"))))
+  ) {
     const finding = {
       ruleId: "records-source-counts-missing",
       class: "dashboard-data-claim",
@@ -700,11 +1388,21 @@ async function runLiveSemanticChecks({
   }
   checks.push({
     id: "records-counts-match-reality",
-    status: recordsCountFindings.length > 0 ? "fail" : "pass",
+    status: recordsCountFindings.length > 0 || missingRenderedSourceRows.length > 0 ? "fail" : "pass",
     detail:
       checkedSourceCounts === 0
         ? "no rendered configured source count claims to compare"
         : `${checkedSourceCounts} rendered source count claim(s) matched /_ref/connectors`,
+  });
+
+  const renderedSourcePageCount = sourcePages.length;
+  const renderedDashboardPageCount = (renderedPagesByPath.get("/") ?? [dashboardHtml]).length;
+  const renderedPaginationMissing =
+    connectorsPaged.pageCount > renderedDashboardPageCount || connectorsPaged.pageCount > renderedSourcePageCount;
+  checks.push({
+    id: "rendered-pagination-complete",
+    status: renderedPaginationMissing ? "fail" : "pass",
+    detail: `${renderedDashboardPageCount} dashboard page(s), ${renderedSourcePageCount} source page(s) rendered; JSON page-follow consumed ${connectorsPaged.pageCount} page(s) for ${connectors.length} connector row(s)`,
   });
 
   const nextActionFindings: Finding[] = [];
@@ -727,11 +1425,17 @@ async function runLiveSemanticChecks({
 
   for (const entry of nextActionConnectors) {
     if (entry.verdict?.channel === "attention") {
-      const dashboardHasSource = dashboardText.includes(entry.label);
-      const dashboardHasAction = ["See what to do", "See recovery steps", ...entry.textCandidates].some((candidate) =>
-        dashboardText.includes(candidate)
+      const dashboardRow = renderedDashboardRows(dashboardHtml).find((row) => row.text.includes(entry.label));
+      const action = entry.actions[0] ?? null;
+      const expectedDashboardLabel = action?.cta ? `${entry.label}: ${action.cta}` : null;
+      const dashboardAction = expectedDashboardLabel
+        ? dashboardRow?.anchors.find((anchor) => anchor.text === expectedDashboardLabel)
+        : null;
+      const dashboardHasAction = Boolean(
+        dashboardAction &&
+          hrefPath(dashboardAction.href, base) === `/sources/${encodeURIComponent(entry.routeId ?? "")}`
       );
-      if (!(dashboardHasSource && dashboardHasAction)) {
+      if (!dashboardHasAction) {
         const finding = {
           ruleId: "dashboard-next-action-missing",
           class: "source-next-action",
@@ -755,13 +1459,18 @@ async function runLiveSemanticChecks({
       });
       const { status } = res;
       const html = await res.text();
-      if (status < 200 || status >= 300) {
+      surfaceStatusByPath.set(path, status);
+      htmlByPath.set(path, html);
+      const action = entry.actions[0] ?? null;
+      const requiredText = [{ label: "source detail label", pattern: new RegExp(escapeRegExp(entry.label), "i") }];
+      const resolved = inspectResolvedOwnerSurface({ html, path, requiredText, status });
+      if (!resolved.ok) {
         const finding = {
           ruleId: "source-next-action-detail-not-reached",
           class: "source-next-action",
           path: `live:${path}`,
           line: 0,
-          excerpt: `status ${status}`,
+          excerpt: [...resolved.missing, ...resolved.skeletonMarkers].join(", ") || `status ${status}`,
           rationale:
             "The live probe could not reach the exact source detail route for an owner-satisfiable action. The owner cannot know what to do next if the action destination does not render.",
         };
@@ -769,17 +1478,34 @@ async function runLiveSemanticChecks({
         findings.push(finding);
         continue;
       }
-      const detailText = htmlToText(html);
-      const detailHasAction = entry.textCandidates.some((candidate) => detailText.includes(candidate));
-      if (!detailHasAction) {
+      const actionLabel = typeof action?.cta === "string" ? action.cta : (entry.textCandidates[0] ?? "");
+      const exactActionNodes = exactVisibleActionNodes(html, actionLabel);
+      const remediation = action?.remediation as Connector | undefined;
+      const remediationTarget = remediation?.target;
+      const localDevice =
+        remediationTarget !== null &&
+        typeof remediationTarget === "object" &&
+        (remediationTarget as Connector).kind === "local_device";
+      const routeAction = action?.kind === "reauth" || (action?.kind === "add_info" && !localDevice);
+      const detailActionNode = localDevice
+        ? visibleDomElements(parseResolvedDom(html)).find((node) => domVisibleText(node).startsWith(actionLabel))
+        : exactActionNodes.find((node) => node.tag === "a");
+      const detailHasAction = Boolean(detailActionNode);
+      const actionHrefIsCorrect =
+        !routeAction ||
+        (detailActionNode?.tag === "a" &&
+          expectedActionHrefMatches(action ?? {}, detailActionNode.attrs.href ?? "", base, entry.routeId ?? ""));
+      if (!(detailHasAction && actionHrefIsCorrect)) {
         const finding = {
-          ruleId: "source-next-action-copy-missing",
+          ruleId:
+            routeAction && detailHasAction ? "source-next-action-cta-href-invalid" : "source-next-action-copy-missing",
           class: "source-next-action",
           path: `live:${path}`,
           line: 0,
           excerpt: `${entry.label}: ${entry.textCandidates[0]}`,
-          rationale:
-            "The exact source detail route must render the owner-facing action from the reference verdict. A hidden or missing action breaks the owner's ability to decide the next step.",
+          rationale: routeAction
+            ? "The exact sanctioned owner CTA must be a visible anchor to the server-declared setup or sync target. A generic button, wrong href, or hidden label makes the next step unverifiable."
+            : "The exact source detail route must render the owner-facing action from the reference verdict. A hidden or missing action breaks the owner's ability to decide the next step.",
         };
         nextActionFindings.push(finding);
         findings.push(finding);
@@ -799,74 +1525,13 @@ async function runLiveSemanticChecks({
     }
   }
 
-  const rawNextStepConnectors = connectors
-    .filter(owesOwnerNextStepFromRaw)
-    .map((connector) => ({
-      connector,
-      label: connectorLabel(connector),
-      routeId: connectorRouteId(connector),
-    }))
-    .filter((entry) => entry.routeId);
-
-  for (const entry of rawNextStepConnectors) {
-    const path = `/sources/${encodeURIComponent(entry.routeId ?? "")}`;
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: sequential live HTTP probe against a real origin — avoids hammering the server and keeps findings deterministically ordered.
-      const res = await fetchImpl(`${base}${path}`, {
-        headers: { accept: "text/html", ...header },
-        redirect: "manual",
-      });
-      const { status } = res;
-      const html = await res.text();
-      if (status < 200 || status >= 300) {
-        const finding = {
-          ruleId: "raw-next-action-detail-not-reached",
-          class: "source-next-action",
-          path: `live:${path}`,
-          line: 0,
-          excerpt: `status ${status}`,
-          rationale:
-            "Raw connection evidence says this source needs an owner next step, but the exact source route did not render. The owner cannot know what to do next from a dead destination.",
-        };
-        nextActionFindings.push(finding);
-        findings.push(finding);
-        continue;
-      }
-      const detailText = htmlToText(html);
-      if (!detailHasOwnerActionVerb(detailText)) {
-        const finding = {
-          ruleId: "raw-next-action-affordance-missing",
-          class: "source-next-action",
-          path: `live:${path}`,
-          line: 0,
-          excerpt: entry.label,
-          rationale:
-            "Raw connection evidence says this source needs an owner next step, but the exact source route did not render an owner-actionable verb such as Refresh now, Recover, Retry, or Reconnect.",
-        };
-        nextActionFindings.push(finding);
-        findings.push(finding);
-      }
-    } catch (err) {
-      const finding = {
-        ruleId: "raw-next-action-detail-fetch-failed",
-        class: "source-next-action",
-        path: `live:${path}`,
-        line: 0,
-        excerpt: err instanceof Error ? err.message : String(err),
-        rationale:
-          "The live probe could not fetch the exact source route for a raw owner next-step condition. The owner next-step check is inconclusive until the route is observable.",
-      };
-      nextActionFindings.push(finding);
-      findings.push(finding);
-    }
-  }
   checks.push({
     id: "whats-next-actionable",
     status: nextActionFindings.length > 0 ? "fail" : "pass",
     detail:
-      nextActionConnectors.length === 0 && rawNextStepConnectors.length === 0
-        ? "no rendered or raw owner next-step conditions to probe"
-        : `${nextActionConnectors.length} rendered action route(s) and ${rawNextStepConnectors.length} raw owner next-step route(s) rendered their next step`,
+      nextActionConnectors.length === 0
+        ? "no server-declared owner next-step conditions to probe"
+        : `${nextActionConnectors.length} server-declared owner action route(s) rendered their exact next step`,
   });
 
   const singleTokenDenialCodes = new Set([
@@ -911,7 +1576,7 @@ async function runLiveSemanticChecks({
         .map(connectorRouteId)
         .filter((id) => typeof id === "string" && id.length > 0)
     )
-  ).slice(0, 12);
+  );
   const rawRecoveryTermFindings: Finding[] = [];
   for (const routeId of recoveryRouteIds) {
     try {
@@ -923,19 +1588,27 @@ async function runLiveSemanticChecks({
       });
       const { status } = res;
       const html = await res.text();
-      if (status < 200 || status >= 300) {
+      surfaceStatusByPath.set(path, status);
+      htmlByPath.set(path, html);
+      const resolved = inspectResolvedOwnerSurface({
+        html,
+        path,
+        requiredText: [{ label: "source recovery content", pattern: SOURCE_DETAIL_CONTENT_PATTERN }],
+        status,
+      });
+      if (!resolved.ok) {
         findings.push({
           ruleId: "source-detail-not-reached",
           class: "live-probe-inconclusive",
           path: `live:${path}`,
           line: 0,
-          excerpt: `status ${status}`,
+          excerpt: [...resolved.missing, ...resolved.skeletonMarkers].join(", ") || `status ${status}`,
           rationale:
             "The live semantic probe could not reach a source recovery detail page. Owner recovery copy is inconclusive until the exact source route renders.",
         });
         continue;
       }
-      const detailText = htmlToProseText(html);
+      const detailText = domVisibleText(parseResolvedDom(html));
       const rawRecoveryTerm = detailText.match(BDEAD_LETTER_PATTERN)?.[0] ?? null;
       if (rawRecoveryTerm) {
         const finding = {
@@ -983,7 +1656,7 @@ async function runLiveSemanticChecks({
         .map(connectorRouteId)
         .filter((id) => typeof id === "string" && id.length > 0)
     )
-  ).slice(0, 12);
+  );
   const runGapFindings: Finding[] = [];
   for (const routeId of runGapRouteIds) {
     try {
@@ -995,19 +1668,27 @@ async function runLiveSemanticChecks({
       });
       const { status } = res;
       const html = await res.text();
-      if (status < 200 || status >= 300) {
+      surfaceStatusByPath.set(path, status);
+      htmlByPath.set(path, html);
+      const resolved = inspectResolvedOwnerSurface({
+        html,
+        path,
+        requiredText: [{ label: "source run content", pattern: SOURCE_DETAIL_CONTENT_PATTERN }],
+        status,
+      });
+      if (!resolved.ok) {
         findings.push({
           ruleId: "source-detail-run-gap-not-reached",
           class: "live-probe-inconclusive",
           path: `live:${path}`,
           line: 0,
-          excerpt: `status ${status}`,
+          excerpt: [...resolved.missing, ...resolved.skeletonMarkers].join(", ") || `status ${status}`,
           rationale:
             "The live semantic probe could not reach a source detail page that has a successful latest run with unresolved collection gaps. Run-status honesty is inconclusive until the exact source route renders.",
         });
         continue;
       }
-      const detailText = htmlToText(html);
+      const detailText = domVisibleText(parseResolvedDom(html));
       const cleanSuccessClaim = detailText.match(FAILURES_OPEN_RUNS_PATTERN)?.[0] ?? null;
       const rendersGapStatus = BWITH_GAPS_PATTERN.test(detailText) || BPARTIAL_PATTERN.test(detailText);
       if (cleanSuccessClaim || !rendersGapStatus) {
@@ -1080,6 +1761,7 @@ export async function runLiveAcceptance({
 }): Promise<{
   authMode: string;
   findings: Finding[];
+  mutationChecks: { detail: string; status: string };
   ok: boolean;
   origin: string;
   semanticChecks: { detail: string; id: string; status: string }[];
@@ -1098,6 +1780,8 @@ export async function runLiveAcceptance({
   const findings: Finding[] = [];
   const surfaces: LiveSurfaceResult[] = [];
   const htmlByPath = new Map<string, string>();
+  const surfaceStatusByPath = new Map<string, number>();
+  const renderedPagesByPath = new Map<string, readonly string[]>();
 
   if (authError) {
     findings.push({
@@ -1111,40 +1795,60 @@ export async function runLiveAcceptance({
     });
   }
 
-  for (const surface of LIVE_SURFACES) {
+  if (mode === "none") {
+    findings.push({
+      ruleId: "live-owner-auth-required",
+      class: "live-probe-inconclusive",
+      path: "live:owner-auth",
+      line: 0,
+      excerpt: "no owner session supplied",
+      rationale:
+        "Resolved DOM acceptance requires an authenticated owner session. Anonymous HTML, even when it returns HTTP 200, cannot prove any owner surface or detail route.",
+    });
+  }
+
+  const authenticated = mode !== "none" && !authError;
+
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this helper keeps one authenticated fetch, resolved-DOM check, and finding record together for each declared surface.
+  const fetchSurface = async (surface: { path: string; tier: string }): Promise<string | null> => {
     const url = `${base}${surface.path}`;
     try {
-      // biome-ignore lint/performance/noAwaitInLoops: sequential live HTTP probe against a real origin — avoids hammering the server and keeps findings deterministically ordered.
       const res = await fetchImpl(url, {
         headers: { accept: "text/html", ...header },
         redirect: "manual",
       });
       const { status } = res;
       const html = await res.text();
-      // A login redirect / 401 means the probe could not see the owner surface;
-      // record it as inconclusive rather than a pass.
-      const reachedOwnerSurface = status >= 200 && status < 300;
-      const surfaceFindings = reachedOwnerSurface
+      surfaceStatusByPath.set(surface.path, status);
+      const resolved = authenticated
+        ? inspectResolvedOwnerSurface({ html, path: surface.path, status })
+        : { ok: false, missing: [], skeletonMarkers: [] };
+      const ownerResponse = authenticated && status >= 200 && status < 300;
+      const reachedOwnerSurface = ownerResponse && resolved.ok;
+      const surfaceFindings = ownerResponse
         ? scanForbiddenStrings({
             path: `live:${surface.path}`,
             src: html,
             tier: surface.tier,
             rules: FORBIDDEN_STRING_RULES,
-          }).map((f) => ({ ...f, live: true, line: f.line || lineOf(html, 0) }))
+          }).map((finding) => ({ ...finding, live: true, line: finding.line || lineOf(html, 0) }))
         : [];
-      if (reachedOwnerSurface) {
-        htmlByPath.set(surface.path, html);
-      }
       findings.push(...surfaceFindings);
+      if (ownerResponse) {
+        htmlByPath.set(surface.path, html);
+        renderedPagesByPath.set(surface.path, [html]);
+      }
       if (!reachedOwnerSurface) {
         findings.push({
           ruleId: "live-owner-surface-not-reached",
           class: "live-probe-inconclusive",
           path: `live:${surface.path}`,
           line: 0,
-          excerpt: `status ${status}`,
+          excerpt: authenticated
+            ? [...resolved.missing, ...resolved.skeletonMarkers].join(", ") || `status ${status}`
+            : "authenticated owner session required",
           rationale:
-            "The live probe did not reach the authenticated owner surface. A login redirect, 401, 404, or server error cannot prove the rendered journey is clean.",
+            "The live probe must observe an authenticated, resolved owner DOM for every declared surface. A login redirect, anonymous 200 shell, 401, 404, or server error cannot prove the rendered journey is clean.",
         });
       }
       surfaces.push({
@@ -1155,6 +1859,7 @@ export async function runLiveAcceptance({
         bytes: html.length,
         findingCount: surfaceFindings.length,
       });
+      return reachedOwnerSurface ? html : null;
     } catch (err) {
       surfaces.push({
         path: surface.path,
@@ -1170,12 +1875,55 @@ export async function runLiveAcceptance({
         line: 0,
         excerpt: err instanceof Error ? err.message : String(err),
         rationale:
-          "The live probe could not fetch the owner surface. Network or runtime failures are acceptance failures until the rendered journey is observed.",
+          "The live probe could not fetch the owner surface. Network or runtime failures are acceptance failures until the authenticated rendered journey is observed.",
       });
+      return null;
+    }
+  };
+
+  for (const surface of LIVE_SURFACES) {
+    // biome-ignore lint/performance/noAwaitInLoops: sequential live HTTP probe avoids hammering the origin and keeps findings ordered.
+    await fetchSurface(surface);
+  }
+
+  const setupSurfaces = authenticated ? declaredSetupSurfaces(htmlByPath.get("/sources/add") ?? "") : [];
+  for (const surface of setupSurfaces) {
+    // biome-ignore lint/performance/noAwaitInLoops: sequential live HTTP probe avoids hammering the origin and keeps findings ordered.
+    await fetchSurface(surface);
+  }
+
+  if (authenticated) {
+    for (const path of ["/", "/sources"] as const) {
+      const html = htmlByPath.get(path);
+      if (!html) {
+        continue;
+      }
+      // biome-ignore lint/performance/noAwaitInLoops: each continuation page depends on the previous rendered next link.
+      const pages = await fetchRenderedContinuationPages({
+        base,
+        findings,
+        fetchImpl,
+        header,
+        html,
+        htmlByPath,
+        path,
+        statusByPath: surfaceStatusByPath,
+        surfaces,
+      });
+      renderedPagesByPath.set(path, pages);
+      htmlByPath.set(path, pages.join("\n"));
     }
   }
 
-  const semantic = await runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath });
+  const semantic = await runLiveSemanticChecks({
+    base,
+    fetchImpl,
+    header,
+    htmlByPath,
+    renderedPagesByPath,
+    setupSurfaces,
+    surfaceStatusByPath,
+  });
   const grantCaptions = runLiveGrantCaptionChecks({ htmlByPath });
   findings.push(...semantic.findings);
   findings.push(...grantCaptions.findings);
@@ -1184,6 +1932,10 @@ export async function runLiveAcceptance({
     origin: base,
     authMode: mode,
     surfaces,
+    mutationChecks: {
+      detail: "not run against live owner data; use the disposable/local mutation authority separately",
+      status: "not-run",
+    },
     semanticChecks: [...semantic.checks, ...grantCaptions.checks],
     findings,
     ok: findings.length === 0,

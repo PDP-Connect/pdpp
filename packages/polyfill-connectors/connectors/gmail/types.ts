@@ -13,6 +13,7 @@ import type {
   DetailGapRecoveredMessage,
   DetailGapStartEntry,
 } from "../../src/connector-runtime.ts";
+import type { RuntimeContinuationFact } from "../../src/connector-runtime-protocol.ts";
 
 export interface StreamRequest {
   name: string;
@@ -64,7 +65,7 @@ export interface StateMessage {
 export interface RecordMessage {
   data: Record<string, unknown>;
   emitted_at: string;
-  key: string | number;
+  key: string | readonly string[];
   stream: string;
   type: "RECORD";
 }
@@ -77,9 +78,11 @@ export interface DoneMessage {
 }
 
 export interface SkipResultMessage {
+  continuation?: RuntimeContinuationFact;
   diagnostics?: unknown;
   message: string;
   reason: string;
+  recovery_hint?: string | { action: string; retryable?: boolean };
   stream: string;
   type: "SKIP_RESULT";
 }
@@ -135,6 +138,8 @@ export interface BlobRef {
 }
 
 export interface AllMailCursor {
+  /** Forward/new-mail watermark. Kept separate from the historical boundary. */
+  forward_uidnext?: number;
   highest_modseq?: number | string | null;
   uidnext?: number;
   uidvalidity?: number;
@@ -142,6 +147,14 @@ export interface AllMailCursor {
 
 export interface PriorMessagesState {
   all_mail?: AllMailCursor;
+  backfill?: MessagesBackfillCursor;
+}
+
+export interface MessagesBackfillCursor {
+  backfilled_through_uid?: number;
+  completed_at?: string | null;
+  target_uid?: number;
+  uidvalidity?: number;
 }
 
 export interface AttachmentAllMailCursor {

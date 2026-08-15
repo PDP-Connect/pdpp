@@ -81,7 +81,9 @@ You do not need to memorize the route or the env var names; the dashboard advert
 
 ## Step 3 &mdash; Enroll the host
 
-On the host with the data, paste the command the dashboard rendered. Example:
+On the host with the data, exchange the code the dashboard rendered for a
+device credential. `enroll` prints the raw JSON response &mdash; save the
+three values, and never log or paste the token anywhere else:
 
 ```bash
 npx -y @pdpp/local-collector enroll \
@@ -89,8 +91,6 @@ npx -y @pdpp/local-collector enroll \
   --code <one-time-code> \
   --device-label "the owner's laptop"
 ```
-
-The JSON response shape:
 
 ```json
 {
@@ -102,11 +102,23 @@ The JSON response shape:
 }
 ```
 
-Persist the device id, device token, and `source_instance_id`. `connector_instance_id` is the server-side connection id for owner-facing diagnostics; the collector command still passes the device-binding selector as `PDPP_CONNECTION_ID`. The device token is sensitive (device-scoped ingest only, but still write-capable on this lane). Treat it like an API key &mdash; never commit it.
+`connector_instance_id` is the server-side connection id for owner-facing
+diagnostics; the collector still passes the device-binding selector as
+`PDPP_CONNECTION_ID`. The device token is sensitive (device-scoped ingest
+only, but still write-capable on this lane) &mdash; treat it like an API key
+and never commit or log it.
+
+> **A guided `setup` subcommand (one command, `--sample` proof pass, saved
+> profile file) exists in this repo's source but has not shipped in a
+> published `@pdpp/local-collector` release yet.** Once it ships, this step
+> collapses to a single `setup --sample <n>` invocation; until then, use the
+> two-step `enroll` + `run` flow below, which matches every published
+> version.
 
 ## Step 4 &mdash; Run a connector pass
 
-Paste the `@pdpp/local-collector run` command from the dashboard, filling the three env vars from the enrollment response:
+Supply the three values from Step 3's `enroll` output as env vars, the way the
+dashboard's rendered command shows:
 
 ```bash
 PDPP_LOCAL_DEVICE_ID=dev_... \
@@ -117,7 +129,19 @@ PDPP_CONNECTION_ID=si_... \
     --connector claude_code
 ```
 
-Swap `--connector claude_code` for `codex` to ingest Codex CLI history/skills/etc. The runner:
+Swap `--connector claude_code` for `codex` to ingest Codex CLI history/skills/etc.
+
+Live progress prints to stderr as the connector finds records (phase, running
+counts, and a final summary), so a large local archive no longer looks stuck
+&mdash; pass `--quiet` to suppress it (useful under a systemd unit where
+stderr already goes to the journal).
+
+> Once the `setup` subcommand ships in a published release (see the note in
+> Step 3), it saves a local profile so `run --connection-id si_...` alone
+> resolves your credentials, and its `--sample <n>` flag runs a bounded proof
+> pass. Neither is available in the published package today.
+
+The runner:
 
 1. Recovers expired outbox leases (work a crashed prior run left claimed).
 2. **Drains the existing durable outbox first.** Any record batches, checkpoints, or gaps already queued for this connection are sent against `POST .../ingest` before anything else.
@@ -129,7 +153,7 @@ Swap `--connector claude_code` for `codex` to ingest Codex CLI history/skills/et
 
 Run the same command on a schedule (cron, systemd timer, ad-hoc) to keep the lane fresh. Because durable backlog wins over source scanning, running more often than a slow lane can drain is safe: extra invocations drain backlog and exit rather than piling on duplicate scans.
 
-> **Persistent state, not `/tmp`.** The durable outbox (`PDPP_COLLECTOR_QUEUE`, default under the package's `.pdpp-data/`) is what carries undrained backlog between runs and makes the backlog guard above work. Keep it — and any captured `run`/`doctor` JSON or `PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR` dump — on a persistent, disk-backed directory (`$XDG_STATE_HOME`/`~/.local/state` on Linux, `~/Library/Application Support` on macOS). On hosts where `/tmp` is a RAM-backed `tmpfs`, pointing the outbox or a large captured summary at `/tmp` consumes memory and loses the backlog on reboot, which defeats the guard and forces a full re-scan. See `docs/reference/local-collector.md`§"Persistent State And Scratch Paths".
+> **Persistent state, not `/tmp`.** The durable outbox (by default, a source-aware SQLite file under `$XDG_STATE_HOME`/`~/.local/state` on Linux, or `~/Library/Application Support` on macOS) carries undrained backlog between runs and makes the backlog guard above work. An explicit `PDPP_COLLECTOR_QUEUE` still takes precedence. Keep the outbox — and any captured `run`/`doctor` JSON or `PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR` dump — on a persistent, disk-backed directory. On hosts where `/tmp` is a RAM-backed `tmpfs`, pointing the outbox or a large captured summary at `/tmp` consumes memory and loses the backlog on reboot, which defeats the guard and forces a full re-scan. See `docs/reference/local-collector.md`§"Persistent State And Scratch Paths".
 
 ## Step 5 &mdash; Verify on the dashboard
 
@@ -147,6 +171,72 @@ Open `/device-exporters`. The device row updates with:
 - **Lost the device token**: revoke the device from `/device-exporters` and re-enroll a new device. Connection ids are stable per `(connector_id, local_binding_name)` so accepted records are not lost; older routes and JSON still call this `source_instance_id`.
 - **`status: blocked` with `state_get_failed`**: the runner refuses to advance without prior state to avoid over-collecting. Inspect the dashboard for the underlying error (typically a transient AS reach issue or a removed source instance) before retrying.
 - **`status: retrying` with `state_put_failed`**: benign; the next pass re-reads state and re-emits records the connector child considered consumed. Server-side idempotency absorbs the duplicates.
+
+## Stopping a run and interrupt safety
+
+`Ctrl+C` (`SIGINT`, and `SIGTERM`) during a plain `run` is safe: the collector
+installs a real signal handler for the duration of the run and aborts
+cleanly. The abort forwards to the connector child
+(`SIGTERM`, then `SIGKILL` after a grace period if it does not exit), flushes
+any records it had already parsed before the interrupt to the durable local
+outbox, and records an honest recovery gap. Nothing already flushed is lost,
+and nothing beyond what was flushed is claimed as collected &mdash; the
+interrupted pass never advances the server-side checkpoint, and the CLI exits
+non-zero so a supervising script does not mistake an interrupt for success.
+Re-run the same command (or `recover --apply`) to pick up where it left off;
+the durable outbox is exactly what makes that safe.
+
+## Removing a host
+
+> `logout` and the local profile file it manages depend on `setup`, which is
+> not yet in a published `@pdpp/local-collector` release (see the note in
+> Step 3). Until then, revoke a device from `/device-exporters` and stop
+> running its `enroll`/`run` commands &mdash; there is no local profile file
+> to delete for the manual two-step flow.
+
+To fully log out a host &mdash; revoke its device credential on the reference
+server, then delete its local profile:
+
+```bash
+npx -y @pdpp/local-collector logout --connector claude_code
+# or, for a profile saved under a custom name:
+npx -y @pdpp/local-collector logout --profile <name>
+```
+
+`logout` calls the reference server first, using the device's own credential
+to revoke itself (a device can only revoke itself, never another device),
+and only deletes the local profile `.env` file after the server confirms the
+credential is gone &mdash; either freshly revoked, or already revoked from a
+prior `logout` attempt (idempotent). If the server call fails ambiguously
+(network error, timeout, unexpected response) `logout` fails closed: it
+prints an error and leaves the local profile in place so you can retry once
+the server is reachable, rather than silently deleting the only local record
+of a token that may still be live.
+
+If the server is unreachable or has been decommissioned and you need to
+clear local state anyway, pass `--local-only`:
+
+```bash
+npx -y @pdpp/local-collector logout --connector claude_code --local-only
+```
+
+This skips the server call entirely and deletes the local profile
+unconditionally &mdash; the device token then remains valid against the
+reference deployment until revoked some other way (a server admin
+revoking it directly, or a future `logout` once the server is reachable
+again). It is deliberately not what plain `logout` does, since it does not
+close the server-side lane.
+
+After logout, also delete the durable outbox file (`status` reports its exact
+path under `db.path`) if you no longer need the locally queued history for
+that connection.
+
+To remove `@pdpp/local-collector` itself from a host:
+
+```bash
+npm rm -g @pdpp/local-collector
+rm -rf ~/.config/pdpp/collectors   # all saved profiles, not just one
+```
 
 ## Coverage and excluded stores
 

@@ -31,7 +31,7 @@
  *   2. required attention open                     -> needs_attention
  *   3. owner-paused                               -> idle
  *   4. give-up streak crossed                      -> blocked
- *   5. backoff currently delaying retry            -> cooling_off
+ *   5. affirmative scheduled retry with clean evidence -> cooling_off
  *   6. outbox stalled / coverage/run incomplete    -> degraded
  *   7. current evidence without collection verdict -> unknown
  *   7a. current managed remote-surface evidence absent -> unknown
@@ -48,7 +48,7 @@
 
 import type { EphemeralBrowserRuntimeProjection } from "./browser-surface/ephemeral-health-projection.ts";
 import { type BrowserSurfaceRepairEvidence, decideBrowserSurfaceRepair } from "./browser-surface/repair-decision.ts";
-import { BLOCKED_PROMOTION_THRESHOLD } from "./connection-health-policy.ts";
+import { BLOCKED_PROMOTION_THRESHOLD, OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS } from "./connection-health-policy.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -77,7 +77,34 @@ export type ConnectionConditionType =
   | "ScheduleEligible"
   | "SourceCoverageComplete";
 
-export type ConnectionConditionStatus = "false" | "true" | "unknown";
+/**
+ * Condition status.
+ *
+ *   - `true`           : the condition holds on current evidence.
+ *   - `false`          : the condition is violated on current evidence.
+ *   - `unknown`        : the condition is answerable in principle, but current
+ *                        evidence does not settle it. A verdict is genuinely
+ *                        pending.
+ *   - `not_applicable` : the condition cannot apply to this connection at all,
+ *                        because the evidence source it reads does not exist
+ *                        here (no local-device binding, no managed runtime
+ *                        surface, no browser-process continuity to prove). This
+ *                        is a *settled* answer, not a pending one.
+ *
+ * `not_applicable` exists so the projection stops encoding certainty as doubt.
+ * A self-hosted deployment with no local collector and no
+ * `@opendatalabs/remote-surface` package can never answer `BacklogClear` or
+ * `RemoteSurfaceAvailable`; reporting those as `unknown` invited the owner to
+ * wait for a verdict that would never arrive. {@link pickSupportingConditionIds}
+ * filters these out of the owner-facing supporting list the same way it filters
+ * uninteresting `true`+`info` conditions, so a healthy connection shows an
+ * honest, near-empty diagnostics list.
+ *
+ * Classification treats `not_applicable` exactly as it treated the `unknown` it
+ * replaces: it is never `true` and never `false`, so no headline state, axis, or
+ * healthy-set predicate changes. Only presentation changes.
+ */
+export type ConnectionConditionStatus = "false" | "not_applicable" | "true" | "unknown";
 
 export type ConnectionConditionSeverity = "blocked" | "error" | "info" | "warning";
 
@@ -103,6 +130,8 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_SUCCEEDED: "collection_succeeded",
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
   COVERAGE_UNKNOWN: "coverage_unknown",
+  CREDENTIAL_CONTINUITY_NOT_APPLICABLE: "credential_continuity_not_applicable",
+  CREDENTIAL_CONTINUITY_PROVEN: "credential_continuity_proven",
   CREDENTIAL_CONTINUITY_UNPROVEN: "credential_continuity_unproven",
   CREDENTIAL_REJECTED: "credential_rejected",
   CREDENTIAL_REQUIRED: "credential_required",
@@ -114,6 +143,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   LOCAL_EXPORTER_ACTIVE: "local_exporter_active",
   LOCAL_EXPORTER_DEAD_LETTER_BACKLOG: "local_exporter_dead_letter_backlog",
   LOCAL_EXPORTER_IDLE: "local_exporter_idle",
+  LOCAL_EXPORTER_NOT_APPLICABLE: "local_exporter_not_applicable",
   LOCAL_EXPORTER_STALE_HEARTBEAT: "local_exporter_stale_heartbeat",
   LOCAL_EXPORTER_STALE_PENDING: "local_exporter_stale_pending",
   LOCAL_EXPORTER_STALLED: "local_exporter_stalled",
@@ -126,6 +156,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   OUTBOX_ACTIVE: "outbox_active",
   OUTBOX_DEAD_LETTER_BACKLOG: "outbox_dead_letter_backlog",
   OUTBOX_IDLE: "outbox_idle",
+  OUTBOX_NOT_APPLICABLE: "outbox_not_applicable",
   OUTBOX_STALE_HEARTBEAT: "outbox_stale_heartbeat",
   OUTBOX_STALE_PENDING: "outbox_stale_pending",
   OUTBOX_STALLED: "outbox_stalled",
@@ -138,6 +169,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   REMOTE_SURFACE_FAILED: "remote_surface_failed",
   REMOTE_SURFACE_NOT_REQUIRED: "remote_surface_not_required",
   REMOTE_SURFACE_UNKNOWN: "remote_surface_unknown",
+  RETRY_NOT_APPLICABLE: "retry_not_applicable",
   RUNTIME_AVAILABLE: "runtime_available",
   RUNTIME_BINDING_MISSING: "runtime_binding_missing",
   RUNTIME_NOT_MANAGED: "runtime_not_managed",
@@ -369,6 +401,15 @@ export interface OutboxDiagnosticCounts {
   readonly dead_letter?: number;
   readonly leased?: number;
   readonly oldest_pending_at?: string | null;
+  /**
+   * `MIN(created_at)` over ready rows that have actually failed at least
+   * once (`attempt_count > 0`) — evidence a retry is genuinely stuck, not
+   * just that a row is queued. Distinct from `oldest_pending_at`, which
+   * also ages with a freshly-enqueued, never-failed row (e.g. a large
+   * healthy first drain). Kept for backlog age policy; `oldest_pending_at`
+   * remains the ordinary backlog-diagnostics field.
+   */
+  readonly oldest_retrying_at?: string | null;
   readonly pending?: number;
   readonly retrying?: number;
   readonly stale_leases?: number;
@@ -419,25 +460,33 @@ const OUTBOX_DIAGNOSTIC_COUNT_FIELDS: readonly OutboxDiagnosticCountField[] = [
   "total",
 ];
 
+type OutboxDiagnosticTimestampField = "oldest_pending_at" | "oldest_retrying_at";
+
+const OUTBOX_DIAGNOSTIC_TIMESTAMP_FIELDS: readonly OutboxDiagnosticTimestampField[] = [
+  "oldest_pending_at",
+  "oldest_retrying_at",
+];
+
 /**
  * Roll up several source instances' `OutboxDiagnosticCounts` into one
  * connection-level summary. Pure — no I/O, no clock reads.
  *
- * The numeric count fields are summed; `oldest_pending_at` takes the
- * earliest non-null timestamp so the connection reports the longest-waiting
- * record across its sources. A non-finite or negative count is ignored
+ * The numeric count fields are summed; each timestamp field
+ * (`oldest_pending_at`, `oldest_retrying_at`) independently takes the
+ * earliest non-null value across sources so the connection reports the
+ * longest-waiting record/retry. A non-finite or negative count is ignored
  * (treated as absent) rather than poisoning the sum — the store already
  * normalizes counts, but this keeps the helper safe for any caller.
  *
- * Returns `null` when no input carries any numeric count, so a connection
- * with only empty/absent diagnostics surfaces no count rollup rather than a
- * misleading all-zero object.
+ * Returns `null` when no input carries any numeric count or timestamp, so a
+ * connection with only empty/absent diagnostics surfaces no count rollup
+ * rather than a misleading all-zero object.
  */
 export function rollupOutboxDiagnosticCounts(
   items: readonly (OutboxDiagnosticCounts | null | undefined)[]
 ): OutboxDiagnosticCounts | null {
   const sums = new Map<OutboxDiagnosticCountField, number>();
-  let oldestPendingAt: string | null = null;
+  const oldestTimestamps = new Map<OutboxDiagnosticTimestampField, string>();
   for (const item of items) {
     if (!item) {
       continue;
@@ -449,19 +498,19 @@ export function rollupOutboxDiagnosticCounts(
       }
       sums.set(field, (sums.get(field) ?? 0) + value);
     }
-    if (
-      typeof item.oldest_pending_at === "string" &&
-      item.oldest_pending_at.length > 0 &&
-      (oldestPendingAt === null || item.oldest_pending_at < oldestPendingAt)
-    ) {
-      oldestPendingAt = item.oldest_pending_at;
+    for (const field of OUTBOX_DIAGNOSTIC_TIMESTAMP_FIELDS) {
+      const value = item[field];
+      const current = oldestTimestamps.get(field);
+      if (typeof value === "string" && value.length > 0 && (current === undefined || value < current)) {
+        oldestTimestamps.set(field, value);
+      }
     }
   }
-  if (sums.size === 0 && oldestPendingAt === null) {
+  if (sums.size === 0 && oldestTimestamps.size === 0) {
     return null;
   }
-  const result: OutboxDiagnosticCounts = Object.fromEntries(sums);
-  return oldestPendingAt === null ? result : { ...result, oldest_pending_at: oldestPendingAt };
+  const result: OutboxDiagnosticCounts = { ...Object.fromEntries(sums), ...Object.fromEntries(oldestTimestamps) };
+  return result;
 }
 
 /**
@@ -1118,6 +1167,21 @@ export interface ComputeConnectionHealthInput {
   readonly detailGapBacklog?: ConnectionDetailGapBacklogEvidence | null;
   readonly ephemeralBrowserRuntime?: EphemeralBrowserRuntimeProjection | null | undefined;
   readonly freshness: ConnectionFreshnessEvidence | null;
+  /**
+   * True when this connection collects through an enrolled local-device
+   * collector, so the local-device outbox axis is a question this deployment can
+   * actually answer. Server-side connectors (a browser-backed Reddit connection,
+   * for example) have no local collector component at all, and their outbox axis
+   * stays `unknown` forever — not because evidence is missing, but because there
+   * is no exporter to report one.
+   *
+   * The projection uses this only to distinguish "no outbox evidence yet" from
+   * "this connection has no outbox", which selects `not_applicable` instead of
+   * `unknown` for `BacklogClear` / `LocalExporterAvailable`. It never changes the
+   * axis, the headline state, or any remediation. Omit/`false` preserves the
+   * prior `unknown` behavior for callers that do not know the binding.
+   */
+  readonly localDeviceBacked?: boolean;
   readonly localDeviceCollection?: ConnectionLocalDeviceCollectionEvidence | null;
   readonly observedAt?: string | null;
   readonly outbox: ConnectionOutboxEvidence | null;
@@ -1155,16 +1219,18 @@ type ClassificationStep = (
 // Ordered precedence: each step returns a snapshot args object when it claims
 // the verdict, otherwise null and we fall through to the next step. The order
 // encodes UI policy: unreliable evidence beats current owner action beats
-// owner pause beats blocking conditions beats retry exhaustion beats backoff
-// beats degraded evidence beats no-verdict beats healthy.
+// owner pause beats blocking conditions beats retry exhaustion beats degrading
+// evidence beats passive backoff beats no-verdict beats healthy. Backoff is
+// allowed to claim `cooling_off` only when the evidence-positive degrading
+// predicate has no independent collection/runtime failure to report.
 const HEALTH_CLASSIFICATION_STEPS: readonly ClassificationStep[] = [
   classifyUnreliableProjection,
   classifyOpenAttention,
   classifyOwnerPaused,
   classifyReadinessBlocked,
   classifyRetryPolicyExhausted,
-  classifyCoolingOff,
   classifyDegradedEvidence,
+  classifyCoolingOff,
   classifyCurrentEvidenceWithoutVerdict,
   classifyCurrentManagedRuntimeUnknown,
   classifyCurrentManagedRemoteSurfaceUnknown,
@@ -1322,9 +1388,20 @@ function classifyRetryPolicyExhausted(ctx: ClassificationContext): ReturnType<Cl
 }
 
 function classifyCoolingOff(ctx: ClassificationContext): ReturnType<ClassificationStep> {
-  // 5. Backoff currently delaying retry -> cooling_off.
+  // Backoff currently delaying retry -> cooling_off, but only when it is the
+  // sole degrading evidence. Collection, coverage, freshness, and runtime
+  // failures are more informative than the scheduler's retry timing. Manual-
+  // only unscheduled connectors expose RetryPolicyClear as not_applicable, so
+  // they naturally fall through to healthy or the manual stale advisory.
   const retryPolicy = ctx.conditionSet.get("RetryPolicyClear");
-  if (retryPolicy?.status !== "false") {
+  if (
+    retryPolicy?.status !== "false" ||
+    !hasAffirmativePassiveRecoveryEvidence({
+      axes: ctx.axes,
+      conditions: ctx.conditions,
+      next_attempt_at: ctx.nextAttemptAt,
+    })
+  ) {
     return null;
   }
   return {
@@ -1339,9 +1416,9 @@ function classifyCoolingOff(ctx: ClassificationContext): ReturnType<Classificati
 }
 
 function classifyDegradedEvidence(ctx: ClassificationContext): ReturnType<ClassificationStep> {
-  // 6. Outbox stalled, coverage incomplete, gaps present, or last run failed
+  // Outbox stalled, coverage incomplete, gaps present, or last run failed
   //    -> degraded. Success-with-gaps must not be healthy.
-  if (!hasDegradingCondition(ctx.conditions)) {
+  if (!hasIndependentDegradingEvidence(ctx.conditions)) {
     return null;
   }
   return {
@@ -1615,7 +1692,47 @@ function isDegradingCondition(item: ConnectionHealthCondition): boolean {
   return item.severity === "warning" || item.severity === "error" || item.severity === "blocked";
 }
 
-function hasDegradingCondition(conditions: readonly ConnectionHealthCondition[]): boolean {
+/**
+ * The evidence-positive passive-recovery authority shared by the connection
+ * classifier and downstream owner/fleet projections. Backoff timing is not
+ * enough: collection, complete coverage, freshness, an enabled schedule, and
+ * a clear owner/runtime boundary must all be current affirmative evidence.
+ */
+export function hasAffirmativePassiveRecoveryEvidence(
+  evidence: Pick<ConnectionHealthSnapshot, "axes" | "conditions" | "next_attempt_at">
+): boolean {
+  const hasCurrentCondition = (type: ConnectionConditionType, status: ConnectionHealthCondition["status"]): boolean =>
+    evidence.conditions.some(
+      (candidate) => candidate.current && candidate.type === type && candidate.status === status
+    );
+  const blockerTypes: readonly ConnectionConditionType[] = [
+    "CredentialsValid",
+    "ProjectionReliable",
+    "RuntimeAvailable",
+    "RemoteSurfaceAvailable",
+    "LocalExporterAvailable",
+  ];
+  return (
+    evidence.axes.coverage === "complete" &&
+    evidence.axes.freshness === "fresh" &&
+    evidence.next_attempt_at !== null &&
+    hasCurrentCondition("CollectionSucceeded", "true") &&
+    hasCurrentCondition("SourceCoverageComplete", "true") &&
+    hasCurrentCondition("Fresh", "true") &&
+    hasCurrentCondition("ScheduleEligible", "true") &&
+    hasCurrentCondition("AttentionClear", "true") &&
+    !hasIndependentDegradingEvidence(evidence.conditions) &&
+    !blockerTypes.some((type) => hasCurrentCondition(type, "false"))
+  );
+}
+
+/**
+ * The evidence-positive health authority shared by scheduler and fleet
+ * projections. Policy-only conditions (`RetryPolicyClear`, `ScheduleEligible`,
+ * and `AttentionClear`) do not make a connection degraded; collection,
+ * coverage, freshness, runtime, and terminal evidence do.
+ */
+export function hasIndependentDegradingEvidence(conditions: readonly ConnectionHealthCondition[]): boolean {
   return conditions.some(isDegradingCondition);
 }
 
@@ -1641,6 +1758,7 @@ function projectConditions(
   const observedAt = input.observedAt ?? input.run?.lastSuccessAt ?? input.backoff?.nextRunAt ?? null;
   // The stalled cause is only meaningful when the axis is actually stalled.
   const stalledCause = axes.outbox === "stalled" ? (input.outbox?.cause ?? null) : null;
+  const localDeviceBacked = input.localDeviceBacked === true;
   return [
     projectionReliableCondition(input),
     scheduleEligibleCondition(input),
@@ -1651,10 +1769,10 @@ function projectConditions(
     credentialContinuityCondition(input),
     runtimeAvailableCondition(input),
     remoteSurfaceAvailableCondition(input),
-    localExporterAvailableCondition(axes, stalledCause),
+    localExporterAvailableCondition(axes, stalledCause, localDeviceBacked),
     sourceCoverageCondition(input, axes),
     freshCondition(input, axes),
-    backlogClearCondition(axes, stalledCause),
+    backlogClearCondition(axes, stalledCause, localDeviceBacked),
   ].map((item) => {
     const conditionObservedAt = item.observed_at ?? observedAt;
     return {
@@ -1758,12 +1876,33 @@ function canonicalProjectionUnreliableSources(sources: readonly string[]): reado
 
 function scheduleEligibleCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   if (!input.schedule) {
+    // "There is no schedule row" is a fact the scheduler is certain about, so it
+    // must not render as a pending verdict. It is deliberately NOT `false`:
+    // `classifyOwnerPaused` treats any false `ScheduleEligible` as an intentional
+    // owner pause and would demote an otherwise-healthy connection to `idle`,
+    // and `pickDominantConditionId` would surface it as the dominant condition
+    // for that idle state. Both would change what the projection claims is true
+    // about the connection, which this change must not do.
+    //
+    // `not_applicable` is the honest encoding for the owner-facing surface: no
+    // schedule *policy* applies here yet. The condition drops out of the
+    // supporting list rather than sitting there as a permanent "Unknown", and
+    // the schedules page remains the place where the owner sets one. The copy
+    // states the consequence the owner can act on instead of naming an absent
+    // config object.
     return condition({
-      message: "No scheduler policy is configured for this connection.",
+      message: "No schedule yet — this connection runs only when you sync it.",
       origin: "scheduler",
       reason: CONDITION_REASON.SCHEDULE_NOT_CONFIGURED,
+      remediation: {
+        action: "wait",
+        label: "Set a schedule to refresh this connection automatically",
+        retryable: false,
+        surface: { kind: "schedule" },
+        target: "schedule",
+      },
       severity: "info",
-      status: "unknown",
+      status: "not_applicable",
       type: "ScheduleEligible",
     });
   }
@@ -1794,6 +1933,16 @@ function scheduleEligibleCondition(input: ComputeConnectionHealthInput): Connect
 }
 
 function retryPolicyClearCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
+  if (isManualRefreshOnly(input.refresh) && !isExplicitOwnerScheduledManual(input.refresh, input.schedule)) {
+    return condition({
+      message: "This connection refreshes only when the owner starts it, so scheduler retry timing does not apply.",
+      origin: "scheduler",
+      reason: CONDITION_REASON.RETRY_NOT_APPLICABLE,
+      severity: "info",
+      status: "not_applicable",
+      type: "RetryPolicyClear",
+    });
+  }
   if (!input.backoff || conditionExpired(input.backoff.nextRunAt, input.observedAt ?? null)) {
     return condition({
       message: input.backoff
@@ -2136,12 +2285,30 @@ function credentialContinuityCondition(input: ComputeConnectionHealthInput): Con
       type: "CredentialContinuity",
     });
   }
+  // The runtime does the work to prove continuity across a process replacement;
+  // before this branch existed the answer was computed and then discarded, so a
+  // proven session and an unprobed one rendered identically.
+  if (continuity === "continuity_proven") {
+    return condition({
+      message: "Browser-session continuity is proven across the last process replacement.",
+      origin: "runtime",
+      reason: CONDITION_REASON.CREDENTIAL_CONTINUITY_PROVEN,
+      severity: "info",
+      status: "true",
+      type: "CredentialContinuity",
+    });
+  }
+  // Everything else is `not_applicable` — either the projection said so (any
+  // connection that is not browser-runtime backed, or a dynamic runtime with no
+  // replacement receipt), or there is no ephemeral runtime projection at all.
+  // There is no process-bound session here, so nothing could ever prove or
+  // disprove continuity. That is a settled answer, not a pending one.
   return condition({
-    message: "No process-bound credential continuity proof is required or available.",
+    message: "This connection has no process-bound browser session, so continuity does not apply.",
     origin: "runtime",
-    reason: CONDITION_REASON.CREDENTIALS_NOT_PROBED,
+    reason: CONDITION_REASON.CREDENTIAL_CONTINUITY_NOT_APPLICABLE,
     severity: "info",
-    status: "unknown",
+    status: "not_applicable",
     type: "CredentialContinuity",
   });
 }
@@ -2195,7 +2362,7 @@ function unmanagedEphemeralRuntimeCondition(): ConnectionHealthCondition {
     origin: "runtime",
     reason: CONDITION_REASON.RUNTIME_NOT_MANAGED,
     severity: "info",
-    status: "unknown",
+    status: "not_applicable",
     type: "RuntimeAvailable",
   });
 }
@@ -2252,7 +2419,7 @@ function legacyRuntimeAvailableCondition(input: ComputeConnectionHealthInput): C
       origin: "runtime",
       reason: CONDITION_REASON.RUNTIME_NOT_MANAGED,
       severity: "info",
-      status: "unknown",
+      status: "not_applicable",
       type: "RuntimeAvailable",
     });
   }
@@ -2313,7 +2480,7 @@ function idleDynamicRuntimeRemoteSurfaceCondition(
     origin: "remote_surface",
     reason: CONDITION_REASON.REMOTE_SURFACE_NOT_REQUIRED,
     severity: "info",
-    status: "unknown",
+    status: "not_applicable",
     type: "RemoteSurfaceAvailable",
   });
 }
@@ -2331,7 +2498,7 @@ function legacyRemoteSurfaceAvailableCondition(input: ComputeConnectionHealthInp
       origin: "remote_surface",
       reason: CONDITION_REASON.REMOTE_SURFACE_NOT_REQUIRED,
       severity: "info",
-      status: "unknown",
+      status: "not_applicable",
       type: "RemoteSurfaceAvailable",
     });
   }
@@ -2464,7 +2631,8 @@ function stalledCauseCopy(cause: OutboxStalledCause | null): StalledCauseCopy {
 
 function localExporterAvailableCondition(
   axes: ConnectionAxes,
-  stalledCause: OutboxStalledCause | null
+  stalledCause: OutboxStalledCause | null,
+  localDeviceBacked: boolean
 ): ConnectionHealthCondition {
   switch (axes.outbox) {
     case "idle":
@@ -2503,14 +2671,27 @@ function localExporterAvailableCondition(
       });
     }
     default:
-      return condition({
-        message: "No trusted local exporter evidence is available.",
-        origin: "local_device",
-        reason: CONDITION_REASON.LOCAL_EXPORTER_UNKNOWN,
-        severity: "info",
-        status: "unknown",
-        type: "LocalExporterAvailable",
-      });
+      // A connection with no local-device binding has no exporter to report on,
+      // so this is settled rather than pending. Keep the honest `unknown` for a
+      // local-device-backed connection whose collector simply has not checked in
+      // yet — there the evidence really is outstanding.
+      return localDeviceBacked
+        ? condition({
+            message: "No trusted local exporter evidence is available.",
+            origin: "local_device",
+            reason: CONDITION_REASON.LOCAL_EXPORTER_UNKNOWN,
+            severity: "info",
+            status: "unknown",
+            type: "LocalExporterAvailable",
+          })
+        : condition({
+            message: "This connection collects on the server, so no local exporter applies.",
+            origin: "local_device",
+            reason: CONDITION_REASON.LOCAL_EXPORTER_NOT_APPLICABLE,
+            severity: "info",
+            status: "not_applicable",
+            type: "LocalExporterAvailable",
+          });
   }
 }
 
@@ -2883,7 +3064,8 @@ function deriveConnectionForwardDisposition(
 
 function backlogClearCondition(
   axes: ConnectionAxes,
-  stalledCause: OutboxStalledCause | null
+  stalledCause: OutboxStalledCause | null,
+  localDeviceBacked: boolean
 ): ConnectionHealthCondition {
   switch (axes.outbox) {
     case "idle":
@@ -2928,14 +3110,26 @@ function backlogClearCondition(
       });
     }
     default:
-      return condition({
-        message: "No trusted local-device outbox evidence is available.",
-        origin: "local_device",
-        reason: CONDITION_REASON.OUTBOX_UNKNOWN,
-        severity: "info",
-        status: "unknown",
-        type: "BacklogClear",
-      });
+      // Mirrors `localExporterAvailableCondition`: no local-device binding means
+      // there is no outbox to have a backlog, which is settled. A bound
+      // connection with no heartbeat yet stays honestly `unknown`.
+      return localDeviceBacked
+        ? condition({
+            message: "No trusted local-device outbox evidence is available.",
+            origin: "local_device",
+            reason: CONDITION_REASON.OUTBOX_UNKNOWN,
+            severity: "info",
+            status: "unknown",
+            type: "BacklogClear",
+          })
+        : condition({
+            message: "This connection collects on the server, so there is no local-device outbox.",
+            origin: "local_device",
+            reason: CONDITION_REASON.OUTBOX_NOT_APPLICABLE,
+            severity: "info",
+            status: "not_applicable",
+            type: "BacklogClear",
+          });
   }
 }
 
@@ -3011,8 +3205,7 @@ function isExternalToolUnavailableReason(normalized: string): boolean {
   return (
     normalized.includes("binary_missing") ||
     normalized.includes("external_tool_missing") ||
-    normalized.includes("external_tool_unavailable") ||
-    normalized.includes("slackdump_missing")
+    normalized.includes("external_tool_unavailable")
   );
 }
 
@@ -3024,6 +3217,17 @@ function conditionClassifierText(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
+// Deliberately keeps literal token-prefix shapes (github_pat_/gho_/ghp_,
+// xox[baprs]-) alongside the generic secret-syntax patterns
+// (`key: value`/`bearer …`) rather than moving them to a manifest-declared
+// list. This is a defense-in-depth leak filter applied to arbitrary
+// upstream/connector-authored condition text before it is persisted and
+// displayed — it must catch a real secret even when a manifest is stale,
+// missing, or the leak comes from a connector whose manifest never declared
+// this shape. Trusting only manifest-declared prefixes here would make the
+// filter's coverage a function of manifest completeness instead of a fixed
+// security invariant. LONG_OPAQUE_CONDITION_PATTERN (below) is the
+// content-agnostic backstop for prefix shapes this list doesn't name.
 const SECRET_CONDITION_PATTERN =
   /(authorization\s*[:=]|bearer\s+[A-Za-z0-9]|cookie\s*[:=]|credential\s*[:=]|github_pat_|gho_|ghp_|password\s*[:=]|secret\s*[:=]|token\s*[:=]|xox[baprs]-)/i;
 const LONG_OPAQUE_CONDITION_PATTERN = /\b[A-Za-z0-9_-]{24,}\b/;
@@ -3125,6 +3329,13 @@ function pickSupportingConditionIds(
       continue;
     }
     if (conditionValue.status === "true" && conditionValue.severity === "info") {
+      continue;
+    }
+    // A condition this connection cannot answer is a settled fact, not a pending
+    // verdict. Surfacing it would tell the owner to wait for evidence that no
+    // deployment change short of enrolling a local collector or installing the
+    // remote-surface package could ever produce.
+    if (conditionValue.status === "not_applicable") {
       continue;
     }
     ids.push(conditionValue.id);
@@ -3314,6 +3525,19 @@ export interface HeartbeatOutboxEvidence {
   readonly lastHeartbeatAt: string | null;
   /** Last reported `status` from the heartbeat body. */
   readonly lastHeartbeatStatus: "blocked" | "healthy" | "retrying" | "starting" | "stopped" | null;
+  /**
+   * ISO timestamp of the oldest still-`ready` outbox row that has actually
+   * failed at least once (`attempt_count > 0`), i.e. real retry evidence —
+   * NOT the oldest ready row overall. A large healthy first drain enqueues
+   * rows that can sit `ready` for hours before their first attempt without
+   * ever failing; using the oldest-ready timestamp for an age policy would
+   * label that in-progress, never-failed backlog a stuck retry. `null`/
+   * absent/unparseable is treated as "no retry-age evidence": the
+   * backlog-age check below never fires, so a missing or malformed
+   * timestamp fails conservatively (stays at its pre-existing axis) rather
+   * than fabricating a stall.
+   */
+  readonly oldestRetryingAt?: string | null;
   /** Pending durable work depth the device last reported. */
   readonly recordsPending: number | null;
 }
@@ -3337,6 +3561,27 @@ export interface HeartbeatOutboxEvidence {
  * or before it ever reports its first `healthy` heartbeat — e.g. the
  * host or the collector process was killed on restart without a final
  * heartbeat).
+ *
+ * Stale-backlog detection: a *fresh* heartbeat with pending work does not,
+ * by itself, prove the backlog is healthy — an explicit-transient row
+ * retries forever by design (see `collector-runner.ts`'s
+ * `classifyLocalDeviceFailure`), so a permanently-broken endpoint that
+ * happens to fail in a retryable shape (5xx, timeout, network fault) would
+ * otherwise sit in `active` forever with a live-looking heartbeat. This
+ * check is keyed on `evidence.oldestRetryingAt` — the oldest row with real
+ * retry evidence (`attempt_count > 0`), NOT the oldest ready row overall.
+ * Age alone cannot answer whether a retry is stuck: a large healthy first
+ * drain enqueues rows that sit `ready` for hours before their first
+ * attempt without ever failing, and using oldest-ready age would falsely
+ * degrade that in-progress, never-failed backlog. When
+ * `evidence.oldestRetryingAt` is older than
+ * `OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS`, the axis degrades to `stalled`
+ * with cause `transient_upload_failure` — the same system-handled,
+ * no-owner-action cause already used for a dead-lettered transient-5xx
+ * summary, since both describe the same situation: the system, not the
+ * owner, owns recovery. A missing or unparseable `oldestRetryingAt` (no row
+ * has ever failed) never triggers this path, so an ordinary healthy
+ * backlog fails conservatively rather than fabricating a stall.
  */
 export function deriveOutboxAxisFromHeartbeat(
   evidence: HeartbeatOutboxEvidence,
@@ -3368,6 +3613,10 @@ export function deriveOutboxAxisFromHeartbeat(
 
   if (pending > 0 && heartbeatStale) {
     return { axis: "stalled", cause: "stale_pending", unreliable: false };
+  }
+  const retryingBacklogAgeMs = ageMs(evidence.oldestRetryingAt ?? null, options.nowIso);
+  if (pending > 0 && retryingBacklogAgeMs !== null && retryingBacklogAgeMs > OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS) {
+    return { axis: "stalled", cause: "transient_upload_failure", unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "starting" || evidence.lastHeartbeatStatus === "retrying") {
     if (heartbeatStale) {
@@ -3424,7 +3673,10 @@ function isTransientDeadLetterErrorClass(errorClass: string): boolean {
   );
 }
 
-function ageMs(iso: string, nowIso: string): number | null {
+function ageMs(iso: string | null, nowIso: string): number | null {
+  if (iso === null) {
+    return null;
+  }
   const observed = Date.parse(iso);
   const now = Date.parse(nowIso);
   if (!(Number.isFinite(observed) && Number.isFinite(now))) {

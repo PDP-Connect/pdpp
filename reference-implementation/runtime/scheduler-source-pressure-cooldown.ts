@@ -24,12 +24,26 @@
  * recovery attempt counts) and relaxes the moment the gaps recover (the
  * pending set becomes empty), so a clean/recovered run is never stuck.
  *
- * This module is **pure**, mirroring `scheduler-backoff.ts`: it takes the
- * pending pressure gaps + the connector's base interval and returns a
- * decision. No I/O, no timers, no store access. The scheduler reads the
- * durable gaps through an injected probe and feeds them here; the controller
- * projection feeds the same shape so the dashboard renders an honest
- * `cooling_off` pill instead of bare green while pressure gaps remain.
+ * The core decision math (`computeSourcePressureCooldown`) is **pure**,
+ * mirroring `scheduler-backoff.ts`: it takes the pending pressure gaps + the
+ * connector's base interval and returns a decision. No I/O, no timers, no
+ * store access. The scheduler reads the durable gaps through an injected
+ * probe and feeds them here; the controller projection feeds the same shape
+ * so the dashboard renders an honest `cooling_off` pill instead of bare green
+ * while pressure gaps remain.
+ *
+ * `cooldownProfileForConnector` (and therefore
+ * `computeConnectionSourcePressureCooldown`, which resolves through it) is
+ * the one deliberate exception to that purity claim: it does real I/O — a
+ * DB-backed manifest lookup (`getConnectorManifest`) — to read a connector's
+ * self-attested `capabilities.refresh_policy.max_cooldown_cycles` instead of
+ * consulting a hardcoded per-connector registry. This keeps connector-specific
+ * knowledge (a provider's observed recovery-window length) out of the RI and
+ * in the connector's own manifest, matching the precedent every other
+ * request-time manifest read in this codebase already follows (e.g.
+ * `scheduler-manager-factory.ts`, `search.ts`, `runtime/controller.ts` itself).
+ * All four real call sites are already inside `async` functions, so this adds
+ * no new sync/async boundary.
  *
  * The cooldown is deliberately orthogonal to failure back-off: a connection
  * can be failing (back-off) *and* carrying pressure gaps (cooldown) at the
@@ -39,6 +53,9 @@
  * is intentionally subject to it so the owner does not accidentally hammer a
  * hot account.
  */
+
+import { getConnectorManifest } from "../server/auth.ts";
+import { PROVIDER_PRESSURE_REASONS } from "./recovery-reason-codes.ts";
 
 // ─── Pressure reasons ───────────────────────────────────────────────────────
 
@@ -52,8 +69,9 @@
  * `upstream_pressure` and `rate_limited` are the two source-pressure reasons a
  * connector emits on a `DETAIL_GAP` (see
  * `packages/polyfill-connectors/src/connector-runtime-protocol.ts`).
+ * This aliases the recovery vocabulary so scheduling and presentation cannot drift.
  */
-export const SOURCE_PRESSURE_GAP_REASONS: ReadonlySet<string> = new Set(["rate_limited", "upstream_pressure"]);
+export const SOURCE_PRESSURE_GAP_REASONS: ReadonlySet<string> = PROVIDER_PRESSURE_REASONS;
 
 // ─── Tunables ──────────────────────────────────────────────────────────────
 
@@ -85,29 +103,36 @@ export const DEFAULT_MAX_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 // ─── Provider profiles (§10-B, §3 rule 6) ───────────────────────────────────
 //
 // maxCooldownCycles is a ProviderProfile field. A connector MAY declare its own
-// value (ChatGPT does — the registry override below), but it can NEVER opt OUT of
-// the §10-B no-progress escalation: `cooldownProfileForConnector` falls every
-// unregistered connector back to a conservative `DEFAULT_COOLDOWN_PROFILE`
+// value via its manifest's `capabilities.refresh_policy.max_cooldown_cycles`
+// (ChatGPT does — see packages/polyfill-connectors/manifests/chatgpt.json),
+// but it can NEVER opt OUT of the §10-B no-progress escalation:
+// `cooldownProfileForConnector` falls every connector with no declared value
+// (or an unresolvable manifest) back to a conservative `DEFAULT_COOLDOWN_PROFILE`
 // (spec §10-A/§10-B "impossible by construction"). This is distinct from the §3
 // rule-6 *safety/ban prior* (`pacingMinIntervalMs`, strictly per-provider, no
 // default): maxCooldownCycles is a no-progress escalation budget, not a rate
 // prior — so a safe shared default is correct, and a SILENT "never escalate"
 // (the pre-fix absent → Infinity) is the §10-B bug being closed.
+//
+// A connector-declared value is a SCHEDULING budget, never a classification
+// override: it only changes WHEN escalation fires, never WHETHER it fires.
+// Two independent gates bound it against a malicious/buggy self-attestation:
+// (1) manifest validation rejects an out-of-range declaration outright
+// (`validateRefreshPolicyRecoveryBudgets` in connector-manifest-validation.ts);
+// (2) `RI_MAX_COOLDOWN_CYCLES_CEILING` below clamps whatever the manifest says
+// at the read site, regardless of what validation allowed through.
 
 /**
- * ChatGPT cooldown profile for the §10-B no-progress escalation.
- *
- * maxCooldownCycles: after this many consecutive cooldown cycles with zero
- * forward progress, the connection escalates from `cooling_off` →
- * `needs_attention`. Derived from ChatGPT's observed recovery curve:
- * a pressure window that lasts more than ~48h (8 × 6h cooldown cap) has
- * almost certainly stopped recovering on its own — either the endpoint is
- * down or the account access needs renewal. 8 cycles gives a full 48h window
- * before alarming the owner.
+ * RI-owned hard ceiling on `maxCooldownCycles`, enforced at the read site
+ * regardless of what a connector's manifest declares. A connector-declared
+ * value is clamped to this ceiling — never trusted unbounded — so a
+ * self-attested budget can only ever make escalation slower, never disable
+ * it. Matches the manifest-validation upper bound
+ * (`REFRESH_POLICY_MAX_COOLDOWN_CYCLES_RANGE.max` in
+ * connector-manifest-validation.ts) as defense in depth: this clamp still
+ * holds even if an already-registered manifest predates that validation.
  */
-export const CHATGPT_COOLDOWN_PROFILE = Object.freeze({
-  maxCooldownCycles: 8,
-});
+export const RI_MAX_COOLDOWN_CYCLES_CEILING = 24;
 
 /**
  * §10-B "impossible by construction" default cooldown profile.
@@ -120,42 +145,55 @@ export const CHATGPT_COOLDOWN_PROFILE = Object.freeze({
  * the exact permanent lie §10-B exists to prevent.
  *
  * The fix mirrors §10-A: the production path ALWAYS resolves a real cooldown
- * profile via `cooldownProfileForConnector` (explicit registry override OR this
- * safe default — never null, never Infinity). A connector can NEVER be on the
- * cooldown path with escalation silently disabled. An unaudited connector
- * escalates after a CONSERVATIVE number of no-progress cycles (more generous
- * than ChatGPT's audited 8, since its real recovery window is unknown) rather
- * than never escalating.
+ * profile via `cooldownProfileForConnector` (explicit manifest-declared value OR
+ * this safe default — never null, never Infinity). A connector can NEVER be on
+ * the cooldown path with escalation silently disabled. A connector with no
+ * declared value escalates after a CONSERVATIVE number of no-progress cycles
+ * (more generous than ChatGPT's audited 8, since its real recovery window is
+ * unknown) rather than never escalating.
  */
 export const DEFAULT_COOLDOWN_PROFILE = Object.freeze({
   maxCooldownCycles: 12,
 });
 
-// Per-connector cooldown profile registry. An EXPLICIT entry overrides the
-// default cycle budget with the provider's observed recovery-window length. A
-// connector NOT listed here does NOT opt out of §10-B escalation — it falls back
-// to DEFAULT_COOLDOWN_PROFILE via `cooldownProfileForConnector`. The registry
-// value is an override, never a gate (spec §10-B, §3 rule 6).
-const COOLDOWN_PROFILES: Readonly<Record<string, { maxCooldownCycles: number }>> = Object.freeze({
-  chatgpt: CHATGPT_COOLDOWN_PROFILE,
-});
+/**
+ * Clamp a candidate `maxCooldownCycles` value to the RI hard ceiling. Returns
+ * `null` when the value is not a usable finite positive integer at all (the
+ * caller falls back to `DEFAULT_COOLDOWN_PROFILE` in that case) — this is the
+ * read-site defense-in-depth gate, independent of manifest validation.
+ */
+function clampCooldownCycles(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.min(Math.floor(value), RI_MAX_COOLDOWN_CYCLES_CEILING);
+}
 
 /**
  * Resolve the cooldown profile the production path MUST use. ALWAYS returns a
- * real profile — the explicit per-connector profile when registered, otherwise
- * the safe `DEFAULT_COOLDOWN_PROFILE`. There is no null/Infinity return: a
+ * real profile — the connector's manifest-declared
+ * `capabilities.refresh_policy.max_cooldown_cycles` (clamped to
+ * `RI_MAX_COOLDOWN_CYCLES_CEILING`) when present and resolvable, otherwise the
+ * safe `DEFAULT_COOLDOWN_PROFILE`. There is no null/Infinity return: a
  * connection can never sit on the cooldown path with §10-B escalation silently
  * off. Matches on the canonical connector key prefix so instance-scoped ids
- * (`chatgpt:default`) resolve to the `chatgpt` profile.
+ * (`chatgpt:default`) resolve to the `chatgpt` manifest. Does real I/O (a
+ * DB-backed manifest lookup) — see the module doc comment.
  */
-export function cooldownProfileForConnector(connectorId: string | null | undefined): {
+export async function cooldownProfileForConnector(connectorId: string | null | undefined): Promise<{
   maxCooldownCycles: number;
-} {
+}> {
   if (typeof connectorId === "string" && connectorId) {
     const base = connectorId.split(":")[0]?.split("@")[0];
-    const explicit = base ? COOLDOWN_PROFILES[base] : undefined;
-    if (explicit) {
-      return explicit;
+    if (base) {
+      const manifest = await getConnectorManifest(base).catch(() => null);
+      const declared = clampCooldownCycles(
+        (manifest as { capabilities?: { refresh_policy?: { max_cooldown_cycles?: unknown } } } | null)?.capabilities
+          ?.refresh_policy?.max_cooldown_cycles
+      );
+      if (declared !== null) {
+        return { maxCooldownCycles: declared };
+      }
     }
   }
   return DEFAULT_COOLDOWN_PROFILE;
@@ -198,14 +236,14 @@ export function assertCooldownProfile(profile: { maxCooldownCycles?: number } | 
  * it does not alter the dispatch/drain decision, only the health-state
  * recommendation.
  */
-export function computeConnectionSourcePressureCooldown(
+export async function computeConnectionSourcePressureCooldown(
   connectorId: string | null | undefined,
   pendingGaps: readonly PendingPressureGap[],
   baseIntervalMs: number,
   lastRunAtMs: number,
   options: ComputeCooldownOptions = {}
-): SourcePressureCooldownDecision {
-  const { maxCooldownCycles } = assertCooldownProfile(cooldownProfileForConnector(connectorId));
+): Promise<SourcePressureCooldownDecision> {
+  const { maxCooldownCycles } = assertCooldownProfile(await cooldownProfileForConnector(connectorId));
   return computeSourcePressureCooldown(pendingGaps, baseIntervalMs, lastRunAtMs, {
     ...options,
     maxCooldownCycles,

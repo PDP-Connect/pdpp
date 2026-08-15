@@ -15,6 +15,7 @@ import { closeDb, getDb, initDb } from "../server/db.ts";
 // run, in packages/polyfill-connectors/src/static-secret-injection.test.ts. This
 // suite proves the store<->seam fail-closed contract.
 interface StaticSecretDescriptor {
+  captureRequired?: boolean;
   credentialKind: string;
   secretEnvVars: string[];
 }
@@ -23,9 +24,22 @@ const STATIC_SECRET_REGISTRY: Record<string, StaticSecretDescriptor> = {
   chatgpt: { credentialKind: "username_password", secretEnvVars: ["CHATGPT_PASSWORD"] },
   github: { credentialKind: "personal_access_token", secretEnvVars: ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"] },
   gmail: { credentialKind: "app_password", secretEnvVars: ["GOOGLE_APP_PASSWORD_PDPP", "GMAIL_APP_PASSWORD"] },
+  usaa: { credentialKind: "username_password", secretEnvVars: ["USAA_PASSWORD"] },
+  // venmo mirrors the REAL registry's captureRequired: false (its manifest's
+  // block-level credential_capture.required is false) — the fact
+  // isStaticSecretCaptureOptional reads. usaa is the counterweight: a
+  // required static-secret connector with no such fact.
+  venmo: { captureRequired: false, credentialKind: "username_password", secretEnvVars: ["VENMO_PASSWORD"] },
 };
 function isStaticSecretConnector(connectorId: string): boolean {
   return Object.hasOwn(STATIC_SECRET_REGISTRY, connectorId);
+}
+// Mirrors the REAL `isStaticSecretCaptureOptional`
+// (packages/polyfill-connectors/src/static-secret-injection.ts) — see this
+// file's header comment for why this suite injects local stand-ins instead
+// of importing the connector package's `.ts` runner barrel directly.
+function isStaticSecretCaptureOptional(connectorId: string): boolean {
+  return STATIC_SECRET_REGISTRY[connectorId]?.captureRequired === false;
 }
 function buildConnectionScopedSecretEnv(connectorId: string, recovered: { secret: string }): Record<string, string> {
   const descriptor = STATIC_SECRET_REGISTRY[connectorId];
@@ -55,9 +69,10 @@ import {
 type ResolveStaticSecretRunEnv = (args: {
   connectorId: string;
   connectorInstanceId: string;
-  ownerSubjectId?: string | undefined;
+  ownerSubjectId: string;
   sourceBinding: unknown;
   credentialStore: unknown;
+  isStaticSecretCaptureOptional?: (connectorId: string) => boolean;
   isStaticSecretConnector: (connectorId: string) => boolean;
   buildConnectionScopedSecretEnv: (connectorId: string, recovered: { secret: string }) => Record<string, string>;
 }) => Promise<Record<string, string>>;
@@ -131,7 +146,7 @@ function resolveEnv(
   }: {
     connectorId: string;
     connectorInstanceId: string;
-    ownerSubjectId?: string | undefined;
+    ownerSubjectId: string;
     sourceBinding?: unknown;
   }
 ): Promise<Record<string, string>> {
@@ -140,6 +155,7 @@ function resolveEnv(
     connectorId,
     connectorInstanceId,
     credentialStore: store,
+    isStaticSecretCaptureOptional,
     isStaticSecretConnector,
     ownerSubjectId,
     sourceBinding,
@@ -273,6 +289,87 @@ test(
   })
 );
 
+// F1/F2 run-time half: Venmo's real owner journey today creates a
+// `static_secret`/`static_secret_draft`-bound connection (browser_collector
+// enrollment for this connector class remains proof-gated — see
+// packages/polyfill-connectors/src/static-secret-injection.ts's
+// isStaticSecretCaptureOptional doc), so the EXISTING browser-session
+// sourceBinding.kind exemption above does not apply to it. The manifest's
+// OWN `credential_capture.required: false` fact (captureRequired on the
+// registry descriptor) must independently forgive a missing credential —
+// this is the provider-neutral authority the run env resolver reads,
+// never a connector-name check.
+test(
+  "a connector whose manifest declares credential_capture.required: false may run without a static credential, even on a plain static_secret binding",
+  withStore(async (store) => {
+    seedConnectorInstance({
+      connectorId: "venmo",
+      connectorInstanceId: "cin_venmo",
+      ownerSubjectId: "owner_1",
+      sourceBinding: { kind: "static_secret" },
+    });
+    const env = await resolveEnv(store, {
+      connectorId: "venmo",
+      connectorInstanceId: "cin_venmo",
+      ownerSubjectId: "owner_1",
+      sourceBinding: { kind: "static_secret" },
+    });
+    assert.equal(env, null);
+  })
+);
+
+test(
+  "the SAME optional connector still injects its stored credential when one IS present",
+  withStore(async (store) => {
+    seedConnectorInstance({
+      connectorId: "venmo",
+      connectorInstanceId: "cin_venmo_saved",
+      ownerSubjectId: "owner_1",
+      sourceBinding: { kind: "static_secret" },
+    });
+    await store.capture({
+      connectorInstanceId: "cin_venmo_saved",
+      credentialKind: "username_password",
+      now: NOW,
+      ownerSubjectId: "owner_1",
+      secret: "synthetic-venmo-password",
+    });
+    const env = await resolveEnv(store, {
+      connectorId: "venmo",
+      connectorInstanceId: "cin_venmo_saved",
+      ownerSubjectId: "owner_1",
+      sourceBinding: { kind: "static_secret" },
+    });
+    assert.equal(env.VENMO_PASSWORD, "synthetic-venmo-password");
+  })
+);
+
+// Counterweight: a REQUIRED static-secret connector (usaa — no
+// credential_capture.required: false fact) with no stored credential must
+// still fail the run closed on a plain static_secret binding — the new
+// captureOptional path must not accidentally forgive every connector.
+test(
+  "a REQUIRED static-secret connector still fails closed on a missing credential (captureOptional does not leak to it)",
+  withStore(async (store) => {
+    seedConnectorInstance({
+      connectorId: "usaa",
+      connectorInstanceId: "cin_usaa",
+      ownerSubjectId: "owner_1",
+      sourceBinding: { kind: "static_secret" },
+    });
+    await assert.rejects(
+      () =>
+        resolveEnv(store, {
+          connectorId: "usaa",
+          connectorInstanceId: "cin_usaa",
+          ownerSubjectId: "owner_1",
+          sourceBinding: { kind: "static_secret" },
+        }),
+      (err) => err instanceof ConnectorInstanceCredentialError && err.code === "credential_not_found"
+    );
+  })
+);
+
 test(
   "a revoked credential fails the run closed; a run cannot authenticate with a stale secret",
   withStore(async (store) => {
@@ -381,8 +478,16 @@ test(
       ownerSubjectId: "owner_1",
       secret: "work two distinct",
     });
-    const personal = await resolveEnv(store, { connectorId: "gmail", connectorInstanceId: "cin_personal" });
-    const work = await resolveEnv(store, { connectorId: "gmail", connectorInstanceId: "cin_work" });
+    const personal = await resolveEnv(store, {
+      connectorId: "gmail",
+      connectorInstanceId: "cin_personal",
+      ownerSubjectId: "owner_1",
+    });
+    const work = await resolveEnv(store, {
+      connectorId: "gmail",
+      connectorInstanceId: "cin_work",
+      ownerSubjectId: "owner_1",
+    });
     assert.equal(personal.GOOGLE_APP_PASSWORD_PDPP, "personal one here");
     assert.equal(work.GOOGLE_APP_PASSWORD_PDPP, "work two distinct");
     assert.notEqual(personal.GOOGLE_APP_PASSWORD_PDPP, work.GOOGLE_APP_PASSWORD_PDPP);

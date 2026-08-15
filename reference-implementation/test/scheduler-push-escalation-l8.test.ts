@@ -38,6 +38,7 @@ function makeSchedule(overrides: Partial<ConnectorSchedule> = {}): ConnectorSche
     connectorPath: "/nonexistent/connector",
     intervalMs: 1000,
     manifest: { automation: { enabled: true }, display_name: "Test Connector" },
+    ownerSubjectId: "owner-test",
     ownerToken: "owner-test-token",
     ...overrides,
   };
