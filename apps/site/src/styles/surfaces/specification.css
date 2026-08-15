@@ -54,26 +54,30 @@
     --fd-toc-width: 15rem;
   }
 
-  /* Full-bleed grid, not a wider container: rail (240px) + TOC (240px) are
-     fixed regardless of viewport, so ANY fixed container here (marketing's
-     1080px, or a wider spec-only cap) leaves the center track at
-     container-minus-480px. A wider container just relocates the ceiling —
-     #nd-page's own max-w-[900px] mx-auto then clamps *inside* that center
-     track and centers with slack on both sides once the track exceeds 900px,
-     which reads as a dead gap between prose and the TOC rather than real
-     margin (measured live, 2026-08-14: ~300px of empty space between the end
-     of prose text and #nd-toc at 1920 under a 1520px container). Removing
-     the container's max-width instead lets the grid itself span the
-     viewport: rail and TOC sit near the true viewport edges (Cloudflare
-     Docs' pattern, verified live 2026-08-14 — no container, both rails
-     pinned to the viewport, only prose is measured), and #nd-page's own
-     600px-driven measure (via --container-measure on the text elements)
-     governs prose width independent of how much track space exists. Rail
-     and TOC therefore cost the reading column nothing: they sit in space a
-     fixed container would have wasted as background margin anyway. */
-  [data-pdpp-doc-theme] .container.max-w-page {
-    max-width: none;
-  }
+  /* The document track shares the site container rather than going
+     full-bleed, so the rail's links start on the same x as the masthead
+     wordmark and every page on the site opens on one vertical line.
+
+     An earlier revision here removed the container's max-width on the
+     grounds that "Cloudflare Docs pins both rails to the viewport." That
+     was a measurement error: it read Cloudflare's rail CONTAINER, which is
+     indeed full-bleed, not the link text inside it, which sits at x=16
+     against a wordmark at x=24. Re-measured 2026-08-14 across 11 docs sites
+     that have a rail, 9 align the rail's link text to the wordmark within
+     16px (Cloudflare 24/16, Stripe 4/12, Deno 18/18, Astro 24/16, MCP
+     272/256, GitHub 16/24, Terraform 24/16, OpenTelemetry 12/21, Better
+     Stack 405/391) and NONE pins rail text to the viewport edge. Ours sat
+     at 32 while its own wordmark was at 607 — a 575px divergence at 2560,
+     unmatched anywhere in the reference class.
+
+     The rails do now cost the reading column real width — the centre track
+     is container-minus-480px. That is paid for by the shared container
+     width in concept/components.css, NOT by a docs-only override: every
+     reference site that aligns its rail this way keeps ONE container across
+     surfaces and absorbs the rails inside it (Better Stack, Tailscale,
+     OpenTelemetry, MCP and Kubernetes all hold their wordmark at the
+     identical x on docs and non-docs pages, measured 2026-08-14). A
+     docs-only widening would move the masthead between pages again. */
 }
 
 /* Fumadocs ships `#nd-toc` with its own `max-xl:hidden` utility, but the
