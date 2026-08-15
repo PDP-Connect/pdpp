@@ -97,7 +97,7 @@ export class ConnectorSummaryPageCursorError extends Error {
  * Canonical, order-independent scope fingerprint for a `connector_id` filter:
  * `null` (unfiltered) → `""`; a single string → itself (byte-identical to the
  * pre-set-scope digest, so an existing single-id cursor keeps resolving); a
- * SET → its distinct members sorted and joined with ` ` (a byte no
+ * SET → its distinct members sorted and joined with `\0` (a byte no
  * canonical connector id can contain), so `[A, B]` and `[B, A]` fingerprint
  * identically and a set cursor can never be replayed against a different or
  * reordered set.
@@ -109,7 +109,7 @@ function connectorIdScopeFingerprint(connectorId: ConnectorIdScope): string {
   if (typeof connectorId === "string") {
     return connectorId;
   }
-  return [...new Set(connectorId)].sort().join(" ");
+  return [...new Set(connectorId)].sort().join("\0");
 }
 
 /**
@@ -424,8 +424,7 @@ export function decodeConnectorSummaryPageCursor(
     !isNonEmptyString(payload.i) ||
     !isNonEmptyString(payload.s) ||
     !isNonEmptyString(payload.t) ||
-    typeof payload.f !== "string" ||
-    typeof payload.w !== "string"
+    typeof payload.f !== "string"
   ) {
     throw new ConnectorSummaryPageCursorError();
   }
@@ -438,7 +437,14 @@ export function decodeConnectorSummaryPageCursor(
   // even before the scope-digest comparison below — this rejects a
   // cross-surface replay on a cheap plaintext-shaped field the same way `f`
   // rejects a connector_id-scope mismatch.
-  if (payload.w !== sourcesVisibilityFingerprint(sourcesVisibility)) {
+  // Cursors issued before the Sources-only boundary was introduced have no
+  // `w` field. They were unfiltered cursors, so preserve that valid legacy
+  // scope while still rejecting them on the Sources page.
+  const cursorSourcesVisibility = payload.w === undefined ? "" : payload.w;
+  if (
+    typeof cursorSourcesVisibility !== "string" ||
+    cursorSourcesVisibility !== sourcesVisibilityFingerprint(sourcesVisibility)
+  ) {
     throw new ConnectorSummaryPageCursorError();
   }
   let suppliedScope: Buffer;
