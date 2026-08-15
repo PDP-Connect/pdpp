@@ -35,6 +35,7 @@ export function PdppConceptPage({ children, home = false, className }: ConceptPa
           "**:data-[slot=pdpp-concept-doc]:pt-7! **:data-[slot=pdpp-concept-doc]:pb-5! max-md:**:data-[slot=pdpp-concept-doc]:pt-0!",
         className
       )}
+      data-page={home ? "home" : undefined}
       data-slot="pdpp-concept-page"
     >
       {children}

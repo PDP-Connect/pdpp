@@ -11,6 +11,17 @@
  * @theme / [data-surface="concept"] blocks — TW IntelliSense false `{ expected`
  * cascade; notes in this header only.
  *
+ * --container-page is the landing-page width for the whole concept surface,
+ * chrome included. It was 1080, the 10th percentile of its class: of 16
+ * protocol and infra landing pages measured at 1920 on 2026-08-15, only
+ * OAuth.net (960) and Matrix (1000) cap at or below it, and the median is
+ * 1280 — hit exactly by Deno, Astro and Let's Encrypt (Kubernetes 1200,
+ * Rust 1152, W3C 1312, IETF 1300, OpenTelemetry 1320, Tailscale 1440,
+ * MCP 1472, Terraform 1600, SQLite uncapped). Raised on the token rather
+ * than per-page so masthead, hero and footer keep one left edge; scoping it
+ * to the page container alone left the hero hanging 100px outside the chrome
+ * that frames it. Railed surfaces override to 1560 in components.css.
+ *
  * Shared `Text` colors use brand/shadcn utils (text-foreground, text-primary, …).
  * Legacy ink/paper/teal TW classes remain in compat-palette.css until migrated.
  *
@@ -41,7 +52,7 @@
  */
 
 @theme {
-  --container-page: 1080px;
+  --container-page: 1280px;
 
   --spacing-pad: clamp(20px, calc(0.9249rem + 1.3873vw), 32px);
   --spacing-gutter: clamp(40px, calc(2.2832rem + 0.9249vw), 48px);
