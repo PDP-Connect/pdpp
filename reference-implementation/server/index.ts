@@ -271,6 +271,7 @@ import {
   getOwnerConnectionDiagnostics,
   getPendingApprovalDetail,
   invalidateConnectorSummariesCache,
+  listConnectorSourcesSummaryPage,
   listConnectorSummaries,
   listConnectorSummaryPage,
   listOwnerVisibleConnectorInstances,
@@ -5687,9 +5688,25 @@ export function buildAsApp(opts: ServerOpts = {}) {
         includeFleetHealth?: boolean;
         limit: number;
         profile?: ConnectorSummaryPageProfile;
+        sourcesVisibility?: boolean;
       }
     ) => {
       const after = (page.cursor as ConnectorIdentityPageBoundary | null) ?? null;
+      // The owner Sources page's exclusive opt-in (`sources_visibility=1`):
+      // excludes a pure recovered historical fragment BEFORE `LIMIT` via a
+      // dedicated identity-page query, so `has_more`/`next_cursor` are
+      // authoritative over the rows this page renders. Every other caller
+      // (Explore, Add Source, manual upload) omits this and reaches the
+      // unfiltered branches below unchanged.
+      if (page.sourcesVisibility) {
+        const { inventory, ...envelope } = await listConnectorSourcesSummaryPage(controller, {
+          after,
+          includeRunSummaries: "singleton-active",
+          limit: page.limit,
+          ownerSubjectId,
+        });
+        return envelope;
+      }
       // The three profile branches return different `data` element types
       // (`ConnectorSummary` / `ConnectorIdentityInventorySummary` /
       // `ConnectorRetainedCountSummary`); this closure's return type is

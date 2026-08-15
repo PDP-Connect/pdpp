@@ -689,6 +689,16 @@ export interface RefConnectorSummary {
    */
   source_kind?: string;
   /**
+   * Provider-neutral Sources-list visibility (mirrors server `ConnectorSummary
+   * .source_visibility`). `"hidden_from_sources"` marks a PURE recovered
+   * historical fragment — never a UAT-transferred/manual-import row or an
+   * active promoted connection, both of which read `"active"`. Optional: a
+   * reference predating this field omits it, in which case the console shows
+   * the row (fails open to visible, the pre-existing behavior) rather than
+   * hiding rows an older reference never classified.
+   */
+  source_visibility?: "active" | "hidden_from_sources" | null;
+  /**
    * Server-owned work classification derived from `owner_state.resolver`.
    * Optional only for references predating this field; the console fails closed
    * when it is absent instead of classifying raw health locally.
@@ -1723,6 +1733,7 @@ export function listConnectorSummaries(options?: {
   includeFleetHealth?: boolean;
   limit?: number;
   profile?: undefined;
+  sourcesVisibility?: boolean;
 }): Promise<RefConnectorSummariesResponse>;
 export async function listConnectorSummaries(
   options: {
@@ -1738,6 +1749,15 @@ export async function listConnectorSummaries(
     includeFleetHealth?: boolean;
     limit?: number;
     profile?: ConnectorSummaryProfile;
+    /**
+     * Owner Sources page's exclusive opt-in (`sources_visibility=1`):
+     * excludes a pure recovered historical fragment from this identity page
+     * BEFORE the reference's `LIMIT`, so `has_more`/the next cursor stay
+     * authoritative over the rows the Sources list actually renders. Every
+     * other caller (Explore, Add Source, manual upload) omits this. Mutually
+     * exclusive with `connectorId`/`profile` server-side.
+     */
+    sourcesVisibility?: boolean;
   } = {}
 ): Promise<
   RefConnectorSummariesResponse | RefConnectorIdentitySummariesResponse | RefConnectorRetainedCountSummariesResponse
@@ -1761,6 +1781,7 @@ export async function listConnectorSummaries(
     include_fleet_health: options.includeFleetHealth ? 1 : undefined,
     limit: options.limit ?? CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT,
     profile: options.profile,
+    sources_visibility: options.sourcesVisibility ? 1 : undefined,
   })) as RefConnectorSummariesResponse;
 }
 

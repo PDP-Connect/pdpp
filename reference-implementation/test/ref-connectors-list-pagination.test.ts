@@ -79,6 +79,7 @@ test("connector summary page request requires an explicit bounded limit", () => 
     cursor: null,
     includeFleetHealth: false,
     limit: 100,
+    sourcesVisibility: false,
   });
   for (const query of [{ cursor: "rcs1.e30" }, { limit: "0" }, { limit: "101" }, { limit: "1.5" }]) {
     assert.throws(
@@ -96,6 +97,7 @@ test("connector summary page request decodes the issued continuation", () => {
     cursor: boundary,
     includeFleetHealth: false,
     limit: 7,
+    sourcesVisibility: false,
   });
 });
 
@@ -109,6 +111,7 @@ test("connector summary page request requires limit when connector_id is supplie
     cursor: null,
     includeFleetHealth: false,
     limit: 10,
+    sourcesVisibility: false,
   });
 });
 
@@ -118,9 +121,45 @@ test("connector summary page request accepts explicit complete-page fleet health
     cursor: null,
     includeFleetHealth: true,
     limit: 10,
+    sourcesVisibility: false,
   });
   assert.throws(
     () => parseConnectorSummaryPageRequest({ include_fleet_health: "true", limit: "10" }, "owner_a"),
     ConnectorSummaryPageRequestError
+  );
+});
+
+test("connector summary page request parses the Sources page's sources_visibility opt-in and rejects it alongside connector_id/profile", () => {
+  assert.deepEqual(parseConnectorSummaryPageRequest({ limit: "10", sources_visibility: "1" }, "owner_a"), {
+    connectorId: null,
+    cursor: null,
+    includeFleetHealth: false,
+    limit: 10,
+    sourcesVisibility: true,
+  });
+  assert.deepEqual(parseConnectorSummaryPageRequest({ limit: "10", sources_visibility: "0" }, "owner_a"), {
+    connectorId: null,
+    cursor: null,
+    includeFleetHealth: false,
+    limit: 10,
+    sourcesVisibility: false,
+  });
+  assert.throws(
+    () => parseConnectorSummaryPageRequest({ limit: "10", sources_visibility: "yes" }, "owner_a"),
+    ConnectorSummaryPageRequestError
+  );
+  assert.throws(
+    () => parseConnectorSummaryPageRequest({ connector_id: "github", limit: "10", sources_visibility: "1" }, "owner_a"),
+    ConnectorSummaryPageRequestError,
+    "sources_visibility must not compose with a connector_id scope"
+  );
+  assert.throws(
+    () =>
+      parseConnectorSummaryPageRequest(
+        { limit: "10", profile: "identity_inventory", sources_visibility: "1" },
+        "owner_a"
+      ),
+    ConnectorSummaryPageRequestError,
+    "sources_visibility must not compose with a profile"
   );
 });

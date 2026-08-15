@@ -70,7 +70,13 @@ async function resolveHost(): Promise<string> {
 }
 
 function fetchSourcesPage(pageState: ReturnType<typeof parseConnectorSummaryPageState>) {
-  return loadConnectorSummaryPage(pageState, (opts) => liveDashboardDataSource.listConnectorSummaries(opts));
+  // `sourcesVisibility: true` asks the reference to exclude a pure recovered
+  // historical fragment BEFORE its own LIMIT, so `hasMore`/the next cursor
+  // stay correct for the rows this page actually renders — never a
+  // post-LIMIT filter. Explore and every other surface omit this flag.
+  return loadConnectorSummaryPage(pageState, (opts) =>
+    liveDashboardDataSource.listConnectorSummaries({ ...opts, sourcesVisibility: true })
+  );
 }
 
 export default async function RecordsIndexPage({
