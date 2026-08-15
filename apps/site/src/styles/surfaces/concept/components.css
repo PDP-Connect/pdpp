@@ -103,15 +103,29 @@
      the concept rail to the right balanced the outer edges but stranded the
      gap in the middle and detached the contents list from its heading, and a
      narrower concept-only container moved the masthead 190px between pages. */
-  [data-surface="concept"] .container.max-w-page {
+  /* Only pages that actually carry a rail. The front door has no rail and no
+     TOC — it is a single centred column, and widening its container to 1560
+     stranded the hero in the left half with ~690px of dead space beside it,
+     clipped the data columns mid-word, and wrapped the CTA row. Production
+     holds it at 1080 and that is correct for a one-track page. */
+  [data-surface="concept"]
+  .container.max-w-page:has([data-slot="pdpp-concept-rail"]),
+  [data-pdpp-doc-theme] .container.max-w-page {
     max-width: 1560px;
   }
 
   /* The document track keeps the figure bound so the widened container buys
      margin, not line length. Capping individual tables does not work — they
      carry max-width:100% of their section, which is already narrower — so the
-     bound belongs on the track every wide block shares. */
-  [data-surface="concept"] .pdpp-doc {
+     bound belongs on the track every wide block shares.
+
+     Railed pages only. The front door is a full-bleed two-column hero, not a
+     measured document: capping it at the figure width squeezed it into the
+     left 720px of a 1080px container, clipped the data columns mid-word
+     ("artist Grou", "title Weath") and wrapped the three CTAs onto two rows. */
+  [data-surface="concept"]
+    .container.max-w-page:has([data-slot="pdpp-concept-rail"])
+    .pdpp-doc {
     max-width: var(--container-concept-figure);
   }
 }
