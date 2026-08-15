@@ -275,6 +275,40 @@ function ownerVisibleIdentityPageParams(
   return connectorId === null ? base : [ownerSubjectId, connectorId, ...base.slice(1)];
 }
 
+// The SAME `recovery_reason` string the historical-archive recovery path
+// stamps on a PURE recovered fragment (a `historical_archive` binding
+// restored from record evidence with no surviving connector_instances row and
+// no UAT-transfer marker). Kept as a single named constant, not inlined, so
+// the SQLite/Postgres literal and the app-level predicate below (used by any
+// point-lookup that bypasses this page) can never drift from each other.
+const PURE_RECOVERED_FRAGMENT_RECOVERY_REASON = "connection_metadata_missing";
+
+// Bind-parameter array for the sources-visible unfiltered template: identical
+// cursor tuple to `ownerVisibleIdentityPageParams`'s unfiltered shape, with
+// the pure-recovered-fragment `recovery_reason` literal bound once as its own
+// parameter (never string-interpolated) ahead of the cursor tuple.
+function sourcesVisibleIdentityPageParams(
+  ownerSubjectId: string,
+  after: ConnectorIdentityPageBoundary | null,
+  limit: number
+): (string | number | null)[] {
+  const cursorConnectorId = after ? after.connectorId : null;
+  const cursorCreatedAt = after ? after.createdAt : null;
+  const cursorInstanceId = after ? after.connectorInstanceId : null;
+  return [
+    ownerSubjectId,
+    PURE_RECOVERED_FRAGMENT_RECOVERY_REASON,
+    cursorConnectorId,
+    cursorConnectorId,
+    cursorConnectorId,
+    cursorCreatedAt,
+    cursorConnectorId,
+    cursorCreatedAt,
+    cursorInstanceId,
+    limit + 1,
+  ];
+}
+
 // This is an owner-facing dashboard visibility policy, not a generic status
 // filter: drafts and ordinary revoked connections remain visible, while
 // retired setup shells and system-only connectors do not consume page slots.
@@ -376,6 +410,48 @@ WHERE owner_subject_id = ?
   )
 ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
 LIMIT ?`;
+// Sources-list-only identity page: EXCLUDES a pure recovered historical
+// fragment before LIMIT (never a post-LIMIT filter — the known
+// filter-after-LIMIT defect this repo avoids everywhere else, see the
+// `RETIRED_SETUP_SHELL_BINDING_KINDS` predicate above). Deliberately a
+// SEPARATE template family from `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_*_SQL`:
+// Explore's connection-facet listing and every other read surface use the
+// unfiltered templates unchanged, so a hidden fragment's already-ingested
+// records stay attributable and reachable there. A `historical_archive`
+// binding that ALSO carries a UAT-transfer marker (`latest_uat_source_instance_id`
+// or `recovery_reason = 'uat_record_transfer'`) is a manual/UAT-imported
+// source, not a bare fragment, and is NOT excluded — the second OR arm below
+// keeps it. The Sources page never scopes by `connectorId` (see
+// `apps/console/.../sources/page.tsx`), so only the unfiltered shape exists;
+// add FILTERED/SET siblings if a future caller needs the scoped form.
+export const SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL = `
+SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+FROM connector_instances
+WHERE owner_subject_id = ?
+  AND connector_id NOT LIKE '%manual_action_stub%'
+  AND connector_id NOT LIKE '%manual-action-stub%'
+  AND connector_id NOT LIKE '%stream-test-stub%'
+  AND connector_id NOT LIKE '%pg_runtime_%'
+  AND connector_id NOT LIKE '%pg_canonical_%'
+  AND connector_id NOT LIKE '%pg_expand_%'
+  AND connector_id NOT LIKE '%pg_lexical_backfill_%'
+  AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+  AND (
+    json_extract(source_binding_json, '$.kind') IS NOT 'historical_archive'
+    OR json_extract(source_binding_json, '$.recovery_reason') IS NOT ?
+    OR json_extract(source_binding_json, '$.latest_uat_source_instance_id') IS NOT NULL
+    OR json_extract(source_binding_json, '$.recovery_reason') IS 'uat_record_transfer'
+  )
+  AND (
+    ? IS NULL
+    OR connector_id > ?
+    OR (connector_id = ? AND created_at > ?)
+    OR (connector_id = ? AND created_at = ? AND connector_instance_id > ?)
+  )
+ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+LIMIT ?`;
+
 // `draft` is reserved for static-secret owner-session connection setup: a real
 // connector_instances row that is excluded from every connection read surface
 // until its first successful ingest flips it to `active`. Only the owner-session
@@ -1522,6 +1598,28 @@ export function createSqliteConnectorInstanceStore() {
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
+    // Sources-page-only sibling of `listOwnerVisibleIdentityPage`: excludes a
+    // pure recovered historical fragment BEFORE `LIMIT` (see
+    // `SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL`'s comment for the
+    // exact exclusion contract). Every other caller (Explore's facet listing,
+    // Add Source, manual upload) keeps using `listOwnerVisibleIdentityPage`
+    // unchanged, so a hidden fragment's connection facet and records stay
+    // reachable everywhere except this one paginated list.
+    listSourcesVisibleIdentityPage(
+      ownerSubjectId: string,
+      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+    ): ConnectorInstanceIdentityPage {
+      assertConnectorIdentityPageLimit(limit);
+      const rows = Array.from(
+        iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(
+          SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL,
+          sourcesVisibleIdentityPageParams(ownerSubjectId, after, limit)
+        )
+      );
+      const hasMore = rows.length > limit;
+      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+    },
+
     // Promotes a temporary setup binding to its durable sibling kind.
     // Guarded by `status = 'draft' AND binding.kind = fromKind`: a
     // concurrent revoke racing this UPDATE loses safely (no row change,
@@ -1890,6 +1988,39 @@ WHERE ci.owner_subject_id = $1
     OR (ci.connector_id = $7 AND ci.created_at = $8 AND ci.connector_instance_id > $9)
   )
 ORDER BY ci.connector_id ASC, ci.created_at ASC, ci.connector_instance_id ASC
+LIMIT $10`;
+
+// Postgres mirror of `SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL` —
+// see that template's comment for the exclusion contract (pure recovered
+// fragments only; a `historical_archive` binding carrying a UAT-transfer
+// marker stays visible; every other read surface, including Explore's
+// facet listing, keeps using the unfiltered templates above unchanged).
+export const POSTGRES_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL = `
+SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+FROM connector_instances
+WHERE owner_subject_id = $1
+  AND connector_id NOT LIKE '%manual_action_stub%'
+  AND connector_id NOT LIKE '%manual-action-stub%'
+  AND connector_id NOT LIKE '%stream-test-stub%'
+  AND connector_id NOT LIKE '%pg_runtime_%'
+  AND connector_id NOT LIKE '%pg_canonical_%'
+  AND connector_id NOT LIKE '%pg_expand_%'
+  AND connector_id NOT LIKE '%pg_lexical_backfill_%'
+  AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+  AND (
+    COALESCE(source_binding_json->>'kind', '') <> 'historical_archive'
+    OR COALESCE(source_binding_json->>'recovery_reason', '') <> $2
+    OR source_binding_json->>'latest_uat_source_instance_id' IS NOT NULL
+    OR source_binding_json->>'recovery_reason' = 'uat_record_transfer'
+  )
+  AND (
+    $3::text IS NULL
+    OR connector_id > $4
+    OR (connector_id = $5 AND created_at > $6)
+    OR (connector_id = $7 AND created_at = $8 AND connector_instance_id > $9)
+  )
+ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
 LIMIT $10`;
 
 export function createPostgresConnectorInstanceStore() {
@@ -2272,6 +2403,22 @@ export function createPostgresConnectorInstanceStore() {
         params = ownerVisibleIdentityPageParams(ownerSubjectId, null, after, limit);
       }
       const result = await postgresQuery(sql, params);
+      const rows = result.rows as ConnectorInstanceRow[];
+      const hasMore = rows.length > limit;
+      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+    },
+
+    // Postgres mirror of the SQLite `listSourcesVisibleIdentityPage` arm
+    // above — same exclusion contract, same LIMIT-time enforcement.
+    async listSourcesVisibleIdentityPage(
+      ownerSubjectId: string,
+      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+    ): Promise<ConnectorInstanceIdentityPage> {
+      assertConnectorIdentityPageLimit(limit);
+      const result = await postgresQuery(
+        POSTGRES_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL,
+        sourcesVisibleIdentityPageParams(ownerSubjectId, after, limit)
+      );
       const rows = result.rows as ConnectorInstanceRow[];
       const hasMore = rows.length > limit;
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };

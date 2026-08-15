@@ -881,6 +881,20 @@ export interface ConnectorSummary {
    * supports a static secret. Connection-scoped fact, not a connector capability.
    */
   readonly source_kind: string;
+  /**
+   * Provider-neutral Sources-list visibility, derived from `source_binding`
+   * by `deriveSourceVisibility`. `"hidden_from_sources"` is reserved for a
+   * PURE recovered historical fragment: a `historical_archive` binding whose
+   * `recovery_reason` is exactly `"connection_metadata_missing"` AND that
+   * carries no UAT-transfer marker. Every other row — including a
+   * `historical_archive` binding that DOES carry a UAT-transfer marker (a
+   * manual/UAT-imported source, not a bare recovered fragment) and every
+   * active/promoted connection — is `"active"`. This never removes or
+   * mutates the stored connection; Explore and other record-read paths do
+   * not consult this field, so hidden fragments' records stay reachable
+   * there.
+   */
+  readonly source_visibility: "active" | "hidden_from_sources";
   /** Total server-owned work classification derived from `owner_state.resolver`. */
   readonly source_work: SourceWorkGroup;
   readonly status: string | null;
@@ -2123,6 +2137,27 @@ export async function listOwnerVisibleConnectorInstancePage(
   }
 ): Promise<{ readonly hasMore: boolean; readonly rows: readonly ConnectorInstanceRow[] }> {
   return await getConnectorInstanceStore().listOwnerVisibleIdentityPage(ownerSubjectId, { after, connectorId, limit });
+}
+
+/**
+ * Sources-page-only sibling of {@link listOwnerVisibleConnectorInstancePage}:
+ * excludes a pure recovered historical fragment (a `historical_archive`
+ * `source_binding` stamped `recovery_reason: "connection_metadata_missing"`
+ * with no UAT-transfer marker) BEFORE `LIMIT`, so `hasMore`/the next cursor
+ * are computed only over rows the Sources list will actually render — never
+ * a post-LIMIT filter that would silently shrink a page or misreport
+ * `hasMore`. A `historical_archive` row carrying a UAT-transfer marker (e.g.
+ * a UAT-imported Google Maps/WhatsApp source) is NOT excluded. Every other
+ * caller (Explore's connection-facet listing, Add Source, manual upload)
+ * keeps using {@link listOwnerVisibleConnectorInstancePage} unchanged, so a
+ * hidden fragment's connection facet and already-ingested records stay
+ * reachable everywhere except this one list.
+ */
+export async function listSourcesVisibleConnectorInstancePage(
+  ownerSubjectId: string,
+  { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+): Promise<{ readonly hasMore: boolean; readonly rows: readonly ConnectorInstanceRow[] }> {
+  return await getConnectorInstanceStore().listSourcesVisibleIdentityPage(ownerSubjectId, { after, limit });
 }
 
 /**
@@ -6200,6 +6235,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     schedule: localDeviceBacked ? null : schedule,
     source_binding_kind: connectionBindingKind(instance),
     source_kind: instance.sourceKind,
+    source_visibility: deriveSourceVisibility(instance),
     source_work: sourceWorkGroupFromOwnerState(ownerState.resolver),
     status: instance.status,
     stream_count: evidence ? evidence.stream_count : streamRecords.length,
@@ -6254,6 +6290,53 @@ function connectionBindingKind(instance: ConnectorInstanceRow): string | null {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const kind = (binding as { readonly kind?: unknown }).kind;
   return typeof kind === "string" ? kind : null;
+}
+
+// A `historical_archive` binding recovered purely from record evidence (no
+// surviving connector_instances row) stamps this exact `recovery_reason`.
+// Kept as a named constant, not inlined, so the one production string this
+// predicate matches against is grep-able and can't silently drift from the
+// value the recovery path writes.
+const PURE_FRAGMENT_RECOVERY_REASON = "connection_metadata_missing";
+
+// Any of these on `source_binding` marks the row as a UAT-transferred/manual
+// import that happens to also carry a `historical_archive` binding — it must
+// stay visible on Sources even though its binding kind matches a pure
+// recovered fragment. Deliberately provider-neutral: this checks for the
+// PRESENCE of a transfer marker, never a specific connector/provider id.
+function hasUatTransferMarker(binding: Record<string, unknown>): boolean {
+  if (typeof binding.latest_uat_source_instance_id === "string" && binding.latest_uat_source_instance_id) {
+    return true;
+  }
+  return binding.recovery_reason === "uat_record_transfer";
+}
+
+/**
+ * Provider-neutral Sources-list visibility predicate. Hides ONLY a pure
+ * recovered historical fragment: `source_binding.kind === "historical_archive"`
+ * with `recovery_reason === "connection_metadata_missing"` and no UAT-transfer
+ * marker. A `historical_archive` binding that DOES carry a UAT-transfer marker
+ * (e.g. a UAT-imported Google Maps/WhatsApp source) is a manual/transferred
+ * source, not a bare fragment, and stays `"active"` — as does every other
+ * binding kind, including active promoted connections. Never inspects
+ * `connector_id`/`source_kind` — no connector-specific branching.
+ */
+function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "hidden_from_sources" {
+  const binding = instance.sourceBinding;
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    return "active";
+  }
+  const record = binding as Record<string, unknown>;
+  if (record.kind !== "historical_archive") {
+    return "active";
+  }
+  if (record.recovery_reason !== PURE_FRAGMENT_RECOVERY_REASON) {
+    return "active";
+  }
+  if (hasUatTransferMarker(record)) {
+    return "active";
+  }
+  return "hidden_from_sources";
 }
 
 function connectionIsBrowserSessionBound(instance: ConnectorInstanceRow): boolean {
@@ -7684,6 +7767,57 @@ export async function listConnectorSummaryPage(
     | ListConnectorSummaryPageResult<ConnectorSummary>
     | ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>
     | ListConnectorSummaryPageResult<ConnectorRetainedCountSummary>;
+}
+
+/**
+ * Sources-page-only sibling of {@link listConnectorSummaryPage}: reads the
+ * bounded identity page through {@link listSourcesVisibleConnectorInstancePage}
+ * instead of {@link listOwnerVisibleConnectorInstancePage}, so a pure
+ * recovered historical fragment is excluded BEFORE `LIMIT` and `has_more`/
+ * `next_cursor` are computed only over rows this page will render. Always
+ * the full `detail`-shaped `ConnectorSummary` profile (the Sources page's
+ * only consumer) — no `connectorId`/`profile` axis, since the Sources list
+ * never scopes by connector and always renders the full passport shape.
+ */
+export async function listConnectorSourcesSummaryPage(
+  controller: ControllerLike | null | undefined,
+  {
+    after = null,
+    includeRunSummaries = "singleton-active",
+    limit,
+    ownerSubjectId,
+  }: {
+    readonly after?: ConnectorIdentityPageBoundary | null;
+    readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
+    readonly limit: number;
+    readonly ownerSubjectId: string;
+  }
+): Promise<ListConnectorSummaryPageResult<ConnectorSummary>> {
+  const identityPage = await listSourcesVisibleConnectorInstancePage(ownerSubjectId, { after, limit });
+  const data = await projectConnectorSummaryIdentityPage(controller, {
+    includeRunSummaries,
+    ownerSubjectId,
+    rows: identityPage.rows,
+  });
+  const last = identityPage.rows.at(-1);
+  return {
+    data,
+    has_more: identityPage.hasMore,
+    inventory: identityPage.rows,
+    next_cursor:
+      identityPage.hasMore && last?.createdAt
+        ? encodeConnectorSummaryPageCursor(
+            {
+              connectorId: last.connectorId,
+              connectorInstanceId: last.connectorInstanceId,
+              createdAt: last.createdAt,
+            },
+            ownerSubjectId,
+            undefined,
+            null
+          )
+        : null,
+  };
 }
 
 /**

@@ -712,13 +712,25 @@ export function collapseDuplicateFallbackSources(instances: readonly SourceInsta
   };
 }
 
+/**
+ * A pure recovered historical fragment must never render as its own row on
+ * the owner Sources list — its records stay reachable through Explore and
+ * other read paths, which do not consult this field. Every other row,
+ * including a UAT-transferred/manual-import source or an active promoted
+ * connection, is unaffected: this only excludes `"hidden_from_sources"`.
+ */
+function isVisibleOnSourcesList(summary: RefConnectorSummary): boolean {
+  return summary.source_visibility !== "hidden_from_sources";
+}
+
 /** Map a list of summaries into the Sources view, preserving input order. */
 export function toSourcesView(
   summaries: RefConnectorSummary[],
   options: { manifests?: readonly SourceManifestLike[] } = {}
 ): SourceInstanceView[] {
+  const visibleSummaries = summaries.filter(isVisibleOnSourcesList);
   const fallbackCountByConnector = new Map<string, number>();
-  for (const summary of summaries) {
+  for (const summary of visibleSummaries) {
     if (
       isFallbackConnectionLabel({
         connectorId: summary.connector_id,
@@ -730,7 +742,7 @@ export function toSourcesView(
     }
   }
   const fallbackOrdinalByConnector = new Map<string, number>();
-  return summaries.map((summary) => {
+  return visibleSummaries.map((summary) => {
     const isAmbiguousFallback =
       (fallbackCountByConnector.get(summary.connector_id) ?? 0) > 1 &&
       isFallbackConnectionLabel({
