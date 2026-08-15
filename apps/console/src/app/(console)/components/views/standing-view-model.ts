@@ -230,8 +230,15 @@ export interface StandingData {
   /** Aggregate server verdict; source rows retain their existing detail contract. */
   fleetHealth: RefFleetHealthVerdict | null;
   grantPackages: GrantPackagesView | null;
+  /** Exact healthy-source count when the overview loaded the complete source fleet. */
+  healthySourceCount: number | null;
   hero: StandingHero;
   lately: LatelyView[];
+  /** Whether ANY web-push subscription is registered on this deployment — the
+   *  only server-derivable signal (per-browser enablement is client-only
+   *  state, see web-push-settings.tsx). `"unknown"` when the read failed;
+   *  must never default to "not configured" on a load failure. */
+  notificationsSetup: "configured" | "not_configured" | "unknown";
   overviewIssues: AttentionRowView[];
   relationships: RelationshipView[];
   sourceIssues: AttentionRowView[];
@@ -268,6 +275,8 @@ export interface StandingInputs {
   grants: GrantSummary[];
   /** href builders (bound to dashboardRoutes by the page). */
   hrefs: StandingHrefs;
+  /** See StandingData.notificationsSetup. */
+  notificationsSetup: "configured" | "not_configured" | "unknown";
   /** Relative-time formatter (injected so the view-model stays clock-pure). */
   now: Date;
   /**
@@ -276,11 +285,21 @@ export interface StandingInputs {
    */
   overviewLoadIssues: string[];
   pendingApprovals: PendingApproval[];
+  /** Exact number of operational, assessed sources in the complete overview page. */
+  sourceCount?: number;
   /**
    * Connections with material source issues that do NOT ask the owner to do
    * anything. These must still suppress "everything is syncing" all-clears.
    */
   sourceIssues: SourceIssueConnection[];
+  /** Honest bounded dashboard pagination state, when the live page is used. */
+  sourcePage?: {
+    kind: "error" | "ok";
+    hasMore: boolean;
+    message?: string;
+    nextCursor?: string;
+    isPaged: boolean;
+  };
   /**
    * Mutually-exclusive owner-console source work. This is the actionability
    * model the Overview renders; legacy arrays remain only for compatibility
@@ -608,10 +627,22 @@ function toRelationships(
   return Array.from(groups.values()).map((group) => {
     const grantCount = group.grantIds.length;
     const grantWord = grantCount === 1 ? "grant" : "grants";
+    // The group's subject is identifiable when it resolves to exactly ONE
+    // distinct grant id — dedupe first, so a client whose grants all carry the
+    // same id still drills into that grant rather than falling back to the list.
+    const distinctGrantIds = Array.from(new Set(group.grantIds.filter((id) => id.length > 0)));
+    const identifiableGrantId = distinctGrantIds.length === 1 ? distinctGrantIds[0] : null;
     const status = group.statuses.includes("expiring") ? "expiring" : (group.statuses[0] ?? "active");
     return {
-      actionHref: grantCount === 1 ? hrefs.grant(group.grantIds[0] ?? "") : hrefs.grants,
-      actionLabel: "review",
+      // Per-grant drill-in whenever a SPECIFIC grant is identifiable. A group is
+      // keyed by client, so a multi-grant group has no single subject — but the
+      // one-grant case does, and previously only the `=== 1` branch used it.
+      // `identifiableGrantId` keeps that drill-in and degrades to the filtered
+      // list (never the bare index) when the subject is genuinely ambiguous.
+      actionHref: identifiableGrantId ? hrefs.grant(identifiableGrantId) : hrefs.grants,
+      // NAV, not a mutation: this only opens a page. It rendered as the word
+      // "review" in a `rr-rel__revoke` slot, which read as a destructive control.
+      actionLabel: identifiableGrantId ? "Review grant →" : `Review ${grantCount} grants →`,
       clientId: group.clientId,
       reads:
         group.phrases.size > 0
@@ -888,7 +919,10 @@ function activeSourceWork(input: StandingInputs): SourceWorkGroups {
 function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRowView {
   let what: string;
   if (item.group === "needsOwner") {
-    what = `${item.label} needs you`;
+    // Owner attention is already classified by the shared provider-neutral
+    // actionability model. Keep its exact sanctioned CTA on the overview so
+    // the owner does not have to open Syncs to learn what to do.
+    what = item.actionLabel ? `${item.label}: ${item.actionLabel}` : `${item.label} needs you`;
   } else if (item.group === "review" && item.actionLabel) {
     // The non-urgent group reads as the CONCRETE available action ("Amazon:
     // Refresh now"), not a taxonomy noun ("Amazon is ready for review").
@@ -897,6 +931,8 @@ function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRow
     what = `${item.label}: action available`;
   } else if (item.group === "working" || item.group === "notMeasured") {
     what = `${item.label}: ${item.what}`;
+  } else if (item.group === "unavailable") {
+    what = `${item.label} status unavailable`;
   } else {
     what = `${item.label} ${item.statusLabel}`;
   }
@@ -968,6 +1004,16 @@ function toSourceWorkSections(
       tone: "muted",
     });
   }
+  if (groups.unavailable.length > 0) {
+    sections.push({
+      countLabel: pluralSource(groups.unavailable.length),
+      id: "unavailable",
+      note: SOURCE_WORK_GROUP_COPY.unavailable.note,
+      rows: groups.unavailable.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.unavailable.label,
+      tone: "muted",
+    });
+  }
   return sections;
 }
 
@@ -979,12 +1025,12 @@ function buildDecideHero(pending: PendingApproval[], hrefs: StandingHrefs): Stan
   const more = pending.length - 1;
   const who = first ? clientLabel(first.client_id ?? null, first.approval_id) : "An app";
   const reads = first ? approvalReads(first) : "parts of your data";
-  const moreSub = `Nothing leaves until you say so — review each request one at a time. ${more} more after this one.`;
+  const moreSub = `No data is shared until you approve a request. Review each request one at a time. ${more} more after this one.`;
   return {
     cta: { href: hrefs.grants, human: true, label: "Review the request" },
     kicker: pending.length === 1 ? "A request is waiting on you" : `${pending.length} requests are waiting`,
     line: { emphasis: reads, tail: ".", text: `${who} wants to read ` },
-    sub: more > 0 ? moreSub : "Nothing leaves until you say so — approve it one piece at a time.",
+    sub: more > 0 ? moreSub : "No data is shared until you approve this request.",
     tone: "decide",
   };
 }
@@ -1087,16 +1133,21 @@ export function computeHero(input: StandingInputs): StandingHero {
   if (input.pendingApprovals.length > 0) {
     return buildDecideHero(input.pendingApprovals, input.hrefs);
   }
+  // A source that needs the owner outranks a totals refresh. Totals catching up
+  // is a few-minute self-resolving delay with nothing to do about it; a source
+  // that stopped collecting is work only the owner can clear. Ordering these the
+  // other way spent the one hero slot on the transient state and buried the
+  // actionable one.
+  const fleetHealthHero = input.fleetHealth ? buildFleetHealthHero(input.fleetHealth, input.hrefs) : null;
+  if (fleetHealthHero) {
+    return fleetHealthHero;
+  }
   const projectionState = input.summary?.projection?.state;
   if (projectionState === "stale" || projectionState === "failed") {
     return buildStaleHero(input.summary, input.hrefs);
   }
   if (input.overviewLoadIssues.length > 0) {
     return buildPartialDataHero(input.overviewLoadIssues, input.hrefs);
-  }
-  const fleetHealthHero = input.fleetHealth ? buildFleetHealthHero(input.fleetHealth, input.hrefs) : null;
-  if (fleetHealthHero) {
-    return fleetHealthHero;
   }
   return buildCalmHero(input);
 }
@@ -1108,14 +1159,21 @@ export function buildStandingData(input: StandingInputs): StandingData {
   const sourceWork = activeSourceWork(input);
   const allBearers = toBearers(input.bearerClients, input.hrefs);
   const bearers = allBearers.slice(0, BEARER_PREVIEW_LIMIT);
+  const sourceWorkCount = Object.values(sourceWork).reduce((sum, rows) => sum + rows.length, 0);
+  const healthySourceCount =
+    input.overviewLoadIssues.length === 0 && input.sourceCount !== undefined
+      ? Math.max(0, input.sourceCount - sourceWorkCount)
+      : null;
   return {
     advisoryOwnerActions: toAdvisoryOwnerActions(input.advisoryOwnerActions, input.hrefs),
     attention: toAttention(input.attentionConnections, input.hrefs),
     bearers,
     bearersOverflow: allBearers.length - bearers.length,
     grantPackages: toGrantPackages(input.grants, input.hrefs, input.grantPackageCount),
+    healthySourceCount,
     hero: computeHero(input),
     lately: toLately(input.traces, input.now),
+    notificationsSetup: input.notificationsSetup,
     overviewIssues,
     relationships: toRelationships(input.grants, input.hrefs, input.now, clientNamesById(input.bearerClients)),
     sourceIssues: toSourceIssues(input.sourceIssues, input.hrefs),

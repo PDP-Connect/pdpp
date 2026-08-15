@@ -32,7 +32,7 @@ export default function RunsError({ error, reset }: { error: Error & { digest?: 
           Try again
         </button>
         <a className={buttonVariants({ size: "sm", variant: "ghost" })} href="/syncs">
-          Back to syncs
+          Back to Syncs
         </a>
       </div>
     </main>

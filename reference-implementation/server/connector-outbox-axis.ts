@@ -121,6 +121,7 @@ function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, 
       evidenceTrusted: trusted,
       lastHeartbeatAt: row.lastHeartbeatAt,
       lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
+      oldestRetryingAt: row.outboxDiagnostics?.oldest_retrying_at ?? null,
       recordsPending: row.recordsPending,
     },
     {

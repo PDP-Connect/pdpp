@@ -13,6 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { type Pool as PgPool, Pool, type PoolClient, type QueryResultRow } from "pg";
 import {
   hashKey,
@@ -974,6 +975,10 @@ export async function bootstrapPostgresSchema({
         updated_at TEXT NOT NULL,
         revoked_at TEXT,
         manifest_generation BIGINT NOT NULL DEFAULT 0,
+        -- Monotonic per-instance receipt advanced by the source-boundary
+        -- triggers installed after bootstrap migrations. Readers cast it to
+        -- text so BIGINT values never narrow through JavaScript Number.
+        source_revision BIGINT NOT NULL DEFAULT 0,
         UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_connector_status
@@ -1095,13 +1100,57 @@ export async function bootstrapPostgresSchema({
         credential_kind TEXT NOT NULL CHECK (credential_kind IN ('access_token', 'api_key', 'app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
         sealed_secret TEXT NOT NULL,
         fingerprint TEXT,
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'rejected')),
         captured_at TEXT NOT NULL,
         rotated_at TEXT,
-        revoked_at TEXT
+        revoked_at TEXT,
+        rejected_at TEXT,
+        rejection_reason TEXT
       );
+      ALTER TABLE connector_instance_credentials
+        ADD COLUMN IF NOT EXISTS rejected_at TEXT;
+      ALTER TABLE connector_instance_credentials
+        ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
         ON connector_instance_credentials(owner_subject_id, status);
+
+      -- Existing Postgres deployments may have the original active/revoked
+      -- credential status CHECK. Widen it in place so rejected credentials
+      -- preserve the same lifecycle contract as the SQLite store.
+      DO $$
+      DECLARE
+        credential_status_constraint_name TEXT;
+        credential_status_constraint_def TEXT;
+      BEGIN
+        FOR credential_status_constraint_name, credential_status_constraint_def IN
+          SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%status%'
+             AND pg_get_constraintdef(oid) LIKE '%active%'
+             AND pg_get_constraintdef(oid) LIKE '%revoked%'
+        LOOP
+          IF credential_status_constraint_def NOT LIKE '%rejected%' THEN
+            EXECUTE format('ALTER TABLE connector_instance_credentials DROP CONSTRAINT %I', credential_status_constraint_name);
+          END IF;
+        END LOOP;
+
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%status%'
+             AND pg_get_constraintdef(oid) LIKE '%active%'
+             AND pg_get_constraintdef(oid) LIKE '%revoked%'
+             AND pg_get_constraintdef(oid) LIKE '%rejected%'
+        ) THEN
+          ALTER TABLE connector_instance_credentials
+            ADD CONSTRAINT connector_instance_credentials_status_check
+            CHECK (status IN ('active', 'revoked', 'rejected'));
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS acquisition_batches (
         batch_id TEXT PRIMARY KEY,
@@ -1295,13 +1344,13 @@ export async function bootstrapPostgresSchema({
         created_at TEXT NOT NULL,
         expires_at TEXT,
         last_used_at TEXT,
-        superseded_at TEXT,
         revoked_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_grant
         ON oauth_refresh_tokens(grant_id, status);
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_client_status
         ON oauth_refresh_tokens(client_id, status, expires_at);
+
       CREATE TABLE IF NOT EXISTS grants (
         grant_id TEXT PRIMARY KEY,
         subject_id TEXT NOT NULL,
@@ -2270,8 +2319,8 @@ export async function bootstrapPostgresSchema({
         record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                    BIGINT NOT NULL DEFAULT 0,
-  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_count    BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         metadata_json             JSONB
@@ -2286,8 +2335,8 @@ export async function bootstrapPostgresSchema({
         record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                    BIGINT NOT NULL DEFAULT 0,
-  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_count    BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT
       );
@@ -2304,8 +2353,8 @@ export async function bootstrapPostgresSchema({
         record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                    BIGINT NOT NULL DEFAULT 0,
-  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_count    BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         PRIMARY KEY(connector_instance_id, stream)
@@ -2322,8 +2371,8 @@ export async function bootstrapPostgresSchema({
         record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                    BIGINT NOT NULL DEFAULT 0,
-  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_count    BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         PRIMARY KEY(connector_instance_id, stream, record_family)
@@ -2346,8 +2395,8 @@ export async function bootstrapPostgresSchema({
         total_retained_bytes      BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                    BIGINT NOT NULL DEFAULT 0,
-  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_count    BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         metadata_json             JSONB,
@@ -2380,6 +2429,9 @@ export async function bootstrapPostgresSchema({
         state                     TEXT NOT NULL DEFAULT 'rebuilding',
         last_error                TEXT,
         canonical_evidence_revision BIGINT NOT NULL DEFAULT 0,
+        -- NULL is legacy/unknown and is rendered stale until a successful
+        -- source-revision-aware repair writes the captured receipt.
+        source_revision BIGINT,
         manifest_generation BIGINT NOT NULL DEFAULT 0,
         schedule_checkpoint TEXT NOT NULL DEFAULT 'unobserved',
         run_lifecycle_event_seq BIGINT,
@@ -2413,13 +2465,18 @@ export async function bootstrapPostgresSchema({
 
       -- Scope-keyed (never per-record) dirty flag for lexical+semantic
       -- derived index maintenance. See server/db.ts for the SQLite mirror
-      -- and full rationale.
+      -- and full rationale, including why revision (not marked_at) is
+      -- the clear's CAS token: two durable marks can land within the same
+      -- millisecond and receive an identical marked_at ISO string, but
+      -- revision is atomically incremented once per mark and can never
+      -- collide.
       CREATE TABLE IF NOT EXISTS search_index_dirty (
         connector_instance_id TEXT NOT NULL,
         connector_id TEXT NOT NULL,
         stream TEXT NOT NULL,
         dirty INTEGER NOT NULL DEFAULT 1,
         marked_at TEXT NOT NULL,
+        revision BIGINT NOT NULL DEFAULT 0,
         reconciled_at TEXT,
         last_error TEXT,
         attempts INTEGER NOT NULL DEFAULT 0,
@@ -2430,6 +2487,7 @@ export async function bootstrapPostgresSchema({
         ON search_index_dirty(dirty);
       ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS next_attempt_at TEXT;
+      ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
 
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS last_record_updated_at TEXT;
@@ -2551,11 +2609,16 @@ export async function bootstrapPostgresSchema({
             NULLIF(NEW.data_json->>'connection_id', '')
           );
           NEW.connector_instance_id := terminal_instance_id;
+          -- Do not lock the instance row from this BEFORE INSERT trigger.
+          -- Concurrent terminal inserts can otherwise hold share locks while
+          -- the source-revision AFTER trigger waits to upgrade the same row,
+          -- producing a PostgreSQL 40P01 cycle. The terminal event is already
+          -- scoped by its identity; generation reconciliation remains a
+          -- disposable read-model concern.
           SELECT manifest_generation
             INTO NEW.manifest_generation
             FROM connector_instances
-           WHERE connector_instance_id = terminal_instance_id
-           FOR SHARE;
+           WHERE connector_instance_id = terminal_instance_id;
         END IF;
         RETURN NEW;
       END;
@@ -2699,6 +2762,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
+    await ensurePostgresConnectorSummarySourceRevisionPrimitive(client);
   } finally {
     try {
       if (bootstrapLockHeld) {
@@ -2707,6 +2771,232 @@ export async function bootstrapPostgresSchema({
     } finally {
       client.release();
     }
+  }
+}
+
+/**
+ * Install the provider-neutral PostgreSQL source-revision boundary after all
+ * legacy column migrations. The instance row is the single monotonic receipt;
+ * the nullable evidence copy records the revision a built row absorbed. The
+ * installation runs as one DDL/data transaction while an access-exclusive
+ * lock excludes live writers. Source triggers advance only the canonical
+ * receipt; evidence invalidation remains best effort and cannot reject the
+ * canonical write that caused it.
+ */
+async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: PoolClient): Promise<void> {
+  const sourceTables = [
+    "records",
+    "version_counter",
+    "connector_schedules",
+    "controller_active_runs",
+    // Spine rows are append/delete lifecycle facts. The terminal manifest
+    // stamp is an internal INSERT-time correction, so UPDATE is excluded to
+    // keep it from double-touching the receipt (SQLite has the same boundary).
+    "spine_events",
+    "retained_size_connection",
+    "retained_size_stream",
+    "manifest_write_violations",
+  ] as const;
+  const legacySourceTables = [
+    "record_changes",
+    "blobs",
+    "blob_bindings",
+    "run_history",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+  ] as const;
+  await client.query("BEGIN");
+  try {
+    await client.query(`
+      LOCK TABLE
+        connector_instances,
+        connector_summary_evidence,
+        connectors,
+        records,
+        version_counter,
+        connector_schedules,
+        controller_active_runs,
+        spine_events,
+        retained_size_connection,
+        retained_size_stream,
+        manifest_write_violations
+      IN ACCESS EXCLUSIVE MODE;
+
+      ALTER TABLE connector_instances
+        ADD COLUMN IF NOT EXISTS source_revision BIGINT NOT NULL DEFAULT 0;
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS source_revision BIGINT;
+      UPDATE connector_instances SET source_revision = 0 WHERE source_revision IS NULL;
+    `);
+    const markerPath = process.env.PDPP_TEST_SOURCE_REVISION_INSTALL_LOCK_PATH;
+    if (markerPath) {
+      writeFileSync(markerPath, `${process.pid}\n`, "utf8");
+    }
+
+    await client.query(`
+      CREATE OR REPLACE FUNCTION pdpp_advance_connector_summary_source_revision(target_id TEXT)
+      RETURNS VOID
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF target_id IS NULL OR target_id = '' THEN
+          RETURN;
+        END IF;
+        UPDATE connector_instances
+           SET source_revision = CASE
+             WHEN source_revision IS NULL THEN 0
+             WHEN source_revision < 9223372036854775807::bigint THEN source_revision + 1
+             ELSE 9223372036854775807::bigint
+           END
+         WHERE connector_instance_id = target_id;
+      END;
+      $function$;
+
+      CREATE OR REPLACE FUNCTION pdpp_touch_connector_summary_source_row()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      AS $function$
+      DECLARE
+        new_id TEXT;
+        old_id TEXT;
+        new_row JSONB;
+        old_row JSONB;
+      BEGIN
+        IF TG_OP <> 'DELETE' THEN
+          new_row := to_jsonb(NEW);
+          new_id := NULLIF(new_row->>'connector_instance_id', '');
+          IF TG_TABLE_NAME = 'spine_events' THEN
+            new_id := COALESCE(
+              new_id,
+              NULLIF(new_row->'data_json'->>'connector_instance_id', ''),
+              NULLIF(new_row->'data_json'->>'connection_id', '')
+            );
+          END IF;
+        END IF;
+        IF TG_OP <> 'INSERT' THEN
+          old_row := to_jsonb(OLD);
+          old_id := NULLIF(old_row->>'connector_instance_id', '');
+          IF TG_TABLE_NAME = 'spine_events' THEN
+            old_id := COALESCE(
+              old_id,
+              NULLIF(old_row->'data_json'->>'connector_instance_id', ''),
+              NULLIF(old_row->'data_json'->>'connection_id', '')
+            );
+          END IF;
+        END IF;
+        IF new_id IS NOT NULL THEN
+          PERFORM pdpp_advance_connector_summary_source_revision(new_id);
+        END IF;
+        IF old_id IS NOT NULL AND old_id IS DISTINCT FROM new_id THEN
+          PERFORM pdpp_advance_connector_summary_source_revision(old_id);
+        END IF;
+        IF TG_OP = 'DELETE' THEN
+          RETURN OLD;
+        END IF;
+        RETURN NEW;
+      END;
+      $function$;
+
+      CREATE OR REPLACE FUNCTION pdpp_touch_connector_summary_instance()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        PERFORM pdpp_advance_connector_summary_source_revision(NEW.connector_instance_id);
+        RETURN NEW;
+      END;
+      $function$;
+
+      CREATE OR REPLACE FUNCTION pdpp_touch_connector_summary_manifest()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      AS $function$
+      DECLARE
+        instance_id TEXT;
+      BEGIN
+        IF TG_OP <> 'DELETE' THEN
+          FOR instance_id IN
+            SELECT connector_instance_id FROM connector_instances WHERE connector_id = NEW.connector_id
+          LOOP
+            PERFORM pdpp_advance_connector_summary_source_revision(instance_id);
+          END LOOP;
+        END IF;
+        IF TG_OP = 'DELETE' THEN
+          FOR instance_id IN
+            SELECT connector_instance_id FROM connector_instances WHERE connector_id = OLD.connector_id
+          LOOP
+            PERFORM pdpp_advance_connector_summary_source_revision(instance_id);
+          END LOOP;
+        ELSIF TG_OP = 'UPDATE' AND OLD.connector_id IS DISTINCT FROM NEW.connector_id THEN
+          FOR instance_id IN
+            SELECT connector_instance_id FROM connector_instances WHERE connector_id = OLD.connector_id
+          LOOP
+            PERFORM pdpp_advance_connector_summary_source_revision(instance_id);
+          END LOOP;
+        END IF;
+        IF TG_OP = 'DELETE' THEN
+          RETURN OLD;
+        END IF;
+        RETURN NEW;
+      END;
+      $function$;
+    `);
+
+    // Trigger names intentionally enumerate the source boundary. The instance
+    // trigger excludes source_revision itself, preventing recursive self-touches.
+    await client.query(`
+      DROP TRIGGER IF EXISTS pdpp_source_revision_connector_instances_update ON connector_instances;
+      CREATE TRIGGER pdpp_source_revision_connector_instances_update
+        AFTER UPDATE OF owner_subject_id, connector_id, display_name, status,
+          source_kind, source_binding_key, source_binding_json, created_at,
+          updated_at, revoked_at, manifest_generation, record_reset_generation,
+          record_identity_generation
+        ON connector_instances
+        FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_instance();
+
+      DROP TRIGGER IF EXISTS pdpp_source_revision_connectors_update ON connectors;
+      DROP TRIGGER IF EXISTS pdpp_source_revision_connectors_insert ON connectors;
+      DROP TRIGGER IF EXISTS pdpp_source_revision_connectors_delete ON connectors;
+      CREATE TRIGGER pdpp_source_revision_connectors_update
+        AFTER UPDATE OF connector_id, manifest ON connectors
+        FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_manifest();
+      CREATE TRIGGER pdpp_source_revision_connectors_insert
+        AFTER INSERT ON connectors
+        FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_manifest();
+      CREATE TRIGGER pdpp_source_revision_connectors_delete
+        AFTER DELETE ON connectors
+        FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_manifest();
+    `);
+
+    for (const table of sourceTables) {
+      const trigger = `pdpp_source_revision_${table}`;
+      const timing = table === "spine_events" ? "BEFORE" : "AFTER";
+      const operations = table === "spine_events" ? "INSERT OR DELETE" : "INSERT OR UPDATE OR DELETE";
+      // biome-ignore lint/performance/noAwaitInLoops: trigger DDL must run sequentially inside one transaction.
+      await client.query(`
+        DROP TRIGGER IF EXISTS ${trigger} ON ${table};
+        CREATE TRIGGER ${trigger}
+          ${timing} ${operations} ON ${table}
+          FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_source_row();
+      `);
+    }
+
+    for (const table of legacySourceTables) {
+      // biome-ignore lint/performance/noAwaitInLoops: obsolete trigger cleanup is part of one ordered migration transaction.
+      await client.query(`DROP TRIGGER IF EXISTS pdpp_source_revision_${table} ON ${table}`);
+    }
+
+    // A complete reinstall is itself a knowledge boundary. Existing evidence
+    // must be rebuilt after the last trigger is present; otherwise a writer
+    // could have landed in an installation gap and left a clean-looking row.
+    await client.query("COMMIT");
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Rollback failure must not hide the migration error.
+    }
+    throw error;
   }
 }
 
@@ -4365,6 +4655,8 @@ async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient):
         [connectorKey, JSON.stringify(manifest), row.created_at || now]
       );
 
+      // Existing connector lifecycle is owner authority. The device row is
+      // migration input only and may remain active after a zero-cascade revoke.
       await client.query(
         `INSERT INTO connector_instances(
            connector_instance_id, owner_subject_id, connector_id, display_name, status,
@@ -4375,12 +4667,10 @@ async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient):
            SET owner_subject_id = EXCLUDED.owner_subject_id,
                connector_id = EXCLUDED.connector_id,
                display_name = EXCLUDED.display_name,
-               status = EXCLUDED.status,
                source_kind = EXCLUDED.source_kind,
                source_binding_key = EXCLUDED.source_binding_key,
                source_binding_json = EXCLUDED.source_binding_json,
-               updated_at = EXCLUDED.updated_at,
-               revoked_at = EXCLUDED.revoked_at`,
+               updated_at = GREATEST(connector_instances.updated_at, EXCLUDED.updated_at)`,
         [
           connectorInstanceId,
           row.owner_subject_id,

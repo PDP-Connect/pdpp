@@ -55,6 +55,54 @@ test("detail-gap page reader fails clearly when CAS leasing is unavailable", asy
   await assert.rejects(readDetailGapPage(), { message: "detail-gap store must support CAS recovery leases" });
 });
 
+test("detail-gap pages and served leases preserve checkpoint-parent identity", async () => {
+  const served = new Map<
+    string,
+    {
+      attempted: boolean;
+      gapId: string;
+      leaseId: string;
+      parentStream: string | null;
+      recordKey: string | null;
+      runId: string;
+      stream: string | null;
+    }
+  >();
+  const store: DetailGapStoreParam = {
+    claimPendingGaps(gapIds) {
+      return Promise.resolve(gapIds.filter((gapId): gapId is string => typeof gapId === "string"));
+    },
+    listPendingGaps() {
+      return Promise.resolve([
+        {
+          detail_locator: "locator",
+          gap_id: "gap-1",
+          parent_stream: "group_messages",
+          record_key: "shared-key",
+          status: "pending",
+          stream: "attachments",
+        },
+      ]);
+    },
+    markGapStatus() {
+      return Promise.resolve();
+    },
+  };
+  const readDetailGapPage = createDetailGapPageReader({
+    allServedGapLeases: served,
+    connectorId: "groupme",
+    connectorInstanceId: "instance",
+    detailGapStore: store,
+    grantId: "grant",
+    runId: "run",
+  });
+
+  const page = await readDetailGapPage();
+
+  assert.equal(page.detailGaps[0]?.parent_stream, "group_messages");
+  assert.equal(served.get("gap-1")?.parentStream, "group_messages");
+});
+
 test("BASELINE: validateDetailGapsPageRequest normalizes a valid page request", () => {
   assert.deepEqual(
     validateDetailGapsPageRequest(

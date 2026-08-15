@@ -53,9 +53,9 @@ export function ReenrollButton({
         <div>
           <div className="pdpp-eyebrow text-muted-foreground">1. Re-enroll this device</div>
           <p className="pdpp-caption mt-1 text-muted-foreground">
-            Run on the target host. The response returns <code className="font-mono">device_id</code>,{" "}
+            Run on the target device. The response returns <code className="font-mono">device_id</code>,{" "}
             <code className="font-mono">device_token</code>, and <code className="font-mono">source_instance_id</code> —
-            persist all three.
+            save all three, and never log the token.
           </p>
           <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
             <code
@@ -70,7 +70,7 @@ export function ReenrollButton({
         </div>
 
         <div>
-          <div className="pdpp-eyebrow text-muted-foreground">2. Run a connector pass</div>
+          <div className="pdpp-eyebrow text-muted-foreground">2. Start collection</div>
           <div className="rounded-md border border-border/70 bg-muted/30 p-3">
             <div className="flex min-w-0 items-baseline justify-between gap-2">
               <div className="pdpp-caption text-muted-foreground">

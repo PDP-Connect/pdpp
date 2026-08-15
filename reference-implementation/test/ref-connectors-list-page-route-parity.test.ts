@@ -65,7 +65,7 @@ function iso(index: number): string {
 
 function manifest(): Record<string, unknown> {
   return {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: CONNECTOR_ID,
     display_name: "Mounted route page proof",
     protocol_version: "0.1.0",

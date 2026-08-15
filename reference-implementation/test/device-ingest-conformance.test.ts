@@ -18,16 +18,19 @@ import { startServer as startServerBase } from "../server/index.ts";
 import { __setPostgresRecordSortBackfillPhaseHookForTest } from "../server/postgres-records.ts";
 import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import {
+  __setIndexPublishPhaseHookForTest,
   __setRecordIndexFaultHookForTest,
   __setSqliteRecordSortBackfillPhaseHookForTest,
   deleteAllRecords,
   deleteRecord,
+  drainConnectorInstanceIndexWork,
   ingestRecord,
+  ingestRecords,
   setClientEventEnqueueHook,
 } from "../server/records.ts";
 import { __setDeviceIngestPhaseFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
-import { __setLexicalBackfillPhaseHookForTest, lexicalIndexBackfillForManifest } from "../server/search.ts";
-import { configureSemanticBackend, semanticIndexBackfillForManifest } from "../server/search-semantic.ts";
+import { __setLexicalBackfillPhaseHookForTest } from "../server/search.ts";
+import { configureSemanticBackend } from "../server/search-semantic.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
@@ -86,6 +89,18 @@ async function within<T>(promise: Promise<T>, label: string, timeoutMs = 10_000)
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Durable record commit does not block on derived lexical/semantic index
+// maintenance (records.ts's scheduleRecordIndexMaintenance runs it on a
+// fire-and-forget per-connector-instance lane). A writer's own promise
+// resolving therefore proves the durable row landed, not that its derived
+// index converged -- drainConnectorInstanceIndexWork is the scheduler's own
+// settlement barrier (awaits the real per-instance tail chain to
+// quiescence), the deterministic way to observe that convergence before
+// asserting on lexical/semantic content.
+function waitForDeferredIndexWorkToDrain(timeoutMs = 10_000): Promise<void> {
+  return drainConnectorInstanceIndexWork(timeoutMs);
 }
 
 type CanonicalValue = null | string | number | boolean | CanonicalValue[] | { [key: string]: CanonicalValue };
@@ -481,6 +496,7 @@ async function withBackend(kind: BackendKind, fn: (driver: Driver) => Promise<vo
     } finally {
       __setConnectorInstanceWritePhaseHookForTest(null);
       __setDeviceIngestPhaseFaultHookForTest(null);
+      __setIndexPublishPhaseHookForTest(null);
       __setRecordIndexFaultHookForTest(null);
       __setSqliteRecordSortBackfillPhaseHookForTest(null);
       __setRegisterConnectorPhaseHookForTest(null);
@@ -511,6 +527,7 @@ async function withBackend(kind: BackendKind, fn: (driver: Driver) => Promise<vo
     } finally {
       __setConnectorInstanceWritePhaseHookForTest(null);
       __setDeviceIngestPhaseFaultHookForTest(null);
+      __setIndexPublishPhaseHookForTest(null);
       __setRecordIndexFaultHookForTest(null);
       __setSqliteRecordSortBackfillPhaseHookForTest(null);
       __setRegisterConnectorPhaseHookForTest(null);
@@ -1467,18 +1484,18 @@ async function runDuplicateAndNewerWriterOracle(driver: Driver): Promise<void> {
     assert.equal(beforeNewer.version, 2);
     assert.equal(await driver.changes(device.connector_instance_id, expected.key), 2);
     assert.deepEqual(notificationVersions(notifications), [1, 2]);
-    if (expected.deleted) {
-      assert.deepEqual(await driver.lexical(device.connector_instance_id, expected.key), []);
-      assert.deepEqual(await driver.semantic(device.connector_instance_id, expected.key), []);
-    } else {
+    // Lexical and semantic publish inside ONE atomic version-gated
+    // transaction per record (see harden-connector-instance-write-fence-
+    // transaction-native): the injected fault fires during the UNLOCKED
+    // compute phase, before that transaction ever opens, so neither index
+    // family observes a partial write here — both are empty regardless of
+    // `expected.deleted`. This replaces the pre-atomicity expectation that
+    // lexical alone could land before a fault blocked semantic.
+    if (!expected.deleted) {
       assert.equal(beforeNewer.record_json.content, expected.content);
-      assert.deepEqual(await driver.lexical(device.connector_instance_id, expected.key), [
-        { field: "content", text: expected.content },
-      ]);
-      assert.deepEqual(await driver.semantic(device.connector_instance_id, expected.key), [
-        { record_key: expected.key, scope_key: JSON.stringify(["messages", "content"]) },
-      ]);
     }
+    assert.deepEqual(await driver.lexical(device.connector_instance_id, expected.key), []);
+    assert.deepEqual(await driver.semantic(device.connector_instance_id, expected.key), []);
 
     // The older reservation is deliberately still processing. A newer direct
     // authoritative write now wins before the old retry rereads its final
@@ -2317,12 +2334,24 @@ function firstCollisionExpected(writerName: string, order: string) {
       version: 2,
     });
   }
+  // order === "direct-first": the device batch is the SECOND writer, still
+  // queued behind the direct writer's per-record connector-instance fence —
+  // but its reservation row (`device_ingest_batch_outcomes`) is no longer
+  // gated by that same fence (see `withDeviceIngestBatchAttempt`'s header in
+  // ref-device-exporters.ts): reservation bookkeeping is self-serialized on
+  // BATCH identity, not connector-instance identity, so it can and does run
+  // concurrently with an in-flight direct writer on the same instance. The
+  // reservation touches no shared record state, so "processing" is visible
+  // here even though no record mutation has happened yet — this is the
+  // correct, intended effect of no longer holding a batch-duration
+  // connector-instance-wide fence (see
+  // harden-connector-instance-write-fence-transaction-native).
   if (writerName === "direct-upsert") {
     return activeCollisionExpected({
       content: "direct final",
       history: collisionHistory(false, false),
       notifications: [2],
-      outcomeStatus: null,
+      outcomeStatus: "processing",
       version: 2,
     });
   }
@@ -2330,18 +2359,18 @@ function firstCollisionExpected(writerName: string, order: string) {
     return deletedCollisionExpected({
       history: collisionHistory(false, true),
       notifications: [],
-      outcomeStatus: null,
+      outcomeStatus: "processing",
       version: 2,
     });
   }
   if (writerName === "stream-delete") {
-    return absentCollisionExpected({ notifications: [], outcomeStatus: null });
+    return absentCollisionExpected({ notifications: [], outcomeStatus: "processing" });
   }
   return activeCollisionExpected({
     content: "initial state",
     history: collisionHistory(false),
     notifications: [],
-    outcomeStatus: null,
+    outcomeStatus: "processing",
     version: 1,
   });
 }
@@ -2421,6 +2450,10 @@ interface WriterCollisionCase {
 }
 
 async function runWriterCollisionOracle(driver: Driver): Promise<void> {
+  // Lexical and semantic manifest backfills intentionally do not hold the
+  // connector-instance admission fence across their scans. Their bounded
+  // per-page write coordination is covered by the dedicated backfill tests;
+  // this matrix covers writers that participate in admission ordering.
   const writers: WriterCollisionCase[] = [
     {
       apply: async (target) => await ingestRecord(target, directRecord("collision", "direct final")),
@@ -2433,16 +2466,6 @@ async function runWriterCollisionOracle(driver: Driver): Promise<void> {
     {
       apply: async (target) => await deleteAllRecords(target, "messages"),
       name: "stream-delete",
-    },
-    {
-      apply: async (_target, manifest) =>
-        await Reflect.apply(lexicalIndexBackfillForManifest, undefined, [{ manifest }]),
-      name: "lexical-backfill",
-    },
-    {
-      apply: async (_target, manifest) =>
-        await Reflect.apply(semanticIndexBackfillForManifest, undefined, [{ manifest }]),
-      name: "semantic-backfill",
     },
   ];
 
@@ -2527,6 +2550,10 @@ async function runWriterCollisionOracle(driver: Driver): Promise<void> {
         Promise.all([holder, firstPromise, secondAcquired.promise]),
         `${writer.name} first writer completion and second-writer barrier`
       );
+      await within(
+        waitForDeferredIndexWorkToDrain(),
+        `${writer.name} ${order} deferred index work draining after the first writer`
+      );
       assert.deepEqual(
         await collisionSnapshot(driver, device, request, notifications),
         firstCollisionExpected(writer.name, order),
@@ -2536,6 +2563,10 @@ async function runWriterCollisionOracle(driver: Driver): Promise<void> {
       releaseSecond.resolve();
       await within(secondPromise, `${writer.name} second writer completion`);
       assert.equal(mustExist(deviceResult, "device result must exist").status, 201);
+      await within(
+        waitForDeferredIndexWorkToDrain(),
+        `${writer.name} ${order} deferred index work draining after the second writer`
+      );
       assert.deepEqual(
         await collisionSnapshot(driver, device, request, notifications),
         finalCollisionExpected(writer.name, order),
@@ -2560,6 +2591,404 @@ async function runWriterCollisionOracle(driver: Driver): Promise<void> {
   });
 }
 
+/**
+ * Adversarial oracles for the version-gated derived-index publication CAS
+ * (harden-connector-instance-write-fence-transaction-native's stale-overwrite
+ * fix).
+ *
+ * Mechanism note (why these two shapes, not a generic "pause any writer"):
+ * every per-record index-maintenance job for one connector instance —
+ * whether from `ingestRecord`'s HTTP path or a device batch's final-plan
+ * step — runs inside ONE per-instance FIFO tail chain
+ * (`enqueueConnectorInstanceIndexWork`), which serializes compute+publish
+ * end-to-end. Two jobs already enqueued into that lane therefore cannot have
+ * their publishes overlap — the lane itself prevents that. The real,
+ * reachable race has two distinct shapes instead:
+ *
+ * 1. `deleteRecord` (owner HTTP single-record delete) calls
+ *    `maintainRecordIndexes` DIRECTLY and synchronously, bypassing the lane
+ *    entirely (matching its pre-existing, un-laned behavior). This can run
+ *    concurrently with an in-flight LANED publish for the same key.
+ * 2. A device batch's derived-index step enqueues onto the lane only AFTER
+ *    `finalDeviceRecordPlan`/`prepareDeviceFinalRecords` run (a real,
+ *    structurally-necessary gap after the batch's own durable commits) — so
+ *    ENQUEUE order can invert relative to COMMIT order: an older commit's
+ *    enqueue can land, and therefore run, AFTER a newer same-key commit's
+ *    enqueue+run already completed. Forced here by pausing at the device
+ *    route's existing `"after-durable-phase"` fault hook (durable commits
+ *    done, enqueue not yet issued).
+ *
+ * Both are exercised below; a lock-around-embedding regression guard and a
+ * crash/sweep-backstop case round out the required oracle set.
+ */
+async function runVersionCasOracle(driver: Driver): Promise<void> {
+  const target = (device: EnrolledDevice) => driver.target(device.connector_instance_id);
+
+  await runSerial(
+    [
+      "delete-bypass-races-newer-upsert",
+      "http-batch-lane-races-newer-delete",
+      "device-commit-before-enqueue-inversion-upsert",
+      "device-commit-before-enqueue-inversion-mixed-family",
+      "device-stale-delete-vs-live-upsert",
+      "device-stale-upsert-vs-live-delete",
+      "crash-mid-publish-sweep-backstop",
+      "no-lock-around-embedding",
+      "device-retry-version-monotonicity",
+    ] as const,
+    async (caseName) => {
+      const device = await enrollConfiguredDevice(driver, `version-cas-${caseName}`);
+      const key = "version-cas-key";
+
+      if (caseName === "delete-bypass-races-newer-upsert") {
+        // `deleteRecord` holds the connector-instance write fence across its
+        // OWN inline `maintainRecordIndexes` call (pre-existing behavior —
+        // the old unguarded index-delete calls ran inline there too), so it
+        // can never overlap a same-instance `ingestRecord`'s DURABLE write —
+        // the fence already serializes those. What it DOES bypass is the
+        // per-instance derived-work LANE: an earlier upsert's publish can
+        // still be sitting in the lane, not yet run, when a delete for the
+        // SAME key later commits and runs its own un-laned publish
+        // immediately. Seed the row (v1) with its lane publish paused at the
+        // version seam; delete it (v2, un-laned) to completion; then release
+        // the seed's stale v1 publish. The stale publish must discard
+        // itself, not resurrect content over the newer delete.
+        const seedStalledAtSeam = deferred<void>();
+        const releaseSeed = deferred<void>();
+        __setIndexPublishPhaseHookForTest(async (point: string, context: Record<string, unknown>) => {
+          if (point === "before-publish-transaction" && context.op === "upsert" && context.expectedVersion === 1) {
+            seedStalledAtSeam.resolve();
+            await releaseSeed.promise;
+          }
+        });
+        try {
+          const seedPromise = ingestRecord(target(device), directRecord(key, "seed"));
+          await within(seedStalledAtSeam.promise, "the seed's lane publish stalled at its version seam");
+          await deleteRecord(target(device), "messages", key);
+          releaseSeed.resolve();
+          await within(seedPromise, "the seed's ingestRecord call completes");
+          await within(waitForDeferredIndexWorkToDrain(), "the stale seed publish attempt drains");
+        } finally {
+          __setIndexPublishPhaseHookForTest(null);
+          releaseSeed.resolve();
+        }
+        const record = mustExist(await driver.record(device.connector_instance_id, key), "record must exist");
+        assert.equal(record.deleted, true, "the newer, un-laned delete is authoritative");
+        assert.deepEqual(
+          await driver.lexical(device.connector_instance_id, key),
+          [],
+          "the stale seed publish must not resurrect content the newer delete already removed"
+        );
+        assert.deepEqual(await driver.semanticWithEmbedding(device.connector_instance_id, key), []);
+        return;
+      }
+
+      if (caseName === "http-batch-lane-races-newer-delete") {
+        // Same mechanism, exercised through the HTTP BATCH path
+        // (`ingestRecords`) instead of the single-record path — a distinct
+        // shared choke point (`runDeferredRecordIndexes`) that also
+        // schedules onto the per-instance lane, fire-and-forget, after its
+        // own durable batch commits. Seed the row (v1); a one-record batch
+        // upsert (v2) commits durably, its lane publish paused at the
+        // version seam; then the un-laned `deleteRecord` (v3) fully
+        // commits+publishes. The batch's stale v2 publish must, on resuming,
+        // discard itself rather than resurrect content the newer delete
+        // already removed.
+        await ingestRecord(target(device), directRecord(key, "seed"));
+        await within(waitForDeferredIndexWorkToDrain(), "seed publish drains");
+        const batchStalledAtSeam = deferred<void>();
+        const releaseBatch = deferred<void>();
+        __setIndexPublishPhaseHookForTest(async (point: string, context: Record<string, unknown>) => {
+          if (point === "before-publish-transaction" && context.op === "upsert" && context.expectedVersion === 2) {
+            batchStalledAtSeam.resolve();
+            await releaseBatch.promise;
+          }
+        });
+        try {
+          const batchPromise = ingestRecords(target(device), [
+            { data: { content: "batch-content", id: key }, key, op: "upsert", stream: "messages" },
+          ]);
+          await within(batchStalledAtSeam.promise, "the batch's lane publish stalled at its version seam");
+          await deleteRecord(target(device), "messages", key);
+          releaseBatch.resolve();
+          await within(batchPromise, "the batch call completes");
+          await within(waitForDeferredIndexWorkToDrain(), "the batch's stale publish attempt drains");
+        } finally {
+          __setIndexPublishPhaseHookForTest(null);
+          releaseBatch.resolve();
+        }
+        const record = mustExist(await driver.record(device.connector_instance_id, key), "record must exist");
+        assert.equal(record.deleted, true, "the newer, un-laned delete is authoritative");
+        assert.deepEqual(
+          await driver.lexical(device.connector_instance_id, key),
+          [],
+          "the batch's stale publish must not resurrect content the newer delete already removed"
+        );
+        assert.deepEqual(await driver.semanticWithEmbedding(device.connector_instance_id, key), []);
+        return;
+      }
+
+      if (
+        caseName === "device-commit-before-enqueue-inversion-upsert" ||
+        caseName === "device-commit-before-enqueue-inversion-mixed-family"
+      ) {
+        // The real device-batch race: a device batch's durable per-record
+        // commits finish, then `finalDeviceRecordPlan`/`prepareDeviceFinalRecords`
+        // run (a genuine async gap) BEFORE the batch enqueues its
+        // final-plan publish onto the per-instance lane. Pausing at the
+        // route's own `"after-durable-phase"` hook (durable commits done,
+        // enqueue not yet issued) lets a same-instance direct writer's
+        // ENTIRE commit-enqueue-publish cycle land inside that gap — so the
+        // device batch's OLDER commit enqueues, and therefore runs, AFTER
+        // the direct writer's NEWER commit already published. Both index
+        // families are checked in the "mixed-family" variant to prove they
+        // never disagree about which write is current (the exact defect a
+        // per-family-only CAS would miss).
+        await ingestRecord(target(device), directRecord(key, "seed"));
+        await within(waitForDeferredIndexWorkToDrain(), "seed publish drains");
+
+        const devicePausedAfterDurablePhase = deferred<void>();
+        const releaseDevice = deferred<void>();
+        __setDeviceIngestPhaseFaultHookForTest(async (point: string) => {
+          if (point === "after-durable-phase") {
+            devicePausedAfterDurablePhase.resolve();
+            await releaseDevice.promise;
+          }
+        });
+        let deviceResult: JsonResponse | undefined;
+        try {
+          const request = batch(device, nextId(`${caseName}`), [deviceRecord(key, "device-older-content")]);
+          const devicePromise = driver.ingest(device, request).then((result) => {
+            deviceResult = result;
+            return result;
+          });
+          await within(devicePausedAfterDurablePhase.promise, "device batch paused after its durable commit");
+          // The direct writer's ENTIRE cycle (commit, enqueue, lane-run,
+          // publish) completes here, strictly inside the device batch's
+          // commit-to-enqueue gap.
+          await ingestRecord(target(device), directRecord(key, "direct-newer-content"));
+          await within(waitForDeferredIndexWorkToDrain(), "the direct writer's own publish drains");
+          assert.deepEqual(
+            await driver.lexical(device.connector_instance_id, key),
+            [{ field: "content", text: "direct-newer-content" }],
+            "the direct writer's newer publish must be visible before the device batch enqueues"
+          );
+          releaseDevice.resolve();
+          await within(devicePromise, "the device batch resumes, enqueues, and completes");
+          await within(waitForDeferredIndexWorkToDrain(), "the device batch's inverted-order publish attempt drains");
+        } finally {
+          __setDeviceIngestPhaseFaultHookForTest(null);
+          releaseDevice.resolve();
+        }
+        assert.equal(mustExist(deviceResult, "device result must exist").status, 201);
+        const record = mustExist(await driver.record(device.connector_instance_id, key), "record must exist");
+        assert.equal(record.record_json.content, "direct-newer-content", "the durable row: newest write wins");
+        const lexicalRows = await driver.lexical(device.connector_instance_id, key);
+        assert.deepEqual(
+          lexicalRows,
+          [{ field: "content", text: "direct-newer-content" }],
+          "lexical must reflect the direct writer, never the device batch's inverted-order stale publish"
+        );
+        if (caseName === "device-commit-before-enqueue-inversion-mixed-family") {
+          const semanticRows = await driver.semanticWithEmbedding(device.connector_instance_id, key);
+          assert.equal(
+            semanticRows.length,
+            1,
+            "semantic must also reflect the direct writer, not be split from lexical"
+          );
+        }
+        return;
+      }
+
+      if (caseName === "device-stale-delete-vs-live-upsert") {
+        // Same commit-before-enqueue inversion mechanism, with the device
+        // batch performing a DELETE that becomes stale: a same-instance
+        // direct upsert lands inside the gap. The device's stale
+        // delete-publish must not remove the direct writer's live content.
+        await ingestRecord(target(device), directRecord(key, "seed"));
+        await within(waitForDeferredIndexWorkToDrain(), "seed publish drains");
+        const devicePausedAfterDurablePhase = deferred<void>();
+        const releaseDevice = deferred<void>();
+        __setDeviceIngestPhaseFaultHookForTest(async (point: string) => {
+          if (point === "after-durable-phase") {
+            devicePausedAfterDurablePhase.resolve();
+            await releaseDevice.promise;
+          }
+        });
+        let deviceResult: JsonResponse | undefined;
+        try {
+          const request = batch(device, nextId(`${caseName}`), [deviceRecord(key, "", { op: "delete" })]);
+          const devicePromise = driver.ingest(device, request).then((result) => {
+            deviceResult = result;
+            return result;
+          });
+          await within(devicePausedAfterDurablePhase.promise, "device delete-batch paused after its durable commit");
+          await ingestRecord(target(device), directRecord(key, "direct-revives"));
+          await within(waitForDeferredIndexWorkToDrain(), "the direct writer's own publish drains");
+          releaseDevice.resolve();
+          await within(devicePromise, "the device batch resumes and completes");
+          await within(waitForDeferredIndexWorkToDrain(), "the device batch's stale delete-publish attempt drains");
+        } finally {
+          __setDeviceIngestPhaseFaultHookForTest(null);
+          releaseDevice.resolve();
+        }
+        assert.equal(mustExist(deviceResult, "device result must exist").status, 201);
+        const record = mustExist(await driver.record(device.connector_instance_id, key), "record must exist");
+        assert.equal(record.deleted, false);
+        assert.equal(record.record_json.content, "direct-revives");
+        assert.deepEqual(
+          await driver.lexical(device.connector_instance_id, key),
+          [{ field: "content", text: "direct-revives" }],
+          "the device batch's stale delete-publish must not remove the direct writer's live content"
+        );
+        return;
+      }
+
+      if (caseName === "device-stale-upsert-vs-live-delete") {
+        // Inverse: the device batch's UPSERT becomes stale — a same-instance
+        // direct DELETE lands inside the gap. The device's stale
+        // upsert-publish must not resurrect content into the index.
+        await ingestRecord(target(device), directRecord(key, "seed"));
+        await within(waitForDeferredIndexWorkToDrain(), "seed publish drains");
+        const devicePausedAfterDurablePhase = deferred<void>();
+        const releaseDevice = deferred<void>();
+        __setDeviceIngestPhaseFaultHookForTest(async (point: string) => {
+          if (point === "after-durable-phase") {
+            devicePausedAfterDurablePhase.resolve();
+            await releaseDevice.promise;
+          }
+        });
+        let deviceResult: JsonResponse | undefined;
+        try {
+          const request = batch(device, nextId(`${caseName}`), [deviceRecord(key, "device-stale-content")]);
+          const devicePromise = driver.ingest(device, request).then((result) => {
+            deviceResult = result;
+            return result;
+          });
+          await within(devicePausedAfterDurablePhase.promise, "device upsert-batch paused after its durable commit");
+          await deleteRecord(target(device), "messages", key);
+          await within(waitForDeferredIndexWorkToDrain(), "the direct delete's own publish drains");
+          releaseDevice.resolve();
+          await within(devicePromise, "the device batch resumes and completes");
+          await within(waitForDeferredIndexWorkToDrain(), "the device batch's stale upsert-publish attempt drains");
+        } finally {
+          __setDeviceIngestPhaseFaultHookForTest(null);
+          releaseDevice.resolve();
+        }
+        assert.equal(mustExist(deviceResult, "device result must exist").status, 201);
+        const record = mustExist(await driver.record(device.connector_instance_id, key), "record must exist");
+        assert.equal(record.deleted, true, "the newer direct delete is authoritative");
+        assert.deepEqual(
+          await driver.lexical(device.connector_instance_id, key),
+          [],
+          "the device batch's stale upsert-publish must not resurrect content the newer delete already removed"
+        );
+        assert.deepEqual(await driver.semanticWithEmbedding(device.connector_instance_id, key), []);
+        return;
+      }
+
+      if (caseName === "crash-mid-publish-sweep-backstop") {
+        // A publish "crashes" (throws) after compute but before the CAS
+        // write lands — the durable commit's own dirty-flag mark is the
+        // fact that survives, and the bounded reconcile sweep, run once,
+        // brings the derived index to the correct current state. Proves
+        // the sweep is a genuine backstop, not required for the primary
+        // race (which the other cases already prove holds without it).
+        __setIndexPublishPhaseHookForTest((point: string, context: Record<string, unknown>) => {
+          if (point === "before-publish-transaction" && context.expectedVersion === 1) {
+            throw new Error("simulated crash between compute and publish transaction");
+          }
+        });
+        try {
+          await ingestRecord(target(device), directRecord(key, "crash-content"));
+        } catch {
+          // Deliberately swallowed: this mirrors scheduleRecordIndexMaintenance's
+          // own fire-and-forget contract — a derived-phase failure never
+          // rolls back the durable write, and the caller here stands in for
+          // that fire-and-forget lane.
+        } finally {
+          __setIndexPublishPhaseHookForTest(null);
+        }
+        assert.deepEqual(
+          await driver.lexical(device.connector_instance_id, key),
+          [],
+          "the crashed publish must not have left partial state"
+        );
+        const { runSearchIndexDirtyReconcileRound } = await import("../server/search-index-reconcile.ts");
+        await runSearchIndexDirtyReconcileRound();
+        assert.deepEqual(
+          await driver.lexical(device.connector_instance_id, key),
+          [{ field: "content", text: "crash-content" }],
+          "one reconcile round closes the gap the crashed publish left"
+        );
+        return;
+      }
+
+      if (caseName === "no-lock-around-embedding") {
+        // Regression guard: a same-instance writer whose embedding is
+        // artificially slow must not block a concurrent same-instance
+        // writer's OWN record commit beyond one transaction's duration —
+        // the CAS fix must not "fix" the stale-overwrite race by
+        // reintroducing a lock spanning the embedding call.
+        const otherKey = "version-cas-key-other";
+        const embedStalled = deferred<void>();
+        const releaseEmbed = deferred<void>();
+        driver.setEmbeddingHook(async (text) => {
+          if (text === "slow-content") {
+            embedStalled.resolve();
+            await releaseEmbed.promise;
+          }
+        });
+        try {
+          const slowPromise = ingestRecord(target(device), directRecord(key, "slow-content"));
+          await within(embedStalled.promise, "the slow writer's embedding call is in flight");
+          const commitStarted = performance.now();
+          await ingestRecord(target(device), directRecord(otherKey, "fast-content"));
+          const commitElapsedMs = performance.now() - commitStarted;
+          assert.ok(
+            commitElapsedMs < 1000,
+            `a concurrent same-instance writer's durable commit must not queue behind another writer's embedding call — took ${commitElapsedMs}ms`
+          );
+          releaseEmbed.resolve();
+          await within(slowPromise, "the slow writer completes");
+        } finally {
+          driver.setEmbeddingHook(null);
+          releaseEmbed.resolve();
+        }
+        return;
+      }
+
+      if (caseName === "device-retry-version-monotonicity") {
+        // A device-batch retry that replays a durable-prefix record (already
+        // covered by authoritativeFinalRecord's reread) must not decrement
+        // or otherwise corrupt the derived index's version when it repairs
+        // derived facts — version only ever moves forward across a retry.
+        __setDeviceIngestPhaseFaultHookForTest((point: string) => {
+          if (point === "after-durable-phase") {
+            throw new Error("hold the batch after durable phase, before final-plan index maintenance");
+          }
+        });
+        let request: DeviceBatch;
+        try {
+          request = batch(device, nextId("version-cas-retry"), [deviceRecord(key, "retry-content")]);
+          assert.equal((await driver.ingest(device, request)).status, 503);
+        } finally {
+          __setDeviceIngestPhaseFaultHookForTest(null);
+        }
+        const stranded = mustExist(await driver.outcome(device, request.batch_id), "stranded outcome must exist");
+        assert.equal(stranded.durable_prefix_count, 1);
+        assert.equal((await driver.ingest(device, request)).status, 201);
+        await within(waitForDeferredIndexWorkToDrain(), "retry's final-plan publish drains");
+        const record = mustExist(await driver.record(device.connector_instance_id, key), "record must exist");
+        assert.equal(record.version, 1, "the retry repairs derived state at the SAME version, never a new one");
+        assert.deepEqual(await driver.lexical(device.connector_instance_id, key), [
+          { field: "content", text: "retry-content" },
+        ]);
+      }
+    }
+  );
+}
+
 const ORACLES: [string, (driver: Driver) => Promise<void>][] = [
   ["phase fault/resume matrix", runPhaseFaultMatrix],
   ["simultaneous identity matrix", runConcurrentIdentityOracle],
@@ -2568,6 +2997,7 @@ const ORACLES: [string, (driver: Driver) => Promise<void>][] = [
   ["stranded processing diagnostics", runStrandedDiagnosticsOracle],
   ["registration/backfill ordering", runManifestRegistrationOracle],
   ["device/direct writer collision matrix", runWriterCollisionOracle],
+  ["version-CAS stale-overwrite adversarial matrix", runVersionCasOracle],
 ];
 
 for (const [name, oracle] of ORACLES) {

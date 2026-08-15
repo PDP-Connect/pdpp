@@ -7,7 +7,7 @@ import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primi
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type CimdClientDocument, listCimdClientDocuments } from "../lib/ref-client.ts";
 import { createCimdClientIdentityAction, deleteCimdClientIdentityAction } from "./actions.ts";
@@ -134,8 +134,7 @@ function ClientIdentityList({
   if (!identities.length) {
     return (
       <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
-        No stable client identities yet. Create one when a local MCP client supports an explicit URL-shaped{" "}
-        <code className="font-mono">client_id</code>.
+        No client identities yet.
       </p>
     );
   }
@@ -277,7 +276,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   const notice = noticeText(params.notice);
   const primaryEntries: SetupEntry[] = [
     {
-      body: "Use this for ChatGPT, Claude.ai, and remote MCP clients. Browser clients use PKCE; sandboxed clients can use the advertised device-code flow.",
+      body: "Use this for ChatGPT, Claude.ai, and remote MCP clients. Browser clients use PKCE; some clients use the device-code flow.",
       label: "MCP server URL",
       title: "MCP URL",
       value: targets.mcpUrl,
@@ -289,7 +288,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
       value: targets.claudeCodeCommand,
     },
     {
-      body: "Adds the same remote MCP endpoint without a bearer-token env var.",
+      body: "Adds the same remote MCP endpoint without a separate bearer token.",
       label: "Codex command",
       title: "Codex",
       value: targets.codexCommand,
@@ -297,15 +296,15 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   ];
   const secondaryEntries: SetupEntry[] = [
     {
-      body: "For a shell agent that will use scoped REST reads instead of hosted MCP.",
+      body: "For a local client that uses scoped REST reads instead of MCP.",
       label: "PDPP CLI connect command",
       title: "PDPP CLI",
       value: targets.pdppCliCommand,
     },
     {
-      body: "For agents that discover instructions before choosing MCP or CLI.",
-      label: "agent-readable entrypoint URL",
-      title: "Agent skill",
+      body: "For clients that read the public instructions before choosing MCP or CLI.",
+      label: "Instructions URL",
+      title: "Instructions",
       value: targets.agentEntrypoint,
     },
   ];
@@ -318,8 +317,8 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
             Deployment readiness
           </Link>
         }
-        breadcrumbs={[{ href: "/", label: "Dashboard" }, { label: "Connect apps" }]}
-        description="Give apps and local agents grant-scoped read access to data already in this instance. To add or manage the data sources that populate it, go to Sources."
+        breadcrumbs={[{ href: "/", label: "Overview" }, { label: "Connect apps" }]}
+        description="Give apps and local clients grant-scoped read access to data already in this instance. To add or manage data sources, go to Sources."
         title="Connect apps"
       />
 
@@ -329,7 +328,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
       </div>
 
       <Section
-        description="Use these when an app or local agent needs read access to records already collected in this PDPP instance."
+        description="Use these when an app or local client needs read access to records already collected in this PDPP instance."
         title="Connect apps"
       >
         <ul className="divide-y divide-border/70 border-border/70 border-y">
@@ -349,7 +348,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
         tone="info"
       >
         <p className="pdpp-caption text-callout-info-fg/80">
-          Source accounts are managed under Sources. Keep this page for AI app and agent read-access setup.
+          Source accounts are managed under Sources. Use this page to set up app and local-client read access.
         </p>
       </Callout>
 
@@ -365,8 +364,8 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
       </Section>
 
       <Section
-        description="Use these only when the agent is running locally or reading the public agent instructions."
-        title="Other agent entrypoints"
+        description="Use these for local clients or for reading the public instructions."
+        title="Other client entrypoints"
       >
         <ul className="divide-y divide-border/70 border-border/70 border-y">
           {secondaryEntries.map((entry) => (
@@ -378,16 +377,16 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
       <Callout
         action={
           <Link className="underline-offset-2 hover:underline" href="/deployment/tokens">
-            Owner-agent access →
+            Owner credentials →
           </Link>
         }
         title="Owner credentials stay out of ordinary MCP setup"
         tone="info"
       >
         <p className="pdpp-caption text-callout-info-fg/80">
-          Claude, ChatGPT, Codex, Claude Code, and third-party MCP clients should use the scoped OAuth flow at{" "}
-          <code className="font-mono">/mcp</code>. Headless MCP setup still returns a scoped client token, not an owner
-          bearer. Trusted local owner automation is a separate flow.
+          Claude, ChatGPT, Codex, Claude Code, and other MCP clients should use the scoped OAuth flow at{" "}
+          <code className="font-mono">/mcp</code>. That flow returns a scoped client token, never the owner bearer.
+          Trusted local access for the owner uses a separate flow.
         </p>
       </Callout>
     </RecordroomShellWithPalette>

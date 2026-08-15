@@ -10,13 +10,16 @@ import {
   expectedLocalCoverageStoreDescriptors,
   expectedLocalCoverageStores,
 } from "../../packages/polyfill-connectors/src/local-source-inventory.ts";
-import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.ts";
+import { evaluateStreamHealthAuthority } from "../../scripts/stream-health-audit/authority.ts";
 import type { CollectionRateSnapshot, CoverageAxis, OutboxAxis } from "../runtime/connection-health.ts";
 import {
   __setConnectorInstanceWritePhaseHookForTest,
   withConnectorInstanceWrite,
 } from "../server/connector-instance-write-coordinator.ts";
-import { reconcileDirtyConnectorSummaryEvidence } from "../server/connector-summary-read-model.ts";
+import {
+  markConnectorSummaryEvidenceDirty,
+  reconcileDirtyConnectorSummaryEvidence,
+} from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { composeFleetHealthVerdict } from "../server/fleet-health.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "../server/freshness.ts";
@@ -84,6 +87,39 @@ const HEARTBEAT_AT = "2026-06-03T11:59:00.000Z";
 const STALE_HISTORICAL_RUN_AT = "2026-05-22T14:31:18.319Z";
 const STATE_CONNECTOR_ID = CONNECTOR_ID;
 
+function streamHealthForSummary(summary: unknown, manifestStreams?: readonly unknown[]) {
+  const object =
+    summary && typeof summary === "object" && !Array.isArray(summary) ? (summary as Record<string, unknown>) : {};
+  const declaredStreams = manifestStreams ?? (Array.isArray(object.streams) ? object.streams : []);
+  const connectionId = typeof object.connection_id === "string" ? object.connection_id : "<missing>";
+  const connectorId = typeof object.connector_id === "string" ? object.connector_id : "<missing>";
+  const streamKeys = declaredStreams
+    .filter((stream): stream is string => typeof stream === "string" && stream.trim().length > 0)
+    .map((stream) => ({ connectionId, stream }));
+  return evaluateStreamHealthAuthority({
+    auth: { authenticated: true, mode: "test", resolved: true },
+    connections: [summary],
+    dom: {
+      authenticated: true,
+      connectionIds: [connectionId],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      streamKeys,
+      suspense: false,
+    },
+    manifests: [{ connector_id: connectorId, streams: declaredStreams }],
+    paginationComplete: true,
+    revision: {
+      dom: "local-coverage-test",
+      expected: "local-coverage-test",
+      sha: "local-coverage-test",
+      summaries: "local-coverage-test",
+    },
+  });
+}
+
 function withTmpDb(fn: () => Promise<void>) {
   return async () => {
     const dir = mkdtempSync(join(tmpdir(), "pdpp-local-coverage-green-"));
@@ -98,7 +134,7 @@ function withTmpDb(fn: () => Promise<void>) {
 }
 
 interface TestManifestCapabilities {
-  public_listing: { listed: boolean; status: string };
+  public_listing: { tier: "supported" };
   refresh_policy?: { maximum_staleness_seconds: number };
 }
 
@@ -107,7 +143,7 @@ function seedConnector({
 }: {
   refreshPolicy?: { maximum_staleness_seconds: number } | null;
 } = {}) {
-  const capabilities: TestManifestCapabilities = { public_listing: { listed: true, status: "test" } };
+  const capabilities: TestManifestCapabilities = { public_listing: { tier: "supported" } };
   if (refreshPolicy) {
     capabilities.refresh_policy = refreshPolicy;
   }
@@ -358,10 +394,20 @@ test(
       stream: "messages",
     });
     // Every known store is accounted for (collected / inventory-only / excluded).
-    // The real local collectors emit one diagnostic for the parent project/session
-    // store; co-emitted child streams inherit that coverage through `state_stream`.
+    // `derived_messages`/`derived_attachments` are explicit here because the
+    // production claude_code descriptor authority declares them as their own
+    // proof-bearing stores (the connector's real `emitDerivedCoverage` scans
+    // the same session transcripts `sessions` scans and reports its own
+    // `collected` row) -- they are not implied by the `projects`/`sessions`
+    // row. `state_stream` parent inheritance (see `seedConnector`'s manifest)
+    // is exercised as an independent, agreeing path: were these rows absent,
+    // `messages`/`attachments` would still read `complete` purely from
+    // inheriting the `sessions` row below.
     seedCoverage([
       { status: "collected", store: "projects", stream: "sessions" },
+      { status: "collected", store: "derived_messages", stream: "messages" },
+      { status: "collected", store: "derived_attachments", stream: "attachments" },
+      { status: "collected", store: "derived_memory_notes", stream: "memory_notes" },
       { status: "inventory_only", store: "cache", stream: null },
       { status: "excluded", store: "auth", stream: null },
     ]);
@@ -381,12 +427,12 @@ test(
     assert.equal(
       reportByStream.messages?.coverage_condition,
       "complete",
-      "local coverage diagnostics should prove child-stream coverage through the state_stream parent"
+      "local coverage diagnostics prove messages complete directly, and it also agrees with state_stream parent inheritance"
     );
     assert.equal(
       reportByStream.attachments?.coverage_condition,
       "complete",
-      "co-emitted local child streams inherit coverage from their declared parent stream"
+      "local coverage diagnostics prove attachments complete directly, and it also agrees with state_stream parent inheritance"
     );
     assert.equal(
       reportByStream.coverage_diagnostics?.coverage_condition,
@@ -439,12 +485,34 @@ test(
   })
 );
 
+// A prior version of this suite isolated `state_stream` parent inheritance by
+// omitting messages/attachments' OWN coverage_diagnostics row entirely
+// (proving inheritance is what makes them read complete). That scenario is no
+// longer reachable now that the production claude_code descriptor authority
+// declares `derived_messages`/`derived_attachments`/`derived_memory_notes` as
+// their own required entries: `hasAuthoritativeInventory` + `missingStores`
+// (see `deriveLocalCoverageAxis`) require EVERY descriptor entry present
+// before the axis is reliable at all, so a snapshot missing those rows is
+// honestly `unknown`, not a valid "inheritance-only" healthy state. The
+// "healthy drained local collector..." test above now seeds messages/
+// attachments' direct rows explicitly and still exercises state_stream
+// inheritance as an agreeing, non-exclusive path (see its own comment).
+
 test(
   "repair-lock failure reaches health, required-report authority, and fleet without degrading optional local policy semantics",
   withTmpDb(async () => {
     seedConnector();
     await seedInstance();
-    seedCoverage([{ status: "collected", store: "projects", stream: "sessions" }]);
+    // messages/attachments carry explicit direct-proof rows (matching real
+    // production's derived-store emitter), so the failed-repair assertions
+    // below exercise the demotion of an authoritative `complete` claim to
+    // `unknown` -- not the absence of coverage evidence altogether.
+    seedCoverage([
+      { status: "collected", store: "projects", stream: "sessions" },
+      { status: "collected", store: "derived_messages", stream: "messages" },
+      { status: "collected", store: "derived_attachments", stream: "attachments" },
+      { status: "collected", store: "derived_memory_notes", stream: "memory_notes" },
+    ]);
     await seedHealthyDrainedHeartbeat();
     await rebuildRetainedSize();
 
@@ -457,6 +525,10 @@ test(
       key: "repair-lock-probe",
       stream: "messages",
       version: 2,
+    });
+    await markConnectorSummaryEvidenceDirty({
+      connectorInstanceId: CONNECTOR_INSTANCE_ID,
+      reason: "record ingest changed connection count/stream evidence",
     });
 
     const previousWait = process.env.PDPP_INGEST_LOCK_WAIT_MS;
@@ -481,7 +553,7 @@ test(
       const report = new Map(row.collection_report.map((entry) => [entry.stream, entry]));
 
       assert.equal(row.connection_health.state, "unknown");
-      assert.deepEqual(row.connection_health.unknown_reasons, ["repair_lock_unavailable"]);
+      assert.deepEqual(row.connection_health.unknown_reasons, ["summary_evidence_dirty_backstop"]);
       for (const stream of ["sessions", "messages", "attachments", "coverage_diagnostics"]) {
         const entry = report.get(stream);
         assert.equal(entry?.considered, "unknown", `${stream} has no authoritative denominator`);
@@ -491,7 +563,6 @@ test(
       }
 
       const fleet = composeFleetHealthVerdict({
-        coverageAudit: { status: "pass" },
         inventory: [
           {
             connectorId: CONNECTOR_ID,
@@ -502,6 +573,7 @@ test(
           },
         ],
         runtime: { ok: true },
+        streamHealth: { status: "pass" },
         summaries: [row],
       });
       assert.equal(fleet.state, "indeterminate");
@@ -592,7 +664,7 @@ test(
 );
 
 test(
-  "SQLite persisted private coverage STATE is malformed, cannot project complete, and never reaches summary or audit output",
+  "SQLite persisted private coverage STATE is malformed, cannot project complete, and never reaches summary or authority output",
   withTmpDb(async () => {
     const privacySentinel = "/private/local-coverage-sentinel";
     seedConnector();
@@ -625,24 +697,24 @@ test(
       connector_instance_id: CONNECTOR_INSTANCE_ID,
     });
     const summary = await projectConnection();
-    const audit = auditStreamHealth([summary]);
+    const authority = streamHealthForSummary(summary);
 
     assert.equal(proof.malformed, true);
     assert.equal(proof.hasCommittedSnapshot, false);
     assert.equal(summary.connection_health.axes.coverage, "unknown");
-    assert.equal(JSON.stringify({ audit, summary }).includes(privacySentinel), false);
+    assert.equal(JSON.stringify({ authority, summary }).includes(privacySentinel), false);
   })
 );
 
 test(
-  "unsupported local inventory cannot turn an arbitrary singleton into complete report or audit pass",
+  "unsupported local inventory cannot turn an arbitrary singleton into complete report or authority pass",
   withTmpDb(async () => {
     const connectorId = "unsupported-local-proof-gate";
     const instanceId = "cin_unsupported_local_proof";
     const deviceId = "dev_unsupported_local_proof";
     const sourceInstanceId = "src_unsupported_local_proof";
     const manifest = {
-      capabilities: { public_listing: { listed: true, status: "test" } },
+      capabilities: { public_listing: { tier: "supported" } },
       connector_id: connectorId,
       display_name: "Unsupported local proof",
       protocol_version: "0.1.0",
@@ -718,7 +790,7 @@ test(
     assert.ok(row);
     assert.equal(row.connection_health.axes.coverage, "unknown");
     assert.notEqual(row.collection_report.find((entry) => entry.stream === "messages")?.coverage_condition, "complete");
-    assert.notEqual(auditStreamHealth([row]).status, "pass");
+    assert.notEqual(streamHealthForSummary(row).status, "pass");
   })
 );
 
@@ -784,12 +856,24 @@ test(
       assert.equal(entry?.forward_disposition, "unmeasured", `${stream} must remain unmeasured`);
     }
 
-    const audit = auditStreamHealth([summary]);
-    assert.equal(audit.status, "fail");
+    const authority = streamHealthForSummary(
+      summary,
+      manifest.streams.map((stream) => stream.name)
+    );
+    assert.notEqual(authority.status, "pass");
     assert.deepEqual(
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: the runtime fixture deliberately exercises an absent or nullable boundary value.
-      [...(audit.failures[0]?.streams ?? [])].sort((a, b) => a.stream.localeCompare(b.stream)),
-      requiredStreams.map((stream) => ({ class: "runtime_evidence_missing", stream })),
+      authority.findings
+        .filter(
+          (finding) =>
+            finding.stream !== "<owner-dom>" &&
+            finding.stream !== "<revision>" &&
+            finding.stream !== "<vocabulary>" &&
+            finding.stream !== "<audit>" &&
+            finding.stream !== "<pagination>"
+        )
+        .map((finding) => finding.stream)
+        .sort((left, right) => left.localeCompare(right)),
+      requiredStreams,
       "each shipped required stream is red until runtime evidence is committed"
     );
   })

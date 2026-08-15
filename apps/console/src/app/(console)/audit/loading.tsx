@@ -14,7 +14,7 @@ import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 export default function TracesLoading() {
   return (
     <RecordroomShellWithPalette>
-      <ListLoadingSkeleton label="traces" rows={8} />
+      <ListLoadingSkeleton label="audit events" rows={8} />
     </RecordroomShellWithPalette>
   );
 }

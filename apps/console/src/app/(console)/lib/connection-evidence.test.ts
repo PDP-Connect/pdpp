@@ -29,7 +29,9 @@ import {
   formatLastDurableProgress,
   formatOutboxAxis,
   formatProjectionFreshness,
+  formatSourceHeartbeat,
   formatSourceOutboxState,
+  formatSupportingCondition,
   outboxAxisIsApplicable,
   resolveRecordCountDisplay,
   summarizeAxisChips,
@@ -44,6 +46,7 @@ import type {
   RefConnectionHealthCondition,
   RefConnectionHealthSnapshot,
   RefDetailGapBacklog,
+  RefRenderedVerdict,
   RefSchedule,
 } from "./ref-client.ts";
 import type { ConnectorOverview } from "./rs-client.ts";
@@ -1890,120 +1893,93 @@ test("syncActionIdleLabel keeps non-failed idle sync copy", () => {
 // ─── deriveFailureSummary ─────────────────────────────────────────────────────
 
 // Top-level regex constants for useTopLevelRegex compliance
-const PROSE_GAP_RE = /gap/i;
-const PROSE_INCOMPLETE_RE = /incomplete/i;
 const PROSE_THROTTLE_RE = /throttl/i;
-const PROSE_BACKOFF_RE = /back-off|backoff|retry/i;
-const PROSE_RECONNECT_RE = /reconnect/i;
+function renderedVerdict(overrides: Partial<RefRenderedVerdict> = {}): RefRenderedVerdict {
+  return {
+    annotations: [],
+    channel: "attention",
+    detail: {},
+    forward_statement: "The server has an owner-facing next step.",
+    pill: { label: "Can't collect", tone: "red" },
+    progress: {
+      gaps_drained_last_run: null,
+      headline: "Collection needs review.",
+      last_refreshed_at: null,
+      mode: "manual",
+      records_committed_last_run: null,
+      retained_records: null,
+    },
+    required_actions: [],
+    streams: [],
+    trace: null,
+    ...overrides,
+  } as RefRenderedVerdict;
+}
 
-test("deriveFailureSummary returns null for healthy state", () => {
-  assert.equal(deriveFailureSummary(snapshot({ state: "healthy" })), null);
+test("deriveFailureSummary never classifies a raw health snapshot without a server verdict", () => {
+  for (const health of [
+    snapshot({ state: "degraded" }),
+    snapshot({ state: "cooling_off", reason_code: "source_pressure" }),
+    snapshot({ state: "blocked" }),
+    snapshot({ state: "needs_attention" }),
+  ]) {
+    assert.equal(deriveFailureSummary(health), null);
+  }
 });
 
-test("deriveFailureSummary returns null for idle state", () => {
-  assert.equal(deriveFailureSummary(snapshot({ state: "idle" })), null);
-});
-
-test("deriveFailureSummary returns null for null input", () => {
-  assert.equal(deriveFailureSummary(null), null);
-});
-
-test("deriveFailureSummary degraded → 'What's missing?' trigger, view_runs CTA", () => {
-  const result = deriveFailureSummary(
-    snapshot({ axes: { attention: "none", coverage: "gaps", freshness: "fresh", outbox: "idle" }, state: "degraded" })
-  );
-  assert.ok(result);
-  assert.equal(result.triggerLabel, "What's missing?");
-  assert.equal(result.cta, "view_runs");
-  assert.match(result.prose, PROSE_GAP_RE);
-});
-
-test("deriveFailureSummary degraded with complete coverage → generic prose", () => {
+test("deriveFailureSummary formats the server verdict and only borrows facts from raw health", () => {
   const result = deriveFailureSummary(
     snapshot({
-      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
-      state: "degraded",
+      last_success_at: "2026-04-28T19:33:00Z",
+      next_attempt_at: "2026-05-15T15:36:00Z",
+      reason_code: "browser_context_died",
+      state: "blocked",
+    }),
+    renderedVerdict({
+      required_actions: [
+        {
+          affects: [],
+          audience: "owner",
+          cta: "Reconnect this account",
+          kind: "reauth",
+          satisfied_when: { kind: "credential_present_and_unrejected" },
+          terminal: true,
+          urgency: "now",
+        },
+      ],
     })
   );
   assert.ok(result);
-  assert.equal(result.triggerLabel, "What's missing?");
-  assert.match(result.prose, PROSE_INCOMPLETE_RE);
-});
-
-test("deriveFailureSummary cooling_off source_pressure → honest prose about throttling", () => {
-  const result = deriveFailureSummary(snapshot({ reason_code: "source_pressure", state: "cooling_off" }));
-  assert.ok(result);
-  assert.equal(result.triggerLabel, "What's wrong?");
-  assert.equal(result.cta, "wait");
-  assert.match(result.prose, PROSE_THROTTLE_RE);
-});
-
-test("deriveFailureSummary cooling_off failure back-off → retry prose", () => {
-  const result = deriveFailureSummary(snapshot({ reason_code: "reddit_login_unexpected_ui", state: "cooling_off" }));
-  assert.ok(result);
-  assert.equal(result.cta, "wait");
-  assert.match(result.prose, PROSE_BACKOFF_RE);
-});
-
-test("deriveFailureSummary blocked → reconnect CTA", () => {
-  const result = deriveFailureSummary(snapshot({ state: "blocked" }));
-  assert.ok(result);
-  assert.equal(result.triggerLabel, "What's wrong?");
-  assert.equal(result.cta, "reconnect");
-  assert.match(result.prose, PROSE_RECONNECT_RE);
-});
-
-test("deriveFailureSummary needs_attention → reconnect CTA", () => {
-  const result = deriveFailureSummary(snapshot({ state: "needs_attention" }));
-  assert.ok(result);
-  assert.equal(result.cta, "reconnect");
-});
-
-test("deriveFailureSummary passes through reason_code", () => {
-  const result = deriveFailureSummary(snapshot({ reason_code: "browser_context_died", state: "blocked" }));
-  assert.ok(result);
+  assert.equal(result.actionLabel, "Reconnect this account");
+  assert.equal(result.cta, "connection_detail");
   assert.equal(result.reasonCode, "browser_context_died");
-});
-
-test("deriveFailureSummary passes through next_attempt_at", () => {
-  const result = deriveFailureSummary(snapshot({ next_attempt_at: "2026-05-15T15:36:00Z", state: "cooling_off" }));
-  assert.ok(result);
   assert.equal(result.nextAttemptAt, "2026-05-15T15:36:00Z");
-});
-
-test("deriveFailureSummary passes through last_success_at", () => {
-  const result = deriveFailureSummary(snapshot({ last_success_at: "2026-04-28T19:33:00Z", state: "blocked" }));
-  assert.ok(result);
   assert.equal(result.lastSuccessAt, "2026-04-28T19:33:00Z");
 });
 
-// §6.2 invariant: source-pressure blocked must NEVER emit cta:"reconnect".
-// A blocked state whose root cause is source-pressure is self-resolving; a
-// Reconnect CTA would direct the owner to a manual action that is unnecessary
-// and confusing. deriveFailureSummary applies the shared isSourcePressureCooldown
-// guard (also load-bearing for the blocked-branch fallback in this file). (spec §6.2)
-test("deriveFailureSummary blocked + source_pressure reason_code → cta is 'wait', NOT 'reconnect'", () => {
-  const result = deriveFailureSummary(snapshot({ reason_code: "source_pressure", state: "blocked" }));
-  assert.ok(result);
-  assert.notEqual(result.cta, "reconnect", "source-pressure blocked must not yield reconnect CTA");
-  assert.equal(result.cta, "wait");
-});
-
-test("deriveFailureSummary blocked + backlog + next_attempt_at (inferred source-pressure) → cta is 'wait', NOT 'reconnect'", () => {
-  // isSourcePressureCooldown also fires when there is a pending backlog AND a
-  // scheduled next_attempt_at, even without an explicit reason_code. The
-  // deriveFailureSummary blocked branch must honour the same inference.
+test("deriveFailureSummary uses the server wait verdict even when raw health says source pressure", () => {
   const result = deriveFailureSummary(
-    snapshot({
-      detail_gap_backlog: backlog({ pending: 5 }),
-      next_attempt_at: "2026-05-20T10:00:00Z",
-      reason_code: null,
-      state: "blocked",
+    snapshot({ reason_code: "source_pressure", state: "blocked" }),
+    renderedVerdict({
+      channel: "advisory",
+      forward_statement: "The source is throttling this connection; it will retry automatically.",
+      pill: { label: "Degraded", tone: "amber" },
+      required_actions: [
+        {
+          affects: [],
+          audience: "none",
+          cta: "No action needed",
+          kind: "wait",
+          satisfied_when: { kind: "none" },
+          terminal: false,
+          urgency: "soon",
+        },
+      ],
     })
   );
   assert.ok(result);
-  assert.notEqual(result.cta, "reconnect", "inferred source-pressure blocked must not yield reconnect CTA");
   assert.equal(result.cta, "wait");
+  assert.match(result.prose, PROSE_THROTTLE_RE);
 });
 
 // §6.3 invariant: "done" (caught up) must be false when terminal > 0.
@@ -2237,7 +2213,7 @@ test("formatCollectionRateReadout fails closed for partial projection payloads",
     ceiling_rate_per_min: 240,
     current_interval_ms: 250,
     effective_rate_per_min: 240,
-    last_backoff: { reason: "throttle" } as never,
+    last_backoff: { reason: "throttle" },
   });
   assert.ok(partialBackoff);
   assert.equal(partialBackoff.backoffLabel, null, "partial back-off → omit optional line");
@@ -2255,6 +2231,67 @@ test("formatCollectionRateReadout fails closed for partial projection payloads",
   );
 });
 
+test("formatSupportingCondition labels the type instead of leaking the enum key", () => {
+  const view = formatSupportingCondition({
+    id: "BacklogClear:outbox_unknown",
+    message: "No trusted local-device outbox evidence is available.",
+    reason: "outbox_unknown",
+    status: "unknown",
+    type: "BacklogClear",
+  });
+
+  assert.equal(view.label, "Backlog clear", "the raw CamelCase enum key must never reach the owner");
+  assert.equal(view.statusLabel, "Unknown", "the bare lowercase status is capitalized");
+  assert.match(view.title, /outbox unknown/, "the snake_case reason is humanized before the tooltip");
+  assert.doesNotMatch(view.title, /outbox_unknown/);
+});
+
+test("formatSupportingCondition keeps the message on every status, not just false", () => {
+  // The old renderer dropped `message` unless the status was `false`, which hid
+  // the one human-readable field exactly on the healthy connections where a bare
+  // "Unknown" explained nothing.
+  for (const status of ["true", "false", "unknown", "not_applicable"]) {
+    const view = formatSupportingCondition({
+      id: `RuntimeAvailable:runtime_not_managed:${status}`,
+      message: "No managed runtime surface is required for this connection.",
+      reason: "runtime_not_managed",
+      status,
+      type: "RuntimeAvailable",
+    });
+    assert.match(view.message, /No managed runtime surface is required/, `${status} must carry its message`);
+    assert.match(view.title, /No managed runtime surface is required/);
+  }
+});
+
+test("formatSupportingCondition folds the remediation label into the tooltip", () => {
+  const view = formatSupportingCondition({
+    id: "LocalExporterAvailable:local_exporter_stalled",
+    message: "The local collector is not making progress.",
+    reason: "local_exporter_stalled",
+    remediation: { label: "Check the local collector" },
+    status: "false",
+    type: "LocalExporterAvailable",
+  });
+
+  assert.equal(view.statusLabel, "No");
+  assert.match(view.title, /Check the local collector\.$/);
+});
+
+test("formatSupportingCondition degrades gracefully for an unknown condition type", () => {
+  // A newer reference may add a condition type this console build has no label
+  // for; it must still read as words rather than vanishing or throwing.
+  const view = formatSupportingCondition({
+    id: "SomeNewCheck:whatever",
+    message: "",
+    reason: "whatever",
+    status: "unknown",
+    type: "SomeNewCheck",
+  });
+
+  assert.equal(view.label, "Some new check");
+  assert.equal(view.message, "", "an empty message stays empty rather than rendering a stray separator");
+});
+
 // The single-voice "handling it" badge synthesizer (`synthesizeConnectionVerdict`
 // / `badgeState`) that used to live here was deleted (Wave 10a/10b, 2026-07-09
 // state-model convergence): the server-owned `RenderedVerdict.pill` is the one
@@ -2262,3 +2299,41 @@ test("formatCollectionRateReadout fails closed for partial projection payloads",
 // classification this synthesizer relied on (`isSourcePressureCooldown`)
 // remains load-bearing for `deriveFailureSummary`'s `blocked` branch and is
 // covered above (`deriveFailureSummary blocked + source_pressure reason_code`).
+
+/**
+ * Reproduces the live UAT shape: a one-shot collector killed with its
+ * terminal, leaving `last_heartbeat_status = 'starting'` in the column for
+ * 38+ hours. The dashboard rendered "Heartbeat: starting" the whole time.
+ */
+test("formatSourceHeartbeat never presents a stale status verbatim", () => {
+  const chip = formatSourceHeartbeat({
+    heartbeat_health: "stale",
+    heartbeat_lease_ms: 30 * 60 * 1000,
+    last_heartbeat_status: "starting",
+  });
+
+  assert.equal(chip.value, "stale", "beyond the lease the presented health is stale");
+  assert.doesNotMatch(chip.label, /starting/, "the dead process's last 'starting' must not be the label");
+  assert.match(chip.title, /Last reported "starting"/, "but it is retained as dated evidence");
+  assert.match(chip.title, /30-minute lease/, "and the declared lease is named");
+});
+
+test("formatSourceHeartbeat passes a within-lease status through", () => {
+  const chip = formatSourceHeartbeat({
+    heartbeat_health: "starting",
+    heartbeat_lease_ms: 30 * 60 * 1000,
+    last_heartbeat_status: "starting",
+  });
+
+  assert.equal(chip.value, "starting", "a fresh 'starting' really is starting");
+  assert.equal(chip.label, "Heartbeat · starting");
+});
+
+test("formatSourceHeartbeat reports unknown when the server derived no health", () => {
+  // An older reference that does not project `heartbeat_health` must degrade
+  // to unknown, never fall back to the raw status it also sends.
+  const chip = formatSourceHeartbeat({ last_heartbeat_status: "starting" });
+
+  assert.equal(chip.value, "unknown");
+  assert.doesNotMatch(chip.label, /starting/, "an underived status is not evidence of life");
+});

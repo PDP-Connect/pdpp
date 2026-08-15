@@ -14,6 +14,7 @@ const REGEXP_5 = /unsupported fields detail/;
 const REGEXP_6 = /invalid DONE\.error\.code/;
 const REGEXP_7 = /invalid DONE\.error\.message/;
 const REGEXP_8 = /invalid DONE\.error\.message/;
+const INVALID_RECOVERY_HINT_MESSAGE_PATTERN = /invalid DONE\.error\.recovery_hint/;
 
 test("validateDoneError returns null when DONE.error is absent", () => {
   assert.equal(validateDoneError("failed", null), null);
@@ -87,4 +88,55 @@ test("validateDoneError normalizes valid failed DONE.error details", () => {
       retryable: false,
     }
   );
+});
+
+test("validateDoneError accepts a closed-vocabulary recovery_hint distinct from code", () => {
+  assert.deepEqual(
+    validateDoneError("failed", { code: "session_expired", message: "failed", recovery_hint: "refresh_credentials" }),
+    { code: "session_expired", message: "failed", recovery_hint: "refresh_credentials", retryable: null }
+  );
+  assert.deepEqual(
+    validateDoneError("failed", {
+      message: "failed",
+      recovery_hint: { action: "manual_action_required", retryable: false },
+    }),
+    { message: "failed", recovery_hint: { action: "manual_action_required", retryable: false }, retryable: null }
+  );
+});
+
+test("validateDoneError rejects an out-of-vocabulary recovery_hint", () => {
+  const result = validateDoneError("failed", { message: "failed", recovery_hint: "made_up_action" });
+  assert.ok(result instanceof Error);
+  assert.match(result.message, INVALID_RECOVERY_HINT_MESSAGE_PATTERN);
+});
+
+test("recovery_hint accepts only actionable shapes", () => {
+  const bareAction = validateDoneError("failed", { message: "failed", recovery_hint: "retry_by_runtime" });
+  assert.ok(!(bareAction instanceof Error));
+  assert.equal(bareAction?.recovery_hint, "retry_by_runtime");
+
+  const objectWithAction = validateDoneError("failed", {
+    message: "failed",
+    recovery_hint: { action: "refresh_credentials" },
+  });
+  assert.ok(!(objectWithAction instanceof Error));
+  assert.deepEqual(objectWithAction?.recovery_hint, { action: "refresh_credentials" });
+
+  const objectWithBoth = validateDoneError("failed", {
+    message: "failed",
+    recovery_hint: { action: "retry_on_connector_upgrade", retryable: false },
+  });
+  assert.ok(!(objectWithBoth instanceof Error));
+  assert.deepEqual(objectWithBoth?.recovery_hint, { action: "retry_on_connector_upgrade", retryable: false });
+  for (const invalid of [
+    {},
+    { retryable: true },
+    { action: "made_up_action" },
+    { action: "refresh_credentials", retryable: "false" },
+    { action: "refresh_credentials", connector_detail: "private" },
+  ]) {
+    const result = validateDoneError("failed", { message: "failed", recovery_hint: invalid });
+    assert.ok(result instanceof Error, `accepted invalid recovery_hint: ${JSON.stringify(invalid)}`);
+    assert.match(result.message, INVALID_RECOVERY_HINT_MESSAGE_PATTERN);
+  }
 });

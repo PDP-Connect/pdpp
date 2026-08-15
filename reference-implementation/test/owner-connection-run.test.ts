@@ -43,6 +43,7 @@ import { listSpineEventsPage, type SpineEventRecord } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 const REGEXP_1 = /owner-agent/i;
 
@@ -66,6 +67,7 @@ interface ClosableServer {
 
 interface StartServerOptions {
   asPort?: number;
+  connectionScopedRunEnvResolver?: typeof resolveCredentialFreeFixtureRunEnv;
   connectorPathResolver?: () => string;
   dbPath?: string;
   ownerAuthPassword?: string;
@@ -74,7 +76,10 @@ interface StartServerOptions {
 }
 
 async function startServer(opts: StartServerOptions): Promise<ClosableServer> {
-  const raw: Record<string, unknown> = await startServerUntyped(opts);
+  const raw: Record<string, unknown> = await startServerUntyped({
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
+    ...opts,
+  });
   const result: ClosableServer = {
     asPort: raw.asPort as number,
     asServer: raw.asServer as CloseableHandle,

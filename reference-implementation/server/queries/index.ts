@@ -239,6 +239,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authTokensRevokeByRefreshFamily: MutationQuery;
   readonly authTokensRevokeByTokenId: MutationQuery;
   readonly blobsGetRowById: ReadOneQuery;
+  readonly blobsGetSizeById: ReadOneQuery;
   readonly blobsGetStoredById: ReadOneQuery;
   readonly blobsInsertBinding: MutationQuery;
   // Blobs — content-addressed blob persistence + binding maintenance.
@@ -282,8 +283,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstancesListByOwner: ReadManyQuery;
   readonly connectorInstancesListByOwnerIncludingDrafts: ReadManyQuery;
   readonly connectorInstancesListDraftBrowserEnrollmentShells: SmallEnumerationQuery;
+  readonly connectorInstancesListGenerationByConnector: SmallEnumerationQuery;
   readonly connectorInstancesMigrateLegacyBindingKey: MutationQuery;
+  readonly connectorInstancesPromoteSetupBinding: MutationQuery;
+  readonly connectorInstancesSetRecordIdentityGeneration: MutationQuery;
   readonly connectorInstancesUpdateDisplayName: MutationQuery;
+  readonly connectorInstancesUpdateStaticSecretBinding: MutationQuery;
   readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly connectorSummaryEvidenceMarkDirtyByConnectorInstance: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
@@ -354,6 +359,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordRejectionsReleaseQuota: MutationQuery;
   readonly recordRejectionsSumPayloadBytesForConnection: ReadOneQuery;
   readonly recordRejectionsUpdateReplay: MutationQuery;
+  // Provider app config — deployment-scoped config (e.g. a shared OAuth
+  // client id/secret) keyed generically by (identity_group, logical_key).
+  readonly providerAppConfigDeleteByIdentityGroupAndLogicalKey: MutationQuery;
+  readonly providerAppConfigGetByIdentityGroupAndLogicalKey: ReadOneQuery;
+  readonly providerAppConfigListConfiguredKeysByIdentityGroup: SmallEnumerationQuery;
+  readonly providerAppConfigUpsert: MutationQuery;
   // Records — streaming aggregate scan over a single (connector, stream).
   readonly recordsAggregateIterateStreamRecordsForAggregation: IterateQuery;
   // Records — per-connector stream aggregate for `/_ref/connectors`.
@@ -422,6 +433,14 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Lexical retrieval — FTS5 index maintenance.
   readonly searchIndexDeleteByRecordKey: MutationQuery;
   readonly searchIndexDeleteByStream: MutationQuery;
+  // Search — scope-keyed (connector_instance_id, stream) dirty flag for
+  // deferred lexical+semantic index maintenance.
+  readonly searchIndexDirtyClear: MutationQuery;
+  readonly searchIndexDirtyCountDirty: ReadOneQuery;
+  readonly searchIndexDirtyGetByScope: ReadOneQuery;
+  readonly searchIndexDirtyListDirty: IterateQuery;
+  readonly searchIndexDirtyMarkDirty: MutationQuery;
+  readonly searchIndexDirtyRecordFailure: MutationQuery;
   readonly searchIndexInsertRow: MutationQuery;
   readonly searchMetaDeleteByStream: MutationQuery;
   // Lexical retrieval — backfill drift detection metadata.
@@ -808,6 +827,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "blobsGetStoredById",
     "blobsInsertBinding",
     "blobsGetRowById",
+    "blobsGetSizeById",
     "blobsListBindingsById",
     // Approvals — `/_ref/approvals` projection.
     "approvalsListPendingConsents",

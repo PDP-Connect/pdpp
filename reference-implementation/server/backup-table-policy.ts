@@ -26,11 +26,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Durable binary object metadata; bytes must restore with the database recovery point.",
   },
   browser_surface_leases: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Active browser leases are runtime locks that must converge through crash recovery after boot.",
   },
   browser_surface_replacement_receipts: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Replacement receipts describe in-flight browser recovery and must be reconciled after a crash.",
   },
   browser_surface_replacement_selection_override_audit_outbox: {
@@ -39,15 +39,15 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
       "Audit outbox state is durable audit evidence unless an executable crash-reconciliation oracle proves safe loss.",
   },
   browser_surface_replacement_selection_override_batches: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Batch rows coordinate replacement override processing and are reconciled by runtime recovery.",
   },
   browser_surface_replacement_selection_overrides: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Override rows affect active browser replacement choices and are reconciled with live surfaces.",
   },
   browser_surfaces: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Surface liveness is process-local and must be re-probed after restore.",
   },
   cimd_client_documents: {
@@ -87,7 +87,7 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Connection identity and configuration are core owner state.",
   },
   connector_maintenance_cursor: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Maintenance sweep cursors can be retried after crash recovery.",
   },
   connector_schedules: {
@@ -99,7 +99,7 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Connector checkpoint state is needed for incremental recovery.",
   },
   connector_summary_evidence: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Summary evidence is a projection rebuilt from records and connector state.",
   },
   connectors: {
@@ -107,19 +107,19 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Connector catalog rows are required to interpret connections and records.",
   },
   consent_exchange_codes: {
-    classification: "ephemeral_crash_reconciled",
-    reason: "Consent exchange codes are short-lived single-use handoff state reconciled by expiry and redemption.",
+    classification: "backup_required",
+    reason: "Consent exchange state is durable owner authorization state until expiry or redemption.",
   },
   controller_active_runs: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Active run rows represent in-flight work and must be reconciled by startup/runtime recovery.",
   },
   dataset_summary_projection: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Dataset summary rows are projections rebuilt from retained records.",
   },
   dataset_summary_stream_projection: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Stream summary rows are projections rebuilt from retained records.",
   },
   device_enrollment_codes: {
@@ -143,7 +143,7 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Device source bindings are durable connection state.",
   },
   explore_cursor_store: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason:
       "Explore cursor handles are bounded TTL page tokens; stale or missing handles fail closed as invalid cursors.",
   },
@@ -164,15 +164,15 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "OAuth grants are core authorization state.",
   },
   lexical_search_index: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Lexical index rows are rebuilt from records.",
   },
   lexical_search_meta: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Lexical index metadata is rebuilt with the index.",
   },
   lexical_search_snapshots: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Search result snapshots are derived query artifacts.",
   },
   manifest_write_violations: {
@@ -184,7 +184,7 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Manual upload artifact metadata must match restored artifact files.",
   },
   oauth_authorization_codes: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Authorization codes are short-lived OAuth transaction state.",
   },
   oauth_clients: {
@@ -204,7 +204,7 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Pending consent transactions must not be silently dropped by a coherent restore.",
   },
   presentation_screen_states: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Presentation screen state is tied to live browser/screen surfaces.",
   },
   provider_app_config: {
@@ -232,23 +232,23 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Current records are durable owner data.",
   },
   retained_size_connection: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Retained-size rows are rebuildable projections.",
   },
   retained_size_global: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Retained-size rows are rebuildable projections.",
   },
   retained_size_record_family: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Retained-size rows are rebuildable projections.",
   },
   retained_size_stream: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Retained-size rows are rebuildable projections.",
   },
   retained_size_top_rows: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Retained-size rows are rebuildable projections.",
   },
   run_history: {
@@ -260,27 +260,27 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Scheduler checkpoints prevent duplicate or skipped scheduled work.",
   },
   search_index_dirty: {
-    classification: "ephemeral_crash_reconciled",
+    classification: "backup_required",
     reason: "Dirty flags are reconciled by bounded search-index repair.",
   },
   semantic_search_backfill_progress: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Semantic backfill progress is recomputed while rebuilding semantic search.",
   },
   semantic_search_blob: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Semantic embeddings are rebuilt from records and blobs.",
   },
   semantic_search_meta: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Semantic index metadata is rebuilt with the index.",
   },
   semantic_search_rowid: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "SQLite semantic rowid mapping is rebuilt with semantic search.",
   },
   semantic_search_snapshots: {
-    classification: "derived_rebuildable",
+    classification: "backup_required",
     reason: "Semantic search snapshots are derived query artifacts.",
   },
   source_webhook_events: {
@@ -311,12 +311,20 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
 
 const SQLITE_INTERNAL_TABLES = new Set(["sqlite_sequence", "sqlite_stat1", "sqlite_stat4"]);
 const SQLITE_LAZY_APPLICATION_TABLES = ["explore_cursor_store"] as const;
+const POSTGRES_LAZY_APPLICATION_TABLES = [
+  "dataset_summary_projection",
+  "dataset_summary_stream_projection",
+  "explore_cursor_store",
+] as const;
+const POSTGRES_SQLITE_ONLY_TABLES = ["semantic_search_rowid"] as const;
 
 export function isInternalBackupCatalogTable(name: string): boolean {
   return SQLITE_INTERNAL_TABLES.has(name) || isShadowTable(name);
 }
 
 export const SQLITE_LAZY_STORAGE_TABLES = Object.freeze([...SQLITE_LAZY_APPLICATION_TABLES]);
+export const POSTGRES_LAZY_STORAGE_TABLES = Object.freeze([...POSTGRES_LAZY_APPLICATION_TABLES]);
+export const POSTGRES_SQLITE_ONLY_STORAGE_TABLES = Object.freeze([...POSTGRES_SQLITE_ONLY_TABLES]);
 
 export const POSTGRES_STORAGE_TABLES = Object.freeze(
   Object.keys(BACKUP_TABLE_INVENTORY).filter((name) => name !== "semantic_search_rowid")

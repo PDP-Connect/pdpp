@@ -19,11 +19,11 @@ import {
   projectStorageDisplayName,
   resolveRequestConnectionId,
 } from "./connection-id-request.ts";
-import { assertConnectorInstanceWritableStatus } from "./connector-instance-admission.ts";
 import {
   type ConnectorInstanceWriteOwnership,
   withConnectorInstanceWrite,
 } from "./connector-instance-write-coordinator.ts";
+import { assertConnectorInstanceWritableStatus } from "./connector-instance-admission.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
 import { assertGrantedManifestReadAuthority, assertManifestReadAuthority } from "./manifest-read-authority.ts";
 import {
@@ -48,12 +48,8 @@ import {
   fieldWindowError,
   normalizeWindowSelector,
 } from "./record-field-window.ts";
-import {
-  compileRequestFilters,
-  nonNullSchemaTypes,
-  passesRequestFilters,
-  passesTimeConstraint,
-} from "./record-filters.ts";
+import { compileRequestFilters, nonNullSchemaTypes, passesRequestFilters, passesTimeConstraint } from "./record-filters.ts";
+import { firstSemanticTimeValue, SEMANTIC_TIME_UNKNOWN } from "./semantic-time-coercion.ts";
 import {
   getChangeHistoryLimit,
   nowIso,
@@ -62,20 +58,9 @@ import {
 } from "./storage-utils.ts";
 import { createPostgresConnectorInstanceStore } from "./stores/connector-instance-store.ts";
 import { advancePostgresDeviceIngestPrefix } from "./stores/device-exporter-store.ts";
+import { markSearchIndexDirtyPostgres } from "./stores/search-index-dirty-store.ts";
 
 type JsonObject = Record<string, unknown>;
-type PostgresAdmissionLockedPhaseHook = (point: string, context: Record<string, unknown>) => Promise<void> | void;
-
-let postgresAdmissionLockedPhaseHook: PostgresAdmissionLockedPhaseHook | null = null;
-
-/** Test-only seam after transaction-native connector-instance admission locks its row. */
-export function __setPostgresAdmissionLockedPhaseHookForTest(hook: unknown): void {
-  postgresAdmissionLockedPhaseHook = typeof hook === "function" ? (hook as PostgresAdmissionLockedPhaseHook) : null;
-}
-
-async function maybePostgresAdmissionLockedPhase(point: string, context: Record<string, unknown>): Promise<void> {
-  await postgresAdmissionLockedPhaseHook?.(point, context);
-}
 
 async function sequentially<T>(items: readonly T[], visit: (item: T) => Promise<void>): Promise<void> {
   const item = items.at(0);
@@ -228,6 +213,11 @@ type ExpansionEntry = ReturnType<typeof normalizeExpandRequest>[number];
 
 interface ResponseRecord extends JsonObject {
   expanded?: JsonObject;
+  // Logical byte length of this record's current `record_json`
+  // (octet_length(record_json)). Only populated on the single-record-detail
+  // read path (`postgresGetRecord`) — never on a list response. Mirrors
+  // `ResponseRecord.record_json_bytes` in `server/records.ts` (SQLite).
+  record_json_bytes?: number;
 }
 
 interface ResponseRow {
@@ -261,7 +251,9 @@ interface IngestRecord {
 interface IngestOptions {
   attemptContext?: DeviceAttemptContext | null;
   deviceReservation?: JsonObject & { inputIndex: number };
+  /** See RecordIngestOptions.requireConnectionAdmission in server/records.ts. */
   requireConnectionAdmission?: boolean;
+  /** See RecordIngestOptions.runId in server/records.ts. */
   runId?: string | null;
 }
 
@@ -584,7 +576,7 @@ function fieldsFor(
       effective = [...requestFields];
     }
   }
-  if (effective && !Object.hasOwn(streamGrant, "instance_ids")) {
+  if (effective) {
     const seen = new Set(effective);
     for (const required of requiredFields) {
       if (!seen.has(required)) {
@@ -626,48 +618,22 @@ function cursorValue(data: JsonObject | null, manifestStream: ManifestStream | n
   return value === undefined || value === null ? null : String(value);
 }
 
-// Below this, a numeric timestamp is treated as Unix SECONDS; at or above it, as
-// Unix MILLISECONDS. Mirrors search-record-timestamps.ts and the SQLite ingest
-// path in records.ts so all three coerce timestamps identically.
-const SEMANTIC_TIME_EPOCH_MS_THRESHOLD = 1e12;
-
-function coerceSemanticTimeValue(value: unknown): string | null {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    const ms = value >= SEMANTIC_TIME_EPOCH_MS_THRESHOLD ? value : value * 1000;
-    const date = new Date(ms);
-    return Number.isNaN(date.getTime()) ? null : date.toISOString();
-  }
-  return null;
-}
-
 // SEMANTIC time (when the thing happened) to stamp on a record at ingest, for
 // the Explore merged-timeline sort. Resolves the manifest consent_time_field
-// (preferred) then cursor_field from `data`, coerced epoch-aware, falling back
-// to `effectiveEmittedAt` when no semantic field is declared or the value is
-// missing/unparseable. Never empty. Mirrors computeIngestSemanticTime in the
-// SQLite path (records.ts).
-function semanticTimeValue(data: unknown, manifestStream: ManifestStream | null, effectiveEmittedAt: string): string {
+// (preferred) then cursor_field from `data`, coerced epoch-aware, yielding
+// SEMANTIC_TIME_UNKNOWN (empty string) when no semantic field is declared or the
+// value is missing/unparseable/a sentinel. An unknown date is stored as ABSENT
+// rather than backfilled with ingest time; readers COALESCE to emitted_at for
+// ordering. Mirrors computeIngestSemanticTime in the SQLite path (records.ts)
+// via the shared coercion leaf, so the two backends cannot drift apart.
+function semanticTimeValue(data: unknown, manifestStream: ManifestStream | null): string {
   if (!data || typeof data !== "object") {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
-  const dataObject = data as JsonObject;
-  const candidates: string[] = [];
-  for (const field of [manifestStream?.consent_time_field, manifestStream?.cursor_field]) {
-    if (typeof field === "string" && field && !candidates.includes(field)) {
-      candidates.push(field);
-    }
-  }
-  for (const field of candidates) {
-    const coerced = coerceSemanticTimeValue(dataObject[field]);
-    if (coerced) {
-      return coerced;
-    }
-  }
-  return effectiveEmittedAt;
+  return (
+    firstSemanticTimeValue(data as JsonObject, [manifestStream?.consent_time_field, manifestStream?.cursor_field]) ??
+    SEMANTIC_TIME_UNKNOWN
+  );
 }
 
 const manifestStreamCache = new Map<string, ManifestStream | null>();
@@ -843,7 +809,7 @@ export async function postgresBackfillRecordSortPositionsForManifest(
         const data = typeof row.record_json === "string" ? JSON.parse(row.record_json) : row.record_json;
         const cursor = cursorValue(data, manifestStream);
         const primary = primaryKeyText(data, row.record_key, manifestStream);
-        const semanticTime = semanticTimeValue(data, manifestStream, row.emitted_at);
+        const semanticTime = semanticTimeValue(data, manifestStream);
         const result = await postgresQuery(
           `UPDATE records
               SET cursor_value = $5, primary_key_text = $6, semantic_time = $7
@@ -936,57 +902,62 @@ export function postgresPrepareDeviceFinalRecords(
 ): Promise<DevicePreparePlanEntry[]> {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId ?? "");
-  return withPostgresTransaction(async (client) => {
-    const result: DevicePreparePlanEntry[] = [];
-    await plan.reduce(async (previous, entry) => {
-      await previous;
-      const input = entry.record;
-      const recordKey = encodeKey(input.key);
-      const currentResult = await client.query(
-        `SELECT record_json, emitted_at, deleted
+  return withPostgresTransaction(
+    async (client) => {
+      const result: DevicePreparePlanEntry[] = [];
+      await plan.reduce(async (previous, entry) => {
+        await previous;
+        const input = entry.record;
+        const recordKey = encodeKey(input.key);
+        const currentResult = await client.query(
+          `SELECT record_json, emitted_at, deleted, version
            FROM records
           WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
           FOR UPDATE`,
-        [connectorInstanceId, input.stream, recordKey]
-      );
-      const current = currentResult.rows[0] || null;
-      if (!current || current.deleted) {
-        result.push({
-          ...entry,
-          record: { ...input, data: {}, op: "delete" },
-        });
-        return;
-      }
+          [connectorInstanceId, input.stream, recordKey]
+        );
+        const current = currentResult.rows[0] || null;
+        if (!current || current.deleted) {
+          result.push({
+            ...entry,
+            record: { ...input, data: {}, op: "delete" },
+            version: current ? Number(current.version) : undefined,
+          });
+          return;
+        }
 
-      const data = (
-        typeof current.record_json === "string" ? JSON.parse(current.record_json) : current.record_json
-      ) as JsonObject;
-      const facts = attemptContext?.streams?.[input.stream] ?? null;
-      const manifestStream = facts ? manifestStreamFromFacts(facts) : null;
-      const semanticTime = semanticTimeValue(data, manifestStream, current.emitted_at || input.emitted_at || nowIso());
-      const cursor = cursorValue(data, manifestStream);
-      const primary = primaryKeyText(data, recordKey, manifestStream);
-      await client.query(
-        `UPDATE records
+        const data = (
+          typeof current.record_json === "string" ? JSON.parse(current.record_json) : current.record_json
+        ) as JsonObject;
+        const facts = attemptContext?.streams?.[input.stream] ?? null;
+        const manifestStream = facts ? manifestStreamFromFacts(facts) : null;
+        const semanticTime = semanticTimeValue(data, manifestStream);
+        const cursor = cursorValue(data, manifestStream);
+        const primary = primaryKeyText(data, recordKey, manifestStream);
+        await client.query(
+          `UPDATE records
             SET cursor_value = $4,
                 primary_key_text = $5,
                 semantic_time = $6
           WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
             AND deleted = FALSE`,
-        [connectorInstanceId, input.stream, recordKey, cursor, primary, semanticTime]
-      );
-      result.push({
-        ...entry,
-        record: {
-          ...input,
-          data,
-          emitted_at: current.emitted_at || input.emitted_at,
-          op: "upsert",
-        },
-      });
-    }, Promise.resolve());
-    return result;
-  });
+          [connectorInstanceId, input.stream, recordKey, cursor, primary, semanticTime]
+        );
+        result.push({
+          ...entry,
+          record: {
+            ...input,
+            data,
+            emitted_at: current.emitted_at || input.emitted_at,
+            op: "upsert",
+          },
+          version: Number(current.version),
+        });
+      }, Promise.resolve());
+      return result;
+    },
+    { lockConnectorInstanceId: connectorInstanceId }
+  );
 }
 
 function encodeCursor(payload: unknown): string {
@@ -1012,13 +983,20 @@ function responseRecord({
   fields: string[] | null;
   identity?: RecordIdentity | null;
 }): ResponseRecord {
-  const record = {
+  const record: ResponseRecord = {
     data: projectFields(row.record_json as JsonObject | null, fields),
     emitted_at: row.emitted_at,
     id: row.record_key,
     object: "record",
     stream,
   };
+  // Only `postgresGetRecord`'s single-row query selects `record_json_bytes`;
+  // list-path callers of this shared helper (queryPostgresChangesSince,
+  // queryPostgresPagedRecords) do not, so `row.record_json_bytes` is
+  // `undefined` there and this is a no-op — never a fabricated `0`.
+  if (row.record_json_bytes !== undefined && row.record_json_bytes !== null) {
+    record.record_json_bytes = Number(row.record_json_bytes);
+  }
   decorateRecordWithConnectionIdentity(record, identity);
   return record;
 }
@@ -1174,7 +1152,7 @@ export function __buildPostgresGrantVisibilityForTest(streamGrant: StreamGrant):
 } {
   const whereParts: string[] = [];
   const params: unknown[] = [];
-  appendGrantVisibilityClauses(whereParts, params, buildEffectiveFilter(streamGrant, {}));
+  appendGrantVisibilityClauses(whereParts, params, buildEffectiveFilter(streamGrant, {}) as unknown as EffectiveFilter);
   return { params, whereParts };
 }
 
@@ -1791,26 +1769,107 @@ async function writePostgresIngestMutation({
   return nextRecordJsonBytes;
 }
 
+type PostgresTransactionClient = Parameters<Parameters<typeof withPostgresTransaction>[0]>[0];
+
+// Run-admission fence: `FOR UPDATE` takes Postgres' row lock on this run's
+// run_history row, so this SELECT blocks until any concurrent terminal write
+// (writePostgresRunHistoryForSpineEvent's `UPDATE ... WHERE status='running'`,
+// which takes the same row lock implicitly) commits or rolls back —
+// whichever transaction reaches the row first wins, giving a linearized
+// ordering rather than a check-then-write race. Fails CLOSED: a caller that
+// supplies a runId is asserting run-bound ingestion, and runtime/index.ts
+// always awaits the run.started spine write (which durably inserts this row
+// with status='running') before spawning the child that could ever call
+// flushBatch — so a genuine run-bound write is guaranteed to find its row. A
+// missing row for a supplied runId means the id is spoofed, mistyped, or
+// belongs to a run this process never started; none of those should be
+// admitted. Must be called from inside the same transaction as the mutation
+// it guards. See harden-ingest-run-admission-fence.
 async function assertPostgresRunStillAdmitted(
-  client: PgClient,
+  client: PostgresTransactionClient,
   runId: string | null | undefined,
   connectorInstanceId: string
 ): Promise<void> {
   if (!runId) {
     return;
   }
-  const runStatusResult = await client.query(
+  const runStatusResult = await client.query<{ status: string }>(
     "SELECT status FROM run_history WHERE run_id = $1 AND connector_instance_id = $2 FOR UPDATE",
     [runId, connectorInstanceId]
   );
-  const runStatus = (runStatusResult.rows[0] as { status?: unknown } | undefined)?.status;
-  if (runStatus !== "running") {
-    const err = new Error(
+  const runStatus = runStatusResult.rows[0]?.status;
+  if (!runStatus || runStatus !== "running") {
+    throw new Error(
       `run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`
     );
-    (err as Error & { code?: string }).code = "run_terminal";
-    throw err;
   }
+}
+
+/**
+ * Opt-in re-check, inside the SAME locked transaction as the mutation it
+ * guards, that the `connector_instances` row still exists AND is in a
+ * writable lifecycle state before writing. Mirrors
+ * `assertPostgresRunStillAdmitted`'s shape and rationale: the
+ * transaction-scoped advisory lock (`lockConnectorInstanceId`) only
+ * serializes THIS transaction against another writer for the SAME
+ * connector instance — it does not, on its own, reject a write whose
+ * transaction starts fresh AFTER a concurrent delete already committed and
+ * removed the row, or after a concurrent revoke already committed and
+ * flipped its status. Re-checking inside every locked transaction (not once
+ * before a whole batch) closes that TOCTOU for EVERY record in a batch, not
+ * only the first — see server/records.ts's `assertConnectorInstanceWritable`
+ * for the pre-transaction-native single-check precedent this replaces.
+ *
+ * `revoked` is the only status this rejects (2026-08-10 revise): revoke is
+ * the terminal "stop collecting" signal (server/routes/owner-connection-revoke.ts),
+ * so a write racing a concurrent revoke must not durably land after the
+ * owner revoked it. `active` and `draft` both admit writes -- `draft` is the
+ * pre-activation state a static-secret connection's first successful ingest
+ * itself must be able to reach (activateDraft flips draft -> active only
+ * AFTER a write succeeds), so rejecting `draft` here would make that
+ * connect path unable to ever complete. `paused` is deliberately left
+ * unaffected: it is a scheduler/refresh-run policy signal (whether to
+ * auto-run collection), not a per-write admission gate, and no caller of
+ * this assertion has ever depended on `paused` refusing writes -- narrowing
+ * to that state without evidence a fresh defect exists there is out of
+ * scope for this fix. See harden-connector-instance-write-fence-transaction-native.
+ */
+// Test-only fault seam mirroring records.ts's admission-phase hooks. Fires
+// with `{ connectorInstanceId }` at point
+// `"after-connector-instance-admission-lock"`, right after this transaction
+// has taken Postgres' row lock on the connector_instances row (below) but
+// before the writable-status assertion runs. Lets a test suspend a writer
+// here, attempt a concurrent revoke (which must block on the same row lock),
+// then resume -- proving the lock genuinely serializes admission against a
+// concurrent revoke rather than merely re-checking a stale read.
+type PostgresAdmissionLockedPhaseHook = (point: string, context: Record<string, unknown>) => Promise<void> | void;
+let postgresAdmissionLockedPhaseHook: PostgresAdmissionLockedPhaseHook | null = null;
+
+export function __setPostgresAdmissionLockedPhaseHookForTest(hook: unknown): void {
+  postgresAdmissionLockedPhaseHook = typeof hook === "function" ? (hook as PostgresAdmissionLockedPhaseHook) : null;
+}
+
+async function maybeAfterConnectorInstanceAdmissionLockPhase(
+  point: string,
+  context: Record<string, unknown>
+): Promise<void> {
+  await postgresAdmissionLockedPhaseHook?.(point, context);
+}
+
+async function assertPostgresConnectorInstanceWritable(
+  client: PostgresTransactionClient,
+  connectorInstanceId: string
+): Promise<void> {
+  const {
+    rows: [row],
+  } = await client.query<{ status: string }>(
+    "SELECT status FROM connector_instances WHERE connector_instance_id = $1 FOR UPDATE",
+    [connectorInstanceId]
+  );
+  await maybeAfterConnectorInstanceAdmissionLockPhase("after-connector-instance-admission-lock", {
+    connectorInstanceId,
+  });
+  assertConnectorInstanceWritableStatus(row?.status ?? null, connectorInstanceId);
 }
 
 export async function postgresIngestRecord(
@@ -1848,40 +1907,35 @@ export async function postgresIngestRecord(
   const storedPrimaryKeyText = op === "delete" ? recordKey : primaryKeyText(data ?? null, recordKey, manifestStream);
   // SEMANTIC time for the Explore merged-timeline sort (upserts only; a delete
   // keeps the row's existing semantic_time). Falls back to emitted_at.
-  const storedSemanticTime =
-    op === "delete" ? null : semanticTimeValue(data ?? null, manifestStream, effectiveEmittedAt);
+  const storedSemanticTime = op === "delete" ? null : semanticTimeValue(data ?? null, manifestStream);
 
-  const outcome = await withPostgresTransaction<DurableIngestOutcome>(async (client) => {
-    if (options.requireConnectionAdmission) {
-      const admission = await client.query<{ status: string }>(
-        "SELECT status FROM connector_instances WHERE connector_instance_id = $1 FOR UPDATE",
-        [connectorInstanceId]
-      );
-      assertConnectorInstanceWritableStatus(admission.rows[0]?.status ?? null, connectorInstanceId);
-      await maybePostgresAdmissionLockedPhase("after-connector-instance-admission-lock", { connectorInstanceId });
-    }
-    await assertPostgresRunStillAdmitted(client, options.runId, connectorInstanceId);
-    const finishDurableOutcome = async (value: DurableIngestOutcome): Promise<DurableIngestOutcome> => {
-      if (options.deviceReservation) {
-        await advancePostgresDeviceIngestPrefix(
-          client,
-          options.deviceReservation,
-          options.deviceReservation.inputIndex
-        );
+  const outcome = await withPostgresTransaction<DurableIngestOutcome>(
+    async (client) => {
+      if (options.requireConnectionAdmission) {
+        await assertPostgresConnectorInstanceWritable(client, connectorInstanceId);
       }
-      return value;
-    };
-    // No-op equivalence is computed at the `jsonb` level via a server-side
-    // `record_json = $::jsonb` comparison. The naive `JSON.stringify` of
-    // the JS object node-postgres parses out of jsonb does not round-trip
-    // to the bytes the connector emitted: Postgres' `::text` output adds
-    // whitespace and the parsed object's key order matches Postgres'
-    // internal storage. Either gap silently turns identical re-ingests
-    // into version churn, observed in production as Slack `workspace`
-    // accumulating 31k+ versions of the same payload. `jsonb` equality is
-    // structural and ignores both incidental layout differences.
-    const currentResult = await client.query(
-      `SELECT record_json,
+      await assertPostgresRunStillAdmitted(client, options.runId, connectorInstanceId);
+      const finishDurableOutcome = async (value: DurableIngestOutcome): Promise<DurableIngestOutcome> => {
+        if (options.deviceReservation) {
+          await advancePostgresDeviceIngestPrefix(
+            client,
+            options.deviceReservation,
+            options.deviceReservation.inputIndex
+          );
+        }
+        return value;
+      };
+      // No-op equivalence is computed at the `jsonb` level via a server-side
+      // `record_json = $::jsonb` comparison. The naive `JSON.stringify` of
+      // the JS object node-postgres parses out of jsonb does not round-trip
+      // to the bytes the connector emitted: Postgres' `::text` output adds
+      // whitespace and the parsed object's key order matches Postgres'
+      // internal storage. Either gap silently turns identical re-ingests
+      // into version churn, observed in production as Slack `workspace`
+      // accumulating 31k+ versions of the same payload. `jsonb` equality is
+      // structural and ignores both incidental layout differences.
+      const currentResult = await client.query(
+        `SELECT record_json,
               deleted,
               version,
               COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes,
@@ -1889,85 +1943,96 @@ export async function postgresIngestRecord(
        FROM records
        WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
        FOR UPDATE`,
-      [connectorInstanceId, stream, recordKey, recordJson]
-    );
-    const current = currentResult.rows[0] || null;
+        [connectorInstanceId, stream, recordKey, recordJson]
+      );
+      const current = currentResult.rows[0] || null;
 
-    if (op === "delete" && (!current || current.deleted)) {
-      return finishDurableOutcome({ kind: "noop" });
-    }
+      if (op === "delete" && (!current || current.deleted)) {
+        return finishDurableOutcome({ kind: "noop" });
+      }
 
-    const ingestDisposition =
-      op === "delete"
-        ? "normal"
-        : await repairPostgresIdenticalIngest({
-            client,
-            connectorInstanceId,
-            current,
-            options,
-            recordKey,
-            storedCursorValue,
-            storedPrimaryKeyText,
-            storedSemanticTime,
-            stream,
-          });
-    if (ingestDisposition === "noop") {
-      return finishDurableOutcome({ kind: "noop" });
-    }
-    const selfHeal = ingestDisposition === "self_heal";
+      const ingestDisposition =
+        op === "delete"
+          ? "normal"
+          : await repairPostgresIdenticalIngest({
+              client,
+              connectorInstanceId,
+              current,
+              options,
+              recordKey,
+              storedCursorValue,
+              storedPrimaryKeyText,
+              storedSemanticTime,
+              stream,
+            });
+      if (ingestDisposition === "noop") {
+        return finishDurableOutcome({ kind: "noop" });
+      }
+      const selfHeal = ingestDisposition === "self_heal";
 
-    const nextVersion = await allocateNextVersion(client, resolvedConnectorId, connectorInstanceId, stream);
-    const currentRecordJsonBytes = current && !current.deleted ? Number(current.record_json_bytes || 0) : 0;
-    const nextRecordJsonBytes = await writePostgresIngestMutation({
-      client,
-      connectorId,
-      connectorInstanceId,
-      current,
-      effectiveEmittedAt,
-      nextVersion,
-      op,
-      recordJson,
-      recordKey,
-      storedCursorValue,
-      storedPrimaryKeyText,
-      storedSemanticTime,
-      stream,
-    });
-
-    const insertedChangeJsonBytes = op === "delete" ? currentRecordJsonBytes : nextRecordJsonBytes;
-    const { bytes: prunedBytesForDelta, rows: prunedRowsForDelta } = await prunePostgresRecordChanges({
-      changeHistoryLimit,
-      client,
-      connectorInstanceId,
-      nextVersion,
-      stream,
-    });
-
-    return finishDurableOutcome({
-      kind: "changed",
-      op,
-      retainedSizeDelta: {
+      const nextVersion = await allocateNextVersion(client, resolvedConnectorId, connectorInstanceId, stream);
+      const currentRecordJsonBytes = current && !current.deleted ? Number(current.record_json_bytes || 0) : 0;
+      const nextRecordJsonBytes = await writePostgresIngestMutation({
+        client,
         connectorId,
         connectorInstanceId,
-        currentRecordJsonBytesDelta:
-          op === "delete" ? -currentRecordJsonBytes : nextRecordJsonBytes - currentRecordJsonBytes,
-        recordCountDelta: (() => {
-          if (op === "delete") {
-            return -1;
-          }
-          if (current?.deleted) {
-            return 1;
-          }
-          return current ? 0 : 1;
-        })(),
-        recordHistoryCountDelta: 1 - prunedRowsForDelta,
-        recordHistoryJsonBytesDelta: insertedChangeJsonBytes - prunedBytesForDelta,
+        current,
+        effectiveEmittedAt,
+        nextVersion,
+        op,
+        recordJson,
+        recordKey,
+        storedCursorValue,
+        storedPrimaryKeyText,
+        storedSemanticTime,
         stream,
-      },
-      selfHeal,
-      version: nextVersion,
-    });
-  });
+      });
+
+      // Scope-keyed dirty mark, inside the SAME transaction/client as the
+      // record mutation above: this scope's lexical/semantic index may now be
+      // stale. See server/stores/search-index-dirty-store.ts.
+      await markSearchIndexDirtyPostgres(
+        client,
+        { connectorId: resolvedConnectorId, connectorInstanceId, stream },
+        nowIso()
+      );
+
+      const insertedChangeJsonBytes = op === "delete" ? currentRecordJsonBytes : nextRecordJsonBytes;
+      const { bytes: prunedBytesForDelta, rows: prunedRowsForDelta } = await prunePostgresRecordChanges({
+        changeHistoryLimit,
+        client,
+        connectorInstanceId,
+        nextVersion,
+        stream,
+      });
+
+      return finishDurableOutcome({
+        kind: "changed",
+        op,
+        retainedSizeDelta: {
+          connectorId,
+          connectorInstanceId,
+          currentRecordJsonBytesDelta:
+            op === "delete" ? -currentRecordJsonBytes : nextRecordJsonBytes - currentRecordJsonBytes,
+          recordCountDelta: (() => {
+            if (op === "delete") {
+              return -1;
+            }
+            if (current?.deleted) {
+              return 1;
+            }
+            return current ? 0 : 1;
+          })(),
+          recordHistoryCountDelta: 1 - prunedRowsForDelta,
+          recordHistoryJsonBytesDelta: insertedChangeJsonBytes - prunedBytesForDelta,
+          stream,
+        },
+        selfHeal,
+        version: nextVersion,
+      });
+    },
+    { lockConnectorInstanceId: connectorInstanceId }
+  );
 
   if (outcome.kind === "noop") {
     return { accepted: true, changed: false };
@@ -2576,7 +2641,15 @@ export async function postgresGetRecord(
     "ASC"
   );
   const result = await postgresQuery(
-    `SELECT record_key, record_json, emitted_at
+    // `record_json_bytes` mirrors the same `octet_length(record_json::text)`
+    // expression the retained-size top-N rebuild already uses
+    // (retained-size-read-model.ts) — the `::text` cast is required because
+    // `record_json` is `jsonb`; bare `octet_length(jsonb)` measures the
+    // internal binary storage representation, not the JSON text length, and
+    // would not be comparable to the SQLite `LENGTH(CAST(... AS BLOB))` byte
+    // count. Single-row read: one scalar added to an existing point query,
+    // not a second query.
+    `SELECT record_key, record_json, emitted_at, octet_length(record_json::text) AS record_json_bytes
      FROM records
      WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND deleted = FALSE`,
     [connectorInstanceId, stream, recordId]
@@ -2814,17 +2887,20 @@ export async function postgresListStreams(
 export function postgresDeleteAllRecords(storageTarget: StorageTarget, stream: string): Promise<number> {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId ?? "");
-  return withPostgresTransaction(async (client) => {
-    const countResult = await client.query(
-      `SELECT COUNT(*)::int AS count FROM records
+  return withPostgresTransaction(
+    async (client) => {
+      const countResult = await client.query(
+        `SELECT COUNT(*)::int AS count FROM records
        WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE`,
-      [connectorInstanceId, stream]
-    );
-    const deletedRecordCount = Number(countResult.rows[0]?.count || 0);
-    await advancePostgresRecordResetGenerationForStreams(client, connectorInstanceId, [stream]);
-    await deletePostgresRecordTailForPair(client, connectorInstanceId, stream);
-    return deletedRecordCount;
-  });
+        [connectorInstanceId, stream]
+      );
+      const deletedRecordCount = Number(countResult.rows[0]?.count || 0);
+      await advancePostgresRecordResetGenerationForStreams(client, connectorInstanceId, [stream]);
+      await deletePostgresRecordTailForPair(client, connectorInstanceId, stream);
+      return deletedRecordCount;
+    },
+    { lockConnectorInstanceId: connectorInstanceId }
+  );
 }
 
 /**
@@ -2936,8 +3012,18 @@ interface BlobPersistArgs {
   connectorInstanceId?: string | null;
   coordinatorOwnership?: ConnectorInstanceWriteOwnership | null;
   data: Buffer | Uint8Array;
+  jsonPath?: string;
   mimeType: string;
   recordKey: string;
+  /**
+   * See RecordIngestOptions.requireConnectionAdmission in server/records.ts
+   * for the full rationale. Same opt-in contract: `postgresPersistContentAddressedBlob`
+   * stays a connector-agnostic durable storage primitive for direct callers
+   * (internal repair/backfill paths, tests) that write blobs without ever
+   * enrolling a `connector_instances` row. Only the HTTP blob-write route
+   * (server/index.ts's `persistContentAddressedBlob`) sets this true.
+   */
+  requireConnectionAdmission?: boolean;
   stream: string;
 }
 
@@ -2956,7 +3042,9 @@ export function postgresPersistContentAddressedBlob({
   recordKey,
   mimeType,
   data,
+  jsonPath,
   coordinatorOwnership = null,
+  requireConnectionAdmission,
 }: BlobPersistArgs): Promise<BlobPersistResult> {
   const effectiveConnectorInstanceId = connectorInstanceId || resolveStorageConnectorInstanceId(null, connectorId);
   return withConnectorInstanceWrite(
@@ -2969,6 +3057,8 @@ export function postgresPersistContentAddressedBlob({
         mimeType,
         recordKey,
         stream,
+        ...(jsonPath ? { jsonPath } : {}),
+        ...(requireConnectionAdmission ? { requireConnectionAdmission } : {}),
       }),
     coordinatorOwnership ?? undefined
   );
@@ -2981,6 +3071,8 @@ async function postgresPersistContentAddressedBlobWithinFence({
   recordKey,
   mimeType,
   data,
+  jsonPath = "@record",
+  requireConnectionAdmission,
 }: Omit<BlobPersistArgs, "coordinatorOwnership">): Promise<BlobPersistResult> {
   const effectiveConnectorInstanceId = connectorInstanceId || resolveStorageConnectorInstanceId(null, connectorId);
   const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
@@ -2988,36 +3080,52 @@ async function postgresPersistContentAddressedBlobWithinFence({
   const blobId = `blob_sha256_${sha256}`;
   const sizeBytes = bytes.byteLength;
 
-  const row = await withPostgresTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO blobs
+  const row = await withPostgresTransaction(
+    async (client) => {
+      // Opt-in (default false), inside the SAME locked transaction as the
+      // write below, mirroring `RecordIngestOptions.requireConnectionAdmission`
+      // in server/records.ts: this function stays a connector-agnostic durable
+      // storage primitive for direct callers (internal repair/backfill paths,
+      // tests) that never enroll a `connector_instances` row. Only the HTTP
+      // blob-write route sets this true. When set, re-checked here (not once
+      // before the transaction) so the lock and the check are
+      // atomic with respect to a concurrent delete — see
+      // assertPostgresConnectorInstanceWritable's header for the general
+      // rationale. See harden-connector-instance-write-fence-transaction-native.
+      if (requireConnectionAdmission) {
+        await assertPostgresConnectorInstanceWritable(client, effectiveConnectorInstanceId);
+      }
+      await client.query(
+        `INSERT INTO blobs
          (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (blob_id) DO NOTHING`,
-      [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey, mimeType, sizeBytes, sha256, bytes]
-    );
-    const stored = await client.query("SELECT blob_id, mime_type, size_bytes, sha256 FROM blobs WHERE blob_id = $1", [
-      blobId,
-    ]);
-    const [storedRow] = stored.rows;
-    if (!storedRow || storedRow.sha256 !== sha256 || Number(storedRow.size_bytes) !== sizeBytes) {
-      const err: PgQueryError = new Error("Blob storage collision");
-      err.code = "api_error";
-      throw err;
-    }
-    // json_path = '@record' marks this as a record-level attachment-style
-    // binding (the blob belongs to the record as a whole). The
-    // migrate-storage tool uses RFC 6901 JSON Pointers for field-level
-    // extractions. See docs/reference/binary-content-invariant-design-brief.md §4.6.
-    const binding = await client.query(
-      `INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
-       VALUES ($1, $2, $3, $4, $5, '@record')
+        [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey, mimeType, sizeBytes, sha256, bytes]
+      );
+      const stored = await client.query("SELECT blob_id, mime_type, size_bytes, sha256 FROM blobs WHERE blob_id = $1", [
+        blobId,
+      ]);
+      const [storedRow] = stored.rows;
+      if (!storedRow || storedRow.sha256 !== sha256 || Number(storedRow.size_bytes) !== sizeBytes) {
+        const err: PgQueryError = new Error("Blob storage collision");
+        err.code = "api_error";
+        throw err;
+      }
+      // json_path = '@record' marks this as a record-level attachment-style
+      // binding (the blob belongs to the record as a whole). The
+      // migrate-storage tool uses RFC 6901 JSON Pointers for field-level
+      // extractions. See docs/reference/binary-content-invariant-design-brief.md §4.6.
+      const binding = await client.query(
+        `INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT DO NOTHING
        RETURNING blob_id`,
-      [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey]
-    );
-    return { ...storedRow, binding_inserted: (binding.rowCount ?? 0) > 0 };
-  });
+        [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey, jsonPath]
+      );
+      return { ...storedRow, binding_inserted: (binding.rowCount ?? 0) > 0 };
+    },
+    { lockConnectorInstanceId: effectiveConnectorInstanceId }
+  );
 
   return {
     binding_inserted: Boolean(row.binding_inserted),
@@ -3036,6 +3144,19 @@ export async function postgresLoadContentAddressedBlob(blobId: string): Promise<
     [blobId]
   );
   return result.rows[0] || null;
+}
+
+/**
+ * Read only the size of a content-addressed blob by primary key. Single
+ * indexed point lookup — distinct from `postgresLoadContentAddressedBlob`,
+ * which also returns the raw bytes; this is the lean lookup for decorating
+ * a record's `blob_ref.size_bytes` without pulling the blob's bytes into
+ * memory. Mirrors `blobsGetSizeById` (SQLite).
+ */
+export async function postgresLoadBlobSize(blobId: string): Promise<number | null> {
+  const result = await postgresQuery("SELECT size_bytes FROM blobs WHERE blob_id = $1", [blobId]);
+  const row = result.rows[0];
+  return row && row.size_bytes !== undefined && row.size_bytes !== null ? Number(row.size_bytes) : null;
 }
 
 export async function postgresListBlobBindings(

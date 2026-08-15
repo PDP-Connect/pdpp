@@ -42,7 +42,8 @@ const ALREADY_RUNNING_PRESERVED = /reason:\s*"already_running"/;
 const ALREADY_RUNNING_RETURNS_FULL_RUN_ID = /run_id: match\?\.\[0\]/;
 const FORCE_OPTION_SIGNATURE = /options: RunConnectorNowOptions = \{\}/;
 const FORCE_OPTION_BODY = /const runOptions = \{ force: options\.force === true \}/;
-const RUN_CONNECTION_WITH_OPTIONS = /runConnectionNow\(connectionId, runOptions\)/;
+const RUN_CONNECTION_WITH_SETUP_ADMISSION =
+  /runConnectionNow\(connectionId, \{ \.\.\.runOptions, runAdmission: "setup" \}\)/;
 const RUN_CONNECTOR_WITH_OPTIONS = /runConnectorNow\(connectorId, runOptions\)/;
 
 test("run-now action imports the typed unreachable error so it can branch on transport failure", async () => {
@@ -79,11 +80,11 @@ test("the already_running 409 branch preserves the full run id for linking", asy
   assert.match(src, ALREADY_RUNNING_RETURNS_FULL_RUN_ID);
 });
 
-test("run-now action forwards explicit force override to the operator client", async () => {
+test("run-now action forwards explicit force override and runAdmission to the operator client", async () => {
   const src = await readFile(ACTIONS_FILE, "utf8");
   assert.match(src, FORCE_OPTION_SIGNATURE);
   assert.match(src, FORCE_OPTION_BODY);
-  assert.match(src, RUN_CONNECTION_WITH_OPTIONS);
+  assert.match(src, RUN_CONNECTION_WITH_SETUP_ADMISSION);
   assert.match(src, RUN_CONNECTOR_WITH_OPTIONS);
 });
 

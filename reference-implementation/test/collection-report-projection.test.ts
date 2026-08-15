@@ -141,7 +141,12 @@ test("collected records, no gaps, NO considered -> unknown coverage + unmeasured
   assert.equal(entry.forward_disposition, "unmeasured");
 });
 
-test("declared checkpoint-window strategy with committed checkpoint proves coverage without numeric denominator", () => {
+test("declared checkpoint-window strategy with committed checkpoint does NOT prove coverage without a denominator", () => {
+  // Extends the invariant directly above: a declared strategy plus a committed
+  // checkpoint is still not positive coverage evidence. The checkpoint records
+  // where the cursor stopped, not what the source held — and a large
+  // `collected` count is a yield, not a boundary. The stream reads honestly
+  // unproven until the connector measures `considered` at its enumeration site.
   const entries = buildCollectionReport({
     attentionOpen: false,
     collectionFacts: {
@@ -157,6 +162,26 @@ test("declared checkpoint-window strategy with committed checkpoint proves cover
   assert.equal(entry.considered, "unknown");
   assert.equal(entry.coverage_strategy, "checkpoint_window");
   assert.equal(entry.freshness_strategy, "scheduled_window");
+  assert.equal(entry.coverage_condition, "unknown");
+  assert.equal(entry.forward_disposition, "unmeasured");
+});
+
+test("declared checkpoint-window strategy with a measured boundary and committed checkpoint proves coverage", () => {
+  // The other half: once the connector declares the boundary it enumerated, the
+  // committed checkpoint closes the window and `collected` is free to be a
+  // changed-record count below it.
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [fact({ checkpoint: "committed", collected: 12, considered: 1145, stream: "messages" })],
+    },
+    freshness: "fresh",
+    manifestStreams: [
+      { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window", name: "messages" },
+    ],
+    refresh: null,
+  });
+  const entry = entryFor(entries, "messages");
   assert.equal(entry.coverage_condition, "complete");
   assert.equal(entry.forward_disposition, "complete");
 });
@@ -379,6 +404,69 @@ test("terminal failed latest run is NEVER substituted by a prior success (failur
   // The failed run carries no collection_facts of its own and is NOT
   // owner-cancelled, so it is NOT substituted — it reads unknown, never the
   // prior success's `complete`. Terminal failures must never appear green.
+  assert.equal(entry.coverage_condition, "unknown");
+  assert.notEqual(entry.coverage_condition, "complete");
+});
+
+// P1-1 cross-surface follow-up: `projectCollectionReport` must classify
+// coverage off `latestSettledRun` (the newest TERMINAL run), exactly like the
+// already-fixed connection-health headline (`healthClassifyingRun`) — not off
+// `lastRun` alone. Without threading `latestSettledRun` through, a settled
+// failure sitting strictly between the last success and an active retry is
+// invisible here: `lastRun` is the active retry (no coverage evidence of its
+// own), so `coverageClassifyingRun` falls back to `lastSuccessfulRun` and the
+// per-stream report reads the OLD success's complete coverage even though a
+// real failure happened after it and before the retry. This would let the
+// Collection Report disagree with the corrected connection-health headline
+// (degraded) by showing a stale "complete" stream.
+test("success -> settled failure -> active retry: report reflects the settled failure, not the old success", () => {
+  const successfulRun = makeRun({
+    collection_facts: {
+      streams: [fact({ collected: 0, considered: 1125, covered: 1125, stream: "messages" })],
+    },
+    event_count: 3,
+    finished_at: "2026-05-19T11:00:00.000Z",
+    last_at: "2026-05-19T11:00:00.000Z",
+    run_id: "run_success",
+    started_at: "2026-05-19T10:59:00.000Z",
+    status: "succeeded",
+  });
+  const settledFailedRun = makeRun({
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: "credential_rejected",
+    finished_at: "2026-05-19T12:10:00.000Z",
+    last_at: "2026-05-19T12:10:00.000Z",
+    run_id: "run_settled_failure",
+    started_at: "2026-05-19T12:09:00.000Z",
+    status: "failed",
+    terminal_reason: "credential_rejected",
+  });
+  const activeRetryRun = makeRun({
+    collection_facts: null,
+    event_count: 0,
+    finished_at: null,
+    last_at: "2026-05-19T12:20:00.000Z",
+    run_id: "run_active_retry",
+    started_at: "2026-05-19T12:20:00.000Z",
+    status: "in_progress",
+  });
+  const entries = projectCollectionReport({
+    connectionHealth: makeHealth({ attention: "none", freshness: "stale" }),
+    lastRun: activeRetryRun,
+    lastSuccessfulRun: successfulRun,
+    latestSettledRun: settledFailedRun,
+    manifestStreams: [
+      { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window", name: "messages" },
+    ],
+    refreshPolicy: null,
+  });
+  const entry = entryFor(entries, "messages");
+
+  // The settled failure — not the active retry, and not the old success —
+  // is the coverage authority: it carries no collection_facts of its own and
+  // is not owner-cancelled, so it must read unknown, never the stale
+  // "complete" the old success would otherwise leave behind.
   assert.equal(entry.coverage_condition, "unknown");
   assert.notEqual(entry.coverage_condition, "complete");
 });
@@ -942,7 +1030,7 @@ test("YNAB category_groups (full_inventory): committed checkpoint -> complete af
   const entries = buildCollectionReport({
     attentionOpen: false,
     collectionFacts: {
-      streams: [fact({ checkpoint: "committed", collected: 12, considered: null, stream: "category_groups" })],
+      streams: [fact({ checkpoint: "committed", collected: 12, considered: 40, stream: "category_groups" })],
     },
     freshness: "fresh",
     manifestStreams: [
@@ -951,7 +1039,7 @@ test("YNAB category_groups (full_inventory): committed checkpoint -> complete af
     refresh: null,
   });
   const entry = entryFor(entries, "category_groups");
-  assert.equal(entry.considered, "unknown");
+  assert.equal(entry.considered, 40);
   assert.equal(entry.coverage_strategy, "full_inventory");
   assert.equal(entry.coverage_condition, "complete");
   assert.equal(entry.forward_disposition, "complete");
@@ -1147,7 +1235,7 @@ test("carry-forward: scoped run preserves prior proof for an omitted required st
     collectionFactsAsOf: "2026-06-01T00:00:00.000Z",
     freshness: "fresh",
     latestStreamFacts: storedFacts(
-      [fact({ checkpoint: "committed", collected: 500, considered: null, stream: "messages" })],
+      [fact({ checkpoint: "committed", collected: 500, considered: 500, stream: "messages" })],
       { asOf: "2026-05-01T00:00:00.000Z" }
     ),
     manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
@@ -1198,7 +1286,7 @@ test("carry-forward: an attempted-but-unresolved classifying fact cannot shadow 
     collectionFactsAsOf: "2026-06-01T00:00:00.000Z",
     freshness: "fresh",
     latestStreamFacts: storedFacts([
-      fact({ checkpoint: "committed", collected: 500, considered: null, stream: "messages" }),
+      fact({ checkpoint: "committed", collected: 500, considered: 500, stream: "messages" }),
     ]),
     manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
     refresh: null,
@@ -1247,8 +1335,8 @@ test("stored evidence: a stored state_stream child inherits from its own run's s
     collectionFacts: { streams: [] },
     freshness: "fresh",
     latestStreamFacts: storedFacts([
-      fact({ checkpoint: "committed", collected: 500, considered: null, stream: "messages" }),
-      fact({ checkpoint: "not_staged", collected: 0, considered: null, stream: "message_reactions" }),
+      fact({ checkpoint: "committed", collected: 500, considered: 500, stream: "messages" }),
+      fact({ checkpoint: "not_staged", collected: 0, considered: 2, stream: "message_reactions" }),
     ]),
     manifestStreams: CHILD_MANIFEST,
     refresh: null,
@@ -1272,7 +1360,7 @@ test("carry-forward: a carried fact zeroes its stale run-local pending_detail_ga
       fact({
         checkpoint: "committed",
         collected: 500,
-        considered: null,
+        considered: 500,
         pending_detail_gaps: 3,
         stream: "messages",
       }),
@@ -1361,6 +1449,35 @@ test("carry-forward: an undeclared fact-only stream resting unknown does NOT tri
     rollupCollectionReportCoverageOverride("complete", entries),
     null,
     "an undeclared unknown stream must not override a clean connection axis"
+  );
+});
+
+test("optional terminal stream remains advisory while required terminal stream remains blocking", () => {
+  const optional: CollectionReportEntry = {
+    checkpoint: "not_staged",
+    collected: 0,
+    considered: "unknown",
+    coverage_condition: "terminal_gap",
+    coverage_strategy: null,
+    covered: "unknown",
+    evidence_as_of: null,
+    forward_disposition: "terminal",
+    freshness_strategy: null,
+    pending_detail_gaps: 0,
+    pending_detail_gaps_is_floor: false,
+    required: false,
+    skipped: { reason: "optional_resource_unavailable" },
+    stream: "optional_stream",
+  };
+  const required = { ...optional, required: true, stream: "required_stream" };
+
+  assert.equal(
+    rollupCollectionReportCoverageOverride("complete", [optional], [{ name: "optional_stream", required: false }]),
+    null
+  );
+  assert.equal(
+    rollupCollectionReportCoverageOverride("complete", [required], [{ name: "required_stream" }]),
+    "terminal_gap"
   );
 });
 
@@ -1609,7 +1726,7 @@ test("proof-predicate parity: a stored `disabled` checkpoint proves durable cove
     collectionFactsRunId: "run_full_scope_failed",
     freshness: "fresh",
     latestStreamFacts: storedFacts(
-      [fact({ checkpoint: "disabled", collected: 0, considered: null, stream: "order_items" })],
+      [fact({ checkpoint: "disabled", collected: 0, considered: 4, covered: 4, stream: "order_items" })],
       { asOf: "2026-07-10T00:00:00.000Z", runId: "run_old" }
     ),
     manifestStreams: [

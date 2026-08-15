@@ -638,7 +638,7 @@ test("unchanged reingest of an unanchored current row recreates its anchor (self
     // Source-backed resync: the SAME payload is re-sent. Normally a no-op;
     // here it must self-heal because the anchor is missing.
     const result = await upsert("cold", { v: 1 });
-    assert.deepEqual(result, { accepted: true, changed: true, self_healed: true });
+    assert.deepEqual(result, { accepted: true, changed: true, self_healed: true, version: 12 });
 
     // A fresh anchor now exists at a NEW (head-of-window) version, not the
     // stale v1 that would re-prune on the next changed write.

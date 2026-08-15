@@ -57,6 +57,7 @@ const CANVAS_PASSES_RECORDS_BASE_RE =
 const HEADER_FULL_STREAM_USES_HELPER_RE =
   /const fullStreamHref =[\s\S]*buildStreamRecordsHref\(\s*recordsBasePath,[\s\S]*connectionId: scopedConnection\.connectionId,[\s\S]*connectorId: scopedConnection\.connectorId,[\s\S]*stream: selectedStreams\[0\] \?\? ""/;
 const ROW_ACTION_LABEL_RE = /<span className="rr-x-row__action">\{actionLabel\}<\/span>/;
+const BURST_STREAM_LABEL_RE = /rep\?\.stream \? ` \/ \$\{humanizeFieldLabel\(rep\.stream\)\}` : ""/;
 // R2: feed rows MUST render a per-record time-of-day in the LIVE FeedRow (the
 // console renders explore-canvas.tsx FeedRow, not the operator-ui card). Pin the
 // semantic contract: the row carries the time wrapper, labels non-semantic rows
@@ -197,7 +198,10 @@ const ASSEMBLER_PASSES_ROLES_RE = /buildRecordPreview\(kind, data, dtypes, drole
 // first humanized declared key/value, else a NEUTRAL fallback — never a guessed title
 // from a stream/kind name OR the timeline `entry.summary`. Pin the import of the honest
 // projection and the content-first call whose fallback is ONLY the neutral record id.
-const CANVAS_GENERIC_KV_LEAD_RE = /import \{ rowPrimary, rowSecondary \} from "@pdpp\/display";/;
+// Import-line pin, not import-set pin: match rowPrimary/rowSecondary imported
+// from @pdpp/display regardless of what other named imports share that one
+// import statement (e.g. a jargon-humanizer added to the same line).
+const CANVAS_GENERIC_KV_LEAD_RE = /import \{[^}]*\browPrimary\b[^}]*\browSecondary\b[^}]*\} from "@pdpp\/display";/;
 const CANVAS_GENERIC_TITLE_LINE_RE = /const primaryLine = rowPrimary\(entry\.preview \?\? null, entry\.recordId\);/;
 // RL1 hardening (end-review P0): the row primary must NEVER fall back to
 // `entry.summary` (the timeline summary heuristic), even for retrieval/search rows.
@@ -259,6 +263,12 @@ const FEED_PENDING_DIM_RE =
 // with internal scroll (no bottom overflow). No JS measurement.
 const TYPEAHEAD_VIEWPORT_CLAMP_RE =
   /\.rr-x-typeahead \{(?=[\s\S]*?left: 0;)(?=[\s\S]*?right: 0;)(?=[\s\S]*?max-width: 100vw;)(?=[\s\S]*?max-height: min\(280px, 60vh\);)(?=[\s\S]*?overflow-y: auto;)[\s\S]*?\}/;
+
+// Mobile: the options popover (operator-syntax legend) becomes a full-width sheet,
+// same as the date popover, so it doesn't overflow when the trigger wraps near the
+// left edge. The override turns off the absolute right:0 anchor and spans full width.
+const OPTIONS_VIEWPORT_CLAMP_RE =
+  /\.rr-x-options__body \{(?=[\s\S]*?right: 0;)(?=[\s\S]*?left: 0;)(?=[\s\S]*?width: auto;)(?=[\s\S]*?max-width: none;)[\s\S]*?\}/;
 
 // (#7) Motion communicates model state and is reduced-motion gated with a static
 // fallback. The shared reveal (Upcoming body / burst expand / day-group mount):
@@ -431,6 +441,16 @@ test("Slice 4: the LIVE FeedRow renders an honest generic row (first humanized k
     src,
     CANVAS_MATCH_EXCERPT_MARK_RE,
     "the match excerpt renders under a 'Match' mark so it reads as an excerpt, not a faked title (F1)"
+  );
+});
+
+test("Explore burst headers humanize stream keys without changing stream identity", async () => {
+  const src = await readFile(EXPLORE_CANVAS_FILE, "utf8");
+
+  assert.match(
+    src,
+    BURST_STREAM_LABEL_RE,
+    "burst headers must render a human label instead of exposing a raw stream key"
   );
 });
 
@@ -737,6 +757,14 @@ test("Slice 5 (#6): the operators/typeahead popover stays within the viewport (p
     css,
     TYPEAHEAD_VIEWPORT_CLAMP_RE,
     "the typeahead must be left:0/right:0 anchored to the input AND clamped by max-width:100vw + max-height:min(280px,60vh) + overflow-y:auto so it never runs off-screen"
+  );
+  // Mobile override: the options popover (operator-syntax legend) also becomes a
+  // full-width sheet to match DateChip's mobile pattern, preventing leftward overflow
+  // when the trigger wraps near the left edge on narrow screens.
+  assert.match(
+    css,
+    OPTIONS_VIEWPORT_CLAMP_RE,
+    "the options popover must have a mobile override with right:0 + left:0 + width:auto + max-width:none to become a full-width sheet and prevent overflow"
   );
 });
 

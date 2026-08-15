@@ -91,6 +91,31 @@
           }
         }
       }
+    },
+    {
+      // test/helpers/ri-zero-connector-knowledge-ast-shared.ts
+      // (terminal-revise-0810 dedup). The single `@babel/parser` import
+      // shared by both the identity-scan and data-load-scan AST scanners was
+      // consolidated into this one module (previously duplicated per-file,
+      // each with its own identical override below this one). Same confirmed
+      // resolver-gap class as the root biome.jsonc's scripts/test-migration
+      // override: this module parses production .ts source with
+      // @babel/parser (root devDependency, pinned 7.29.2) rather than
+      // TypeScript 7's own compiler API, which no longer exposes a
+      // lightweight createSourceFile-style parser. `tsc --noEmit` resolves
+      // the import cleanly and
+      // `node --input-type=module -e "console.log(import.meta.resolve('@babel/parser'))"`
+      // resolves to node_modules/.pnpm/@babel+parser@7.29.2/node_modules/@babel/parser/lib/index.js;
+      // this guard's own runtime test suite (ri-zero-connector-knowledge-conformance.test.ts)
+      // is the authority that the import actually resolves and works.
+      "includes": ["test/helpers/ri-zero-connector-knowledge-ast-shared.ts"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          }
+        }
+      }
     }
   ]
 }

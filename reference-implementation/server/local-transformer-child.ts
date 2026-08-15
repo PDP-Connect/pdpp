@@ -13,11 +13,22 @@ import type { DataType, FeatureExtractionPipeline } from "@huggingface/transform
  * untyped `.js` and out of this migration's scope, so the fields are typed
  * `unknown` here and narrowed defensively at each read, same as the
  * pre-migration code's own implicit (and unchecked) assumptions.
+ *
+ * `intraOpNumThreads` is set by `embedding-concurrency.ts`'s
+ * `resolveEmbeddingConcurrency()` (via the parent executor) and forwarded
+ * into ONNX Runtime's own `SessionOptions.intraOpNumThreads`. Left unset,
+ * a single inference session defaults to one native thread PER PHYSICAL
+ * CORE (confirmed against ONNX Runtime's own threading docs and the
+ * installed onnxruntime-common SessionOptions type) -- admitting several
+ * concurrent jobs without capping this means each session independently
+ * tries to claim every core, which a controlled benchmark measured as
+ * consistently SLOWER than running one job at a time, not faster.
  */
 interface TransformerJobConfig {
   cacheDir?: unknown;
   downloadAllowed?: unknown;
   dtype?: unknown;
+  intraOpNumThreads?: unknown;
   modelId?: unknown;
 }
 
@@ -77,8 +88,20 @@ function dtypeOption(value: unknown): { dtype: DataType | Record<string, DataTyp
   return value === undefined ? {} : { dtype: value as DataType | Record<string, DataType> };
 }
 
+/**
+ * Build the `{ session_options }` fragment for pipeline(), omitting the key
+ * entirely when `intraOpNumThreads` is absent/invalid rather than forcing
+ * some other value -- an invalid value falls back to ONNX Runtime's own
+ * default (one thread per physical core) instead of this module inventing
+ * validation it never performed elsewhere.
+ */
+function sessionOptions(value: unknown): { session_options: { intraOpNumThreads: number } } | Record<string, never> {
+  const threads = Number(value);
+  return Number.isInteger(threads) && threads > 0 ? { session_options: { intraOpNumThreads: threads } } : {};
+}
+
 async function extractorFor(config: TransformerJobConfig): Promise<FeatureExtractionPipeline> {
-  const key = `${config.modelId}\u0000${config.dtype}\u0000${config.cacheDir}\u0000${config.downloadAllowed}`;
+  const key = `${config.modelId}\u0000${config.dtype}\u0000${config.cacheDir}\u0000${config.downloadAllowed}\u0000${config.intraOpNumThreads}`;
   const cached = extractors.get(key);
   if (cached) {
     return cached;
@@ -92,6 +115,7 @@ async function extractorFor(config: TransformerJobConfig): Promise<FeatureExtrac
     }
     return pipeline("feature-extraction", typeof config.modelId === "string" ? config.modelId : undefined, {
       ...dtypeOption(config.dtype),
+      ...sessionOptions(config.intraOpNumThreads),
     });
   });
   extractors.set(key, promise);

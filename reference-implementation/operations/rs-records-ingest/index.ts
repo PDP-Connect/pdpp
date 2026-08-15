@@ -15,10 +15,11 @@
  * - the public `{ stream, records_accepted, records_rejected, errors }`
  *   response envelope.
  *
- * The capability is deliberately per-line and ordered: the operation parses
- * submitted non-empty lines into indexed inputs, then awaits each parsed
- * record's `ingestRecord` call before advancing. It MUST NOT parallelize
- * ingest, batch ingests, or coalesce errors.
+ * The default capability is deliberately per-line and ordered: the operation
+ * awaits each `ingestRecord` call before advancing. Hosts that provide the
+ * optional `ingestRecords` capability may batch only the already-parsed
+ * records; they still return one result per input record so parse and ingest
+ * failures remain line-addressable and ordered.
  *
  * Atomicity and durable write ordering for each record remain the
  * responsibility of the underlying ingest capability. A failure on one line
@@ -119,6 +120,18 @@ export interface RecordsIngestDependencies {
     connectorId: string,
     requestedConnectorInstanceId: string | null
   ) => string | null | Promise<string | null>;
+  /**
+   * Optional host optimization for a single NDJSON request. The input is in
+   * line order and contains only successfully parsed records. Each result is
+   * either null (accepted) or the exact error message for that record.
+   * Hosts MUST preserve the same per-record durability and failure-isolation
+   * contract as `ingestRecord`.
+   */
+  ingestRecords?: (
+    connectorId: string,
+    connectorInstanceId: string | null,
+    records: readonly Record<string, unknown>[]
+  ) => readonly (string | IngestLineFailure | null)[] | Promise<readonly (string | IngestLineFailure | null)[]>;
 }
 
 export interface RecordsIngestEnvelope {
@@ -202,18 +215,32 @@ export class RecordsIngestResourceLimitError extends Error {
  * underlying classified failure's own text — that text originates from
  * `classifyIngestFailure`'s catch-all (any error a host does not recognize —
  * a raw SQLite/Postgres driver error, in production) and can carry SQL
- * fragments or bound-parameter values. This class has no other constructor
- * input and no other field, so there is nothing here for a future caller to
- * accidentally surface externally. The per-line classified detail is used
- * only transiently, inside `executeRecordsIngest`, to decide retryability
- * and the count — it is discarded once this Error is constructed, not
- * retained anywhere.
+ * fragments, bound-parameter values, or other storage-internal detail that
+ * must never reach the external HTTP response or the persisted
+ * `mutation.rejected` spine event (an owner-facing "trace show" artifact,
+ * not an internal-only sink). The raw detail is preserved ONLY on
+ * `firstRetryableFailureMessage` — a field this Error carries but that is
+ * NOT part of `.message`, so a caller with a legitimate internal-diagnostics
+ * reason to read it (server-side logging) opts in explicitly rather than
+ * inheriting it through ordinary `.message` propagation. No existing
+ * internal-only diagnostics channel is wired into this route today, so this
+ * field is deliberately inert (read by nothing yet) rather than routed
+ * through a fabricated one; wiring a real sink is a separate, deliberate
+ * decision, not an incidental side effect of this fix. The per-line detail is
+ * used only transiently to classify the batch and is never included in the
+ * public message or persisted owner-facing event.
+ * No raw detail is retained on this error object.
  */
 export class RecordsIngestSystemicFailureError extends Error {
   readonly code: "ingest_batch_storage_error";
   readonly retryableFailureCount: number;
 
-  constructor(streamName: string, retryableFailureCount: number, submittedCount: number, options?: ErrorOptions) {
+  constructor(
+    streamName: string,
+    retryableFailureCount: number,
+    submittedCount: number,
+    options?: ErrorOptions
+  ) {
     super(
       `Ingest for stream '${streamName}' had ${retryableFailureCount} systemic/retryable record failure(s) out of ${submittedCount} submitted; retry the batch`,
       options
@@ -324,7 +351,9 @@ async function ingestParsedRecords(
     return [];
   }
   const parsedRecords = parsedInputs.map((input) => input.parsedRecord);
-  const results = await ingestSequentially(connectorId, connectorInstanceId, parsedRecords, dependencies.ingestRecord);
+  const results = dependencies.ingestRecords
+    ? await ingestWithBatchCapability(connectorId, connectorInstanceId, parsedRecords, dependencies.ingestRecords)
+    : await ingestSequentially(connectorId, connectorInstanceId, parsedRecords, dependencies.ingestRecord);
   await markAcceptedRecordRejectionsStale(
     connectorId,
     connectorInstanceId,
@@ -335,6 +364,41 @@ async function ingestParsedRecords(
     runId
   );
   return results;
+}
+
+async function ingestWithBatchCapability(
+  connectorId: string,
+  connectorInstanceId: string | null,
+  parsedRecords: readonly Record<string, unknown>[],
+  ingestRecords: NonNullable<RecordsIngestDependencies["ingestRecords"]>
+): Promise<readonly (IngestLineFailure | null)[]> {
+  try {
+    const results = await ingestRecords(connectorId, connectorInstanceId, parsedRecords);
+    if (results.length !== parsedRecords.length) {
+      throw new Error(`ingestRecords returned ${results.length} results for ${parsedRecords.length} records`);
+    }
+    return results.map((error) => {
+      if (error === null) {
+        return null;
+      }
+      if (typeof error === "string") {
+        return {
+          message: error,
+          // Legacy batch hosts provide only a message. Without a typed
+          // permanence proof, classify the outcome as retryable/systemic.
+          retryable: true,
+        };
+      }
+      return {
+        ...(typeof error.code === "string" ? { code: error.code } : {}),
+        message: typeof error.message === "string" ? error.message : "ingest batch returned a malformed record outcome",
+        retryable: error.retryable !== false,
+      };
+    });
+  } catch (err) {
+    const failure = classifyThrownIngestError(err);
+    return parsedRecords.map(() => failure);
+  }
 }
 
 function recordKeyFromParsedRecord(record: Record<string, unknown>): string | null {
@@ -571,8 +635,10 @@ function countRetryableFailures(lineErrors: readonly (IngestLineFailure | null)[
  *   3. not_found when the manifest does not declare the stream.
  *   4. JSON.parse each line and ingest under `{ ...record, stream }`.
  *      JSON.parse failures and ingest errors both increment records_rejected
- *      and append the message to errors. The established sequential
- *      capability is always used.
+ *      and append the message to errors. If the host exposes `ingestRecords`,
+ *      valid records use that capability once while preserving line order in
+ *      the returned results; otherwise the established sequential capability
+ *      is used.
  *   5. return the envelope plus submitted_record_count for instrumentation.
  */
 export async function executeRecordsIngest(

@@ -55,7 +55,16 @@ function repoRoot(): string {
 // identity of the integration worktree and every sibling lane worktree for
 // the rest of the session. `-c` scopes the override to a single command
 // invocation and cannot leak.
-const FIXTURE_IDENTITY = ["-c", "user.email=fixture@example.test", "-c", "user.name=fixture"];
+const FIXTURE_COMMIT_CONFIG = [
+  "-c",
+  "commit.gpgsign=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "user.email=fixture@example.test",
+  "-c",
+  "user.name=fixture",
+];
 
 async function withRealWorktree(run: (root: string) => Promise<void> | void): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pdpp-r1-e2e-"));
@@ -70,7 +79,7 @@ async function withRealWorktree(run: (root: string) => Promise<void> | void): Pr
 }
 function commitAll(root: string, message: string): void {
   execFileSync("git", ["add", "-A"], { cwd: root });
-  execFileSync("git", [...FIXTURE_IDENTITY, "commit", "-q", "-m", message], { cwd: root });
+  execFileSync("git", [...FIXTURE_COMMIT_CONFIG, "commit", "-q", "-s", "-m", message], { cwd: root });
 }
 function readManifestFile(root: string): Manifest {
   return JSON.parse(readFileSync(join(root, "test-accounting.manifest.json"), "utf8"));

@@ -164,6 +164,7 @@ import {
   withConnectorInstanceControlPlaneWrite,
   withConnectorInstanceWrite,
 } from "../connector-instance-write-coordinator.ts";
+import type { PostgresTransactionClient } from "../postgres-storage.ts";
 import { postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 
 const ACTIVE_RESOLUTION_LIMIT = 2;
@@ -1072,6 +1073,7 @@ export async function resolveOwnerConnectorInstanceNamespace({
  * connector type (or another owner's deterministic id) as a capability.
  */
 export function admitOwnerRunConnection({
+  allowDraft = false,
   ownerSubjectId,
   connectorId,
   connectorInstanceId = null,
@@ -1079,6 +1081,8 @@ export function admitOwnerRunConnection({
   displayName = null,
   now,
 }: {
+  /** Setup routes may explicitly admit the exact draft they just created. */
+  allowDraft?: boolean;
   ownerSubjectId: string;
   connectorId: string;
   connectorInstanceId?: string | null;
@@ -1090,6 +1094,7 @@ export function admitOwnerRunConnection({
     // Explicit selectors never materialize or fall through. The broader
     // resolver still supports legacy read compatibility independently.
     allowDefaultAccount: !connectorInstanceId,
+    allowStatuses: allowDraft ? ["active", "draft"] : ["active"],
     connectorId,
     connectorInstanceId,
     connectorInstanceStore,
@@ -1517,6 +1522,39 @@ export function createSqliteConnectorInstanceStore() {
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
+    // Promotes a temporary setup binding to its durable sibling kind.
+    // Guarded by `status = 'draft' AND binding.kind = fromKind`: a
+    // concurrent revoke racing this UPDATE loses safely (no row change,
+    // `promoted: false`). Never writes the identity tuple
+    // (connector_instance_id/owner_subject_id/source_kind/source_binding_key).
+    promoteSetupBinding(
+      connectorInstanceId: string,
+      {
+        fromKind,
+        sourceBinding,
+        updatedAt,
+      }: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
+    ): { instance: ConnectorInstance | null; promoted: boolean } {
+      let promoted = false;
+      writeTransaction(() => {
+        const result = exec(referenceQueries.connectorInstancesPromoteSetupBinding, [
+          stableJson(sourceBinding),
+          "active",
+          updatedAt,
+          connectorInstanceId,
+          fromKind,
+        ]);
+        promoted = Boolean(result.changes);
+        if (promoted) {
+          exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+            `connector instance promoted from ${fromKind}`,
+            connectorInstanceId,
+          ]);
+        }
+      });
+      return { instance: this.get(connectorInstanceId), promoted };
+    },
+
     resolveActiveByConnector(ownerSubjectId: string, connectorId: string): ConnectorInstance {
       const rows = getMany<ConnectorInstanceRow>(
         referenceQueries.connectorInstancesListActiveByOwnerConnector,
@@ -1562,6 +1600,47 @@ export function createSqliteConnectorInstanceStore() {
           "connector instance display_name changed",
           connectorInstanceId,
         ]);
+      });
+      return this.get(connectorInstanceId);
+    },
+
+    // Re-key one owner-session static-secret instance after a synchronous
+    // provider probe proves its account identity. The connector instance id
+    // is intentionally preserved: records, schedules, history, and callers
+    // all address that id. The existing binding unique constraint is the
+    // cross-request identity claim; a concurrent claim for the same verified
+    // identity raises the backend's normal unique-constraint error for the
+    // route to resolve to the winner.
+    updateStaticSecretBinding({
+      connectorInstanceId,
+      connectorId,
+      ownerSubjectId,
+      sourceBinding,
+      sourceBindingKey,
+      updatedAt,
+    }: {
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+      sourceBinding: Record<string, unknown>;
+      sourceBindingKey: string;
+      updatedAt: string;
+    }): ConnectorInstance | null {
+      writeTransaction(() => {
+        const result = exec(referenceQueries.connectorInstancesUpdateStaticSecretBinding, [
+          sourceBindingKey,
+          stableJson(sourceBinding),
+          updatedAt,
+          connectorInstanceId,
+          ownerSubjectId,
+          connectorId,
+        ]);
+        if (result.changes) {
+          exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+            "static-secret binding updated",
+            connectorInstanceId,
+          ]);
+        }
       });
       return this.get(connectorInstanceId);
     },
@@ -1643,6 +1722,7 @@ export function createSqliteConnectorInstanceStore() {
           normalized.createdAt ?? null,
           normalized.updatedAt ?? null,
           normalized.revokedAt,
+          normalized.connectorId,
         ]);
         return this.get(normalized.connectorInstanceId);
       } catch (err) {
@@ -1818,15 +1898,28 @@ export function createPostgresConnectorInstanceStore() {
     // single conditional UPDATE keyed on `status = 'draft'` is the no-op /
     // concurrency guard: a row that is missing or not draft is untouched. See
     // add-static-secret-owner-session-connect-path design Decision 5.
+    // Transaction-scoped connector-instance advisory lock (2026-08-10,
+    // harden-connector-instance-write-fence-transaction-native): this is
+    // promoteSetupBinding's sibling branch in the same activateDraftConnection
+    // control-flow and was missed by that callsite audit -- an unfenced write
+    // here could race deleteConnection for the SAME connector instance
+    // (delete's row-erasing transaction and this UPDATE with no ordering
+    // guarantee between them). Locking matches every other Postgres mutator
+    // in this file.
     async activateDraft(
       connectorInstanceId: string,
       { now }: { now?: string } = {}
     ): Promise<ConnectorInstance | null> {
-      await postgresQuery(
-        `UPDATE connector_instances
-         SET status = 'active', updated_at = $1, revoked_at = NULL
-         WHERE connector_instance_id = $2 AND status = 'draft'`,
-        [now ?? new Date().toISOString(), connectorInstanceId]
+      await withPostgresTransaction(
+        async (client: PostgresTransactionClient) => {
+          await client.query(
+            `UPDATE connector_instances
+             SET status = 'active', updated_at = $1, revoked_at = NULL
+             WHERE connector_instance_id = $2 AND status = 'draft'`,
+            [now ?? new Date().toISOString(), connectorInstanceId]
+          );
+        },
+        { lockConnectorInstanceId: connectorInstanceId }
       );
       return await this.get(connectorInstanceId);
     },
@@ -1890,9 +1983,7 @@ export function createPostgresConnectorInstanceStore() {
 
       const stamp = now ?? new Date().toISOString();
       const { deletedRecordCount, scheduleDeleted, deviceRefsCleared } = await withPostgresTransaction(
-        async (client: {
-          query: (sql: string, params?: unknown[]) => Promise<{ rowCount?: number | null; rows: unknown[] }>;
-        }) => {
+        async (client: PostgresTransactionClient) => {
           // Record-family + blob + attention purge runs against the SAME client,
           // so it is atomic with the schedule / device / row deletes below.
           const recordCount = await purge.deleteRecordRowsPostgres(client, connectorInstanceId);
@@ -1933,7 +2024,8 @@ export function createPostgresConnectorInstanceStore() {
             deviceRefsCleared: device.rowCount,
             scheduleDeleted: Number(schedule.rowCount ?? 0) > 0,
           };
-        }
+        },
+        { lockConnectorInstanceId: connectorInstanceId }
       );
 
       // Post-commit, rebuildable projection teardown (see SQLite arm).
@@ -2185,6 +2277,41 @@ export function createPostgresConnectorInstanceStore() {
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
+    // Postgres mirror of the SQLite arm above — same `status = 'draft' AND
+    // binding.kind = fromKind` guard, same `promoted` result, same
+    // identity-preserving contract.
+    async promoteSetupBinding(
+      connectorInstanceId: string,
+      {
+        fromKind,
+        sourceBinding,
+        updatedAt,
+      }: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
+    ): Promise<{ instance: ConnectorInstance | null; promoted: boolean }> {
+      let promoted = false;
+      await withPostgresTransaction(
+        async (client: PostgresTransactionClient) => {
+          const result = await client.query(
+            `UPDATE connector_instances
+             SET source_binding_json = $1::jsonb, status = $2, updated_at = $3
+             WHERE connector_instance_id = $4
+               AND status = 'draft'
+               AND source_binding_json->>'kind' = $5`,
+            [stableJson(sourceBinding), "active", updatedAt, connectorInstanceId, fromKind]
+          );
+          promoted = Boolean(result.rowCount);
+          if (promoted) {
+            await client.query(
+              `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+              [`connector instance promoted from ${fromKind}`, connectorInstanceId]
+            );
+          }
+        },
+        { lockConnectorInstanceId: connectorInstanceId }
+      );
+      return { instance: await this.get(connectorInstanceId), promoted };
+    },
+
     async resolveActiveByConnector(ownerSubjectId: string, connectorId: string): Promise<ConnectorInstance> {
       const result = await postgresQuery(
         `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
@@ -2215,7 +2342,7 @@ export function createPostgresConnectorInstanceStore() {
     ): Promise<ConnectorInstance | null> {
       assertOwnerSetDisplayNameArgs({ connectorInstanceId, displayName, ownerSubjectId });
       await withPostgresTransaction(
-        async (client: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount?: number | null }> }) => {
+        async (client: PostgresTransactionClient) => {
           const result = await client.query(
             `UPDATE connector_instances
            SET display_name = $1, updated_at = $2
@@ -2233,7 +2360,52 @@ export function createPostgresConnectorInstanceStore() {
             `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
             ["connector instance display_name changed", connectorInstanceId]
           );
-        }
+        },
+        { lockConnectorInstanceId: connectorInstanceId }
+      );
+      return await this.get(connectorInstanceId);
+    },
+
+    // Postgres mirror of the SQLite static-secret identity claim. The binding
+    // unique constraint is enforced by the database, not by a process-local
+    // read/then-write sequence, so concurrent owners/processes cannot both
+    // claim one verified identity.
+    async updateStaticSecretBinding({
+      connectorInstanceId,
+      connectorId,
+      ownerSubjectId,
+      sourceBinding,
+      sourceBindingKey,
+      updatedAt,
+    }: {
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+      sourceBinding: Record<string, unknown>;
+      sourceBindingKey: string;
+      updatedAt: string;
+    }): Promise<ConnectorInstance | null> {
+      await withPostgresTransaction(
+        async (client: PostgresTransactionClient) => {
+          const result = await client.query(
+            `UPDATE connector_instances
+             SET source_binding_key = $1,
+                 source_binding_json = $2::jsonb,
+                 updated_at = $3
+             WHERE connector_instance_id = $4
+               AND owner_subject_id = $5
+               AND connector_id = $6
+               AND status IN ('active', 'draft')`,
+            [sourceBindingKey, stableJson(sourceBinding), updatedAt, connectorInstanceId, ownerSubjectId, connectorId]
+          );
+          if (result.rowCount) {
+            await client.query(
+              `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+              ["static-secret binding updated", connectorInstanceId]
+            );
+          }
+        },
+        { lockConnectorInstanceId: connectorInstanceId }
       );
       return await this.get(connectorInstanceId);
     },
@@ -2254,7 +2426,7 @@ export function createPostgresConnectorInstanceStore() {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
       await withPostgresTransaction(
-        async (client: { query: (sql: string, params?: unknown[]) => Promise<unknown> }) => {
+        async (client: PostgresTransactionClient) => {
           await client.query(
             "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4",
             [status, updatedAt, revokedAt, connectorInstanceId]
@@ -2263,7 +2435,8 @@ export function createPostgresConnectorInstanceStore() {
             `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
             [`connector instance status changed to ${status}`, connectorInstanceId]
           );
-        }
+        },
+        { lockConnectorInstanceId: connectorInstanceId }
       );
       return await this.get(connectorInstanceId);
     },
@@ -2303,88 +2476,126 @@ export function createPostgresConnectorInstanceStore() {
     async upsert(record: ConnectorInstanceUpsertRecord): Promise<ConnectorInstance | null> {
       const normalized = normalizeRecord(record);
       const currentLocalBindingName = extractLocalBindingName(record.sourceBinding);
-      // Tombstone guard: only relevant when no LIVE row exists for this
-      // identity yet — an `ON CONFLICT DO UPDATE` hit against an existing row
-      // (revoke, pause, reactivate-by-re-enroll) is untouched by this check.
-      // See the SQLite arm for the full rationale.
-      if (!(await this.get(normalized.connectorInstanceId))) {
-        assertIdentityNotTombstoned(
-          await this.getTombstoneByBinding({
-            connectorId: normalized.connectorId,
-            ownerSubjectId: normalized.ownerSubjectId,
-            sourceBindingKey: normalized.sourceBindingKey,
-            sourceKind: normalized.sourceKind,
-          }),
-          normalized
-        );
-      }
-      // Test-only, opt-in — widens the tombstone-check-to-INSERT window so a
-      // genuine two-process race is deterministically reproducible. No-op in
-      // production.
-      await testOnlyUpsertTombstoneCheckDelay();
-      try {
-        await postgresQuery(
-          `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
-           VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
-           ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO UPDATE SET
-             display_name = excluded.display_name,
-             status = excluded.status,
-             source_binding_json = excluded.source_binding_json,
-             updated_at = excluded.updated_at,
-             revoked_at = excluded.revoked_at`,
-          [
-            normalized.connectorInstanceId,
-            normalized.ownerSubjectId,
-            normalized.connectorId,
-            normalized.displayName,
-            normalized.status,
-            normalized.sourceKind,
-            normalized.sourceBindingKey,
-            normalized.sourceBindingJson,
-            normalized.createdAt,
-            normalized.updatedAt,
-            normalized.revokedAt,
-          ]
-        );
-        return await this.get(normalized.connectorInstanceId);
-      } catch (err) {
-        if ((err as { code?: string } | null)?.code !== "23505") {
-          throw err;
-        }
-        const colliding = await postgresQuery<ConnectorInstanceRow>(
-          `SELECT connector_instance_id, owner_subject_id, connector_id, source_kind, source_binding_json
-             FROM connector_instances WHERE connector_instance_id = $1`,
-          [normalized.connectorInstanceId]
-        );
-        // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-        const collidingRow = colliding.rows[0];
-        if (!collidingRow) {
-          throw err;
-        }
-        if (!isSameLogicalBindingUnderLegacyKey(collidingRow, normalized, currentLocalBindingName)) {
-          throw err;
-        }
-        await postgresQuery(
-          `UPDATE connector_instances SET
-             display_name = $1,
-             status = $2,
-             source_binding_key = $3,
-             source_binding_json = $4::jsonb,
-             updated_at = $5,
-             revoked_at = $6
-           WHERE connector_instance_id = $7`,
-          [
-            normalized.displayName,
-            normalized.status,
-            normalized.sourceBindingKey,
-            normalized.sourceBindingJson,
-            normalized.updatedAt,
-            normalized.revokedAt,
-            collidingRow.connector_instance_id,
-          ]
-        );
-        return await this.get(collidingRow.connector_instance_id);
-      }
+      const resultConnectorInstanceId = await withPostgresTransaction(
+        async (client: PostgresTransactionClient) => {
+          // Tombstone guard: only relevant when no LIVE row exists for this
+          // identity yet — an `ON CONFLICT DO UPDATE` hit against an existing
+          // row (revoke, pause, reactivate-by-re-enroll) is untouched by this
+          // check. See the SQLite arm for the full rationale. Runs on the
+          // SAME client/transaction as the INSERT below, inside the SAME
+          // connector-instance advisory lock `withPostgresTransaction`
+          // acquires via `lockConnectorInstanceId` — the lock (not merely a
+          // process-local mutex) is what makes this read-then-write atomic
+          // with respect to a concurrent `deleteConnection` transaction for
+          // the SAME identity. See
+          // harden-connector-instance-write-fence-transaction-native.
+          const existing = await client.query<{ connector_instance_id: string }>(
+            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = $1",
+            [normalized.connectorInstanceId]
+          );
+          if (existing.rows.length === 0) {
+            const tombstoneResult = await client.query<ConnectorInstanceTombstoneRow>(
+              `SELECT connector_instance_id, owner_subject_id, connector_id, source_kind, source_binding_key, deleted_at
+               FROM connector_instance_tombstones
+               WHERE owner_subject_id = $1 AND connector_id = $2 AND source_kind = $3 AND source_binding_key = $4`,
+              [normalized.ownerSubjectId, normalized.connectorId, normalized.sourceKind, normalized.sourceBindingKey]
+            );
+            assertIdentityNotTombstoned(mapTombstone(tombstoneResult.rows[0]), normalized);
+          }
+          // Test-only, opt-in — widens the tombstone-check-to-INSERT window so a
+          // genuine two-process race is deterministically reproducible. No-op in
+          // production.
+          await testOnlyUpsertTombstoneCheckDelay();
+          // A SAVEPOINT, not a bare try/catch: once ANY statement inside a
+          // Postgres transaction errors (including the expected/handled
+          // 23505 PK collision below), the WHOLE transaction is aborted
+          // (SQLSTATE 25P02, "current transaction is aborted") and refuses
+          // every subsequent statement until ROLLBACK. The pre-migration
+          // code ran the INSERT and its 23505 fallback UPDATE as two
+          // separate AUTOCOMMIT statements, so a 23505 in the first never
+          // poisoned the second. Now that both run inside ONE transaction
+          // (see this function's header), the fallback path MUST roll back
+          // to a savepoint taken before the INSERT, or the collision-repair
+          // UPDATE below inherits an already-aborted transaction and itself
+          // fails with 25P02. See harden-connector-instance-write-fence-transaction-native.
+          await client.query("SAVEPOINT upsert_insert_attempt");
+          try {
+            // `record_identity_generation` is seeded from the connector's
+            // currently persisted manifest, not left at the column default —
+            // see the identical rationale in the SQLite arm's `insert.sql`.
+            await client.query(
+              `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at, record_identity_generation)
+               VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11,
+                 COALESCE(
+                   (SELECT (manifest #>> '{capabilities,record_identity,generation}')::int
+                      FROM connectors WHERE connector_id = $3),
+                   0
+                 ))
+               ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO UPDATE SET
+                 display_name = excluded.display_name,
+                 status = excluded.status,
+                 source_binding_json = excluded.source_binding_json,
+                 updated_at = excluded.updated_at,
+                 revoked_at = excluded.revoked_at`,
+              [
+                normalized.connectorInstanceId,
+                normalized.ownerSubjectId,
+                normalized.connectorId,
+                normalized.displayName,
+                normalized.status,
+                normalized.sourceKind,
+                normalized.sourceBindingKey,
+                normalized.sourceBindingJson,
+                normalized.createdAt,
+                normalized.updatedAt,
+                normalized.revokedAt,
+              ]
+            );
+            await client.query("RELEASE SAVEPOINT upsert_insert_attempt");
+            return normalized.connectorInstanceId;
+          } catch (err) {
+            if ((err as { code?: string } | null)?.code !== "23505") {
+              throw err;
+            }
+            await client.query("ROLLBACK TO SAVEPOINT upsert_insert_attempt");
+            const colliding = await client.query<ConnectorInstanceRow>(
+              `SELECT connector_instance_id, owner_subject_id, connector_id, source_kind, source_binding_json
+                 FROM connector_instances WHERE connector_instance_id = $1`,
+              [normalized.connectorInstanceId]
+            );
+            // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+            const collidingRow = colliding.rows[0];
+            if (!collidingRow) {
+              throw err;
+            }
+            if (!isSameLogicalBindingUnderLegacyKey(collidingRow, normalized, currentLocalBindingName)) {
+              throw err;
+            }
+            await client.query(
+              `UPDATE connector_instances SET
+                 display_name = $1,
+                 status = $2,
+                 source_binding_key = $3,
+                 source_binding_json = $4::jsonb,
+                 updated_at = $5,
+                 revoked_at = $6
+               WHERE connector_instance_id = $7`,
+              [
+                normalized.displayName,
+                normalized.status,
+                normalized.sourceBindingKey,
+                normalized.sourceBindingJson,
+                normalized.updatedAt,
+                normalized.revokedAt,
+                collidingRow.connector_instance_id,
+              ]
+            );
+            return collidingRow.connector_instance_id;
+          }
+        },
+        { lockConnectorInstanceId: normalized.connectorInstanceId }
+      );
+      return await this.get(resultConnectorInstanceId);
     },
   };
   const deleteConnectionUncoordinated = store.deleteConnection;
@@ -2399,14 +2610,22 @@ export function createPostgresConnectorInstanceStore() {
   // Coordinated on the SAME deterministic connector_instance_id
   // `deleteConnection` uses, so a delete and an upsert for the same
   // identity always serialize through the one per-identity gate.
-  // `withConnectorInstanceWrite`'s Postgres path acquires a REAL
-  // `pg_try_advisory_lock` (postgresCoordinationEnabled() /
-  // acquirePostgresAdvisoryLock in connector-instance-write-coordinator.ts)
-  // -- exclusion enforced by the Postgres server across connections and
-  // processes, not merely the coordinator's in-process mutex. Proven by a
-  // genuine two-OS-process discriminator, not just concurrent async calls
-  // in one process: test/connector-instance-delete-upsert-two-process-race.test.js.
-  // See openspec/changes/fix-owner-delete-resurrection.
+  //
+  // Cross-process exclusion is no longer `withConnectorInstanceWrite`'s job
+  // (it is now purely an in-process gate — see its docstring). BOTH
+  // `deleteConnection` and `upsert` now acquire the SAME transaction-scoped
+  // `pg_advisory_xact_lock` directly inside their own `withPostgresTransaction`
+  // call (`lockConnectorInstanceId`) — exclusion still enforced by the
+  // Postgres server across connections and processes, just transaction-
+  // scoped instead of session-scoped. The `withConnectorInstanceWrite` wrap
+  // below is kept ONLY to avoid two same-process callers both entering their
+  // Postgres transactions concurrently and colliding on `23505`
+  // unnecessarily; it is no longer load-bearing for the cross-process
+  // invariant. Proven by a genuine two-OS-process discriminator, not just
+  // concurrent async calls in one process:
+  // test/connector-instance-delete-upsert-two-process-race.test.ts.
+  // See openspec/changes/fix-owner-delete-resurrection and
+  // harden-connector-instance-write-fence-transaction-native.
   const upsertUncoordinated = store.upsert;
   store.upsert = (record) =>
     withConnectorInstanceWrite(normalizeRecord(record).connectorInstanceId, () =>

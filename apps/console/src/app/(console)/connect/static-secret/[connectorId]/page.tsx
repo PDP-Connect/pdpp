@@ -7,6 +7,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { getStaticSecretSetup, RefNotFoundError, type StaticSecretSetupField } from "../../../lib/ref-client.ts";
+import { staticSecretFormContract } from "../../../lib/source-setup-form-contract.ts";
 import { createStaticSecretConnectionAction, replaceStaticSecretCredentialAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +20,8 @@ interface PageSearchParams {
   // When present, the form is in "replace credential" mode for an existing
   // connection — preserves connection_id, history, schedule, and records.
   connectionId?: string;
+  displayName?: string;
+  draftRetry?: string;
   error?: string;
 }
 
@@ -36,6 +39,63 @@ function firstValue(value: string | string[] | undefined): string | undefined {
 
 function inputType(field: StaticSecretSetupField): "email" | "password" | "text" {
   return field.type === "email" || field.type === "password" ? field.type : "text";
+}
+
+function pageCopy(displayName: string, isDraftRetryMode: boolean, isReplaceMode: boolean) {
+  if (isDraftRetryMode) {
+    return {
+      description:
+        "Correct the provider details and submit again. This keeps the same pending connection and never reuses the rejected secret.",
+      title: `Retry ${displayName}`,
+    };
+  }
+  if (isReplaceMode) {
+    return {
+      description:
+        "Enter the credential this connection should use. Records, history, and schedule stay attached to the same connection.",
+      title: `Reconnect ${displayName}`,
+    };
+  }
+  return {
+    description:
+      "Enter the provider credential to create this connection and start its first sync. The account keeps its own connection identity and credentials.",
+    title: `Add ${displayName}`,
+  };
+}
+
+function ModeCallout({ isDraftRetryMode, isReplaceMode }: { isDraftRetryMode: boolean; isReplaceMode: boolean }) {
+  if (isDraftRetryMode) {
+    return (
+      <Callout
+        className="mt-5"
+        description="The failed validation did not create a credential. Your corrected non-secret details stay on this pending connection; enter the secret again to retry."
+        surface="human"
+        title="Retrying the same connection"
+      />
+    );
+  }
+  if (isReplaceMode) {
+    return (
+      <Callout
+        className="mt-5"
+        description="Reconnect uses the submitted credential for this connection. It does not change collected records, schedule, or history."
+        surface="human"
+        title="This keeps the same connection"
+      />
+    );
+  }
+  return (
+    <Callout
+      className="mt-5"
+      description="Submit the form again for a second mailbox or account. Each submission creates a separate connection with its own stored credential."
+      title="Add another account without changing deployment settings"
+    >
+      <p className="pdpp-caption text-muted-foreground">
+        The deployment only needs an instance-level credential key provider. Account credentials are captured here for
+        one connection at a time.
+      </p>
+    </Callout>
+  );
 }
 
 export default async function StaticSecretConnectPage({
@@ -56,12 +116,17 @@ export default async function StaticSecretConnectPage({
   const resolvedSearchParams = await searchParams;
   const pageParams: PageSearchParams = {
     connectionId: firstValue(resolvedSearchParams.connection_id),
+    displayName: firstValue(resolvedSearchParams.display_name),
+    draftRetry: firstValue(resolvedSearchParams.draft_retry),
     error: firstValue(resolvedSearchParams.error),
   };
-  // Repair/update mode: a connection_id in the query means the owner is
-  // replacing the credential on an existing connection, not creating a new one.
-  const isReplaceMode = Boolean(pageParams.connectionId);
+  // A draft retry keeps the same connection id but remains in the create-form
+  // presentation so the owner can see and preserve the chosen display name.
+  const isDraftRetryMode = Boolean(pageParams.connectionId && pageParams.draftRetry === "1");
+  const isReplaceMode = Boolean(pageParams.connectionId && !isDraftRetryMode);
+  const hasExistingTarget = Boolean(pageParams.connectionId);
   const readinessBlocked = setup.deployment_readiness.state !== "ready";
+  const formContract = staticSecretFormContract(setup, hasExistingTarget);
 
   // After a validation failure the action redirects back here with the owner's
   // non-secret field values as `field_<name>` query params so the form context
@@ -74,20 +139,20 @@ export default async function StaticSecretConnectPage({
     return firstValue(resolvedSearchParams[`field_${field.name}`]);
   }
 
-  const pageTitle = isReplaceMode ? `Reconnect ${setup.display_name}` : `Add ${setup.display_name}`;
-  const pageDescription = isReplaceMode
-    ? "Enter the credential this connection should use. Records, history, and schedule stay attached to the same connection."
-    : "Seal the provider secret from this owner session and start the first sync. The account keeps its own connection identity and credentials.";
+  const { description: pageDescription, title: pageTitle } = pageCopy(
+    setup.display_name,
+    isDraftRetryMode,
+    isReplaceMode
+  );
   const backHref =
     isReplaceMode && pageParams.connectionId ? `/sources/${encodeURIComponent(pageParams.connectionId)}` : "/sources";
-  const backLabel = isReplaceMode ? "Back to connection" : "Back to connections";
 
   return (
     <RecordroomShellWithPalette>
       <PageHeader
         actions={
           <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={backHref}>
-            {backLabel}
+            Back to Sources
           </Link>
         }
         breadcrumbs={[{ href: "/sources", label: "Sources" }, { label: pageTitle }]}
@@ -97,13 +162,7 @@ export default async function StaticSecretConnectPage({
 
       <div className="mb-5 grid gap-2">{pageParams.error ? <InlineNotice message={pageParams.error} /> : null}</div>
 
-      <Section
-        description={
-          setup.credential_capture.description ??
-          "This form is generated from the connector manifest. Secrets are submitted to the owner-session capture route and are not returned to agents, MCP clients, REST reads, audit payloads, or the dashboard."
-        }
-        title={setup.credential_capture.label}
-      >
+      <Section description={formContract.credentialSectionDescription} title={setup.credential_capture.label}>
         {readinessBlocked ? (
           <Callout
             description={
@@ -123,14 +182,28 @@ export default async function StaticSecretConnectPage({
           </Callout>
         ) : (
           <form
-            action={isReplaceMode ? replaceStaticSecretCredentialAction : createStaticSecretConnectionAction}
+            action={hasExistingTarget ? replaceStaticSecretCredentialAction : createStaticSecretConnectionAction}
             className="grid max-w-2xl gap-4 rounded-sm border border-border/80 bg-muted/20 p-4"
           >
             <input name="connector_id" type="hidden" value={setup.connector_id} />
-            {isReplaceMode && pageParams.connectionId ? (
+            {hasExistingTarget && pageParams.connectionId ? (
               <input name="connection_id" type="hidden" value={pageParams.connectionId} />
             ) : null}
-            {setup.credential_capture.fields.map((field) => (
+            {isReplaceMode ? null : (
+              <label className="grid gap-1" htmlFor="static-secret-display-name">
+                <span className="pdpp-eyebrow">{formContract.connectionName.label}</span>
+                <IcInput
+                  defaultValue={pageParams.displayName}
+                  id="static-secret-display-name"
+                  maxLength={formContract.connectionName.maxLength}
+                  name={formContract.connectionName.name}
+                  placeholder={formContract.connectionName.placeholder}
+                  type="text"
+                />
+                <span className="pdpp-caption text-muted-foreground">{formContract.connectionName.helpText}</span>
+              </label>
+            )}
+            {formContract.credentialFields.map((field) => (
               <label className="grid gap-1" htmlFor={`static-secret-${field.name}`} key={field.name}>
                 <span className="pdpp-eyebrow">{field.label}</span>
                 <IcInput
@@ -139,7 +212,17 @@ export default async function StaticSecretConnectPage({
                   id={`static-secret-${field.name}`}
                   name={field.name}
                   placeholder={field.placeholder ?? undefined}
-                  required={field.required}
+                  // F2: native HTML validation must not block the block-level
+                  // optional case. `setup.credential_capture.required ===
+                  // false` (e.g. Venmo — BOTH-OR-NONE, blank is a valid,
+                  // complete choice) makes every field's own `required`
+                  // attribute non-binding at the browser level; the server
+                  // (buildStaticSecretPayload / validateBundledSecret) is
+                  // what actually enforces BOTH-OR-NONE once ANY field is
+                  // filled. A REQUIRED capture (the default) is unaffected —
+                  // each field's own `required` still gates the native form
+                  // exactly as before.
+                  required={setup.credential_capture.required !== false && field.required}
                   type={inputType(field)}
                 />
                 {field.description || field.help_text || field.help_url ? (
@@ -164,41 +247,20 @@ export default async function StaticSecretConnectPage({
             ))}
             {setup.validation === "synchronous" ? (
               <p className="pdpp-caption text-muted-foreground">
-                The credential is checked with the provider when you submit. If it is valid, the account is confirmed
-                before the first sync starts; if not, you stay on this form with your details preserved.
+                The credential is checked with the provider when you submit. A valid one confirms the account and starts
+                the first sync; otherwise you stay on this form with your details preserved.
               </p>
             ) : null}
             <div>
               <IcButton type="submit" variant="human">
-                {isReplaceMode
-                  ? "Reconnect account and run sync"
-                  : (setup.credential_capture.submit_label ?? "Create connection and start first sync")}
+                {formContract.primaryActionLabel}
               </IcButton>
             </div>
           </form>
         )}
       </Section>
 
-      {isReplaceMode ? (
-        <Callout
-          className="mt-5"
-          description="Reconnect uses the submitted credential for this connection. It does not change collected records, schedule, or history."
-          surface="human"
-          title="This keeps the same connection"
-        />
-      ) : (
-        <Callout
-          className="mt-5"
-          description="Submit the form again for a second mailbox or account. Each submission creates a separate connection with its own stored credential."
-          surface="human"
-          title="Add another account without changing deployment settings"
-        >
-          <p className="pdpp-caption text-muted-foreground">
-            The deployment only needs an instance-level credential key provider. Account credentials are captured here
-            for one connection at a time.
-          </p>
-        </Callout>
-      )}
+      <ModeCallout isDraftRetryMode={isDraftRetryMode} isReplaceMode={isReplaceMode} />
     </RecordroomShellWithPalette>
   );
 }

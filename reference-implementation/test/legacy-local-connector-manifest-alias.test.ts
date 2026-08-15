@@ -29,7 +29,7 @@ function validManifest(connectorId: string) {
   return {
     connector_id: connectorId,
     display_name: "Claude Code",
-    manifest_uri: "https://registry.pdpp.org/connectors/claude-code",
+    manifest_uri: "https://registry.pdpp.dev/connectors/claude-code",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -99,3 +99,28 @@ test(
     );
   })
 );
+
+// google_takeout/apple_photos/google_messages previously had NO coverage here
+// (only claude_code was pinned) and their alias entries had silently dropped
+// out of auth.ts's own, independently-hand-maintained alias table — see
+// docs/inbox/report-connector-knowledge-clusters-bc.md. auth.ts now derives
+// its table from connector-key.ts's legacyLocalAliasMap(), and this pins that
+// every legacy alias it declares actually resolves through getConnectorManifest.
+for (const [legacyId, canonicalId] of [
+  ["google_takeout", "google-takeout"],
+  ["apple_photos", "apple-photos"],
+  ["google_messages", "google-messages"],
+] as const) {
+  test(
+    `legacy local connector id ${legacyId} reads through its canonical manifest (${canonicalId})`,
+    withTmpDb(async () => {
+      await registerConnector(validManifest(`https://registry.pdpp.dev/connectors/${canonicalId}`));
+      insertStaleLegacyManifest(legacyId);
+
+      const manifest = await getConnectorManifest(legacyId);
+
+      assert.ok(manifest, `canonical manifest exists for ${legacyId}`);
+      assert.equal(manifest.connector_id, canonicalId);
+    })
+  );
+}

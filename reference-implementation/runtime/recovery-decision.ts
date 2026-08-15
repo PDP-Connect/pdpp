@@ -31,7 +31,12 @@
  * two can never disagree about what "source pressure" means.
  */
 
-import { SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
+import {
+  CONNECTOR_DEFECT_REASONS as CONNECTOR_DEFECT_REASON_CODES,
+  INFORMATIONAL_RECOVERY_REASONS as INFORMATIONAL_RECOVERY_REASON_CODES,
+  OWNER_REQUIRED_REASONS as OWNER_REQUIRED_REASON_CODES,
+  PROVIDER_PRESSURE_REASONS as PROVIDER_PRESSURE_REASON_CODES,
+} from "./recovery-reason-codes.ts";
 
 // ─── Recovery classes (design.md D4) ─────────────────────────────────────────
 //
@@ -58,48 +63,6 @@ export type RecoveryClass =
   | "informational"
   /** Reason absent or unrecognized; treated as generic recoverable work. */
   | "unknown";
-
-/**
- * Canonical DETAIL_GAP reasons that mean provider pressure. This is the SAME
- * set the cooldown governor arms on (`scheduler-source-pressure-cooldown.ts`),
- * re-exported here so callers classify against one source of truth.
- */
-export const PROVIDER_PRESSURE_REASONS: ReadonlySet<string> = SOURCE_PRESSURE_GAP_REASONS;
-
-/**
- * Reasons the terminal-gap classifier stamps on a `terminal` row for a failure
- * that requires owner re-authentication (§10-C `auth_failure`). These route to
- * `owner_required`, never a retry.
- */
-export const OWNER_REQUIRED_REASONS: ReadonlySet<string> = new Set(["auth_failure"]);
-
-/**
- * Reasons the terminal-gap classifier stamps on a `terminal` row for a
- * deterministically unfillable resource (deleted / gone / permanently
- * forbidden). These route to `connector_defect` (system/connector issue), never
- * an owner retry.
- */
-export const CONNECTOR_DEFECT_REASONS: ReadonlySet<string> = new Set([
-  "gone",
-  "not_found",
-  "permanent_forbidden",
-  // A per-item poison item quarantined by the runtime (design.md D10;
-  // `runtime/recovery-quarantine.ts`). It has crossed its per-item no-progress
-  // budget and must never be presented as owner-drainable retry — it is a
-  // connector/system issue with captured evidence.
-  "quarantined",
-]);
-
-/**
- * Informational (non-recoverable, non-defect) reasons. Mirrors
- * `INFORMATIONAL_GAP_REASONS` in `runtime/index.js`; a gap with one of these is
- * an out-of-scope/disabled decision, not drainable retry work.
- */
-export const INFORMATIONAL_RECOVERY_REASONS: ReadonlySet<string> = new Set([
-  "not_available_in_mode",
-  "out_of_scope",
-  "user_disabled",
-]);
 
 /** Recovery classes that count as durable, drainable non-pressure recovery work. */
 export const NON_PRESSURE_RECOVERY_CLASSES: ReadonlySet<RecoveryClass> = new Set<RecoveryClass>([
@@ -214,16 +177,16 @@ export function classifyRecoveryReason(reason: string | null | undefined): Recov
   if (!normalized) {
     return "unknown";
   }
-  if (PROVIDER_PRESSURE_REASONS.has(normalized)) {
+  if (PROVIDER_PRESSURE_REASON_CODES.has(normalized)) {
     return "provider_pressure";
   }
-  if (OWNER_REQUIRED_REASONS.has(normalized)) {
+  if (OWNER_REQUIRED_REASON_CODES.has(normalized)) {
     return "owner_required";
   }
-  if (CONNECTOR_DEFECT_REASONS.has(normalized)) {
+  if (CONNECTOR_DEFECT_REASON_CODES.has(normalized)) {
     return "connector_defect";
   }
-  if (INFORMATIONAL_RECOVERY_REASONS.has(normalized)) {
+  if (INFORMATIONAL_RECOVERY_REASON_CODES.has(normalized)) {
     return "informational";
   }
   if (normalized === "run_cap_deferred") {

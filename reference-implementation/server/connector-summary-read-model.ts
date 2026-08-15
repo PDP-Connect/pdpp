@@ -36,16 +36,16 @@
 
 import { iterateDynamicSqlAcknowledged } from "../lib/db.ts";
 import type { EphemeralBrowserRuntimeProjection } from "../runtime/browser-surface/ephemeral-health-projection.ts";
+import { readConnectorInstanceIdPage as readInstanceIdPage } from "./connector-summary-evidence-bounded-reconciliation.ts";
 import type { RepairCandidateReason } from "./connector-summary-evidence-engine.ts";
 import {
   pruneOrphanedEvidenceComplete,
-  readAllInstanceIdsForPruning,
-  readInstanceIdPage,
   reconcileConnectorSummaryEvidence,
 } from "./connector-summary-evidence-engine.ts";
 import type { ConnectorSummaryReconcileObservation } from "./connector-summary-reconcile-observability.ts";
 import { getDb } from "./db.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
+import type { ConnectorMaintenanceCursorLease } from "./stores/connector-maintenance-cursor-store.ts";
 
 /** A raw database row (column-keyed) crossing the untyped storage boundary. */
 type Row = Record<string, unknown>;
@@ -54,12 +54,14 @@ type ConnectorSummaryReconcileObservationSink = (observation: ConnectorSummaryRe
 
 const GENERIC_REPAIR_CANDIDATE_REASONS: readonly RepairCandidateReason[] = [
   "dirty",
+  "state_stale",
   "record_checkpoint_mismatch",
   "identity_mismatch",
   "manifest_mismatch",
   "retained_bytes_changed_or_unavailable",
   "schedule_mismatch",
   "lifecycle_checkpoint_lag",
+  "source_revision_mismatch",
 ];
 
 /** Bounded maintenance never creates more than one ordinary page of cold evidence. */
@@ -184,11 +186,26 @@ export interface ConnectorListSummaryTerminalProjectionEnvelope {
 }
 
 const TERMINAL_PROJECTION_STATES = new Set(["current", "stale", "failed"]);
+export const TERMINAL_PROJECTION_PUBLICATION_RACE = "ConnectorListSummaryProjectionRace";
+const DECIMAL_SOURCE_REVISION_RE = /^\d+$/;
+const LEADING_ZEROES_SOURCE_REVISION_RE = /^0+(?=\d)/;
+const MAX_SOURCE_REVISION = "9223372036854775807";
 
 function terminalProjectionState(value: unknown): ConnectorListSummaryTerminalProjectionEnvelope["state"] {
   return typeof value === "string" && TERMINAL_PROJECTION_STATES.has(value)
     ? (value as ConnectorListSummaryTerminalProjectionEnvelope["state"])
     : "unobserved";
+}
+
+function knownSourceRevision(value: unknown): boolean {
+  return value !== null && value !== undefined && DECIMAL_SOURCE_REVISION_RE.test(String(value));
+}
+
+function sourceRevisionIsExhausted(value: unknown): boolean {
+  if (!knownSourceRevision(value)) {
+    return false;
+  }
+  return String(value).replace(LEADING_ZEROES_SOURCE_REVISION_RE, "") === MAX_SOURCE_REVISION;
 }
 
 function parseTerminalProjection(value: unknown): ConnectorListSummaryTerminalProjection | null {
@@ -221,6 +238,39 @@ function parseTerminalProjection(value: unknown): ConnectorListSummaryTerminalPr
 // multi-statement transactions): rebuild* and reconcileDirty*. Also untouched:
 // the *Sync SQLite helpers reconcile uses to stay inside one better-sqlite3
 // transaction, and readConnectionRecordRecencyEvidence (out of this tranche).
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalizes `markDirty`'s optional `sourceEventSeq` to a value both backends
+ * bind identically: a finite number, or SQL `NULL` meaning "leave the stored
+ * `source_event_seq` alone" (every caller's UPDATE wraps it in
+ * `COALESCE(?, source_event_seq)`).
+ *
+ * Both backends previously inlined their own guard and they did not agree.
+ * Postgres guarded `null` AND `undefined` — it had to, because `Number(undefined)`
+ * is `NaN` and Postgres's bigint column rejects it outright ("invalid input
+ * syntax for type bigint: 'NaN'"), throwing before the UPDATE ran and turning
+ * every omitted-`sourceEventSeq` dirty-mark into a silent no-op (swallowed by
+ * `markConnectorSummaryEvidenceDirty`'s best-effort catch). SQLite guarded only
+ * `null`, so it bound `NaN` — which better-sqlite3 coerces to SQL NULL, making
+ * `COALESCE` preserve the prior value. That accident is why the drift never
+ * produced a SQLite symptom, and why no test caught it.
+ *
+ * The genuine cross-backend divergence is a non-nullish UNPARSEABLE value
+ * (`"abc"`, `{}`): SQLite silently preserves the prior seq, Postgres throws and
+ * loses the whole dirty mark. Both now agree on the SQLite-shaped outcome —
+ * preserve, never throw — because a dirty marker is a best-effort latency hint
+ * and must never be the reason a connection fails to converge. Fail-open here
+ * is strictly safer than fail-closed: the reconcile sweep still repairs the row.
+ */
+export function normalizeSourceEventSeq(sourceEventSeq: unknown): number | null {
+  if (sourceEventSeq === null || sourceEventSeq === undefined) {
+    return null;
+  }
+  const parsed = Number(sourceEventSeq);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 // ---------------------------------------------------------------------------
 function createConnectorSummaryStore() {
   if (isPostgresStorageBackend()) {
@@ -256,6 +306,7 @@ function createConnectorSummaryStore() {
                   stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                   dirty, computed_at, source_event_seq, state, last_error,
                   canonical_evidence_revision,
+                  source_revision::text AS source_revision,
                   manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
                   list_summary_projection_json, list_summary_projection_state,
                   list_summary_projection_reason_code, list_summary_projection_computed_at
@@ -265,6 +316,37 @@ function createConnectorSummaryStore() {
           params
         );
         return result.rows;
+      },
+      async listPendingMaintenanceInstanceIds({
+        includeIncomplete,
+        limit,
+      }: {
+        includeIncomplete: boolean;
+        limit: number;
+      }) {
+        const dirty = await postgresQuery(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE dirty <> 0
+            ORDER BY connector_instance_id ASC
+            LIMIT $1`,
+          [limit]
+        );
+        if (dirty.rows.length > 0) {
+          return (dirty.rows as Row[]).map((row) => String(row.connector_instance_id));
+        }
+        if (!includeIncomplete) {
+          return [];
+        }
+        const incomplete = await postgresQuery(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE terminal_facts_reason_code = $1
+            ORDER BY connector_instance_id ASC
+            LIMIT $2`,
+          [REASON_CODES.TERMINAL_FOLD_INCOMPLETE, limit]
+        );
+        return (incomplete.rows as Row[]).map((row) => String(row.connector_instance_id));
       },
       async markAllDirty({ sanitized }: { sanitized?: string | null }) {
         await postgresQuery(
@@ -362,8 +444,7 @@ function createConnectorSummaryStore() {
         // best-effort catch, so every omitted-sourceEventSeq dirty-mark call
         // was a complete no-op against Postgres. Nullish (both `null` and
         // `undefined`) must bind SQL `NULL`, not `NaN`.
-        const boundSourceEventSeq =
-          sourceEventSeq === null || sourceEventSeq === undefined ? null : Number(sourceEventSeq);
+        const boundSourceEventSeq = normalizeSourceEventSeq(sourceEventSeq);
         await postgresQuery(
           `UPDATE connector_summary_evidence
               SET dirty = 1,
@@ -399,6 +480,7 @@ function createConnectorSummaryStore() {
                     stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                     dirty, computed_at, source_event_seq, state, last_error,
                     canonical_evidence_revision,
+                    CAST(source_revision AS TEXT) AS source_revision,
                     manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
                     list_summary_projection_json, list_summary_projection_state,
                     list_summary_projection_reason_code, list_summary_projection_computed_at`;
@@ -429,6 +511,33 @@ function createConnectorSummaryStore() {
           `SELECT ${columns} FROM connector_summary_evidence ORDER BY connector_instance_id ASC`
         ),
       ];
+    },
+    listPendingMaintenanceInstanceIds({ includeIncomplete, limit }: { includeIncomplete: boolean; limit: number }) {
+      const dirty = getDb()
+        .prepare(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE dirty <> 0
+            ORDER BY connector_instance_id ASC
+            LIMIT ?`
+        )
+        .all(limit) as Row[];
+      if (dirty.length > 0) {
+        return dirty.map((row) => String(row.connector_instance_id));
+      }
+      if (!includeIncomplete) {
+        return [];
+      }
+      const incomplete = getDb()
+        .prepare(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE terminal_facts_reason_code = ?
+            ORDER BY connector_instance_id ASC
+            LIMIT ?`
+        )
+        .all(REASON_CODES.TERMINAL_FOLD_INCOMPLETE, limit) as Row[];
+      return incomplete.map((row) => String(row.connector_instance_id));
     },
     markAllDirty({ sanitized }: { sanitized?: string | null }) {
       getDb()
@@ -526,7 +635,7 @@ function createConnectorSummaryStore() {
                   source_event_seq = COALESCE(?, source_event_seq)
             WHERE connector_instance_id = ?`
         )
-        .run(sanitized, sourceEventSeq === null ? null : Number(sourceEventSeq), connectorInstanceId);
+        .run(sanitized, normalizeSourceEventSeq(sourceEventSeq), connectorInstanceId);
     },
   };
 }
@@ -567,157 +676,35 @@ export async function getConnectorSummaryEvidence(connectorInstanceId: string | 
   return rows[0] ?? null;
 }
 
-/**
- * Return the stored terminal owner-LIST projection for exactly one
- * connection. This is a read-only evidence lookup: it never reconciles,
- * rebuilds, observes runtime state, or upgrades a stale payload to current.
- */
-export async function getConnectorListSummaryTerminalProjection(
-  connectorInstanceId: string | null | undefined
-): Promise<ConnectorListSummaryTerminalProjectionEnvelope> {
-  if (!connectorInstanceId) {
-    return unobservedTerminalProjectionEnvelope();
-  }
-  const batch = await getConnectorListSummaryTerminalProjectionBatch([connectorInstanceId]);
-  return batch.get(connectorInstanceId) ?? unobservedTerminalProjectionEnvelope();
-}
-
-/** Maximum connection ids accepted by one bounded terminal-projection batch read. */
-export const MAX_TERMINAL_PROJECTION_BATCH_IDS = 100;
-
-function unobservedTerminalProjectionEnvelope(): ConnectorListSummaryTerminalProjectionEnvelope {
-  return { computed_at: null, projection: null, reason_code: "summary_missing", state: "unobserved" };
-}
-
-function shapeTerminalProjectionRow(row: Row): ConnectorListSummaryTerminalProjectionEnvelope {
-  const state = terminalProjectionState(row.list_summary_projection_state);
-  const projection = state === "current" ? parseTerminalProjection(row.list_summary_projection_json) : null;
-  return {
-    computed_at:
-      typeof row.list_summary_projection_computed_at === "string" ? row.list_summary_projection_computed_at : null,
-    projection,
-    reason_code:
-      typeof row.list_summary_projection_reason_code === "string" ? row.list_summary_projection_reason_code : null,
-    state: projection === null && state === "current" ? "failed" : state,
-  };
-}
-
-/**
- * Batched, read-only lookup of the stored terminal owner-LIST projection for
- * every requested connection id, in ONE bounded evidence read (`IN (...)`/
- * `= ANY`, never one query per id — the N+1 shape this batch getter exists
- * to replace). Never reconciles, rebuilds, observes runtime state, or
- * upgrades a stale payload to current; a read that finds no row, or a
- * non-current row, returns that connection's honest `unobserved`/`stale`/
- * `failed` envelope rather than silently omitting it.
- *
- * Every requested id has exactly one entry in the returned map, including
- * ids with no durable evidence row at all (`unobserved`, `summary_missing`).
- * Duplicate ids collapse to one entry. Bounded to
- * `MAX_TERMINAL_PROJECTION_BATCH_IDS` requested ids per call.
- */
-export async function getConnectorListSummaryTerminalProjectionBatch(
-  connectorInstanceIds: readonly string[]
-): Promise<ReadonlyMap<string, ConnectorListSummaryTerminalProjectionEnvelope>> {
-  const uniqueIds = [...new Set(connectorInstanceIds.filter((id): id is string => Boolean(id)))];
-  if (uniqueIds.length === 0) {
-    return new Map();
-  }
-  if (uniqueIds.length > MAX_TERMINAL_PROJECTION_BATCH_IDS) {
-    throw new RangeError(
-      `terminal connector summary projection batch accepts at most ${MAX_TERMINAL_PROJECTION_BATCH_IDS} connection ids`
-    );
-  }
-  const store = createConnectorSummaryStore();
-  const rows = (await store.listEvidence({ connectorInstanceIds: uniqueIds })) as Row[];
-  const byId = new Map<string, Row>();
-  for (const row of rows) {
-    byId.set(String(row.connector_instance_id), row);
-  }
-  const result = new Map<string, ConnectorListSummaryTerminalProjectionEnvelope>();
-  for (const id of uniqueIds) {
-    const row = byId.get(id);
-    result.set(id, row ? shapeTerminalProjectionRow(row) : unobservedTerminalProjectionEnvelope());
-  }
-  return result;
-}
-
-/**
- * Publish a complete owner LIST item after a bounded maintenance reader has
- * assembled every durable axis and supplied its runtime observation. The
- * conditional update makes a concurrent canonical mutation win: a payload
- * may only become current while the canonical evidence envelope is current.
- */
-export async function publishConnectorListSummaryTerminalProjection(input: {
-  /** Captured with the bounded canonical evidence read used to derive `projection`. */
-  readonly canonicalEvidenceRevision: string;
-  readonly connectorInstanceId: string;
-  readonly computedAt: string;
-  readonly projection: ConnectorListSummaryTerminalProjection;
-}): Promise<boolean> {
-  const { canonicalEvidenceRevision, connectorInstanceId, computedAt, projection } = input;
-  const summaryConnectionId = projection.summary.connection_id ?? projection.summary.connector_instance_id;
-  if (summaryConnectionId !== connectorInstanceId) {
-    throw new Error("Terminal connector summary projection identity does not match its evidence row.");
-  }
-  const encoded = JSON.stringify(projection);
-  const currentEvidenceWhere = `dirty = 0
-    AND state = 'fresh'
-    AND record_snapshot_state = 'current'
-    AND terminal_facts_state = 'current'
-    AND manifest_declaration_state = 'current'`;
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `UPDATE connector_summary_evidence
-          SET list_summary_projection_json = $2::jsonb,
-              list_summary_projection_state = 'current',
-              list_summary_projection_reason_code = NULL,
-              list_summary_projection_computed_at = $3
-        WHERE connector_instance_id = $1
-          AND canonical_evidence_revision = $4
-          AND ${currentEvidenceWhere}`,
-      [connectorInstanceId, encoded, computedAt, canonicalEvidenceRevision]
-    );
-    return result.rowCount === 1;
-  }
-  const result = getDb()
-    .prepare(
-      `UPDATE connector_summary_evidence
-          SET list_summary_projection_json = ?,
-              list_summary_projection_state = 'current',
-              list_summary_projection_reason_code = NULL,
-              list_summary_projection_computed_at = ?
-        WHERE connector_instance_id = ?
-          AND canonical_evidence_revision = ?
-          AND ${currentEvidenceWhere}`
-    )
-    .run(encoded, computedAt, connectorInstanceId, canonicalEvidenceRevision);
-  return result.changes === 1;
-}
-
 async function invalidateAllConnectorListSummaryTerminalProjections(reasonCode: string): Promise<void> {
   if (isPostgresStorageBackend()) {
     await postgresQuery(
-      "UPDATE connector_summary_evidence SET canonical_evidence_revision = canonical_evidence_revision + 1"
-    );
-    await postgresQuery(
       `UPDATE connector_summary_evidence
-          SET list_summary_projection_state = 'stale',
-              list_summary_projection_reason_code = $1
-        WHERE list_summary_projection_state = 'current'`,
+          SET canonical_evidence_revision = canonical_evidence_revision + 1,
+              list_summary_projection_state = CASE
+                WHEN list_summary_projection_state = 'current' THEN 'stale'
+                ELSE list_summary_projection_state
+              END,
+              list_summary_projection_reason_code = CASE
+                WHEN list_summary_projection_state = 'current' THEN $1
+                ELSE list_summary_projection_reason_code
+              END`,
       [reasonCode]
     );
     return;
   }
   getDb()
-    .prepare("UPDATE connector_summary_evidence SET canonical_evidence_revision = canonical_evidence_revision + 1")
-    .run();
-  getDb()
     .prepare(
       `UPDATE connector_summary_evidence
-          SET list_summary_projection_state = 'stale',
-              list_summary_projection_reason_code = ?
-        WHERE list_summary_projection_state = 'current'`
+          SET canonical_evidence_revision = canonical_evidence_revision + 1,
+              list_summary_projection_state = CASE
+                WHEN list_summary_projection_state = 'current' THEN 'stale'
+                ELSE list_summary_projection_state
+              END,
+              list_summary_projection_reason_code = CASE
+                WHEN list_summary_projection_state = 'current' THEN ?
+                ELSE list_summary_projection_reason_code
+              END`
     )
     .run(reasonCode);
 }
@@ -778,6 +765,22 @@ function shapeComponentEnvelope(row: Row, state: unknown, reasonCode: unknown) {
 }
 
 function shapeListSummaryProjection(row: Row): ConnectorListSummaryTerminalProjectionEnvelope {
+  if (!knownSourceRevision(row.source_revision)) {
+    return {
+      computed_at: null,
+      projection: null,
+      reason_code: "canonical_source_revision_unknown",
+      state: "stale",
+    };
+  }
+  if (sourceRevisionIsExhausted(row.source_revision)) {
+    return {
+      computed_at: null,
+      projection: null,
+      reason_code: "canonical_source_revision_exhausted",
+      state: "stale",
+    };
+  }
   const state = terminalProjectionState(row.list_summary_projection_state);
   return {
     computed_at:
@@ -789,14 +792,29 @@ function shapeListSummaryProjection(row: Row): ConnectorListSummaryTerminalProje
   };
 }
 
+function shapeSourceRevision(row: Row): {
+  readonly dirty: boolean;
+  readonly source_revision: string | null;
+  readonly state: unknown;
+} {
+  const known = knownSourceRevision(row.source_revision);
+  const exhausted = sourceRevisionIsExhausted(row.source_revision);
+  return {
+    dirty: !known || exhausted || Number(row.dirty || 0) !== 0,
+    source_revision: known ? String(row.source_revision) : null,
+    state: !known || exhausted ? "stale" : row.state || "unknown",
+  };
+}
+
 export function shapeEvidenceRow(row: Row) {
   const retainedBytesState = String(row.retained_bytes_state || "unobserved");
+  const sourceRevision = shapeSourceRevision(row);
   return {
     canonical_evidence_revision: String(row.canonical_evidence_revision ?? "0"),
     computed_at: row.computed_at || null,
     connector_id: row.connector_id,
     connector_instance_id: row.connector_instance_id,
-    dirty: Number(row.dirty || 0) !== 0,
+    ...sourceRevision,
     display_name: row.display_name,
     last_error: row.last_error || null,
     last_record_updated_at: row.last_record_updated_at || null,
@@ -807,6 +825,12 @@ export function shapeEvidenceRow(row: Row) {
       row.manifest_declaration_reason_code
     ),
     manifest_generation: Number(row.manifest_generation ?? 0),
+    // The record-source checkpoint (`version_counter` as of the repair) —
+    // shaped here so the READ boundary can reach the same record-side
+    // observation proof `buildRepairedRow` used when it derived the row's
+    // `count_state`. Parsed defensively; a malformed column reads as no
+    // checkpoint at all rather than a fabricated observation.
+    record_checkpoint: parseEvidenceJson(row.record_checkpoint_json, null),
     record_snapshot: shapeComponentEnvelope(
       row,
       row.record_snapshot_state || "unobserved",
@@ -819,7 +843,6 @@ export function shapeEvidenceRow(row: Row) {
     schedule_checkpoint: row.schedule_checkpoint === undefined ? "unobserved" : String(row.schedule_checkpoint),
     source_event_seq: row.source_event_seq === null ? null : Number(row.source_event_seq),
     source_kind: row.source_kind,
-    state: row.state || "unknown",
     status: row.status,
     stream_count: Number(row.stream_count || 0),
     stream_facts_event_seq: row.stream_facts_event_seq === null ? null : Number(row.stream_facts_event_seq),
@@ -827,7 +850,7 @@ export function shapeEvidenceRow(row: Row) {
     stream_records: parseEvidenceJson(row.stream_records_json, []),
     terminal_facts: shapeTerminalFacts(row),
     total_records: Number(row.total_records || 0),
-    total_retained_bytes: Number(row.total_retained_bytes || 0),
+    total_retained_bytes: retainedBytesState === "current" ? Number(row.total_retained_bytes || 0) : null,
   };
 }
 
@@ -1308,7 +1331,15 @@ function createStreamFactsFoldStore() {
                   stream_facts_fold_version = $5,
                   terminal_facts_state = $6,
                   terminal_facts_reason_code = $7,
-                  canonical_evidence_revision = canonical_evidence_revision + 1
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = CASE
+                    WHEN list_summary_projection_state = 'current' THEN 'stale'
+                    ELSE list_summary_projection_state
+                  END,
+                  list_summary_projection_reason_code = CASE
+                    WHEN list_summary_projection_state = 'current' THEN 'canonical_evidence_changed'
+                    ELSE list_summary_projection_reason_code
+                  END
             WHERE connector_instance_id = $1
               AND stream_facts_event_seq IS NOT DISTINCT FROM $4
               AND stream_facts_fold_version IS NOT DISTINCT FROM $8`,
@@ -1388,7 +1419,15 @@ function createStreamFactsFoldStore() {
                   stream_facts_fold_version = ?,
                   terminal_facts_state = ?,
                   terminal_facts_reason_code = ?,
-                  canonical_evidence_revision = canonical_evidence_revision + 1
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = CASE
+                    WHEN list_summary_projection_state = 'current' THEN 'stale'
+                    ELSE list_summary_projection_state
+                  END,
+                  list_summary_projection_reason_code = CASE
+                    WHEN list_summary_projection_state = 'current' THEN 'canonical_evidence_changed'
+                    ELSE list_summary_projection_reason_code
+                  END
             WHERE connector_instance_id = ?
               AND stream_facts_event_seq IS ?
               AND stream_facts_fold_version IS ?`
@@ -1822,9 +1861,8 @@ export interface FoldStreamFactsResult {
  * fold-participation check OR terminal-event history (Sol P1.2: unrelated
  * connections' terminal event volume must not affect a scoped fold's cost or
  * the checkpoint a scoped participant advances to). `null` (the default)
- * preserves the exact prior complete behavior for every existing caller —
- * an unscoped fold's high-water mark is still the true global max, and its
- * batch reads still see every connection's terminal history.
+ * runs a complete pass as a sequence of instance-scoped folds, preserving
+ * complete coverage without a fleet-global terminal receipt.
  *
  * `options.maxDurationMs`/`options.maxEvents`, when provided, genuinely
  * bound the batch-drain loop itself (Sol fourth-verdict P1.2: "the fold
@@ -2037,10 +2075,78 @@ async function drainTerminalEventBatches({
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The complete-fold wrapper owns the instance-scoped budget and aggregate receipt contract.
 export async function foldConnectorSummaryStreamFacts(
   connectorInstanceIds: readonly string[] | null = null,
   options: { readonly deadline?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
 ): Promise<FoldStreamFactsResult> {
+  // Keep the terminal high-water receipt instance-scoped even for a complete
+  // maintenance pass. A fleet-wide MAX(event_seq) lets one busy connection
+  // make an unrelated connection claim that it folded history it never saw.
+  if (connectorInstanceIds === null) {
+    const rows = (await createConnectorSummaryStore().listEvidence({})) as Row[];
+    const aggregate = {
+      casRejectedInstanceIds: [] as string[],
+      eventsRead: 0,
+      folded: 0,
+      incomplete: false,
+      minimumCheckpointAfter: null as number | null,
+      minimumCheckpointBefore: null as number | null,
+      participants: 0,
+      refused: 0,
+      resumeAfterSeq: null as number | null,
+    };
+    const deadline = resolveCooperativeDeadline(options);
+    let remainingEvents = options.maxEvents;
+    for (const row of rows) {
+      if (deadline !== null && Date.now() >= deadline) {
+        aggregate.incomplete = true;
+        break;
+      }
+      const foldOptions = {
+        ...(deadline === null ? {} : { deadline }),
+        ...(remainingEvents === undefined ? {} : { maxEvents: remainingEvents }),
+      };
+      // biome-ignore lint/performance/noAwaitInLoops: Instance-scoped folds are intentionally sequential so one complete pass has a deterministic budget and receipt order.
+      const result = await foldConnectorSummaryStreamFacts([String(row.connector_instance_id)], foldOptions);
+      aggregate.casRejectedInstanceIds.push(...result.casRejectedInstanceIds);
+      aggregate.eventsRead += result.eventsRead;
+      aggregate.folded += result.folded;
+      aggregate.incomplete ||= result.incomplete;
+      aggregate.participants += result.participants;
+      aggregate.refused += result.refused;
+      if (result.minimumCheckpointBefore !== null) {
+        aggregate.minimumCheckpointBefore =
+          aggregate.minimumCheckpointBefore === null
+            ? result.minimumCheckpointBefore
+            : Math.min(aggregate.minimumCheckpointBefore, result.minimumCheckpointBefore);
+      }
+      if (result.minimumCheckpointAfter !== null) {
+        aggregate.minimumCheckpointAfter =
+          aggregate.minimumCheckpointAfter === null
+            ? result.minimumCheckpointAfter
+            : Math.min(aggregate.minimumCheckpointAfter, result.minimumCheckpointAfter);
+      }
+      if (result.resumeAfterSeq !== null) {
+        aggregate.resumeAfterSeq =
+          aggregate.resumeAfterSeq === null
+            ? result.resumeAfterSeq
+            : Math.min(aggregate.resumeAfterSeq, result.resumeAfterSeq);
+      }
+      if (remainingEvents !== undefined) {
+        remainingEvents = Math.max(0, remainingEvents - result.eventsRead);
+        if (remainingEvents === 0) {
+          aggregate.incomplete = true;
+          break;
+        }
+      }
+      if (result.incomplete) {
+        aggregate.incomplete = true;
+        break;
+      }
+    }
+    return aggregate;
+  }
   let result: FoldStreamFactsResult | null = null;
   for (let attempt = 0; attempt < STREAM_FACTS_CAS_REPLAY_ATTEMPTS; attempt += 1) {
     if (result !== null && typeof options.deadline === "number" && Date.now() >= options.deadline) {
@@ -2320,8 +2426,9 @@ async function writeParticipantStreamFacts(
  * fan-out AND its terminal-event high-water/batch reads to exactly that set
  * (Sol P1.2) — an unrelated connection's terminal-event volume no longer
  * affects a scoped fold's cost or the checkpoint a scoped participant
- * advances to. `null` (the default) preserves the exact prior complete
- * behavior.
+ * advances to. `null` (the default) runs a complete pass as a sequence of
+ * instance-scoped folds, preserving complete coverage without a fleet-global
+ * terminal receipt.
  *
  * `options.maxDurationMs`/`options.maxEvents`, when provided, thread
  * straight through to `foldConnectorSummaryStreamFacts`'s own budget (Sol
@@ -2514,7 +2621,11 @@ async function runBoundedObservationPhases(
   }
   const generic = await startRepair(GENERIC_REPAIR_CANDIDATE_REASONS, options.maxCandidates);
   const result = mergeReconcilePhaseResults(missing, generic);
-  maintenanceIncomplete ||= result.skipped > 0 || foldOutcome.incomplete || Date.now() >= deadline;
+  // A repair that started before the deadline may finish after it. The
+  // cooperative contract makes that unit finish cleanly; it is incomplete
+  // only when the deadline actually deferred remaining candidates, not merely
+  // because the completed final unit crossed the clock boundary.
+  maintenanceIncomplete ||= result.skipped > 0 || foldOutcome.incomplete;
   return { foldOutcome, incomplete: maintenanceIncomplete, repairDurationMs, result };
 }
 
@@ -2525,7 +2636,7 @@ async function runBoundedObservationPhases(
 /**
  * The one internal observation barrier (design.md "Central consumer and
  * cache boundary"): discover+repair every row the complete canonical
- * `connector_instances` set classifies as needing it (missing, dirty,
+ * `connector_instances` set classifies as needing it (missing, dirty, stale,
  * checkpoint-mismatched, manifest-mismatched, and retained-bytes-changed —
  * see `reconcileConnectorSummaryEvidence` in
  * `connector-summary-evidence-engine.ts`), then fold terminal-event deltas
@@ -2801,6 +2912,328 @@ export async function reconcileDirtyConnectorSummaryEvidence(
 // before the loop begins, and an unscoped fold can exceed it afterward").
 // ---------------------------------------------------------------------------
 
+/**
+ * One bounded page of prioritized maintenance work. Fresh canonical writes
+ * (`dirty <> 0`) always go first. Once that queue is empty, a bounded terminal
+ * replay that previously exhausted its event budget resumes immediately
+ * instead of waiting for the fleet cursor to wrap. Best-effort by
+ * construction: the cursor walk remains the correctness backstop.
+ */
+async function readPendingMaintenanceInstanceIdPage(
+  limit: number,
+  includeIncomplete: boolean
+): Promise<readonly string[]> {
+  try {
+    return await createConnectorSummaryStore().listPendingMaintenanceInstanceIds({ includeIncomplete, limit });
+  } catch {
+    return [];
+  }
+}
+
+function isExpectedProjectionRace(error: unknown): boolean {
+  return error instanceof Error && error.name === TERMINAL_PROJECTION_PUBLICATION_RACE;
+}
+
+/**
+ * The keyset cursor walk over the canonical `connector_instances` set — the
+ * sweep's correctness backstop, which eventually covers EVERY connection
+ * regardless of any dirty marker. Each page runs the same scoped
+ * discovery+fold+repair+prune barrier (`observeConnectorSummaryEvidence`) a
+ * scoped read-time consumer would, so the unit is bounded by `pageSize`, not
+ * by N. The deadline is checked BETWEEN pages so a page already starting
+ * always gets its full remaining-budget allotment.
+ */
+async function runCursorWalk(args: {
+  readonly cursor: string | null;
+  readonly deadline: number;
+  readonly foldEventCap: { maxEvents?: number };
+  readonly maxPages: number;
+  readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
+  readonly onPageConverged?: (
+    connectorInstanceIds: readonly string[],
+    maintenanceLease?: ConnectorMaintenanceCursorLease
+  ) => Promise<void>;
+  readonly pageSize: number;
+}): Promise<{
+  readonly anyFoldIncomplete: boolean;
+  readonly coveredCompleteSet: boolean;
+  readonly cursor: string | null;
+  readonly discovered: number;
+  readonly repaired: number;
+  readonly skipped: number;
+}> {
+  const { cursor: initialCursor, deadline, maxPages, pageSize } = args;
+  let cursor = initialCursor;
+  let discovered = 0;
+  let repaired = 0;
+  let skipped = 0;
+  let pages = 0;
+  let coveredCompleteSet = false;
+  let anyFoldIncomplete = false;
+
+  for (;;) {
+    // Strictly deadline-gated, including the first page: `maxDurationMs` is a
+    // genuine bound on TOTAL wall-clock work, so no page — the most expensive
+    // unit here (discovery + fold + repair over `pageSize` connections) — may
+    // BEGIN after expiry. The walk's guarantee that clean rows still converge
+    // comes from running BEFORE any acceleration under the round's one
+    // deadline (see `runBoundedSummaryEvidenceSweep`), never from starting late.
+    if (pages >= maxPages || sweepNow() >= deadline) {
+      break;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+    const pageIds = await readInstanceIdPage(cursor, pageSize);
+    testOnlySweepDiscoveryHook("walk_page_ids");
+    if (pageIds.length === 0) {
+      coveredCompleteSet = true;
+      break;
+    }
+    // The discovery read above is itself awaited work and can consume what
+    // remained of the budget. Re-check BEFORE the expensive unit: a page whose
+    // observe would begin after expiry must not begin at all, and must not
+    // count as a processed page. The cursor is deliberately left where it was,
+    // so the next round revisits exactly these connections rather than
+    // skipping past a page nothing ever repaired.
+    if (sweepNow() >= deadline) {
+      break;
+    }
+    pages += 1;
+    // The cursor position BEFORE this page — the resume point when this
+    // page's OWN fold is incomplete, so a follow-up call revisits exactly
+    // these connections rather than advancing past them.
+    const cursorBeforeCurrentPage = cursor;
+    const pageStartedAt = Date.now();
+    const pageResult = await observeConnectorSummaryEvidence(pageIds, {
+      deadline,
+      ...args.foldEventCap,
+    });
+    discovered += pageIds.length;
+    repaired += pageResult.reconciled;
+    skipped += pageResult.skipped;
+    emitScopedObservationUnit(pageResult, pageIds.length, pageStartedAt);
+    if (pageResult.incomplete) {
+      // Evidence folding and terminal projection publication are separate
+      // convergence axes. A page may have more terminal history to fold, yet
+      // already contain clean rows whose captured terminal facts are ready to
+      // publish. Give the bounded publisher that page before resuming the
+      // fold; otherwise one fold-heavy connection can indefinitely suppress
+      // publication for every unrelated stale-clean row on the page.
+      try {
+        await args.onPageConverged?.(pageIds, args.maintenanceLease);
+      } catch (error) {
+        if (!isExpectedProjectionRace(error)) {
+          throw error;
+        }
+      }
+      // This page's fold did not fully converge within its budget — the
+      // sweep as a whole is incomplete regardless of how many pages
+      // followed, and the resume point is BEFORE this page (not past it).
+      anyFoldIncomplete = true;
+      cursor = cursorBeforeCurrentPage;
+      break;
+    }
+    try {
+      await args.onPageConverged?.(pageIds, args.maintenanceLease);
+    } catch (error) {
+      if (!isExpectedProjectionRace(error)) {
+        throw error;
+      }
+      // The publisher's revision/lease CAS correctly rejected this page.
+      // Preserve the page as the durable resume point; the next bounded round
+      // will re-observe and republish it. Unexpected publication failures
+      // still escape and remain visible to the worker.
+      anyFoldIncomplete = true;
+      cursor = cursorBeforeCurrentPage;
+      break;
+    }
+    cursor = pageIds.at(-1) ?? cursor;
+    if (pageIds.length < pageSize) {
+      // Short page: this was genuinely the last page of the complete set.
+      coveredCompleteSet = true;
+      break;
+    }
+  }
+
+  return { anyFoldIncomplete, coveredCompleteSet, cursor, discovered, repaired, skipped };
+}
+
+/**
+ * Complete-set orphan pruning, run only when a sweep genuinely covered every
+ * page AND every fold converged.
+ *
+ * The sweep's own pages already scoped-pruned every id they discovered was
+ * gone. What per-page scoped pruning CANNOT catch: an evidence row whose
+ * `connector_instance_id` was NEVER discovered by any page at all —
+ * impossible if every page's ids came from the same live instance table,
+ * EXCEPT for evidence rows that are pure orphans (their `connector_instances`
+ * row is gone, so no page ever produced their id). A genuinely complete run
+ * is safe to complete-prune exactly like `reconcileConnectorSummaryEvidence(null)`
+ * does, using the same complete live-instance read and prune primitive.
+ */
+async function pruneCompleteSetOrphans(): Promise<number> {
+  return await pruneOrphanedEvidenceComplete();
+}
+
+/**
+ * Emits the reconcile observation for one scoped observation unit — a
+ * dirty-priority tranche or a cursor-walk page. Both run the identical barrier
+ * (`observeConnectorSummaryEvidence`) over a bounded id set, so both report
+ * the same shape; the sole difference is which ids the unit covered.
+ */
+function emitScopedObservationUnit(
+  result: Awaited<ReturnType<typeof observeConnectorSummaryEvidence>>,
+  scopeSize: number,
+  startedAt: number
+): void {
+  emitConnectorSummaryReconcileObservation({
+    candidateReasonCounts: result.candidateReasonCounts,
+    candidatesInspected: result.candidatesInspected,
+    durationMs: Date.now() - startedAt,
+    failed: result.failed,
+    failureClasses: result.failureClasses,
+    incomplete: result.incomplete,
+    repairDurationMs: result.repairDurationMs,
+    repaired: result.reconciled,
+    resumePending: result.resumeAfterSeq !== null,
+    scopeKind: "scoped",
+    scopeSize,
+    skipped: result.skipped,
+    terminalFoldEventsRead: result.terminalFoldEventsRead,
+    terminalFoldMinimumCheckpointAfter: result.terminalFoldMinimumCheckpointAfter,
+    terminalFoldMinimumCheckpointBefore: result.terminalFoldMinimumCheckpointBefore,
+    terminalFoldParticipants: result.terminalFoldParticipants,
+    terminalFoldZeroProgress: result.terminalFoldZeroProgress,
+  });
+}
+
+/**
+ * Services ONE bounded page of prioritized maintenance work through the SAME
+ * scoped discovery+fold+repair+prune barrier (`observeConnectorSummaryEvidence`)
+ * the walk's own pages use. Freshly dirty rows are never mixed with an older
+ * incomplete replay: the latter may consume the fold budget before a newer
+ * row's terminal event is reached. Incomplete replay is selected only when
+ * the dirty queue is empty.
+ *
+ * Runs AFTER the cursor walk, from whatever budget the walk left, under the
+ * round's one absolute deadline. That ordering is what makes the walk's turn
+ * structural: this tranche can never consume the round before the correctness
+ * backstop has had its chance. It is pure acceleration — it shortens the wait
+ * for a freshly-dirtied row from "whenever the cursor wraps" to "this round"
+ * whenever the round has time left, and is skipped entirely when it does not.
+ * Bounded by construction: at most `limit` connections.
+ *
+ * It deliberately does NOT de-duplicate against the page the walk just
+ * processed. An earlier revision read the walk's next page to skip overlapping
+ * ids, which made sense only while this tranche ran FIRST. With the walk
+ * running first that read is both obsolete and counterproductive: rows the
+ * walk genuinely repaired are no longer dirty, so they cannot be selected
+ * here anyway, while a row re-dirtied DURING the walk is precisely the row
+ * worth accelerating — and the skip would have suppressed it. Dropping the
+ * read removes one query and one post-await gate per round.
+ *
+ * The one awaited discovery read here is itself work that can consume what is
+ * left, so `deadline` is re-checked after it and immediately before the
+ * observe — a started unit may finish, but none may BEGIN late.
+ */
+async function runDirtyPriorityAcceleration(args: {
+  readonly deadline: number;
+  readonly includeIncomplete: boolean;
+  readonly limit: number;
+  readonly foldEventCap: { maxEvents?: number };
+  readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
+  readonly onPageConverged?: (
+    connectorInstanceIds: readonly string[],
+    maintenanceLease?: ConnectorMaintenanceCursorLease
+  ) => Promise<void>;
+}): Promise<{
+  readonly discovered: number;
+  readonly incomplete: boolean;
+  readonly repaired: number;
+  readonly skipped: number;
+}> {
+  const empty = { discovered: 0, incomplete: false, repaired: 0, skipped: 0 };
+  if (sweepNow() >= args.deadline) {
+    return empty;
+  }
+  const pendingIds = await readPendingMaintenanceInstanceIdPage(args.limit, args.includeIncomplete);
+  testOnlySweepDiscoveryHook("acceleration_dirty_ids");
+  if (pendingIds.length === 0) {
+    return empty;
+  }
+  // The discovery read above is itself work that can consume the budget, so
+  // the deadline is re-checked here — immediately before the expensive unit
+  // and never assumed to still hold from the entry check. Bailing costs
+  // nothing durable: the dirty markers stay set, so the next round selects
+  // exactly these ids again.
+  if (sweepNow() >= args.deadline) {
+    return empty;
+  }
+  const startedAt = Date.now();
+  const result = await observeConnectorSummaryEvidence(pendingIds, {
+    deadline: args.deadline,
+    ...args.foldEventCap,
+  });
+  emitScopedObservationUnit(result, pendingIds.length, startedAt);
+  try {
+    await args.onPageConverged?.(pendingIds, args.maintenanceLease);
+  } catch (error) {
+    if (!isExpectedProjectionRace(error)) {
+      throw error;
+    }
+    return {
+      discovered: pendingIds.length,
+      incomplete: true,
+      repaired: result.reconciled,
+      skipped: result.skipped,
+    };
+  }
+  return {
+    discovered: pendingIds.length,
+    incomplete: result.incomplete,
+    repaired: result.reconciled,
+    skipped: result.skipped,
+  };
+}
+
+/**
+ * Test-only deterministic seam fired immediately AFTER each awaited discovery
+ * read inside the sweep's two tranches, and a complete no-op in production
+ * (`__sweepDiscoveryHook` is never assigned outside a test).
+ *
+ * Exists so a test can prove the "no work unit BEGINS after expiry" contract
+ * without sleeps or wall-clock races: the hook advances an injected clock past
+ * the deadline at exactly the point a real slow discovery read would have
+ * consumed the budget, and the test then asserts that no observe/fold ran.
+ * `__testOnlySetSweepDiscoveryHook` is the only intended installer.
+ */
+let __sweepDiscoveryHook: ((point: "acceleration_dirty_ids" | "walk_page_ids") => void) | null = null;
+
+export function __testOnlySetSweepDiscoveryHook(
+  hook: ((point: "acceleration_dirty_ids" | "walk_page_ids") => void) | null
+): void {
+  __sweepDiscoveryHook = hook;
+}
+
+function testOnlySweepDiscoveryHook(point: "acceleration_dirty_ids" | "walk_page_ids"): void {
+  __sweepDiscoveryHook?.(point);
+}
+
+/**
+ * The sweep's clock, injectable for tests. Production always reads the real
+ * one; a test can substitute a controllable clock so deadline behavior is
+ * deterministic rather than a wall-clock race.
+ * `__testOnlySetSweepClock` is the only intended installer.
+ */
+let __sweepClock: (() => number) | null = null;
+
+export function __testOnlySetSweepClock(clock: (() => number) | null): void {
+  __sweepClock = clock;
+}
+
+function sweepNow(): number {
+  return __sweepClock ? __sweepClock() : Date.now();
+}
+
 export interface BoundedSweepResult {
   /** Total instances discovered+repaired+considered across every page processed this call. */
   readonly discovered: number;
@@ -2811,8 +3244,13 @@ export interface BoundedSweepResult {
    * converged (Sol fourth-verdict P1.2: "gate prunedComplete on both a
    * complete canonical connection census and complete folds") — the caller
    * should NOT treat this as a correctness gate (design.md "Startup is
-   * acceleration, not authority": the unbounded read-time barrier always
-   * covers whatever this sweep missed). `resumeAfterId`, when set, is the
+   * acceleration, not authority"). NOTE (2026-08-10): this used to read
+   * "the unbounded read-time barrier always covers whatever this sweep
+   * missed" — that barrier was removed from ordinary GET by the 2026-07-29
+   * terminal-gate revision, so the periodic sweep IS the only repair path
+   * now. What covers a missed page is the NEXT tick (resuming from
+   * `resumeAfterId`), plus the dirty-priority tranche for work that arrived
+   * since. `resumeAfterId`, when set, is the
    * exact cursor position to resume from on a follow-up call — for a
    * fold-incomplete page this is the id BEFORE that page (not past it), so
    * a follow-up call revisits the SAME still-incomplete page's connections
@@ -2871,109 +3309,180 @@ export interface BoundedSweepResult {
  * cold page has a one-page missing-evidence cap. `options.maxPages`
  * additionally caps the number of pages processed; `options.pageSize`
  * controls how many connections each page covers.
+ *
+ * `options.firstTranche` (2026-08-12) alternates which tranche gets the
+ * round's genuine first opportunity — the FULL, undivided `maxDurationMs`
+ * budget, before the other tranche runs at all. See the ordering comment
+ * inside this function for why a fixed walk-always-first order left a
+ * genuine, unbounded starvation hole, and why a soft time-slice (reserving
+ * part of the walk's deadline for acceleration) cannot structurally close
+ * it. Defaults to `"walk"`, reproducing the exact prior behavior for a
+ * caller that does not opt in; callers that want the closed invariant must
+ * alternate this value across calls (`connector-maintenance-sweep.ts` does).
  */
 export async function runBoundedSummaryEvidenceSweep(options: {
   readonly maxDurationMs: number;
+  readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
   readonly maxPages?: number;
+  readonly onPageConverged?: (
+    connectorInstanceIds: readonly string[],
+    maintenanceLease?: ConnectorMaintenanceCursorLease
+  ) => Promise<void>;
   readonly pageSize?: number;
   readonly afterId?: string | null;
   readonly maxEventsPerFold?: number;
+  readonly firstTranche?: "walk" | "acceleration";
 }): Promise<BoundedSweepResult> {
-  const deadline = Date.now() + options.maxDurationMs;
+  const deadline = sweepNow() + options.maxDurationMs;
   const pageSize = options.pageSize ?? 25;
   const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
 
   let discovered = 0;
   let repaired = 0;
   let skipped = 0;
-  let cursor = options.afterId ?? null;
-  // The cursor position BEFORE the page currently being processed — used
-  // as the resume point when that page's OWN fold is incomplete, so a
-  // follow-up call revisits this exact page's connections rather than
-  // advancing past them (the connection-page cursor alone cannot express
-  // "this page started but its fold did not finish").
-  let cursorBeforeCurrentPage = cursor;
-  let pages = 0;
-  let coveredCompleteSet = false;
-  let anyFoldIncomplete = false;
 
-  for (;;) {
-    if (Date.now() >= deadline || pages >= maxPages) {
-      break;
-    }
-    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-    const pageIds = await readInstanceIdPage(cursor, pageSize);
-    if (pageIds.length === 0) {
-      coveredCompleteSet = true;
-      break;
-    }
-    pages += 1;
-    cursorBeforeCurrentPage = cursor;
-    // Full discovery + fold + repair + scoped-prune for exactly this page —
-    // the same barrier a scoped read-time consumer runs, so the whole unit
-    // is bounded by pageSize, not by N. The page receives the sweep's one
-    // absolute cooperative deadline; it never fabricates another duration.
-    const pageStartedAt = Date.now();
-    const pageResult = await observeConnectorSummaryEvidence(pageIds, {
+  // Maintenance-priority acceleration (2026-08-10, extended 2026-08-13).
+  // The cursor walk is the
+  // correctness backstop — it eventually covers every connection — but it is
+  // ordered by `connector_instance_id`, NOT by when work arrived, so a
+  // connection invalidated a moment ago waits for the cursor to wrap the whole
+  // fleet: `ceil(N/pageSize)` ticks, entirely independent of when its run
+  // completed. That is the live UAT defect: write invalidation set `dirty = 1`
+  // correctly and nothing ever CONSUMED it (`dirty` is read only by
+  // `classifyCandidate`, to classify an id the walk already selected — never
+  // to select one), so a completed run's facts stayed unreadable on the
+  // owner's normal list/detail read.
+  //
+  // One bounded bite of prioritized work is serviced each round, through the SAME
+  // scoped discovery+fold+repair+prune barrier the walk's own pages use — no
+  // new engine, no polling, no read-path write. It is a LATENCY hint on the
+  // same contract as every other dirty marker here, never a correctness gate.
+  // Once dirty work clears, `terminal_fold_incomplete` rows stay in this
+  // acceleration path until their durable replay checkpoint reaches current;
+  // without that continuation, the first bounded pass cleared `dirty` and
+  // silently demoted the remaining replay to the fleet walk.
+  // Threaded identically into both tranches; resolved once so the two call
+  // sites cannot drift.
+  const foldEventCap: { maxEvents?: number } =
+    typeof options.maxEventsPerFold === "number" ? { maxEvents: options.maxEventsPerFold } : {};
+
+  // ORDER: alternating first opportunity, both tranches under the ONE
+  // absolute `deadline`.
+  //
+  // With cooperative, non-preemptible units, a "reserve" computed as a
+  // shorter sub-deadline for one tranche does NOT structurally guarantee the
+  // other tranche any time: an individual observe/fold/repair unit only
+  // checks its deadline BETWEEN internal steps (never mid-step — that is the
+  // whole cooperative-budget contract elsewhere in this file), so a single
+  // slow unit inside the "capped" tranche can already overshoot past its own
+  // shortened sub-deadline before the next check ever fires, consuming into
+  // — or past — the time meant to be reserved for the other tranche. A
+  // shorter deadline is therefore a probabilistic time-slice, not a
+  // guarantee, and encoding a fixed number of reserved milliseconds as a
+  // correctness property would be exactly the kind of unproven margin this
+  // codebase's cooperative-deadline design otherwise refuses to rely on
+  // (2026-08-12 correction — an earlier revision of this comment claimed a
+  // `minAccelerationReserveMs` sub-deadline closed this gap; it did not).
+  //
+  // What DOES structurally bound worst-case starvation is alternating which
+  // tranche receives first opportunity — the round's FULL, undivided
+  // `maxDurationMs`, before the other tranche is even attempted:
+  //
+  //   - FIRST OPPORTUNITY, every round, for WHICHEVER tranche goes first.
+  //     The first tranche is offered the round's complete budget before the
+  //     second tranche can touch it — the same structural guarantee the
+  //     walk-always-first design gave the walk, now available to either
+  //     tranche on alternating rounds.
+  //   - HARD 2-ROUND STARVATION BOUND. If round N's first tranche overshoots
+  //     and consumes the entire round (leaving the second tranche zero
+  //     time — the exact failure mode a fixed walk-first order could not
+  //     avoid), round N+1 gives the OTHER tranche first opportunity instead.
+  //     A tranche can therefore be denied first opportunity for at most one
+  //     consecutive round, regardless of how badly any single unit inside
+  //     the other tranche overshoots. This is the caller's structural
+  //     contract to uphold (see `firstTranche`'s doc above) — this function
+  //     only honors whichever value it is given each call; the CALLER must
+  //     alternate the value across rounds for the bound to hold across
+  //     rounds, which `connector-maintenance-sweep.ts` does.
+  //   - DURABLE RESUME. A round that makes no progress on the walk leaves
+  //     its cursor exactly where it was, so nothing is skipped and the next
+  //     tick that walks retries the same page.
+  //   - EVENTUAL CONVERGENCE under repeated normally-budgeted ticks, given
+  //     folds that are finite and progressing.
+  //
+  // Neither tranche is starved of CORRECTNESS by losing a round's first
+  // opportunity: a walk round with no progress leaves its cursor unmoved
+  // (never lost), and an acceleration round with no turn leaves the dirty
+  // marker set (never lost) — both converge via the walk regardless, exactly
+  // as before. What alternation closes is the LATENCY bound: without it, a
+  // sufficiently fold-heavy page could make acceleration's "eventually" mean
+  // "not within this page's entire multi-round convergence window," which is
+  // unbounded in the general case and is exactly the live UAT defect.
+  const walkFirst = (options.firstTranche ?? "walk") === "walk";
+
+  async function runWalkTranche() {
+    // Whichever tranche runs SECOND uses `sweepNow()` — whatever the round's
+    // clock reads after the first tranche's own await — as ITS effective
+    // starting point, but both tranches are still handed the SAME absolute
+    // `deadline`: the second tranche gets "whatever remains," the first
+    // tranche gets the round's complete, undivided allotment.
+    const walk = await runCursorWalk({
+      cursor: options.afterId ?? null,
       deadline,
-      ...(typeof options.maxEventsPerFold === "number" ? { maxEvents: options.maxEventsPerFold } : {}),
+      foldEventCap,
+      maxPages,
+      ...(options.maintenanceLease ? { maintenanceLease: options.maintenanceLease } : {}),
+      ...(options.onPageConverged ? { onPageConverged: options.onPageConverged } : {}),
+      pageSize,
     });
-    discovered += pageIds.length;
-    repaired += pageResult.reconciled;
-    skipped += pageResult.skipped;
-    emitConnectorSummaryReconcileObservation({
-      candidateReasonCounts: pageResult.candidateReasonCounts,
-      candidatesInspected: pageResult.candidatesInspected,
-      durationMs: Date.now() - pageStartedAt,
-      failed: pageResult.failed,
-      failureClasses: pageResult.failureClasses,
-      incomplete: pageResult.incomplete,
-      repairDurationMs: pageResult.repairDurationMs,
-      repaired: pageResult.reconciled,
-      resumePending: pageResult.resumeAfterSeq !== null,
-      scopeKind: "scoped",
-      scopeSize: pageIds.length,
-      skipped: pageResult.skipped,
-      terminalFoldEventsRead: pageResult.terminalFoldEventsRead,
-      terminalFoldMinimumCheckpointAfter: pageResult.terminalFoldMinimumCheckpointAfter,
-      terminalFoldMinimumCheckpointBefore: pageResult.terminalFoldMinimumCheckpointBefore,
-      terminalFoldParticipants: pageResult.terminalFoldParticipants,
-      terminalFoldZeroProgress: pageResult.terminalFoldZeroProgress,
-    });
-    if (pageResult.incomplete) {
-      // This page's fold did not fully converge within its budget — the
-      // sweep as a whole is incomplete regardless of how many pages
-      // followed, and the resume point is BEFORE this page (not past it),
-      // so a follow-up call revisits exactly the connections that did not
-      // finish rather than skipping them.
-      anyFoldIncomplete = true;
-      cursor = cursorBeforeCurrentPage;
-      break;
-    }
-    cursor = pageIds.at(-1) ?? cursor;
-    if (pageIds.length < pageSize) {
-      // Short page: this was genuinely the last page of the complete set.
-      coveredCompleteSet = true;
-      break;
-    }
+    discovered += walk.discovered;
+    repaired += walk.repaired;
+    skipped += walk.skipped;
+    return walk;
   }
 
-  let prunedComplete = false;
-  if (coveredCompleteSet && !anyFoldIncomplete) {
-    // The sweep's own pages already scoped-pruned every id they discovered
-    // was gone. What per-page scoped pruning CANNOT catch: an evidence row
-    // whose connector_instance_id was NEVER discovered by any page at all —
-    // impossible if every page's ids came from the same live instance
-    // table, EXCEPT for evidence rows that are pure orphans (their
-    // connector_instances row is gone, so no page ever produced their id).
-    // A genuinely complete run (every page covered, none skipped, every
-    // fold genuinely converged) is safe to complete-prune exactly like
-    // `reconcileConnectorSummaryEvidence(null)` does, using the same
-    // complete live-instance read and prune primitive.
-    const liveInstanceRows = await readAllInstanceIdsForPruning();
-    const dropped = await pruneOrphanedEvidenceComplete(liveInstanceRows);
-    repaired += dropped;
-    prunedComplete = true;
+  async function runAccelerationTranche() {
+    const acceleration =
+      sweepNow() < deadline
+        ? await runDirtyPriorityAcceleration({
+            deadline,
+            foldEventCap,
+            // Only the scheduler opts into alternating tranches. A direct
+            // sweep keeps its historical one-fold event cap; otherwise the
+            // walk and acceleration tranches can drain the same incomplete
+            // row twice in one call.
+            includeIncomplete: options.firstTranche !== undefined,
+            limit: pageSize,
+            ...(options.maintenanceLease ? { maintenanceLease: options.maintenanceLease } : {}),
+            ...(options.onPageConverged ? { onPageConverged: options.onPageConverged } : {}),
+          })
+        : { discovered: 0, incomplete: false, repaired: 0, skipped: 0 };
+    discovered += acceleration.discovered;
+    repaired += acceleration.repaired;
+    skipped += acceleration.skipped;
+    return acceleration;
+  }
+
+  let walk: Awaited<ReturnType<typeof runWalkTranche>>;
+  let acceleration: Awaited<ReturnType<typeof runAccelerationTranche>>;
+  if (walkFirst) {
+    walk = await runWalkTranche();
+    acceleration = await runAccelerationTranche();
+  } else {
+    acceleration = await runAccelerationTranche();
+    walk = await runWalkTranche();
+  }
+
+  const { coveredCompleteSet, cursor } = walk;
+  // A tranche whose own fold did not converge within budget makes the sweep as
+  // a whole incomplete, exactly like an incomplete walk page — it must not
+  // license complete-set pruning, which requires every fold to have genuinely
+  // converged.
+  const anyFoldIncomplete = acceleration.incomplete || walk.anyFoldIncomplete;
+
+  const prunedComplete = coveredCompleteSet && !anyFoldIncomplete;
+  if (prunedComplete) {
+    repaired += await pruneCompleteSetOrphans();
   }
 
   const incomplete = !coveredCompleteSet || anyFoldIncomplete;

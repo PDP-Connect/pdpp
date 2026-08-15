@@ -34,6 +34,7 @@ function staticSecretManifest(connectorId: string, credentialKind = "api_key"): 
         credential_capture: {
           fields: [
             {
+              env: ["TEST_PROVIDER_SECRET"],
               label: "Provider secret",
               name: "secret",
               required: true,
@@ -160,21 +161,59 @@ test("setup planner keeps browser-bound connectors proof-gated before live proof
   assert.equal(chase.enrollmentKey, "chase");
 });
 
-test("setup planner keeps unproven static-secret connectors proof-gated", () => {
-  // 'mailbox' is synthetic and absent from STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS.
+test("setup planner marks unproven static-secret connectors with a real credential_capture as experimental, not hidden", () => {
+  // 'mailbox' is synthetic and absent from STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS,
+  // but its manifest declares a real credential_capture block — the same shape
+  // Steam/Jellyfin/Apple Contacts declare — so the generic capture form is
+  // reachable today. This must surface as an explicit opt-in, not "supported"
+  // and not "not available here".
   const plan = buildConnectionSetupPlan({
     connectorKey: "mailbox",
     manifest: staticSecretManifest("mailbox", "app_password"),
   });
   assert.equal(plan.connectorModality, "api_network");
   assert.equal(plan.setupModality, "static_secret");
-  assert.equal(plan.supportState, "proof_gated");
-  assert.equal(plan.catalogDisposition, "static_secret_connect");
+  assert.equal(plan.supportState, "experimental");
+  assert.equal(plan.catalogDisposition, "static_secret_experimental");
   assert.equal(plan.nextStepKind, "capture_static_secret");
-  assert.equal(plan.ownerAgentIntent.status, "proof_gated");
+  assert.equal(plan.ownerAgentIntent.status, "experimental");
+  assert.equal(plan.ownerAgentIntent.method, "POST");
   assert.equal(plan.ownerAgentIntent.nextStepKind, "capture_static_secret");
   assert.equal(plan.proofGate, "static_secret_live_proof_missing");
   assert.equal(plan.runbookPath, null);
+});
+
+test("setup planner keeps static-secret connectors proof-gated (hidden) when no credential_capture is declared", () => {
+  // A connector manifest can declare setup.modality: "static_secret" without a
+  // usable credential_capture block (e.g. missing a secret field). This must
+  // stay hidden, not experimental — experimental requires a real, submittable
+  // form, matching GroupMe's manual_action (no credential_capture) staying
+  // unsupported rather than silently promoted.
+  const plan = buildConnectionSetupPlan({
+    connectorKey: "no-capture-declared",
+    manifest: manifest(
+      "no-capture-declared",
+      { network: { required: true } },
+      { setup: { modality: "static_secret" } }
+    ),
+  });
+  assert.equal(plan.setupModality, "unsupported");
+  assert.equal(plan.supportState, "unsupported");
+  assert.equal(plan.catalogDisposition, "api_network_unsupported");
+});
+
+test("GroupMe-shaped manual_action connector with no credential_capture stays unsupported, never experimental", () => {
+  // Regression guard for the actual GroupMe manifest shape: setup.modality is
+  // "manual_action" (unrecognized) with no credential_capture block, so it
+  // must fall through to unsupported and never reach the experimental branch.
+  const plan = buildConnectionSetupPlan({
+    connectorKey: "groupme",
+    manifest: manifest("groupme", { network: { required: true } }, { setup: { modality: "manual_action" } }),
+  });
+  assert.equal(plan.setupModality, "unsupported");
+  assert.equal(plan.supportState, "unsupported");
+  assert.equal(plan.catalogDisposition, "api_network_unsupported");
+  assert.notEqual(plan.catalogDisposition, "static_secret_experimental");
 });
 
 test("setup planner marks live-proven static-secret connectors as supported", () => {
@@ -202,6 +241,24 @@ test("setup planner marks live-proven static-secret connectors as supported", ()
     assert.equal(plan.proofGate, null, `${connectorKey}: proofGate`);
     assert.equal(plan.runbookPath, null, `${connectorKey}: runbookPath`);
   }
+});
+
+test("YNAB static-secret setup supports owner-session capture route", () => {
+  // YNAB regression: static-secret capture form was unreachable from the
+  // catalog picker when YNAB was not in the live-proven roster. Verify the fix.
+  const plan = buildConnectionSetupPlan({
+    connectorKey: "ynab",
+    manifest: staticSecretManifest("ynab", "personal_access_token"),
+  });
+  assert.equal(plan.connectorModality, "api_network");
+  assert.equal(plan.setupModality, "static_secret");
+  assert.equal(plan.supportState, "supported");
+  assert.equal(plan.catalogDisposition, "static_secret_connect");
+  assert.equal(plan.nextStepKind, "capture_static_secret");
+  assert.equal(plan.ownerAgentIntent.status, "supported");
+  assert.equal(plan.ownerAgentIntent.method, "POST");
+  assert.equal(plan.proofGate, null);
+  assert.equal(plan.validationMode, "first_sync");
 });
 
 test("setup planner treats hybrid filesystem static-secret connectors as credential capture setup", () => {
@@ -277,9 +334,15 @@ test("setup planner distinguishes provider app readiness from owner authorizatio
   // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
   assert.match(blocked.ownerAgentIntent.reason, /provider application/i);
 
+  // Readiness follows the manifest's declared settings against the observed
+  // deployment, so a ready deployment is described by supplying them.
   const readyButUnproven = buildConnectionSetupPlan({
     configuredProviderAuthConnectorKeys: ["fitness-oauth"],
     connectorKey: "fitness-oauth",
+    deploymentEnv: {
+      FITNESS_OAUTH_CLIENT_ID: "test-client-id",
+      FITNESS_OAUTH_CLIENT_SECRET: "test-client-secret",
+    },
     manifest: providerManifest,
   });
   assert.equal(readyButUnproven.deploymentReadiness.state, "ready");
@@ -299,7 +362,7 @@ test("setup planner classifies Google Maps Data Portability as deployment-blocke
   ).default;
   const plan = buildConnectionSetupPlan({
     connectorKey: "google-maps-data-portability",
-    manifest: googleMapsManifest,
+    manifest: googleMapsManifest as unknown as ConnectorManifestLike,
   });
 
   assert.equal(plan.connectorModality, "api_network");
@@ -359,6 +422,153 @@ test("setup planner returns typed unknown for missing manifests", () => {
   assert.equal(plan.supportState, "unsupported");
   assert.equal(plan.catalogDisposition, "unknown_unsupported");
   assert.equal(plan.ownerAgentIntent.status, "unsupported");
+});
+
+const EXPERIMENTAL_WAVE_0807_MANIFEST_FIXTURES = ["steam", "jellyfin", "apple_contacts"] as const;
+
+test("wave-0807 static-secret connectors (Steam, Jellyfin, Apple Contacts) surface as experimental opt-in, not hidden", async () => {
+  for (const connectorId of EXPERIMENTAL_WAVE_0807_MANIFEST_FIXTURES) {
+    const shippedManifest =
+      // biome-ignore lint/performance/noAwaitInLoops: sequential fixture loads over a fixed short list read clearer than Promise.all here.
+      (await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } }))
+        .default;
+    const plan = buildConnectionSetupPlan({ connectorKey: connectorId, manifest: shippedManifest });
+    assert.equal(plan.setupModality, "static_secret", `${connectorId}: setupModality`);
+    assert.equal(plan.supportState, "experimental", `${connectorId}: supportState`);
+    assert.equal(plan.catalogDisposition, "static_secret_experimental", `${connectorId}: catalogDisposition`);
+    assert.equal(plan.ownerAgentIntent.status, "experimental", `${connectorId}: ownerAgentIntent.status`);
+    assert.equal(plan.ownerAgentIntent.method, "POST", `${connectorId}: ownerAgentIntent.method — form is reachable`);
+    assert.notEqual(plan.supportState, "proof_gated", `${connectorId}: must not silently hide a real setup path`);
+  }
+});
+
+test("iMessage is a supported local_collector_enroll connector, not proof-gated", async () => {
+  // iMessage reads chat.db via node:sqlite (no native module), so it ships in
+  // the published @pdpp/local-collector bundle like Claude Code/Codex and is
+  // registered in SUPPORTED_LOCAL_COLLECTOR_CONNECTORS — the enroll path
+  // must reflect that, not the older filesystem-shaped-but-unproven state.
+  const connectorId = "imessage";
+  const shippedManifest = (
+    await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } })
+  ).default;
+  const plan = buildConnectionSetupPlan({ connectorKey: connectorId, manifest: shippedManifest });
+  assert.equal(plan.connectorModality, "local_collector", `${connectorId}: connectorModality`);
+  assert.equal(plan.catalogDisposition, "local_collector_enroll", `${connectorId}: catalogDisposition`);
+  assert.equal(plan.nextStepKind, "enroll_local_collector", `${connectorId}: nextStepKind`);
+  assert.equal(plan.supportState, "supported", `${connectorId}: supportState`);
+  assert.equal(plan.proofGate, null, `${connectorId}: proofGate`);
+});
+
+test("google_takeout's committed manifest classifies as local_collector_enroll (bundled into @pdpp/local-collector)", async () => {
+  // Google Takeout reads an already-extracted GOOGLE_TAKEOUT_DIR from the
+  // local filesystem it runs on — exactly the local-collector shape, not a
+  // browser-upload or provider-API connector. It is now bundled into
+  // @pdpp/local-collector (SUPPORTED_LOCAL_COLLECTOR_CONNECTORS), so it must
+  // classify as the proven, actionable disposition, not the unproven
+  // `local_collector_unproven` disposition a filesystem-shaped connector
+  // gets before it ships in that bundle (see the synthetic-manifest test
+  // above asserting that disposition directly).
+  const connectorId = "google_takeout";
+  const shippedManifest = (
+    await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } })
+  ).default;
+  const plan = buildConnectionSetupPlan({ connectorKey: "google-takeout", manifest: shippedManifest });
+  assert.equal(plan.connectorModality, "local_collector");
+  assert.equal(plan.catalogDisposition, "local_collector_enroll");
+  assert.equal(plan.supportState, "supported");
+  assert.notEqual(plan.catalogDisposition, "local_collector_unproven");
+});
+
+test("Apple Photos and Google Messages are supported local_collector_enroll connectors, not proof-gated", async () => {
+  // Both now ship in the published @pdpp/local-collector bundle
+  // (LOCAL_COLLECTOR_DEFINITIONS + SUPPORTED_LOCAL_COLLECTOR_CONNECTORS +
+  // tsconfig.build.json packaging), so Add Source must surface the guided
+  // enroll path, not the proof-gated "classified but not advertised" state.
+  // Real device/account proof (a macOS Photos.app export; a gmcli-paired
+  // Android device) remains separately unverified — this test only asserts
+  // the SETUP PATH is reachable, not that live collection has been proven.
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ["apple_photos", "apple-photos"],
+    ["google_messages", "google-messages"],
+  ];
+  for (const [connectorId, connectorKey] of cases) {
+    const shippedManifest =
+      // biome-ignore lint/performance/noAwaitInLoops: sequential fixture loads over a fixed short list read clearer than Promise.all here.
+      (await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } }))
+        .default;
+    const plan = buildConnectionSetupPlan({ connectorKey, manifest: shippedManifest });
+    assert.equal(plan.connectorModality, "local_collector", `${connectorId}: connectorModality`);
+    assert.equal(plan.catalogDisposition, "local_collector_enroll", `${connectorId}: catalogDisposition`);
+    assert.equal(plan.nextStepKind, "enroll_local_collector", `${connectorId}: nextStepKind`);
+    assert.equal(plan.supportState, "supported", `${connectorId}: supportState`);
+    assert.equal(plan.proofGate, null, `${connectorId}: proofGate`);
+  }
+});
+
+test("wave-0807 GroupMe manifest is a static-secret experimental connector, not silently promoted to live-proven", async () => {
+  // GroupMe's manifest now declares setup.modality: "static_secret" with a
+  // real credential_capture block (access-token field), so it is eligible
+  // for the experimental static-secret path — a deliberate change from the
+  // earlier manual_action/no-credential_capture shape this test used to
+  // assert against. Counterweight: GroupMe is not (and must not silently
+  // become) a member of STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS, so it must
+  // land on the unproven "experimental" branch, never the fully-supported
+  // "static_secret_connect"/supported branch that live-proven connectors get.
+  const groupmeManifest = (
+    await import("../../packages/polyfill-connectors/manifests/groupme.json", { with: { type: "json" } })
+  ).default;
+  assert.equal(
+    STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS.includes("groupme" as never),
+    false,
+    "GroupMe must not be added to the live-proven roster without a real dated live env-free run"
+  );
+  const plan = buildConnectionSetupPlan({ connectorKey: "groupme", manifest: groupmeManifest });
+  assert.equal(plan.setupModality, "static_secret");
+  assert.equal(plan.supportState, "experimental");
+  assert.equal(plan.catalogDisposition, "static_secret_experimental");
+  assert.equal(plan.proofGate, "static_secret_live_proof_missing");
+  assert.notEqual(plan.catalogDisposition, "static_secret_connect");
+  assert.notEqual(plan.supportState, "unsupported");
+});
+
+test("wave-0807 Google Calendar/Contacts keep the deployment-app vs owner-account split untouched", async () => {
+  for (const connectorId of ["google_calendar", "google_contacts"]) {
+    const shippedManifest =
+      // biome-ignore lint/performance/noAwaitInLoops: sequential fixture loads over a fixed short list read clearer than Promise.all here.
+      (await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } }))
+        .default;
+    // Both halves state the deployment explicitly: readiness is measured
+    // against the manifest's declared settings, so an empty environment is
+    // what "no deployment config" means and the assertion cannot be flipped
+    // by whatever the host machine happens to export.
+    const blocked = buildConnectionSetupPlan({
+      connectorKey: connectorId,
+      deploymentEnv: {},
+      manifest: shippedManifest,
+    });
+    assert.equal(blocked.setupModality, "provider_authorization", `${connectorId}: setupModality`);
+    assert.equal(
+      blocked.supportState,
+      "needs_deployment_config",
+      `${connectorId}: supportState without deployment config`
+    );
+    assert.equal(blocked.catalogDisposition, "provider_auth_deployment_blocked", `${connectorId}: catalogDisposition`);
+
+    const configured = buildConnectionSetupPlan({
+      configuredProviderAuthConnectorKeys: [connectorId],
+      connectorKey: connectorId,
+      deploymentEnv: {
+        GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
+        GOOGLE_OAUTH_CLIENT_SECRET: "test-client-secret",
+      },
+      manifest: shippedManifest,
+    });
+    assert.equal(configured.deploymentReadiness.state, "ready", `${connectorId}: deployment app configured`);
+    // Per-owner authorization is still unproven independent of deployment
+    // config — the two facts stay distinct, exactly as designed.
+    assert.equal(configured.supportState, "proof_gated", `${connectorId}: owner authorization still unproven`);
+    assert.equal(configured.catalogDisposition, "provider_auth_proof_gated", `${connectorId}: catalogDisposition`);
+  }
 });
 
 test("classifyConnectorIntentModality preserves filesystem over browser over network precedence", () => {

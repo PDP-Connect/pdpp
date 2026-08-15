@@ -61,6 +61,10 @@ export interface Suite {
   id: string;
   include: string[];
   loader: string;
+  // Command that materializes the suite's generated, gitignored prerequisites
+  // before its children run. Declared per suite because only the suite knows
+  // which build artifacts its tests import; the runner stays generic.
+  prepare?: string[];
   profiles: ProfileEntry[];
   zero_tests?: boolean;
 }
@@ -470,6 +474,31 @@ export async function readManifest(
     }
     if (!["node-test", "python-unittest", "shell"].includes(suite.loader)) {
       fail(`${suite.id} must declare a supported loader`);
+    }
+    // `environment` and `prepare` are the two per-suite child-execution
+    // declarations. Both are optional, but a malformed one must fail closed
+    // here rather than surface as an unattributable child failure later.
+    if (suite.environment !== undefined) {
+      if (typeof suite.environment !== "object" || Array.isArray(suite.environment)) {
+        fail(`${suite.id} environment must be an object`);
+      }
+      for (const [name, value] of Object.entries(suite.environment)) {
+        if (typeof value !== "string" || !name) {
+          fail(`${suite.id} environment value must be a string: ${name}`);
+        }
+      }
+    }
+    if (suite.prepare !== undefined) {
+      if (
+        !Array.isArray(suite.prepare) ||
+        suite.prepare.length === 0 ||
+        suite.prepare.some((part) => typeof part !== "string" || !part)
+      ) {
+        fail(`${suite.id} prepare must be a non-empty string command`);
+      }
+      if (zeroTestSuite(suite)) {
+        fail(`${suite.id} zero-test declaration must not declare prepare`);
+      }
     }
     for (const entry of suite.profiles) {
       validateSkipReasons(

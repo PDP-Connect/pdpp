@@ -15,6 +15,12 @@ import {
   postgresQuery,
   withPostgresTransaction,
 } from "../postgres-storage.ts";
+import type {
+  BrowserSurfacePersistenceTransaction,
+  BrowserSurfacePersistenceUnitOfWorkStores,
+} from "./browser-surface-persistence-unit-of-work.ts";
+import { runBrowserSurfacePersistenceUnitOfWork } from "./browser-surface-persistence-unit-of-work.ts";
+import type { BrowserSurfaceReplacementReceiptStore } from "./browser-surface-replacement-ledger-store.ts";
 
 interface Queryable {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: (BrowserSurfaceRow | BrowserSurfaceLeaseRow)[] }>;
@@ -89,10 +95,28 @@ export interface BrowserSurfaceLeaseStore {
   upsertLease: (lease: BrowserSurfaceLease) => Promise<BrowserSurfaceLease>;
   upsertSurface: (surface: BrowserSurfaceWithPersistenceMetadata) => Promise<BrowserSurfaceWithPersistenceMetadata>;
   withLeaseTransaction: <T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T) => Promise<T>;
+  withPersistenceUnitOfWork: <T>(
+    replacementReceiptStore: BrowserSurfaceReplacementReceiptStore,
+    fn: (stores: BrowserSurfacePersistenceUnitOfWorkStores) => Promise<T> | T
+  ) => Promise<T>;
 }
 
 const TERMINAL_STATUS_SQL = TERMINAL_BROWSER_SURFACE_LEASE_STATUSES.map((status) => `'${status}'`).join(", ");
 const TERMINAL_LEASE_STATUS_SET = new Set<BrowserSurfaceLease["status"]>(TERMINAL_BROWSER_SURFACE_LEASE_STATUSES);
+
+// better-sqlite3 exposes one connection here, while the unit of work is
+// asynchronous. Serialize at the transaction authority so every caller that
+// shares this connection is safe, including unrelated browser surfaces.
+let sqliteTransactionTail: Promise<void> = Promise.resolve();
+
+function enqueueSqliteTransaction<T>(operation: () => Promise<T>): Promise<T> {
+  const next = sqliteTransactionTail.then(operation);
+  sqliteTransactionTail = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
 
 /** Maximum identities accepted by one bounded summary/detail observation. */
 export const MAX_BROWSER_SURFACE_CONNECTION_IDENTITIES = 25;
@@ -583,21 +607,38 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return this.getSurface(surfaceId);
   }
 
-  async withLeaseTransaction<T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T): Promise<T> {
-    const db = getDb();
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const value = await fn(this);
-      db.exec("COMMIT");
-      return value;
-    } catch (err) {
+  withLeaseTransaction<T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T): Promise<T> {
+    return enqueueSqliteTransaction(async () => {
+      const db = getDb();
+      db.exec("BEGIN IMMEDIATE");
       try {
-        db.exec("ROLLBACK");
-      } catch {
-        // Rollback failure is non-actionable; the original error is rethrown below.
+        const value = await fn(this);
+        db.exec("COMMIT");
+        return value;
+      } catch (err) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+          // Rollback failure is non-actionable; the original error is rethrown below.
+        }
+        throw err;
       }
-      throw err;
-    }
+    });
+  }
+
+  withPersistenceUnitOfWork<T>(
+    replacementReceiptStore: BrowserSurfaceReplacementReceiptStore,
+    fn: (stores: BrowserSurfacePersistenceUnitOfWorkStores) => Promise<T> | T
+  ): Promise<T> {
+    return this.withLeaseTransaction((leaseStore) =>
+      runBrowserSurfacePersistenceUnitOfWork(
+        {
+          leaseStore,
+          replacementReceiptStore: replacementReceiptStore.bindToTransaction({ backend: "sqlite" }),
+        },
+        fn
+      )
+    );
   }
 }
 
@@ -811,6 +852,26 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   withLeaseTransaction<T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T): Promise<T> {
     return withPostgresTransaction(async (client) => await fn(new PostgresBrowserSurfaceLeaseStore(client)));
+  }
+
+  withPersistenceUnitOfWork<T>(
+    replacementReceiptStore: BrowserSurfaceReplacementReceiptStore,
+    fn: (stores: BrowserSurfacePersistenceUnitOfWorkStores) => Promise<T> | T
+  ): Promise<T> {
+    return withPostgresTransaction((client) => {
+      const transaction: BrowserSurfacePersistenceTransaction = {
+        backend: "postgres",
+        query: (sql, values = []) =>
+          client.query(sql, [...values]) as unknown as Promise<{ readonly rows: readonly unknown[] }>,
+      };
+      return runBrowserSurfacePersistenceUnitOfWork(
+        {
+          leaseStore: new PostgresBrowserSurfaceLeaseStore(client),
+          replacementReceiptStore: replacementReceiptStore.bindToTransaction(transaction),
+        },
+        fn
+      );
+    });
   }
 }
 

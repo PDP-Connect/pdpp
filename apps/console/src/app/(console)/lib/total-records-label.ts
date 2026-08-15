@@ -2,46 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Centralized state-aware count/label primitives for a reference-server
- * `total_records`/`totalRecords` value (Sol fourth-verdict P1.3, "Health
- * boundary" — reconcile-active-summary-evidence design.md). Every renderer
- * of a `total_records` value MUST check `isTotalRecordsAuthoritative`
- * (directly or via `formatTotalRecordsLabel`) before treating the number as
- * a proven exact count. `undefined` (a reference predating this field) is
- * treated as authoritative, preserving the exact prior always-numeric
- * rendering for every existing caller.
+ * Console-side re-export of the centralized state-aware count/label
+ * primitives (Sol fourth-verdict P1.3, "Health boundary" —
+ * reconcile-active-summary-evidence design.md). Every renderer of a
+ * `total_records` value MUST check `isTotalRecordsAuthoritative` (directly or
+ * via `formatTotalRecordsLabel`) before treating the number as a proven exact
+ * count.
  *
- * Lives outside sources-view-model.ts (which re-exports both for existing
- * import sites) because that module and lib/connection-evidence.ts import
- * from each other; these two pure helpers have no dependency on either
- * module's own state and were the only shared surface causing the cycle.
+ * The implementation moved to `@pdpp/operator-ui/lib/total-records-label` so
+ * that package's pure render-models (`source-storage.ts`, which feeds the
+ * deployment page's per-source storage table) can route through the same
+ * branching instead of re-deriving it — the dependency runs console →
+ * operator-ui, so the shared authority has to live there. This module stays
+ * as the console's import path so existing call sites are unchanged.
  */
-import type { RefCountState } from "./ref-client.ts";
-
-export function isTotalRecordsAuthoritative(totalRecordsState?: RefCountState): boolean {
-  return totalRecordsState === undefined || totalRecordsState === "known" || totalRecordsState === "known_zero";
-}
-
-/**
- * Non-authoritative states never render the number as a confident count:
- *   - `"stale"`: the evidence exists but is not current — the carried-over
- *     number (including a carried-over ZERO) renders as an explicitly
- *     unverified hint, never bare.
- *   - `"unobserved"`/`"unknown"`: no trustworthy value exists at all — the
- *     unit noun itself (not a number) is rendered as unavailable.
- *   - `"known"`/`"known_zero"`/omitted: the exact prior always-numeric
- *     rendering.
- */
-export function formatTotalRecordsLabel(
-  totalRecords: number,
-  totalRecordsState: RefCountState | undefined,
-  unit: string
-): string {
-  if (totalRecordsState === "stale") {
-    return `${totalRecords.toLocaleString()} ${unit} (unverified)`;
-  }
-  if (totalRecordsState === "unobserved" || totalRecordsState === "unknown") {
-    return `${unit} unavailable`;
-  }
-  return `${totalRecords.toLocaleString()} ${unit}`;
-}
+// biome-ignore lint/performance/noBarrelFile: thin re-export of the ONE shared count-label authority in @pdpp/operator-ui; preserves the console's historical import path (`./total-records-label.ts`) for the view-models, pages, and tests that import these by name.
+export { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "@pdpp/operator-ui/lib/total-records-label";

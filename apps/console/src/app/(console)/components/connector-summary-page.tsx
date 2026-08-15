@@ -74,6 +74,7 @@
 
 import { validateListEnvelope } from "@pdpp/list-envelope";
 import Link from "next/link";
+import { unstable_rethrow } from "next/navigation";
 import {
   buildNextPageHref,
   buildRestartHref,
@@ -153,6 +154,10 @@ export async function loadConnectorSummaryPage<T, R = undefined, H = undefined>(
       runtime: response.runtime,
     };
   } catch (err) {
+    // This shared loader is imported by a bare Node test suite, so it cannot
+    // import the server-only wrapper used by page modules. Call the same public
+    // Next.js primitive directly before converting real data errors.
+    unstable_rethrow(err);
     // A rejected continuation (malformed/expired cursor) and a genuine
     // transport failure both land here. Both are "this page could not be
     // shown" — never silently reinterpreted as "no more pages" or "the

@@ -90,7 +90,7 @@ function iso(index: number): string {
 
 function manifest(connectorId: string): Record<string, unknown> {
   return {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: "Unbounded scale proof",
     protocol_version: "0.1.0",

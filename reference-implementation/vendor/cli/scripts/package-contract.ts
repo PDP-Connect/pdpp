@@ -6,11 +6,44 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 
 const TEST_ARTIFACT = /(^|\/)\.?.+\.test\.(?:js|mjs|cjs|ts|mts|cts)$/;
-const NPM_PACK_JSON = /(\[\s*\{[\s\S]*\])\s*$/;
+const WHITESPACE = /\s/;
+const NPM_PACK_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
 
 interface ExportTarget {
   label: string;
   target: string;
+}
+
+interface NpmPackResult {
+  filename: string;
+  files: Array<{ path: string }>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeNpmPackPayload(payload: unknown): NpmPackResult[] {
+  let entries: unknown[];
+  if (Array.isArray(payload)) {
+    entries = payload;
+  } else if (isRecord(payload)) {
+    entries = typeof payload.filename === "string" ? [payload] : Object.values(payload);
+  } else {
+    entries = [];
+  }
+
+  assert.ok(entries.length > 0, "npm pack did not produce a non-empty JSON payload");
+  return entries.map((entry, index) => {
+    assert.ok(isRecord(entry), `npm pack result ${index} is not an object`);
+    assert.equal(typeof entry.filename, "string", `npm pack result ${index} has no filename`);
+    assert.ok(Array.isArray(entry.files), `npm pack result ${index} has no files list`);
+    for (const [fileIndex, file] of entry.files.entries()) {
+      assert.ok(isRecord(file), `npm pack result ${index} file ${fileIndex} is not an object`);
+      assert.equal(typeof file.path, "string", `npm pack result ${index} file ${fileIndex} has no path`);
+    }
+    return entry as unknown as NpmPackResult;
+  });
 }
 
 function assertInsideDist(packageRoot: string, target: string, label: string): { target: string; targetPath: string } {
@@ -113,8 +146,40 @@ export function assertPackedFiles(manifest: PackageManifest, packedFiles: string
   }
 }
 
-export function parseNpmPackOutput(output: string): Array<{ filename: string }> {
-  const match = output.match(NPM_PACK_JSON);
-  assert.ok(match, "npm pack did not produce a trailing JSON payload");
-  return JSON.parse(match[1]) as Array<{ filename: string }>;
+export function parseNpmPackOutput(output: string): NpmPackResult[] {
+  assert.ok(
+    Buffer.byteLength(output, "utf8") <= NPM_PACK_OUTPUT_MAX_BYTES,
+    `npm pack output exceeds the ${NPM_PACK_OUTPUT_MAX_BYTES}-byte limit`
+  );
+
+  const trimmed = output.trimEnd();
+  let payload: unknown;
+  try {
+    payload = JSON.parse(trimmed);
+  } catch {
+    let searchEnd = trimmed.length;
+    while (searchEnd > 0 && payload === undefined) {
+      const newline = trimmed.lastIndexOf("\n", searchEnd - 1);
+      const lineStart = newline + 1;
+      const lineEnd = searchEnd;
+      let candidateStart = lineStart;
+      while (candidateStart < lineEnd && WHITESPACE.test(trimmed[candidateStart] ?? "")) {
+        candidateStart += 1;
+      }
+
+      if (trimmed[candidateStart] === "[" || trimmed[candidateStart] === "{") {
+        try {
+          payload = JSON.parse(trimmed.slice(candidateStart));
+        } catch {
+          // A nested array/object line is not the root payload; keep looking
+          // toward the beginning of the bounded output.
+        }
+      }
+
+      searchEnd = newline >= 0 ? newline : 0;
+    }
+  }
+
+  assert.ok(payload !== undefined, "npm pack did not produce a trailing JSON payload");
+  return normalizeNpmPackPayload(payload);
 }

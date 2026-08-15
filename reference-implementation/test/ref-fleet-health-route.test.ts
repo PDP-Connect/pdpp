@@ -152,7 +152,7 @@ test("production fleet wiring projects one custom-owner visible population witho
     .run(
       VISIBLE_CONNECTOR_ID,
       JSON.stringify({
-        capabilities: { public_listing: { listed: true, status: "test" } },
+        capabilities: { public_listing: { tier: "supported" } },
         connector_id: VISIBLE_CONNECTOR_ID,
         display_name: "Fleet-visible connector",
         protocol_version: "0.1.0",
@@ -227,7 +227,7 @@ test("fleet-summary projection reuses its owner-visible inventory without a seco
     .run(
       VISIBLE_CONNECTOR_ID,
       JSON.stringify({
-        capabilities: { public_listing: { listed: true, status: "test" } },
+        capabilities: { public_listing: { tier: "supported" } },
         connector_id: VISIBLE_CONNECTOR_ID,
         display_name: "Fleet-visible connector",
         protocol_version: "0.1.0",

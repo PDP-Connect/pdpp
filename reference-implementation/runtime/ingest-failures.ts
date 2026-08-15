@@ -162,3 +162,67 @@ export function buildInvalidIngestResponseFailure({
   });
   return err;
 }
+
+interface IngestEnvelopeContractViolationFailureInput {
+  batchSize: number;
+  recordsAccepted: number;
+  recordsRejected: number;
+  status: number;
+  stream: string;
+}
+
+/**
+ * Defensive protocol-violation net, NOT the primary silent-drop defense.
+ *
+ * The primary defense lives server-side: `rs.records.ingest` (the
+ * operation) classifies every per-record failure as PERMANENT (a genuine
+ * data defect — malformed JSON, a schema/identity violation; same input
+ * always fails identically) or SYSTEMIC (a storage/coordination failure
+ * that never proved the record's own data invalid, or any error the host's
+ * classifier does not recognize — unknown defaults to systemic). Any
+ * systemic failure anywhere in a batch makes the operation throw
+ * `RecordsIngestSystemicFailureError`, which the route maps to a non-2xx
+ * (503) response — so `readIngestResponse`'s `!resp.ok` branch above already
+ * throws a retryable failure for that case via `buildIngestHttpFailure`,
+ * BEFORE this function is ever reached. A 2xx response with `records_rejected`
+ * covering some or even all of the batch is the intentional, unchanged
+ * per-record isolation contract and must resolve as a counted, continued
+ * success no matter how many records it rejects — count alone was
+ * historically (and wrongly) used to infer retryability here, which
+ * conflated N legitimate permanent rejections with a systemic one.
+ *
+ * What this function actually guards is a conforming-RS-contract VIOLATION:
+ * a 2xx response whose own `records_accepted + records_rejected` doesn't sum
+ * to the batch size at all — a shape the current server-side contract should
+ * never produce (every line in the runtime's own well-formed NDJSON is
+ * always accounted for in the envelope, or the batch throws non-2xx first).
+ * Seeing it anyway means the RS answering this request is not honoring its
+ * own contract (a stale/non-reference-implementation RS, or a bug) — a
+ * distinct, rarer failure mode from "some records were rejected," which
+ * this function deliberately does NOT trigger on.
+ */
+export function buildIngestEnvelopeContractViolationFailure({
+  batchSize,
+  recordsAccepted,
+  recordsRejected,
+  status,
+  stream,
+}: IngestEnvelopeContractViolationFailureInput): ErrorWithFailureReason {
+  const err = new Error(
+    `Ingest for ${stream} returned a 2xx envelope whose records_accepted+records_rejected ` +
+      `(${recordsAccepted}+${recordsRejected}) does not account for the submitted batch (${batchSize}) after HTTP ` +
+      `${status}; the RS is not honoring the rs.records.ingest envelope contract — treating as a non-successful, retryable failure`
+  ) as ErrorWithFailureReason;
+  err.failure_reason = "ingest_envelope_contract_violation";
+  err.pdpp_error_code = "ingest_envelope_contract_violation";
+  err.response_status = status;
+  err.ingest_failure = buildIngestFailureDetails({
+    batchSize,
+    bodyText: null,
+    contentType: null,
+    phase: "envelope_contract_violation",
+    status,
+    stream,
+  });
+  return err;
+}

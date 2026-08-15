@@ -1,9 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SUPPORTED_SEED_CONNECTOR_KEYS } from "../../connectors/seed/index.ts";
 import { canonicalConnectorKey } from "../../server/connector-key.ts";
 import { initDb } from "../../server/db.ts";
 import { initPostgresStorage, isPostgresStorageBackend, resolveStorageBackend } from "../../server/postgres-storage.ts";
@@ -24,9 +25,63 @@ const SEED_CONNECTOR_PATH = join(REF_ROOT, "connectors", "seed", "index.ts");
 const MANIFESTS_DIR = join(REF_ROOT, "manifests");
 const OWNER_AUTH_REQUIRED_PATTERN = /owner_session_required|owner placeholder auth|401/i;
 
-// The deterministic seed connector (connectors/seed/index.ts) emits fixtures for
-// these three worlds; no external credentials required.
-const DEFAULT_CONNECTORS = ["spotify", "github", "reddit"];
+interface SeedManifestFields {
+  connector_id?: unknown;
+  connector_key?: unknown;
+}
+
+/**
+ * Pure selection logic, no filesystem access: which of the already-read
+ * manifests are seedable. The seed connector (connectors/seed/index.ts)
+ * only has fixture-emit logic for the connector keys it exports via
+ * SUPPORTED_SEED_CONNECTOR_KEYS — that export is the connector-owned fact
+ * of what it can actually emit. A manifest declaring connector_id/connector_key
+ * is necessary (this command still needs manifests/<key>.json to register
+ * the connector) but not sufficient: a manifest with no corresponding
+ * fixture logic in the seed connector would register successfully then
+ * emit zero records, silently over-claiming seedability. Intersecting
+ * against SUPPORTED_SEED_CONNECTOR_KEYS closes that gap instead of
+ * inferring seedability from manifest presence alone.
+ */
+export function seedableConnectorsFromManifests(
+  manifests: readonly SeedManifestFields[],
+  supportedSeedKeys: readonly string[]
+): string[] {
+  const supported = new Set(supportedSeedKeys);
+  const names: string[] = [];
+  for (const manifest of manifests) {
+    const key =
+      (typeof manifest.connector_key === "string" && manifest.connector_key.trim()) ||
+      (typeof manifest.connector_id === "string" ? canonicalConnectorKey(manifest.connector_id) : null);
+    if (key && supported.has(key)) {
+      names.push(key);
+    }
+  }
+  return names.sort((a, b) => a.localeCompare(b));
+}
+
+/** Parses one manifest JSON file at `manifestPath`. */
+function readManifestFile(manifestPath: string): SeedManifestFields {
+  return JSON.parse(readFileSync(manifestPath, "utf8")) as SeedManifestFields;
+}
+
+/** Reads every manifest JSON file directly under `manifestsDir` (non-recursive, `.json` only). */
+function readManifestsDir(manifestsDir: string): SeedManifestFields[] {
+  const manifests: SeedManifestFields[] = [];
+  for (const file of readdirSync(manifestsDir)) {
+    if (!file.endsWith(".json")) {
+      continue;
+    }
+    manifests.push(readManifestFile(join(manifestsDir, file)));
+  }
+  return manifests;
+}
+
+function readDefaultConnectors(): string[] {
+  return seedableConnectorsFromManifests(readManifestsDir(MANIFESTS_DIR), SUPPORTED_SEED_CONNECTOR_KEYS);
+}
+
+const DEFAULT_CONNECTORS = readDefaultConnectors();
 const OWNER_BOOTSTRAP_CLIENT = "pdpp-polyfill-owner-bootstrap";
 
 // A connector manifest, loaded from manifests/<name>.json: only the fields

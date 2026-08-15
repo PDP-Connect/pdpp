@@ -251,6 +251,8 @@ export interface ActiveRun {
   readonly trace_id: string;
 }
 
+export type RunAdmission = "collection" | "setup" | "browser_enrollment";
+
 export interface RunNowOptions {
   connectorInstanceId?: string;
   /**
@@ -270,10 +272,12 @@ export interface RunNowOptions {
   resources?: Readonly<Record<string, readonly string[]>>;
   rsUrl?: string;
   /**
-   * Narrow owner-session admission for the first run of a browser enrollment
-   * shell. Omitted means the ordinary active-connection collection path.
+   * Narrow owner-session admission for setup lifecycle runs. `setup` admits an
+   * exact draft or active connection; `browser_enrollment` admits only an exact
+   * browser enrollment draft. Omitted means the ordinary active-connection
+   * collection path.
    */
-  runAdmission?: "browser_enrollment";
+  runAdmission?: RunAdmission;
   runId?: string;
   scenarioId?: string;
   sourceWebhookEvent?: SourceWebhookRunEvent;
@@ -301,6 +305,7 @@ export interface AutoResumeSatisfiedActionsInput {
   connectorInstanceId?: string;
   evidence: SatisfactionEvidenceBag;
   manifest?: ConnectorManifest;
+  ownerSubjectId: string;
   ownerToken?: string;
   requiredActions: readonly RequiredAction[];
   rsUrl?: string;
@@ -325,7 +330,12 @@ function buildAutoResumeRunNowOptions(
 ): RunNowOptions {
   const options: RunNowOptions = {
     connectorInstanceId,
+    ownerSubjectId: input.ownerSubjectId,
     priorityClass: "interactive",
+    // Credential capture is an owner-session setup operation. Its exact draft
+    // is intentionally admitted through the setup capability before the run
+    // is created; ordinary collection remains active-only.
+    runAdmission: "setup",
     triggerKind: "manual",
   };
   if (input.manifest !== undefined) {
@@ -470,7 +480,7 @@ export interface ControllerOptions {
     connectorId: string;
     connectorInstanceId: string | null;
     ownerSubjectId: string;
-    runAdmission: "collection" | "browser_enrollment";
+    runAdmission: RunAdmission;
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
   /** Operator-owned logical connector-input bindings for manual runs. */
   approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
@@ -546,10 +556,17 @@ export interface ControllerOptions {
   /**
    * Maximum wall-clock milliseconds a single run may remain active before the
    * watchdog force-finalizes it with a `run.failed` (reason: `run_timed_out`).
-   * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` env var, or 3 600 000 ms (1 hour)
-   * when neither is set. Pass `Infinity` (or set the env var to "Infinity") to
-   * disable the watchdog — useful for intentionally long runs or tests that
-   * drive timing themselves.
+   * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` env var, or 14 400 000 ms (4
+   * hours, >2x longest observed legitimate run) when neither is set. Pass
+   * `Infinity` (or set the env var to "Infinity") to deliberately disable the
+   * watchdog for this connector instance — every run then relies solely on
+   * its own promise settling; a run whose `runConnectorImpl` never resolves
+   * or rejects (a wedged subprocess, a hung network call with no timeout)
+   * leaks its `activeRuns` entry permanently, blacking out the instance until
+   * process restart, with no second timer to catch it. Reserve this for
+   * connectors with their own independent timeout discipline, or for tests
+   * that drive timing themselves; do not use it as a blanket "disable
+   * timeouts" switch.
    */
   maxRunWallClockMs?: number;
   ownerClientId?: string;
@@ -610,7 +627,7 @@ function resolveAdmittedRunConnection(
   connectorId: string,
   connectorInstanceId: string | undefined,
   ownerSubjectId: string,
-  runAdmission: "collection" | "browser_enrollment"
+  runAdmission: RunAdmission
 ): Promise<{ connectorId: string; connectorInstanceId: string }> {
   if (controllerOptions.admitRunConnection) {
     return controllerOptions.admitRunConnection({
@@ -626,7 +643,7 @@ function resolveAdmittedRunConnection(
   );
 }
 
-function runAdmissionFor(options: RunNowOptions): "collection" | "browser_enrollment" {
+function runAdmissionFor(options: RunNowOptions): RunAdmission {
   return options.runAdmission ?? "collection";
 }
 
@@ -973,6 +990,35 @@ const settledRunIds = new Set<string>();
 // completion never fires the watchdog. All timers are .unref()'d so they
 // don't prevent process exit during a clean shutdown.
 const activeRunWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// CANONICAL EXPLANATION (armRunWatchdog and awaitRun both point here instead
+// of restating it): per-run "watchdog forced this run terminal" signal, keyed
+// by run_id. `awaitRun` races the raw `activeRunPromises` entry against this
+// promise so a parent-side await can never block forever on a child that
+// ignores its cancellation signal — the SAME `maxRunWallClockMs` timer that
+// `armRunWatchdog` arms resolves it; this is one timer PER MANAGED RUN, not
+// a single global authority — `maxRunWallClockMs` also independently drives
+// `createAttemptWatchdog`'s resettable no-progress budget in
+// runtime/scheduler/run-executor.ts (a different policy: markProgress()
+// re-arms it), though the two never race in practice because managed runs
+// return before reaching `runWithRetries`/`runSingleAttempt`, so the attempt
+// watchdog never arms for them. Resolved (not rejected) because a
+// watchdog-forced timeout is a normal, expected outcome for `awaitRun`'s
+// caller, which only needs the terminal status. Cleared in
+// finalizeRunCleanup alongside the other per-run maps.
+//
+// `maxRunWallClockMs: Infinity` is a deliberate, supported way to disable
+// this watchdog entirely for a connector instance (see the doc comment on
+// `ControllerOptions.maxRunWallClockMs`) — no settlement is ever armed for
+// that run, so `awaitRun` falls back to a bare await of the raw promise.
+// That is an intentional, pinned behavior for connectors expected to manage
+// their own timeout discipline, NOT a gap to fill with another timer.
+//
+// Fail-closed note: `awaitRun` reads the run's terminal status from the
+// spine after this race settles. A `null` terminal read (no terminal event
+// found — e.g. a swallowed `emitSpineEvent` failure during watchdog
+// force-finalization) maps to `"failed"`, never `"succeeded"`: an
+// unconfirmed run must never be reported as having conclusively succeeded.
+const runWatchdogSettlements = new Map<string, { promise: Promise<void>; resolve: () => void }>();
 // Monotonic run-generation fencing token, keyed by connector_instance key
 // (same key as activeRuns). Incremented each time a new run is admitted for
 // a connector_instance — including when a hung/stale run is reclaimed by the
@@ -981,7 +1027,12 @@ const activeRunWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 // generation matches the current value before writing terminal/ingest data.
 // Persisted to controller_active_runs.run_generation so the fencing token
 // survives through the DB layer (audit trail + crash-restart consistency).
-// Keys are removed when the entry is cleaned up to avoid unbounded growth.
+// Keys are NEVER removed on run completion (no runGenerations.delete call
+// exists outside the blanket test-reset `.clear()`) -- the counter must
+// stay monotonic per connector_instance for the fence to hold across that
+// instance's full history of runs, not just its currently-active one.
+// Growth is bounded by the number of distinct connector_instance keys ever
+// admitted, not by run count.
 const runGenerations = new Map<string, number>();
 // Keyed by run_id. Interaction broker state is intentionally in-memory:
 // dashboard-submitted values satisfy the current live run only and are never
@@ -1951,8 +2002,14 @@ export function __resetControllerInteractionStateForTests(): void {
     clearTimeout(timer);
   }
   activeRunWatchdogTimers.clear();
+  runWatchdogSettlements.clear();
   runGenerations.clear();
   needsHumanAttention.clear();
+}
+
+/** Test-only introspection: proves `runWatchdogSettlements` drains rather than leaking across runs. */
+export function __getRunWatchdogSettlementsSizeForTests(): number {
+  return runWatchdogSettlements.size;
 }
 
 export function isNeedsHumanAttention(connectorId: string, options: ConnectorInstanceOptions = {}): boolean {
@@ -2079,11 +2136,11 @@ function maxPressureGapAttemptCount(gaps: readonly PendingPressureGap[]): number
   return max;
 }
 
-function buildSchedulerBackoffApi(
+async function buildSchedulerBackoffApi(
   schedule: Schedule,
   facts: ScheduleHistoryFacts,
   ineligibilityReason: string | null
-): SchedulerBackoffApi | null {
+): Promise<SchedulerBackoffApi | null> {
   if (!schedule.enabled || ineligibilityReason) {
     return null;
   }
@@ -2132,7 +2189,7 @@ function buildSchedulerBackoffApi(
   // `recommended_health_state` (cooling_off → needs_attention for a dead-but-
   // 429ing provider), never the dispatch decision.
   const consecutiveCooldownCycles = maxPressureGapAttemptCount(facts.pendingPressureGaps);
-  const cooldown: SourcePressureCooldownDecision = computeConnectionSourcePressureCooldown(
+  const cooldown: SourcePressureCooldownDecision = await computeConnectionSourcePressureCooldown(
     schedule.connector_id,
     facts.pendingPressureGaps,
     intervalMs,
@@ -2197,12 +2254,12 @@ function mergeBackoffAndCooldown(
   };
 }
 
-function scheduleToApi(
+async function scheduleToApi(
   schedule: Schedule | null,
   runtimeProjection: RuntimeProjection | null = null,
   policy: RefreshPolicy | null = null,
   historyFacts: ScheduleHistoryFacts = EMPTY_SCHEDULE_HISTORY_FACTS
-): ScheduleApi | null {
+): Promise<ScheduleApi | null> {
   if (!schedule) {
     return null;
   }
@@ -2238,7 +2295,7 @@ function scheduleToApi(
   // happens to sit at the top of the persisted history.
   const lastFinishedAt = runtimeProjection?.last_finished_at || null;
   const nextDueAt = schedule.enabled && !ineligibilityReason ? computeNextDueAt(schedule, lastFinishedAt) : null;
-  const schedulerBackoff = buildSchedulerBackoffApi(schedule, historyFacts, ineligibilityReason);
+  const schedulerBackoff = await buildSchedulerBackoffApi(schedule, historyFacts, ineligibilityReason);
   // Historical run timestamps (`last_started_at`, `last_finished_at`,
   // `last_successful_at`) remain truthful audit anchors and stay surfaced
   // even for a gated row -- they describe what already happened, not
@@ -2792,7 +2849,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
           browserSurfaceLeaseManager,
           historyIndex
         );
-        return scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
+        return await scheduleToApi(
+          schedule,
+          runtimeProjection,
+          policy,
+          historyIndex.get(schedule.connector_instance_id)
+        );
       })
     );
     return apis.flatMap((api) => (api ? [api] : []));
@@ -2821,7 +2883,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           browserSurfaceLeaseManager,
           historyIndex
         );
-        const api = scheduleToApi(
+        const api = await scheduleToApi(
           schedule,
           runtimeProjection,
           policy,
@@ -2863,7 +2925,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       browserSurfaceLeaseManager,
       historyIndex
     );
-    return scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
+    return await scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
   }
 
   async function upsertSchedule(
@@ -2900,7 +2962,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       });
     }
     const historyIndex = await loadScheduleHistoryIndex();
-    const schedule = scheduleToApi(
+    const schedule = await scheduleToApi(
       await getScheduleRecord(connectorInstanceId),
       getRuntimeProjection(resolvedConnectorId, connectorInstanceId, browserSurfaceLeaseManager, historyIndex),
       policy,
@@ -2934,7 +2996,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     await schedulerStore.setScheduleEnabled(connectorInstanceId, enabled, nowIso());
     const historyIndex = await loadScheduleHistoryIndex();
-    return scheduleToApi(
+    return await scheduleToApi(
       await getScheduleRecord(connectorInstanceId),
       getRuntimeProjection(
         resolvedConnectorId,
@@ -3139,10 +3201,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // Idempotency guard: the watchdog and the run's own .finally() can both
     // call finalizeRunCleanup. Only the first call does real work; subsequent
     // calls are silent no-ops. We detect "already finalized" by checking
-    // whether the key is still in activeRuns (the primary liveness signal).
-    if (!activeRuns.has(input.key)) {
-      // Already cleaned up (watchdog fired first, or called twice). Ensure
-      // the settled marker is present regardless.
+    // whether THIS run's entry is still in activeRuns — fenced on run_id, not
+    // just key presence. A bare key check would let a stale finalize (e.g. a
+    // watchdog that parked mid-cleanup) treat a DIFFERENT run's entry as "not
+    // yet finalized" once that later run is admitted on the same key, and
+    // then evict the live run's entry below. Fencing here makes the eviction
+    // itself impossible: a stale call now sees its own run_id is gone and
+    // takes the early-return branch instead of touching the map.
+    if (activeRuns.get(input.key)?.run_id !== input.runId) {
+      // Already cleaned up (watchdog fired first, called twice, or a newer
+      // run has since been admitted on this key). Ensure the settled marker
+      // is present regardless.
       settledRunIds.add(input.runId);
       return;
     }
@@ -3153,9 +3222,16 @@ export function createController(opts: ControllerOptions = {}): Controller {
       clearTimeout(watchdogTimer);
       activeRunWatchdogTimers.delete(input.runId);
     }
+    // A normal completion that beats the watchdog deadline means the timer
+    // above is cleared and will never fire, so its settlement will never
+    // resolve on its own — drop the entry so it doesn't leak. Any `awaitRun`
+    // race is already won by the (now-settled) `activeRunPromises` entry.
+    runWatchdogSettlements.delete(input.runId);
     // Mark settled BEFORE deleting from activeRuns so the 409 guard's
     // reconciliation window is as short as possible.
     settledRunIds.add(input.runId);
+    // Safe to delete unconditionally here: the guard above already proved
+    // activeRuns.get(input.key)?.run_id === input.runId.
     activeRuns.delete(input.key);
     activeRunPromises.delete(input.runId);
     activeRunTraceContexts.delete(input.runId);
@@ -3465,7 +3541,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // reads `isSourcePressureCooldownDeferring`, so the escalation health
     // state is unused here — but using one production entry keeps the seam
     // uniform.
-    const cooldown = computeConnectionSourcePressureCooldown(
+    const cooldown = await computeConnectionSourcePressureCooldown(
       connectorId,
       pendingPressureGaps,
       baseIntervalMs,
@@ -3515,11 +3591,19 @@ export function createController(opts: ControllerOptions = {}): Controller {
    *   1. Aborts the run's cancellation signal (requests cooperative subprocess exit).
    *   2. Emits a typed `run.failed` (reason: `run_timed_out`) terminal spine event.
    *   3. Calls `finalizeRunCleanup` to clear the in-memory and DB active-run entry.
+   *   4. Resolves this run's `runWatchdogSettlements` entry, unblocking any
+   *      `awaitRun` caller racing the (possibly still-hung) `activeRunPromises`
+   *      entry against it — see `awaitRun` for why that race exists.
    *
-   * No-op when `maxRunWallClockMs` is not a positive finite number (Infinity disables).
+   * No-op when `maxRunWallClockMs` is not a positive finite number — including
+   * the deliberate `Infinity` disable case (see `runWatchdogSettlements`'
+   * declaration comment for what that trades away).
    * The timer is `.unref()`'d so it never prevents a clean process exit.
    * `finalizeRunCleanup` is idempotent — both the watchdog and the run's own `.finally()`
-   * can call it safely.
+   * can call it safely. The settlement resolves on EVERY firing, including the
+   * benign race where the run's own `.finally()` already cleared `activeRuns`
+   * (`runAlreadyTerminal`/`finalizeRunCleanup` are skipped then, but a caller
+   * could still be mid-race against this same timer).
    */
   function armRunWatchdog(input: {
     readonly browserSurfaceLease: BrowserSurfaceLease | null;
@@ -3533,9 +3617,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
       return;
     }
     const { browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext } = input;
+    let resolveSettlement!: () => void;
+    const settlementPromise = new Promise<void>((resolve) => {
+      resolveSettlement = resolve;
+    });
+    runWatchdogSettlements.set(runId, { promise: settlementPromise, resolve: resolveSettlement });
     const watchdogTimer = setTimeout(() => {
       activeRunWatchdogTimers.delete(runId);
       if (!activeRuns.has(key)) {
+        resolveSettlement();
         return;
       }
       log.warn?.(
@@ -3578,10 +3668,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
         }
         await finalizeRunCleanup({ browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext });
       };
-      emitAndFinalize().catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        log.warn?.(`[controller] watchdog: emitAndFinalize failed for ${runId}: ${message}`);
-      });
+      emitAndFinalize()
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log.warn?.(`[controller] watchdog: emitAndFinalize failed for ${runId}: ${message}`);
+        })
+        .finally(() => {
+          resolveSettlement();
+        });
     }, maxRunWallClockMs);
     if (watchdogTimer.unref) {
       watchdogTimer.unref();
@@ -3613,7 +3707,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Run admission owns ordered source-webhook replay, active-run, browser-surface, and runtime-launch state transitions.
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
-    const runOwnerSubjectId = options.ownerSubjectId || ownerSubjectId;
+    const runOwnerSubjectId = options.ownerSubjectId ?? ownerSubjectId;
     const admittedConnection = await resolveAdmittedRunConnection(
       opts,
       connectorId,
@@ -4004,19 +4098,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // Waits for `activeRunPromises.get(runId)` to settle (the promise resolves
   // after `finalizeRunCleanup` completes, which fires in the `.finally()` of
   // the connector run — so by the time we get here, the spine terminal event
-  // is guaranteed to have been emitted). Then reads that terminal status from
-  // the spine and maps it to "succeeded" | "failed".
+  // is guaranteed to have been emitted), RACED against this run's
+  // `runWatchdogSettlements` entry (see that map's declaration comment for
+  // why the race exists and what `Infinity` does to it). Then reads the
+  // terminal status from the spine and maps it to "succeeded" | "failed".
   //
   // If the run is not in `activeRunPromises` (already completed before we look,
   // or unknown), we skip the await and go straight to the spine read — this is
   // safe because the terminal event is already there.
+  //
+  // Fail-closed: a `null` terminal read (no terminal event found) maps to
+  // "failed", never "succeeded" — see the `runWatchdogSettlements` comment.
   async function awaitRun(runId: string): Promise<"succeeded" | "failed"> {
     const runPromise = activeRunPromises.get(runId);
     if (runPromise) {
       // Suppress any rejection — we care about the terminal status from the
       // spine, not about whether the promise itself threw (the catch handler
       // in runNow already emits a terminal spine event for throws).
-      await runPromise.catch(() => undefined);
+      const settled = runPromise.catch(() => undefined);
+      const watchdog = runWatchdogSettlements.get(runId)?.promise;
+      await (watchdog ? Promise.race([settled, watchdog]) : settled);
     }
     const terminalStatus = await getRunTerminalStatus(runId);
     return terminalStatus === "completed" ? "succeeded" : "failed";

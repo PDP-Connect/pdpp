@@ -39,7 +39,7 @@ type FixtureReport = RefDeploymentReport & { readonly service: string; readonly 
 
 function report(environment: readonly RefDeploymentEnvEntry[]): FixtureReport {
   return {
-    database: { path: ":memory:" },
+    database: { backend: "unknown", path: ":memory:" },
     environment,
     lexical: {},
     manifests: [],

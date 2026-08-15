@@ -20,6 +20,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { load as loadSqliteVec } from "sqlite-vec";
 import {
@@ -55,7 +56,7 @@ interface SqliteDatabase {
   loadExtension: (file: string, entrypoint?: string) => void;
   pragma: (source: string, options?: { simple?: boolean }) => unknown;
   prepare: (sql: string) => SqliteStatement;
-  transaction: <T>(fn: () => T) => () => T;
+  transaction: <T>(fn: () => T) => (() => T) & { immediate: () => T };
 }
 type VectorIndexKind = "sqlite-vec" | "blob-flat";
 type DatabaseHandle = SqliteDatabase & { vectorIndexKind: VectorIndexKind };
@@ -534,6 +535,11 @@ CREATE TABLE IF NOT EXISTS connector_instances (
   -- This is intentionally an event counter, not a wall-clock value: a
   -- remove/re-add ABA advances twice even when no reader observes the middle.
   manifest_generation   INTEGER NOT NULL DEFAULT 0,
+  -- Monotonic receipt for every supported canonical mutation belonging to this
+  -- connector instance. Backend-native source triggers advance it in the same
+  -- transaction as the mutation; readers use CAST(... AS TEXT) so BIGINT-sized
+  -- values never pass through JavaScript Number.
+  source_revision       INTEGER NOT NULL DEFAULT 0,
   UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key),
   FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT
 );
@@ -1989,6 +1995,9 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   -- advances it, so a payload derived from an older bounded read cannot
   -- publish after the row has moved on.
   canonical_evidence_revision   INTEGER NOT NULL DEFAULT 0,
+  -- Nullable only for legacy rows. A NULL receipt is immediately stale and is
+  -- repaired with the first successful source-revision-aware build.
+  source_revision               INTEGER,
   -- Durable connection-scoped declaration identity. This is the only
   -- eligibility boundary for terminal, coverage, and heartbeat proof.
   manifest_generation INTEGER NOT NULL DEFAULT 0,
@@ -2068,12 +2077,25 @@ CREATE TABLE IF NOT EXISTS manifest_write_violations (
 -- listing query excludes rows still in backoff, so a permanently-failing
 -- scope rotates out of contention and a later healthy scope can take its
 -- page slot, while the failing scope still gets retried periodically.
+-- revision is a monotonic per-scope generation counter, atomically
+-- incremented by every mark-dirty write (revision = revision + 1 in the
+-- SAME statement, same idiom as connector_instances.manifest_generation).
+-- A reconcile's clear is CAS'd on the revision value it read when it
+-- listed the scope, NOT on marked_at: two durable marks issued within
+-- the same millisecond receive the identical ISO marked_at string (no
+-- guaranteed sub-millisecond monotonicity), so a marked_at-only CAS can
+-- silently pass even though a concurrent write re-dirtied the scope after
+-- the reconcile's read -- revision cannot collide, because it only ever
+-- increases by exactly 1 per mark and the clear demands an exact match.
+-- marked_at is kept for queue ordering (oldest-first) and operator-facing
+-- diagnostics ONLY; it is no longer part of any correctness-bearing check.
 CREATE TABLE IF NOT EXISTS search_index_dirty (
   connector_instance_id TEXT NOT NULL,
   connector_id          TEXT NOT NULL,
   stream                TEXT NOT NULL,
   dirty                 INTEGER NOT NULL DEFAULT 1,
   marked_at             TEXT NOT NULL,
+  revision              INTEGER NOT NULL DEFAULT 0,
   reconciled_at         TEXT,
   last_error            TEXT,
   attempts              INTEGER NOT NULL DEFAULT 0,
@@ -2355,6 +2377,14 @@ function migrateRecordRejectionBytePayload(raw: SqliteDatabase): void {
   }
 }
 
+function testOnlySourceRevisionInstallationLockMarker(): void {
+  const markerPath = process.env.PDPP_TEST_SOURCE_REVISION_INSTALL_LOCK_PATH;
+  if (!markerPath) {
+    return;
+  }
+  writeFileSync(markerPath, `${process.pid}\n`, "utf8");
+}
+
 function migrateDeviceIngestBatchOutcomes(raw: SqliteDatabase): void {
   const columns = raw.prepare("PRAGMA table_info(device_ingest_batch_outcomes)").all();
   const needsRebuild = !columns.some((column) => column.name === "accepted_at");
@@ -2484,6 +2514,7 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "retained_bytes_reason_code", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "manifest_generation", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(raw, "connector_summary_evidence", "canonical_evidence_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(raw, "connector_summary_evidence", "source_revision", "INTEGER");
   addColumnIfMissing(raw, "connector_summary_evidence", "schedule_checkpoint", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "run_lifecycle_event_seq", "INTEGER");
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_json", "TEXT");
@@ -2528,6 +2559,159 @@ function ensureRetainedSizeRejectionColumns(raw: SqliteDatabase): void {
     UPDATE retained_size_global
        SET dirty = 1
      WHERE EXISTS (SELECT 1 FROM record_rejections);
+  `);
+}
+
+/**
+ * Install the provider-neutral SQLite source-revision boundary after all
+ * legacy table rebuilds have completed. `connector_instances.source_revision`
+ * is the one per-instance monotonic receipt; the nullable evidence copy is
+ * the receipt captured by a built row. Source triggers advance only the
+ * canonical receipt. Evidence invalidation is best effort, so a projection
+ * fault can never roll back a canonical write. The caller installs this
+ * primitive inside one BEGIN IMMEDIATE migration transaction.
+ */
+function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): void {
+  // Test-only marker: the surrounding transaction is already BEGIN IMMEDIATE,
+  // so a second connection that observes this file is guaranteed to contend
+  // with the installation lock rather than enter an unprotected DDL gap.
+  testOnlySourceRevisionInstallationLockMarker();
+  const sourceTables = [
+    "records",
+    "version_counter",
+    "connector_schedules",
+    "controller_active_runs",
+    "spine_events",
+    "retained_size_connection",
+    "retained_size_stream",
+    "manifest_write_violations",
+  ] as const;
+  const legacySourceTables = [
+    "record_changes",
+    "blobs",
+    "blob_bindings",
+    "run_history",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+  ] as const;
+  addColumnIfMissing(raw, "connector_instances", "source_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(raw, "connector_summary_evidence", "source_revision", "INTEGER");
+
+  raw.exec(`
+    UPDATE connector_instances SET source_revision = 0 WHERE source_revision IS NULL;
+    UPDATE connector_instances
+       SET source_revision = CAST(source_revision AS INTEGER)
+     WHERE source_revision IS NOT NULL
+       AND typeof(source_revision) <> 'integer';
+    UPDATE connector_summary_evidence
+       SET source_revision = CAST(source_revision AS INTEGER)
+     WHERE source_revision IS NOT NULL
+       AND typeof(source_revision) <> 'integer';
+  `);
+
+  // Source tables whose rows carry connector_instance_id. The spine fallback
+  // matches the existing normalized column and legacy JSON identity. UPDATE
+  // touches NEW and OLD identities with one set-based UPDATE, so a move cannot
+  // leave either instance with a falsely clean receipt. Tables that are
+  // maintained as derived implementation details are intentionally absent:
+  // their writes do not add canonical facts that the summary repair reads.
+  const sourceIdentity = (prefix: string, table: string): string => {
+    if (table === "spine_events") {
+      return `COALESCE(
+        NULLIF(${prefix}.connector_instance_id, ''),
+        NULLIF(json_extract(${prefix}.data_json, '$.connector_instance_id'), ''),
+        NULLIF(json_extract(${prefix}.data_json, '$.connection_id'), '')
+      )`;
+    }
+    return `NULLIF(${prefix}.connector_instance_id, '')`;
+  };
+  const advance = (identitySql: string): string => `
+      UPDATE connector_instances
+         SET source_revision = CASE
+           WHEN source_revision IS NULL THEN 0
+           WHEN source_revision < 9223372036854775807 THEN source_revision + 1
+           ELSE 9223372036854775807
+         END
+       WHERE connector_instance_id = ${identitySql};`;
+  const advanceEither = (newIdentitySql: string, oldIdentitySql: string): string => `
+      UPDATE connector_instances
+         SET source_revision = CASE
+           WHEN source_revision IS NULL THEN 0
+           WHEN source_revision < 9223372036854775807 THEN source_revision + 1
+           ELSE 9223372036854775807
+         END
+       WHERE connector_instance_id IN (${newIdentitySql}, ${oldIdentitySql});`;
+
+  for (const table of sourceTables) {
+    const insertName = `pdpp_source_revision_${table}_insert`;
+    const updateName = `pdpp_source_revision_${table}_update`;
+    const deleteName = `pdpp_source_revision_${table}_delete`;
+    // spine_events are append/delete lifecycle facts. Its terminal manifest
+    // stamp performs an internal INSERT-time UPDATE, so omit UPDATE here to
+    // avoid counting that implementation detail as a second source touch.
+    const updateTrigger =
+      table === "spine_events"
+        ? ""
+        : `
+      CREATE TRIGGER ${updateName}
+        AFTER UPDATE ON ${table}
+        BEGIN
+          ${advanceEither(sourceIdentity("NEW", table), sourceIdentity("OLD", table))}
+        END;`;
+    raw.exec(`
+      DROP TRIGGER IF EXISTS ${insertName};
+      DROP TRIGGER IF EXISTS ${updateName};
+      DROP TRIGGER IF EXISTS ${deleteName};
+      CREATE TRIGGER ${insertName}
+        AFTER INSERT ON ${table}
+        BEGIN
+          ${advance(sourceIdentity("NEW", table))}
+        END;
+      ${updateTrigger}
+      CREATE TRIGGER ${deleteName}
+        AFTER DELETE ON ${table}
+        BEGIN
+          ${advance(sourceIdentity("OLD", table))}
+        END;
+    `);
+  }
+
+  for (const table of legacySourceTables) {
+    raw.exec(`
+      DROP TRIGGER IF EXISTS pdpp_source_revision_${table}_insert;
+      DROP TRIGGER IF EXISTS pdpp_source_revision_${table}_update;
+      DROP TRIGGER IF EXISTS pdpp_source_revision_${table}_delete;
+    `);
+  }
+
+  // Identity/manifest-generation edits are canonical source mutations even
+  // when they do not touch one of the child source tables. Excluding
+  // source_revision from UPDATE OF prevents the receipt's own internal update
+  // from recursively advancing itself.
+  raw.exec(`
+    DROP TRIGGER IF EXISTS pdpp_source_revision_connector_instances_update;
+    CREATE TRIGGER pdpp_source_revision_connector_instances_update
+      AFTER UPDATE OF owner_subject_id, connector_id, display_name, status,
+        source_kind, source_binding_key, source_binding_json, created_at,
+        updated_at, revoked_at, manifest_generation, record_reset_generation,
+        record_identity_generation
+      ON connector_instances
+      BEGIN
+        ${advance("NEW.connector_instance_id")}
+      END;
+
+    DROP TRIGGER IF EXISTS pdpp_source_revision_connectors_manifest_update;
+    CREATE TRIGGER pdpp_source_revision_connectors_manifest_update
+      AFTER UPDATE OF connector_id, manifest ON connectors
+      BEGIN
+        UPDATE connector_instances
+           SET source_revision = CASE
+             WHEN source_revision IS NULL THEN 0
+             WHEN source_revision < 9223372036854775807 THEN source_revision + 1
+             ELSE 9223372036854775807
+           END
+         WHERE connector_id IN (NEW.connector_id, OLD.connector_id);
+      END;
   `);
 }
 
@@ -3340,6 +3524,8 @@ function migrateLocalDeviceConnectorInstances(raw: SqliteDatabase, opts: Migrati
           AND source_binding_key = ?
         LIMIT 1`
     );
+    // Existing connector lifecycle is owner authority. The device row is
+    // migration input only and may remain active after a zero-cascade revoke.
     const upsertInstance = raw.prepare(
       `INSERT INTO connector_instances(
          connector_instance_id, owner_subject_id, connector_id, display_name, status,
@@ -3350,12 +3536,13 @@ function migrateLocalDeviceConnectorInstances(raw: SqliteDatabase, opts: Migrati
          owner_subject_id = excluded.owner_subject_id,
          connector_id = excluded.connector_id,
          display_name = excluded.display_name,
-         status = excluded.status,
          source_kind = excluded.source_kind,
          source_binding_key = excluded.source_binding_key,
          source_binding_json = excluded.source_binding_json,
-         updated_at = excluded.updated_at,
-         revoked_at = excluded.revoked_at`
+         updated_at = CASE
+           WHEN excluded.updated_at > connector_instances.updated_at THEN excluded.updated_at
+           ELSE connector_instances.updated_at
+         END`
     );
     const updateSourceInstance = raw.prepare(
       `UPDATE device_source_instances
@@ -5638,6 +5825,14 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
     addColumnIfMissing(raw, "search_index_dirty", "attempts", "INTEGER NOT NULL DEFAULT 0")
   );
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "search_index_dirty", "next_attempt_at", "TEXT"));
+  // Monotonic per-scope CAS generation (see the CREATE TABLE comment above):
+  // a pre-existing reference DB created the table before this column
+  // existed. Pre-existing rows seed with 0; any subsequent mark-dirty write
+  // bumps it, so a reconcile that read revision=0 before this migration ran
+  // still correctly fails its clear CAS if a mark landed in between.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "search_index_dirty", "revision", "INTEGER NOT NULL DEFAULT 0")
+  );
   runWithSqliteBusyRetrySync(() => ensureRecordResetGenerationColumn(raw));
   runWithSqliteBusyRetrySync(() => ensureRecordIdentityGenerationColumn(raw));
   // Incremental add-source linkage: a later same-client ceremony records the
@@ -5893,6 +6088,9 @@ CREATE TABLE IF NOT EXISTS cimd_client_documents (
   // explicit value start at 1). See docs/research/slvp-ideal-stuck-run-liveness-2026-06-14.md §2.6 / §8.
   runWithSqliteBusyRetrySync(() =>
     addColumnIfMissing(raw, "controller_active_runs", "run_generation", "INTEGER NOT NULL DEFAULT 1")
+  );
+  runWithSqliteBusyRetrySync(() =>
+    raw.transaction(() => ensureConnectorSummarySourceRevisionPrimitive(raw)).immediate()
   );
   db = withCachedPrepare(raw);
   // Stamp the chosen vector-index backend onto the wrapped db so

@@ -12,18 +12,21 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { createWriteStream } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { closeSync, createWriteStream, openSync } from "node:fs";
+import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { finished } from "node:stream/promises";
 import {
   type ManualUploadValidationResult,
   validateManualUploadArtifactByKind,
+  validateManualUploadArtifactFromFileByKind,
 } from "../../../packages/polyfill-connectors/src/manual-upload-validation.ts";
 import {
   type ConnectorManifestLike,
   displayNameForConnector,
   manualUploadSetupFromManifest,
 } from "../connection-setup-plan.ts";
+import { manualUploadMaxBytes } from "../manual-upload-limits.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 const PATH_SEP_RE = /[\\/]/;
@@ -31,7 +34,6 @@ const UNSAFE_FILENAME_CHARS_RE = /[^\w .-]/g;
 const CONNECTION_ID_RE = /^cin_[A-Za-z0-9_-]+$/;
 const ARTIFACT_ID_RE = /^mua_[A-Za-z0-9_-]+$/;
 const MANUAL_UPLOAD_STREAM_CONTENT_TYPE = "application/vnd.pdpp.manual-upload";
-const MANUAL_UPLOAD_ROUTE_BODY_LIMIT_BYTES = 1024 * 1024 * 1024;
 
 interface RouteRequest {
   readonly body?: unknown;
@@ -85,6 +87,51 @@ interface ConnectorInstanceStore {
     createdAt: string;
     updatedAt: string;
   }) => Promise<ConnectorInstance> | ConnectorInstance;
+}
+
+// Written by both createManualUploadDraftConnection and
+// validateAndStageArtifact below; each sets a different subset of the
+// optional fields.
+export interface ManualUploadDraftSourceBinding {
+  readonly acquisition_method: "owner_artifact";
+  readonly import_dir: string;
+  readonly import_dir_env_var: string;
+  readonly import_validation?: unknown;
+  readonly kind: "manual_upload_draft";
+  readonly staged_upload?: boolean;
+  readonly uploaded_file_name?: string;
+}
+
+// import_dir/import_dir_env_var are read on every run (connection-scoped-run-env.ts,
+// buildControllerManualUploadRunEnvResolver), not just at setup — they must
+// survive promotion.
+export interface ManualUploadDurableSourceBinding {
+  readonly acquisition_method: "owner_artifact";
+  readonly import_dir: string;
+  readonly import_dir_env_var: string;
+  readonly import_validation?: unknown;
+  readonly kind: "manual_upload";
+  readonly promoted_at: string;
+  readonly promoted_from: "manual_upload_draft";
+  readonly uploaded_file_name?: string;
+}
+
+// Pure — no I/O. `staged_upload` does not carry over: it meant "no file
+// staged yet," no longer true once records have ingested.
+export function promoteManualUploadDraftBinding(
+  draftBinding: ManualUploadDraftSourceBinding,
+  now: string
+): ManualUploadDurableSourceBinding {
+  return {
+    acquisition_method: draftBinding.acquisition_method,
+    import_dir: draftBinding.import_dir,
+    import_dir_env_var: draftBinding.import_dir_env_var,
+    kind: "manual_upload",
+    promoted_at: now,
+    promoted_from: "manual_upload_draft",
+    ...(draftBinding.import_validation === undefined ? {} : { import_validation: draftBinding.import_validation }),
+    ...(draftBinding.uploaded_file_name === undefined ? {} : { uploaded_file_name: draftBinding.uploaded_file_name }),
+  };
 }
 
 interface AcquisitionBatch {
@@ -149,6 +196,7 @@ interface ManualUploadArtifact {
 }
 
 interface ManualUploadArtifactStore {
+  claimForSweep: (artifactId: string, cutoffIso: string, nowIso: string) => Promise<boolean> | boolean;
   get: (artifactId: string) => Promise<ManualUploadArtifact | null> | ManualUploadArtifact | null;
   insert: (record: {
     artifactId: string;
@@ -165,6 +213,7 @@ interface ManualUploadArtifactStore {
     connectorInstanceId: string,
     options?: { limit?: number }
   ) => Promise<ManualUploadArtifact[]> | ManualUploadArtifact[];
+  listInFlightOlderThan: (cutoffIso: string) => Promise<ManualUploadArtifact[]> | ManualUploadArtifact[];
   update: (
     artifactId: string,
     patch: {
@@ -332,7 +381,23 @@ async function requireManualUploadSetup(
   });
 }
 
-async function resolveAcceptedUpload(
+/**
+ * Shared streaming-upload primitive for every manual-upload route that
+ * accepts a raw file body (staged-artifact, validation-preview, and the
+ * legacy draft-connection create path): the request body is written to a
+ * bounded TEMP staging path via `writeUploadBodyToPath` (streamed, hashed
+ * incrementally, never buffered whole) and then validated via
+ * `validateStagedArtifact`'s fd-backed dispatch — the same path
+ * `/manual-upload-staged-artifact` already used exclusively. No caller of
+ * this function reads the body as a buffer.
+ *
+ * The caller owns the returned `stagingPath`'s lifecycle: on a `valid`
+ * result, either move/rename it into a permanent location (the create path)
+ * or delete it once its metadata has been used (the preview path, which
+ * never needs to keep the bytes). `removeStagingArtifact` is the existing
+ * whole-directory cleanup helper for this.
+ */
+async function stageAcceptedUpload(
   ctx: MountRefManualUploadDraftConnectionContext,
   req: RouteRequest,
   res: RouteResponse,
@@ -342,7 +407,13 @@ async function resolveAcceptedUpload(
     ownerSubjectId: string | null;
     setup: NonNullable<ReturnType<typeof manualUploadSetupFromManifest>>;
   }
-): Promise<{ fileBytes: Buffer; fileName: string; validation: ManualUploadValidationResult | null } | null> {
+): Promise<{
+  fileSizeBytes: number;
+  fileName: string;
+  sha256: string;
+  stagingPath: string;
+  validation: ManualUploadValidationResult | null;
+} | null> {
   const fileName = normalizeFileName(firstQueryValue(req.query?.file_name));
   if (!fileName) {
     return await rejectManualUploadRequest(ctx, req, res, {
@@ -366,22 +437,54 @@ async function resolveAcceptedUpload(
       param: "file_name",
     });
   }
-  const fileBytes = bodyAsBuffer(req.body);
-  if (!(fileBytes && fileBytes.length > 0)) {
-    return await rejectManualUploadRequest(ctx, req, res, {
-      connectorId: args.connectorId,
-      errorCode: "import_file_required",
-      httpStatus: 400,
-      message: "A non-empty import file body must be provided.",
-      operation: args.operation,
-      ownerSubjectId: args.ownerSubjectId,
-    });
+
+  const stagingId = `mua_preview_${randomBytes(18).toString("base64url")}`;
+  const stagingDir = join(ctx.importBaseDir, "_staging", safePathSegment(args.connectorId), stagingId);
+  const stagingPath = join(stagingDir, fileName);
+  const maxFileBytes = args.setup.validation?.maxFileBytes ?? null;
+  await mkdir(stagingDir, { recursive: true });
+  let written: { fileSizeBytes: number; sha256: string };
+  try {
+    written = await writeUploadBodyToPath(req.body, stagingPath, maxFileBytes);
+  } catch (err) {
+    await rm(stagingDir, { force: true, recursive: true }).catch(() => undefined);
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    if ((err as { code?: unknown })?.code === "manual_upload_too_large") {
+      return await rejectManualUploadRequest(ctx, req, res, {
+        connectorId: args.connectorId,
+        errorCode: "import_file_too_large",
+        httpStatus: 413,
+        message: maxFileBytes
+          ? `This connector accepts browser uploads up to ${maxFileBytes} bytes.`
+          : "This import file is too large.",
+        operation: args.operation,
+        ownerSubjectId: args.ownerSubjectId,
+        param: "import_file",
+      });
+    }
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    if ((err as { code?: unknown })?.code === "import_file_required") {
+      return await rejectManualUploadRequest(ctx, req, res, {
+        connectorId: args.connectorId,
+        errorCode: "import_file_required",
+        httpStatus: 400,
+        message: "A non-empty import file body must be provided.",
+        operation: args.operation,
+        ownerSubjectId: args.ownerSubjectId,
+      });
+    }
+    throw err;
   }
-  const validation = validateManualUploadArtifact(args.setup.validation?.kind ?? null, fileBytes, {
+
+  const validation = await validateStagedArtifact(
+    { fileSha256: written.sha256, fileSizeBytes: written.fileSizeBytes, stagingPath },
+    args.setup.validation?.kind ?? null,
+    args.setup.validation?.fileBacked ?? false,
     fileName,
-    maxFileBytes: args.setup.validation?.maxFileBytes ?? null,
-  });
+    maxFileBytes
+  );
   if (validation && validation.status !== "valid") {
+    await rm(stagingDir, { force: true, recursive: true }).catch(() => undefined);
     return await rejectManualUploadRequest(ctx, req, res, {
       connectorId: args.connectorId,
       errorCode: `import_file_${validation.status}`,
@@ -392,7 +495,7 @@ async function resolveAcceptedUpload(
       param: "import_file",
     });
   }
-  return { fileBytes, fileName, validation };
+  return { fileName, fileSizeBytes: written.fileSizeBytes, sha256: written.sha256, stagingPath, validation };
 }
 
 function manualUploadTooLargeError(maxFileBytes: number): Error & { code?: string; maxFileBytes?: number } {
@@ -409,6 +512,30 @@ function isAsyncIterableBody(value: unknown): value is AsyncIterable<Buffer | Ui
   return Boolean(value && typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function");
 }
 
+/**
+ * Streams `body` to `path` (O_EXCL create, never overwrites), hashing and
+ * byte-capping incrementally, and returns once the file is durably closed.
+ *
+ * The stream's own `'error'` event (ENOSPC, EIO, a permission revoked
+ * mid-write, or the O_EXCL create itself failing with EEXIST) is caught via
+ * `stream.finished()` from `node:stream/promises`, attached to `out`
+ * IMMEDIATELY after creation -- before any `write()` call, and therefore
+ * before any chance of a synchronous or near-synchronous error. This is not
+ * a cosmetic detail: Node delivers a write-stream error to BOTH the
+ * `end(callback)` completion callback AND as a standalone `'error'` event;
+ * a stream with zero `'error'` listeners treats that event as an uncaught
+ * exception regardless of whether some other code path also observed the
+ * same failure via a callback. The prior version of this function only
+ * awaited `end()`'s callback -- exactly the "handled by one path, still
+ * uncaught via the other" shape -- verified directly against
+ * `createWriteStream("/dev/full")`: the `end()` callback correctly received
+ * ENOSPC AND a `process.on("uncaughtException", ...)` handler also fired
+ * for the identical error, killing the process. `finished()` is Node's
+ * documented single-settlement primitive for exactly this stream-lifecycle
+ * class (it internally attaches the 'error'/'close'/'finish' listeners
+ * itself and resolves/rejects exactly once), so it closes this class of bug
+ * rather than working around one specific symptom.
+ */
 async function writeUploadBodyToPath(
   body: unknown,
   path: string,
@@ -417,7 +544,10 @@ async function writeUploadBodyToPath(
   const hash = createHash("sha256");
   let fileSizeBytes = 0;
   const out = createWriteStream(path, { flags: "wx" });
-  let finished = false;
+  // Attached before any write -- see the doc comment above for why this
+  // ordering is load-bearing, not stylistic.
+  const settled = finished(out);
+  let doneCleanly = false;
   try {
     const writeChunk = async (raw: Buffer | Uint8Array | string) => {
       const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
@@ -435,6 +565,17 @@ async function writeUploadBodyToPath(
       for await (const raw of body) {
         await writeChunk(raw);
       }
+      // A genuinely empty stream (zero chunks, or chunks totaling zero
+      // bytes) never trips writeChunk's own checks -- it just writes
+      // nothing. Mirror the buffer path's explicit empty-body rejection so
+      // both bodies of this shared primitive enforce the same contract;
+      // without this, an empty streamed upload would silently "succeed"
+      // with a zero-byte staged file instead of failing closed.
+      if (fileSizeBytes === 0) {
+        throw Object.assign(new Error("A non-empty import file body must be provided."), {
+          code: "import_file_required",
+        });
+      }
     } else {
       const fileBytes = bodyAsBuffer(body);
       if (!(fileBytes && fileBytes.length > 0)) {
@@ -445,14 +586,19 @@ async function writeUploadBodyToPath(
       await writeChunk(fileBytes);
     }
 
-    await new Promise<void>((resolve, reject) => {
-      out.end((err?: Error | null) => (err ? reject(err) : resolve()));
-    });
-    finished = true;
+    out.end();
+    await settled;
+    doneCleanly = true;
     return { fileSizeBytes, sha256: hash.digest("hex") };
   } finally {
-    if (!finished) {
+    if (!doneCleanly) {
       out.destroy();
+      // `settled` has already rejected (a stream error) or will reject once
+      // `destroy()`'s abort propagates; either way it must never be left
+      // unawaited/unhandled here, or Node will report an unhandled
+      // rejection for the SAME promise `finished()` already attached
+      // listeners for.
+      await settled.catch(() => undefined);
       await rm(path, { force: true }).catch(() => undefined);
     }
   }
@@ -545,6 +691,65 @@ async function createManualUploadDraftConnection(
   return { connection, importDir, sourceBindingKey };
 }
 
+/**
+ * Dispatches by the manifest's declared `validation.file_backed` capability,
+ * never by `kind` itself: `fileBacked` routes through
+ * validateManualUploadArtifactFromFileByKind (a caller-owned fd, never a
+ * whole-file readFile); everything else stays on the buffer-based
+ * validateManualUploadArtifactByKind path. This function has no knowledge of
+ * which `kind` strings exist or which connector any of them names — both
+ * dispatchers live in packages/polyfill-connectors/src/manual-upload-validation.ts,
+ * the connector-owned registry that is the only place in the codebase
+ * allowed to both know the `kind` space and import connector validation
+ * modules directly.
+ *
+ * artifact.artifactSha256 was already computed while STREAMING the upload
+ * to disk (writeUploadBodyToPath, hashed incrementally during the write) —
+ * reused here rather than rehashing, so the file-backed path never reads
+ * the whole artifact even to compute its own hash a second time.
+ */
+async function validateStagedArtifact(
+  args: {
+    fileSha256: string;
+    fileSizeBytes: number | null;
+    stagingPath: string;
+  },
+  kind: string | null,
+  fileBacked: boolean,
+  fileName: string,
+  maxFileBytes: number | null
+): Promise<ManualUploadValidationResult | null> {
+  if (fileBacked) {
+    const fileSize = args.fileSizeBytes ?? (await stat(args.stagingPath)).size;
+    const fd = openSync(args.stagingPath, "r");
+    try {
+      return await validateManualUploadArtifactFromFileByKind(kind, fd, fileSize, {
+        fileName,
+        fileSha256: args.fileSha256,
+        filePath: args.stagingPath,
+        maxFileBytes,
+      });
+    } finally {
+      closeSync(fd);
+    }
+  }
+  const fileBytes = await readFile(args.stagingPath);
+  return validateManualUploadArtifactByKind(kind, fileBytes, { fileName, maxFileBytes });
+}
+
+/**
+ * Removes the whole per-artifact `_staging/<connectorId>/<artifactId>/`
+ * directory, not just the uploaded file inside it -- `rm(stagingPath)`
+ * alone leaves the now-empty directory behind forever (the same orphan bug
+ * the successful rename() path already avoids by removing
+ * `dirname(stagingPath)`; every terminal branch must do the same, not just
+ * the success path). Best-effort: a cleanup failure must never fail the
+ * artifact's own status transition.
+ */
+async function removeStagingArtifact(stagingPath: string): Promise<void> {
+  await rm(dirname(stagingPath), { force: true, recursive: true }).catch(() => undefined);
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: staging is the transaction boundary for validation, dedupe, target-source resolution, file movement, and artifact status updates.
 async function validateAndStageArtifact(
   ctx: MountRefManualUploadDraftConnectionContext,
@@ -566,11 +771,17 @@ async function validateAndStageArtifact(
   }
   await artifactStore.update(args.artifactId, { error: null, status: "validating" });
   try {
-    const fileBytes = await readFile(artifact.stagingPath);
-    const validation = validateManualUploadArtifact(args.setup.validation?.kind ?? null, fileBytes, {
-      fileName: args.fileName,
-      maxFileBytes: args.setup.validation?.maxFileBytes ?? null,
-    });
+    const validation = await validateStagedArtifact(
+      {
+        fileSha256: artifact.artifactSha256 ?? "",
+        fileSizeBytes: artifact.fileSizeBytes ?? null,
+        stagingPath: artifact.stagingPath,
+      },
+      args.setup.validation?.kind ?? null,
+      args.setup.validation?.fileBacked ?? false,
+      args.fileName,
+      args.setup.validation?.maxFileBytes ?? null
+    );
     if (validation && validation.status !== "valid") {
       await artifactStore.update(args.artifactId, {
         error: {
@@ -580,7 +791,7 @@ async function validateAndStageArtifact(
         status: "failed",
         validation,
       });
-      await rm(artifact.stagingPath, { force: true }).catch(() => undefined);
+      await removeStagingArtifact(artifact.stagingPath);
       return;
     }
 
@@ -604,7 +815,7 @@ async function validateAndStageArtifact(
             status: "duplicate",
           } as ManualUploadValidationResult,
         });
-        await rm(artifact.stagingPath, { force: true }).catch(() => undefined);
+        await removeStagingArtifact(artifact.stagingPath);
         return;
       }
     }
@@ -648,6 +859,10 @@ async function validateAndStageArtifact(
     await mkdir(finalDir, { recursive: true });
     const finalPath = join(finalDir, args.fileName);
     await rename(artifact.stagingPath, finalPath);
+    // rename() moves the file out but leaves the now-empty per-artifact
+    // _staging/<connectorId>/<artifactId>/ directory behind -- nothing else
+    // ever removes it.
+    await removeStagingArtifact(artifact.stagingPath);
     const batch = validation?.file_sha256
       ? await acquisitionStore.insertOwnerArtifactBatch({
           acquisitionMethod: "owner_artifact",
@@ -685,6 +900,12 @@ async function validateAndStageArtifact(
       },
       status: "failed",
     });
+    // A real error partway through this function (e.g. the target-
+    // connection-required throw) previously left the staged file AND its
+    // per-artifact directory behind with no cleanup at all -- unlike the
+    // three success/failed/duplicate branches above. force:true makes this
+    // a safe no-op if rename() already moved the file out before the error.
+    await removeStagingArtifact(artifact.stagingPath);
   }
 }
 
@@ -822,11 +1043,11 @@ async function createAndSendDraftResponse(
     acquisitionStore: AcquisitionBatchStore;
     connectorId: string;
     displayName: string;
-    fileBytes: Buffer;
     fileName: string;
     manifest: ConnectorManifestLike;
     ownerSubjectId: string;
     setup: NonNullable<ReturnType<typeof manualUploadSetupFromManifest>>;
+    stagingPath: string;
     targetConnectionId?: string | null;
     validation: ManualUploadValidationResult | null;
   }
@@ -842,6 +1063,7 @@ async function createAndSendDraftResponse(
       })
     : null;
   if (args.targetConnectionId && !targetConnection) {
+    await removeStagingArtifact(args.stagingPath);
     return;
   }
   const sourceBindingKey =
@@ -851,7 +1073,12 @@ async function createAndSendDraftResponse(
     join(ctx.importBaseDir, safePathSegment(args.connectorId), sourceBindingKey);
   const now = ctx.now ? ctx.now() : new Date().toISOString();
   await mkdir(importDir, { recursive: true });
-  await writeFile(join(importDir, args.fileName), args.fileBytes);
+  // rename() is a same-filesystem metadata move (both stagingPath and
+  // importDir live under ctx.importBaseDir), not a copy -- the staged bytes
+  // are never re-read or re-written here, matching the staged-artifact
+  // route's own rename()-out-of-staging pattern.
+  await rename(args.stagingPath, join(importDir, args.fileName));
+  await removeStagingArtifact(args.stagingPath);
 
   let instance: ConnectorInstance;
   if (targetConnection) {
@@ -1086,12 +1313,13 @@ function mountGetSetup(app: AppLike, ctx: MountRefManualUploadDraftConnectionCon
 function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
   app.post(
     "/_ref/connectors/:connectorId/manual-upload-validation-preview",
-    { bodyLimit: MANUAL_UPLOAD_ROUTE_BODY_LIMIT_BYTES },
+    { bodyLimit: manualUploadMaxBytes() },
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
       const connectorId = ctx.canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
       let ownerSubjectId: string | null = null;
+      let stagingPath: string | null = null;
       try {
         ownerSubjectId = ctx.getOwnerSubjectId(req);
         const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
@@ -1104,7 +1332,19 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
         if (!setup) {
           return;
         }
-        const upload = await resolveAcceptedUpload(ctx, req, res, {
+        if (req.is?.(MANUAL_UPLOAD_STREAM_CONTENT_TYPE) === false) {
+          await rejectManualUploadRequest(ctx, req, res, {
+            connectorId,
+            errorCode: "manual_upload_stream_required",
+            httpStatus: 415,
+            message: `Use Content-Type: ${MANUAL_UPLOAD_STREAM_CONTENT_TYPE} for manual-upload previews.`,
+            operation: "validate",
+            ownerSubjectId,
+            param: "content-type",
+          });
+          return;
+        }
+        const upload = await stageAcceptedUpload(ctx, req, res, {
           connectorId,
           operation: "validate",
           ownerSubjectId,
@@ -1113,6 +1353,7 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
         if (!upload) {
           return;
         }
+        stagingPath = upload.stagingPath;
         const targetConnectionId = optionalConnectionId(req);
         let targetConnection: ConnectorInstance | null = null;
         if (targetConnectionId) {
@@ -1127,6 +1368,11 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
             return;
           }
         }
+        // A preview never keeps the staged bytes -- the response is built
+        // entirely from `validation` (aggregates/metadata), never the file
+        // content itself (see sendValidationPreviewResponse's own body: it
+        // has no `fileBytes` field at all). Clean up staging unconditionally
+        // once validation has produced its result, success or not.
         await sendValidationPreviewResponse(ctx, req, res, {
           acquisitionStore: ctx.createRequestAcquisitionBatchStore(),
           connectorId,
@@ -1139,6 +1385,10 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
         });
       } catch (err) {
         ctx.handleError(res, err);
+      } finally {
+        if (stagingPath) {
+          await removeStagingArtifact(stagingPath);
+        }
       }
     }
   );
@@ -1173,7 +1423,7 @@ function mountGetStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftConn
 function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
   app.post(
     "/_ref/connectors/:connectorId/manual-upload-staged-artifact",
-    { bodyLimit: MANUAL_UPLOAD_ROUTE_BODY_LIMIT_BYTES },
+    { bodyLimit: manualUploadMaxBytes() },
     ctx.requireOwnerSession,
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this route coordinates streaming upload, owner target validation, staging, and async validation handoff in one request boundary.
     async (req: RouteRequest, res: RouteResponse) => {
@@ -1327,12 +1577,13 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
 function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
   app.post(
     "/_ref/connectors/:connectorId/manual-upload-draft-connection",
-    { bodyLimit: MANUAL_UPLOAD_ROUTE_BODY_LIMIT_BYTES },
+    { bodyLimit: manualUploadMaxBytes() },
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
       const connectorId = ctx.canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
       let ownerSubjectId: string | null = null;
+      let stagingPath: string | null = null;
       try {
         ownerSubjectId = ctx.getOwnerSubjectId(req);
         const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
@@ -1344,10 +1595,22 @@ function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftCo
         if (!setup) {
           return;
         }
-        const upload = await resolveAcceptedUpload(ctx, req, res, { connectorId, ownerSubjectId, setup });
+        if (req.is?.(MANUAL_UPLOAD_STREAM_CONTENT_TYPE) === false) {
+          await rejectManualUploadRequest(ctx, req, res, {
+            connectorId,
+            errorCode: "manual_upload_stream_required",
+            httpStatus: 415,
+            message: `Use Content-Type: ${MANUAL_UPLOAD_STREAM_CONTENT_TYPE} for manual uploads.`,
+            ownerSubjectId,
+            param: "content-type",
+          });
+          return;
+        }
+        const upload = await stageAcceptedUpload(ctx, req, res, { connectorId, ownerSubjectId, setup });
         if (!upload) {
           return;
         }
+        stagingPath = upload.stagingPath;
 
         const displayName = requestedOrSuggestedDisplayName(
           req,
@@ -1364,33 +1627,39 @@ function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftCo
           validation: upload.validation,
         });
         if (known) {
+          // Already imported under this hash -- the newly-staged copy is
+          // redundant, not a source of truth for anything. Cleaned up in
+          // `finally` below like every other exit path.
           return;
         }
+        // createAndSendDraftResponse takes ownership of stagingPath from
+        // here: it rename()s it into the connection's real import
+        // directory (or cleans it up itself if the target-connection
+        // resolution fails) -- clear the local reference so this
+        // function's `finally` does not ALSO try to remove a path that
+        // either no longer exists (moved) or was already removed.
+        stagingPath = null;
         await createAndSendDraftResponse(ctx, req, res, {
           acquisitionStore,
           connectorId,
           displayName,
-          fileBytes: upload.fileBytes,
           fileName: upload.fileName,
           manifest,
           ownerSubjectId,
           setup,
+          stagingPath: upload.stagingPath,
           targetConnectionId: optionalConnectionId(req),
           validation: upload.validation,
         });
       } catch (err) {
         ctx.handleError(res, err);
+      } finally {
+        if (stagingPath) {
+          await removeStagingArtifact(stagingPath);
+        }
       }
     }
   );
-}
-
-function validateManualUploadArtifact(
-  kind: string | null,
-  fileBytes: Buffer,
-  options: { fileName?: string | null; maxFileBytes: number | null }
-): ManualUploadValidationResult | null {
-  return validateManualUploadArtifactByKind(kind, fileBytes, options);
 }
 
 function fileNameIsAccepted(
@@ -1515,6 +1784,92 @@ function normalizeFileName(raw: string | null | undefined): string | null {
 function safePathSegment(raw: string): string {
   const segment = raw.replace(UNSAFE_FILENAME_CHARS_RE, "_").replace(PATH_SEP_RE, "_").trim();
   return segment.length > 0 ? segment : "connector";
+}
+
+/** Below this age, an in-flight artifact is assumed to still be owned by a
+ *  live request/setImmediate callback on the CURRENT process -- sweeping it
+ *  too eagerly would race a legitimately-still-running validation and fail
+ *  it out from under itself. 10 minutes is generous relative to real
+ *  upload/validation durations (even a multi-GB streamed upload plus
+ *  validation completes in low minutes; see this task's report) while
+ *  being short enough that a genuinely abandoned upload from a crashed
+ *  process doesn't sit invisible for long. */
+export const MANUAL_UPLOAD_IN_FLIGHT_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * Crash/restart recovery (H5): terminalizes manual-upload artifacts left
+ * stuck at `uploaded` or `validating` by a process that died mid-upload or
+ * mid-validation (crash, OOM, `kill -9`, an unclean deploy restart) --
+ * without this sweep, such a row sits in a non-terminal status FOREVER
+ * (nothing else ever revisits it), and its staged file sits on disk
+ * forever too, since only a completing validateAndStageArtifact call ever
+ * cleans up staging.
+ *
+ * Mirrors reconcileOrphanedRunsAtBoot's shape (terminalize orphaned
+ * in-flight state from a prior process incarnation, once, at startup,
+ * before routes accept traffic) but is deliberately simpler: manual-upload
+ * artifacts have no distributed run-tracking/spine-event coordination to
+ * replay, just a DB row plus a staged file, so a single query + a bounded
+ * per-row cleanup loop is the whole mechanism.
+ *
+ * Multi-process safety: `listInFlightOlderThan` alone is a read, not a
+ * lease -- two server processes booting concurrently against the same DB
+ * (or one process re-running this sweep) would both list the SAME stale
+ * row and both blindly `update(...)` it, an unconditional write race with
+ * no winner/loser distinction (whichever update lands last wins, but both
+ * think they own the cleanup, and both would attempt
+ * `removeStagingArtifact` on the same path -- harmless since it's
+ * idempotent, but the DOUBLE-CLAIM itself is the actual defect: nothing
+ * before this fix prevented it). `claimForSweep` closes this with an
+ * atomic compare-and-swap UPDATE (`WHERE artifact_id = ? AND status IN
+ * (in-flight) AND updated_at < cutoff`, executed by the SAME primitive
+ * every other conditional row transition in this codebase already uses --
+ * a WHERE-guarded UPDATE, checked by affected-row-count) that also bumps
+ * `updated_at` to now on a win. Only the process whose UPDATE actually
+ * matched (returns true) proceeds to terminalize + clean up that row; a
+ * process that loses the race (0 rows affected, because a sibling already
+ * claimed it and moved updated_at forward) skips it entirely rather than
+ * re-terminalizing or re-deleting. Age (`staleMs`) alone never decides
+ * ownership -- it only decides which rows are ELIGIBLE to be claimed; the
+ * claim itself is what decides who owns the cleanup.
+ *
+ * Does NOT sweep orphaned `_staging/` entries that have no DB row at all
+ * (a narrower crash window between the file write completing and the DB
+ * insert committing) -- a disclosed residual, not silently unhandled: see
+ * this task's report.
+ */
+export async function reconcileAbandonedManualUploadArtifactsAtBoot(
+  ctx: Pick<MountRefManualUploadDraftConnectionContext, "createRequestManualUploadArtifactStore" | "now">,
+  options: { staleMs?: number } = {}
+): Promise<{ swept: number }> {
+  const staleMs = options.staleMs ?? MANUAL_UPLOAD_IN_FLIGHT_STALE_MS;
+  const nowIso = ctx.now ? ctx.now() : new Date().toISOString();
+  const cutoffIso = new Date(new Date(nowIso).getTime() - staleMs).toISOString();
+  const artifactStore = ctx.createRequestManualUploadArtifactStore();
+  const stuck = await artifactStore.listInFlightOlderThan(cutoffIso);
+  let swept = 0;
+  for (const artifact of stuck) {
+    // biome-ignore lint/performance/noAwaitInLoops: bounded, infrequent (startup-only) sweep; sequential updates keep each artifact's DB+disk cleanup atomic relative to the next.
+    const claimed = await artifactStore.claimForSweep(artifact.artifactId, cutoffIso, nowIso);
+    if (!claimed) {
+      // Lost the race to a concurrent sweeper (another process, or a
+      // second boot-time call): that owner is responsible for this row's
+      // terminalization and staging cleanup now.
+      continue;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: see above.
+    await artifactStore.update(artifact.artifactId, {
+      error: {
+        code: "manual_upload_interrupted",
+        message: "This import was interrupted by a server restart. Upload the file again to retry.",
+      },
+      status: "failed",
+    });
+    // biome-ignore lint/performance/noAwaitInLoops: see above.
+    await removeStagingArtifact(artifact.stagingPath);
+    swept += 1;
+  }
+  return { swept };
 }
 
 export function mountRefManualUploadDraftConnection(

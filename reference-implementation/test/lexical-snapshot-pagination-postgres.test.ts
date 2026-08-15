@@ -67,6 +67,24 @@ interface SearchListResponse {
   object?: string;
 }
 
+async function waitForIndexedPage(
+  url: string,
+  ownerToken: string,
+  timeoutMs = 10_000
+): Promise<{ body: SearchListResponse; status: number }> {
+  const deadline = Date.now() + timeoutMs;
+  let latest: { body: SearchListResponse; status: number } | null = null;
+  while (Date.now() < deadline) {
+    const response = await fetchJson(url, { headers: { Authorization: `Bearer ${ownerToken}` } });
+    latest = { body: response.body as SearchListResponse, status: response.status };
+    if (latest.status === 200 && latest.body.data.length === 3 && latest.body.has_more === true) {
+      return latest;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`lexical index did not converge before pagination assertion: ${JSON.stringify(latest)}`);
+}
+
 async function fetchJson(url: string, opts: RequestInit = {}): Promise<{ body: unknown; status: number }> {
   const resp = await fetch(url, opts);
   const text = await resp.text();
@@ -219,9 +237,11 @@ if (POSTGRES_URL) {
       await ingest(rsUrl, ownerToken, connectorId, "posts", records);
 
       // ── Page 1: fresh request → buildSnapshot + persistSnapshot (PG adapter).
-      const page1 = await fetchJson(`${rsUrl}/v1/search?q=${encodeURIComponent(term)}&limit=3`, {
-        headers: { Authorization: `Bearer ${ownerToken}` },
-      });
+      // Ingest acknowledges durable records before derived indexes finish.
+      // Poll fresh searches until the public result shape proves enough of the
+      // index has converged to exercise pagination; the snapshot under test is
+      // the final response returned here, not an earlier partial snapshot.
+      const page1 = await waitForIndexedPage(`${rsUrl}/v1/search?q=${encodeURIComponent(term)}&limit=3`, ownerToken);
       assert.equal(page1.status, 200);
       const page1Body = page1.body as SearchListResponse;
       assert.equal(page1Body.object, "list");

@@ -105,7 +105,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
           when there is something waiting. */}
       {approvals.data.length > 0 ? (
         <Section
-          description="Device-flow and consent requests waiting for the owner."
+          description="Approval requests waiting for you."
           id="pending-approvals"
           title={`Pending approvals (${approvals.data.length})`}
         >
@@ -117,12 +117,11 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
             ))}
           </DataList>
           <p className="pdpp-caption mt-2 text-muted-foreground">
-            These dashboard shortcut buttons work in open local-dev mode. If placeholder owner auth is enabled, sign in
-            at{" "}
+            These approval shortcuts are available only in local approval mode. Otherwise, sign in through{" "}
             <a className="underline-offset-2 hover:underline" href={ownerLoginUrl}>
               owner access
             </a>{" "}
-            and approve there instead.
+            and approve the request there.
           </p>
         </Section>
       ) : null}
@@ -133,7 +132,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     activeFilterChips: activeFilters,
     buildListHref: (overrides) => listHref(params, overrides),
     description: "Issued authorizations and lifecycle decisions for client access to owner data.",
-    emptyHint: "Grant artifacts appear after client/provider-connect consent flows issue or reject grants.",
+    emptyHint: "Grants appear after a connected app requests access and the request is approved, denied, or fails.",
     emptyTitle: "No grants yet",
     filters: {
       query: { defaultValue: params.q ?? "", name: "q", placeholder: "id contains…" },

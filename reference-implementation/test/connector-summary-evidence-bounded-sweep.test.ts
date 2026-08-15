@@ -132,9 +132,14 @@ test(
     const n = 50;
     seedConnections(n);
 
-    // Deadline exhausted almost immediately — expect only a small number of
-    // pages (likely just the first) to complete before the deadline check
-    // stops the loop.
+    // Deadline exhausted almost immediately. `maxDurationMs` is authoritative:
+    // a round this tight may legitimately complete ZERO pages, because no page
+    // — the most expensive unit here — may BEGIN after expiry. This used to
+    // assert `discovered > 0`, which encoded a must-make-progress guarantee the
+    // contract never made; under a 1ms budget a single scheduler yield decides
+    // it, so that assertion was only ever probabilistically true. Progress is
+    // guaranteed across repeated NORMAL-budget rounds (proven separately),
+    // never within one impossible one.
     const result = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 10 });
 
     assert.equal(result.incomplete, true, "a near-zero deadline cannot cover 50 connections in 10-per-page pages");
@@ -145,7 +150,10 @@ test(
     );
     assert.equal(result.prunedComplete, false, "an incomplete sweep must never run complete-set orphan pruning");
     assert.ok(result.discovered < n, "fewer than the complete set was discovered this call");
-    assert.ok(result.discovered > 0, "at least the first page ran before the deadline check stopped further pages");
+    assert.ok(
+      result.discovered % 10 === 0,
+      "whatever ran was whole pages — the budget never cuts a page partway through"
+    );
   })
 );
 
@@ -177,7 +185,7 @@ test(
       "the resumed sweep covers exactly the 20 connections the first sweep did not reach"
     );
     // A resumed sweep that reaches the natural end of the id cursor DOES
-    // safely run complete-set pruning: `readAllInstanceIdsForPruning` reads
+    // safely run complete-set pruning through bounded keyset pages
     // the FULL live instance table independent of this call's own cursor
     // position, so pruning's live-id set is always complete once the sweep
     // itself confirms there is no more data past its cursor — regardless of

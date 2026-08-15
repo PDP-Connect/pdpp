@@ -74,6 +74,7 @@ import {
 } from "../../operations/rs-records-delete-stream/index.ts";
 import {
   executeRecordsIngest,
+  type IngestLineFailure,
   type InsertOrReplayRejectionInput,
   parseLines as parseIngestLines,
   type RecordsIngestDependencies,
@@ -244,14 +245,44 @@ async function ingestRecordClassified(
     });
   } catch (err) {
     const classified = ctx.classifyIngestFailure(err);
-    if (!classified.retryable) {
-      const lineError = new Error(classified.message) as Error & { code: string; retryable: false };
-      lineError.code = classified.code;
-      lineError.retryable = false;
-      throw lineError;
-    }
-    throw err;
+    const lineError = new Error(classified.message) as Error & { code: string; retryable: boolean };
+    lineError.code = classified.code;
+    lineError.retryable = classified.retryable;
+    throw lineError;
   }
+}
+
+function batchOutcomeError(outcome: unknown): IngestLineFailure | null {
+  if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) {
+    return { message: "ingest batch returned a malformed record outcome", retryable: true };
+  }
+  const result = outcome as { accepted?: unknown; error?: unknown };
+  if (result.error && typeof result.error === "object") {
+    const structured = result.error as { code?: unknown; message?: unknown; retryable?: unknown };
+    if (typeof structured.message === "string") {
+      return {
+        ...(typeof structured.code === "string" ? { code: structured.code } : {}),
+        message: structured.message,
+        retryable: structured.retryable !== false,
+      };
+    }
+  }
+  if (typeof result.error === "string") {
+    return { message: result.error, retryable: true };
+  }
+  return result.accepted === true
+    ? null
+    : { message: "ingest batch returned a rejected record without an error", retryable: true };
+}
+
+function mapBatchIngestOutcomes(
+  records: readonly Record<string, unknown>[],
+  outcomes: readonly unknown[]
+): readonly (IngestLineFailure | null)[] {
+  if (outcomes.length !== records.length) {
+    throw new Error(`ingestRecords returned ${outcomes.length} results for ${records.length} records`);
+  }
+  return outcomes.map(batchOutcomeError);
 }
 
 interface TokenInfo {
@@ -415,6 +446,13 @@ export interface MountRsMutationContext {
     runId?: string | null;
     stream: string;
   }) => Promise<RejectionReceipt> | RejectionReceipt;
+  /** Optional common-path batch capability; hosts without it use the ordered fallback. */
+  readonly ingestRecords?: (
+    target: StorageTargetLike,
+    records: readonly unknown[],
+    afterRecord?: (record: unknown, outcome: unknown) => Promise<void>,
+    options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+  ) => Promise<readonly unknown[]>;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
   // ref-connectors.ts) invalidates the dashboard/Sources/Syncs summary cache
@@ -448,6 +486,7 @@ export interface MountRsMutationContext {
     stream: string;
     recordKey: string;
     mimeType: string;
+    jsonPath?: string;
     data: Buffer;
   }) => Promise<unknown>;
   readonly putSyncState: (target: StorageTargetLike, map: unknown, args: unknown) => Promise<unknown>;
@@ -574,7 +613,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
             }
             return visible;
           },
-          persistBlob: async ({ connectorId, stream, recordKey, mimeType, data }) => {
+          persistBlob: async ({ connectorId, stream, recordKey, jsonPath, mimeType, data }) => {
             const namespace = storageNamespace ?? (await resolveStorageNamespace(connectorId));
             return ctx.persistContentAddressedBlob({
               connectorId: namespace.connectorId,
@@ -582,6 +621,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
               // ctx.persistContentAddressedBlob is untyped (.js host); Buffer extends
               // Uint8Array so the operation's coerced Uint8Array is always passable here.
               data: data instanceof Buffer ? data : Buffer.from(data),
+              jsonPath,
               mimeType,
               recordKey,
               stream,
@@ -593,6 +633,8 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
           contentType: (req.headers as Record<string, unknown>)["content-type"],
           requestParams: {
             connector_id: (req.query as Record<string, unknown>).connector_id,
+            json_path: (req.query as Record<string, unknown>).json_path,
+            mime_type: (req.query as Record<string, unknown>).mime_type,
             record_key: (req.query as Record<string, unknown>).record_key,
             stream: (req.query as Record<string, unknown>).stream,
           },
@@ -1147,6 +1189,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         }
         return storageNamespace;
       };
+      const { ingestRecords } = ctx;
       const dependencies: RecordsIngestDependencies = {
         hasManifestStream: async (cid: string, streamName: string) => {
           const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
@@ -1197,6 +1240,49 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           const namespace = await resolveAdmittedNamespace(cid, requestedConnectorInstanceId);
           return namespace.connectorInstanceId;
         },
+        ...(ingestRecords
+          ? {
+              ingestRecords: async function ingestRecordsForRoute(
+                cid: string,
+                cin: string | null,
+                records: readonly Record<string, unknown>[]
+              ): Promise<readonly (IngestLineFailure | null)[]> {
+                const namespace =
+                  storageNamespace ??
+                  (await resolveAdmittedNamespace(cid, cin));
+                // biome-ignore lint/suspicious/noUnnecessaryConditions: Express route params are nullable at runtime even though the local adapter type narrows them.
+                const streamName = req.params.stream ?? "";
+                const getLatestAcquisitionBatch = ctx.getLatestAcquisitionBatchForConnection;
+                const connectorInstanceIdForBatch = namespace.connectorInstanceId;
+                const afterRecord = async function afterRecord(record: unknown, outcome: unknown): Promise<void> {
+                  const outcomeError = batchOutcomeError(outcome);
+                  if (outcomeError) {
+                    return;
+                  }
+                  if (!(getLatestAcquisitionBatch && connectorInstanceIdForBatch)) {
+                    return;
+                  }
+                  acquisitionBatchPromise ??= Promise.resolve(
+                    getLatestAcquisitionBatch(connectorInstanceIdForBatch) ?? null
+                  );
+                  await maybeRecordAcquisitionProvenance(
+                    ctx,
+                    namespace,
+                    await acquisitionBatchPromise,
+                    streamName,
+                    record
+                  );
+                };
+                const outcomes = await ingestRecords(
+                  ctx.storageTargetForConnectorNamespace(namespace),
+                  records,
+                  afterRecord,
+                  { requireConnectionAdmission: Boolean(namespace.connectorInstanceId), runId }
+                );
+                return mapBatchIngestOutcomes(records, outcomes);
+              },
+            }
+          : {}),
       };
       let output: RecordsIngestOutput;
       try {

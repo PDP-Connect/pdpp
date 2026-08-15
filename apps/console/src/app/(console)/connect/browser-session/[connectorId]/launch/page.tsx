@@ -49,7 +49,7 @@ export default async function BrowserSessionLaunchPage({
       <PageHeader
         actions={
           <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
-            Back to sources
+            Back to Sources
           </Link>
         }
         breadcrumbs={[

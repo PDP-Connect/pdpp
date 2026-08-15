@@ -395,7 +395,13 @@ export interface RefConnectionHealthCondition {
   remediation: RefConnectionConditionRemediation | null;
   sensitivity: "owner" | "public" | "secret_redacted";
   severity: "blocked" | "error" | "info" | "warning";
-  status: "false" | "true" | "unknown";
+  /**
+   * `not_applicable` means the condition cannot apply to this connection at all
+   * (no local-device binding, no managed runtime surface, no schedule policy) —
+   * a settled answer, not a pending one. The reference filters these out of
+   * `supporting_condition_ids`, so they arrive in `conditions` but are not shown.
+   */
+  status: "false" | "not_applicable" | "true" | "unknown";
   type: string;
 }
 
@@ -506,6 +512,9 @@ export interface DatasetSummaryProjectionMetadata {
 // and the dashboard must not re-assemble them.
 export interface DeploymentDiagnostics {
   database: {
+    // Authoritative storage identity from the reference process. Optional for
+    // older deployments; absence is unknown, never SQLite.
+    backend?: "postgres" | "sqlite" | "unknown";
     path: string;
     // Read-only physical on-disk footprint (Postgres-only). `null` on a
     // SQLite backend or when the size read fails — never a fabricated `0`.

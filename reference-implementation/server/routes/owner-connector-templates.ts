@@ -5,13 +5,18 @@
 // route `GET /v1/owner/connector-templates`.
 //
 // This route is intentionally template-level. It tells a trusted owner agent
-// what connector implementations exist and which configured connection
-// instances currently belong to each template. Stateful work still targets
-// `connection_id` through `/v1/owner/connections`; adding a new connection is
-// exposed only as a typed intent and is marked unsupported when this reference
-// build lacks a proven provider primitive.
+// what registered connector implementations exist and which configured
+// connection instances currently belong to each template. Stateful work still
+// targets `connection_id` through `/v1/owner/connections`; adding a new
+// connection is exposed as a typed owner-agent intent only when the
+// server-owned planner and proof/listing contract mark that REST action
+// supported. Interactive browser setup remains owner-mediated in Console.
 
-import { buildConnectionSetupPlan } from "../connection-setup-plan.ts";
+import {
+  buildConnectionSetupPlan,
+  isSupportedBrowserCollectorConnector,
+  staticSecretCredentialCaptureFromManifest,
+} from "../connection-setup-plan.ts";
 import type { OwnerAgentControlAction } from "../metadata.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
@@ -32,9 +37,26 @@ interface AppLike {
 }
 
 interface ConnectorManifestLike {
+  readonly capabilities?: {
+    readonly auth?: {
+      readonly deployment_config?: readonly string[] | null;
+      readonly kind?: string | null;
+      readonly mode?: string | null;
+      readonly required?: readonly string[] | null;
+      readonly type?: string | null;
+    } | null;
+    readonly public_listing?: {
+      readonly tier?: "supported" | "preview" | "development" | null;
+    } | null;
+  } | null;
   readonly connector_id?: string | null;
   readonly connector_key?: string | null;
   readonly display_name?: string | null;
+  readonly icon?: {
+    readonly color?: string | null;
+    readonly kind?: string | null;
+    readonly svg?: string | null;
+  } | null;
   readonly name?: string | null;
   readonly runtime_requirements?: {
     readonly bindings?: Readonly<Record<string, unknown>> | null;
@@ -60,11 +82,11 @@ interface ConnectorInstanceStore {
 
 export interface MountOwnerConnectorTemplatesContext {
   canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  configuredProviderAuthConnectorKeys?: readonly string[];
   createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
   getConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike | null> | ConnectorManifestLike | null;
   getOwnerTokenSubjectId: (req: unknown) => string;
   handleError: (res: unknown, err: unknown) => void;
-  listReferenceLocalConnectorCatalogManifests: () => readonly ConnectorManifestLike[];
   listRegisteredConnectorIds: () => Promise<readonly string[]> | readonly string[];
   projectStorageDisplayName: (
     displayName: string | null | undefined,
@@ -73,10 +95,24 @@ export interface MountOwnerConnectorTemplatesContext {
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   resolveResource: (req: unknown) => string;
+  uatExposeUnlistedConnectors?: boolean;
+  uatConnectorAllowlist?: ReadonlySet<string>;
 }
 
 function stripTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+export function parseUatConnectorAllowlist(input: string | undefined): ReadonlySet<string> {
+  if (!input || typeof input !== "string") {
+    return new Set();
+  }
+  return new Set(
+    input
+      .split(",")
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0 && /^[a-z0-9_-]+$/.test(k))
+  );
 }
 
 function connectorKeyFromManifest(
@@ -121,13 +157,108 @@ function projectConnectionSummary(
   };
 }
 
+// These are the dispositions with a supported owner-agent REST intent. Browser
+// setup is intentionally handled by the separate owner-session projection
+// below, because the REST intent route cannot launch interactive login.
+const ACTIONABLE_CATALOG_DISPOSITIONS = new Set([
+  "local_collector_enroll",
+  "manual_upload_connect",
+  "provider_auth_connect",
+  "static_secret_connect",
+]);
+
+const OWNER_SESSION_BROWSER_ACTION_REASON =
+  "Connect this account from the owner's secure browser-session dashboard. Owner-agent REST does not launch interactive browser setup.";
+
+function isActionablePublicListing(manifest: ConnectorManifestLike): boolean {
+  // `needs_human_auth` is an explicitly actionable listing state for sources
+  // whose owner-mediated setup still requires an interactive provider step.
+  const listing = manifest.capabilities?.public_listing;
+  return listing?.tier !== undefined && listing.tier !== "development";
+}
+
+export function isSupportedOwnerActionPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
+  return (
+    ACTIONABLE_CATALOG_DISPOSITIONS.has(plan.catalogDisposition) &&
+    plan.ownerAgentIntent.status === "supported" &&
+    plan.ownerAgentIntent.method !== null &&
+    plan.ownerAgentIntent.nextStepKind === plan.nextStepKind &&
+    plan.supportState === "supported" &&
+    plan.proofGate === null
+  );
+}
+
+/**
+ * Browser setup has a shipped owner-session route, but it is not an
+ * owner-agent REST primitive: the owner must complete interactive login in
+ * the secure browser. The planner's production-ready browser roster is the
+ * proof for browser-backed static-secret entries; the manual disposition is
+ * already the planner's proof-backed browser classification.
+ */
+export function isOwnerSessionBrowserActionPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
+  if (plan.connectorModality !== "browser_bound") {
+    return false;
+  }
+  if (plan.catalogDisposition === "browser_collector_manual") {
+    return plan.nextStepKind === "enroll_browser_collector" && typeof plan.enrollmentKey === "string";
+  }
+  return (
+    plan.catalogDisposition === "static_secret_connect" &&
+    plan.setupModality === "static_secret" &&
+    isSupportedBrowserCollectorConnector(plan.connectorKey)
+  );
+}
+
+function isOwnerActionablePlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
+  return isSupportedOwnerActionPlan(plan) || isOwnerSessionBrowserActionPlan(plan);
+}
+
+function isUatExposablePlan(
+  plan: ReturnType<typeof buildConnectionSetupPlan>,
+  manifest: ConnectorManifestLike,
+  connectorKey?: string | null,
+  allowlist?: ReadonlySet<string>
+): boolean {
+  const basePlan = [
+    isOwnerActionablePlan(plan),
+    plan.catalogDisposition === "static_secret_experimental",
+    plan.catalogDisposition === "static_secret_connect" &&
+      plan.setupModality === "static_secret" &&
+      staticSecretCredentialCaptureFromManifest(manifest) !== null,
+  ].includes(true);
+
+  if (basePlan) {
+    return true;
+  }
+
+  // Allowlist-based UAT exposure: development connectors explicitly listed
+  // can be exposed when they have a valid setup path
+  if (allowlist && connectorKey && allowlist.has(connectorKey)) {
+    const listing = manifest.capabilities?.public_listing;
+    const isDevelopment = listing?.tier === "development";
+    if (isDevelopment) {
+      const hasValidSetup =
+        plan.catalogDisposition === "static_secret_connect" &&
+        plan.setupModality === "static_secret" &&
+        staticSecretCredentialCaptureFromManifest(manifest) !== null;
+      return hasValidSetup;
+    }
+  }
+
+  return false;
+}
+
 function buildTemplateSupportedActions(args: {
-  connectorKey: string;
+  manifest: ConnectorManifestLike;
   plan: ReturnType<typeof buildConnectionSetupPlan>;
   resource: string;
+  uatExposeUnlistedConnectors?: boolean;
 }): OwnerAgentControlAction[] {
   const rs = stripTrailingSlash(args.resource);
-  if (args.plan.ownerAgentIntent.status === "supported") {
+  const isActionable =
+    isActionablePublicListing(args.manifest) ||
+    (args.uatExposeUnlistedConnectors === true && isSupportedOwnerActionPlan(args.plan));
+  if (isActionable && isSupportedOwnerActionPlan(args.plan)) {
     return [
       {
         family: "initiate_connection",
@@ -135,6 +266,17 @@ function buildTemplateSupportedActions(args: {
         reason: `${args.plan.ownerAgentIntent.reason} Body: { connector_id, display_name? }.`,
         status: "supported",
         url: `${rs}/v1/owner/connections/intents`,
+      },
+    ];
+  }
+  if (isActionable && isOwnerSessionBrowserActionPlan(args.plan)) {
+    return [
+      {
+        family: "initiate_connection",
+        method: null,
+        reason: OWNER_SESSION_BROWSER_ACTION_REASON,
+        status: "owner_mediated",
+        url: null,
       },
     ];
   }
@@ -149,10 +291,25 @@ function buildTemplateSupportedActions(args: {
   ];
 }
 
-function projectSetupPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): Record<string, unknown> {
+function projectSetupPlan(
+  manifest: ConnectorManifestLike,
+  plan: ReturnType<typeof buildConnectionSetupPlan>
+): Record<string, unknown> {
+  // Owner-facing actionability: manifest is listed AND plan is actionable (lifecycle authority unchanged).
+  // UAT exposure via uat_expose_unlisted_connectors does not modify setup_plan; it is a separate flag
+  // for the console to enable testing without claiming Supported or Preview tier.
+  const isActionableManifest = isActionablePublicListing(manifest);
+  const isActionablePlan = isOwnerActionablePlan(plan);
+  const ownerActionable = isActionableManifest && isActionablePlan;
   return {
+    catalog_disposition: plan.catalogDisposition,
     deployment_readiness: plan.deploymentReadiness,
+    enrollment_key: plan.enrollmentKey ?? null,
     next_step_kind: plan.nextStepKind,
+    // This is owner-facing actionability, not owner-agent REST support. A
+    // browser action is represented in supported_actions as owner_mediated
+    // with no method or URL because interactive setup stays in Console.
+    owner_actionable: ownerActionable,
     proof_gate: plan.proofGate,
     runbook_path: plan.runbookPath,
     setup_modality: plan.setupModality,
@@ -171,11 +328,28 @@ function projectTemplate(
   if (!connectorKey) {
     return null;
   }
-  const plan = buildConnectionSetupPlan({ connectorKey, manifest });
+  const plan = buildConnectionSetupPlan({
+    configuredProviderAuthConnectorKeys: ctx.configuredProviderAuthConnectorKeys ?? [],
+    connectorKey,
+    manifest,
+  });
   const modality = plan.connectorModality;
   const connections = (connectionsByConnector.get(connectorKey) ?? []).map((instance) =>
     projectConnectionSummary(ctx, instance)
   );
+  // Explicit UAT exposure fact: true only when deployment opts in, AND
+  // (connector is preview tier unproven OR development tier on allowlist),
+  // AND the plan is UAT-exposable (has a valid setup path).
+  const listing = manifest.capabilities?.public_listing;
+  const isUnproven = listing?.tier === "preview";
+  const isDevelopment = listing?.tier === "development";
+  const isAllowlisted = ctx.uatConnectorAllowlist?.has(connectorKey) === true;
+
+  const uatExposeUnlistedConnectors =
+    ctx.uatExposeUnlistedConnectors === true &&
+    ((isUnproven && isUatExposablePlan(plan, manifest, connectorKey, ctx.uatConnectorAllowlist)) ||
+      (isDevelopment && isAllowlisted && isUatExposablePlan(plan, manifest, connectorKey, ctx.uatConnectorAllowlist)));
+
   return {
     connection_count: connections.length,
     connections,
@@ -183,22 +357,20 @@ function projectTemplate(
     connector_key: connectorKey,
     connector_modality: modality,
     display_name: displayNameForTemplate(connectorKey, manifest),
+    icon: manifest.icon ?? null,
     object: "owner_connector_template",
-    setup_plan: projectSetupPlan(plan),
+    public_listing: manifest.capabilities?.public_listing ?? null,
+    registration_status: "registered",
+    setup_plan: projectSetupPlan(manifest, plan),
     stream_count: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
-    supported_actions: buildTemplateSupportedActions({ connectorKey, plan, resource }),
+    supported_actions: buildTemplateSupportedActions({ manifest, plan, resource, uatExposeUnlistedConnectors }),
+    uat_expose_unlisted_connectors: uatExposeUnlistedConnectors,
     version: manifest.version ?? null,
   };
 }
 
 async function collectConnectorTemplates(ctx: MountOwnerConnectorTemplatesContext): Promise<ConnectorManifestLike[]> {
   const byConnectorKey = new Map<string, ConnectorManifestLike>();
-  for (const manifest of ctx.listReferenceLocalConnectorCatalogManifests()) {
-    const key = connectorKeyFromManifest(ctx, manifest);
-    if (key) {
-      byConnectorKey.set(key, manifest);
-    }
-  }
   for (const connectorId of await ctx.listRegisteredConnectorIds()) {
     const connectorKey = ctx.canonicalConnectorKey(connectorId) ?? connectorId;
     try {
@@ -255,7 +427,16 @@ export function mountOwnerConnectorTemplates(app: AppLike, ctx: MountOwnerConnec
         ]);
         res.json({
           data: templates
-            .map((manifest) => projectTemplate(ctx, manifest, connections, resource))
+            .map((manifest) => {
+              // A malformed registered manifest should not blank every other
+              // template from an owner agent — same isolation as the read loop
+              // in collectConnectorTemplates above.
+              try {
+                return projectTemplate(ctx, manifest, connections, resource);
+              } catch {
+                return null;
+              }
+            })
             .filter((item): item is Record<string, unknown> => Boolean(item)),
           object: "list",
         });

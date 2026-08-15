@@ -8,7 +8,26 @@
 // route and it never returns the submitted secret. Owner-agent intent may point
 // at the owner-session capture page, but it never carries the credential itself.
 
-import { type ConnectorManifestLike, expectedStaticSecretCredentialKind } from "../connection-setup-plan.ts";
+import {
+  isBundledStaticSecretCredentialKind,
+  isFullyBundledStaticSecretCredentialKind,
+} from "../../../packages/polyfill-connectors/src/static-secret-credential-capture.ts";
+
+import {
+  type ConnectorManifestLike,
+  expectedStaticSecretCredentialKind,
+  type StaticSecretSetupField,
+  staticSecretCredentialCaptureFromManifest,
+} from "../connection-setup-plan.ts";
+import {
+  assertStaticSecretActiveCredentialReplacementAllowed,
+  isStaticSecretBindingUniqueConflict,
+  isStaticSecretPipelineBinding,
+  parseStaticSecretSetupFields,
+  staticSecretBindingRecord,
+  staticSecretIdentityClaim,
+  staticSecretSetupFieldsFromBinding,
+} from "../static-secret-identity.ts";
 import { isCredentialEncryptionConfigured } from "../stores/credential-encryption.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { codeToStatus } from "./ref-error-status.ts";
@@ -111,18 +130,38 @@ interface ConnectorInstanceCredentialStore {
     secret: string;
     now: string;
   }) => Promise<CredentialMetadata> | CredentialMetadata;
+  // Non-secret, key-derived fingerprint of a candidate plaintext — used to
+  // prove "is this the exact same credential already stored" without
+  // sealing/persisting anything. See connector-instance-credential-store.ts.
+  fingerprintCandidate: (secret: string) => string | null;
   getMetadata: (connectorInstanceId: string) => Promise<CredentialMetadata | null> | CredentialMetadata | null;
 }
 
 interface ConnectorInstanceRow {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
+  readonly ownerSubjectId: string;
   readonly sourceBinding?: unknown;
+  readonly sourceBindingKey: string;
   readonly status: string;
 }
 
 interface ConnectorInstanceStore {
   get: (connectorInstanceId: string) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
+  getByBinding: (input: {
+    ownerSubjectId: string;
+    connectorId: string;
+    sourceKind: string;
+    sourceBindingKey: string;
+  }) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
+  updateStaticSecretBinding: (input: {
+    connectorInstanceId: string;
+    connectorId: string;
+    ownerSubjectId: string;
+    sourceBinding: Record<string, unknown>;
+    sourceBindingKey: string;
+    updatedAt: string;
+  }) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
   updateStatus: (
     connectorInstanceId: string,
     args: { readonly revokedAt?: string | null; readonly status: string; readonly updatedAt: string }
@@ -148,6 +187,7 @@ export interface MountRefStaticSecretCredentialsContext {
         status: string | null;
       };
     };
+    ownerSubjectId: string;
     requiredActions: readonly AutoResumeRequiredAction[];
   }) => Promise<AutoResumeResult> | AutoResumeResult;
   // Canonicalize a connector id/key (strip the registry prefix) so the probe
@@ -155,11 +195,12 @@ export interface MountRefStaticSecretCredentialsContext {
   // given (matching the existing draft-route fallback).
   canonicalConnectorKey?: (value: string | null | undefined) => string | null;
   createRequestConnectorInstanceCredentialStore: () => ConnectorInstanceCredentialStore;
-  // Connector-instance store, used to recover the draft's non-secret setup
-  // fields for the probe context and to retire rejected first-time draft setup
-  // rows. Optional: when absent the probe runs with no setup-field context
-  // (fine for connectors whose probe needs none, e.g. GitHub) and cannot
-  // perform draft cleanup.
+  // Credential capture changes the owner-facing connector summary state and
+  // must invalidate any in-flight summary projection before the response.
+  invalidateConnectorSummariesCache?: () => void;
+  // Connector-instance store, used to recover/update non-secret setup fields
+  // and claim a verified provider identity. Optional only for narrow injected
+  // callers that do not use setup-field or identity-aware probing.
   createRequestConnectorInstanceStore?: () => ConnectorInstanceStore;
   createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
   emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
@@ -201,12 +242,35 @@ function errWithCode(code: string): { code: string } {
   return { code };
 }
 
-async function expectedCredentialKindForConnector(
+function codedError(code: string, message: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.code = code;
+  return error;
+}
+
+function throwCodedError(code: string, message: string): never {
+  throw codedError(code, message);
+}
+
+function nowFor(ctx: MountRefStaticSecretCredentialsContext): string {
+  return ctx.now ? ctx.now() : new Date().toISOString();
+}
+
+interface StaticSecretCredentialContract {
+  readonly credentialKind: string;
+  readonly fields: readonly StaticSecretSetupField[];
+  /** Block-level `credential_capture.required` — see `validateBundledSecret`'s doc. */
+  readonly required: boolean;
+}
+
+async function staticSecretCredentialContract(
   ctx: MountRefStaticSecretCredentialsContext,
   connectorId: string
-): Promise<string | null> {
+): Promise<StaticSecretCredentialContract | null> {
   const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
-  return expectedStaticSecretCredentialKind(connectorId, manifest);
+  const credentialKind = expectedStaticSecretCredentialKind(connectorId, manifest);
+  const capture = staticSecretCredentialCaptureFromManifest(manifest);
+  return credentialKind && capture ? { credentialKind, fields: capture.fields, required: capture.required } : null;
 }
 
 function projectCredentialMetadata(meta: CredentialMetadata): Record<string, unknown> {
@@ -236,7 +300,8 @@ function credentialRepairAction(): AutoResumeRequiredAction {
 async function autoResumeAfterCredentialCapture(
   ctx: MountRefStaticSecretCredentialsContext,
   namespace: ConnectorNamespace,
-  credential: CredentialMetadata
+  credential: CredentialMetadata,
+  ownerSubjectId: string
 ): Promise<AutoResumeResult | null> {
   if (typeof ctx.autoResumeSatisfiedActions !== "function") {
     return null;
@@ -253,6 +318,7 @@ async function autoResumeAfterCredentialCapture(
           status: credential.status ?? null,
         },
       },
+      ownerSubjectId,
       requiredActions: [credentialRepairAction()],
     });
   } catch (err) {
@@ -337,67 +403,17 @@ async function emitCaptureAudit(
   });
 }
 
-// Pull the non-secret setup fields out of the draft's source binding. The draft
-// binding is `{ kind: "static_secret_draft", setup_fields: {...} }`; only
-// non-secret fields are ever stored there (the secret lives in the credential
-// store), so this is safe to read for the probe context.
-function setupFieldsFromBinding(sourceBinding: unknown): Record<string, string> | null {
-  if (!sourceBinding || typeof sourceBinding !== "object" || Array.isArray(sourceBinding)) {
-    return null;
-  }
-  const raw = (sourceBinding as { setup_fields?: unknown }).setup_fields;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return null;
-  }
-  const fields: Record<string, string> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (typeof value === "string" && value.length > 0) {
-      fields[key] = value;
-    }
-  }
-  return Object.keys(fields).length > 0 ? fields : null;
-}
-
-function isStaticSecretDraftInstance(instance: ConnectorInstanceRow | null): instance is ConnectorInstanceRow {
-  if (instance?.status !== "draft") {
-    return false;
-  }
-  const binding = instance.sourceBinding;
-  return Boolean(
-    binding &&
-      typeof binding === "object" &&
-      !Array.isArray(binding) &&
-      (binding as { kind?: unknown }).kind === "static_secret_draft"
-  );
-}
-
-async function retireRejectedStaticSecretDraft(
-  ctx: MountRefStaticSecretCredentialsContext,
-  connectorInstanceId: string,
-  now: string
-): Promise<void> {
-  if (typeof ctx.createRequestConnectorInstanceStore !== "function") {
-    return;
-  }
-  const store = ctx.createRequestConnectorInstanceStore();
-  const instance = await store.get(connectorInstanceId);
-  if (!isStaticSecretDraftInstance(instance)) {
-    return;
-  }
-  await store.updateStatus(connectorInstanceId, {
-    revokedAt: now,
-    status: "revoked",
-    updatedAt: now,
-  });
-}
-
 // Resolve the non-secret setup-field context for a connector's probe by reading
 // the draft instance's source binding. Best-effort: a connector whose probe
 // needs no setup fields (e.g. GitHub) is unaffected when this returns null.
 async function probeContextForInstance(
   ctx: MountRefStaticSecretCredentialsContext,
-  connectorInstanceId: string
+  connectorInstanceId: string,
+  setupFieldsOverride?: Record<string, string>
 ): Promise<StaticSecretProbeContext> {
+  if (setupFieldsOverride) {
+    return { connectorInstanceId, setupFields: setupFieldsOverride };
+  }
   if (typeof ctx.createRequestConnectorInstanceStore !== "function") {
     return { connectorInstanceId, setupFields: null };
   }
@@ -405,7 +421,7 @@ async function probeContextForInstance(
   const instance = await store.get(connectorInstanceId);
   return {
     connectorInstanceId,
-    setupFields: instance ? setupFieldsFromBinding(instance.sourceBinding) : null,
+    setupFields: instance ? staticSecretSetupFieldsFromBinding(instance.sourceBinding) : null,
   };
 }
 
@@ -413,7 +429,7 @@ function parseCaptureBody(
   ctx: MountRefStaticSecretCredentialsContext,
   res: RouteResponse,
   body: unknown
-): { credentialKind: string | null; secret: string } | null {
+): { credentialKind: string | null; secret: string; setupFieldsRaw?: unknown } | null {
   const objectBody = (body as Record<string, unknown> | null) || {};
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const secret = objectBody.secret;
@@ -430,12 +446,209 @@ function parseCaptureBody(
   return {
     credentialKind: typeof objectBody.credential_kind === "string" ? objectBody.credential_kind.trim() : null,
     secret,
+    ...(Object.hasOwn(objectBody, "setup_fields") ? { setupFieldsRaw: objectBody.setup_fields } : {}),
   };
+}
+
+async function updateDraftSetupFieldsBeforeProbe(
+  ctx: MountRefStaticSecretCredentialsContext,
+  input: {
+    connectorId: string;
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+    setupFields?: Record<string, string>;
+  }
+): Promise<void> {
+  if (!input.setupFields || typeof ctx.createRequestConnectorInstanceStore !== "function") {
+    return;
+  }
+  const store = ctx.createRequestConnectorInstanceStore();
+  const instance = await store.get(input.connectorInstanceId);
+  if (instance?.status !== "draft") {
+    return;
+  }
+  const binding = staticSecretBindingRecord(instance.sourceBinding);
+  if (binding?.kind !== "static_secret_draft") {
+    throwCodedError("static_secret_draft_required", "Only a static-secret draft can update setup fields during retry.");
+  }
+  binding.setup_fields = input.setupFields;
+  await store.updateStaticSecretBinding({
+    connectorId: input.connectorId,
+    connectorInstanceId: input.connectorInstanceId,
+    ownerSubjectId: input.ownerSubjectId,
+    sourceBinding: binding,
+    sourceBindingKey: instance.sourceBindingKey,
+    updatedAt: ctx.now ? ctx.now() : new Date().toISOString(),
+  });
+}
+
+interface ClaimedStaticSecretIdentity {
+  readonly deduplicated: boolean;
+  readonly instance: ConnectorInstanceRow;
+}
+
+function requireConnectorInstanceStore(ctx: MountRefStaticSecretCredentialsContext): ConnectorInstanceStore {
+  if (typeof ctx.createRequestConnectorInstanceStore !== "function") {
+    throwCodedError(
+      "static_secret_identity_unavailable",
+      "A connector-instance store is required to claim a verified provider identity."
+    );
+  }
+  return ctx.createRequestConnectorInstanceStore();
+}
+
+async function currentInstanceOrThrow(
+  store: ConnectorInstanceStore,
+  connectorInstanceId: string
+): Promise<ConnectorInstanceRow> {
+  const current = await store.get(connectorInstanceId);
+  if (!current) {
+    throwCodedError("connector_instance_not_found", `Connection '${connectorInstanceId}' does not exist.`);
+  }
+  return current;
+}
+
+function currentBindingOrThrow(current: ConnectorInstanceRow): Record<string, unknown> {
+  const binding = staticSecretBindingRecord(current.sourceBinding);
+  if (!binding) {
+    throwCodedError(
+      "static_secret_binding_invalid",
+      "The connection has no valid static-secret binding; refusing to store the credential."
+    );
+  }
+  return binding;
+}
+
+async function resolveIdentityBindingConflict(
+  ctx: MountRefStaticSecretCredentialsContext,
+  store: ConnectorInstanceStore,
+  current: ConnectorInstanceRow,
+  sourceBindingKey: string,
+  originalError: unknown,
+  input: { connectorId: string; ownerSubjectId: string }
+): Promise<ClaimedStaticSecretIdentity> {
+  const winner = await store.getByBinding({
+    connectorId: input.connectorId,
+    ownerSubjectId: input.ownerSubjectId,
+    sourceBindingKey,
+    sourceKind: "account",
+  });
+  if (!winner) {
+    throw originalError;
+  }
+  if (winner.status === "revoked") {
+    throwCodedError(
+      "static_secret_identity_revoked",
+      "This provider identity belongs to a revoked connection; refusing to create or reactivate another connection silently."
+    );
+  }
+  if (current.status === "active" && winner.connectorInstanceId !== current.connectorInstanceId) {
+    throwCodedError(
+      "static_secret_identity_conflict",
+      "Another active connection already owns this verified provider identity; refusing to retarget this active connection."
+    );
+  }
+  if (winner.connectorInstanceId !== current.connectorInstanceId && current.status === "draft") {
+    const now = nowFor(ctx);
+    await store.updateStatus(current.connectorInstanceId, {
+      revokedAt: now,
+      status: "revoked",
+      updatedAt: now,
+    });
+  }
+  return { deduplicated: true, instance: winner };
+}
+
+async function claimProbedStaticSecretIdentity(
+  ctx: MountRefStaticSecretCredentialsContext,
+  input: {
+    connectorId: string;
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+    probedIdentity: string;
+    secret: string;
+    setupFields?: Record<string, string>;
+  }
+): Promise<ClaimedStaticSecretIdentity> {
+  const store = requireConnectorInstanceStore(ctx);
+  const { identity, sourceBindingKey } = staticSecretIdentityClaim(input);
+  const current = await currentInstanceOrThrow(store, input.connectorInstanceId);
+  const binding = currentBindingOrThrow(current);
+  if (current.status === "active" && isStaticSecretPipelineBinding(current.sourceBinding)) {
+    const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
+    const existingCredential = await credentialStore.getMetadata(input.connectorInstanceId);
+    assertStaticSecretActiveCredentialReplacementAllowed({
+      existingCredentialFingerprint: existingCredential?.fingerprint ?? null,
+      hasExistingCredential: existingCredential !== null,
+      newSecretFingerprint: credentialStore.fingerprintCandidate(input.secret),
+      probedIdentity: identity,
+      sourceBinding: current.sourceBinding,
+      status: current.status,
+    });
+  }
+  binding.verified_identity = identity;
+  if (input.setupFields) {
+    binding.setup_fields = input.setupFields;
+  }
+  try {
+    const updated = await store.updateStaticSecretBinding({
+      connectorId: input.connectorId,
+      connectorInstanceId: input.connectorInstanceId,
+      ownerSubjectId: input.ownerSubjectId,
+      sourceBinding: binding,
+      sourceBindingKey,
+      updatedAt: nowFor(ctx),
+    });
+    if (!updated) {
+      throwCodedError(
+        "connector_instance_not_found",
+        `Connection '${input.connectorInstanceId}' is no longer capturable.`
+      );
+    }
+    return { deduplicated: false, instance: updated };
+  } catch (err) {
+    if (!isStaticSecretBindingUniqueConflict(err)) {
+      throw err;
+    }
+    return resolveIdentityBindingConflict(ctx, store, current, sourceBindingKey, err, input);
+  }
+}
+
+// Guards a credential replacement when there is no probed identity to claim
+// (no-probe connector, or a probe that self-reported skipped). The active-
+// connection fail-closed rule still applies here — this is the primary
+// reproduction path for PR #84's P1: a connection that reached `active`
+// through first-sync with no probe ever running has no durable identity
+// signal on its binding, and nothing about that absence licenses a silent
+// credential swap.
+//
+// Deliberately never passes anything derived from `setup_fields` as identity
+// proof here: those are owner-typed, non-secret, and trivially resubmittable
+// by an attacker alongside a stolen secret. With no probe, the only channel
+// this route can offer is the credential fingerprint.
+async function assertActiveReplacementAllowedWithoutProbe(
+  ctx: MountRefStaticSecretCredentialsContext,
+  input: { connectorInstanceId: string; secret: string }
+): Promise<void> {
+  const store = requireConnectorInstanceStore(ctx);
+  const current = await currentInstanceOrThrow(store, input.connectorInstanceId);
+  if (current.status !== "active" || !isStaticSecretPipelineBinding(current.sourceBinding)) {
+    return;
+  }
+  const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
+  const existingCredential = await credentialStore.getMetadata(input.connectorInstanceId);
+  assertStaticSecretActiveCredentialReplacementAllowed({
+    existingCredentialFingerprint: existingCredential?.fingerprint ?? null,
+    hasExistingCredential: existingCredential !== null,
+    newSecretFingerprint: credentialStore.fingerprintCandidate(input.secret),
+    sourceBinding: current.sourceBinding,
+    status: current.status,
+  });
 }
 
 // Runs the synchronous credential probe when one is configured. Returns the
 // probed identity on success, null-with-side-effects on rejection (audit emitted,
-// error sent, draft retired), or `{ probedIdentity: null }` when the probe is
+// error sent, draft remains resumable), or `{ probedIdentity: null }` when the probe is
 // absent or skipped.
 async function runCredentialProbe(
   ctx: MountRefStaticSecretCredentialsContext,
@@ -448,20 +661,19 @@ async function runCredentialProbe(
     credentialKind: string | null;
     ownerSubjectId: string | null;
     secret: string;
+    setupFields?: Record<string, string>;
   }
 ): Promise<{ probedIdentity: { detail: string | null; identity: string } | null } | null> {
   if (typeof ctx.probeStaticSecretCredential !== "function") {
     return { probedIdentity: null };
   }
-  const probeContext = await probeContextForInstance(ctx, args.connectorInstanceId);
+  const probeContext = await probeContextForInstance(ctx, args.connectorInstanceId, args.setupFields);
   const probeResult = await ctx.probeStaticSecretCredential({
     connectorKey: args.connectorKey,
     context: probeContext,
     secret: args.secret,
   });
   if (!probeResult.ok) {
-    const now = ctx.now ? ctx.now() : new Date().toISOString();
-    await retireRejectedStaticSecretDraft(ctx, args.connectorInstanceId, now);
     await emitCaptureAudit(ctx, req, res, {
       connectionId: args.connectorInstanceId,
       connectorId: args.connectorId,
@@ -481,7 +693,7 @@ async function runCredentialProbe(
 
 // Validates the expected credential kind for a namespace and that encryption is
 // configured. Emits audit + sends the error response on failure and returns
-// false; returns true when all checks pass.
+// null; returns the manifest's non-secret setup fields when all checks pass.
 async function validateCredentialKind(
   ctx: MountRefStaticSecretCredentialsContext,
   req: RouteRequest,
@@ -489,9 +701,9 @@ async function validateCredentialKind(
   namespace: ConnectorNamespace,
   credentialKind: string | null,
   ownerSubjectId: string | null
-): Promise<boolean> {
-  const expectedKind = await expectedCredentialKindForConnector(ctx, namespace.connectorId);
-  if (!expectedKind) {
+): Promise<StaticSecretCredentialContract | null> {
+  const contract = await staticSecretCredentialContract(ctx, namespace.connectorId);
+  if (!contract) {
     await emitCaptureAudit(ctx, req, res, {
       connectionId: namespace.connectorInstanceId,
       connectorId: namespace.connectorId,
@@ -506,9 +718,9 @@ async function validateCredentialKind(
       "static_secret_credential_unsupported",
       `Connection '${namespace.connectorInstanceId}' belongs to connector '${namespace.connectorId}', which is not a static-secret connector.`
     );
-    return false;
+    return null;
   }
-  if (credentialKind !== expectedKind) {
+  if (credentialKind !== contract.credentialKind) {
     await emitCaptureAudit(ctx, req, res, {
       connectionId: namespace.connectorInstanceId,
       connectorId: namespace.connectorId,
@@ -521,10 +733,10 @@ async function validateCredentialKind(
       res,
       400,
       "credential_kind_mismatch",
-      `credential_kind must be '${expectedKind}' for connector '${namespace.connectorId}'.`,
+      `credential_kind must be '${contract.credentialKind}' for connector '${namespace.connectorId}'.`,
       "credential_kind"
     );
-    return false;
+    return null;
   }
   // Fail closed before probing when the instance-level credential key
   // provider is missing: there is no point validating a credential we
@@ -545,9 +757,184 @@ async function validateCredentialKind(
       "credential_encryption_key_missing",
       "Credential encryption is required but no instance-level key provider is configured. Configure it before capturing a static-secret credential. No credential was validated or stored."
     );
-    return false;
+    return null;
   }
-  return true;
+  return contract;
+}
+
+// A REQUIRED contract (credential_capture.required is not false) whose
+// secret fields are all individually optional describes "at least one
+// credential path" (for example, username+password OR an API key) —
+// per-field `required` checks never fire on a fully empty submission for
+// that shape, so it needs its own presence check to reject one.
+function isAtLeastOnePathContract(secretFields: readonly StaticSecretSetupField[]): boolean {
+  return secretFields.length > 0 && !secretFields.some((field) => field.required);
+}
+
+function parseSecretBundle(secret: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(secret);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {};
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function bundleHasAnySecret(bundle: Record<string, unknown>, secretFields: readonly StaticSecretSetupField[]): boolean {
+  return secretFields.some((field) => {
+    const value = bundle[field.name];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+function bundleHasField(bundle: Record<string, unknown>, field: StaticSecretSetupField): boolean {
+  const value = bundle[field.name];
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+// Shared reject path for every `validateBundledSecret` rejection: audit +
+// respond identically, only the message differs.
+async function rejectMissingCredential(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  namespace: ConnectorNamespace,
+  credentialKind: string | null,
+  ownerSubjectId: string | null,
+  message: string
+): Promise<void> {
+  await emitCaptureAudit(ctx, req, res, {
+    connectionId: namespace.connectorInstanceId,
+    connectorId: namespace.connectorId,
+    credentialKind,
+    error: errWithCode("missing_credential"),
+    outcome: "failed",
+    ownerSubjectId,
+  });
+  ctx.pdppError(res, 400, "missing_credential", message, "secret");
+}
+
+/** Every field in the bundle is absent — the connector-honest "sign in by hand" choice, never a partial submission. */
+function bundleIsEntirelyBlank(contract: StaticSecretCredentialContract, bundle: Record<string, unknown>): boolean {
+  return !contract.fields.some((field) => bundleHasField(bundle, field));
+}
+
+// The ONE per-field completeness rule, shared by BOTH `validateBundledSecret`
+// branches. A fully bundled credential requires every required capture field;
+// a partially bundled credential requires its required secret fields. For a REQUIRED capture this is the
+// manifest contract enforced directly (a partial username/password bundle or
+// a literal `{}` fails here, before any probe or store). For an OPTIONAL
+// capture (BOTH-OR-NONE) the caller must check
+// `bundleIsEntirelyBlank` FIRST — an entirely blank bundle is the valid
+// "sign in by hand" choice this function does not itself special-case — and
+// the moment ANY field is present, the same rule applies unchanged.
+// The credential-kind fact is load-bearing: `secret_bundle` seals non-secret
+// fields too, while `username_password` keeps setup fields (such as a base URL)
+// outside the credential so rotation does not require resubmitting them.
+function missingRequiredBundledFields(
+  contract: StaticSecretCredentialContract,
+  bundle: Record<string, unknown>
+): readonly StaticSecretSetupField[] {
+  const fullyBundled = isFullyBundledStaticSecretCredentialKind(contract.credentialKind);
+  return contract.fields.filter(
+    (field) => (fullyBundled || field.secret) && field.required && !bundleHasField(bundle, field)
+  );
+}
+
+// The wire encoding for "no credential was submitted" on an OPTIONAL
+// capture, for EITHER kind shape — mirrors the console's
+// `BLANK_OPTIONAL_SECRET_SENTINEL` (`static-secret-payload.ts`) exactly.
+// `parseCaptureBody` above rejects a genuinely empty string outright as
+// `invalid_request` before any required/optional logic runs, so a blank
+// choice must arrive as a non-empty sentinel. Checked by EXACT string
+// equality, never a length/trim heuristic — a bare provider secret is
+// legitimately allowed to be short, and only this one reserved value means
+// "nothing was chosen".
+const BLANK_OPTIONAL_SECRET_SENTINEL = "{}";
+
+/**
+ * Outcome of validating a submitted secret/bundle against the manifest's
+ * contract, before ANY store write. A `"rejected"` outcome carries its owner-
+ * facing message so the decision and its explanation come from the SAME
+ * branch — never a second function re-deriving which rule fired.
+ */
+type BundledSecretValidation =
+  | { readonly kind: "blank_optional" }
+  | { readonly kind: "proceed" }
+  | { readonly kind: "rejected"; readonly message: string };
+
+function validateSingleSecret(contract: StaticSecretCredentialContract, secret: string): BundledSecretValidation {
+  if (secret !== BLANK_OPTIONAL_SECRET_SENTINEL) {
+    return { kind: "proceed" };
+  }
+  // F4: the blank-sentinel single secret on an OPTIONAL capture is the same
+  // valid "sign in by hand" choice a blank bundle is for a multi-field
+  // capture — not reachable by any shipped manifest today (every
+  // `required: false` manifest is `username_password`), but the next
+  // single-field optional manifest must not silently inherit the
+  // always-required assumption the pre-F4 code made by omission.
+  if (contract.required === false) {
+    return { kind: "blank_optional" };
+  }
+  const field = contract.fields.find((candidate) => candidate.secret);
+  return { kind: "rejected", message: field ? `${field.label} is required.` : "A secret field is required." };
+}
+
+/**
+ * The server-side re-validation twin of the console's `bundledSecretPayload`
+ * — the console already applied this rule once when it built `secret`, but
+ * this route is the one place every manifest is actually enforced (an
+ * owner-agent or a future non-console client could submit here directly),
+ * so the rule cannot live in the console alone.
+ *
+ * `contract.required` (block-level `credential_capture.required`, default
+ * true) is the ONE provider-neutral fact this decides on — never a
+ * connector-name branch, never an inference from field count.
+ *
+ * Returns `"blank_optional"` — rather than `"proceed"` — for an entirely
+ * blank bundle on an OPTIONAL capture: the caller must NOT store `"{}"` as a
+ * credential for that case (F1). An optional capture's blank choice means
+ * "proceed with manual browser sign-in", not "store an empty secret" —
+ * those are different outcomes the old boolean return could not express.
+ *
+ * Past that one optional-only escape, required and optional captures share
+ * the SAME per-field rule (`missingRequiredBundledFields`): a bundle missing
+ * any field required by its credential-kind bundling policy is rejected before the
+ * credential probe, the replacement guard, and the store. A REQUIRED
+ * username/password capture therefore fails closed on a partial bundle or a
+ * literal `{}` at capture time — not later at injection.
+ */
+function validateBundledSecret(contract: StaticSecretCredentialContract, secret: string): BundledSecretValidation {
+  if (!isBundledStaticSecretCredentialKind(contract.credentialKind)) {
+    return validateSingleSecret(contract, secret);
+  }
+  const bundle = parseSecretBundle(secret);
+  if (contract.required === false && bundleIsEntirelyBlank(contract, bundle)) {
+    return { kind: "blank_optional" };
+  }
+  const missing = missingRequiredBundledFields(contract, bundle);
+  if (missing.length > 0) {
+    const labels = missing.map((field) => field.label).join(", ");
+    return {
+      kind: "rejected",
+      message:
+        contract.required === false
+          ? `${labels} is required once any credential field is filled.`
+          : `${labels} is required.`,
+    };
+  }
+  const secretFields = contract.fields.filter((field) => field.secret);
+  if (isAtLeastOnePathContract(secretFields) && !bundleHasAnySecret(bundle, secretFields)) {
+    return {
+      kind: "rejected",
+      message: `At least one of ${secretFields.map((field) => field.label).join(", ")} is required.`,
+    };
+  }
+  return { kind: "proceed" };
 }
 
 // Stores the validated credential and sends the success response.
@@ -557,8 +944,9 @@ async function storeAndRespond(
   res: RouteResponse,
   args: {
     credentialKind: string | null;
+    deduplicated?: boolean;
     namespace: ConnectorNamespace;
-    ownerSubjectId: string | null;
+    ownerSubjectId: string;
     probedIdentity: { detail: string | null; identity: string } | null;
     secret: string;
   }
@@ -570,11 +958,12 @@ async function storeAndRespond(
     connectorInstanceId: args.namespace.connectorInstanceId,
     credentialKind: args.credentialKind ?? "",
     now,
-    ownerSubjectId: args.ownerSubjectId ?? "",
+    ownerSubjectId: args.ownerSubjectId,
     secret: args.secret,
   });
+  ctx.invalidateConnectorSummariesCache?.();
   const rotated = Boolean(previous);
-  const autoResume = await autoResumeAfterCredentialCapture(ctx, args.namespace, metadata);
+  const autoResume = await autoResumeAfterCredentialCapture(ctx, args.namespace, metadata, args.ownerSubjectId);
   await emitCaptureAudit(ctx, req, res, {
     connectionId: args.namespace.connectorInstanceId,
     connectorId: args.namespace.connectorId,
@@ -595,6 +984,7 @@ async function storeAndRespond(
     identity: args.probedIdentity
       ? { account_identity: args.probedIdentity.identity, detail: args.probedIdentity.detail }
       : null,
+    ...(args.deduplicated ? { deduplicated: true } : {}),
     next_step: {
       kind: "run_connection",
       method: "POST",
@@ -608,97 +998,247 @@ async function storeAndRespond(
   });
 }
 
+/**
+ * Ruling (F1): an entirely blank submission on an OPTIONAL capture means
+ * "proceed with manual browser sign-in", never "store an empty credential".
+ * This function therefore:
+ *   - never calls `store.capture(...)` — no row is written, no existing
+ *     credential is touched, rotated, or cleared;
+ *   - projects `credential.present: false` honestly (never the store's
+ *     always-`present:true` shape a written row would carry);
+ *   - still returns 200/201 and a `run_connection` next step, because a
+ *     blank optional choice is a VALID, complete setup outcome — the
+ *     connector's own manual-sign-in fallback is what makes the run able to
+ *     proceed with zero credentials (see `isStaticSecretCaptureOptional` in
+ *     `static-secret-injection.ts` for the run-time half of this contract).
+ * No credential probe runs (there is nothing to probe) and no
+ * active-replacement guard runs (there is nothing to replace).
+ */
+async function respondWithoutStoringCredential(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  args: { credentialKind: string | null; namespace: ConnectorNamespace; ownerSubjectId: string | null }
+): Promise<void> {
+  await emitCaptureAudit(ctx, req, res, {
+    connectionId: args.namespace.connectorInstanceId,
+    connectorId: args.namespace.connectorId,
+    credentialKind: args.credentialKind,
+    outcome: "succeeded",
+    ownerSubjectId: args.ownerSubjectId,
+    rotated: false,
+  });
+  res.status(200).json({
+    auto_resume: null,
+    connection_id: args.namespace.connectorInstanceId,
+    connector_id: args.namespace.connectorId,
+    connector_instance_id: args.namespace.connectorInstanceId,
+    credential: {
+      captured_at: null,
+      credential_kind: null,
+      fingerprint: null,
+      present: false,
+      revoked_at: null,
+      rotated_at: null,
+      status: null,
+    },
+    identity: null,
+    next_step: {
+      kind: "run_connection",
+      method: "POST",
+      reason:
+        "No credential was saved — this connector signs in through the secure browser instead. Run this connection to begin that sign-in.",
+      url: `/_ref/connections/${encodeURIComponent(args.namespace.connectorInstanceId)}/run`,
+    },
+    object: "static_secret_credential_capture",
+    validation: "first_sync",
+  });
+}
+
 // POST /_ref/connections/:connectorInstanceId/static-secret-credential
 //
 // Owner-session-only credential capture for one existing connection. The
 // plaintext appears only in the request body and the store's sealing call; the
 // response and audit event contain non-secret metadata only.
+interface CaptureRequestState {
+  credentialKind: string | null;
+  namespace: ConnectorNamespace | null;
+  ownerSubjectId: string | null;
+}
+
+async function runStaticSecretCredentialCapture(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  connectorInstanceId: string,
+  state: CaptureRequestState
+): Promise<void> {
+  const ownerSubjectId = ctx.getOwnerSubjectId(req);
+  state.ownerSubjectId = ownerSubjectId;
+  const capture = parseCaptureBody(ctx, res, req.body);
+  if (!capture) {
+    await emitCaptureAudit(ctx, req, res, {
+      connectionId: connectorInstanceId,
+      credentialKind: state.credentialKind,
+      error: errWithCode("invalid_request"),
+      outcome: "failed",
+      ownerSubjectId,
+    });
+    return;
+  }
+  const { credentialKind, secret, setupFieldsRaw } = capture;
+  state.credentialKind = credentialKind;
+  const namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
+    allowDefaultAccount: false,
+    // Admit a `draft` target so the owner can seal a credential onto a
+    // not-yet-ingested first static-secret connection. This is owner-
+    // session-only; no bearer/agent path passes allowStatuses. See
+    // add-static-secret-owner-session-connect-path design Decisions 3 & 5.
+    allowStatuses: ["active", "draft"],
+    connectorInstanceId,
+    ownerSubjectId,
+  });
+  state.namespace = namespace;
+  const contract = await validateCredentialKind(ctx, req, res, namespace, credentialKind, ownerSubjectId);
+  if (!contract) {
+    return;
+  }
+  const validation = validateBundledSecret(contract, secret);
+  if (validation.kind === "rejected") {
+    await rejectMissingCredential(ctx, req, res, namespace, credentialKind, ownerSubjectId, validation.message);
+    return;
+  }
+  const submittedSetupFields = parseStaticSecretSetupFields(setupFieldsRaw, contract.fields, (code, message, param) =>
+    ctx.pdppError(res, 400, code, message, param)
+  );
+  if (submittedSetupFields === null) {
+    return;
+  }
+  await updateDraftSetupFieldsBeforeProbe(ctx, {
+    connectorId: namespace.connectorId,
+    connectorInstanceId: namespace.connectorInstanceId,
+    ownerSubjectId,
+    ...(submittedSetupFields ? { setupFields: submittedSetupFields } : {}),
+  });
+
+  // F1: an entirely blank submission on an OPTIONAL capture proceeds with
+  // manual browser sign-in — it never reaches the credential probe, the
+  // active-replacement guard, or the store. Nothing is written, nothing
+  // existing is touched, and the response is honest that no credential is
+  // present.
+  if (validation.kind === "blank_optional") {
+    await respondWithoutStoringCredential(ctx, req, res, { credentialKind, namespace, ownerSubjectId });
+    return;
+  }
+
+  // Synchronous validation moment (owner-journey flow design B1). When a
+  // probe is injected, validate the credential against the provider BEFORE
+  // storing it. A known-bad credential is rejected and NOTHING is written.
+  // A skipped probe preserves the first-sync path.
+  const probeConnectorKey = ctx.canonicalConnectorKey
+    ? (ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId)
+    : namespace.connectorId;
+  const probeOutcome = await runCredentialProbe(ctx, req, res, {
+    connectorId: namespace.connectorId,
+    connectorInstanceId: namespace.connectorInstanceId,
+    connectorKey: probeConnectorKey,
+    credentialKind,
+    ownerSubjectId,
+    secret,
+    ...(submittedSetupFields ? { setupFields: submittedSetupFields } : {}),
+  });
+  if (probeOutcome === null) {
+    return;
+  }
+  const { probedIdentity } = probeOutcome;
+  const { deduplicated, responseNamespace } = await claimOrGuardReplacement(ctx, {
+    namespace,
+    ownerSubjectId,
+    probedIdentity,
+    secret,
+    ...(submittedSetupFields ? { submittedSetupFields } : {}),
+  });
+  await storeAndRespond(ctx, req, res, {
+    credentialKind,
+    ...(deduplicated ? { deduplicated: true } : {}),
+    namespace: responseNamespace,
+    ownerSubjectId,
+    probedIdentity,
+    secret,
+  });
+}
+
+// After a probe either names an identity or is skipped, either claims that
+// identity (existing behavior) or — with no probed identity to claim — still
+// runs the active-replacement guard. An active connection with no durable,
+// provider-verified identity is never silently retargetable just because
+// nothing on record contradicts the new secret; owner-typed `setup_fields`
+// are never consulted as proof here (see assertActiveReplacementAllowedWithoutProbe).
+async function claimOrGuardReplacement(
+  ctx: MountRefStaticSecretCredentialsContext,
+  input: {
+    namespace: ConnectorNamespace;
+    ownerSubjectId: string;
+    probedIdentity: { detail: string | null; identity: string } | null;
+    secret: string;
+    submittedSetupFields?: Record<string, string>;
+  }
+): Promise<{ deduplicated: boolean; responseNamespace: ConnectorNamespace }> {
+  if (input.probedIdentity) {
+    const claim = await claimProbedStaticSecretIdentity(ctx, {
+      connectorId: input.namespace.connectorId,
+      connectorInstanceId: input.namespace.connectorInstanceId,
+      ownerSubjectId: input.ownerSubjectId,
+      probedIdentity: input.probedIdentity.identity,
+      secret: input.secret,
+      ...(input.submittedSetupFields ? { setupFields: input.submittedSetupFields } : {}),
+    });
+    return {
+      deduplicated: claim.deduplicated,
+      responseNamespace: { ...input.namespace, connectorInstanceId: claim.instance.connectorInstanceId },
+    };
+  }
+  await assertActiveReplacementAllowedWithoutProbe(ctx, {
+    connectorInstanceId: input.namespace.connectorInstanceId,
+    secret: input.secret,
+  });
+  return { deduplicated: false, responseNamespace: input.namespace };
+}
+
+async function handleStaticSecretCredentialCapture(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  connectorInstanceId: string
+): Promise<void> {
+  const state: CaptureRequestState = { credentialKind: null, namespace: null, ownerSubjectId: null };
+  try {
+    await runStaticSecretCredentialCapture(ctx, req, res, connectorInstanceId, state);
+  } catch (err) {
+    const auditNamespace = state.namespace;
+    await emitCaptureAudit(ctx, req, res, {
+      connectionId: auditNamespace ? auditNamespace.connectorInstanceId : connectorInstanceId,
+      connectorId: auditNamespace ? auditNamespace.connectorId : null,
+      credentialKind: state.credentialKind,
+      error: err,
+      outcome: "failed",
+      ownerSubjectId: state.ownerSubjectId,
+    });
+    const status = credentialCaptureErrorStatus(err);
+    const { code } = err as { code?: unknown };
+    if (typeof code === "string" && status !== 500) {
+      ctx.pdppError(res, status, code, err instanceof Error ? err.message : String(err));
+      return;
+    }
+    ctx.handleError(res, err);
+  }
+}
+
 export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRefStaticSecretCredentialsContext): void {
   app.post(
     "/_ref/connections/:connectorInstanceId/static-secret-credential",
     ctx.requireOwnerSession,
-    async (req: RouteRequest, res: RouteResponse) => {
-      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
-      let ownerSubjectId: string | null = null;
-      let namespace: ConnectorNamespace | null = null;
-      let credentialKind: string | null = null;
-      try {
-        ownerSubjectId = ctx.getOwnerSubjectId(req);
-        const capture = parseCaptureBody(ctx, res, req.body);
-        if (!capture) {
-          await emitCaptureAudit(ctx, req, res, {
-            connectionId: connectorInstanceId,
-            credentialKind,
-            error: errWithCode("invalid_request"),
-            outcome: "failed",
-            ownerSubjectId,
-          });
-          return;
-        }
-        // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-        credentialKind = capture.credentialKind;
-        namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
-          allowDefaultAccount: false,
-          // Admit a `draft` target so the owner can seal a credential onto a
-          // not-yet-ingested first static-secret connection. This is owner-
-          // session-only; no bearer/agent path passes allowStatuses. See
-          // add-static-secret-owner-session-connect-path design Decisions 3 & 5.
-          allowStatuses: ["active", "draft"],
-          connectorInstanceId,
-          ownerSubjectId,
-        });
-        const kindOk = await validateCredentialKind(ctx, req, res, namespace, credentialKind, ownerSubjectId);
-        if (!kindOk) {
-          return;
-        }
-        // Synchronous validation moment (owner-journey flow design B1). When a
-        // probe is injected, validate the credential against the provider BEFORE
-        // storing it: a known-bad credential is rejected with a provider-named,
-        // owner-causal message and NOTHING is written to the credential store.
-        // The prober self-reports `skipped: true` for a connector with no probe,
-        // so the first-sync path is preserved without a separate gate. The probe
-        // is injected, so no live provider call happens under test.
-        const probeConnectorKey = ctx.canonicalConnectorKey
-          ? (ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId)
-          : namespace.connectorId;
-        const probeOutcome = await runCredentialProbe(ctx, req, res, {
-          connectorId: namespace.connectorId,
-          connectorInstanceId: namespace.connectorInstanceId,
-          connectorKey: probeConnectorKey,
-          credentialKind,
-          ownerSubjectId,
-          secret: capture.secret,
-        });
-        if (probeOutcome === null) {
-          return;
-        }
-        await storeAndRespond(ctx, req, res, {
-          credentialKind,
-          namespace,
-          ownerSubjectId,
-          probedIdentity: probeOutcome.probedIdentity,
-          secret: capture.secret,
-        });
-      } catch (err) {
-        await emitCaptureAudit(ctx, req, res, {
-          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-          connectionId: namespace?.connectorInstanceId ?? connectorInstanceId,
-          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-          connectorId: namespace?.connectorId ?? null,
-          credentialKind,
-          error: err,
-          outcome: "failed",
-          ownerSubjectId,
-        });
-        const status = credentialCaptureErrorStatus(err);
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-        const code = (err as { code?: unknown })?.code;
-        if (typeof code === "string" && status !== 500) {
-          ctx.pdppError(res, status, code, (err as Error).message);
-          return;
-        }
-        ctx.handleError(res, err);
-      }
-    }
+    async (req: RouteRequest, res: RouteResponse) =>
+      handleStaticSecretCredentialCapture(ctx, req, res, decodeURIComponent(req.params.connectorInstanceId as string))
   );
 }

@@ -20,12 +20,11 @@
  * maintenance-sweep pass (periodic or startup) still detects and repairs it,
  * with no dependency on the dirty flag ever having fired at all.
  *
- * Each test explicitly simulates "the dirty marker was swallowed" by NEVER
- * calling `markConnectorSummaryEvidenceDirty`/`markAllConnectorSummaryEvidenceDirty`
- * for the mutation under test — the row's `dirty` flag stays 0 throughout —
- * and instead only mutates the canonical table directly, then proves
- * `reconcileConnectorSummaryEvidence` still detects and repairs the drift on
- * its own, purely from the durable checkpoint comparison.
+ * Each test explicitly simulates "the dirty marker was swallowed" by clearing
+ * the best-effort marker after the canonical mutation. The source-revision
+ * trigger still advances the durable receipt in the same transaction, so the
+ * row reads clean in the probe premise but the next maintenance pass must
+ * still detect and repair the drift.
  */
 
 import assert from "node:assert/strict";
@@ -60,7 +59,7 @@ function requirePostgresUrl(): string {
 }
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: CONNECTOR_ID,
   display_name: "Schedule/Lifecycle Checkpoint Probe",
   protocol_version: "0.1.0",
@@ -192,9 +191,9 @@ test("SQLite: a schedule mutation with a swallowed dirty marker is still detecte
     const firstEvidence = await requireEvidence();
     assert.equal(firstEvidence.schedule_checkpoint, "absent", "no schedule row yet: checkpoint is the absent sentinel");
 
-    // Simulate a schedule upsert whose dirty marker was swallowed: insert the
-    // schedule row directly, WITHOUT touching connector_summary_evidence at
-    // all (dirty stays 0 — the row still reads 'fresh').
+    // Simulate a schedule upsert whose best-effort dirty marker was swallowed:
+    // insert the canonical row directly, then clear only the marker. The
+    // source-revision trigger remains the durable correctness backstop.
     const scheduleUpdatedAt = "2026-07-29T00:05:00.000Z";
     getDb()
       .prepare(
@@ -202,16 +201,24 @@ test("SQLite: a schedule mutation with a swallowed dirty marker is still detecte
          VALUES (?, ?, 900, 0, 1, ?, ?)`
       )
       .run(INSTANCE_ID, CONNECTOR_ID, scheduleUpdatedAt, scheduleUpdatedAt);
+    // Simulate a lost best-effort marker. The source-revision trigger still
+    // advanced the canonical receipt, which is the correctness backstop.
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET dirty = 0, state = 'fresh' WHERE connector_instance_id = ?")
+      .run(INSTANCE_ID);
     const stillClean = await requireEvidence();
-    assert.equal(stillClean.dirty, false, "premise: the dirty marker for this schedule mutation was never fired");
+    assert.equal(
+      stillClean.dirty,
+      false,
+      "premise: the best-effort dirty marker was cleared after the schedule mutation"
+    );
 
-    // A second maintenance pass, with NO dirty marker ever having fired,
-    // must still detect the drift purely from connector_schedules.updated_at
-    // and repair the row.
+    // A second maintenance pass, with the best-effort marker cleared, must
+    // still detect the drift from the canonical checkpoint and source receipt.
     const result = await reconcileConnectorSummaryEvidence();
     assert.ok(
       result.candidateReasonCounts.schedule_mismatch >= 1,
-      "the schedule mutation is classified as schedule_mismatch even though dirty was never set"
+      "the schedule mutation is classified as schedule_mismatch even though dirty was cleared"
     );
     const repaired = await requireEvidence();
     assert.equal(
@@ -236,9 +243,9 @@ test("SQLite: a run-lifecycle event with a swallowed dirty marker is still detec
     const firstEvidence = await requireEvidence();
     assert.equal(firstEvidence.run_lifecycle_event_seq, null, "no spine events yet: lifecycle checkpoint is null");
 
-    // Simulate a run-lifecycle event (e.g. run.started) whose dirty marker
-    // was swallowed: insert the spine event directly, WITHOUT touching
-    // connector_summary_evidence.
+    // Simulate a run-lifecycle event (e.g. run.started) whose best-effort
+    // dirty marker was swallowed: insert the spine event, then clear only the
+    // marker. The source-revision trigger remains durable.
     getDb()
       .prepare(
         `INSERT INTO spine_events(
@@ -247,13 +254,20 @@ test("SQLite: a run-lifecycle event with a swallowed dirty marker is still detec
          ) VALUES ('evt_run_started_1', 1, 'run.started', ?, ?, 'test', 'trace_run_started_1', 'runtime', 'test-connector', 'run', 'run_1', 'started', 'run_1', ?, '{}', '1')`
       )
       .run(NOW, NOW, INSTANCE_ID);
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET dirty = 0, state = 'fresh' WHERE connector_instance_id = ?")
+      .run(INSTANCE_ID);
     const stillClean = await requireEvidence();
-    assert.equal(stillClean.dirty, false, "premise: the dirty marker for this run-lifecycle event was never fired");
+    assert.equal(
+      stillClean.dirty,
+      false,
+      "premise: the best-effort dirty marker was cleared after the lifecycle mutation"
+    );
 
     const result = await reconcileConnectorSummaryEvidence();
     assert.ok(
       result.candidateReasonCounts.lifecycle_checkpoint_lag >= 1,
-      "the run-lifecycle event is classified as lifecycle_checkpoint_lag even though dirty was never set"
+      "the run-lifecycle event is classified as lifecycle_checkpoint_lag even though dirty was cleared"
     );
     const repaired = await requireEvidence();
     assert.equal(repaired.run_lifecycle_event_seq, 1, "the repaired row absorbs the live spine_events.event_seq");
@@ -285,13 +299,21 @@ if (POSTGRES_URL) {
          VALUES($1, $2, 900, 0, TRUE, $3, $3)`,
         [INSTANCE_ID, CONNECTOR_ID, scheduleUpdatedAt]
       );
+      await postgresQuery(
+        "UPDATE connector_summary_evidence SET dirty = 0, state = 'fresh' WHERE connector_instance_id = $1",
+        [INSTANCE_ID]
+      );
       const stillClean = await requireEvidence();
-      assert.equal(stillClean.dirty, false, "premise: the dirty marker for this schedule mutation was never fired");
+      assert.equal(
+        stillClean.dirty,
+        false,
+        "premise: the best-effort dirty marker was cleared after the schedule mutation"
+      );
 
       const result = await reconcileConnectorSummaryEvidence();
       assert.ok(
         result.candidateReasonCounts.schedule_mismatch >= 1,
-        "the schedule mutation is classified as schedule_mismatch even though dirty was never set"
+        "the schedule mutation is classified as schedule_mismatch even though dirty was cleared"
       );
       const repaired = await requireEvidence();
       assert.equal(
@@ -343,13 +365,21 @@ if (POSTGRES_URL) {
           INSTANCE_ID,
         ]
       );
+      await postgresQuery(
+        "UPDATE connector_summary_evidence SET dirty = 0, state = 'fresh' WHERE connector_instance_id = $1",
+        [INSTANCE_ID]
+      );
       const stillClean = await requireEvidence();
-      assert.equal(stillClean.dirty, false, "premise: the dirty marker for this run-lifecycle event was never fired");
+      assert.equal(
+        stillClean.dirty,
+        false,
+        "premise: the best-effort dirty marker was cleared after the lifecycle mutation"
+      );
 
       const result = await reconcileConnectorSummaryEvidence();
       assert.ok(
         result.candidateReasonCounts.lifecycle_checkpoint_lag >= 1,
-        "the run-lifecycle event is classified as lifecycle_checkpoint_lag even though dirty was never set"
+        "the run-lifecycle event is classified as lifecycle_checkpoint_lag even though dirty was cleared"
       );
       const repaired = await requireEvidence();
       assert.equal(

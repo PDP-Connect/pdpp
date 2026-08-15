@@ -16,6 +16,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -41,10 +42,6 @@ import {
   recordFingerprint,
   selectRemovableVersions,
 } from "../scripts/compact-record-history.ts";
-import {
-  POINT_IN_TIME_REAL_FIELD_STREAMS as SERVER_POINT_IN_TIME_STREAMS,
-  RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS as SERVER_RECURRING_SNAPSHOT_STREAMS,
-} from "../server/version-disposition.ts";
 
 const REGEXP_1 = /Registered policies/;
 const REGEXP_2 = /no compaction policy registered/;
@@ -62,6 +59,53 @@ const SCRIPT_PATH = path.resolve(__dirname, "..", "scripts", "compact-record-his
 
 const { Pool } = pg;
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+
+// Repo-root-relative manifest roots, read directly from disk (test-only
+// static-file access — the same pattern connector-key.test.ts already uses —
+// NOT the runtime `getConnectorManifest` DB-catalog lookup version-disposition
+// callers use in production). Used below to independently re-derive which
+// (connector, stream) pairs declare each `compaction_class`, so the
+// server-list-matches-script-list guardrail tests keep proving the two stay
+// in sync without importing any list out of version-disposition.ts (which no
+// longer exports one — compaction_class now lives on the manifest itself).
+const MANIFEST_ROOTS_FOR_TEST = [
+  path.resolve(__dirname, "..", "manifests"),
+  path.resolve(__dirname, "..", "..", "packages", "polyfill-connectors", "manifests"),
+];
+
+function manifestStreamPairsByCompactionClass(compactionClass: string): { connector: string; stream: string }[] {
+  const pairs: { connector: string; stream: string }[] = [];
+  for (const dir of MANIFEST_ROOTS_FOR_TEST) {
+    let files: string[];
+    try {
+      files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      let manifest: {
+        connector_key?: string;
+        connector_id?: string;
+        streams?: { name?: string; compaction_class?: string }[];
+      };
+      try {
+        manifest = JSON.parse(readFileSync(path.join(dir, file), "utf8"));
+      } catch {
+        continue;
+      }
+      const connector = manifest.connector_key || manifest.connector_id;
+      if (!(connector && Array.isArray(manifest.streams))) {
+        continue;
+      }
+      for (const stream of manifest.streams) {
+        if (stream?.compaction_class === compactionClass && stream.name) {
+          pairs.push({ connector, stream: stream.name });
+        }
+      }
+    }
+  }
+  return pairs;
+}
 
 // ─── Pure-helper tests ──────────────────────────────────────────────────
 
@@ -158,10 +202,17 @@ test("COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ["codex", "shell_snapshots"],
     ["codex", "config_inventory"],
     ["codex", "cache_inventory"],
-    ["codex", "logs"],
   ];
+  // ri-zero-knowledge-terminal-revise-0810: COMPACTION_POLICIES is now built
+  // by iterating every shipped manifest's own streams (readdirSync order),
+  // not a hand-curated array literal -- iteration ORDER is no longer a
+  // meaningful invariant (findPolicy is a keyed lookup, never a positional
+  // one), so this compares the same expected SET of (connector, stream)
+  // pairs sorted, rather than requiring an exact incidental order match.
   const actual = COMPACTION_POLICIES.map((p) => [p.connectorIds[0], p.stream]);
-  assert.deepEqual(actual, expected);
+  const sortPairs = (pairs: (readonly [string, string])[]) =>
+    [...pairs].map(([c, s]) => `${c}/${s}`).sort((a, b) => a.localeCompare(b));
+  assert.deepEqual(sortPairs(actual as [string, string][]), sortPairs(expected as [string, string][]));
 });
 
 test("findPolicy returns null for unknown streams", () => {
@@ -287,14 +338,16 @@ for (const stream of ["accounts", "credit_card_billing"]) {
   });
 }
 
-// ─── Server disposition-registry in-sync guardrail ────────────────────────
+// ─── Manifest disposition-registry in-sync guardrail ──────────────────────
 //
-// version_disposition is now DERIVED server-side
+// version_disposition is DERIVED server-side
 // (reference-implementation/server/version-disposition.ts) from this script's
-// COMPACTION_POLICIES registry plus two reference-maintained stream lists. The
-// server module is intentionally `pg`-free, so this Node test imports it
-// directly (no source-parsing of the browser bundle, which is what the prior
-// console-mirror tests did before the lists moved server-side).
+// COMPACTION_POLICIES registry plus the manifest-declared `compaction_class`
+// each connector's OWN manifest carries (`ri-zero-knowledge-terminal-
+// revise-0810`: connector-identity facts live in connector-owned manifests,
+// never in RI source or RI-committed JSON, so version-disposition.ts no
+// longer exports a stream list to compare against — this test re-derives the
+// manifest-declared pairs itself, directly from the manifest files on disk).
 //
 // These tests pin the structural invariants the derivation relies on:
 //   - point-in-time split residuals must have NO compaction policy (a policy
@@ -302,10 +355,12 @@ for (const stream of ["accounts", "credit_card_billing"]) {
 //   - recurring point-in-time snapshots (sessions) MUST have a compaction
 //     policy — it is the regression safety net for a broken no-op gate — which
 //     is exactly why the disposition cannot key on policy ABSENCE and must use
-//     explicit list membership with precedence.
+//     the manifest-declared class with precedence.
 
-test("server point-in-time real-field streams have NO compaction policy (split, never compact)", () => {
-  for (const { connector, stream } of SERVER_POINT_IN_TIME_STREAMS) {
+test("manifest-declared point-in-time real-field streams have NO compaction policy (split, never compact)", () => {
+  const manifestPointInTime = manifestStreamPairsByCompactionClass("point_in_time_real_field");
+  assert.ok(manifestPointInTime.length > 0, "expected at least one manifest to declare point_in_time_real_field");
+  for (const { connector, stream } of manifestPointInTime) {
     assert.equal(
       findPolicy(connector, stream),
       null,
@@ -319,21 +374,27 @@ test("server point-in-time real-field streams have NO compaction policy (split, 
   }
 });
 
-test("server point-in-time list matches this script's real-field guardrail list", () => {
-  const serverSet = new Set(SERVER_POINT_IN_TIME_STREAMS.map(({ connector, stream }) => `${connector}/${stream}`));
+test("manifest point-in-time streams match this script's real-field guardrail list", () => {
+  const manifestSet = new Set(
+    manifestStreamPairsByCompactionClass("point_in_time_real_field").map(
+      ({ connector, stream }) => `${connector}/${stream}`
+    )
+  );
   const scriptSet = new Set(POINT_IN_TIME_REAL_FIELD_STREAMS.map(({ connector, stream }) => `${connector}/${stream}`));
   assert.deepEqual(
-    [...serverSet].sort(),
+    [...manifestSet].sort(),
     [...scriptSet].sort(),
-    "server disposition point-in-time list and script real-field guardrail must list the same pairs"
+    "manifest-declared point-in-time streams and script real-field guardrail must list the same pairs"
   );
 });
 
-test("server recurring point-in-time snapshot streams DO have a registered compaction policy (regression safety net)", () => {
+test("manifest-declared recurring point-in-time snapshot streams DO have a registered compaction policy (regression safety net)", () => {
   // The design relies on this: sessions keep their policy as the catch for a
-  // broken mtime gate, so the disposition must classify them by explicit list
-  // membership with precedence, NOT by policy absence.
-  for (const { connector, stream } of SERVER_RECURRING_SNAPSHOT_STREAMS) {
+  // broken mtime gate, so the disposition must classify them by the
+  // manifest-declared class with precedence, NOT by policy absence.
+  const manifestRecurringSnapshot = manifestStreamPairsByCompactionClass("recurring_snapshot");
+  assert.ok(manifestRecurringSnapshot.length > 0, "expected at least one manifest to declare recurring_snapshot");
+  for (const { connector, stream } of manifestRecurringSnapshot) {
     assert.ok(
       findPolicy(connector, stream),
       `${connector}/${stream} is a recurring snapshot; it MUST keep a compaction policy as the no-op regression safety net`
@@ -341,9 +402,13 @@ test("server recurring point-in-time snapshot streams DO have a registered compa
   }
 });
 
-test("server recurring-snapshot list and point-in-time list are disjoint", () => {
-  const piSet = new Set(SERVER_POINT_IN_TIME_STREAMS.map(({ connector, stream }) => `${connector}/${stream}`));
-  for (const { connector, stream } of SERVER_RECURRING_SNAPSHOT_STREAMS) {
+test("manifest recurring-snapshot streams and point-in-time streams are disjoint", () => {
+  const piSet = new Set(
+    manifestStreamPairsByCompactionClass("point_in_time_real_field").map(
+      ({ connector, stream }) => `${connector}/${stream}`
+    )
+  );
+  for (const { connector, stream } of manifestStreamPairsByCompactionClass("recurring_snapshot")) {
     assert.equal(
       piSet.has(`${connector}/${stream}`),
       false,

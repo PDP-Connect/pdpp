@@ -48,7 +48,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type ClientEventSubscriptionAttempt,
@@ -262,7 +262,7 @@ export default async function EventSubscriptionsPage({ searchParams }: { searchP
       <RecordroomShellWithPalette>
         <PageHeader
           count={`${list.data.length}`}
-          description="Webhook-style event subscriptions registered by clients against owner-issued grants. Operator surface is read-only with one safety-valve disable; rotate and replay remain client-owned."
+          description="Webhook-style event subscriptions registered by clients against owner-issued grants. This surface reads them and can disable one; rotate and replay stay with the client."
           title="Client event subscriptions"
         />
 
@@ -312,13 +312,13 @@ function FiltersForm({ params }: { params: ResolvedParams }) {
           can keep a row open while narrowing the surrounding list. */}
       {params.peekId ? <input name="peek" type="hidden" value={params.peekId} /> : null}
       <Toolbar>
-        <ToolbarField label="client_id" width="min-w-[12rem]">
+        <ToolbarField label="Client id" width="min-w-[12rem]">
           <IcInput defaultValue={params.clientId} name="client_id" placeholder="cli_…" />
         </ToolbarField>
-        <ToolbarField label="grant_id" width="min-w-[12rem]">
+        <ToolbarField label="Grant id" width="min-w-[12rem]">
           <IcInput defaultValue={params.grantId} name="grant_id" placeholder="grt_…" />
         </ToolbarField>
-        <ToolbarField label="status" width="min-w-[10rem]">
+        <ToolbarField label="Status" width="min-w-[10rem]">
           <IcSelect
             defaultValue={params.status}
             name="status"

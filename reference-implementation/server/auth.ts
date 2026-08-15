@@ -33,7 +33,7 @@ import { postgresEmitSpineEventInTransaction } from "../lib/postgres-spine.ts";
 import { createTraceContext, emitSpineEvent as emitRawSpineEvent, type SpineEventInput } from "../lib/spine.ts";
 import type { CimdFetchDependencies, CimdTransportFailureEvent } from "./cimd.ts";
 import { listActiveBindingsForGrant, projectBindingForWire } from "./connection-identity.ts";
-import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "./connector-key.ts";
+import { canonicalConnectorKey, canonicalConnectorKeyFromManifest, legacyLocalAliasMap } from "./connector-key.ts";
 import {
   invalidConnectorManifest,
   resolveManifestSensitivity,
@@ -846,10 +846,11 @@ async function pgExec(sql: string, params: unknown[] = []): Promise<{ changes: n
 }
 
 let configuredNativeManifest: DbRow | null = null;
-const LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES = new Map([
-  ["claude_code", "claude-code"],
-  ["codex", "codex"],
-]);
+// Source of truth: connector-key.ts's legacyLocalAliasMap(). This used to be a
+// second, independently-maintained table here and had drifted (missing
+// google_takeout/apple_photos/google_messages) — see
+// docs/inbox/report-connector-knowledge-clusters-bc.md.
+const LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES = new Map(Object.entries(legacyLocalAliasMap()));
 const PENDING_CONSENT_REQUEST_URI_PREFIX = "urn:pdpp:pending-consent:";
 const LEADING_SLASH_RE = /^\//;
 const TRAILING_SLASHES_RE = /\/+$/;

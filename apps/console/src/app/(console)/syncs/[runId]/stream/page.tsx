@@ -4,7 +4,7 @@
 import { buttonVariants } from "@pdpp/brand-react";
 import type { Viewport } from "next";
 import { notFound } from "next/navigation";
-import { ServerUnreachable } from "../../../components/shell.tsx";
+import { ServerUnreachable } from "../../../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
   getRunStatus,
@@ -18,6 +18,7 @@ import {
   getCurrentBrowserSurfaceAssistance,
   getCurrentRunAssistance,
   hasActiveBrowserSurface,
+  hasResolvedBrowserSurfaceAssistance,
   requiresBrowserSurfaceAssistance,
 } from "../../../lib/run-assistance.ts";
 import {
@@ -41,13 +42,28 @@ export const viewport: Viewport = {
   width: "device-width",
 };
 
-function RunDetailLink({ children, runId }: { children: string; runId: string }) {
+function RunDetailLink({ runId }: { runId: string }) {
   return (
     <a
       className={buttonVariants({ className: "mt-5", size: "sm", variant: "default" })}
       href={`/syncs/${encodeURIComponent(runId)}`}
     >
-      {children}
+      View run details (optional)
+    </a>
+  );
+}
+
+function SetupStatusLink({ connectionId, runId }: { connectionId: string | null; runId: string }) {
+  if (!connectionId) {
+    return <RunDetailLink runId={runId} />;
+  }
+  const query = new URLSearchParams({ run_id: runId });
+  return (
+    <a
+      className={buttonVariants({ className: "mt-5", size: "sm", variant: "default" })}
+      href={`/connect/status/${encodeURIComponent(connectionId)}?${query.toString()}`}
+    >
+      View setup status
     </a>
   );
 }
@@ -112,11 +128,13 @@ function renderNoAssistanceSurface({
   connector,
   currentAssistance,
   envelope,
+  connectorInstanceId,
   runId,
   runStatus,
 }: {
   connector: ConnectorContext | null;
   currentAssistance: ReturnType<typeof getCurrentRunAssistance>;
+  connectorInstanceId: string | null;
   envelope: TimelineEnvelope;
   runId: string;
   runStatus: RunStatusEnvelope | null;
@@ -125,7 +143,7 @@ function renderNoAssistanceSurface({
     return <UnavailableStreamSurface connector={connector} runId={runId} />;
   }
   if (currentAssistance?.ownerAction === "act_elsewhere" && currentAssistance.responseContract === "none") {
-    return <ExternalApprovalSurface assistance={currentAssistance} connector={connector} runId={runId} />;
+    return <ExternalApprovalSurface assistance={currentAssistance} runId={runId} />;
   }
   const noAssistanceState = selectNoAssistanceStreamState({
     // biome-ignore lint/suspicious/noUnnecessaryConditions: runStatus is nullable; tsc rejects removing this.
@@ -149,9 +167,18 @@ function renderNoAssistanceSurface({
     );
   }
   if (hasActiveBrowserSurface(envelope.events)) {
-    return <PreparingBrowserSurface connector={connector} runId={runId} />;
+    return <PreparingBrowserSurface connectionId={connectorInstanceId} runId={runId} />;
   }
-  return <RunContinuingSurface connector={connector} runId={runId} />;
+  // The owner already completed a browser step (e.g. H-E-B login) for this
+  // run, and no further browser action is currently open. Say so plainly
+  // instead of reusing the generic "No browser action is waiting" copy,
+  // which reads as a dead end right after a login the owner just finished
+  // (fr-setup-status-lifecycle-0806) — the run keeps going in the
+  // background and this page's job here is done.
+  if (hasResolvedBrowserSurfaceAssistance(envelope.events)) {
+    return <AssistanceCompleteSurface connectionId={connectorInstanceId} runId={runId} />;
+  }
+  return <RunContinuingSurface connectionId={connectorInstanceId} runId={runId} />;
 }
 
 export default async function RunInteractionStreamPage({
@@ -217,7 +244,14 @@ export default async function RunInteractionStreamPage({
   const connector = await resolveConnectorContext(connectorId, connectorInstanceId);
 
   if (!streamableAssistance) {
-    return renderNoAssistanceSurface({ connector, currentAssistance, envelope, runId, runStatus });
+    return renderNoAssistanceSurface({
+      connector,
+      connectorInstanceId,
+      currentAssistance,
+      envelope,
+      runId,
+      runStatus,
+    });
   }
 
   return (
@@ -246,7 +280,7 @@ function RunEndedSurface({
   let statusLabel = "failed";
   let title = `${subject} needs a look.`;
   let description =
-    "The browser step is no longer waiting, but the run did not complete successfully. Open the run timeline for the exact failure and next action.";
+    "The browser step is no longer waiting, but the run did not complete successfully. View run details for the exact failure and next action.";
   let sectionClass = "rounded-3xl border border-destructive/30 bg-destructive/5 p-6 shadow-2xl shadow-black/10";
   if (terminalStatus === "cancelled") {
     statusLabel = "cancelled";
@@ -255,7 +289,7 @@ function RunEndedSurface({
   } else if (terminalStatus === "deferred") {
     statusLabel = "browser deferred";
     title = "Secure browser slot unavailable.";
-    description = `${subject} waited for a secure browser slot, but capacity stayed full. No connector work started. Retry when a browser slot is available.`;
+    description = `${subject} waited for a secure browser slot, but capacity stayed full. No connector work started. Try again when a secure browser slot is available.`;
     sectionClass = "rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10";
   }
   return (
@@ -264,15 +298,19 @@ function RunEndedSurface({
         <p className="pdpp-eyebrow text-muted-foreground">run {statusLabel}</p>
         <h1 className="pdpp-heading mt-3 text-balance text-foreground">{title}</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">{description}</p>
-        <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
+        <RunDetailLink runId={runId} />
       </section>
     </main>
   );
 }
 
-function RunContinuingSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: connector is nullable; tsc rejects removing this.
-  const subject = connector?.displayName ?? "This run";
+function RunContinuingSurface({
+  connectionId,
+  runId,
+}: {
+  connectionId: string | null;
+  runId: string;
+}) {
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
       <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
@@ -280,17 +318,38 @@ function RunContinuingSurface({ connector, runId }: { connector: ConnectorContex
         <p className="pdpp-eyebrow text-muted-foreground">run continuing</p>
         <h1 className="pdpp-heading mt-3 text-balance text-foreground">No browser action is waiting.</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">
-          {subject} is still being checked. Open the run timeline to follow the latest status.
+          The run is still in progress. This page updates automatically when browser input is needed.
         </p>
-        <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
+        <SetupStatusLink connectionId={connectionId} runId={runId} />
       </section>
     </main>
   );
 }
 
-function PreparingBrowserSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: connector is nullable; tsc rejects removing this.
-  const subject = connector?.displayName ?? "This run";
+function AssistanceCompleteSurface({ connectionId, runId }: { connectionId: string | null; runId: string }) {
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
+      <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
+        <NoAssistanceRunPoller runId={runId} />
+        <p className="pdpp-eyebrow text-muted-foreground">browser step complete</p>
+        <h1 className="pdpp-heading mt-3 text-balance text-foreground">Browser step complete.</h1>
+        <p className="mt-3 text-muted-foreground text-sm leading-6">
+          Collection is continuing in the background. You can close this page — it updates automatically if browser
+          input is needed again.
+        </p>
+        <SetupStatusLink connectionId={connectionId} runId={runId} />
+      </section>
+    </main>
+  );
+}
+
+function PreparingBrowserSurface({
+  connectionId,
+  runId,
+}: {
+  connectionId: string | null;
+  runId: string;
+}) {
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
       <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
@@ -298,10 +357,9 @@ function PreparingBrowserSurface({ connector, runId }: { connector: ConnectorCon
         <p className="pdpp-eyebrow text-muted-foreground">secure browser starting</p>
         <h1 className="pdpp-heading mt-3 text-balance text-foreground">Preparing the secure browser.</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">
-          {subject} has started a browser-session repair. This page will open the browser controls as soon as the run
-          asks for your input.
+          Keep this page open. Browser controls will appear automatically when the run needs your input.
         </p>
-        <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
+        <SetupStatusLink connectionId={connectionId} runId={runId} />
       </section>
     </main>
   );
@@ -309,27 +367,23 @@ function PreparingBrowserSurface({ connector, runId }: { connector: ConnectorCon
 
 function ExternalApprovalSurface({
   assistance,
-  connector,
   runId,
 }: {
   assistance: NonNullable<ReturnType<typeof getCurrentRunAssistance>>;
-  connector: ConnectorContext | null;
   runId: string;
 }) {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: connector is nullable; tsc rejects removing this.
-  const subject = connector?.displayName ?? "This run";
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
       <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
         <NoAssistanceRunPoller runId={runId} />
         <p className="pdpp-eyebrow text-muted-foreground">approval waiting</p>
-        <h1 className="pdpp-heading mt-3 text-balance text-foreground">Approve the prompt outside PDPP.</h1>
+        <h1 className="pdpp-heading mt-3 text-balance text-foreground">Approve the request with the provider.</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">{assistance.message}</p>
         <p className="mt-3 text-muted-foreground text-sm leading-6">
-          {subject} will continue automatically after the provider confirms the approval. No browser controls are
-          waiting on this page.
+          The run will continue automatically after the provider confirms your approval. No browser controls are waiting
+          here.
         </p>
-        <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
+        <RunDetailLink runId={runId} />
       </section>
     </main>
   );
@@ -343,11 +397,10 @@ function UnavailableStreamSurface({ connector, runId }: { connector: ConnectorCo
         <p className="pdpp-eyebrow text-muted-foreground">stream unavailable</p>
         <h1 className="pdpp-heading mt-3 text-balance text-foreground">Waiting for a browser surface</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">
-          {connector ? `${connector.displayName} needs browser control, but ` : "This run needs browser control, but "}
-          no current stream target is registered for this assistance request. Keep the run open while the runtime
-          registers a browser surface, then return to the run detail page.
+          {connector ? `${connector.displayName} needs browser control. ` : "This run needs browser control. "}Keep this
+          page open while the secure browser prepares. The page updates automatically when it is ready.
         </p>
-        <RunDetailLink runId={runId}>Back to run detail</RunDetailLink>
+        <RunDetailLink runId={runId} />
       </section>
     </main>
   );

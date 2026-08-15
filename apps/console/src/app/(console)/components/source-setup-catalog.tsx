@@ -9,7 +9,9 @@ import type { RefCountState } from "../lib/ref-client.ts";
 import {
   sourceSetupAction,
   sourceSetupAvailability,
+  sourceSetupContext,
   sourceSetupGuidance,
+  isRunnableAddOffer,
   sourceSetupRank,
   sourceSetupSecondaryAction,
   sourceSetupStatus,
@@ -93,7 +95,7 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
   const secondary = paths.filter((path) => !visibleLabels.has(path.label));
   return (
     <div className="mt-3" data-testid="source-acquisition-paths">
-      <p className="pdpp-eyebrow mb-1 text-muted-foreground">Acquisition paths</p>
+      <p className="pdpp-eyebrow mb-1 text-muted-foreground">Ways to add data</p>
       <ul className="grid gap-2">
         {visible.map((path) => (
           <SourceAcquisitionPathRow key={`${path.posture}:${path.label}`} path={path} />
@@ -102,7 +104,7 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
       {secondary.length > 0 ? (
         <details className="group mt-2">
           <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
-            Other ways to add coverage
+            Other ways to add data
           </summary>
           <ul className="mt-2 grid gap-2">
             {secondary.map((path) => (
@@ -116,28 +118,50 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
 }
 
 function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: number): string {
+  if (sourceSetupAvailability(entry) === "not_available_here") {
+    return "No proven setup path is available in this dashboard.";
+  }
   if (entry.modality === "browser_bound" && entry.setupModality === "static_secret") {
-    return "Connect in a secure browser, with optional encrypted sign-in details for repair.";
+    return "Connect in a secure browser; interactive sign-in is valid, with optional saved details for repair.";
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
-      return "Local collector on the machine that has this data.";
+      return "Run the local collector on the machine that has this data.";
     case "static_secret_connect":
-      return "Provider credential captured by this instance.";
+      return "Enter the provider credential for this account.";
+    case "static_secret_experimental":
+      return "Enter the provider credential for this account. Preview: not yet live-validated.";
+    case "provider_auth_connect":
+      return "Authorize this account through the provider.";
     case "manual_upload_connect":
       return existingSourceCount > 0
         ? `${existingSourceCount} existing ${existingSourceCount === 1 ? "source" : "sources"} can receive another export; choose on the import page.`
         : "Owner-exported file import.";
     case "provider_auth_deployment_blocked":
-      return "Server provider settings are required before account setup.";
+      return "This source needs provider authorization. Configure provider settings before adding an account.";
     case "browser_collector_manual":
     case "browser_bound_runbook":
       return entry.disposition === "browser_collector_manual"
         ? "Connect account from a secure browser session."
-        : "Browser-backed setup is not packaged in this dashboard yet.";
+        : "Browser setup is not available in this dashboard yet.";
     default:
-      return "No owner-usable setup path in this build.";
+      return "No setup path is available in this dashboard.";
   }
+}
+
+function SourceSetupContext({ entry }: { entry: ConnectorCatalogEntry }) {
+  const context = sourceSetupContext(entry);
+  if (!context) {
+    return null;
+  }
+  return (
+    <p
+      className="pdpp-caption mt-2 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2 text-muted-foreground"
+      data-testid="source-setup-context"
+    >
+      {context}
+    </p>
+  );
 }
 
 function sourceDetailHref(connectorKey: string, connectionId: string): string {
@@ -206,22 +230,50 @@ function ExistingSourceLinks({
   );
 }
 
+function SourceExternalDocs({ entry }: { entry: ConnectorCatalogEntry }) {
+  if (entry.externalDocs.length === 0) {
+    return null;
+  }
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-1">
+      <span className="pdpp-caption text-muted-foreground">Provider documentation:</span>
+      {entry.externalDocs.map((doc) => (
+        <a
+          className="pdpp-caption text-foreground underline underline-offset-4"
+          href={doc.url}
+          key={`${entry.connectorKey}:${doc.url}`}
+          rel="noreferrer"
+          target="_blank"
+          title="Opens in a new tab"
+        >
+          {doc.label} (opens in a new tab)
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function SourceSetupDetails({ entry }: { entry: ConnectorCatalogEntry }) {
   const guidance = sourceSetupGuidance(entry);
   const hasRichImportDetail = entry.disposition === "manual_upload_connect" && entry.acquisitionPaths.length > 0;
 
-  if (!hasRichImportDetail) {
+  if (!hasRichImportDetail && entry.externalDocs.length === 0) {
     return null;
   }
 
   return (
     <details className="group mt-2" data-testid="source-setup-details">
       <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
-        Show import options
+        {hasRichImportDetail ? "Show import options" : "Provider documentation"}
       </summary>
       <div className="mt-2 grid gap-2">
-        <p className="pdpp-caption text-muted-foreground">{guidance}</p>
-        <SourceAcquisitionPaths paths={entry.acquisitionPaths} />
+        {hasRichImportDetail ? (
+          <>
+            <p className="pdpp-caption text-muted-foreground">{guidance}</p>
+            <SourceAcquisitionPaths paths={entry.acquisitionPaths} />
+          </>
+        ) : null}
+        <SourceExternalDocs entry={entry} />
       </div>
     </details>
   );
@@ -230,11 +282,9 @@ function SourceSetupDetails({ entry }: { entry: ConnectorCatalogEntry }) {
 function SourceSetupCard({
   entry,
   existingSources,
-  unavailable,
 }: {
   entry: ConnectorCatalogEntry;
   existingSources: readonly ExistingSourceSetupLink[];
-  unavailable?: boolean;
 }) {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
@@ -256,13 +306,14 @@ function SourceSetupCard({
           </span>
         </div>
         <p className="pdpp-caption mt-1 text-muted-foreground">{sourceMethodLine(entry, existingSources.length)}</p>
+        <SourceSetupContext entry={entry} />
         <ExistingSourceLinks connectorKey={entry.connectorKey} sources={existingSources} />
         <SourceSetupDetails entry={entry} />
       </div>
       <div className="flex flex-col items-end justify-start gap-1">
         {action ? (
           <>
-            <span className="pdpp-eyebrow text-muted-foreground">Next</span>
+            <span className="pdpp-eyebrow text-muted-foreground">Next step</span>
             <Link className={buttonVariants({ size: "sm", variant: "default" })} href={action.href}>
               {action.label}
             </Link>
@@ -272,80 +323,41 @@ function SourceSetupCard({
               </Link>
             ) : null}
           </>
-        ) : (
-          <span
-            className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground"
-            data-testid="source-unavailable-fact"
-          >
-            {unavailable ? "Not available from this page" : "No primary action"}
-          </span>
-        )}
+        ) : null}
       </div>
     </li>
   );
 }
 
-function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEntry[] }) {
+function ExperimentalSetupSummary({
+  entries,
+  existingSourcesByConnector,
+}: {
+  entries: readonly ConnectorCatalogEntry[];
+  existingSourcesByConnector?: Readonly<Record<string, readonly ExistingSourceSetupLink[]>>;
+}) {
   if (entries.length === 0) {
     return null;
   }
   return (
-    <details className="rounded-sm border border-border/80 bg-muted/20 p-3" data-testid="server-setup-summary">
-      <summary className="pdpp-caption cursor-pointer text-muted-foreground">
-        Server settings needed before setup ({entries.length})
-      </summary>
+    <details className="rounded-sm border border-border/80 bg-muted/20 p-3" data-testid="experimental-setup-summary">
+      <summary className="pdpp-caption cursor-pointer text-muted-foreground">Preview ({entries.length})</summary>
       <div className="mt-3 grid gap-3">
         <p className="pdpp-caption text-muted-foreground">
-          These sources need provider app settings on this instance before an account can be added.
+          These setup paths are implemented but have not completed live validation. Test them with non-critical data.
         </p>
-        <ul className="grid gap-2">
-          {entries.map((entry) => (
-            <li className="flex flex-wrap items-center justify-between gap-2" key={entry.connectorKey}>
-              <div className="min-w-0">
-                <p className="pdpp-caption font-medium text-foreground">{entry.displayName}</p>
-                <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
-              </div>
-              <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment">
-                Open server settings
-              </Link>
-            </li>
-          ))}
-        </ul>
+        <SourceSetupCardList entries={entries} existingSourcesByConnector={existingSourcesByConnector} />
       </div>
     </details>
-  );
-}
-
-function UnavailableSourceSummary({ entries }: { entries: readonly ConnectorCatalogEntry[] }) {
-  if (entries.length === 0) {
-    return null;
-  }
-  return (
-    <ul className="mt-3 grid gap-2" data-testid="unavailable-source-summary">
-      {entries.map((entry) => {
-        const status = sourceSetupStatus(entry);
-        return (
-          <li className="flex flex-wrap items-center justify-between gap-2" key={entry.connectorKey}>
-            <div className="min-w-0">
-              <p className="pdpp-caption font-medium text-foreground">{entry.displayName}</p>
-              <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
-            </div>
-            <span className={`pdpp-eyebrow rounded border px-1.5 py-0.5 ${status.tone}`}>{status.label}</span>
-          </li>
-        );
-      })}
-    </ul>
   );
 }
 
 function SourceSetupCardList({
   entries,
   existingSourcesByConnector,
-  unavailable,
 }: {
   entries: readonly ConnectorCatalogEntry[];
   existingSourcesByConnector?: Readonly<Record<string, readonly ExistingSourceSetupLink[]>>;
-  unavailable?: boolean;
 }) {
   return (
     <ul className="grid gap-3">
@@ -354,7 +366,6 @@ function SourceSetupCardList({
           entry={entry}
           existingSources={existingSourcesByConnector?.[entry.connectorKey] ?? []}
           key={entry.connectorKey}
-          unavailable={unavailable}
         />
       ))}
     </ul>
@@ -380,15 +391,11 @@ export function SourceSetupCatalog({
   query: string;
 }) {
   const filtered = filterSourceCatalog(catalog, query);
-  const available = filtered.filter((entry) => sourceSetupAvailability(entry) === "available_now");
-  const serverSetup = filtered.filter((entry) => sourceSetupAvailability(entry) === "requires_server_setup");
-  const unavailable = filtered.filter((entry) => sourceSetupAvailability(entry) === "not_available_here");
-  const hasQuery = query.trim().length > 0;
+  const available = filtered.filter((entry) => entry.publicTier === "supported" && isRunnableAddOffer(entry));
+  const experimental = filtered.filter((entry) => entry.publicTier === "preview" && isRunnableAddOffer(entry));
+  const actionable = [...available, ...experimental];
   return (
-    <Section
-      description="Start with sources this dashboard can add now. Other connector entries are separated so they do not look like available setup paths."
-      title="Add data"
-    >
+    <Section description="Add sources this dashboard can set up now." title="Add data">
       <form action={action} className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
         <label className="sr-only" htmlFor="source_q">
           Search data sources
@@ -398,7 +405,7 @@ export function SourceSetupCatalog({
           Search
         </IcButton>
       </form>
-      {filtered.length > 0 ? (
+      {actionable.length > 0 ? (
         <div className="grid gap-5">
           {available.length > 0 ? (
             <SourceSetupCardList entries={available} existingSourcesByConnector={existingSourcesByConnector} />
@@ -408,16 +415,7 @@ export function SourceSetupCatalog({
             </p>
           )}
 
-          <ServerSetupSummary entries={serverSetup} />
-
-          {unavailable.length > 0 ? (
-            <details className="rounded-md border border-border/80 bg-muted/20 p-3" open={hasQuery}>
-              <summary className="pdpp-caption cursor-pointer text-muted-foreground">
-                Sources not available from this page ({unavailable.length})
-              </summary>
-              <UnavailableSourceSummary entries={unavailable} />
-            </details>
-          ) : null}
+          <ExperimentalSetupSummary entries={experimental} existingSourcesByConnector={existingSourcesByConnector} />
         </div>
       ) : (
         <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">

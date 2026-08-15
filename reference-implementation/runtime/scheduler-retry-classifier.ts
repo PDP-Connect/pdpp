@@ -114,11 +114,11 @@ function hasRetryableRunFailureContext(err: RunConnectorError | null | undefined
 }
 
 function knownGapRequiresOwnerAuthRepair(gap: Record<string, unknown>): boolean {
-  return (
-    isOwnerAuthAction(stringField(plainObject(gap.recovery_hint), "action")) ||
-    isOwnerAuthAction(stringField(gap, "reason")) ||
-    matchesOwnerAuthMessage(stringField(gap, "message"))
-  );
+  const recoveryHint = plainObject(gap.recovery_hint);
+  if (recoveryHint) {
+    return isOwnerAuthAction(stringField(recoveryHint, "action"));
+  }
+  return isOwnerAuthAction(stringField(gap, "reason")) || matchesOwnerAuthMessage(stringField(gap, "message"));
 }
 
 function runRequiresOwnerAuthRepair(err: RunConnectorError | null | undefined): boolean {

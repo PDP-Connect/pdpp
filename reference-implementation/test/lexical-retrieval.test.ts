@@ -43,6 +43,7 @@ import { closeDb, getDb, initDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { closePostgresStorage } from "../server/postgres-storage.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { drainConnectorInstanceIndexWork } from "../server/records.ts";
 import { buildSearchPlanForGrant, parseSearchParams } from "../server/search.ts";
 
 // ─── harness ────────────────────────────────────────────────────────────────
@@ -407,7 +408,7 @@ async function approveClientGrant(asUrl: string, params: ApproveClientGrantParam
     }
   );
   assert.equal(reviewStatus, 200, JSON.stringify(review));
-  assert.ok(review, "consent review returns a body");
+  assert.ok(review, "consent review response body");
   assert.equal(typeof review.approval_review_revision, "string", "consent review returns a revision");
   const { body: approved, status: approvalStatus } = await fetchJson<ApprovedGrantResponse>(
     `${asUrl}/consent/approve`,
@@ -422,7 +423,7 @@ async function approveClientGrant(asUrl: string, params: ApproveClientGrantParam
   );
   assert.equal(approvalStatus, 200, JSON.stringify(approved));
   assert.ok(approved, "consent approve response body");
-  assert.ok(approved.token, "consent approval token");
+  assert.ok(approved.token, `consent approval token: ${JSON.stringify(approved)}`);
   return approved;
 }
 
@@ -675,7 +676,6 @@ if (POSTGRES_URL) {
       capabilities: { human_interaction: ["credentials"] },
       connector_id: connectorId,
       display_name: "Postgres Lexical Recall",
-      manifest_uri: `https://sources.example/connectors/${connectorId}`,
       protocol_version: "0.1.0",
       streams: [
         {
@@ -733,6 +733,11 @@ if (POSTGRES_URL) {
         });
       }
       await ingest(rsUrl, ownerToken, connectorId, "posts", records);
+      // Derived-index publish is deferred/fire-and-forget (records.ts);
+      // asserting on lexical content requires draining the per-connector-
+      // instance index lane first, per drainConnectorInstanceIndexWork's own
+      // documented contract for this exact case.
+      await drainConnectorInstanceIndexWork();
 
       const { status, body } = await fetchJson<SearchListResponse>(
         `${rsUrl}/v1/search?q=${encodeURIComponent(term)}&limit=5`,
@@ -1581,8 +1586,8 @@ test("buildSearchPlanForGrant honors declared ∩ authorized; parseSearchParams 
  *   4. Issue /v1/search — the historical records must show up immediately.
  *
  * Without the registerConnector backfill hook, step (4) would return zero
- * hits because the FTS5 write-path maintenance (lexicalIndexUpsert) only
- * runs on subsequent record writes, not on records that already existed.
+ * hits because the FTS5 write-path maintenance only runs on subsequent
+ * record writes, not on records that already existed.
  */
 test("pre-existing records become searchable after lexical_fields are declared (no re-ingest)", async () => {
   // Bypass the standard withHarness — it pre-registers manifests with
@@ -1650,8 +1655,8 @@ test("pre-existing records become searchable after lexical_fields are declared (
     assert.equal(regV1.status, 201);
 
     // (2) Ingest records BEFORE the extension is enabled. These records
-    // never reach lexicalIndexUpsert because the manifest declares no
-    // lexical_fields at the time of write.
+    // never reach lexical write-path maintenance because the manifest
+    // declares no lexical_fields at the time of write.
     const ownerToken = await issueOwnerToken(asUrl);
     await ingest(rsUrl, ownerToken, CONNECTOR_ID, "posts", [
       {

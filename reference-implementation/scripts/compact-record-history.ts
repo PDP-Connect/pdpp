@@ -108,13 +108,205 @@
  */
 
 import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import pg from "pg";
 
 const { Pool } = pg;
+
+/**
+ * Per-connector fingerprint-exclusion policy is CONNECTOR-OWNED DATA,
+ * declared on each stream's own manifest entry (`compaction_fingerprint`),
+ * never compiled into this script as a connector-keyed literal or read from
+ * an RI-owned sibling JSON registry (ri-zero-knowledge-terminal-revise-0810
+ * closed the latter: an RI-committed JSON file naming connector/stream
+ * identity is exactly as much self-attested connector knowledge as the same
+ * fact written into `.ts` source, just reached via a different seam — see
+ * `reference-implementation/test/ri-zero-connector-knowledge-conformance.test.ts`).
+ *
+ * This script reads every manifest under both shipped manifest roots
+ * (`packages/polyfill-connectors/manifests/`, `reference-implementation/
+ * manifests/` — mirroring `scripts/generate-connector-registry.ts`'s own
+ * static, load-time enumeration of the same two roots, the sanctioned
+ * pattern for RI tooling that needs the full manifest set rather than one
+ * connector at a time via the runtime installed-connector catalog) and
+ * builds `COMPACTION_POLICIES` GENERICALLY from whichever streams declare a
+ * `compaction_fingerprint` field — this script contains no connector-name
+ * branch anywhere. `compaction_fingerprint.exclude_keys` (and the optional
+ * `change_model`/`representative_policy`/`content_gate` fields) is a FACT a
+ * connector safely self-attests about its OWN emitted record shape (which
+ * fields on ITS OWN records are run-clock/acquisition noise versus real
+ * content) — this is categorically different from `version-disposition.ts`'s
+ * reviewed-residue map, which is an OWNER JUDGMENT CALL about a specific
+ * connector INSTANCE's observed history and must never be self-attested;
+ * see that module's own doc comment for why that one stays outside any
+ * manifest.
+ */
+interface CompactionFingerprintContentGate {
+  readonly gated_exclude_keys: readonly string[];
+  readonly presence_fields: readonly string[];
+}
+interface CompactionFingerprintDeclaration {
+  readonly change_model?: "immutable_semantic";
+  readonly content_gate?: CompactionFingerprintContentGate;
+  readonly exclude_keys: readonly string[];
+  readonly representative_policy?: "current";
+}
+interface ManifestStreamLike {
+  readonly compaction_fingerprint?: CompactionFingerprintDeclaration;
+  readonly name?: unknown;
+}
+interface ManifestLike {
+  readonly connector_id?: unknown;
+  readonly connector_key?: unknown;
+  readonly streams?: readonly ManifestStreamLike[];
+}
+
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const riRoot = resolve(scriptDir, "..");
+const repoRoot = resolve(riRoot, "..");
+
+const REGISTRY_ID_PREFIX = "https://registry.pdpp.dev/connectors/";
+
+function connectorKeyFromManifest(manifest: ManifestLike): string | null {
+  if (typeof manifest.connector_key === "string" && manifest.connector_key.length > 0) {
+    return manifest.connector_key;
+  }
+  if (typeof manifest.connector_id === "string" && manifest.connector_id.startsWith(REGISTRY_ID_PREFIX)) {
+    return manifest.connector_id.slice(REGISTRY_ID_PREFIX.length);
+  }
+  return null;
+}
+
+/** Every `*.json` manifest directly under `packages/polyfill-connectors/
+ * manifests/`, parsed. Malformed/non-JSON entries are skipped (this mirrors
+ * the scanner's own manifest-derivation posture — a broken manifest simply
+ * contributes no policy, it does not crash the tool). One function per
+ * manifest root (not a shared parameterized/looped helper), each with its
+ * OWN uniquely-named local directory constant (`polyfillConnectorsManifestsDir`,
+ * not a shared `dir` — the zero-connector-knowledge scanner's bounded
+ * resolver treats a name bound to more than one syntactically distinct
+ * initializer ANYWHERE in the file as ambiguous and drops it, so two
+ * same-named `const dir = ...` in sibling functions would make BOTH
+ * unresolvable even though each is independently a compile-time-fixed
+ * sanctioned root) so the resolver can statically prove this function's own
+ * `readFileSync` call resolves inside the sanctioned manifest root —
+ * matching `scripts/generate-connector-registry.ts`'s own
+ * `readReferenceManifests` shape. */
+function readPolyfillConnectorsManifests(): ManifestLike[] {
+  const polyfillConnectorsManifestsDir = resolve(repoRoot, "packages/polyfill-connectors/manifests");
+  const out: ManifestLike[] = [];
+  let files: string[];
+  try {
+    files = readdirSync(polyfillConnectorsManifestsDir).filter((f) => f.endsWith(".json"));
+  } catch {
+    return out;
+  }
+  for (const file of files) {
+    try {
+      out.push(JSON.parse(readFileSync(resolve(polyfillConnectorsManifestsDir, file), "utf8")));
+    } catch {
+      // Skip: not this tool's job to validate manifest well-formedness.
+    }
+  }
+  return out;
+}
+
+/** Every `*.json` manifest directly under `reference-implementation/
+ * manifests/`, parsed. Same posture as {@link readPolyfillConnectorsManifests}. */
+function readReferenceImplementationManifests(): ManifestLike[] {
+  const referenceImplementationManifestsDir = resolve(riRoot, "manifests");
+  const out: ManifestLike[] = [];
+  let files: string[];
+  try {
+    files = readdirSync(referenceImplementationManifestsDir).filter((f) => f.endsWith(".json"));
+  } catch {
+    return out;
+  }
+  for (const file of files) {
+    try {
+      out.push(JSON.parse(readFileSync(resolve(referenceImplementationManifestsDir, file), "utf8")));
+    } catch {
+      // Skip: not this tool's job to validate manifest well-formedness.
+    }
+  }
+  return out;
+}
+
+/** Every shipped manifest across both roots, parsed. */
+function readAllManifests(): ManifestLike[] {
+  return [...readPolyfillConnectorsManifests(), ...readReferenceImplementationManifests()];
+}
+
+/** Build a `CompactionPolicy` from one manifest's connector key and one of
+ * its streams' `compaction_fingerprint` declaration — generic across every
+ * connector, no connector-name branch. `local-device:<key>` is included
+ * alongside the bare key so multi-device local-collector deployments
+ * (mechanical id-prefix handling, not connector knowledge) resolve to the
+ * same policy as the single-device form. */
+function buildPolicyFromManifestStream(
+  connectorKey: string,
+  streamName: string,
+  declaration: CompactionFingerprintDeclaration
+): CompactionPolicy {
+  const policy: CompactionPolicy = {
+    connectorIds: [connectorKey, `${REGISTRY_ID_PREFIX}${connectorKey}`, `local-device:${connectorKey}`],
+    connectorSource: `manifest-declared compaction_fingerprint (${connectorKey}/${streamName})`,
+    excludeKeys: [...declaration.exclude_keys],
+    stream: streamName,
+  };
+  if (declaration.change_model) {
+    policy.changeModel = declaration.change_model;
+  }
+  if (declaration.representative_policy) {
+    policy.representativePolicy = declaration.representative_policy;
+  }
+  const contentGate = declaration.content_gate;
+  if (contentGate) {
+    policy.resolveExcludeKeys = (record: Record<string, unknown>) => {
+      const hasAllPresenceFields = contentGate.presence_fields.every((field) => isPresentFieldValue(record[field]));
+      return hasAllPresenceFields ? [...contentGate.gated_exclude_keys] : [...declaration.exclude_keys];
+    };
+  }
+  return policy;
+}
+
+/** A `content_gate.presence_fields` entry is "present" when it is a
+ * non-empty string, a positive number, or otherwise truthy. */
+function isPresentFieldValue(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.length > 0;
+  }
+  if (typeof value === "number") {
+    return value > 0;
+  }
+  return Boolean(value);
+}
+
+/** Every `CompactionPolicy`, derived generically from every shipped
+ * manifest's streams — the complete, generic replacement for what used to
+ * be a hand-maintained, connector-keyed literal array. */
+function buildCompactionPoliciesFromManifests(): CompactionPolicy[] {
+  const policies: CompactionPolicy[] = [];
+  for (const manifest of readAllManifests()) {
+    const connectorKey = connectorKeyFromManifest(manifest);
+    if (!connectorKey) {
+      continue;
+    }
+    for (const stream of manifest.streams ?? []) {
+      const declaration = stream.compaction_fingerprint;
+      if (!declaration || typeof stream.name !== "string") {
+        continue;
+      }
+      policies.push(buildPolicyFromManifestStream(connectorKey, stream.name, declaration));
+    }
+  }
+  return policies;
+}
 
 // ─── Shared types ───────────────────────────────────────────────────────
 
@@ -153,13 +345,6 @@ interface EnrichedRow {
   version: number;
 }
 
-/**
- * The shape returned by the two policy-family builders below: every
- * `CompactionPolicy` field except the three optional canonical/content-gate
- * fields those two families never populate.
- */
-type BaseCompactionPolicy = Omit<CompactionPolicy, "changeModel" | "representativePolicy" | "resolveExcludeKeys">;
-
 // ─── Policy registry ────────────────────────────────────────────────────
 
 /**
@@ -169,35 +354,41 @@ type BaseCompactionPolicy = Omit<CompactionPolicy, "changeModel" | "representati
  * one-for-one so a "removable historical version" classification here
  * matches the connector's "no-op emit" classification.
  *
- * Adding a new entry here is a code-review gate. The policy must
- * reference an existing connector-side fingerprint helper.
+ * Every entry here is DERIVED from a manifest-declared `compaction_fingerprint`
+ * field (see `buildCompactionPoliciesFromManifests` above) — this script
+ * itself contains no connector-name branch and no hand-maintained,
+ * connector-keyed literal. The connector's own manifest is the code-review
+ * gate: adding or changing a `compaction_fingerprint` declaration goes
+ * through the same manifest-review process as any other connector-authored
+ * capability, and the manifest author is responsible for mirroring an
+ * existing connector-side fingerprint helper (a manifest-declared
+ * `exclude_keys` that does NOT match the connector's own fingerprint-cursor
+ * exclusion would just mean this tool's "removable" disagrees with the
+ * connector's "no-op emit", the same review burden that existed when this
+ * was a hand-maintained RI-side list — the burden moved to the manifest
+ * author, it did not disappear).
  *
- *   - `connectorId`: the connector_id column value the policy applies to.
- *   - `stream`: the stream column value the policy applies to.
- *   - `excludeKeys`: payload keys excluded from the fingerprint. Mirrors
- *     the connector's `excludeKeys` argument to its own fingerprint
- *     helper. Slack `workspace` excludes `fetched_at` because the
- *     connector excludes it (a08d7a0a — without exclusion the connector
- *     gate would never fire and the 31k-version workspace churn would
- *     not stop).
- *   - `resolveExcludeKeys` (optional): a per-record function `(record) =>
- *     string[]` that computes the exclusion list for each individual record.
- *     Takes precedence over `excludeKeys` when present. Used by content-gated
- *     streams (PDF statements) whose exclusion depends on whether the record
- *     carries a positive content fingerprint. Must mirror the connector-side
- *     `resolveExcludeFromFingerprint` exactly so a "removable historical
- *     version" classification matches the connector's "no-op emit".
- *   - `connectorSource`: the connector file the policy mirrors. Pure
- *     documentation; not consumed at runtime.
- *   - `changeModel` (optional): the per-stream change model. Only
- *     `'immutable_semantic'` opts a stream into canonical mode — it asserts
- *     that, after the policy exclusions, a record's semantic body never moves
- *     (every same-key history differs only on excluded run/acquisition
- *     metadata). Absent (the default) means the stream is audit-only.
- *   - `representativePolicy` (optional): which row survives a same-fingerprint
- *     run under canonical mode. Only `'current'` is supported in this slice —
- *     the `records.version` row wins (authoritative-current-wins), so canonical
- *     apply never rewrites the `records` table. Absent means audit-only.
+ *   - `connectorIds`: every id form the policy applies to (bare key,
+ *     registry-URL form, `local-device:` prefix) — mechanical string forms
+ *     of the SAME connector, not additional connector knowledge.
+ *   - `stream`: the stream name the policy applies to.
+ *   - `excludeKeys`: payload keys excluded from the fingerprint, taken
+ *     directly from the manifest's `compaction_fingerprint.exclude_keys`.
+ *   - `resolveExcludeKeys` (optional): built generically from the manifest's
+ *     `compaction_fingerprint.content_gate` when present — a per-record
+ *     function that switches between `content_gate.gated_exclude_keys` (all
+ *     `presence_fields` are truthy/non-empty) and the base `excludeKeys`
+ *     (fallback). The GATING MECHANISM is RI-owned generic code (this
+ *     function); WHICH fields gate and WHICH fields get excluded is the
+ *     manifest-declared fact.
+ *   - `connectorSource`: now a generic "manifest-declared" label (the
+ *     connector's own manifest IS the source of truth; no RI-authored
+ *     per-entry documentation string to keep in sync).
+ *   - `changeModel`/`representativePolicy` (optional): taken directly from
+ *     the manifest's `compaction_fingerprint.change_model`/
+ *     `representative_policy`. Only `'immutable_semantic'`/`'current'`
+ *     (respectively) opt a stream into canonical mode; absent means
+ *     audit-only, same semantics as before this redesign.
  *
  * Canonical mode (mode === 'canonical') is legal ONLY for a policy with both
  * `changeModel: 'immutable_semantic'` and `representativePolicy: 'current'`.
@@ -205,495 +396,7 @@ type BaseCompactionPolicy = Omit<CompactionPolicy, "changeModel" | "representati
  * is `'audit'`, which ignores both fields and keeps its existing conservative
  * retention for every policy.
  */
-export const COMPACTION_POLICIES: CompactionPolicy[] = [
-  {
-    connectorIds: ["gmail", "https://registry.pdpp.dev/connectors/gmail"],
-    connectorSource:
-      "packages/polyfill-connectors/connectors/gmail/parsers.ts:buildThreadFingerprint → src/fingerprint-cursor.ts:recordFingerprint (canonical)",
-    excludeKeys: [],
-    stream: "threads",
-  },
-  {
-    connectorIds: ["slack", "https://registry.pdpp.dev/connectors/slack"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.workspace (["fetched_at"]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at"],
-    stream: "workspace",
-  },
-  {
-    connectorIds: ["slack", "https://registry.pdpp.dev/connectors/slack"],
-    connectorSource:
-      "packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.users ([]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)",
-    excludeKeys: [],
-    stream: "users",
-  },
-  {
-    connectorIds: ["slack", "https://registry.pdpp.dev/connectors/slack"],
-    connectorSource:
-      "packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.files ([]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)",
-    excludeKeys: [],
-    stream: "files",
-  },
-  {
-    // `channel_memberships` record body is `{id, channel_id, user_id,
-    // fetched_at}`. The per-run `fetched_at: nowIso()` forced a brand-new
-    // version of every membership on every slackdump pass, and the stream
-    // grew into the single largest churn stream by absolute history volume
-    // for a membership set that barely moves. The connector now gates emit
-    // through the per-record fingerprint cursor with
-    // excludeFromFingerprint ["fetched_at"] (FINGERPRINTED_STREAMS now
-    // includes channel_memberships); this policy mirrors that exclusion
-    // one-for-one. Excluding ONLY `fetched_at` is lossless: the only other
-    // fields (id, channel_id, user_id) are the membership identity itself,
-    // so a membership appearing or disappearing is always a fingerprint
-    // boundary that survives — only a true no-op refresh (same membership,
-    // moved run clock) collapses.
-    connectorIds: ["slack", "https://registry.pdpp.dev/connectors/slack"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.channel_memberships (["fetched_at"]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at"],
-    stream: "channel_memberships",
-  },
-  {
-    connectorIds: ["ynab", "https://registry.pdpp.dev/connectors/ynab"],
-    connectorSource:
-      "packages/polyfill-connectors/connectors/ynab/index.ts:openPayeeLocationCursor → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)",
-    excludeKeys: [],
-    stream: "payee_locations",
-  },
-  {
-    // `labels` re-emitted every IMAP mailbox unconditionally on every run
-    // (~269 versions/label of byte-identical history). The connector now
-    // gates emit through a per-label fingerprint cursor keyed by the label
-    // `name`. The cursor keys on a synthetic `id = name` but EXCLUDES `id`
-    // from the fingerprint, so the hash is computed over exactly the
-    // stored record body — `{name, canonical_name, is_system,
-    // parent_name, message_count}` — which contains no `id` and no
-    // run-clock field. This policy therefore mirrors the connector with an
-    // empty exclude set: a "removable historical version" here equals the
-    // connector's own "no-op emit."
-    connectorIds: ["gmail", "https://registry.pdpp.dev/connectors/gmail"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/gmail/index.ts:emitLabelsStream → openFingerprintCursor({excludeFromFingerprint:["id"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical). Stored record_json has no `id`; script excludeKeys [] hashes the same body the connector hashes after stripping the synthetic keying id.',
-    excludeKeys: [],
-    stream: "labels",
-  },
-  {
-    changeModel: "immutable_semantic",
-    // `statements` carried a run-clock `fetched_at: nowIso()` in the
-    // record body, forcing a new version of every statement on every run
-    // (~15 versions/record). A statement's identity (id, account_id,
-    // title, date_delivered) is immutable and its hydrated fields
-    // (pdf_path/pdf_sha256/document_url) are content-addressed (the path
-    // embeds the sha256 prefix), so the only field that moved was
-    // `fetched_at`. The connector now gates emit through a per-statement
-    // fingerprint cursor with resolveExcludeFromFingerprint; this policy
-    // mirrors that content-gated rule one-for-one:
-    //   - both content fields present → exclude blob/acquisition-identity
-    //     fields + run clock (lossless: positive content signal remains);
-    //   - either absent → exclude only `fetched_at` (conservative fallback).
-    // Canonical mode enabled: statements are immutable_semantic once
-    // content fields are present; blob churn is the only field movement.
-    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
-    connectorSource:
-      "packages/polyfill-connectors/connectors/usaa/index.ts:emitStatementRecords → openFingerprintCursor({resolveExcludeFromFingerprint:statementFingerprintExcludeKeys}) → src/statement-content-fingerprint.ts:statementFingerprintExcludeKeys (canonical)",
-    excludeKeys: ["fetched_at"],
-    representativePolicy: "current",
-    resolveExcludeKeys: (record: Record<string, unknown>) => {
-      const textSha = record.pdf_text_sha256;
-      const pageCount = record.pdf_page_count;
-      return typeof textSha === "string" && textSha.length > 0 && typeof pageCount === "number" && pageCount > 0
-        ? ["pdf_sha256", "pdf_path", "document_url", "fetched_at"]
-        : ["fetched_at"];
-    },
-    stream: "statements",
-  },
-  {
-    // `accounts` carried a run-clock `fetched_at` and ALL balance fields
-    // hardcoded `null` (balances live in the separate `balances` stream).
-    // The only field that moved between runs was `fetched_at` (~20
-    // versions/record of pure run-clock churn). The connector now gates
-    // emit through a per-account fingerprint cursor with
-    // excludeFromFingerprint ["fetched_at"]; this policy mirrors that
-    // exclusion one-for-one.
-    connectorIds: ["chase", "https://registry.pdpp.dev/connectors/chase"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/chase/index.ts:emitAccountsStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at"],
-    stream: "accounts",
-  },
-  {
-    changeModel: "immutable_semantic",
-    // `statements` (Chase) carried a run-clock `fetched_at`. A statement's
-    // identity (id = shortHash(account_reference|date_delivered|title)) is
-    // immutable and its hydrated fields (document_url/pdf_path/pdf_sha256)
-    // are content-addressed (path embeds sha256), and Chase re-encrypts the
-    // PDF per download so pdf_sha256/pdf_path/document_url churn with no
-    // content change. The connector now gates emit through a per-statement
-    // fingerprint cursor with resolveExcludeFromFingerprint; this policy
-    // mirrors that content-gated rule one-for-one:
-    //   - both content fields present → exclude blob/acquisition-identity
-    //     fields + run clock (lossless: positive content signal remains);
-    //   - either absent → exclude only `fetched_at` (conservative fallback).
-    // Canonical mode enabled: RC4 re-encryption churn is the only movement
-    // once content fields are present.
-    connectorIds: ["chase", "https://registry.pdpp.dev/connectors/chase"],
-    connectorSource:
-      "packages/polyfill-connectors/connectors/chase/index.ts:processStatementRow+emitStatementIndexOnly → openFingerprintCursor({resolveExcludeFromFingerprint:statementFingerprintExcludeKeys}) → src/statement-content-fingerprint.ts:statementFingerprintExcludeKeys (canonical)",
-    excludeKeys: ["fetched_at"],
-    representativePolicy: "current",
-    resolveExcludeKeys: (record: Record<string, unknown>) => {
-      const textSha = record.pdf_text_sha256;
-      const pageCount = record.pdf_page_count;
-      return typeof textSha === "string" && textSha.length > 0 && typeof pageCount === "number" && pageCount > 0
-        ? ["pdf_sha256", "pdf_path", "document_url", "fetched_at"]
-        : ["fetched_at"];
-    },
-    stream: "statements",
-  },
-  {
-    changeModel: "immutable_semantic",
-    // `transactions` (Chase) carried a run-clock `fetched_at`. A posted
-    // transaction's identity (id = account_id|fitid) and its fields (date,
-    // amount, name, memo, type, …) are immutable; the only field that moved
-    // between runs was `fetched_at`. Because the connector re-downloads an
-    // overlapping incremental QFX window every run, every already-seen
-    // transaction was re-emitted with a fresh `fetched_at` (~308
-    // versions/record — the worst churn stream by ratio). Later live review
-    // also found acquisition-mode `source` flapping
-    // (`qfx_download_all_*` ↔ `qfx_download_since_last_statement_*`) for the
-    // same QFX transaction. The connector now gates emit through a
-    // per-transaction fingerprint cursor with excludeFromFingerprint
-    // ["fetched_at", "source"]; this policy mirrors that exclusion
-    // one-for-one. Excluding only run/acquisition metadata is lossless: a new
-    // transaction (new id) or a real field move is always a fingerprint
-    // boundary that survives; only a re-downloaded byte-identical transaction
-    // modulo those metadata fields collapses.
-    //
-    // CANONICAL OPT-IN (canonicalize-retained-record-history): chase/transactions
-    // is the first — and, in this slice, only — stream eligible for canonical
-    // mode. A posted Chase transaction is immutable once it posts: its identity
-    // (id = account_id|fitid) and its real fields never move, so the same-key
-    // history can only differ on the excluded run/acquisition metadata
-    // (`fetched_at`, `source`). The copied-data proof shows every current Chase
-    // transaction has exactly one semantic version after that exclusion
-    // (1145/1145 keys, max 1 semantic version per key — see
-    // tmp/workstreams/chase-transaction-immutable-ratio-20260605.md). That
-    // single-semantic-version property is what makes
-    // `changeModel: 'immutable_semantic'` legal here and is asserted by the
-    // convergence regression test. `representativePolicy: 'current'` keeps the
-    // `records.version` row as the survivor for the current same-fingerprint
-    // run (the authoritative-current-wins CDC choice), which avoids any
-    // `records`-table rewrite in this slice.
-    connectorIds: ["chase", "https://registry.pdpp.dev/connectors/chase"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/chase/index.ts:emitTransactionsForAccount → openFingerprintCursor({excludeFromFingerprint:["fetched_at","source"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at", "source"],
-    representativePolicy: "current",
-    stream: "transactions",
-  },
-  {
-    // `accounts` (USAA) post-split carries identity/settings only
-    // (`id`, `type`, `name`, `last_four`, `status`) plus the run-clock
-    // `fetched_at`. The point-in-time `balance_cents` /
-    // `available_balance_cents` moved to the append-keyed `account_stats`
-    // observation stream (split-usaa-account-balance-observation-streams), so
-    // the entity body no longer carries a sampled metric — it is now the same
-    // shape as chase/accounts (identity + run clock). Excluding ONLY
-    // `fetched_at` is lossless: an identity/status change is a fingerprint
-    // boundary that is always retained; only a run whose body modulo
-    // `fetched_at` is byte-identical to the prior version (a true no-op
-    // refresh) collapses. The connector gates emit through a per-account
-    // fingerprint cursor with excludeFromFingerprint ["fetched_at"]; this
-    // policy mirrors that exclusion one-for-one. (Pre-split history rows that
-    // still differ on a real `balance_cents` value remain distinct
-    // fingerprints and are never collapsed — they are retained until the owner
-    // decides whether that pre-split residue is worth migrating into
-    // `account_stats`; the forward gate is correct regardless.)
-    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/usaa/index.ts:emitAccountsStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at"],
-    stream: "accounts",
-  },
-  {
-    // `credit_card_billing` post-split carries the stable card identity and
-    // settings (`id`, `account_id`, `account_nickname`, `credit_limit_cents`,
-    // `annual_percent_rate`, `cash_advance_apr`, `card_holders`) plus the
-    // run-clock `fetched_at`. The volatile per-cycle metrics
-    // (`current_balance_cents`, `available_credit_cents`, `cash_rewards_cents`,
-    // `billing_status`, `minimum_payment_met`) moved to the append-keyed
-    // `credit_card_billing_stats` observation stream
-    // (split-usaa-account-balance-observation-streams). The settings fields
-    // that remain are real semantic state (a credit-limit increase or an APR
-    // change is a legitimate, low-rate version) and are NOT excluded.
-    // Excluding ONLY `fetched_at` is lossless: any settings move is a
-    // fingerprint boundary that is always retained; only a true no-op refresh
-    // (body byte-identical modulo `fetched_at`) collapses. The connector gates
-    // emit through a per-card fingerprint cursor with excludeFromFingerprint
-    // ["fetched_at"]; this policy mirrors that exclusion one-for-one.
-    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/usaa/index.ts:runCreditCardBillingStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at"],
-    stream: "credit_card_billing",
-  },
-  {
-    // `/budgets` is a full-collection refetch with no server_knowledge
-    // delta, so before 8eb2a31a every run re-emitted every budget. YNAB
-    // advances `last_month` on calendar rollover and `last_modified_on`
-    // on any in-budget edit, neither of which changes the budget-summary
-    // fields this stream projects — ~273 versions/budget accumulated in
-    // the 2026-05-26 churn report. The connector now gates emit through
-    // openBudgetCursor with BUDGET_FINGERPRINT_EXCLUDE = ["last_month",
-    // "last_modified_on"]; this policy mirrors that exclusion one-for-one
-    // so a "removable historical version" here equals the connector's own
-    // "no-op emit." Historical rows from the pre-gate window differ only
-    // in those two excluded fields and collapse to their fingerprint
-    // boundaries.
-    connectorIds: ["ynab", "https://registry.pdpp.dev/connectors/ynab"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/ynab/index.ts:BUDGET_FINGERPRINT_EXCLUDE (["last_month","last_modified_on"]) → openBudgetCursor → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["last_month", "last_modified_on"],
-    stream: "budgets",
-  },
-  {
-    // `transactions` (USAA) carried a run-clock `fetched_at`. A posted
-    // transaction's identity (id = hashId(accountId|date|amount|original|
-    // #ord)) and its fields are immutable; the only field that moved between
-    // runs was `fetched_at`. Both emit paths re-surfaced the same
-    // transaction every run — the CSV-export path re-downloads an
-    // overlapping incremental date window, and the PDF-statement parse
-    // re-parses the same statement PDFs. The connector now gates BOTH paths
-    // through one shared per-transaction fingerprint cursor with
-    // excludeFromFingerprint ["fetched_at"]; this policy mirrors that
-    // exclusion one-for-one. Excluding ONLY `fetched_at` is lossless: a new
-    // transaction (new id), a corrected amount (new tuple → new id), or a
-    // real field move (e.g. balance_after_cents) is always a fingerprint
-    // boundary that survives; only a re-surfaced byte-identical transaction
-    // (modulo the run clock) collapses.
-    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/usaa/index.ts:emitCsvTransactions+processPdfStatementRow → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at"],
-    stream: "transactions",
-  },
-  {
-    // `inbox_messages` (USAA) carried a run-clock `fetched_at`. A message's
-    // identity (id = hashId(date_short|preview[:120])) and its body are
-    // immutable until its read/unread status flips, but the inbox page is
-    // re-scraped in full every run, so every still-listed message was
-    // re-emitted with a fresh `fetched_at`. The connector now gates emit
-    // through a per-message fingerprint cursor with excludeFromFingerprint
-    // ["fetched_at"]; this policy mirrors that exclusion one-for-one.
-    // Excluding ONLY `fetched_at` is lossless: a read → unread (or unread →
-    // read) status flip is a fingerprint boundary that survives; only a
-    // byte-identical re-scrape (modulo the run clock) collapses.
-    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/usaa/index.ts:runInboxStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at"],
-    stream: "inbox_messages",
-  },
-  {
-    // `current_activity` (Chase) carried a run-clock `fetched_at`. The
-    // dashboard overview re-renders the same recent rows every run; a row
-    // keyed by a stable `ui_transaction_id` is otherwise immutable until it
-    // transitions pending → posted, so the only field that moved between
-    // byte-identical runs was `fetched_at`. The connector now gates emit
-    // through a per-row fingerprint cursor with excludeFromFingerprint
-    // ["fetched_at"]; this policy mirrors that exclusion one-for-one.
-    // Excluding ONLY `fetched_at` is lossless: a pending → posted transition
-    // (status/posted_date/amount move) on a stable id is a fingerprint
-    // boundary that survives, and a fallback-keyed row whose fields change
-    // gets a new id and appends as a distinct row; only a byte-identical
-    // re-render (modulo the run clock) collapses.
-    connectorIds: ["chase", "https://registry.pdpp.dev/connectors/chase"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/chase/index.ts:emitCurrentActivityForAccount → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at"],
-    stream: "current_activity",
-  },
-  {
-    // `orders` (Amazon) carried a run-clock `fetched_at`. An order's
-    // identity (id = order id) is immutable and its total is fixed once
-    // placed, but the current (unfrozen) year is re-scraped every run and
-    // re-emitted with a fresh `fetched_at`. Year-freezing already bounds the
-    // blast radius to recent years; this gate removes the per-run re-emit
-    // within that window. The connector now gates emit through a per-order
-    // fingerprint cursor with excludeFromFingerprint ["fetched_at"]; this
-    // policy mirrors that exclusion one-for-one. Excluding ONLY `fetched_at`
-    // is lossless: a new order (new id) or a real field move
-    // (delivery_status / status_detail transitioning while the order ships)
-    // is always a fingerprint boundary that survives; only a re-scraped
-    // byte-identical order (modulo the run clock) collapses. `order_items`
-    // carries no `fetched_at` and has no registered policy.
-    connectorIds: ["amazon", "https://registry.pdpp.dev/connectors/amazon"],
-    connectorSource:
-      'packages/polyfill-connectors/connectors/amazon/index.ts:emitOrderAndItems → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
-    excludeKeys: ["fetched_at"],
-    stream: "orders",
-  },
-
-  {
-    // `custom_instructions` re-emitted the single full custom-instructions
-    // body (`/user_system_messages`) on every run. The record carries a stable
-    // synthetic id (`user_custom_instructions`) and NO run-clock field —
-    // `updated_at` is the source's own edit timestamp, not a fetch clock — so
-    // every run that found the instructions unchanged produced a byte-identical
-    // new version (the dashboard's custom_instructions churn was 100%
-    // byte-identical no-op re-emit). The connector now gates emit through a
-    // per-record fingerprint cursor over the whole body
-    // (excludeFromFingerprint []); this policy mirrors that with an empty
-    // exclude set, so a "removable historical version" here equals the
-    // connector's own "no-op emit." A real instructions edit moves the body
-    // hash and is always retained as a fingerprint boundary.
-    connectorIds: ["chatgpt", "https://registry.pdpp.dev/connectors/chatgpt"],
-    connectorSource:
-      "packages/polyfill-connectors/connectors/chatgpt/index.ts:runCustomInstructionsStream → openFingerprintCursor() (excludeFromFingerprint []) → src/fingerprint-cursor.ts:recordFingerprint (canonical). Stored record_json is the full builder body (incl. id); script excludeKeys [] hashes the same body.",
-    excludeKeys: [],
-    stream: "custom_instructions",
-  },
-  {
-    // `shared_conversations` is re-listed in full every run and each still-
-    // present share was re-emitted with a byte-identical body — the record
-    // carries a stable share id and NO run-clock field (`created_at` is the
-    // source's share-creation time), so the dashboard's shared_conversations
-    // churn was 100% byte-identical no-op re-emit. The connector now gates emit
-    // through a per-record fingerprint cursor over the whole body
-    // (excludeFromFingerprint []) and prunes stale ids after a clean full pass;
-    // this policy mirrors that with an empty exclude set. A new share (new id)
-    // or a changed title/visibility moves the body hash and is always retained
-    // as a fingerprint boundary; only a byte-identical re-list collapses.
-    connectorIds: ["chatgpt", "https://registry.pdpp.dev/connectors/chatgpt"],
-    connectorSource:
-      "packages/polyfill-connectors/connectors/chatgpt/index.ts:runSharedConversationsStream → openFingerprintCursor() (excludeFromFingerprint []) → src/fingerprint-cursor.ts:recordFingerprint (canonical). Stored record_json is the full builder body (incl. id); script excludeKeys [] hashes the same body.",
-    excludeKeys: [],
-    stream: "shared_conversations",
-  },
-
-  // ─── Exact stable-JSON identity family ────────────────────────────────
-  //
-  // Codex and Claude Code emit records from local on-disk source events
-  // (JSONL rollouts, sqlite threads, markdown files). Record payloads do
-  // not contain a `fetched_at` timestamp; volatile state (file mtimes,
-  // run timestamps) is kept in STATE cursors, not in the record body.
-  // Adjacent versions whose `record_json` is byte-identical under the
-  // canonical stable-stringify therefore represent re-emits of the same
-  // source event — never a real source transition the user would
-  // consider "the record changed."
-  //
-  // Per-stream notes:
-  //
-  //   codex/messages, codex/function_calls
-  //     Record fields are pulled from rollout JSONL response_items;
-  //     `timestamp` is the original event timestamp from the file
-  //     (immutable), `id` is `${session_id}:${line_count}` (stable
-  //     across re-parses of the same line). Re-emits happen only when
-  //     `mtime` changes; identical adjacent versions mean the same
-  //     line was re-emitted with the same parse output.
-  //   codex/sessions
-  //     Has a connector-side fingerprint cursor (af1700ad) that should
-  //     stop *new* churn. Historical inflation predates the cursor.
-  //     Stable-JSON identity is a strict superset of "no real change":
-  //     when adjacent versions have identical JSON, no field moved.
-  //   codex/skills, codex/prompts, codex/rules
-  //     Records carry `mtime_epoch` (seconds, floor(mtimeMs/1000)).
-  //     Every full-scan emit re-stamps the file unless content changes.
-  //     Adjacent identical JSON = mtime unchanged AND content unchanged.
-  //   claude-code/messages, claude-code/attachments
-  //     Like Codex, fields come from JSONL line events; `timestamp` is
-  //     from the source line (or, for `tool_result_file` attachments,
-  //     from the file mtime — but those re-emit only on mtime change,
-  //     so adjacent identical JSON still means no real change).
-  //   claude-code/sessions
-  //     Aggregated per-session record. `last_event_at` widens to the
-  //     observed max; `message_count` is a running tally. Adjacent
-  //     identical JSON means the aggregate didn't move.
-  //   claude-code/memory_notes, claude-code/skills, claude-code/slash_commands
-  //     Local markdown/JSON files with `mtime_epoch` (seconds) in the
-  //     payload. Adjacent identical JSON = file content didn't change.
-  //
-  // `connector_id` values in the live database for these connectors
-  // are `codex` and `claude-code` (hyphen, not underscore). Multi-device
-  // local-collector deployments use `local-device:codex` and
-  // `local-device:claude-code`; both forms are covered by each policy.
-  ...buildLocalDeviceExactJsonPolicies("codex", [
-    "messages",
-    "function_calls",
-    "sessions",
-    "skills",
-    "prompts",
-    "rules",
-  ]),
-  ...buildLocalDeviceExactJsonPolicies(
-    "claude-code",
-    ["messages", "attachments", "sessions", "skills", "memory_notes", "slash_commands"],
-    "claude_code"
-  ),
-
-  // ─── Inventory churn-gate family ──────────────────────────────────────
-  //
-  // `inventory_only`/`defer` stores emit a metadata record (path, type,
-  // privacy classification, reason) whose purpose is the local-agent-collector
-  // completeness contract — NOT a freshness time-series. The `mtime_epoch` and
-  // `size_bytes` file-stat fields tick on every normal tool write and would
-  // re-version an otherwise-unchanged inventory record on every run. The
-  // connectors now gate these streams with an `openInventoryFingerprintCursor`
-  // that excludes exactly those two keys
-  // (packages/polyfill-connectors/src/local-source-inventory.ts:
-  //  INVENTORY_FINGERPRINT_EXCLUDE_KEYS). This policy mirrors that exclusion
-  // one-for-one so a "removable historical version" classification here equals
-  // the connector's "no-op emit" classification. Real inventory transitions
-  // (type, path_hash, classification, reason) stay inside the fingerprint and
-  // are preserved as version boundaries. Inventory enumeration is a full scan,
-  // so these are full-scan policies (a disappeared store re-emits on return).
-  ...buildInventoryChurnGatePolicies(
-    "claude-code",
-    ["backup_inventory", "cache_inventory", "config_inventory", "file_history"],
-    "claude_code"
-  ),
-  ...buildInventoryChurnGatePolicies("codex", [
-    "history",
-    "session_index",
-    "shell_snapshots",
-    "config_inventory",
-    "cache_inventory",
-    "logs",
-  ]),
-];
-
-function buildLocalDeviceExactJsonPolicies(
-  connector: string,
-  streams: string[],
-  dirName: string = connector
-): BaseCompactionPolicy[] {
-  return streams.map((stream) => ({
-    connectorIds: [connector, `local-device:${connector}`],
-    connectorSource:
-      `packages/polyfill-connectors/connectors/${dirName}/ — exact stable-JSON identity ` +
-      "(no fetched_at in record_json; record payload derived from immutable source events " +
-      "and/or mtime-gated file emits)",
-    excludeKeys: [],
-    stream,
-  }));
-}
-
-function buildInventoryChurnGatePolicies(
-  connector: string,
-  streams: string[],
-  dirName: string = connector
-): BaseCompactionPolicy[] {
-  return streams.map((stream) => ({
-    connectorIds: [connector, `local-device:${connector}`],
-    connectorSource:
-      `packages/polyfill-connectors/connectors/${dirName}/ + src/local-source-inventory.ts ` +
-      "— inventory churn gate (openInventoryFingerprintCursor excludes mtime_epoch,size_bytes; " +
-      "inventory meaning = path/type/classification/reason)",
-    excludeKeys: ["mtime_epoch", "size_bytes"],
-    stream,
-  }));
-}
+export const COMPACTION_POLICIES: CompactionPolicy[] = buildCompactionPoliciesFromManifests();
 
 export function findPolicy(connectorId: string, stream: string): CompactionPolicy | null {
   return COMPACTION_POLICIES.find((p) => p.connectorIds.includes(connectorId) && p.stream === stream) || null;

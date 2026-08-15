@@ -28,22 +28,11 @@
  *      merely "narrow at the instance-row level but still touches every
  *      other table completely."
  *
- * Query-counting methodology (DELIBERATELY DIFFERENT from the n-slope
- * file's `db.prepare = wrapperFn` reassignment): `server/db.js` wraps the
- * real `better-sqlite3` `Database` in a `Proxy` whose `get` trap
- * UNCONDITIONALLY intercepts `prop === 'prepare'` and returns a fresh
- * cache-lookup closure on every read, regardless of any property actually
- * assigned on the proxy/target. Verified directly (see this change's PR
- * report): reassigning `db.prepare = fn` on that proxy silently writes an
- * own property nothing ever reads back (`db.prepare` after assignment
- * still resolves through the trap, not the assignment), so the existing
- * n-slope file's counters are always 0 and its query-count assertions pass
- * vacuously (`0 <= 0 + 5`) regardless of real query behavior — confirmed by
- * temporarily instrumenting the wrapper closure itself, which never fires.
- * This file instead patches `Database.prototype.prepare` (the RAW
- * better-sqlite3 method the cache proxy's `get` trap calls on a cache
- * MISS) directly, which genuinely intercepts every real prepare call and
- * correctly does NOT double-count a cache hit (same SQL text reused).
+ * Query-counting methodology: install instrumentation before database
+ * initialization, wrap every real statement returned by the raw
+ * better-sqlite3 prototype, and count statement executions plus rows read.
+ * This observes cache hits as well as misses and resets only after complete
+ * warm-up. It measures query work, not prepared-statement cache accidents.
  */
 
 import assert from "node:assert/strict";
@@ -97,115 +86,160 @@ function seedConnections(n: number, { connectorId = "c1" }: { connectorId?: stri
   return ids;
 }
 
-/**
- * Count REAL `Database.prototype.prepare` invocations (the raw
- * better-sqlite3 method) during `fn`. `server/db.js`'s cached-prepare Proxy
- * calls this exactly once per DISTINCT sql text per db instance — a cache
- * hit for already-prepared text does not re-invoke it — so this is the
- * genuine "how many prepared statements did this pass issue" signal. See
- * this file's header comment for why the n-slope file's `db.prepare =
- * wrapperFn` reassignment approach does not actually intercept anything on
- * this proxy shape.
- */
-async function countRawPrepareCalls<T>(fn: () => Promise<T>): Promise<{ result: T; calls: number }> {
-  let calls = 0;
+interface SqliteReadMetrics {
+  readonly executions: number;
+  readonly maxRows: number;
+  readonly rows: number;
+}
+
+async function withSqliteReadMetrics<T>(
+  fn: (reset: () => void, read: () => SqliteReadMetrics) => Promise<T>
+): Promise<T> {
+  let executions = 0;
+  let rows = 0;
+  let maxRows = 0;
   const original = Database.prototype.prepare;
   Database.prototype.prepare = function patchedPrepare(this: InstanceType<typeof Database>, sql: string) {
-    calls += 1;
-    return original.call<InstanceType<typeof Database>, [string], ReturnType<typeof original>>(this, sql);
+    const statement = original.call<InstanceType<typeof Database>, [string], ReturnType<typeof original>>(this, sql);
+    return new Proxy(statement, {
+      get(target, property, receiver) {
+        const method = Reflect.get(target, property, receiver);
+        if (property === "all") {
+          return (...args: unknown[]) => {
+            const result = Reflect.apply(method as (...values: unknown[]) => unknown, target, args) as unknown[];
+            executions += 1;
+            rows += result.length;
+            maxRows = Math.max(maxRows, result.length);
+            return result;
+          };
+        }
+        if (property === "get") {
+          return (...args: unknown[]) => {
+            const result = Reflect.apply(method as (...values: unknown[]) => unknown, target, args);
+            executions += 1;
+            rows += result === undefined ? 0 : 1;
+            maxRows = Math.max(maxRows, result === undefined ? 0 : 1);
+            return result;
+          };
+        }
+        if (property === "iterate") {
+          return (...args: unknown[]) => {
+            const iterator = Reflect.apply(
+              method as (...values: unknown[]) => unknown,
+              target,
+              args
+            ) as Iterable<unknown>;
+            return (function* () {
+              let yielded = 0;
+              for (const row of iterator) {
+                yielded += 1;
+                rows += 1;
+                yield row;
+              }
+              executions += 1;
+              maxRows = Math.max(maxRows, yielded);
+            })();
+          };
+        }
+        return typeof method === "function" ? method.bind(target) : method;
+      },
+    });
   } as typeof original;
   try {
-    const result = await fn();
-    return { calls, result };
+    return await fn(
+      () => {
+        executions = 0;
+        rows = 0;
+        maxRows = 0;
+      },
+      () => ({ executions, maxRows, rows })
+    );
   } finally {
     Database.prototype.prepare = original;
   }
 }
 
-test(
-  "scoped reconcile for one connection issues a query count independent of N other unrelated connections",
-  withTempDb(async () => {
-    // N=1: one unrelated connection plus the one connection under test.
-    seedConnections(1, { connectorId: "unrelated" });
-    const [targetIn1] = seedConnections(1, { connectorId: "target" });
-    assert.ok(targetIn1, "seedConnections(1, ...) must return exactly one id");
-    await reconcileConnectorSummaryEvidence(null); // warm: create both rows
-    const { calls: calls1 } = await countRawPrepareCalls(() => reconcileConnectorSummaryEvidence([targetIn1]));
-    assert.ok(calls1 > 0, "sanity: the interception itself must observe real prepare calls");
+test("scoped reconcile for one connection issues a query count independent of N other unrelated connections", async () =>
+  withSqliteReadMetrics(async (reset, read) => {
+    const dir = mkdtempSync(join(tmpdir(), "pdpp-scoped-consumer-measured-"));
+    initDb(join(dir, "pdpp.sqlite"));
+    try {
+      // N=1: one unrelated connection plus the one connection under test.
+      seedConnections(1, { connectorId: "unrelated" });
+      const [targetIn1] = seedConnections(1, { connectorId: "target" });
+      assert.ok(targetIn1, "seedConnections(1, ...) must return exactly one id");
+      await reconcileConnectorSummaryEvidence(null); // warm: create both rows
+      reset();
+      await reconcileConnectorSummaryEvidence([targetIn1]);
+      const read1 = read();
 
-    closeDb();
-    const dir25 = mkdtempSync(join(tmpdir(), "pdpp-scoped-consumer-25-"));
-    initDb(join(dir25, "pdpp.sqlite"));
-    // N=25: twenty-five unrelated connections plus the SAME one connection under test.
-    seedConnections(25, { connectorId: "unrelated" });
-    const [targetIn25] = seedConnections(1, { connectorId: "target" });
-    assert.ok(targetIn25, "seedConnections(1, ...) must return exactly one id");
-    await reconcileConnectorSummaryEvidence(null); // warm: create all 26 rows
-    const { result: steadyState25, calls: calls25 } = await countRawPrepareCalls(() =>
-      reconcileConnectorSummaryEvidence([targetIn25])
-    );
-    rmSync(dir25, { force: true, recursive: true });
+      closeDb();
+      const dir25 = mkdtempSync(join(tmpdir(), "pdpp-scoped-consumer-25-"));
+      initDb(join(dir25, "pdpp.sqlite"));
+      // N=25: twenty-five unrelated connections plus the SAME one connection under test.
+      seedConnections(25, { connectorId: "unrelated" });
+      const [targetIn25] = seedConnections(1, { connectorId: "target" });
+      assert.ok(targetIn25, "seedConnections(1, ...) must return exactly one id");
+      await reconcileConnectorSummaryEvidence(null); // warm: create all 26 rows
+      reset();
+      const steadyState25 = await reconcileConnectorSummaryEvidence([targetIn25]);
+      const read25 = read();
+      rmSync(dir25, { force: true, recursive: true });
 
-    assert.equal(steadyState25.repaired, 0, "fixture premise: the one scoped connection is already current");
-    assert.equal(steadyState25.discovered, 1, "scoped discovery reads exactly the one requested connection");
-    // A regression that scopes only the instance-row query but leaves
-    // evidence/retained-bytes/version-counter/canonical-count reads as
-    // complete table scans would still show as a FIXED query count here
-    // (each complete scan is one query, just with a bigger result set) —
-    // the property this asserts is that the scoped call's QUERY COUNT does
-    // not grow with N, which is what "each of the six discovery tables is
-    // read with one batched/complete query, never N point queries" buys.
-    assert.equal(
-      calls25,
-      calls1,
-      `scoped reconcile against N=25 unrelated connections issued ${calls25} prepare calls vs N=1's ${calls1} — scoped consumer cost must not grow with N`
-    );
-  })
-);
+      assert.equal(steadyState25.repaired, 0, "fixture premise: the one scoped connection is already current");
+      assert.equal(steadyState25.discovered, 1, "scoped discovery reads exactly the one requested connection");
+      // A complete-table scan would read 26 rows here while the one-id scope
+      // must read the same bounded result shape as the one-unrelated fixture.
+      assert.ok(
+        read25.rows === read1.rows && read25.maxRows <= read1.maxRows,
+        `scoped read work grew with unrelated fleet size: N=1 ${JSON.stringify(read1)}, N=25 ${JSON.stringify(read25)}`
+      );
+    } finally {
+      closeDb();
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }));
 
-test(
-  "scoped discovery issues a fixed query count for K requested ids, not one query per id (Part 2 batching)",
-  withTempDb(async () => {
-    const idsK5 = seedConnections(5, { connectorId: "batch" });
-    await reconcileConnectorSummaryEvidence(null); // warm
-    const { calls: callsK5 } = await countRawPrepareCalls(() => reconcileConnectorSummaryEvidence(idsK5));
-    assert.ok(callsK5 > 0, "sanity: the interception itself must observe real prepare calls");
+test("scoped discovery issues a fixed query count for K requested ids, not one query per id (Part 2 batching)", async () =>
+  withSqliteReadMetrics(async (reset, read) => {
+    const dir = mkdtempSync(join(tmpdir(), "pdpp-scoped-consumer-k5-measured-"));
+    initDb(join(dir, "pdpp.sqlite"));
+    try {
+      const idsK5 = seedConnections(5, { connectorId: "batch" });
+      await reconcileConnectorSummaryEvidence(null); // warm
+      reset();
+      await reconcileConnectorSummaryEvidence(idsK5);
+      const readK5 = read();
 
-    closeDb();
-    const dir15 = mkdtempSync(join(tmpdir(), "pdpp-scoped-consumer-k15-"));
-    initDb(join(dir15, "pdpp.sqlite"));
-    const idsK15 = seedConnections(15, { connectorId: "batch" });
-    await reconcileConnectorSummaryEvidence(null); // warm
-    const { result: steadyStateK15, calls: callsK15 } = await countRawPrepareCalls(() =>
-      reconcileConnectorSummaryEvidence(idsK15)
-    );
-    rmSync(dir15, { force: true, recursive: true });
+      closeDb();
+      const dir15 = mkdtempSync(join(tmpdir(), "pdpp-scoped-consumer-k15-"));
+      initDb(join(dir15, "pdpp.sqlite"));
+      const idsK15 = seedConnections(15, { connectorId: "batch" });
+      await reconcileConnectorSummaryEvidence(null); // warm
+      reset();
+      const steadyStateK15 = await reconcileConnectorSummaryEvidence(idsK15);
+      const readK15 = read();
+      rmSync(dir15, { force: true, recursive: true });
 
-    assert.equal(steadyStateK15.repaired, 0, "fixture premise: all K=15 requested connections are already current");
-    assert.equal(steadyStateK15.discovered, 15);
-    // The exact regression this proves closed: `readSqliteDiscoveryContext`'s
-    // scoped branch used to do `connectorInstanceIds.map((id) => db.prepare(...).get(id))`
-    // — one query PER requested id — for the instance-row lookup (and every
-    // other scoped table was an unscoped complete-table read regardless of
-    // K). A batched `IN (...)` query per table means the same FIXED number
-    // of distinct SQL texts are prepared whether K=5 or K=15: the
-    // placeholder COUNT changes (making each K's SQL text a distinct cache
-    // key), but the number of PREPARE CALLS per table stays at exactly one,
-    // so the total prepare-call count for K=15 must equal K=5's, not scale
-    // with K.
-    assert.equal(
-      callsK15,
-      callsK5,
-      `K=15 scoped discovery issued ${callsK15} prepare calls vs K=5's ${callsK5} — batched IN(...) discovery must not scale with K`
-    );
-  })
-);
+      assert.equal(steadyStateK15.repaired, 0, "fixture premise: all K=15 requested connections are already current");
+      assert.equal(steadyStateK15.discovered, 15);
+      // A point-query implementation would execute once per requested id;
+      // batched IN(...) discovery keeps execution count fixed as K grows.
+      assert.ok(
+        readK15.executions === readK5.executions,
+        `K=15 scoped discovery executed ${readK15.executions} reads vs K=5's ${readK5.executions} — batched IN(...) discovery must not scale with K`
+      );
+    } finally {
+      closeDb();
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }));
 
 test(
   "a scoped reconcile for connection A does not read or repair sibling connection B, even when B also needs repair",
   withTempDb(async () => {
     const manifest = {
-      capabilities: { public_listing: { listed: true, status: "test" } },
+      capabilities: { public_listing: { tier: "supported" } },
       connector_id: "c1",
       display_name: "Sibling Isolation Test Connector",
       protocol_version: "0.1.0",
@@ -282,5 +316,45 @@ test(
       true,
       "B must still read dirty after getConnectorSummaryForRoute('cin_a') — the consumer-facing scoped route must not touch B"
     );
+  })
+);
+
+test(
+  "a deferred scoped candidate is counted as skipped, independent of the deferred durable row",
+  withTempDb(async () => {
+    const [connectorInstanceId] = seedConnections(1, { connectorId: "deferred" });
+    assert.ok(connectorInstanceId);
+    await reconcileConnectorSummaryEvidence(null);
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET dirty = 1 WHERE connector_instance_id = ?")
+      .run(connectorInstanceId);
+    getDb()
+      .prepare(
+        `INSERT INTO controller_active_runs(
+           connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at
+         ) VALUES (?, 'deferred', 'run_deferred', 'trace_deferred', 'scenario_deferred', ?)`
+      )
+      .run(connectorInstanceId, NOW);
+
+    const result = await reconcileConnectorSummaryEvidence([connectorInstanceId]);
+    assert.equal(result.repaired, 0, "the active run defers the candidate repair");
+    assert.equal(result.skipped, 1, "a deferred candidate remains skipped for this pass");
+  })
+);
+
+test(
+  "scoped orphan pruning with zero candidates never makes skipped negative",
+  withTempDb(async () => {
+    const [connectorInstanceId] = seedConnections(1, { connectorId: "orphan" });
+    assert.ok(connectorInstanceId);
+    await reconcileConnectorSummaryEvidence(null);
+    assert.ok(await getConnectorSummaryEvidence(connectorInstanceId));
+    getDb().prepare("DELETE FROM connector_instances WHERE connector_instance_id = ?").run(connectorInstanceId);
+
+    const result = await reconcileConnectorSummaryEvidence([connectorInstanceId]);
+    assert.equal(result.discovered, 0, "the scoped census has no live connector instances");
+    assert.equal(result.repaired, 1, "the orphan evidence row is pruned");
+    assert.equal(result.skipped, 0, "orphan pruning is independent of skipped candidate accounting");
+    assert.equal(await getConnectorSummaryEvidence(connectorInstanceId), null);
   })
 );

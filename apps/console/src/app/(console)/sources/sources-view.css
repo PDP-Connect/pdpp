@@ -63,10 +63,24 @@ a.rr-s-item {
     inset 0 0 0 1px var(--border-strong);
 }
 
-.rr-s-item__name {
-  /* The bold human name is the clear primary identity on row 1. */
+.rr-s-item__identity {
+  /* Wraps the manifest-declared icon (or Monogram fallback) with the name so
+     both share row 1's grid cell without changing rr-s-item__name's own
+     ellipsis/line-height contract. */
+  display: flex;
   grid-row: 1;
   grid-column: 1;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.rr-s-item__icon {
+  flex-shrink: 0;
+}
+
+.rr-s-item__name {
+  /* The bold human name is the clear primary identity on row 1. */
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 0.875rem;
@@ -151,6 +165,7 @@ a.rr-s-item {
   padding: 14px 0 0;
 }
 .rr-s-link {
+  position: relative;
   width: fit-content;
   padding: 0;
   font: inherit;
@@ -161,6 +176,15 @@ a.rr-s-item {
   cursor: pointer;
   background: none;
   border: 0;
+}
+/* The link's visual size/position stay text-tight (it sits directly below the
+   source-access note, not a padded button row); the hit area grows to the
+   44px floor via an invisible inset ::before, the same technique already used
+   for .rr-x-facet-not's exclude toggle. */
+.rr-s-link::before {
+  position: absolute;
+  inset: -12px;
+  content: "";
 }
 .rr-s-link:hover {
   text-decoration: underline;
@@ -297,16 +321,41 @@ a.rr-s-item {
 
 /* Stream manifest table — show useful collection facts when present, and an
    explicit unavailable state when the reference has not produced per-stream
-   facts. No dash-only rows: empty facts are still a meaningful state. */
+   facts. No dash-only rows: empty facts are still a meaningful state.
+
+   The three fact tracks carry FIXED minimums (13rem + 10rem + 6.5rem = 472px).
+   Whenever the manifest's own box is narrower than that sum, those minimums win
+   and the flexible `minmax(0, 1fr)` stream track is squeezed to literally 0px —
+   the stream name disappears while the facts beside it stay legible. That is a
+   function of the DETAIL PANEL's width, not the viewport's: at a 1024px viewport
+   the panel is only ~366px, so a viewport media query cannot see the squeeze.
+   Hence a container query on the panel — it measures the box the grid actually
+   has to fit in. */
+.rr-s-manifest {
+  container-name: rr-s-manifest;
+  container-type: inline-size;
+}
+
 .rr-s-cols {
   --cols: minmax(0, 1fr) minmax(13rem, 1.4fr) minmax(10rem, 1fr) 6.5rem;
 }
-@media (max-width: 640px) {
+
+/* Below the 472px the four fixed track minimums demand (plus the row's own
+   padding + column gaps), drop to stream + records. Coverage and "read in" are
+   the droppable pair: the collection column still says whether facts exist, and
+   tapping the row remains the reader.
+
+   `!important` is load-bearing, not decoration. The shared `Table` primitive
+   sets `--cols` as an INLINE style (`style={{ "--cols": cols }}` in
+   packages/pdpp-brand-react/src/table.tsx), and an inline declaration outranks
+   any stylesheet rule no matter which query wraps it. Without `!important` this
+   block matches and still loses — which is exactly why the previous
+   `@media (max-width: 640px)` override never actually took effect and the
+   collapse survived. */
+@container rr-s-manifest (max-width: 34rem) {
   .rr-s-cols {
-    --cols: minmax(0, 1fr) minmax(0, 1.25fr);
+    --cols: minmax(0, 1fr) minmax(0, 1.25fr) !important;
   }
-  /* Hide coverage + Explore columns on narrow screens; the collection column
-     still says whether facts exist, and tapping the row remains the reader. */
   .rr-s-cols .pdpp-table__h:nth-child(3),
   .rr-s-cols .pdpp-table__h:nth-child(4),
   .rr-s-cols .pdpp-table__row > *:nth-child(3),
@@ -315,12 +364,39 @@ a.rr-s-item {
   }
 }
 
+/* Narrower still: even two tracks with a 1.25fr records column starve the
+   stream name. Stack the pair so the name always owns a full line. */
+@container rr-s-manifest (max-width: 20rem) {
+  .rr-s-cols {
+    --cols: minmax(0, 1fr) !important;
+  }
+  .rr-s-cols .pdpp-table__h:nth-child(2),
+  .rr-s-cols .pdpp-table__h:nth-child(3),
+  .rr-s-cols .pdpp-table__h:nth-child(4) {
+    display: none;
+  }
+  .rr-s-cols .pdpp-table__row > *:nth-child(2) {
+    padding-top: 2px;
+  }
+}
+
 .rr-s-stream-row {
   color: inherit;
   text-decoration: none;
 }
 
+/* Grid items default to a min-width equal to their content's min-content size,
+   which for `white-space: nowrap` text is the full unwrapped line width — so
+   without this, a long stream name ignores its `minmax(0, 1fr)` track and
+   grows the "stream" column past its share, overlapping the "records" column
+   next to it. `min-width: 0` on the cell lets the track's own 0-minimum win,
+   so `.rr-s-stream`'s overflow/ellipsis can actually engage. */
+.rr-s-cols .pdpp-table__row > *:first-child {
+  min-width: 0;
+}
+
 .rr-s-stream {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--font-mono);
@@ -527,6 +603,81 @@ a.rr-s-item {
   text-decoration: underline;
 }
 
+/* The passport serial's jump-off. Sits beside CopyMono so the connection id
+   both copies and navigates; kept quiet (muted, no underline) so the id itself
+   still reads as the primary content of the line. */
+.rr-s-serial-open {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  text-decoration: none;
+}
+.rr-s-serial-open:hover,
+.rr-s-serial-open:focus-visible {
+  color: var(--primary);
+}
+.rr-s-serial-open:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ── Desktop row: select (row body) + Open escalation ──
+   The row body button SELECTS the source into the right-hand passport; the
+   sibling "Open →" link NAVIGATES to the connection detail page. Two distinct
+   outcomes on one line, so drilling in no longer depends on viewport width.
+   Mirrors the Explore feed's rr-x-row-wrap--desktop / rr-x-row-open pattern.
+   The link stays keyboard-reachable at all times (never display:none) but is
+   visually quiet until the row is hovered, focused-within, or selected, so it
+   adds no per-row noise. */
+.rr-s-item-wrap--desktop {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+.rr-s-item-wrap--desktop > .rr-s-item {
+  flex: 1;
+  min-width: 0;
+}
+.rr-s-item-open {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  align-self: center;
+  padding: 2px 9px;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  opacity: 0;
+  transition:
+    opacity var(--duration-state) var(--ease-standard),
+    color var(--duration-state) var(--ease-standard),
+    border-color var(--duration-state) var(--ease-standard);
+}
+.rr-s-item-wrap--desktop:hover .rr-s-item-open,
+.rr-s-item-wrap--desktop:focus-within .rr-s-item-open,
+.rr-s-item-wrap--desktop:has(.rr-s-item.is-on) .rr-s-item-open {
+  opacity: 1;
+}
+.rr-s-item-open:hover,
+.rr-s-item-open:focus-visible {
+  color: var(--primary);
+  border-color: var(--primary);
+  opacity: 1;
+}
+.rr-s-item-open:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 /* ── Responsive: mobile push navigation ──
    These MUST come after all base rules so they win in the cascade.
    At ≤800px: hide the in-place detail panel and the desktop button affordance;
@@ -541,6 +692,12 @@ a.rr-s-item {
     display: none;
   }
   .rr-s-item.rr-s-item--desktop {
+    display: none;
+  }
+  /* Hide the whole desktop wrapper, not just the row button inside it —
+     otherwise the flex wrapper and its "Open →" link would still render as a
+     stray strip beneath each mobile row. */
+  .rr-s-item-wrap--desktop {
     display: none;
   }
   /* On narrow screens let the meta line wrap rather than clip mid-word.

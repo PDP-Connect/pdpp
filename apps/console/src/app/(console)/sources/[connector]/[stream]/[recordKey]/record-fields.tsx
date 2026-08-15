@@ -15,7 +15,7 @@
  * The display logic lives in `record-fields-display.ts` so it is unit-tested as
  * pure functions; this file is the thin JSX layer.
  */
-import { deriveDeclaredFieldTypes } from "@pdpp/display";
+import { deriveDeclaredFieldTypes, humanizeFieldLabel } from "@pdpp/display";
 import { Fragment } from "react";
 import type { StreamMetadata } from "../../../../lib/rs-client.ts";
 import { ROW_DT, renderValue, valueClassName } from "./record-fields-display.ts";
@@ -32,8 +32,13 @@ export function RecordFields({ data, metadata }: { data: Record<string, unknown>
         const rendered = renderValue(data[key], declaredTypes[key]);
         return (
           <Fragment key={key}>
-            <dt className={ROW_DT}>{key}</dt>
-            <dd className={valueClassName(rendered)} title={rendered.empty ? undefined : rendered.text}>
+            <dt className={ROW_DT} title={key}>
+              {humanizeFieldLabel(key)}
+            </dt>
+            <dd
+              className={valueClassName(rendered)}
+              title={rendered.empty ? undefined : (rendered.detail ?? rendered.text)}
+            >
               {rendered.text}
             </dd>
           </Fragment>

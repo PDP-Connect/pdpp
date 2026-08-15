@@ -105,12 +105,21 @@ export interface ProviderAuthExchanger {
    * The plaintext tokens MUST NOT appear in any response or audit event.
    * Callers pass the tokens once; after this call returns the tokens are
    * considered consumed (the exchanger is responsible for encrypted storage).
+   *
+   * `sourceBinding` is the SAME non-secret object `runInventoryOrTest`
+   * returned on the matching `ProviderAccount` for this connection, passed
+   * back within the same request (never persisted or looked up by a global
+   * map) so an exchanger that needs data from its own inventory step (e.g. a
+   * resource-group inventory in a token bundle) can read it here without
+   * keeping any request-spanning state of its own.
    */
   storeTokens: (args: {
+    connectorId: string;
     connectorInstanceId: string;
     ownerSubjectId: string;
     tokens: ProviderAuthTokens;
     now: string;
+    sourceBinding?: Record<string, unknown> | null;
   }) => Promise<void> | void;
 }
 
@@ -123,6 +132,17 @@ export interface PendingAuthEntry {
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly ownerSubjectId: string;
+  /**
+   * The exact `redirect_uri` sent to the provider's authorization endpoint
+   * in `initiateAuthorization`. The callback recomputes a redirect_uri from
+   * its own request (`buildCallbackRedirectUri`) and must match this stored
+   * value before the code is exchanged — an OAuth code is only valid for the
+   * redirect_uri it was issued against, so a mismatch here means either a
+   * misconfigured/rotated callback base URL or a forged callback request,
+   * and either way the exchange must not proceed with a different URI than
+   * what the owner actually authorized.
+   */
+  readonly redirectUri: string;
 }
 
 export interface PendingAuthStore {
@@ -242,6 +262,17 @@ export interface MountRefProviderAuthContext {
   pendingAuthStore: PendingAuthStore;
   requireOwnerSession: MiddlewareHandler;
   resolveCallbackBaseUrl: (req: unknown) => string;
+  /**
+   * Resolves the deployment-config env view for one connector's manifest,
+   * merging the DB-backed provider-app-config store (authoritative) with
+   * `process.env` (fallback, consulted only when the store has no value) —
+   * the same DB-first, env-fallback order `createDeploymentConfigResolver`
+   * uses for the actual OAuth exchange, so the readiness check answered here
+   * never disagrees with whether the exchange itself can proceed. Optional:
+   * defaults to `process.env` alone (env-only, matching the pre-store
+   * behavior) when omitted.
+   */
+  resolveDeploymentEnv?: (manifest: ConnectorManifestLike) => Promise<Readonly<Record<string, string | undefined>>>;
   resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike | null>;
   setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
@@ -327,7 +358,14 @@ async function activateConnectorInstanceForAccount(
     updatedAt: now,
   };
   const draftInstance = await store.upsert({ ...sharedRecord, status: "draft" });
-  await exchanger.storeTokens({ connectorInstanceId: draftInstance.connectorInstanceId, now, ownerSubjectId, tokens });
+  await exchanger.storeTokens({
+    connectorId,
+    connectorInstanceId: draftInstance.connectorInstanceId,
+    now,
+    ownerSubjectId,
+    sourceBinding,
+    tokens,
+  });
   return store.upsert({ ...sharedRecord, status: "active" });
 }
 
@@ -450,10 +488,14 @@ export function mountRefProviderAuthInitiate(app: AppLike, ctx: MountRefProvider
         const setupPlanArgs: {
           connectorKey: string;
           configuredProviderAuthConnectorKeys?: readonly string[];
+          deploymentEnv?: Readonly<Record<string, string | undefined>>;
           manifest: ConnectorManifestLike;
         } = { connectorKey: connectorId, manifest };
         if (ctx.configuredProviderAuthConnectorKeys) {
           setupPlanArgs.configuredProviderAuthConnectorKeys = ctx.configuredProviderAuthConnectorKeys;
+        }
+        if (ctx.resolveDeploymentEnv) {
+          setupPlanArgs.deploymentEnv = await ctx.resolveDeploymentEnv(manifest);
         }
         const plan = buildConnectionSetupPlan(setupPlanArgs);
 
@@ -494,15 +536,16 @@ export function mountRefProviderAuthInitiate(app: AppLike, ctx: MountRefProvider
         const stateToken = ctx.generateReferenceSecret("pas", 24);
         const now = ctx.now ? ctx.now() : new Date().toISOString();
         const expiresAt = new Date(Date.parse(now) + PENDING_AUTH_TTL_SECONDS * 1000).toISOString();
+        const redirectUri = buildCallbackRedirectUri(ctx, req);
 
         ctx.pendingAuthStore.put(stateToken, {
           connectorId,
           createdAt: now,
           expiresAt,
           ownerSubjectId,
+          redirectUri,
         });
 
-        const redirectUri = buildCallbackRedirectUri(ctx, req);
         const initResult = await ctx.exchanger.initiateAuthorization({
           connectorId,
           redirectUri,
@@ -625,6 +668,30 @@ async function rejectWithStateExpired(
   return "rejected";
 }
 
+async function rejectWithRedirectUriMismatch(
+  ctx: MountRefProviderAuthContext,
+  res: RouteResponse,
+  stateToken: string,
+  connectorId: string,
+  ownerSubjectId: string
+): Promise<"rejected"> {
+  ctx.pendingAuthStore.delete(stateToken);
+  await emitCallbackAudit(ctx, res, {
+    connectorId,
+    error: errWithCode("provider_auth_redirect_uri_mismatch"),
+    failureReason: "redirect_uri_mismatch",
+    outcome: "failed",
+    ownerSubjectId,
+  });
+  ctx.pdppError(
+    res,
+    400,
+    "provider_auth_redirect_uri_mismatch",
+    "The callback redirect_uri does not match the redirect_uri used to start this authorization. Restart the authorization flow."
+  );
+  return "rejected";
+}
+
 async function rejectWithCodeMissing(
   ctx: MountRefProviderAuthContext,
   res: RouteResponse,
@@ -656,7 +723,8 @@ interface ValidatedCallbackState {
 function validateCallbackStateAndCode(
   ctx: MountRefProviderAuthContext,
   res: RouteResponse,
-  params: CallbackParams
+  params: CallbackParams,
+  redirectUri: string
 ): Promise<ValidatedCallbackState | "rejected"> {
   const { stateToken, code, providerError } = params;
   const pending = stateToken ? ctx.pendingAuthStore.get(stateToken) : null;
@@ -677,6 +745,10 @@ function validateCallbackStateAndCode(
 
   if (now > pending.expiresAt) {
     return rejectWithStateExpired(ctx, res, stateToken, connectorId, ownerSubjectId);
+  }
+
+  if (pending.redirectUri !== redirectUri) {
+    return rejectWithRedirectUriMismatch(ctx, res, stateToken, connectorId, ownerSubjectId);
   }
 
   if (!code) {
@@ -791,7 +863,8 @@ export function mountRefProviderAuthCallback(app: AppLike, ctx: MountRefProvider
     let resolvedOwnerSubjectId = "";
 
     try {
-      const validated = await validateCallbackStateAndCode(ctx, res, params);
+      const redirectUri = buildCallbackRedirectUri(ctx, req);
+      const validated = await validateCallbackStateAndCode(ctx, res, params, redirectUri);
       if (validated === "rejected") {
         return;
       }
@@ -802,7 +875,6 @@ export function mountRefProviderAuthCallback(app: AppLike, ctx: MountRefProvider
       // Consume the state token immediately — replay protection.
       ctx.pendingAuthStore.delete(validated.stateToken);
 
-      const redirectUri = buildCallbackRedirectUri(ctx, req);
       const exchanged = await exchangeCodeAndRunInventory(ctx, res, validated, redirectUri);
       if (exchanged === "rejected") {
         return;

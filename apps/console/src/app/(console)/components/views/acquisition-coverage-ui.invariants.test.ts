@@ -33,25 +33,35 @@ const CATALOG_FILE = `${HERE}../source-setup-catalog.tsx`;
 const MANUAL_UPLOAD_FILE = `${HERE}../../connect/manual-upload/[connectorId]/page.tsx`;
 const MANUAL_UPLOAD_FORM_FILE = `${HERE}../../connect/manual-upload/[connectorId]/manual-upload-form.tsx`;
 const STATUS_FILE = `${HERE}../../connect/status/[connectionId]/page.tsx`;
+const STATUS_LINKS_FILE = `${HERE}../../connect/status/[connectionId]/connect-status-links.ts`;
 
 const ONE_STATUS_AND_ACTION_COPY = /one status and one next action/;
 const COMPACT_METHOD_LINE = /function sourceMethodLine/;
 const SUPPORT_FACT_TEST_ID = /data-testid="source-support-fact"/;
-const NEXT_COPY = />Next</;
+const PUBLIC_TIER_COPY = /Supported|Preview/;
+const LEGACY_TIER_COPY = />Experimental\s*\(|Continue anyway|Not available from this page|No setup path available here/;
+const UNAVAILABLE_PROP = /unavailable\?: boolean/;
+const UNAVAILABLE_TEST_ID = /source-unavailable-fact/;
+const NEXT_COPY = />Next step</;
 const GENERIC_SUPPORT_DETAIL_COPY = /Why this, and what to expect/;
 const IMPORT_OPTIONS_DISCLOSURE = /Show import options/;
 const EXISTING_SOURCE_REUSE = /data-testid="existing-source-reuse"/;
 const EXISTING_SOURCE_LINKS = /data-testid="existing-source-links"/;
 const SOURCE_RECORDS_HELPER = /function sourceRecordsHref[\s\S]*new URLSearchParams\(\{ connection:/;
 const SOURCE_DETAIL_HELPER = /function sourceDetailHref[\s\S]*new URLSearchParams\(\{ connection_id:/;
+// The status page's own sourceRecordsHref/sourceDetailHref now live in
+// connect-status-links.ts (extracted so setupHref's connection-id regression
+// — the draft-deadlock fix — is directly unit-testable). Same contract, same
+// helper names, different file.
+const STATUS_SOURCE_RECORDS_HELPER = /export function sourceRecordsHref[\s\S]*new URLSearchParams\(\{ connection:/;
+const STATUS_SOURCE_DETAIL_HELPER = /export function sourceDetailHref[\s\S]*new URLSearchParams\(\{ connection_id:/;
 const CATALOG_EXPLORE_LINK = /href=\{sourceRecordsHref\(source\.connectionId\)\}[\s\S]*Open in Explore/;
 const CATALOG_SOURCE_DETAILS_LINK =
   /href=\{sourceDetailHref\(connectorKey, source\.connectionId\)\}[\s\S]*Source details/;
 const STATUS_EXPLORE_LINK = /href=\{sourceRecordsHref\(status\)\}[\s\S]*Open in Explore/;
 const STATUS_SOURCE_DETAILS_LINK = /href=\{sourceDetailHref\(status\)\}[\s\S]*Source details/;
 const CONNECTOR_LEVEL_STATUS_RECORDS_LINK = /href=\{`\/sources\/\$\{encodeURIComponent\(status\.connector_id\)\}`\}/;
-const SERVER_SETUP_SUMMARY = /data-testid="server-setup-summary"/;
-const MANIFEST_GENERATED_COPY = /generated from the connector manifest/;
+const OWNER_SAFE_STORAGE_COPY = /stored for this source and is not exposed to connected apps or clients/;
 const VALIDATES_BEFORE_COMMIT_COPY = /validates before committing/i;
 const COVERAGE_RECEIPT_COPY = /coverage receipt|coverage provenance/i;
 const PRIMARY_METHODS_IDENTIFIER = /primaryMethods/;
@@ -108,8 +118,14 @@ test("source card keeps the support fact distinct from the recommended next acti
   assert.match(src, IMPORT_OPTIONS_DISCLOSURE);
   // The existing-vs-new source choice belongs on the import page, not in the picker.
   assert.doesNotMatch(src, EXISTING_SOURCE_REUSE);
-  // Server prerequisites are summarized outside the primary add-now rows.
-  assert.match(src, SERVER_SETUP_SUMMARY);
+});
+
+test("source catalog exposes only public Supported/Preview tiers and no latent unavailable card", async () => {
+  const src = await readFile(CATALOG_FILE, "utf8");
+  assert.match(src, PUBLIC_TIER_COPY);
+  assert.doesNotMatch(src, LEGACY_TIER_COPY);
+  assert.doesNotMatch(src, UNAVAILABLE_PROP);
+  assert.doesNotMatch(src, UNAVAILABLE_TEST_ID);
 });
 
 test("source catalog exposes exact existing-account links without turning the picker into a reuse flow", async () => {
@@ -124,10 +140,10 @@ test("source catalog exposes exact existing-account links without turning the pi
 
 // ── 2. Manual/upload page is a coverage-assistant start ─────────────────────
 
-test("manual upload page is manifest-generated and uses validate-before-commit language", async () => {
+test("manual upload page has owner-safe storage and validate-before-commit language", async () => {
   const pageSrc = await readFile(MANUAL_UPLOAD_FILE, "utf8");
   const formSrc = await readFile(MANUAL_UPLOAD_FORM_FILE, "utf8");
-  assert.match(pageSrc, MANIFEST_GENERATED_COPY);
+  assert.match(pageSrc, OWNER_SAFE_STORAGE_COPY);
   // Validates before durable commit when a validator exists.
   assert.match(formSrc, VALIDATES_BEFORE_COMMIT_COPY);
   // It speaks of a durable receipt the owner can revisit.
@@ -203,8 +219,9 @@ test("status page never implies provider credential semantics for an import", as
 
 test("status page sends completed setup to the exact source and Explore scope", async () => {
   const src = await readFile(STATUS_FILE, "utf8");
-  assert.match(src, SOURCE_RECORDS_HELPER);
-  assert.match(src, SOURCE_DETAIL_HELPER);
+  const linksSrc = await readFile(STATUS_LINKS_FILE, "utf8");
+  assert.match(linksSrc, STATUS_SOURCE_RECORDS_HELPER);
+  assert.match(linksSrc, STATUS_SOURCE_DETAIL_HELPER);
   assert.match(src, STATUS_EXPLORE_LINK);
   assert.match(src, STATUS_SOURCE_DETAILS_LINK);
   assert.doesNotMatch(src, CONNECTOR_LEVEL_STATUS_RECORDS_LINK);

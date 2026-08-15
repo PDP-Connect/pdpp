@@ -6,10 +6,25 @@ import { isNullish } from "../lib/nullish.ts";
 // compaction policy" signal — the same registry the maintenance tool resolves.
 // `findPolicy` resolves the short, registry-URL, and local-device id forms.
 import { findPolicy } from "../scripts/compact-record-history.ts";
+// getConnectorManifest is the runtime, DB-catalog-backed manifest lookup
+// (connectors are installed at runtime, not read from the static repo file
+// tree) — the same helper scheduler-manager-factory.ts, ref-control.ts, and
+// polyfill-manifest-reconcile.ts already use to resolve a connector's own
+// manifest by connector_id. resolveCompactionClasses below uses it to read
+// each distinct (connector, stream) pair's manifest-declared
+// `compaction_class` ONCE per request, batched, before the per-row loop.
+import { getConnectorManifest } from "./auth.ts";
 import { getDb } from "./db.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 import { getRetainedSizeGlobal, listRetainedSizeStreams } from "./retained-size-read-model.ts";
-import { classifyVersionDisposition, classifyVersionRemediation } from "./version-disposition.ts";
+import {
+  type CompactionClass,
+  classifyVersionDisposition,
+  classifyVersionRemediation,
+  normalizeConnectorId,
+  type ReviewedCompactionResidueEntry,
+  readReviewedCompactionResidueMap,
+} from "./version-disposition.ts";
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
@@ -433,8 +448,123 @@ async function getDisplayNames(
   return names;
 }
 
+/** A single manifest `streams[]` entry, as far as compaction-class resolution cares. */
+interface ManifestStreamEntry {
+  compaction_class?: unknown;
+  name?: unknown;
+}
+
+/**
+ * Resolve every DISTINCT `(connectorId, stream)` pair's manifest-declared
+ * `compaction_class` ONCE, batched, before the per-row loop in
+ * `buildRecordVersionStatsEnvelope` — this is the sole I/O version-disposition.ts's
+ * classifiers need, and it happens here (the caller), not inside the
+ * synchronous, pure, per-row classifier calls. See version-disposition.ts's
+ * module doc comment for the full rationale.
+ *
+ * Keyed by `${normalizeConnectorId(connectorId)}/${stream}` so callers can do a
+ * synchronous Map lookup per row with the same normalization
+ * `classifyVersionDisposition`'s callers already apply. A manifest lookup
+ * failure (unregistered connector, malformed manifest) resolves that
+ * connector's pairs to `null` rather than throwing — an unresolvable
+ * compaction class is not an error, it just means no manifest-declared
+ * special-case disposition applies (the row still gets a real
+ * `lossless_compaction_candidate` / `active_defect_or_unclassified` disposition
+ * from the other reference-controlled signals).
+ *
+ * Only the raw `compaction_class` string is trusted forward to the caller;
+ * `classifyVersionDisposition` itself still only recognizes the two
+ * enumerated values and treats anything else as `null`, so a manifest cannot
+ * invent a disposition this module does not define by writing an arbitrary
+ * string into this field.
+ */
+async function resolveCompactionClasses(
+  pairs: readonly { connectorId: string | null | undefined; stream: string | undefined }[],
+  resolveManifest: (connectorId: string) => Promise<Record<string, unknown> | null> = getConnectorManifest
+): Promise<Map<string, CompactionClass>> {
+  const byKey = new Map<string, CompactionClass>();
+  const connectorIdsByNormalized = new Map<string, string>();
+  for (const { connectorId, stream } of pairs) {
+    const normalized = normalizeConnectorId(connectorId);
+    if (!(normalized && stream)) {
+      continue;
+    }
+    const key = `${normalized}/${stream}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, null);
+    }
+    if (!connectorIdsByNormalized.has(normalized)) {
+      connectorIdsByNormalized.set(normalized, normalized);
+    }
+  }
+
+  const manifestByConnector = new Map<string, Record<string, unknown> | null>();
+  for (const normalized of connectorIdsByNormalized.keys()) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: bounded by the distinct-connector count in this request's candidate set, not per-row; matches getDisplayNames's existing sequential-resolution pattern.
+      manifestByConnector.set(normalized, await resolveManifest(normalized));
+    } catch {
+      // An unregistered/invalid connector manifest is not fatal here — the
+      // pairs for that connector simply resolve to compactionClass: null.
+      manifestByConnector.set(normalized, null);
+    }
+  }
+
+  for (const key of byKey.keys()) {
+    const slashIndex = key.indexOf("/");
+    const normalized = key.slice(0, slashIndex);
+    const stream = key.slice(slashIndex + 1);
+    const manifest = manifestByConnector.get(normalized);
+    const streams = manifest && Array.isArray(manifest.streams) ? (manifest.streams as ManifestStreamEntry[]) : [];
+    const entry = streams.find((s) => s.name === stream);
+    const compactionClass = entry?.compaction_class;
+    if (compactionClass === "point_in_time_real_field" || compactionClass === "recurring_snapshot") {
+      byKey.set(key, compactionClass);
+    }
+  }
+  return byKey;
+}
+
 function rowKey(row: Row): string {
   return `${row.connector_instance_id}\n${row.stream}`;
+}
+
+/** One row's version_disposition/version_remediation, resolved from the
+ * pre-built compactionClass/reviewed-residue maps. Split out of the row-map
+ * closure to keep it under the cognitive-complexity budget. */
+function resolveVersionDispositionAndRemediation({
+  compactionClassByKey,
+  connectorId,
+  hasCompactionPolicy,
+  lastHistoryAt,
+  reviewedResidueByKey,
+  stream,
+}: {
+  compactionClassByKey: ReadonlyMap<string, CompactionClass>;
+  connectorId: string | null | undefined;
+  hasCompactionPolicy: boolean;
+  lastHistoryAt: string | null;
+  reviewedResidueByKey: ReadonlyMap<string, ReviewedCompactionResidueEntry>;
+  stream: string;
+}): {
+  versionDisposition: ReturnType<typeof classifyVersionDisposition>;
+  versionRemediation: ReturnType<typeof classifyVersionRemediation>;
+} {
+  const normalizedConnector = normalizeConnectorId(connectorId || null);
+  const disposedKey = normalizedConnector ? `${normalizedConnector}/${stream}` : null;
+  const compactionClass = disposedKey ? (compactionClassByKey.get(disposedKey) ?? null) : null;
+  const reviewedResidue = disposedKey ? reviewedResidueByKey.get(disposedKey) : undefined;
+  const versionDisposition = classifyVersionDisposition({
+    compactionClass,
+    hasCompactionPolicy,
+    lastHistoryAt,
+    reviewedAt: reviewedResidue?.reviewedAt,
+  });
+  const versionRemediation = classifyVersionRemediation({
+    pendingRemediation: reviewedResidue?.pendingRemediation ?? null,
+    versionDisposition,
+  });
+  return { versionDisposition, versionRemediation };
 }
 
 function riskSortValue(riskLevel: string): number {
@@ -465,6 +595,7 @@ export async function buildRecordVersionStatsEnvelope(
     listGroundTruthStreams = listRecordVersionGroundTruthStreams,
     listGroundTruthForKeys = listRecordVersionGroundTruthForKeys,
     getProjection = getRetainedSizeGlobal,
+    resolveConnectorManifest = getConnectorManifest,
   }: {
     // biome-ignore lint/suspicious/noExplicitAny: injected connector-instance store is a duck-typed external dependency.
     connectorInstanceStore?: any;
@@ -472,6 +603,12 @@ export async function buildRecordVersionStatsEnvelope(
     listGroundTruthStreams?: (params?: StreamFilter) => Row[] | Promise<Row[]>;
     listGroundTruthForKeys?: (params?: { keys?: StreamKey[] }) => Row[] | Promise<Row[]>;
     getProjection?: () => Row | Promise<Row>;
+    // Injectable seam for tests: the real default is the runtime, DB-catalog-
+    // backed getConnectorManifest (auth.ts). Tests that want compactionClass
+    // resolution without a registered DB manifest catalog can inject a
+    // resolver backed by the static manifest JSON files instead (see
+    // manifestBackedCompactionClassResolver in record-version-stats.test.ts).
+    resolveConnectorManifest?: (connectorId: unknown) => Promise<Record<string, unknown> | null>;
   } = {}
 ) {
   const effectiveLimit = clampRecordVersionStatsLimit(limit);
@@ -537,6 +674,20 @@ export async function buildRecordVersionStatsEnvelope(
     connectorInstanceStore
   );
 
+  // Batched, pre-loop resolution of the two connector-identity-bearing
+  // signals classifyVersionDisposition/classifyVersionRemediation need: the
+  // manifest-declared compactionClass per distinct (connector, stream) pair
+  // (one getConnectorManifest call per distinct connector in this result
+  // set, never per row) and the operator's reviewed-residue map (one cached
+  // file read, see version-disposition.ts). Only plain, connector-anonymous
+  // values are read out of these per row below — the classifiers themselves
+  // stay synchronous and zero-I/O.
+  const compactionClassByKey = await resolveCompactionClasses(
+    mergedRows.map((row: Row) => ({ connectorId: row.connector_id || null, stream: row.stream })),
+    resolveConnectorManifest
+  );
+  const reviewedResidueByKey = readReviewedCompactionResidueMap();
+
   const rows = mergedRows
     .map((row: Row) => {
       const groundTruth = groundTruthByKey.get(rowKey(row));
@@ -557,26 +708,16 @@ export async function buildRecordVersionStatsEnvelope(
         riskReasons.push("projection_dirty");
       }
       const lastHistoryAt = groundTruth?.last_history_at || null;
-      // version_disposition is a derived label only — it never participates in
-      // and never alters the numeric risk classification above. It is computed
-      // from reference-controlled signals: the registered compaction-policy
-      // presence (COMPACTION_POLICIES via findPolicy) plus the server-side
-      // point-in-time / recurring-snapshot / reviewed-residue registries. No
-      // connector-authored value feeds it.
-      const versionDisposition = classifyVersionDisposition({
-        connectorId: row.connector_id || null,
+      // version_disposition/version_remediation are derived labels only —
+      // they never participate in or alter the numeric risk classification
+      // above. No connector-authored value feeds either.
+      const { versionDisposition, versionRemediation } = resolveVersionDispositionAndRemediation({
+        compactionClassByKey,
+        connectorId: row.connector_id,
         hasCompactionPolicy: findPolicy(row.connector_id || "", row.stream) !== null,
         lastHistoryAt,
+        reviewedResidueByKey,
         stream: row.stream,
-      });
-      // version_remediation is the orthogonal next-action axis, derived from the
-      // disposition just computed plus reference-maintained stream lists. It is
-      // a label only and never re-derives or contradicts the disposition. Like
-      // disposition, NO connector-authored value feeds it.
-      const versionRemediation = classifyVersionRemediation({
-        connectorId: row.connector_id || null,
-        stream: row.stream,
-        versionDisposition,
       });
       return {
         connector_id: row.connector_id || null,

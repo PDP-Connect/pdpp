@@ -121,3 +121,29 @@ test("IcSelect merges a caller className onto the trigger button", () => {
   );
   assert.match(html, MERGED_CLASS, "caller className merged onto trigger");
 });
+
+const TRIGGER_SHOWS_LABEL = />Amazon</;
+const TRIGGER_SHOWS_RAW_VALUE = />amazon</;
+const HIDDEN_INPUT_RAW_VALUE = /value="amazon"/;
+
+test("IcSelect trigger shows the selected option's LABEL, never its raw value", () => {
+  // base-ui's <Select.Value> falls back to rendering the raw value unless
+  // Select.Root is given `items`. That is invisible while label === value (the
+  // shape of every early call site) and wrong the moment they diverge — a
+  // connector key like `amazon` displayed where the owner picked "Amazon".
+  const html = renderToStaticMarkup(
+    createElement(IcSelect, {
+      defaultValue: "amazon",
+      name: "connector_id",
+      options: [
+        { label: "any source", value: "" },
+        { label: "Amazon", value: "amazon" },
+        { label: "Gmail", value: "gmail" },
+      ],
+    })
+  );
+  assert.match(html, TRIGGER_SHOWS_LABEL, "trigger must render the option label");
+  assert.doesNotMatch(html, TRIGGER_SHOWS_RAW_VALUE, "trigger must not render the raw option value as its text");
+  // The submitted value stays the raw key — the label is display only.
+  assert.match(html, HIDDEN_INPUT_RAW_VALUE, "hidden input must still submit the raw value");
+});

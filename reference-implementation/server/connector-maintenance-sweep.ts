@@ -29,8 +29,10 @@
  */
 
 import { retireExpiredBrowserEnrollmentShellsForMaintenance } from "./ref-control.ts";
+import { runSearchIndexDirtyReconcileRound } from "./search-index-reconcile.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import {
+  type ConnectorMaintenanceCursorLease,
   type ConnectorMaintenanceCursorStore,
   createConnectorMaintenanceCursorStore,
 } from "./stores/connector-maintenance-cursor-store.ts";
@@ -45,9 +47,14 @@ export interface ConnectorMaintenanceSweepOptions {
   readonly evidenceSweepMaxDurationMs?: number;
   readonly evidenceSweepPageSize?: number;
   readonly nowIso?: () => string;
-  readonly onPhaseError?: (phase: "attention" | "evidence" | "run_history_backfill" | "shells", err: unknown) => void;
+  readonly onPhaseError?: (
+    phase: "attention" | "evidence" | "run_history_backfill" | "search_index_dirty" | "shells",
+    err: unknown
+  ) => void;
   readonly runEvidenceSweep: (args: {
     readonly afterId?: string | null;
+    readonly firstTranche?: "walk" | "acceleration";
+    readonly lease?: ConnectorMaintenanceCursorLease;
     readonly maxDurationMs: number;
     readonly pageSize?: number;
   }) => Promise<unknown>;
@@ -60,6 +67,8 @@ export interface ConnectorMaintenanceSweepOptions {
    * engine, no new table.
    */
   readonly runHistoryBackfillStage?: ResumableRunHistoryBackfillStage;
+  readonly searchIndexDirtyReconcileMaxDurationMs?: number;
+  readonly searchIndexDirtyReconcilePageSize?: number;
 }
 
 interface ResumableEvidenceSweepResult {
@@ -68,6 +77,11 @@ interface ResumableEvidenceSweepResult {
 }
 
 const DEFAULT_CURSOR_LEASE_DURATION_MS = 30_000;
+
+/** The other tranche — the alternation this module keeps across ticks. */
+function otherTranche(tranche: "walk" | "acceleration"): "walk" | "acceleration" {
+  return tranche === "walk" ? "acceleration" : "walk";
+}
 
 function readResumableEvidenceSweepResult(
   value: unknown,
@@ -106,6 +120,15 @@ function readResumableEvidenceSweepResult(
  * state: each page still writes its own durable fold checkpoints. A
  * rejected/malformed result leaves the prior cursor in place (fail closed)
  * rather than silently restarting a starved fleet.
+ *
+ * Also alternates `firstTranche` across ticks (2026-08-12): in-process
+ * closure state, reset on restart — worst case after a restart is one extra
+ * tick before alternation resumes, which is bounded and harmless (the walk
+ * is a valid `firstTranche` default on its own, exactly the prior
+ * behavior). See `runBoundedSummaryEvidenceSweep`'s own doc for why a
+ * caller MUST alternate this value for the 2-round starvation bound to
+ * hold, and why a shorter sub-deadline for one tranche (an earlier revision
+ * of this fix) could not structurally guarantee that bound on its own.
  */
 export function createResumableConnectorMaintenanceSweep(
   options: ConnectorMaintenanceSweepOptions,
@@ -121,6 +144,7 @@ export function createResumableConnectorMaintenanceSweep(
 } {
   let evidenceSweepInFlight = false;
   let observedResumeAfterId: string | null = null;
+  let nextFirstTranche: "walk" | "acceleration" = "walk";
   const runEvidenceSweepRound = async (args: {
     readonly afterId?: string | null;
     readonly maxDurationMs: number;
@@ -132,6 +156,13 @@ export function createResumableConnectorMaintenanceSweep(
     evidenceSweepInFlight = true;
     let lease: Awaited<ReturnType<ConnectorMaintenanceCursorStore["acquire"]>> = null;
     let committed = false;
+    // Committed to THIS call's tranche order before the sweep runs, and
+    // flipped for the NEXT call regardless of this call's outcome (success,
+    // rejection, or throw) — an alternation that silently stalled on one
+    // fixed order after a failure would reopen exactly the starvation gap
+    // this exists to close.
+    const firstTranche = nextFirstTranche;
+    nextFirstTranche = otherTranche(firstTranche);
     try {
       const nowIso = options.nowIso?.() ?? new Date().toISOString();
       lease = await cursorStore.acquire({
@@ -142,7 +173,7 @@ export function createResumableConnectorMaintenanceSweep(
         return null;
       }
       const result = readResumableEvidenceSweepResult(
-        await options.runEvidenceSweep({ ...args, afterId: lease.resumeAfterId }),
+        await options.runEvidenceSweep({ ...args, afterId: lease.resumeAfterId, firstTranche, lease }),
         lease.resumeAfterId
       );
       if (!result) {
@@ -187,6 +218,16 @@ export function createResumableConnectorMaintenanceSweep(
  * authority," now also true of the periodic tick: it accelerates
  * convergence, but an ordinary GET reading momentarily stale evidence
  * between ticks is honest, not a correctness gap).
+ *
+ * The evidence round's `firstTranche` alternates every tick (owned by
+ * `createResumableConnectorMaintenanceSweep`'s closure state, threaded
+ * through here via `runEvidenceSweep`), so a fold-heavy walk page that stays
+ * incomplete for many consecutive ticks can never deny the dirty-priority
+ * acceleration tranche first opportunity for more than one consecutive
+ * tick — a hard 2-tick bound, not a soft time reservation. See
+ * `runBoundedSummaryEvidenceSweep`'s own ordering comment for the exact
+ * starvation mode this closes and why alternation (not a shorter
+ * sub-deadline) is what structurally closes it (2026-08-12).
  */
 let defaultRunHistoryBackfillStage: ResumableRunHistoryBackfillStage | null = null;
 function getDefaultRunHistoryBackfillStage(): ResumableRunHistoryBackfillStage {
@@ -222,5 +263,11 @@ export async function runConnectorMaintenanceSweep(options: ConnectorMaintenance
       .catch((err) => {
         onPhaseError?.("run_history_backfill", err);
       }),
+    runSearchIndexDirtyReconcileRound({
+      maxDurationMs: options.searchIndexDirtyReconcileMaxDurationMs ?? 2000,
+      pageSize: options.searchIndexDirtyReconcilePageSize ?? 25,
+    }).catch((err) => {
+      onPhaseError?.("search_index_dirty", err);
+    }),
   ]);
 }

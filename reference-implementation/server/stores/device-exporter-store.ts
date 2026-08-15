@@ -159,6 +159,11 @@ function mapEnrollment(row: Row | null | undefined) {
   }
   return {
     codeHash: row.code_hash,
+    // The scope an owner declared while minting this code, staged here
+    // because no connection (and so no connector_state row) exists yet to
+    // hold it — see local-collection-scope.ts for why the materialized home
+    // is a reserved connector_state key rather than a column of its own.
+    collectionScope: parseJson(row.collection_scope_json, null) as { since?: string; source_roots?: string[] } | null,
     connectorId: row.connector_id,
     consumedAt: row.consumed_at,
     createdAt: row.created_at,
@@ -351,11 +356,14 @@ function collectDiagnosticCounts(value: Record<string, unknown>): Record<string,
   return normalized;
 }
 
-function validOldestPendingAt(value: Record<string, unknown>): string | null {
-  if (typeof value.oldest_pending_at === "string" && value.oldest_pending_at.length > 0) {
-    const parsed = Date.parse(value.oldest_pending_at);
+const OUTBOX_DIAGNOSTIC_TIMESTAMPS = Object.freeze(["oldest_pending_at", "oldest_retrying_at"]);
+
+function validTimestampField(value: Record<string, unknown>, field: string): string | null {
+  const candidate = value[field];
+  if (typeof candidate === "string" && candidate.length > 0) {
+    const parsed = Date.parse(candidate);
     if (Number.isFinite(parsed)) {
-      return value.oldest_pending_at;
+      return candidate;
     }
   }
   return null;
@@ -365,10 +373,13 @@ export function normalizeOutboxDiagnostics(value: unknown): Record<string, unkno
   if (isNullish(value) || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
-  const normalized: Record<string, unknown> = collectDiagnosticCounts(value as Record<string, unknown>);
-  const oldestPendingAt = validOldestPendingAt(value as Record<string, unknown>);
-  if (oldestPendingAt !== null) {
-    normalized.oldest_pending_at = oldestPendingAt;
+  const record = value as Record<string, unknown>;
+  const normalized: Record<string, unknown> = collectDiagnosticCounts(record);
+  for (const field of OUTBOX_DIAGNOSTIC_TIMESTAMPS) {
+    const timestamp = validTimestampField(record, field);
+    if (timestamp !== null) {
+      normalized[field] = timestamp;
+    }
   }
   return Object.keys(normalized).length > 0 ? normalized : null;
 }
@@ -573,6 +584,9 @@ export function createSqliteDeviceExporterStore() {
         record.expiresAt,
         record.consumedAt ?? null,
         record.revokedAt ?? null,
+        record.collectionScope === undefined || record.collectionScope === null
+          ? null
+          : JSON.stringify(record.collectionScope),
       ]);
     },
 
@@ -978,8 +992,8 @@ export function createPostgresDeviceExporterStore() {
 
     async createEnrollmentCode(record: Row) {
       await postgresQuery(
-        `INSERT INTO device_enrollment_codes(enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        `INSERT INTO device_enrollment_codes(enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at, collection_scope_json)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
         [
           record.enrollmentCodeId,
           record.codeHash,
@@ -993,6 +1007,9 @@ export function createPostgresDeviceExporterStore() {
           record.expiresAt,
           record.consumedAt ?? null,
           record.revokedAt ?? null,
+          record.collectionScope === undefined || record.collectionScope === null
+            ? null
+            : JSON.stringify(record.collectionScope),
         ]
       );
     },
@@ -1040,7 +1057,7 @@ export function createPostgresDeviceExporterStore() {
 
     async findEnrollmentByCodeHash(codeHash: string) {
       const result = await postgresQuery(
-        `SELECT enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at
+        `SELECT enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at, collection_scope_json
          FROM device_enrollment_codes WHERE code_hash = $1`,
         [codeHash]
       );

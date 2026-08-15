@@ -89,6 +89,7 @@ export interface RunExecutorDeps {
   onRunComplete: RunCompleteHandler;
   persistLastRunTime: (connectorId: string, connectorInstanceId: string, lastRunTimeMs: number) => void;
   recordAndNotify: (record: RunRecord) => RunRecord;
+  recordAndNotifyAwaited?: (record: RunRecord) => Promise<RunRecord>;
   referenceBaseUrl: string | null;
   registerRunCancellation: RegisterRunCancellationHandler | null | undefined;
   resolveStaticSecretRunEnv: ResolveStaticSecretRunEnv | null;
@@ -120,13 +121,10 @@ function buildScheduledRunSource(connectorId: string): RunSource {
 }
 
 function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined): AutomationRefreshPolicy | null {
-  const capabilities =
-    manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
-  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
-    return null;
-  }
-  const policy = (capabilities as { refresh_policy?: unknown }).refresh_policy;
-  return policy && typeof policy === "object" && !Array.isArray(policy) ? (policy as AutomationRefreshPolicy) : null;
+  const manifestObject = narrowState(manifest);
+  const capabilities = manifestObject ? narrowState(manifestObject.capabilities) : null;
+  const policy = capabilities ? narrowState(capabilities.refresh_policy) : null;
+  return policy as AutomationRefreshPolicy | null;
 }
 
 function describeFailedRunResult(result: RunConnectorResult): RunConnectorError {
@@ -160,6 +158,15 @@ async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
+// True when a thrown error's message indicates the run was refused by the
+// admission gate (admitRunConnection), rather than failing inside the
+// connector itself. Both coerceRunError branches below reclassify this
+// case to failure_reason/terminal_reason "permission_error" so it is never
+// mistaken for a retryable connector defect.
+function isAdmissionDeniedMessage(message: string): boolean {
+  return message.includes("admitted run connection") || message.includes("admission did not authorize");
+}
+
 function coerceRunError(err: unknown): RunConnectorError {
   if (err && typeof err === "object") {
     const candidate = err as RunConnectorError;
@@ -167,13 +174,13 @@ function coerceRunError(err: unknown): RunConnectorError {
     return {
       ...candidate,
       message,
-      ...(message.includes("admitted run connection") || message.includes("admission did not authorize")
+      ...(isAdmissionDeniedMessage(message)
         ? { failure_reason: "permission_error", terminal_reason: "permission_error" as const }
         : {}),
     };
   }
   const message = typeof err === "string" ? err : "unknown";
-  return message.includes("admitted run connection") || message.includes("admission did not authorize")
+  return isAdmissionDeniedMessage(message)
     ? { failure_reason: "permission_error", message, terminal_reason: "permission_error" }
     : { message };
 }
@@ -315,13 +322,20 @@ interface AttemptWatchdog {
   timedOut: () => boolean;
 }
 
+// A non-finite or non-positive budget means "no wall-clock ceiling" — the
+// watchdog must never arm its timer in that case. Named once so the arm
+// gate and the constructor's initial-arm decision cannot drift apart.
+function isBoundedWallClock(maxRunWallClockMs: number): boolean {
+  return Number.isFinite(maxRunWallClockMs) && maxRunWallClockMs > 0;
+}
+
 function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
   const cancellation = new AbortController();
   let timedOut = false;
   let timer: NodeJS.Timeout | null = null;
 
   const arm = () => {
-    if (!(Number.isFinite(maxRunWallClockMs) && maxRunWallClockMs > 0) || timedOut || cancellation.signal.aborted) {
+    if (!isBoundedWallClock(maxRunWallClockMs) || timedOut || cancellation.signal.aborted) {
       return;
     }
     if (timer) {
@@ -334,7 +348,7 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
     timer.unref?.();
   };
 
-  if (Number.isFinite(maxRunWallClockMs) && maxRunWallClockMs > 0) {
+  if (isBoundedWallClock(maxRunWallClockMs)) {
     arm();
   }
 
@@ -460,6 +474,23 @@ function buildCredentialResolutionFailure(
   };
 }
 
+function buildRunAdmissionFailure(connectorId: string, message: string, connectorInstanceId?: string): RunRecord {
+  return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    error: `run_connection_admission_failed: ${message}`,
+    failureReason: "permission_error",
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "failed",
+  };
+}
+
 const OWNER_REPAIR_CREDENTIAL_CODES = new Set(["credential_not_found", "credential_revoked", "credential_rejected"]);
 
 function ownerRepairCredentialCode(err: unknown): string | null {
@@ -536,6 +567,18 @@ const BROWSER_SURFACE_UNAVAILABLE_STATUSES = new Set([
   "surface_failed",
 ]);
 
+function messageIndicatesRunAlreadyActive(normalizedMessage: string): boolean {
+  return normalizedMessage.includes("run_already_active") || normalizedMessage.includes("already has an active run");
+}
+
+function messageIndicatesBrowserSurfaceLeaseActive(normalizedMessage: string): boolean {
+  return (
+    normalizedMessage.includes("idx_pg_browser_surface_leases_one_non_terminal_run") ||
+    normalizedMessage.includes("browser_surface_leases") ||
+    normalizedMessage.includes("non_terminal_run")
+  );
+}
+
 function controllerRunNowDeferReason(err: unknown): string | null {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
@@ -544,14 +587,10 @@ function controllerRunNowDeferReason(err: unknown): string | null {
   }
   const message = err instanceof Error ? err.message : String(err);
   const normalized = message.toLowerCase();
-  if (normalized.includes("run_already_active") || normalized.includes("already has an active run")) {
+  if (messageIndicatesRunAlreadyActive(normalized)) {
     return "run_already_active";
   }
-  if (
-    normalized.includes("idx_pg_browser_surface_leases_one_non_terminal_run") ||
-    normalized.includes("browser_surface_leases") ||
-    normalized.includes("non_terminal_run")
-  ) {
+  if (messageIndicatesBrowserSurfaceLeaseActive(normalized)) {
     return "browser_surface_lease_active";
   }
   return null;
@@ -573,6 +612,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     onRunComplete,
     persistLastRunTime,
     recordAndNotify,
+    recordAndNotifyAwaited,
     referenceBaseUrl,
     registerRunCancellation,
     resolveStaticSecretRunEnv,
@@ -582,6 +622,79 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     schedulerStore,
     setState,
   } = deps;
+
+  async function appendRunHistoryBestEffort(record: RunRecord, connectorId: string): Promise<void> {
+    if (!schedulerStore) {
+      return;
+    }
+    await Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
+    });
+  }
+
+  // Appends `record` to in-memory + durable history and stamps the
+  // connector's last-run time. The store append is best-effort, but its
+  // settlement is awaited so a later transition cannot overtake this row.
+  async function persistRunHistory(record: RunRecord, connectorId: string, connectorInstanceId: string): Promise<void> {
+    runtime.history.push(record);
+    await appendRunHistoryBestEffort(record, connectorId);
+    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+  }
+
+  async function recordAndNotifyDurably(record: RunRecord): Promise<RunRecord> {
+    if (recordAndNotifyAwaited) {
+      return recordAndNotifyAwaited(record);
+    }
+    if (!schedulerStore) {
+      return recordAndNotify(record);
+    }
+    runtime.history.push(record);
+    await appendRunHistoryBestEffort(record, record.connectorId);
+    onRunComplete(record);
+    return record;
+  }
+
+  // Grant-lifecycle side effects of a terminal result: a succeeded
+  // single-use grant is exhausted (never runs again); any non-success
+  // status runs the existing terminal-reason-driven disable check.
+  function applyGrantOutcome(
+    result: RunConnectorResult,
+    record: RunRecord,
+    grantAccessMode: "continuous" | "single_use",
+    connectorInstanceId: string
+  ): void {
+    if (result.status === "succeeded" && grantAccessMode === "single_use") {
+      runtime.exhaustedGrants.add(connectorInstanceId);
+    }
+    if (result.status !== "succeeded") {
+      handleGrantFailureDisable(record.terminalReason, connectorInstanceId);
+    }
+  }
+
+  // Emits a one-shot `schedule.back_off.cleared` transition marker iff this
+  // success ended an announced back-off (or blocked) streak, and resets both
+  // announce-once maps so a future degradation can re-promote (and
+  // re-announce). The `evaluateBackoffDispatch` gate also clears
+  // `announcedBackoffClass` when it next observes no back-off applied, but
+  // doing it here keeps the timeline event ordering tight (success →
+  // cleared in the same tick). `wasAnnouncedBackoff`/`wasAnnouncedBlocked`
+  // must be captured BEFORE this call by the caller, since a success is
+  // about to be recorded and this checks the PRE-success streak state.
+  async function emitBackoffClearedIfStreakEnded(
+    record: RunRecord,
+    connectorId: string,
+    connectorInstanceId: string,
+    wasAnnouncedBackoff: boolean,
+    wasAnnouncedBlocked: boolean
+  ): Promise<void> {
+    if (record.status !== "succeeded" || !(wasAnnouncedBackoff || wasAnnouncedBlocked)) {
+      return;
+    }
+    runtime.announcedBackoffClass.delete(connectorInstanceId);
+    runtime.announcedBlockedClass.delete(connectorInstanceId);
+    await recordAndNotifyDurably(buildBackoffClearedEvent(connectorId, record.completedAt, connectorInstanceId));
+  }
 
   async function finalizeSuccessOrFailure(
     schedule: ConnectorSchedule,
@@ -599,47 +712,26 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       startedAt,
     });
 
-    // Capture pre-success streak state so we can emit a one-shot
-    // `schedule.back_off.cleared` transition marker iff this success
-    // ended an announced back-off (or blocked) streak. The marker is
-    // emitted AFTER the success record itself so the chronological
-    // order on the timeline is: success → cleared.
+    // Capture pre-success streak state so the post-record streak-cleared
+    // check below observes state as of BEFORE this success, not after.
     const wasAnnouncedBackoff = runtime.announcedBackoffClass.has(connectorInstanceId);
     const wasAnnouncedBlocked = runtime.announcedBlockedClass.has(connectorInstanceId);
 
-    runtime.history.push(record);
-    if (schedulerStore) {
-      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
-      });
-    }
-    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
-
-    if (result.status === "succeeded" && grantAccessMode === "single_use") {
-      runtime.exhaustedGrants.add(connectorInstanceId);
-    }
-    if (result.status !== "succeeded") {
-      handleGrantFailureDisable(record.terminalReason, connectorInstanceId);
-    }
+    await persistRunHistory(record, connectorId, connectorInstanceId);
+    applyGrantOutcome(result, record, grantAccessMode, connectorInstanceId);
 
     if (result.status === "succeeded" && call.persistState && result.state !== undefined) {
       await setState(connectorId, result.state, connectorInstanceId);
     }
 
     onRunComplete(record);
-
-    // Streak-cleared transition. Resets both announce-once maps so a
-    // future degradation can re-promote (and re-announce). The
-    // `evaluateBackoffDispatch` gate also clears `announcedBackoffClass`
-    // when it next observes no back-off applied, but doing it here
-    // keeps the timeline event ordering tight (success → cleared in
-    // the same tick).
-    if (result.status === "succeeded" && (wasAnnouncedBackoff || wasAnnouncedBlocked)) {
-      runtime.announcedBackoffClass.delete(connectorInstanceId);
-      runtime.announcedBlockedClass.delete(connectorInstanceId);
-      recordAndNotify(buildBackoffClearedEvent(connectorId, record.completedAt, connectorInstanceId));
-    }
+    await emitBackoffClearedIfStreakEnded(
+      record,
+      connectorId,
+      connectorInstanceId,
+      wasAnnouncedBackoff,
+      wasAnnouncedBlocked
+    );
 
     return record;
   }
@@ -653,12 +745,89 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     | { kind: "give-up"; error: RunConnectorError | null }
     | { kind: "retry"; error: RunConnectorError };
 
+  // The durable active-run store is only usable when both methods this
+  // lease needs are present; a partially-implemented store (e.g. a test
+  // double or an older store version) is treated the same as "no store".
+  function selectActiveRunStore(): RunExecutorDeps["schedulerStore"] | null {
+    return schedulerStore &&
+      typeof schedulerStore.upsertActiveRun === "function" &&
+      typeof schedulerStore.deleteActiveRun === "function"
+      ? schedulerStore
+      : null;
+  }
+
+  // Reserves the durable active-run row for this attempt. Returns true
+  // (admitted) whenever there is no active-run store to reserve against —
+  // admission is only ever refused by an explicit `false` upsert result,
+  // never by the reservation attempt itself failing (log-and-continue,
+  // fail-open).
+  async function reserveActiveRunRow(
+    activeRunStore: RunExecutorDeps["schedulerStore"] | null,
+    connectorId: string,
+    connectorInstanceId: string,
+    attempt: number,
+    runId: string,
+    startedAt: string,
+    traceContext: SpineTraceContext
+  ): Promise<boolean> {
+    if (!activeRunStore) {
+      return true;
+    }
+    const upserted = await Promise.resolve(
+      activeRunStore.upsertActiveRun({
+        connector_id: connectorId,
+        connector_instance_id: connectorInstanceId,
+        run_generation: attempt,
+        run_id: runId,
+        scenario_id: traceContext.scenario_id,
+        started_at: startedAt,
+        trace_id: traceContext.trace_id,
+      })
+    ).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] failed to reserve active run for ${connectorId}: ${message}`);
+      return false;
+    });
+    return upserted !== false;
+  }
+
+  // Wraps the caller's onStarted so it also registers this attempt's
+  // cancellation handle once the connector reports a real run id/trace id.
+  // The unregister handle is written into `unregisterCancellationBox` (owned
+  // by the caller) rather than returned, since onStarted fires later,
+  // asynchronously, from inside the connector run — the caller's `clear()`
+  // needs a box it can read after this callback may have already run.
+  function registerAttemptCancellation(
+    originalOnStarted: RunConnectorCall["onStarted"],
+    admitted: boolean,
+    watchdog: AttemptWatchdog,
+    connectorId: string,
+    connectorInstanceId: string,
+    unregisterCancellationBox: { value: (() => void) | null }
+  ): NonNullable<RunConnectorCall["onStarted"]> {
+    return (run) => {
+      originalOnStarted?.(run);
+      // Only a genuinely admitted attempt with a real run id/trace id gets a
+      // cancellation handle — an unadmitted attempt has no watchdog worth
+      // cancelling, and readStartedRunInfo must not even run for it.
+      const startedRun = admitted ? readStartedRunInfo(run) : null;
+      if (!startedRun) {
+        return;
+      }
+      unregisterCancellationBox.value =
+        registerRunCancellation?.({
+          cancel: () => watchdog.cancel(),
+          connectorId,
+          connectorInstanceId,
+          runId: startedRun.runId,
+        }) ?? null;
+    };
+  }
+
   // The durable active-run lease + wall-clock watchdog for one attempt. Wraps the
   // caller's RunConnectorCall so `onStarted` persists an active-run row and
   // `onProgress` feeds the watchdog; `clear()` (run in runSingleAttempt's finally)
-  // awaits the pending upsert then deletes the row. Extracted verbatim from the
-  // former inline block in runSingleAttempt so the attempt body reads as pure
-  // control flow; behavior (lease timing, error logging, watchdog) is unchanged.
+  // awaits the pending upsert then deletes the row.
   async function createActiveRunAttemptLease(
     schedule: ConnectorSchedule,
     call: RunConnectorCall,
@@ -671,37 +840,21 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     clear: () => Promise<void>;
   }> {
     const { connectorId, connectorInstanceId = connectorId } = schedule;
-    let unregisterCancellation: (() => void) | null = null;
-    const originalOnStarted = call.onStarted;
     const originalOnProgress = call.onProgress;
-    const activeRunStore =
-      schedulerStore &&
-      typeof schedulerStore.upsertActiveRun === "function" &&
-      typeof schedulerStore.deleteActiveRun === "function"
-        ? schedulerStore
-        : null;
+    const activeRunStore = selectActiveRunStore();
     const watchdog = createAttemptWatchdog(maxRunWallClockMs);
     const runId = call.runId || `run_${Date.now()}`;
     const traceContext = call.traceContext ?? createTraceContext();
-    let admitted = true;
-    if (activeRunStore) {
-      admitted =
-        (await Promise.resolve(
-          activeRunStore.upsertActiveRun({
-            connector_id: connectorId,
-            connector_instance_id: connectorInstanceId,
-            run_generation: attempt,
-            run_id: runId,
-            scenario_id: traceContext.scenario_id,
-            started_at: startedAt,
-            trace_id: traceContext.trace_id,
-          })
-        ).catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`[scheduler] failed to reserve active run for ${connectorId}: ${message}`);
-          return false;
-        })) !== false;
-    }
+    const admitted = await reserveActiveRunRow(
+      activeRunStore,
+      connectorId,
+      connectorInstanceId,
+      attempt,
+      runId,
+      startedAt,
+      traceContext
+    );
+    const unregisterCancellationBox: { value: (() => void) | null } = { value: null };
 
     const leasedCall: RunConnectorCall = {
       ...call,
@@ -710,30 +863,21 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         watchdog.markProgress();
         originalOnProgress();
       },
-      onStarted: (run) => {
-        originalOnStarted?.(run);
-        if (!admitted) {
-          return;
-        }
-        const startedRun = readStartedRunInfo(run);
-        if (!startedRun) {
-          return;
-        }
-        unregisterCancellation =
-          registerRunCancellation?.({
-            cancel: () => watchdog.cancel(),
-            connectorId,
-            connectorInstanceId,
-            runId: startedRun.runId,
-          }) ?? null;
-      },
+      onStarted: registerAttemptCancellation(
+        call.onStarted,
+        admitted,
+        watchdog,
+        connectorId,
+        connectorInstanceId,
+        unregisterCancellationBox
+      ),
       runId,
       traceContext,
     };
 
     const clear = async (): Promise<void> => {
-      unregisterCancellation?.();
-      unregisterCancellation = null;
+      unregisterCancellationBox.value?.();
+      unregisterCancellationBox.value = null;
       watchdog.clear();
       if (admitted && activeRunStore) {
         await Promise.resolve(activeRunStore.deleteActiveRun(connectorInstanceId, runId)).catch((err: unknown) => {
@@ -812,11 +956,11 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   // store append, last-run timestamp, terminal-grant handling, completion
   // notification. Pulled out so `runWithRetries` only orchestrates the retry
   // loop and trusts this helper for the failure tail.
-  function finalizeExhaustedFailure(
+  async function finalizeExhaustedFailure(
     schedule: ConnectorSchedule,
     lastError: RunConnectorError | null,
     attempt: number
-  ): RunRecord {
+  ): Promise<RunRecord> {
     const { connectorId, connectorInstanceId = connectorId } = schedule;
     const failRecord = buildExhaustedFailureRecord({
       attempt,
@@ -824,14 +968,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       connectorInstanceId,
       lastError,
     });
-    runtime.history.push(failRecord);
-    if (schedulerStore) {
-      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(failRecord))).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
-      });
-    }
-    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+    await persistRunHistory(failRecord, connectorId, connectorInstanceId);
     handleGrantFailureDisable(failRecord.terminalReason ?? failRecord.failureReason, connectorInstanceId);
     onRunComplete(failRecord);
     return failRecord;
@@ -1003,9 +1140,19 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       if (runNowResult.status !== "succeeded" && runRequiresOwnerAuthRepair(runNowResult)) {
         markNeedsHuman(connectorId, connectorInstanceId);
       }
-      return recordAndNotify(
+      const wasAnnouncedBackoff = runtime.announcedBackoffClass.has(connectorInstanceId);
+      const wasAnnouncedBlocked = runtime.announcedBlockedClass.has(connectorInstanceId);
+      const record = await recordAndNotifyDurably(
         buildManagedRunTerminalRecord(connectorId, connectorInstanceId, startedAt, runNowResult, attempt)
       );
+      await emitBackoffClearedIfStreakEnded(
+        record,
+        connectorId,
+        connectorInstanceId,
+        wasAnnouncedBackoff,
+        wasAnnouncedBlocked
+      );
+      return record;
     }
 
     throw new Error("unreachable managed run retry state");
@@ -1028,13 +1175,14 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   async function resolveLaunchCredentials(
     connectorId: string,
     connectorInstanceId: string,
+    ownerSubjectId: string,
     isManual: boolean
   ): Promise<{ env: Record<string, string> | null } | { earlyReturn: RunRecord }> {
     if (!resolveStaticSecretRunEnv) {
       return { env: null };
     }
     try {
-      return { env: await resolveStaticSecretRunEnv({ connectorId, connectorInstanceId }) };
+      return { env: await resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId }) };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       persistLastRunTime(connectorId, connectorInstanceId, Date.now());
@@ -1051,6 +1199,31 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         };
       }
       return { earlyReturn: buildCredentialResolutionFailure(connectorId, message, connectorInstanceId) };
+    }
+  }
+
+  async function admitScheduledRunConnection(
+    connectorId: string,
+    connectorInstanceId: string,
+    ownerSubjectId: string
+  ): Promise<void> {
+    if (!admitRunConnection) {
+      if (resolveStaticSecretRunEnv) {
+        throw new Error("scheduler run connection admission is required before credential resolution");
+      }
+      return;
+    }
+    const admittedConnection = await admitRunConnection({
+      connectorId,
+      connectorInstanceId,
+      ownerSubjectId,
+    });
+    if (
+      admittedConnection.connectorId !== connectorId ||
+      admittedConnection.connectorInstanceId !== connectorInstanceId ||
+      admittedConnection.ownerSubjectId !== ownerSubjectId
+    ) {
+      throw new Error("scheduler run admission did not authorize the claimed owner connection");
     }
   }
 
@@ -1091,7 +1264,28 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     return { collectionMode, state, wrappedInteraction };
   }
 
-  async function launchRun(
+  function launchRun(
+    schedule: ConnectorSchedule,
+    isManual: boolean,
+    automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
+    options: { recoveryOnly?: boolean } = {}
+  ): Promise<RunRecord> {
+    const { connectorId, connectorInstanceId = connectorId, ownerSubjectId } = schedule;
+    if (typeof ownerSubjectId !== "string" || ownerSubjectId.trim().length === 0) {
+      return Promise.resolve(
+        recordAndNotify(
+          buildCredentialResolutionFailure(
+            connectorId,
+            "scheduler ownerSubjectId is required and must be nonblank",
+            connectorInstanceId
+          )
+        )
+      );
+    }
+    return launchRunWithValidatedOwner(schedule, isManual, automationPolicy, options);
+  }
+
+  async function launchRunWithValidatedOwner(
     schedule: ConnectorSchedule,
     isManual: boolean,
     automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
@@ -1104,12 +1298,19 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       connectorPath,
       manifest,
       ownerToken,
-      ownerSubjectId = "",
+      ownerSubjectId,
       grantAccessMode = "continuous",
     } = schedule;
     const persistState = grantAccessMode !== "single_use";
 
-    const credentials = await resolveLaunchCredentials(connectorId, connectorInstanceId, isManual);
+    try {
+      await admitScheduledRunConnection(connectorId, connectorInstanceId, ownerSubjectId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return recordAndNotify(buildRunAdmissionFailure(connectorId, message, connectorInstanceId));
+    }
+
+    const credentials = await resolveLaunchCredentials(connectorId, connectorInstanceId, ownerSubjectId, isManual);
     if ("earlyReturn" in credentials) {
       return recordAndNotify(credentials.earlyReturn);
     }

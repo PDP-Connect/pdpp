@@ -28,6 +28,7 @@ function scheduleWithTool(tool: ExternalTool): ConnectorSchedule {
         external_tools: [tool],
       },
     },
+    ownerSubjectId: "owner-readiness",
     ownerToken: "owner-token-readiness-test",
   };
 }

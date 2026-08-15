@@ -541,7 +541,7 @@ test("acceptance 7.1: expired prompt does not heal unresolved session-readiness 
   );
 });
 
-test("acceptance 7.1: cooling_off when scheduler backoff is delaying a retry below the give-up threshold", () => {
+test("acceptance 7.1: failed collection remains degraded while scheduler backoff delays retry", () => {
   const snap = projectConnectorSummaryConnectionHealth({
     freshness: STALE_FRESHNESS,
     lastRun: failedRun({ failure_reason: "rate_limited" }),
@@ -549,9 +549,10 @@ test("acceptance 7.1: cooling_off when scheduler backoff is delaying a retry bel
     nowIso: NOW,
     schedule: backoffSchedule({ failures: 3, reasonClass: "failure:rate_limited" }),
   });
-  assertHeadline(snap, "cooling_off");
+  assertHeadline(snap, "degraded");
   assert.equal(snap.reason_code, "rate_limited");
   assert.equal(snap.next_attempt_at, "2026-05-19T13:00:00.000Z");
+  assert.equal(snap.conditions?.find((condition) => condition.type === "CollectionSucceeded")?.status, "false");
 });
 
 test("acceptance 7.1: blocked when the scheduler give-up streak crosses the promotion threshold", () => {
@@ -637,11 +638,14 @@ test("acceptance 7.1: every canonical headline state is reachable through projec
     },
     {
       input: {
-        freshness: STALE_FRESHNESS,
-        lastRun: failedRun(),
-        lastSuccessfulRun: null,
+        freshness: FRESH,
+        lastRun: succeededRun({ finished_at: RUN_AT, last_at: RUN_AT }),
+        lastSuccessfulRun: succeededRun({ finished_at: RUN_AT, last_at: RUN_AT }),
         nowIso: NOW,
-        schedule: backoffSchedule({ failures: 2 }),
+        schedule: {
+          ...backoffSchedule({ failures: 2 }),
+          last_finished_at: NOW,
+        },
       },
       state: "cooling_off",
     },
@@ -707,6 +711,53 @@ test("acceptance 7.2: active scheduled run surfaces a syncing badge without repl
   assertHeadline(snap, "healthy");
   assert.equal(snap.badges.syncing, true, "active_run_id should light up the syncing badge");
   assert.notEqual(snap.state, "syncing", "syncing is never a headline state");
+});
+
+test("acceptance 7.2: active latest run preserves prior terminal success and collection proof", () => {
+  const priorSuccess = succeededRun({ run_id: "run_prior_success" });
+  const snap = projectConnectorSummaryConnectionHealth({
+    activeRun: {
+      connector_id: "chase",
+      connector_instance_id: "cin_chase",
+      run_generation: 2,
+      run_id: "run_inflight",
+      scenario_id: "default",
+      started_at: NOW,
+      trace_id: "trace_inflight",
+    },
+    freshness: FRESH,
+    lastRun: succeededRun({
+      collection_facts: null,
+      finished_at: null,
+      last_at: NOW,
+      run_id: "run_inflight",
+      status: "in_progress",
+    }),
+    lastSuccessfulRun: priorSuccess,
+    outbox: { axis: "idle" },
+    schedule: { active_run_id: "run_inflight", enabled: true },
+  });
+
+  assert.equal(snap.state, "healthy");
+  assert.equal(snap.badges.syncing, true);
+  assert.equal(snap.conditions?.find((condition) => condition.type === "CollectionSucceeded")?.status, "true");
+  assert.equal(
+    snap.conditions?.find((condition) => condition.type === "CollectionSucceeded")?.reason,
+    "collection_succeeded"
+  );
+});
+
+test("acceptance 7.2: terminal failure still supersedes prior terminal success", () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: failedRun({ run_id: "run_new_failure" }),
+    lastSuccessfulRun: succeededRun({ run_id: "run_prior_success" }),
+    outbox: { axis: "idle" },
+    schedule: { enabled: true },
+  });
+
+  assert.equal(snap.state, "degraded");
+  assert.equal(snap.conditions?.find((condition) => condition.type === "CollectionSucceeded")?.status, "false");
 });
 
 test("acceptance 7.2: durable active-run row surfaces syncing when schedule metadata is absent", () => {
@@ -1439,6 +1490,39 @@ test("§10-C control: a genuine 401/403 auth failure still drives a credential p
   assert.equal(credentialCondition.remediation?.action, "refresh_credentials");
 });
 
+test("stale skip regression: a scheduler-generated attention-skip's own error text must not manufacture a credential_rejected condition for a present, unrejected credential", () => {
+  // Reproduces the live-DB defect: a scheduler `attention_unresolved` skip
+  // (runtime/scheduler/pre-run-gate.ts's buildUnresolvedAttentionSkip) never
+  // dispatches the connector — it carries no genuine provider evidence, only
+  // a restatement of whatever already blocked the run. Before the fix, this
+  // skip's own `failure_reason` text became `reasonCode`
+  // (server/ref-control.ts's `firstReasonCode`), text-matched
+  // `isDefinitiveStoredCredentialRejectionReason`, and re-derived the exact
+  // blocking condition that produced the skip — forever, even though the
+  // live credential row is present and unrejected and there is no
+  // corresponding row in `connector_attention_records`.
+  const skip = failedRun({
+    event_count: 0,
+    failure_reason:
+      "attention_unresolved: credential_rejected (owner_action:cin_test:reauth:stored_credential:credential_present_and_unrejected:credential_rejected)",
+    run_id: "run_skip",
+    status: "skipped",
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    credential: { capable: true, present: true, rejected: false },
+    freshness: FRESH,
+    lastRun: skip,
+    lastSuccessfulRun: succeededRun(),
+    schedule: { enabled: true },
+  });
+  const credentialCondition = snap.conditions?.find((c) => c.type === "CredentialsValid" && c.status === "false");
+  assert.equal(
+    credentialCondition,
+    undefined,
+    "a scheduler skip's own inherited error text must not be read as fresh credential-rejection evidence"
+  );
+});
+
 // ─── Per-Stream Evidence Carry-Forward: proof-age freshness anchor ─────────
 //
 // design.md "Connection Rollup Honesty" / "Per-Stream Evidence Carry-Forward":
@@ -1493,6 +1577,205 @@ function baselineHealthyRefineInputs(nowIso: string) {
   return { healthInput, initialConnectionHealth };
 }
 
+test("optional terminal report cannot preserve an optional terminal initial axis", () => {
+  const optionalStream = { name: "optional_stream", required: false };
+  const run = succeededRun({
+    known_gaps: [
+      {
+        kind: "skip_result",
+        reason: "optional_resource_unavailable",
+        severity: "actionable",
+        stream: "optional_stream",
+      },
+    ],
+  });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [optionalStream],
+    nowIso: NOW,
+    refreshPolicy: STALENESS_REFRESH_POLICY,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  assert.equal(initial.axes.coverage, "complete", "the earlier authority must ignore an optional stream gap");
+
+  const report: CollectionReportEntry[] = [
+    collectionReportEntry({
+      coverage_condition: "terminal_gap",
+      forward_disposition: "terminal",
+      required: false,
+      skipped: { reason: "optional_resource_unavailable" },
+      stream: "optional_stream",
+    }),
+  ];
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, report);
+  assert.equal(refined.axes.coverage, "complete");
+  assert.equal(refined.state, "healthy");
+});
+
+test("unscoped terminal evidence still blocks alongside an optional terminal report", () => {
+  const optionalStream = { name: "optional_stream", required: false };
+  const run = succeededRun({
+    known_gaps: [{ kind: "independent_error", reason: "connector_failure", severity: "actionable", stream: null }],
+  });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [optionalStream],
+    nowIso: NOW,
+    refreshPolicy: STALENESS_REFRESH_POLICY,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  assert.equal(initial.axes.coverage, "terminal_gap");
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, [
+    collectionReportEntry({ coverage_condition: "terminal_gap", required: false, stream: "optional_stream" }),
+  ]);
+  assert.equal(refined.axes.coverage, "terminal_gap");
+  assert.equal(refined.state, "degraded");
+});
+
+test("a bounded continuation proven complete by the stream report does not degrade connection health", () => {
+  const continuation = {
+    boundary: "uidvalidity:1",
+    considered: 20,
+    covered: 20,
+    owner: "runtime" as const,
+    remaining: true as const,
+    slice_end: 500,
+    slice_start: 1,
+  };
+  const gap = {
+    continuation,
+    kind: "skip_result",
+    reason: "historical_backfill_pending",
+    recovery_hint: { action: "retry_by_runtime", retryable: true },
+    severity: "transient",
+    stream: "messages",
+  };
+  const run = succeededRun({ known_gaps: [gap] });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [{ coverage_strategy: "checkpoint_window", name: "messages" }],
+    nowIso: NOW,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  assert.equal(initial.axes.coverage, "retryable_gap", "premise: the raw known-gap rollup degrades");
+
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, [
+    collectionReportEntry({
+      considered: 20,
+      covered: 20,
+      skipped: { continuation, reason: "historical_backfill_pending", recovery_action: "retry_by_runtime" },
+      stream: "messages",
+    }),
+  ]);
+  assert.equal(refined.axes.coverage, "complete");
+  assert.equal(refined.state, "healthy");
+});
+
+test("a different continuation cannot be hidden by a complete stream report", () => {
+  const run = succeededRun({
+    known_gaps: [
+      {
+        continuation: {
+          boundary: "uidvalidity:old",
+          considered: 20,
+          covered: 20,
+          owner: "runtime",
+          remaining: true,
+          slice_end: 500,
+          slice_start: 1,
+        },
+        kind: "skip_result",
+        reason: "historical_backfill_pending",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+        severity: "transient",
+        stream: "messages",
+      },
+    ],
+  });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [{ coverage_strategy: "checkpoint_window", name: "messages" }],
+    nowIso: NOW,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, [
+    collectionReportEntry({
+      skipped: {
+        continuation: {
+          boundary: "uidvalidity:current",
+          considered: 20,
+          covered: 20,
+          owner: "runtime",
+          remaining: true,
+          slice_end: 1000,
+          slice_start: 501,
+        },
+        reason: "historical_backfill_pending",
+        recovery_action: "retry_by_runtime",
+      },
+      stream: "messages",
+    }),
+  ]);
+  assert.equal(refined.axes.coverage, "retryable_gap");
+  assert.equal(refined.state, "degraded");
+});
+
+test("an exact continuation match cannot hide an unproven stream report", () => {
+  const continuation = {
+    boundary: "uidvalidity:1",
+    considered: 20,
+    covered: 20,
+    owner: "runtime" as const,
+    remaining: true as const,
+    slice_end: 500,
+    slice_start: 1,
+  };
+  const run = succeededRun({
+    known_gaps: [
+      {
+        continuation,
+        kind: "skip_result",
+        reason: "historical_backfill_pending",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+        severity: "transient",
+        stream: "messages",
+      },
+    ],
+  });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [{ coverage_strategy: "checkpoint_window", name: "messages" }],
+    nowIso: NOW,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, [
+    collectionReportEntry({
+      considered: 20,
+      coverage_condition: "unknown",
+      covered: 20,
+      skipped: { continuation, reason: "historical_backfill_pending", recovery_action: "retry_by_runtime" },
+      stream: "messages",
+    }),
+  ]);
+  assert.equal(refined.axes.coverage, "retryable_gap");
+  assert.equal(refined.state, "degraded");
+});
+
 test("proof-age anchor: an old omitted-stream proof anchors freshness to stale even under a brand-new scoped run", () => {
   const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
   assert.equal(initialConnectionHealth.state, "healthy", "premise: the run-only projection is healthy/fresh");
@@ -1525,6 +1808,36 @@ test("proof-age anchor: a recent omitted-stream proof preserves Healthy (no fals
   const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, report);
   assert.equal(refined.axes.freshness, "fresh", "recent proof age does not degrade freshness");
   assert.equal(refined.state, "healthy", "recent full-scope proof + recent scoped run stays Healthy");
+});
+
+test("proof-age anchor: owner cancellation does not stale a recent successful proof", () => {
+  const successAt = "2026-05-19T11:55:00.000Z";
+  const successfulRun = succeededRun({ finished_at: successAt, last_at: successAt, started_at: successAt });
+  const cancelledRun = {
+    ...succeededRun({
+      finished_at: NOW,
+      last_at: NOW,
+      started_at: NOW,
+      status: "cancelled",
+    }),
+    terminal_reason: "owner_cancelled",
+  };
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: { captured_at: successAt, last_attempted_at: successAt, status: "current" },
+    lastRun: cancelledRun,
+    lastSuccessfulRun: successfulRun,
+    nowIso: NOW,
+    outbox: { axis: "idle" },
+    refreshPolicy: STALENESS_REFRESH_POLICY,
+    schedule: { enabled: true },
+  };
+  const initialConnectionHealth = projectConnectorSummaryConnectionHealth(healthInput);
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, [
+    collectionReportEntry({ evidence_as_of: successAt, required: true, stream: "messages" }),
+  ]);
+
+  assert.equal(refined.axes.freshness, "fresh");
+  assert.equal(refined.state, "healthy");
 });
 
 test("proof-age anchor: a required stream with NO evidence at all (window exceeded) blocks Healthy via coverage, never silently green", () => {

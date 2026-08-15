@@ -434,6 +434,8 @@ test("blob lifecycle: upload → seed record → grant with blob_ref → fetch b
       "Cache-Control: private, no-store (always)"
     );
     assert.equal(blobResp.headers.get("Content-Length"), String(bytes.length), "Content-Length = exact size_bytes");
+    assert.equal(blobResp.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.equal(blobResp.headers.get("Content-Disposition"), null, "PDF remains eligible for inline display");
 
     // Byte integrity
     const fetched = Buffer.from(await blobResp.arrayBuffer());
@@ -536,6 +538,53 @@ test("blob grant enforcement: blob_not_found when token lacks visibility to the 
       "blob_not_found",
       "error code is blob_not_found (caller learns nothing about which connector owns the blob)"
     );
+  });
+});
+
+test("blob fetch forces active content to download instead of rendering inline (B4)", async () => {
+  await withGmailHarness(async ({ asUrl, rsUrl, connectorId }) => {
+    const ownerToken = await issueOwnerToken(asUrl, "b4_active_content_owner");
+    const bytes = Buffer.from("<script>document.body.textContent = 'executed'</script>");
+    const blob = await uploadBlob(
+      rsUrl,
+      ownerToken,
+      { connector_id: connectorId, record_key: "msg-active:2", stream: "attachments" },
+      bytes,
+      "text/html; charset=utf-8"
+    );
+
+    await seedStream(rsUrl, ownerToken, connectorId, "attachments", [
+      {
+        blob_ref: {
+          blob_id: blob.blob_id,
+          mime_type: blob.mime_type,
+          sha256: blob.sha256,
+          size_bytes: blob.size_bytes,
+        },
+        content_id: null,
+        content_sha256: blob.sha256,
+        content_type: blob.mime_type,
+        encoding: "8bit",
+        filename: "active.html",
+        hydration_error: null,
+        hydration_status: "hydrated",
+        id: "msg-active:2",
+        is_inline: false,
+        message_id: "msg-active",
+        message_received_at: "2026-01-11T12:00:00Z",
+        part_index: "2",
+        size_bytes: blob.size_bytes,
+      },
+    ]);
+
+    const response = await fetch(
+      `${rsUrl}/v1/blobs/${encodeURIComponent(blob.blob_id)}?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.equal(response.headers.get("Content-Disposition"), "attachment");
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
   });
 });
 

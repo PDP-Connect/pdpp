@@ -39,8 +39,7 @@ interface TestRefreshPolicy {
 }
 
 interface TestPublicListing {
-  listed: boolean;
-  status: string;
+  tier: "supported" | "preview" | "development";
 }
 
 interface TestAuthRequirement {
@@ -66,8 +65,7 @@ function manifest(overrides: Partial<TestManifest> = {}): TestManifest {
         required: ["WIDGET_TOKEN"],
       },
       public_listing: {
-        listed: true,
-        status: "proven",
+        tier: "supported",
       },
       refresh_policy: {
         background_safe: true,
@@ -365,10 +363,10 @@ test("assisted_after_owner_auth=true is never auto-enrolled even when env is pre
   assert.equal(controller.schedules.size, 0);
 });
 
-test('public_listing.status != "proven" is never auto-enrolled', async () => {
+test('public_listing.tier != "supported" is never auto-enrolled', async () => {
   const controller = createFakeController();
   const m = manifest();
-  m.capabilities.public_listing.status = "pilot";
+  m.capabilities.public_listing.tier = "preview";
   const summary = await autoEnrollEligibleSchedules({
     controller,
     env: { WIDGET_TOKEN: "set" },
@@ -378,10 +376,10 @@ test('public_listing.status != "proven" is never auto-enrolled', async () => {
   assert.equal(summary.enrolled, 0);
 });
 
-test("public_listing.listed != true is never auto-enrolled", async () => {
+test("a Development connector is never auto-enrolled", async () => {
   const controller = createFakeController();
   const m = manifest();
-  m.capabilities.public_listing.listed = false;
+  m.capabilities.public_listing.tier = "development";
   const summary = await autoEnrollEligibleSchedules({
     controller,
     env: { WIDGET_TOKEN: "set" },

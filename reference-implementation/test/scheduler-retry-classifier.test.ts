@@ -133,6 +133,25 @@ test('shouldRetryRunFailure retries a proven provider-unavailable session-establ
   assert.equal(shouldRetryRunFailure(err), true);
 });
 
+test("shouldRetryRunFailure does not override a present runtime-retry hint with owner-auth message text", () => {
+  assert.equal(
+    shouldRetryRunFailure({
+      connector_error: {
+        message: "source_unavailable: upstream 503",
+        retryable: true,
+      },
+      known_gaps: [
+        {
+          kind: "run_failed",
+          message: "provider_session_failed: source_unavailable: upstream 503",
+          recovery_hint: { action: "retry_by_runtime", retryable: true },
+        },
+      ],
+    }),
+    true
+  );
+});
+
 test("shouldRetryRunFailure still denies a real session_required/session_expired auth failure", () => {
   assert.equal(
     shouldRetryRunFailure({

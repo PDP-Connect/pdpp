@@ -18,7 +18,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { listSpineEventsPage } from "../lib/spine.ts";
-import { startServer } from "../server/index.ts";
+import { getDb } from "../server/db.ts";
+import { activateDraftConnection, startServer } from "../server/index.ts";
 import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/connector-instance-credential-store.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { CREDENTIAL_ENCRYPTION_KEY_ENV } from "../server/stores/credential-encryption.ts";
@@ -30,6 +31,7 @@ const OWNER_PASSWORD = "static-secret-probe-owner-password";
 const OWNER_SUBJECT_ID = "owner_local";
 const TEST_KEY = "static-secret-probe-test-key";
 const GOOD_SECRET = "valid synthetic app password";
+const ALTERNATE_SECRET = "alternate synthetic app password";
 const BAD_SECRET = "rejected synthetic app password";
 const GOOD_PAT = "ghp_valid_synthetic_token";
 const GMAIL_ADDRESS = "the owner@example.com";
@@ -252,7 +254,7 @@ function credentialOf(body: Record<string, unknown>): { present: unknown } {
 // self-reports `skipped`, so the credential is stored without an identity echo.
 function syntheticNoProbeStaticSecretManifest() {
   return {
-    capabilities: { public_listing: { listed: true, status: "proven" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: "https://registry.pdpp.dev/connectors/ynab",
     connector_key: "ynab",
     display_name: "YNAB",
@@ -261,7 +263,16 @@ function syntheticNoProbeStaticSecretManifest() {
     runtime_requirements: { bindings: { network: { required: true } } },
     setup: {
       credential_capture: {
-        fields: [{ label: "YNAB token", name: "secret", required: true, secret: true, type: "password" }],
+        fields: [
+          {
+            env: ["TEST_YNAB_TOKEN"],
+            label: "YNAB token",
+            name: "secret",
+            required: true,
+            secret: true,
+            type: "password",
+          },
+        ],
         kind: "personal_access_token",
         label: "YNAB personal access token",
       },
@@ -301,10 +312,15 @@ async function capture(
   cookie: string,
   connectionId: string,
   secret: string,
-  credentialKind: string
+  credentialKind: string,
+  setupFields?: Record<string, unknown>
 ): Promise<JsonResult> {
   return fetchJson(`${asUrl}/_ref/connections/${encodeURIComponent(connectionId)}/static-secret-credential`, {
-    body: JSON.stringify({ credential_kind: credentialKind, secret }),
+    body: JSON.stringify({
+      credential_kind: credentialKind,
+      secret,
+      ...(setupFields ? { setup_fields: setupFields } : {}),
+    }),
     headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: cookie },
     method: "POST",
   });
@@ -371,8 +387,8 @@ test("a rejected probe returns a typed validation error and stores no credential
       const instanceStore = createSqliteConnectorInstanceStore();
       const instance = await instanceStore.get(connectionId);
       assert.ok(instance, "expected a connector instance for the draft");
-      assert.equal(instance.status, "revoked", "a rejected first-time draft must be retired");
-      assert.ok(instance.revokedAt, "retired draft should carry revokedAt");
+      assert.equal(instance.status, "draft", "a rejected first-time draft must remain resumable");
+      assert.equal(instance.revokedAt, null, "a resumable draft must not be tombstoned");
 
       // The probe was given the non-secret mailbox context, never echoed back.
       assert.equal(proberCalls.length, 1);
@@ -389,6 +405,148 @@ test("a rejected probe returns a typed validation error and stores no credential
       const failedData = failed.data as { error?: { code?: unknown } } | undefined;
       assert.equal(failedData?.error?.code, "gmail_credential_rejected");
       assert.ok(!JSON.stringify(failed).includes(BAD_SECRET), "audit must not contain the secret");
+    });
+  });
+});
+
+test("a corrected mailbox retry updates and reuses the rejected draft", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl, proberCalls }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const draft = await createDraft(asUrl, cookie, "gmail", { account_email: "tim@opendatalabs.xzy" });
+      const connectionId = requireString(draft.body.connection_id, "draft.body.connection_id");
+
+      const rejected = await capture(asUrl, cookie, connectionId, BAD_SECRET, "app_password");
+      assert.equal(rejected.status, 400);
+
+      const retried = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "app_password", {
+        account_email: "tim@opendatalabs.xyz",
+      });
+      assert.equal(retried.status, 201);
+      assert.equal(retried.body.connection_id, connectionId);
+      assert.equal(identityOf(retried.body).account_identity, "tim@opendatalabs.xyz");
+      assert.equal(proberCalls.at(-1)?.context?.setupFields?.account_email, "tim@opendatalabs.xyz");
+
+      const instance = await createSqliteConnectorInstanceStore().get(connectionId);
+      assert.ok(instance, "expected the original draft to remain present");
+      assert.equal(instance.status, "draft");
+      const binding = instance.sourceBinding as { kind?: string; setup_fields?: Record<string, string> };
+      assert.equal(binding.kind, "static_secret_draft");
+      assert.equal(binding.setup_fields?.account_email, "tim@opendatalabs.xyz");
+      const retryCount = getDb()
+        .prepare("SELECT COUNT(*) AS count FROM connector_instances WHERE connector_id = 'gmail'")
+        .get() as { count: number };
+      assert.equal(retryCount.count, 1, "retry must not create a second connector instance");
+      assert.ok(await createSqliteConnectorInstanceCredentialStore().getMetadata(connectionId));
+    });
+  });
+});
+
+test("duplicate Gmail draft submissions converge while distinct identities remain separate", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const first = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const duplicate = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const personalId = requireString(first.body.connection_id, "personal connection id");
+      assert.equal(duplicate.body.connection_id, personalId);
+
+      const captured = await capture(asUrl, cookie, personalId, GOOD_SECRET, "app_password");
+      assert.equal(captured.status, 201);
+      const reloaded = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      assert.equal(reloaded.status, 200, "reloading setup after capture must reuse the pending verified connection");
+      assert.equal(reloaded.body.connection_id, personalId);
+      await createSqliteConnectorInstanceStore().activateDraft(personalId, { now: "2026-06-10T18:00:00.000Z" });
+      const activeReload = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      assert.equal(activeReload.status, 200, "a verified active identity must not receive a duplicate connection");
+      assert.equal(activeReload.body.connection_id, personalId);
+
+      const work = await createDraft(asUrl, cookie, "gmail", { account_email: "work@example.com" });
+      assert.notEqual(work.body.connection_id, personalId, "distinct identities must keep distinct connection ids");
+      const identityCount = getDb()
+        .prepare("SELECT COUNT(*) AS count FROM connector_instances WHERE connector_id = 'gmail'")
+        .get() as { count: number };
+      assert.equal(identityCount.count, 2);
+      const activeCount = getDb()
+        .prepare("SELECT COUNT(*) AS count FROM connector_instances WHERE connector_id = 'gmail' AND status = 'active'")
+        .get() as { count: number };
+      assert.equal(activeCount.count, 1);
+    });
+  });
+});
+
+test("duplicate captures for one probed identity converge across random drafts", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "github");
+      const cookie = await login(asUrl);
+      const first = await createDraft(asUrl, cookie, "github", {});
+      const second = await createDraft(asUrl, cookie, "github", {});
+      const firstId = requireString(first.body.connection_id, "first github connection id");
+      const secondId = requireString(second.body.connection_id, "second github connection id");
+      assert.notEqual(
+        firstId,
+        secondId,
+        "GitHub has no owner-entered identity field, so drafts stay separate until probe"
+      );
+
+      const [captured, deduplicated] = await Promise.all([
+        capture(asUrl, cookie, firstId, GOOD_PAT, "personal_access_token"),
+        capture(asUrl, cookie, secondId, GOOD_PAT, "personal_access_token"),
+      ]);
+      assert.ok([201, 200].includes(captured.status), `unexpected first concurrent status: ${captured.status}`);
+      assert.ok(
+        [201, 200].includes(deduplicated.status),
+        `unexpected second concurrent status: ${deduplicated.status}`
+      );
+      assert.equal(captured.body.connection_id, deduplicated.body.connection_id);
+      assert.ok(
+        [captured, deduplicated].some((result) => result.body.deduplicated === true),
+        "one concurrent capture must report the deduplication"
+      );
+      const credentialCount = getDb().prepare("SELECT COUNT(*) AS count FROM connector_instance_credentials").get() as {
+        count: number;
+      };
+      assert.equal(credentialCount.count, 1, "one verified identity must have one credential row");
+      const winnerId = requireString(captured.body.connection_id, "converged winner connection id");
+      const loserId = winnerId === firstId ? secondId : firstId;
+      assert.ok(
+        [firstId, secondId].includes(winnerId),
+        "the converged connection id must be one of the two racing drafts"
+      );
+      const winnerInstance = await createSqliteConnectorInstanceStore().get(winnerId);
+      assert.notEqual(winnerInstance?.status, "revoked", "the winning draft must remain active for the identity");
+      const loserInstance = await createSqliteConnectorInstanceStore().get(loserId);
+      assert.equal(loserInstance?.status, "revoked", "the losing draft is retired without creating an active fork");
+    });
+  });
+});
+
+test("an active verified connection refuses credential replacement for another identity", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const draft = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const connectionId = requireString(draft.body.connection_id, "personal connection id");
+      const captured = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "app_password");
+      assert.equal(captured.status, 201);
+      const before = await createSqliteConnectorInstanceCredentialStore().getMetadata(connectionId);
+      assert.ok(before?.fingerprint);
+      await createSqliteConnectorInstanceStore().activateDraft(connectionId, { now: "2026-06-10T18:00:00.000Z" });
+
+      const retargeted = await capture(asUrl, cookie, connectionId, ALTERNATE_SECRET, "app_password", {
+        account_email: "work@example.com",
+      });
+      assert.equal(retargeted.status, 409);
+      assert.equal(errorOf(retargeted.body).code, "static_secret_identity_mismatch");
+      const after = await createSqliteConnectorInstanceCredentialStore().getMetadata(connectionId);
+      assert.equal(after?.fingerprint, before.fingerprint, "a rejected retarget must not rotate the credential");
+      const instance = await createSqliteConnectorInstanceStore().get(connectionId);
+      const binding = instance?.sourceBinding as { verified_identity?: string };
+      assert.equal(binding.verified_identity, "personal@example.com");
     });
   });
 });
@@ -457,7 +615,7 @@ test("github: a rejected token is refused and stores nothing", async () => {
       const instanceStore = createSqliteConnectorInstanceStore();
       const instance = await instanceStore.get(connectionId);
       assert.ok(instance, "expected a connector instance for the draft");
-      assert.equal(instance.status, "revoked", "a rejected github draft must be retired");
+      assert.equal(instance.status, "draft", "a rejected github draft must remain resumable");
     });
   });
 });
@@ -513,6 +671,285 @@ test("a connector with no probe keeps the first-sync path (stores, no identity e
       assert.ok(await store.getMetadata(connectionId), "a no-probe credential is stored for first sync");
       // The prober was still consulted; it self-reported skipped.
       assert.equal(proberCalls.at(-1)?.connectorKey, "ynab");
+    });
+  });
+});
+
+// PR #84 P1: an active connection that reached `active` via the real
+// first-sync path (no synchronous probe ever ran, so `verified_identity` was
+// never recorded) must NOT accept a silent credential replacement just
+// because nothing on record contradicts it. Absence of proof is not
+// permission. The only way to accept a replacement here is proof this
+// request supplies: an exact-fingerprint match against the credential
+// already stored (a legitimate resubmission), never a fresh probe result by
+// itself. Drives the actual production activation function
+// (`activateDraftConnection`, the same one `maybeActivateDraftAfterIngest`
+// calls after the first accepted ingest), not a hand-seeded row shape.
+test("an active first-sync connection with no recorded identity fails closed on credential replacement", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerManifest(asUrl, syntheticNoProbeStaticSecretManifest());
+      const cookie = await login(asUrl);
+
+      // 1. Owner creates a draft and captures a credential while the
+      //    connector has no synchronous probe: stored, first_sync, no
+      //    identity recorded anywhere on the binding.
+      const draft = await createDraft(asUrl, cookie, "ynab", {});
+      const connectionId = requireString(draft.body.connection_id, "draft.body.connection_id");
+      const firstCapture = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "personal_access_token");
+      assert.equal(firstCapture.status, 201);
+      assert.equal(firstCapture.body.validation, "first_sync");
+
+      const instanceStore = createSqliteConnectorInstanceStore();
+      const draftInstance = await instanceStore.get(connectionId);
+      assert.ok(draftInstance, "expected a connector instance for the draft");
+      assert.equal(draftInstance.status, "draft");
+      const draftBinding = draftInstance.sourceBinding as { verified_identity?: string };
+      assert.equal(draftBinding.verified_identity, undefined, "no probe ran, so no identity was ever recorded");
+
+      // 2. First accepted ingest activates the draft through the REAL
+      //    production activation path — the same function
+      //    `maybeActivateDraftAfterIngest` calls after a successful sync.
+      await activateDraftConnection(
+        connectionId,
+        instanceStore as unknown as Parameters<typeof activateDraftConnection>[1],
+        () => Promise.resolve(null)
+      );
+      const activeInstance = await instanceStore.get(connectionId);
+      assert.ok(activeInstance, "expected the connection to still exist after activation");
+      assert.equal(activeInstance.status, "active", "first-sync activation must flip the connection active");
+      const activeBinding = activeInstance.sourceBinding as {
+        kind?: string;
+        verified_identity?: string;
+        setup_fields?: Record<string, string>;
+      };
+      assert.equal(activeBinding.kind, "static_secret", "activation promotes to the real static-secret binding kind");
+      assert.equal(
+        activeBinding.verified_identity,
+        undefined,
+        "the active connection has NO recorded identity signal — the exact P1 precondition"
+      );
+
+      // 3. An attacker with owner-session access (or a mistaken owner) tries
+      //    to point this already-trusted, already-syncing connection at a
+      //    DIFFERENT credential. There is no probe for this connector and no
+      //    durable identity on record, so there is nothing to prove sameness
+      //    except the credential bytes themselves — and they differ. This
+      //    MUST be rejected, not silently accepted because nothing on file
+      //    contradicts it.
+      const retargeted = await capture(asUrl, cookie, connectionId, ALTERNATE_SECRET, "personal_access_token");
+
+      assert.notEqual(
+        retargeted.status,
+        201,
+        "an active connection with a live credential must fail closed on replacement, even with no prior verified_identity on record"
+      );
+      assert.equal(errorOf(retargeted.body).code, "static_secret_identity_unverified_replacement");
+
+      // The original credential must survive untouched.
+      const credentialStore = createSqliteConnectorInstanceCredentialStore();
+      const secret = await credentialStore.recoverSecret({
+        connectorInstanceId: connectionId,
+        ownerSubjectId: OWNER_SUBJECT_ID,
+      });
+      assert.equal(secret.secret, GOOD_SECRET, "a rejected replacement must not rotate the stored credential");
+
+      // 4. Resubmitting the EXACT SAME secret (a legitimate retry/resync,
+      //    not an account swap) must still succeed: the fingerprint proves
+      //    sameness without ever decrypting the stored secret or trusting a
+      //    probe.
+      const resubmitted = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "personal_access_token");
+      assert.equal(resubmitted.status, 200, "resubmitting the identical credential is a proven no-op, not a retarget");
+    });
+  });
+});
+
+// Companion to the P1 fail-before test: once a connector DOES have a probe,
+// a matching probed identity is still not sufficient by itself to license a
+// credential swap on an active, no-durable-identity connection — a probe
+// result is exactly what an attacker holding a different, validly-probeable
+// credential can also produce. Only the fingerprint (or, once one has been
+// recorded, the durable identity) is trusted.
+test("a probed identity match alone does not license a retarget when no durable identity is on record", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      const gmail = loadManifest("gmail");
+      await registerManifest(asUrl, gmail);
+      const cookie = await login(asUrl);
+      const connectionId = "cin_active_no_durable_identity";
+      const instanceStore = createSqliteConnectorInstanceStore();
+      await instanceStore.upsert({
+        connectorId: gmail.connector_key,
+        connectorInstanceId: connectionId,
+        createdAt: "2026-06-10T18:00:00.000Z",
+        displayName: "Gmail - existing@example.com",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+        sourceBinding: {
+          kind: "static_secret",
+          promoted_at: "2026-06-10T18:00:00.000Z",
+          promoted_from: "static_secret_draft",
+          setup_fields: {},
+        },
+        sourceBindingKey: connectionId,
+        sourceKind: "account",
+        status: "active",
+        updatedAt: "2026-06-10T18:00:00.000Z",
+      });
+      await createSqliteConnectorInstanceCredentialStore().capture({
+        connectorInstanceId: connectionId,
+        credentialKind: "app_password",
+        now: "2026-06-10T18:00:00.000Z",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+        secret: GOOD_SECRET,
+      });
+
+      // The probe legitimately reports GMAIL_ADDRESS for this new secret —
+      // a real, valid identity, just not provably the SAME account as the
+      // one the original secret belongs to (nothing durable says what that
+      // was). This must still be refused.
+      const retargeted = await capture(asUrl, cookie, connectionId, ALTERNATE_SECRET, "app_password", {
+        account_email: GMAIL_ADDRESS,
+      });
+      assert.equal(retargeted.status, 409);
+      assert.equal(errorOf(retargeted.body).code, "static_secret_identity_unverified_replacement");
+      const credentialStore = createSqliteConnectorInstanceCredentialStore();
+      const secret = await credentialStore.recoverSecret({
+        connectorInstanceId: connectionId,
+        ownerSubjectId: OWNER_SUBJECT_ID,
+      });
+      assert.equal(secret.secret, GOOD_SECRET, "a rejected retarget must not rotate the stored credential");
+    });
+  });
+});
+
+// Discriminator: resubmitting the SAME claimed `setup_fields` identity
+// alongside a DIFFERENT secret must still be refused when no durable
+// verified_identity exists. `setup_fields` is owner-typed and non-secret —
+// trivially resubmittable by anyone who already knows (or guesses) the
+// account email, so it can never stand in for provider-verified proof.
+// No-probe variant: nothing but the fingerprint can prove sameness here.
+test("resubmitting the same claimed setup-field identity with a different secret is refused (no probe)", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      const manifest = syntheticNoProbeStaticSecretManifest();
+      // Give this connector an owner-entered, non-secret identity field so
+      // `setup_fields[identity_field]` is populated — exactly the shape an
+      // attacker would resubmit unchanged.
+      const withIdentityField = {
+        ...manifest,
+        setup: {
+          ...manifest.setup,
+          credential_capture: {
+            ...manifest.setup.credential_capture,
+            fields: [
+              { identity: true, label: "Account email", name: "account_email", required: true, type: "text" },
+              ...manifest.setup.credential_capture.fields,
+            ],
+          },
+        },
+      };
+      await registerManifest(asUrl, withIdentityField);
+      const cookie = await login(asUrl);
+
+      const draft = await createDraft(asUrl, cookie, "ynab", { account_email: "owner@example.com" });
+      const connectionId = requireString(draft.body.connection_id, "draft.body.connection_id");
+      const firstCapture = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "personal_access_token", {
+        account_email: "owner@example.com",
+      });
+      assert.equal(firstCapture.status, 201);
+
+      const instanceStore = createSqliteConnectorInstanceStore();
+      await activateDraftConnection(
+        connectionId,
+        instanceStore as unknown as Parameters<typeof activateDraftConnection>[1],
+        () => Promise.resolve(null)
+      );
+      const activeInstance = await instanceStore.get(connectionId);
+      const activeBinding = activeInstance?.sourceBinding as { verified_identity?: string } | undefined;
+      assert.equal(
+        activeBinding?.verified_identity,
+        undefined,
+        "no probe ever ran — no durable verified_identity exists to protect this row"
+      );
+
+      // Same claimed email, DIFFERENT secret. An attacker (or the API
+      // itself, absent this guard) could otherwise treat the matching email
+      // as proof. It must not be: only the fingerprint is trusted here, and
+      // it does not match.
+      const retargeted = await capture(asUrl, cookie, connectionId, ALTERNATE_SECRET, "personal_access_token", {
+        account_email: "owner@example.com",
+      });
+      assert.equal(retargeted.status, 409);
+      assert.equal(errorOf(retargeted.body).code, "static_secret_identity_unverified_replacement");
+
+      const credentialStore = createSqliteConnectorInstanceCredentialStore();
+      const secret = await credentialStore.recoverSecret({
+        connectorInstanceId: connectionId,
+        ownerSubjectId: OWNER_SUBJECT_ID,
+      });
+      assert.equal(secret.secret, GOOD_SECRET, "a rejected replacement must not rotate the stored credential");
+    });
+  });
+});
+
+// Same discriminator, newly-probed variant: the probe returns the SAME
+// claimed identity as before (an attacker who knows the account email can
+// arrange this), but there is still no durable verified_identity on record
+// to compare a probed result against — only the fingerprint can prove
+// sameness, and a different secret fails it.
+test("resubmitting the same claimed identity via a matching probe with a different secret is refused when unverified", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      const gmail = loadManifest("gmail");
+      await registerManifest(asUrl, gmail);
+      const cookie = await login(asUrl);
+      const connectionId = "cin_same_claimed_identity_new_probe";
+      const instanceStore = createSqliteConnectorInstanceStore();
+      // Active, real pipeline shape, `setup_fields.account_email` already
+      // populated (so a naive "trust setup_fields" implementation would see
+      // a "durable" identity here) — but NO verified_identity was ever
+      // written, because no probe has ever succeeded against this row.
+      await instanceStore.upsert({
+        connectorId: gmail.connector_key,
+        connectorInstanceId: connectionId,
+        createdAt: "2026-06-10T18:00:00.000Z",
+        displayName: "Gmail - existing@example.com",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+        sourceBinding: {
+          kind: "static_secret",
+          promoted_at: "2026-06-10T18:00:00.000Z",
+          promoted_from: "static_secret_draft",
+          setup_fields: { account_email: GMAIL_ADDRESS },
+        },
+        sourceBindingKey: connectionId,
+        sourceKind: "account",
+        status: "active",
+        updatedAt: "2026-06-10T18:00:00.000Z",
+      });
+      await createSqliteConnectorInstanceCredentialStore().capture({
+        connectorInstanceId: connectionId,
+        credentialKind: "app_password",
+        now: "2026-06-10T18:00:00.000Z",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+        secret: GOOD_SECRET,
+      });
+
+      // The probe returns the SAME address as the stored setup_fields — an
+      // attacker submitting the known account email alongside a different,
+      // validly-probeable credential produces exactly this shape. With no
+      // durable verified_identity, this must still be refused.
+      const retargeted = await capture(asUrl, cookie, connectionId, ALTERNATE_SECRET, "app_password", {
+        account_email: GMAIL_ADDRESS,
+      });
+      assert.equal(retargeted.status, 409);
+      assert.equal(errorOf(retargeted.body).code, "static_secret_identity_unverified_replacement");
+
+      const credentialStore = createSqliteConnectorInstanceCredentialStore();
+      const secret = await credentialStore.recoverSecret({
+        connectorInstanceId: connectionId,
+        ownerSubjectId: OWNER_SUBJECT_ID,
+      });
+      assert.equal(secret.secret, GOOD_SECRET, "a rejected retarget must not rotate the stored credential");
     });
   });
 });

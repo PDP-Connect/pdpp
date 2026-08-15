@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const PAGE_FILE = fileURLToPath(new URL("./static-secret/[connectorId]/page.tsx", import.meta.url));
 const ACTION_FILE = fileURLToPath(new URL("./static-secret/[connectorId]/actions.ts", import.meta.url));
 const STATUS_PAGE_FILE = fileURLToPath(new URL("./status/[connectionId]/page.tsx", import.meta.url));
+const STATUS_LINKS_FILE = fileURLToPath(new URL("./status/[connectionId]/connect-status-links.ts", import.meta.url));
 const LEGACY_STATUS_PAGE_FILE = fileURLToPath(
   new URL("./static-secret/[connectorId]/status/[connectionId]/page.tsx", import.meta.url)
 );
@@ -20,15 +21,30 @@ const GET_SETUP = /getStaticSecretSetup\(connectorId\)/;
 // Assert both are imported and referenced — the selector pattern is the invariant.
 const FORM_ACTION_CREATE = /createStaticSecretConnectionAction/;
 const FORM_ACTION_REPLACE = /replaceStaticSecretCredentialAction/;
-const FIELDS_MAP = /setup\.credential_capture\.fields\.map/;
+const EXISTING_TARGET_ACTION = /action=\{hasExistingTarget \? replaceStaticSecretCredentialAction/;
+const RETRY_CONNECTION_ID = /hasExistingTarget && pageParams\.connectionId/;
+const DRAFT_RETRY_MODE = /draftRetry/;
+const FIELDS_MAP = /formContract\.credentialFields\.map/;
+// F2: native HTML `required` must not be hardcoded to the field's own flag —
+// it must also fall back to false whenever the BLOCK-level
+// credential_capture.required is false (BOTH-OR-NONE's blank-optional
+// case), so the browser's own validation cannot block a submission the
+// server-side buildStaticSecretPayload/validateBundledSecret contract
+// already accepts.
+const REQUIRED_HONORS_BLOCK_LEVEL_FACT =
+  /required=\{setup\.credential_capture\.required !== false && field\.required\}/;
+const NO_FIELD_ONLY_REQUIRED_ATTRIBUTE = /required=\{field\.required\}/;
+const CONNECTION_NAME_FIELD = /name=\{formContract\.connectionName\.name\}/;
+const CONNECTION_NAME_MAX_LENGTH = /maxLength=\{formContract\.connectionName\.maxLength\}/;
 const HELP_URL = /field\.help_url/;
 const NEW_TAB = /target="_blank"/;
 const NOREFERRER = /rel="noreferrer"/;
 const OPEN_HELP_COPY = /Open provider setup page in a new tab/;
-const SECRET_BOUNDARY_COPY = /agents, MCP clients, REST reads, audit payloads, or the dashboard/;
+const SECRET_BOUNDARY_COPY = /formContract\.credentialSectionDescription/;
 const STORAGE_NOT_READY_COPY = /Credential storage is not ready/;
-const RECONNECT_REPAIR_TITLE = /Reconnect \$\{setup\.display_name\}/;
-const RECONNECT_REPAIR_SUBMIT = /Reconnect account and run sync/;
+const RECONNECT_REPAIR_TITLE = /title: `Reconnect \$\{displayName\}`/;
+const RECONNECT_REPAIR_SUBMIT = /formContract\.primaryActionLabel/;
+const RETRY_COPY = /Retrying the same connection/;
 const STALE_REPAIR_TITLE = /Update \$\{setup\.display_name\} credential/;
 const STALE_REPAIR_SUBMIT = /Update credential and run sync/;
 const NO_CONNECTOR_BRANCH = /connectorId\s*===/;
@@ -39,12 +55,16 @@ const NO_TRANSIENT_NOTICE = /first_sync_started/;
 
 const ACTION_USE_SERVER = /^"use server";/;
 const REQUIRE_ACCESS = /await requireDashboardAccess\(/;
-const CREATE_DRAFT = /createStaticSecretDraftConnection\(connectorId, setupFields\)/;
+const CREATE_DRAFT = /createStaticSecretDraftConnection\(connectorId, setupFields, \{ displayName \}\)/;
 const CAPTURE_SECRET = /captureStaticSecretCredential\(\{/;
-const AUTO_RESUME = /auto_resume/;
+const START_HELPER_IMPORT = /static-secret-start\.ts/;
 const RUN_ID_AFTER_CAPTURE = /runIdAfterCapture\(/;
-const LEGACY_RUN_FALLBACK = /runConnectionNow\(connectionId\)/;
+const RUN_START_HELPER = /runIdAfterCapture\([\s\S]{0,180}runConnectionNow/;
+const CAPTURED_CONNECTION_ID = /const capturedConnectionId = captured\.connection_id/;
+const CAPTURE_SETUP_FIELDS = /setupFields/;
 const NO_AUTO_RESUME_FIELD_SUPPRESSION = /"auto_resume"\s+in\s+capture[\s\S]{0,120}return null/;
+const TERMINAL_RETRY =
+  /formRetryHrefWithConnectionId\(connectorId, draftConnectionId, errorMessage\(err\), setupFields/;
 const STATUS_SURFACE_PATH = /\/connect\/status\//;
 const STATUS_HREF_CALL = /statusHref\(/;
 const NO_NOTICE_REDIRECT = /notice:\s*"first_sync_started"/;
@@ -56,9 +76,11 @@ const STATUS_FETCH = /getConnectionSetupStatus\(/;
 const STATUS_SETUP_STATE = /setup_state/;
 const STATUS_SETUP_MATERIAL = /setup_material/;
 const STATUS_FAILED_STATE = /first_sync_failed/;
+const STATUS_ZERO_YIELD_STATE = /first_sync_zero_yield/;
 const STATUS_LAST_ERROR = /last_error/;
 const STATUS_CONNECTION_ID = /connection_id/;
 const STATUS_NOT_FOUND = /notFound\(\)/;
+const STATUS_LIVE_POLLER = /<LivePoller enabled=\{status\.pending\} \/>/;
 const STATUS_NO_PASSWORD_INPUT = /type="password"/;
 const STATUS_NO_SECRET_INPUT = /name="secret"/;
 const ROTATED_AT = /rotated_at/;
@@ -81,12 +103,19 @@ const NO_GENERIC_BROWSER_COPY = /Setup material needed|Re-enter credential and r
 const NO_BROWSER_STATIC_SECRET_ROUTE = /\/connect\/static-secret\//;
 const BROWSER_STATUS_START = "function describeBrowserSessionState";
 const BROWSER_STATUS_END = "function describeState";
-const SETUP_HREF_START = "function setupHref";
-const SETUP_HREF_END = "function sourceDetailHref";
+const SETUP_HREF_START = "export function setupHref";
+const SETUP_HREF_END = "export function sourceDetailHref";
 const BROWSER_HREF_START = 'if (status.setup_kind === "browser_session")';
-const BROWSER_HREF_END = "return `/connect/static-secret/";
+const BROWSER_HREF_END =
+  "const params = new URLSearchParams({ connection_id: status.connection_id });\n  return `/connect/static-secret/";
 const RETRY_LABEL_START = "function retryLabel";
 const RETRY_LABEL_END = "function displayValue";
+// The static-secret branch (the default fallthrough of setupHref) MUST carry
+// connection_id, or retry lands on createStaticSecretConnectionAction and
+// mints an orphaned second draft instead of repairing the stuck one — the
+// draft-deadlock regression this file exists to prevent.
+const STATIC_SECRET_HREF_CONNECTION_ID_PARAM = /connection_id:\s*status\.connection_id/;
+const STATIC_SECRET_HREF_RETURN = /return `\/connect\/static-secret\/\$\{encoded\}\?\$\{params\.toString\(\)\}`/;
 
 function sourceBlock(source: string, startMarker: string, endMarker: string): string {
   const start = source.indexOf(startMarker);
@@ -102,7 +131,19 @@ test("static-secret page is an owner-session capture form, not an agent secret p
   // Mode-aware form actions: both create (new connection) and replace (repair/edit) must be wired.
   assert.match(src, FORM_ACTION_CREATE);
   assert.match(src, FORM_ACTION_REPLACE);
+  assert.match(src, EXISTING_TARGET_ACTION);
+  assert.match(src, RETRY_CONNECTION_ID);
+  assert.match(src, DRAFT_RETRY_MODE);
+  assert.match(src, RETRY_COPY);
   assert.match(src, FIELDS_MAP);
+  // F2: the native `required` attribute must be gated by the block-level
+  // credential_capture.required fact, never the field's own `required`
+  // alone — otherwise the browser silently blocks a blank submission the
+  // server-side contract already accepts (Venmo's exact failure mode).
+  assert.match(src, REQUIRED_HONORS_BLOCK_LEVEL_FACT);
+  assert.doesNotMatch(src, NO_FIELD_ONLY_REQUIRED_ATTRIBUTE);
+  assert.match(src, CONNECTION_NAME_FIELD);
+  assert.match(src, CONNECTION_NAME_MAX_LENGTH);
   assert.match(src, HELP_URL);
   assert.match(src, NEW_TAB);
   assert.match(src, NOREFERRER);
@@ -129,14 +170,18 @@ test("static-secret action redirects to the durable setup-status surface, not a 
   assert.match(src, GET_SETUP);
   assert.match(src, CREATE_DRAFT);
   assert.match(src, CAPTURE_SECRET);
-  assert.match(src, AUTO_RESUME);
+  assert.match(src, START_HELPER_IMPORT);
   assert.match(src, RUN_ID_AFTER_CAPTURE);
-  assert.match(src, LEGACY_RUN_FALLBACK);
+  assert.match(src, RUN_START_HELPER);
+  assert.match(src, CAPTURED_CONNECTION_ID);
+  assert.match(src, CAPTURE_SETUP_FIELDS);
   assert.doesNotMatch(src, NO_AUTO_RESUME_FIELD_SUPPRESSION);
-  // The success and the draft-created-then-failed paths both land on the
-  // durable per-connection status surface, keyed on the real connection id.
+  // Success lands on the durable per-connection status surface, keyed on the
+  // real connection id. A draft-created start failure returns to the repair
+  // form instead of fabricating first_sync_pending with no run id.
   assert.match(src, STATUS_SURFACE_PATH);
   assert.match(src, STATUS_HREF_CALL);
+  assert.match(src, TERMINAL_RETRY);
   assert.doesNotMatch(src, NO_NOTICE_REDIRECT);
   assert.doesNotMatch(src, NO_LEGACY_BRANCH);
   assert.doesNotMatch(src, NO_CONNECTOR_BRANCH);
@@ -154,6 +199,7 @@ test("durable setup-status page reads the connection-scoped status route and sur
   assert.match(src, STATUS_SETUP_STATE);
   assert.match(src, STATUS_SETUP_MATERIAL);
   assert.match(src, STATUS_FAILED_STATE);
+  assert.match(src, STATUS_ZERO_YIELD_STATE);
   assert.match(src, STATUS_LAST_ERROR);
   assert.match(src, STATUS_CONNECTION_ID);
   assert.match(src, ROTATED_AT);
@@ -161,6 +207,8 @@ test("durable setup-status page reads the connection-scoped status route and sur
   assert.doesNotMatch(src, NO_UNPROVEN_FIRST_SYNC_COPY);
   // 404s a missing connection rather than fabricating a status.
   assert.match(src, STATUS_NOT_FOUND);
+  // Transitional setup status refreshes automatically while it remains pending.
+  assert.match(src, STATUS_LIVE_POLLER);
   // No provider-specific copy and no secret-bearing input on a read-only
   // status surface (the status page never captures a credential).
   assert.doesNotMatch(src, NO_PROVIDER_COPY);
@@ -170,8 +218,9 @@ test("durable setup-status page reads the connection-scoped status route and sur
 
 test("durable setup-status page carries a browser-session branch with secure-browser copy and a launch-path retry CTA", async () => {
   const src = await readFile(STATUS_PAGE_FILE, "utf8");
+  const linksSrc = await readFile(STATUS_LINKS_FILE, "utf8");
   const browserStatus = sourceBlock(src, BROWSER_STATUS_START, BROWSER_STATUS_END);
-  const setupHref = sourceBlock(src, SETUP_HREF_START, SETUP_HREF_END);
+  const setupHref = sourceBlock(linksSrc, SETUP_HREF_START, SETUP_HREF_END);
   const browserHref = sourceBlock(setupHref, BROWSER_HREF_START, BROWSER_HREF_END);
   const retryLabel = sourceBlock(src, RETRY_LABEL_START, RETRY_LABEL_END);
   assert.match(src, BROWSER_SESSION_KIND_CHECK);
@@ -187,6 +236,8 @@ test("durable setup-status page carries a browser-session branch with secure-bro
   // credential-shaped copy or a static-secret route.
   assert.doesNotMatch(browserStatus, NO_GENERIC_BROWSER_COPY);
   assert.doesNotMatch(browserHref, NO_BROWSER_STATIC_SECRET_ROUTE);
+  assert.match(setupHref, STATIC_SECRET_HREF_CONNECTION_ID_PARAM);
+  assert.match(setupHref, STATIC_SECRET_HREF_RETURN);
 });
 
 test("legacy static-secret setup-status URL redirects to the generic setup-status surface", async () => {

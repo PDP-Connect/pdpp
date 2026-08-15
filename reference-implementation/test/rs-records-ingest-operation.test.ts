@@ -161,6 +161,48 @@ test("rs.records.ingest invokes ingestRecord sequentially in line order", async 
   assert.deepEqual(seen, ["r1", "r2", "r3"]);
 });
 
+test("rs.records.ingest uses the bounded batch capability for distinct stream shapes", async () => {
+  // NOT_JSON is a permanent (non-retryable) per-line parse failure, but the
+  // batch capability's raw-string error for "r3" carries no typed permanence
+  // proof, so it classifies as systemic/retryable (see ingestWithBatchCapability)
+  // and the whole batch throws rather than returning a 200 envelope.
+  await Promise.all(
+    ["messages", "timeline_points"].map(async (streamName) => {
+      let batchCalls = 0;
+      let received: Record<string, unknown>[] = [];
+      await assert.rejects(
+        () =>
+          executeRecordsIngest(
+            defaultInput({
+              body: '{"id":"r1"}\nNOT_JSON\n{"id":"r3"}',
+              streamName,
+            }),
+            defaultDeps({
+              ingestRecord: () => {
+                throw new Error("ordered fallback should not run when batch capability is present");
+              },
+              ingestRecords: (_connectorId, _connectorInstanceId, records) => {
+                batchCalls += 1;
+                received = [...records];
+                return [null, "derived index failed"];
+              },
+            })
+          ),
+        (err) => {
+          assert.ok(err instanceof RecordsIngestSystemicFailureError);
+          assert.equal(err.retryableFailureCount, 1);
+          return true;
+        }
+      );
+      assert.equal(batchCalls, 1, `${streamName} should use one common-path batch call`);
+      assert.deepEqual(
+        received.map((record) => record.stream),
+        [streamName, streamName]
+      );
+    })
+  );
+});
+
 test("rs.records.ingest forwards { ...record, stream } to the dependency", async () => {
   let captured: { cid: string; cin: string | null; record: Record<string, unknown> } | undefined;
   await executeRecordsIngest(

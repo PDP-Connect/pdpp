@@ -4,8 +4,17 @@
 import { formatConnectorKeyForDisplay } from "@pdpp/display";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import type { DeploymentDiagnostics } from "../../lib/ref-client.ts";
-import { buildStorageFootprintModel } from "../../lib/storage-footprint.ts";
+import {
+  buildDatasetStreamSizeModel,
+  buildDatasetTopModel,
+  buildStreamConnectionLabels,
+  type DatasetStreamSizeInput,
+  type DatasetTopRowInput,
+} from "../../lib/dataset-grains.ts";
+import type { DatasetSummaryProjectionMetadata, DeploymentDiagnostics } from "../../lib/ref-client.ts";
+import { buildSourceStorageModel, type SourceStorageInput } from "../../lib/source-storage.ts";
+import { buildDatasetSummaryProjectionStatusModel, buildStorageFootprintModel } from "../../lib/storage-footprint.ts";
+import { Button } from "../../ui/button.tsx";
 import { Timestamp } from "../../ui/timestamp.tsx";
 import { EmptyState } from "../empty-state.tsx";
 import { Callout, PageHeader, Section } from "../primitives.tsx";
@@ -16,13 +25,50 @@ interface DeploymentDiagnosticsViewProps {
   beforeDiagnostics?: ReactNode;
   breadcrumbs?: { href?: string; label: string }[];
   description: string;
+  // The dataset-summary projection metadata (`/_ref/dataset/summary`'s
+  // `projection` field). Optional: when omitted, the storage section
+  // renders the retained-payload comparison with no status/recovery
+  // affordance, same as before this field existed. Used to tell the
+  // operator WHY `retainedBytes` is unknown when it is, and to offer the
+  // manual-rebuild recovery action when the projection is not `fresh`.
+  projection?: DatasetSummaryProjectionMetadata | null;
+  // Server-action result banners for the rebuild action below, threaded in
+  // as plain strings (from a redirect query param) rather than client
+  // state — this is a server-rendered page, not a client form.
+  projectionActionError?: string | null;
+  projectionActionNotice?: string | null;
+  // Server action bound to a `<form action={...}>` that calls
+  // `POST /_ref/dataset/summary/rebuild`. Optional: when omitted, the
+  // projection status line renders with no action button (e.g. a host that
+  // hasn't wired the action yet).
+  rebuildDatasetSummaryAction?: () => Promise<void>;
   report: DeploymentDiagnostics;
   // The logical retained payload (`total_retained_bytes` from
   // `/_ref/dataset/summary`), rendered beside the physical footprint as a
   // labeled comparison. Optional: when omitted the comparison line is hidden
   // rather than guessed. Never combined with the physical size.
   retainedBytes?: number | null;
+  // Connector-summary rows (`GET /_ref/connectors`) used only for the
+  // per-source storage table. Optional: when omitted — or when the list read
+  // fails — the table is hidden rather than rendered empty, exactly as the
+  // physical footprint hides rather than guessing. These per-source totals are
+  // LOGICAL and are never summed with, or compared against, the physical
+  // on-disk size in the same section.
+  sources?: readonly SourceStorageInput[];
+  // True when `sources` is one bounded page and the server reported more
+  // beyond it. The table then says so explicitly rather than presenting a
+  // truncated list as the whole fleet.
+  sourcesTruncated?: boolean;
+  // Stream-grain retained bytes (`GET /_ref/dataset/size?grain=stream`) — one
+  // level finer than the per-source table above. Optional: hidden when
+  // omitted or the read failed, same posture as `sources`.
+  streamSizes?: readonly DatasetStreamSizeInput[];
   title?: string;
+  // Record/blob top-N leaderboards (`GET /_ref/dataset/top`), already
+  // server-bounded to 25 rows each (`MAX_TOP_LIMIT`). Never paginate or
+  // re-sort these client-side — render exactly what the server returned.
+  topBlobs?: readonly DatasetTopRowInput[];
+  topRecords?: readonly DatasetTopRowInput[];
 }
 
 // ─── Section group divider ──────────────────────────────────────────────────
@@ -75,9 +121,18 @@ export function DeploymentDiagnosticsView({
   beforeDiagnostics,
   breadcrumbs,
   description,
+  projection,
+  projectionActionError,
+  projectionActionNotice,
+  rebuildDatasetSummaryAction,
   report,
   retainedBytes,
+  sources,
+  sourcesTruncated,
+  streamSizes,
   title = "Deployment",
+  topBlobs,
+  topRecords,
 }: DeploymentDiagnosticsViewProps) {
   return (
     <>
@@ -101,8 +156,15 @@ export function DeploymentDiagnosticsView({
         <DatabaseSection
           database={report.database}
           indexKind={report.semantic.index.kind}
+          projection={projection}
+          projectionActionError={projectionActionError}
+          projectionActionNotice={projectionActionNotice}
+          rebuildDatasetSummaryAction={rebuildDatasetSummaryAction}
           retainedBytes={retainedBytes}
         />
+        <SourceStorageSection sources={sources} truncated={sourcesTruncated} />
+        <StreamSizeSection connections={sources} rows={streamSizes} />
+        <TopRecordsAndBlobsSection topBlobs={topBlobs} topRecords={topRecords} />
       </div>
       <div className="scroll-mt-16" id="diagnostics">
         <SectionGroupDivider label="Diagnostics" />
@@ -448,13 +510,22 @@ function ManifestsSection({ manifests }: { manifests: DeploymentDiagnostics["man
 function DatabaseSection({
   database,
   indexKind,
+  projection,
+  projectionActionError,
+  projectionActionNotice,
+  rebuildDatasetSummaryAction,
   retainedBytes,
 }: {
   database: DeploymentDiagnostics["database"];
   indexKind: DeploymentDiagnostics["semantic"]["index"]["kind"];
+  projection?: DatasetSummaryProjectionMetadata | null;
+  projectionActionError?: string | null;
+  projectionActionNotice?: string | null;
+  rebuildDatasetSummaryAction?: () => Promise<void>;
   retainedBytes?: number | null;
 }) {
   const footprint = buildStorageFootprintModel(database, retainedBytes);
+  const projectionStatus = buildDatasetSummaryProjectionStatusModel(projection);
   return (
     <Section
       description="On-disk database size is operator diagnostics. It is a different measurement from the retained payload (the JSON/blob byte length of records, history, and blobs) and is never summed with it: the physical size also includes index storage, the event log, TOAST, page bloat, and free space."
@@ -477,7 +548,54 @@ function DatabaseSection({
           title="On-disk size unmeasured"
         />
       )}
+
+      <DatasetSummaryProjectionStatus
+        notice={projectionActionNotice}
+        rebuildAction={rebuildDatasetSummaryAction}
+        status={projectionStatus}
+      />
+      {projectionActionError ? (
+        <Callout className="mt-3" description={projectionActionError} title="Rebuild failed" tone="warning" />
+      ) : null}
     </Section>
+  );
+}
+
+// Status line + recovery action for the dataset-summary projection. Kept
+// deliberately small — one line and one button, not a new page or panel —
+// per the "give the owner a visible path" requirement: today a failed
+// projection is invisible (no boot hook, scheduler, or UI affordance calls
+// its one rebuild route) and unrecoverable short of an API client. This
+// renders nothing when the projection is already fresh, so a healthy
+// deployment sees no change.
+function DatasetSummaryProjectionStatus({
+  notice,
+  rebuildAction,
+  status,
+}: {
+  notice?: string | null;
+  rebuildAction?: () => Promise<void>;
+  status: ReturnType<typeof buildDatasetSummaryProjectionStatusModel>;
+}) {
+  if (!status.needsAttention) {
+    return notice ? <Callout className="mt-3" description={notice} title="Dataset summary" tone="info" /> : null;
+  }
+  return (
+    <Callout
+      action={
+        rebuildAction ? (
+          <form action={rebuildAction}>
+            <Button size="sm" type="submit" variant="outline">
+              Recompute now
+            </Button>
+          </form>
+        ) : undefined
+      }
+      className="mt-3"
+      description={status.statusLine}
+      title="Dataset summary needs attention"
+      tone="warning"
+    />
   );
 }
 
@@ -502,6 +620,188 @@ function DatabaseRelations({ relations }: { relations: ReturnType<typeof buildSt
             <tr className="border-border/60 border-t" key={relation.name}>
               <td className="px-2 py-1.5 font-mono text-xs">{relation.name}</td>
               <td className="px-2 py-1.5 text-right tabular-nums">{relation.label}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Per-source retained payload. The Database section above answers "how big is
+// the database" and "which tables"; this answers "which SOURCE" — the question
+// an operator actually asks before pruning. Deliberately a separate Section
+// from the physical footprint so the two measurements are never read as one:
+// these totals are logical and do not reconcile against pg_database_size.
+function SourceStorageSection({
+  sources,
+  truncated,
+}: {
+  sources?: readonly SourceStorageInput[];
+  truncated?: boolean;
+}) {
+  if (!sources || sources.length === 0) {
+    return null;
+  }
+  const model = buildSourceStorageModel(sources);
+  if (model.rows.length === 0) {
+    return null;
+  }
+  // One bounded page may not hold every configured source. When the server
+  // reported more, the title and description say so — a truncated list must
+  // never read as the whole fleet.
+  const title = truncated ? `Retained payload by source (first ${model.rows.length})` : "Retained payload by source";
+  const description = truncated
+    ? `${model.logicalNote} This is the first page of ${model.rows.length} sources, ordered by retained payload within that page — the deployment holds more sources than are listed here. Open Sources for the full list.`
+    : model.logicalNote;
+  return (
+    <Section description={description} title={title}>
+      <table className="w-full border-border/80 border-y text-left text-sm">
+        <thead>
+          <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+            <th className="px-2 py-2 font-medium">Source</th>
+            <th className="px-2 py-2 text-right font-medium">Records</th>
+            <th className="px-2 py-2 text-right font-medium">Retained (logical)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {model.rows.map((row) => (
+            <tr className="border-border/60 border-t align-top" key={row.connectionId}>
+              <td className="px-2 py-1.5">
+                <span className="text-foreground">{row.label}</span>
+                {row.breakdownLabel ? (
+                  <span className="block text-muted-foreground/70 text-xs" data-testid="retained-bytes-breakdown">
+                    {row.breakdownLabel}
+                  </span>
+                ) : null}
+              </td>
+              <td
+                className={`px-2 py-1.5 text-right tabular-nums ${row.recordsMeasured ? "" : "text-muted-foreground"}`}
+              >
+                {row.recordsLabel}
+              </td>
+              <td className={`px-2 py-1.5 text-right tabular-nums ${row.sizeMeasured ? "" : "text-muted-foreground"}`}>
+                {row.sizeLabel}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {model.someMeasured ? null : (
+        <Callout
+          className="mt-4"
+          description="No source reported a retained-payload size. Sizes appear once the retained-size projection has been observed for each connection."
+          surface="neutral"
+          title="Per-source sizes unmeasured"
+        />
+      )}
+    </Section>
+  );
+}
+
+// Stream-grain retained payload — one level finer than "which source" above.
+// Already computed and exposed at `GET /_ref/dataset/size?grain=stream`; this
+// wires it into the console for the first time. Compact by design (the owner
+// does not need every stream surfaced everywhere, just somewhere reachable).
+function StreamSizeSection({
+  connections,
+  rows,
+}: {
+  connections?: readonly SourceStorageInput[];
+  rows?: readonly DatasetStreamSizeInput[];
+}) {
+  if (!rows || rows.length === 0) {
+    return null;
+  }
+  // Disambiguates rows that would otherwise share an identical
+  // `connector / stream` label (e.g. three ChatGPT connections). Built from
+  // the same connector-summary list the per-source table above already
+  // fetched — no new endpoint or query.
+  const connectionLabels = buildStreamConnectionLabels(connections ?? []);
+  const model = buildDatasetStreamSizeModel(rows, connectionLabels);
+  if (model.rows.length === 0) {
+    return null;
+  }
+  return (
+    <Section
+      description="Retained payload per stream (connector / stream) — a finer grain than the per-source table above. Logical bytes, same as above; does not sum to the on-disk database size."
+      title="Retained payload by stream"
+    >
+      <table className="w-full border-border/80 border-y text-left text-sm">
+        <thead>
+          <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+            <th className="px-2 py-2 font-medium">Stream</th>
+            <th className="px-2 py-2 text-right font-medium">Retained (logical)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {model.rows.map((row) => (
+            <tr className="border-border/60 border-t" key={row.key}>
+              <td className="px-2 py-1.5 font-mono text-xs">{row.label}</td>
+              <td className={`px-2 py-1.5 text-right tabular-nums ${row.sizeMeasured ? "" : "text-muted-foreground"}`}>
+                {row.sizeLabel}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  );
+}
+
+// Record/blob top-N heavy-hitter leaderboards — already bounded server-side
+// to 25 rows each (`MAX_TOP_LIMIT`, `retained-size-read-model.ts:129`).
+// Rendered as two compact side-by-side lists rather than a drill-down UI —
+// the owner explicitly said these do not all need to be surfaced, just
+// reachable. Never paginated further: what the server returns is the whole
+// leaderboard.
+function TopRecordsAndBlobsSection({
+  topRecords,
+  topBlobs,
+}: {
+  topRecords?: readonly DatasetTopRowInput[];
+  topBlobs?: readonly DatasetTopRowInput[];
+}) {
+  const recordsModel = topRecords ? buildDatasetTopModel(topRecords, "record", "total_retained_bytes") : null;
+  const blobsModel = topBlobs ? buildDatasetTopModel(topBlobs, "blob", "blob_bytes") : null;
+  const hasRecords = recordsModel && recordsModel.rows.length > 0;
+  const hasBlobs = blobsModel && blobsModel.rows.length > 0;
+  if (!(hasRecords || hasBlobs)) {
+    return null;
+  }
+  return (
+    <Section
+      description="The largest individual records and blobs across the deployment (top 25 by retained bytes). Logical bytes; a record's own size is separate from any blob it references — see that record's detail page for the split."
+      title="Largest records and blobs"
+    >
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        {hasRecords ? <TopList rows={recordsModel.rows} title="Largest records" /> : null}
+        {hasBlobs ? <TopList rows={blobsModel.rows} title="Largest blobs" /> : null}
+      </div>
+    </Section>
+  );
+}
+
+function TopList({ title, rows }: { title: string; rows: ReturnType<typeof buildDatasetTopModel>["rows"] }) {
+  return (
+    <div>
+      <p className="pdpp-eyebrow text-muted-foreground">{title}</p>
+      <table className="mt-2 w-full border-border/80 border-y text-left text-sm">
+        <thead>
+          <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+            <th className="px-2 py-2 font-medium">Item</th>
+            <th className="px-2 py-2 text-right font-medium">Size</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr className="border-border/60 border-t" key={row.key}>
+              <td className="truncate px-2 py-1.5 font-mono text-xs" title={row.label}>
+                {row.label}
+              </td>
+              <td className={`px-2 py-1.5 text-right tabular-nums ${row.sizeMeasured ? "" : "text-muted-foreground"}`}>
+                {row.sizeLabel}
+              </td>
             </tr>
           ))}
         </tbody>

@@ -26,6 +26,7 @@ import type {
   GetLastSuccessfulRunAtHandler,
   GetNonPressureRecoverableCountHandler,
   GetSourcePressureGapsHandler,
+  HasLegacySchedulerEventMarkerHandler,
   HumanRequiredStateEscalationHandler,
   RunRecord,
   RunSource,
@@ -36,6 +37,7 @@ import {
   type PendingPressureGap,
   type SourcePressureCooldownDecision,
 } from "../scheduler-source-pressure-cooldown.ts";
+import { resolveSchedulerMarkers } from "./recovery-instance-scope.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
 
@@ -56,6 +58,7 @@ export interface DispatchGovernorDeps {
   getLastSuccessfulRunAt: GetLastSuccessfulRunAtHandler;
   getNonPressureRecoverableCount: GetNonPressureRecoverableCountHandler;
   getSourcePressureGaps: GetSourcePressureGapsHandler;
+  hasLegacySchedulerEventMarker?: HasLegacySchedulerEventMarkerHandler;
   onHumanRequiredStateEscalation: HumanRequiredStateEscalationHandler;
   runtime: DispatchGovernorRuntimeState;
 }
@@ -106,6 +109,10 @@ function resolveLastRunEpochMs(lastRunTimeMs: number | undefined, history: reado
     return fromMap;
   }
   return newestHistoryEpochMs(history);
+}
+
+function resolveScheduleAnchor(lastRun: number, lastSuccessAtMs: number | null, now: number): number {
+  return lastSuccessAtMs !== null && lastSuccessAtMs <= now ? Math.max(lastRun, lastSuccessAtMs) : lastRun;
 }
 
 function nowIso(): string {
@@ -411,9 +418,6 @@ export function decideBackoffDispatch(inputs: DecideBackoffDispatchInputs): Deci
       eligible = false;
       recoveryOnly = false;
     }
-  } else if (!inputs.backoffApplied) {
-    // Streak broken (success or different class): clear the announcement.
-    announcedBackoffMutation = "delete";
   }
 
   return { announcedBackoffMutation, announcedBlockedMutation, eligible, recoveryOnly, transitions };
@@ -447,6 +451,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
   const {
     getForwardEvidenceDebt,
     getLastSuccessfulRunAt,
+    hasLegacySchedulerEventMarker = async () => false,
     getNonPressureRecoverableCount,
     getSourcePressureGaps,
     onHumanRequiredStateEscalation,
@@ -657,6 +662,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     // otherwise-immortal failure streak so automation resumes — the live wedge.
     const lastSuccessAtMs = await probeLastSuccessfulRunAt(connectorId, key);
     const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun, { lastSuccessAtMs });
+    const scheduleAnchor = resolveScheduleAnchor(lastRun, lastSuccessAtMs, now);
 
     // Cross-run source-pressure cooldown. Independent of failure back-off: a
     // connection that *succeeded* but deferred work under upstream pressure
@@ -675,16 +681,16 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     // recovery". This threads ADDITIVELY: it only sharpens the health-state
     // recommendation, never the dispatch/drain decision below.
     const consecutiveCooldownCycles = maxPressureGapAttemptCount(freshPressureGaps);
-    const cooldown = computeConnectionSourcePressureCooldown(
+    const cooldown = await computeConnectionSourcePressureCooldown(
       connectorId,
       freshPressureGaps,
       scheduleIntervalMs,
-      lastRun,
+      scheduleAnchor,
       { consecutiveCooldownCycles }
     );
     const cooldownDefers = isSourcePressureCooldownDeferring(cooldown, now);
 
-    const elapsed = now - lastRun;
+    const elapsed = now - scheduleAnchor;
     const intervalElapsed = elapsed >= decision.effectiveIntervalMs;
     // Forward-walk eligibility: gated by BOTH the failure-backoff interval AND
     // the source-pressure cooldown. New source-touching work (the forward walk
@@ -765,20 +771,23 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     // Decide (pure) then apply (effectful). The pure core reads the current
     // dedup state as inputs and returns the dispatch flags, the dedup-map
     // mutations, and the one-shot transitions to fire — all as data.
+    const markerEvidence = await resolveSchedulerMarkers(
+      hasLegacySchedulerEventMarker,
+      connectorId,
+      key,
+      history,
+      decision.reasonClass ?? "",
+      currentStreakHasSchedulerEvent(history, BACKOFF_STARTED_PREFIX, decision.reasonClass ?? ""),
+      currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass ?? "")
+    );
     const backoffDecision = decideBackoffDispatch({
       announcedBackoff: runtime.announcedBackoffClass.get(key),
       announcedBlocked: runtime.announcedBlockedClass.get(key),
       backoffApplied: decision.backoffApplied,
       blocked: decision.recommendedHealthState === "blocked",
       eligible,
-      persistedBackoffStarted:
-        decision.reasonClass !== null &&
-        decision.reasonClass !== undefined &&
-        currentStreakHasSchedulerEvent(history, BACKOFF_STARTED_PREFIX, decision.reasonClass),
-      persistedGaveUp:
-        decision.reasonClass !== null &&
-        decision.reasonClass !== undefined &&
-        currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass),
+      persistedBackoffStarted: markerEvidence.backoffStarted,
+      persistedGaveUp: markerEvidence.gaveUp,
       reasonClass: decision.reasonClass,
       recoveryOnly,
     });
