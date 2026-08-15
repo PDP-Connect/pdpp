@@ -85,13 +85,24 @@
    involved; OpenTelemetry, a 19-item list at 1220px). Multi-column grids in
    this class are overwhelmingly link cards, which .pdpp-channels already is. */
 @media (min-width: 1280px) {
-  /* One container for every surface. /specification spends 480px of it on two
-     rails, so the cap has to clear rails + measure + gutters or the reading
-     column is squeezed: at 1400 the centre track fell to 536px at 1440 and the
-     measure to 440, under the 60-75ch convention and narrower than any of the
-     24 surveyed sites (min 482). 1560 holds the full 600px measure with both
-     rails present and stays inside the surveyed band (median 1312, max 1904).
-     Marketing pages, which carry one rail, simply have more margin. */
+  /* ONE container for every surface, and the wordmark holds still because of
+     it. /specification runs three tracks (rail, measure, section TOC) and
+     needs to clear 480px of rails plus the measure plus gutters; at 1400 its
+     centre track fell to 536px at 1440 and squeezed the measure to 440, under
+     the 60-75ch convention and narrower than any of the 24 sites surveyed
+     (min 482). 1560 holds the full 600px measure with both rails present and
+     sits inside the surveyed band (median 1312, max 1904).
+
+     The concept pages run two tracks, so the surplus lands as right-hand air.
+     That is what the reference class does rather than a per-surface container:
+     Astro serves a 2-track page and a 3-track page from the same container
+     with the wordmark at an identical x on both (24/24), the 2-track page
+     simply carrying more air (232 vs 315). Better Stack, MCP, OpenTelemetry
+     and Kubernetes likewise hold one wordmark position across surfaces
+     (measured 2026-08-14). Two alternatives were tried and reverted: moving
+     the concept rail to the right balanced the outer edges but stranded the
+     gap in the middle and detached the contents list from its heading, and a
+     narrower concept-only container moved the masthead 190px between pages. */
   [data-surface="concept"] .container.max-w-page {
     max-width: 1560px;
   }
