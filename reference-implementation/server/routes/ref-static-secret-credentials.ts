@@ -938,6 +938,32 @@ function validateBundledSecret(contract: StaticSecretCredentialContract, secret:
 }
 
 // Stores the validated credential and sends the success response.
+// A `paused` connection is the only status admitted by this route's
+// `allowStatuses` that isn't already collectible (`active`) or pre-first-sync
+// (`draft`). Widening the allowlist to admit it without also resuming it here
+// would leave the owner's "fix and resume" action stuck: the credential
+// saves, but `admitOwnerRunConnection`'s active-only gate keeps rejecting
+// both the manual run this response links to and every scheduled run, with
+// no other path in this codebase that ever flips `paused` back to `active`.
+// This mirrors owner-connection-reactivate.ts's `revoked -> active` flip,
+// scoped to `paused` and with no `revokedAt` field to clear.
+async function resumePausedConnectionAfterCredentialCapture(
+  ctx: MountRefStaticSecretCredentialsContext,
+  connectorInstanceId: string,
+  updatedAt: string
+): Promise<boolean> {
+  if (typeof ctx.createRequestConnectorInstanceStore !== "function") {
+    return false;
+  }
+  const store = ctx.createRequestConnectorInstanceStore();
+  const current = await store.get(connectorInstanceId);
+  if (!current || current.status !== "paused") {
+    return false;
+  }
+  await store.updateStatus(connectorInstanceId, { status: "active", updatedAt });
+  return true;
+}
+
 async function storeAndRespond(
   ctx: MountRefStaticSecretCredentialsContext,
   req: RouteRequest,
@@ -962,6 +988,7 @@ async function storeAndRespond(
     secret: args.secret,
   });
   ctx.invalidateConnectorSummariesCache?.();
+  const resumed = await resumePausedConnectionAfterCredentialCapture(ctx, args.namespace.connectorInstanceId, now);
   const rotated = Boolean(previous);
   const autoResume = await autoResumeAfterCredentialCapture(ctx, args.namespace, metadata, args.ownerSubjectId);
   await emitCaptureAudit(ctx, req, res, {
@@ -985,6 +1012,7 @@ async function storeAndRespond(
       ? { account_identity: args.probedIdentity.identity, detail: args.probedIdentity.detail }
       : null,
     ...(args.deduplicated ? { deduplicated: true } : {}),
+    ...(resumed ? { resumed_from_paused: true } : {}),
     next_step: {
       kind: "run_connection",
       method: "POST",
@@ -1094,7 +1122,13 @@ async function runStaticSecretCredentialCapture(
     // not-yet-ingested first static-secret connection. This is owner-
     // session-only; no bearer/agent path passes allowStatuses. See
     // add-static-secret-owner-session-connect-path design Decisions 3 & 5.
-    allowStatuses: ["active", "draft"],
+    // Admit `paused` too: a paused connection is still owned and still has a
+    // durable identity/binding — updating its sign-in details is the
+    // supported "fix and resume" action, not a state the owner is blocked
+    // from touching. `revoked` is deliberately excluded; that path stays
+    // owner-connection-reactivate.ts's job (see storeAndRespond's paused ->
+    // active flip below for the resume half of this contract).
+    allowStatuses: ["active", "draft", "paused"],
     connectorInstanceId,
     ownerSubjectId,
   });
