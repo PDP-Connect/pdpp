@@ -608,6 +608,39 @@ CREATE TABLE IF NOT EXISTS connector_instance_tombstones (
   UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
 );
 
+-- Reversible alias/read-model grouping of a recovered-fragment connector
+-- instance under the canonical connector instance for the SAME real
+-- provider account. This table is deliberately the ONLY mechanism for
+-- account unification: no code path physically rewrites a fragment's own
+-- connector_instance_id, moves its records, or deletes it. Every read
+-- surface that must present "one logical account" (Sources, Explore,
+-- lexical/semantic search, source detail, public read identity) resolves
+-- through connector-instance-canonicalization.ts, which reads this table.
+-- Grouping a fragment never affects credentials, schedules, or checkpoint
+-- state -- those stay attached only to the canonical row (enforced by the
+-- migration tool, not by a DB constraint, since credentials/schedules key
+-- off connector_instance_id with no FK to this table).
+-- connector_instance_id is the PRIMARY KEY: a fragment has exactly one
+-- canonical target at a time (no fan-out), and the canonical row itself is
+-- never a fragment (see assertion in the resolver / migration tool, not a DB
+-- CHECK, since a cross-row self-reference isn't expressible as a CHECK).
+-- Deleting a row is the complete rollback: the alias disappears and the
+-- fragment reverts to being its own independently-visible connection.
+CREATE TABLE IF NOT EXISTS connector_instance_groups (
+  connector_instance_id           TEXT PRIMARY KEY,
+  canonical_connector_instance_id TEXT NOT NULL,
+  owner_subject_id                TEXT NOT NULL,
+  reason                          TEXT NOT NULL,
+  evidence                        TEXT NOT NULL DEFAULT '{}',
+  grouped_by                      TEXT NOT NULL,
+  grouped_at                      TEXT NOT NULL,
+  CHECK (connector_instance_id <> canonical_connector_instance_id)
+);
+CREATE INDEX IF NOT EXISTS idx_connector_instance_groups_owner
+  ON connector_instance_groups(owner_subject_id);
+CREATE INDEX IF NOT EXISTS idx_connector_instance_groups_canonical
+  ON connector_instance_groups(canonical_connector_instance_id);
+
 -- Per-connection encrypted static-secret credential store. A peer of the
 -- instance-scoped storage / schedule state: a single connector-declared static
 -- provider secret sealed at rest under the owner/operator key and keyed to

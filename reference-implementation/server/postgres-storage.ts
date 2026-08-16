@@ -1115,6 +1115,25 @@ export async function bootstrapPostgresSchema({
         UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
       );
 
+      -- Postgres mirror of the SQLite connector_instance_groups table (see
+      -- server/db.ts for the full rationale). Reversible alias/read-model
+      -- grouping only -- never a physical rehome of records or a rewrite of
+      -- a fragment's own connector_instance_id.
+      CREATE TABLE IF NOT EXISTS connector_instance_groups (
+        connector_instance_id TEXT PRIMARY KEY,
+        canonical_connector_instance_id TEXT NOT NULL,
+        owner_subject_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        evidence TEXT NOT NULL DEFAULT '{}',
+        grouped_by TEXT NOT NULL,
+        grouped_at TEXT NOT NULL,
+        CHECK (connector_instance_id <> canonical_connector_instance_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_groups_owner
+        ON connector_instance_groups(owner_subject_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_groups_canonical
+        ON connector_instance_groups(canonical_connector_instance_id);
+
       -- Reset-safe record-source checkpoint: incremented by a supported
       -- stream/connector-wide reset over the distinct stream namespaces it
       -- touched, in the same transaction as the deletes. Combined with the
