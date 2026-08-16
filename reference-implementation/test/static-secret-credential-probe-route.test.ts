@@ -551,6 +551,59 @@ test("an active verified connection refuses credential replacement for another i
   });
 });
 
+test("a paused connection accepts a credential update and resumes to active", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const draft = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const connectionId = requireString(draft.body.connection_id, "personal connection id");
+      await capture(asUrl, cookie, connectionId, GOOD_SECRET, "app_password");
+      await createSqliteConnectorInstanceStore().activateDraft(connectionId, { now: "2026-06-10T18:00:00.000Z" });
+      await createSqliteConnectorInstanceStore().updateStatus(connectionId, {
+        status: "paused",
+        updatedAt: "2026-06-10T19:00:00.000Z",
+      });
+
+      const resubmitted = await capture(asUrl, cookie, connectionId, ALTERNATE_SECRET, "app_password", {
+        account_email: "personal@example.com",
+      });
+      assert.equal(resubmitted.status, 200, JSON.stringify(resubmitted.body));
+      assert.equal(resubmitted.body.resumed_from_paused, true);
+
+      const instance = await createSqliteConnectorInstanceStore().get(connectionId);
+      assert.equal(instance?.status, "active", "a successful credential save must resume a paused connection");
+    });
+  });
+});
+
+test("a revoked connection still refuses credential edits with a typed error", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const draft = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const connectionId = requireString(draft.body.connection_id, "personal connection id");
+      await capture(asUrl, cookie, connectionId, GOOD_SECRET, "app_password");
+      await createSqliteConnectorInstanceStore().activateDraft(connectionId, { now: "2026-06-10T18:00:00.000Z" });
+      await createSqliteConnectorInstanceStore().updateStatus(connectionId, {
+        revokedAt: "2026-06-10T19:00:00.000Z",
+        status: "revoked",
+        updatedAt: "2026-06-10T19:00:00.000Z",
+      });
+
+      const resubmitted = await capture(asUrl, cookie, connectionId, ALTERNATE_SECRET, "app_password", {
+        account_email: "personal@example.com",
+      });
+      assert.equal(resubmitted.status, 400);
+      assert.equal(errorOf(resubmitted.body).code, "connector_instance_inactive");
+
+      const instance = await createSqliteConnectorInstanceStore().get(connectionId);
+      assert.equal(instance?.status, "revoked", "revoked must stay revoked; owner-connection-reactivate is its path");
+    });
+  });
+});
+
 test("a valid probe stores the credential and surfaces the account identity", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl, proberCalls }) => {
