@@ -38,34 +38,7 @@ export function PdppHeroWaterStill() {
         className="flex h-full w-full overflow-hidden font-light font-mono text-[12px] text-foreground leading-[34px] [-webkit-mask-image:linear-gradient(to_bottom,transparent,black_90px,black_calc(100%_-_90px),transparent)] [mask-image:linear-gradient(to_bottom,transparent,black_90px,black_calc(100%_-_90px),transparent)]"
       >
         {HERO_WATER_STREAMS.map((stream, colIndex) => (
-          <div
-            className={cn(
-              "min-w-0 flex-1 overflow-hidden whitespace-nowrap ps-[18px]",
-              // Drop columns instead of squeezing them. Text cannot scale below
-              // its own size the way the image heroes on comparable landing
-              // pages do, so three tracks inside a 375px column leave ~100px
-              // each and every pair truncates to "sleep_score…" with the value
-              // — the actual content — clipped away. One column at phone
-              // widths, two by 640, all three from 768.
-              // The breakpoints are on the CONTAINER, not the viewport,
-              // because the hero column's width is not a function of viewport
-              // width alone: the front door splits its container in two, so
-              // this column measures 325px at 375, peaks at 707px around 768,
-              // and settles at 540px from 1440 up. A viewport-keyed rule got
-              // that backwards — at 1024 each stream was 128px, narrower than
-              // at 768, and 22 rows truncated.
-              //
-              // Thresholds come from the width a pair actually needs, measured
-              // rather than estimated: the widest rendered row is 123px at
-              // 12px mono, plus the 18px inline padding, so a track needs
-              // ~141px. Two fit above 300px of container, three above 440 —
-              // and the container is 540px from 1440 up, so all three survive
-              // on desktop instead of the block stranding in the middle third.
-              colIndex === 1 && "@[300px]:block hidden",
-              colIndex === 2 && "@[440px]:block hidden"
-            )}
-            key={stream[0]?.[0] ?? colIndex}
-          >
+          <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap ps-[18px]" key={stream[0]?.[0] ?? colIndex}>
             <div
               className={cn(
                 "motion-safe:will-change-transform motion-reduce:-translate-y-1/2",

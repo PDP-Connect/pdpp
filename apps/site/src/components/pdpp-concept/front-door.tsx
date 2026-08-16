@@ -114,23 +114,18 @@ export function PdppFrontDoor() {
           </div>
         </div>
 
-        {/* RHS — the viz scales with the column, not just the viewport height;
-            stacks under LHS below lg.
+        {/* RHS — shorter when stacked, full height beside the copy on lg+.
 
-            Height was clamp(260px, 36vh, 380px), keyed to viewport HEIGHT
-            alone, so a column 325px wide and one 707px wide were both 380px
-            tall and the block's aspect ratio wandered from 0.86 to 1.86 —
-            nearly square on a phone, a wide letterbox at 768. Reference hero
-            visuals scale in both dimensions (measured 2026-08-15: Tailscale
-            521->294px tall as width narrows, MCP 263->213, OpenTelemetry
-            250->123). Adding a width term lets it shorten as the column
-            narrows; the vh term stays so it can never crowd a short viewport,
-            and the 260px floor keeps enough rows for the drift to read. */}
+            Below lg this block sits UNDER the copy at full width, so its
+            height is pure vertical cost: at 380px it pushed the fold well past
+            the CTAs on a phone. Beside the copy on lg+ it costs nothing extra,
+            because the copy column is taller than it is. Same columns and same
+            drift at every width — only the height changes. */}
         <div className="flex min-h-0 min-w-0 flex-col">
-          <div className="@container min-h-0 flex-1 p-5 max-lg:px-0">
+          <div className="min-h-0 flex-1 p-5 max-lg:px-0">
             <div
               aria-hidden="true"
-              className="pointer-events-none h-[clamp(240px,min(36vh,52cqw),380px)] w-full min-w-0"
+              className="pointer-events-none h-[clamp(160px,22vh,220px)] w-full min-w-0 lg:h-[clamp(260px,36vh,380px)]"
             >
               <PdppHeroWaterStill />
             </div>
