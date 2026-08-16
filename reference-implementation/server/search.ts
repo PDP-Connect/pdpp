@@ -50,6 +50,7 @@ import {
 } from "../operations/rs-search-lexical/index.ts";
 import {
   listActiveOwnerBindingsForConnectors,
+  resolveCanonicalConnectorInstanceIdsForBindings,
   resolveDisplayNamesForBindings,
   resolveFanInBindings,
 } from "./connection-identity.ts";
@@ -2273,6 +2274,27 @@ async function buildSnapshot({
   // Round-robin merge across connectors, preserving each connector's
   // intra-list relevance order.
   const merged = roundRobinMerge(perConnectorHits);
+
+  // Attribute each hit to its canonical connector-instance identity before
+  // display-name resolution, so a grouped fragment's hit reports the SAME
+  // connection identity Sources/Explore show for that logical account
+  // (account-unification wiring; resolves via a single bounded owner-group
+  // preload, never a per-hit DB round trip). Ungrouped hits are unaffected
+  // (identity function). Owner-mode only: client/grant-scoped search reads
+  // resolve identity through the grant's own binding set, not this owner
+  // preload.
+  if (isOwner) {
+    const canonicalIds = await resolveCanonicalConnectorInstanceIdsForBindings({
+      connectorInstanceIds: merged.map((hit) => hit.connectorInstanceId ?? null),
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    });
+    for (const hit of merged) {
+      const canonicalId = hit.connectorInstanceId ? canonicalIds.get(hit.connectorInstanceId) : undefined;
+      if (canonicalId) {
+        hit.connectorInstanceId = canonicalId;
+      }
+    }
+  }
 
   // Decorate each hit with the owner-facing display_name when the store has
   // a non-placeholder label for the binding. Lookups are deduped per

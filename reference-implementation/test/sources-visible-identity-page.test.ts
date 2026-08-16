@@ -16,8 +16,26 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { exec } from "../lib/db.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
+import { referenceQueries } from "../server/queries/index.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+
+function groupFragment(
+  connectorInstanceId: string,
+  canonicalConnectorInstanceId: string,
+  ownerSubjectId: string
+): void {
+  exec(referenceQueries.connectorInstanceGroupsUpsert, [
+    connectorInstanceId,
+    canonicalConnectorInstanceId,
+    ownerSubjectId,
+    "proven_subset",
+    "{}",
+    "test-actor",
+    "2026-08-15T12:00:00.000Z",
+  ]);
+}
 
 const NOW = "2026-06-10T18:00:00.000Z";
 
@@ -173,6 +191,78 @@ test("listSourcesVisibleIdentityPage keeps hasMore/pagination correct when hidde
       ["cin_visible"]
     );
     assert.equal(singleRowPage.hasMore, false);
+  } finally {
+    closeDb();
+  }
+});
+
+test("listSourcesVisibleIdentityPage excludes a grouped fragment (account-unification canonicalization), keeping only the canonical row; listOwnerVisibleIdentityPage still returns both and reports canonicalConnectorInstanceId", () => {
+  initDb();
+  try {
+    seedSqliteConnector("amazon");
+    seedSqliteConnector("github");
+    const store = createSqliteConnectorInstanceStore();
+
+    store.upsert({
+      connectorId: "amazon",
+      connectorInstanceId: "cin_amazon_canonical",
+      createdAt: NOW,
+      displayName: "Amazon",
+      ownerSubjectId: "owner_3",
+      sourceBindingKey: "default",
+      sourceKind: "account",
+      status: "paused",
+      updatedAt: NOW,
+    });
+    store.upsert({
+      connectorId: "amazon",
+      connectorInstanceId: "cin_amazon_fragment",
+      createdAt: NOW,
+      displayName: "Amazon",
+      ownerSubjectId: "owner_3",
+      sourceBindingKey: "amazon_fragment",
+      sourceKind: "account",
+      status: "paused",
+      updatedAt: NOW,
+    });
+    // GitHub-shape unresolved-identity sibling: shares nothing with the
+    // grouping above and must remain fully independent on every surface.
+    store.upsert({
+      connectorId: "github",
+      connectorInstanceId: "cin_github_unresolved",
+      createdAt: NOW,
+      displayName: "GitHub",
+      ownerSubjectId: "owner_3",
+      sourceBindingKey: "default",
+      sourceKind: "account",
+      status: "paused",
+      updatedAt: NOW,
+    });
+    groupFragment("cin_amazon_fragment", "cin_amazon_canonical", "owner_3");
+
+    const sourcesPage = store.listSourcesVisibleIdentityPage("owner_3", { limit: 100 });
+    assert.deepEqual(
+      sourcesPage.rows.map((row) => row.connectorInstanceId).sort(),
+      ["cin_amazon_canonical", "cin_github_unresolved"],
+      "the grouped fragment never renders its own Sources row; only its canonical sibling does"
+    );
+
+    const explorePage = store.listOwnerVisibleIdentityPage("owner_3", { limit: 100 });
+    assert.deepEqual(
+      explorePage.rows.map((row) => row.connectorInstanceId).sort(),
+      ["cin_amazon_canonical", "cin_amazon_fragment", "cin_github_unresolved"],
+      "Explore's facet listing keeps returning every row, fragments included"
+    );
+    const fragmentRow = explorePage.rows.find((row) => row.connectorInstanceId === "cin_amazon_fragment");
+    const canonicalRow = explorePage.rows.find((row) => row.connectorInstanceId === "cin_amazon_canonical");
+    const githubRow = explorePage.rows.find((row) => row.connectorInstanceId === "cin_github_unresolved");
+    assert.equal(fragmentRow?.canonicalConnectorInstanceId, "cin_amazon_canonical");
+    assert.equal(canonicalRow?.canonicalConnectorInstanceId, "cin_amazon_canonical");
+    assert.equal(
+      githubRow?.canonicalConnectorInstanceId,
+      "cin_github_unresolved",
+      "an ungrouped row's canonical id is itself (identity function)"
+    );
   } finally {
     closeDb();
   }
