@@ -46,7 +46,7 @@
 import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 
-interface MappingEntry {
+export interface MappingEntry {
   canonicalConnectorInstanceId: string | null;
   connectorInstanceId: string;
   evidence: Record<string, unknown>;
@@ -148,10 +148,20 @@ async function fragmentHasLiveSyncState(pool: Pool, connectorInstanceId: string)
  *   - the fragment IS the canonical row (self-grouping)
  *   - the canonical row is itself already a grouped fragment (no transitive
  *     chains -- a canonical id must be a terminal identity)
+ *   - the fragment's own status is 'active' (an active connector_instances row
+ *     is exactly the row `listActiveByConnector` -- the grant-scoped/records
+ *     fan-in enumerator -- surfaces as a live, readable binding; grouping it
+ *     would not stop that enumeration, since canonicalization is applied at
+ *     search's/Sources'/Explore's result-shaping boundary, not inside
+ *     `listActiveByConnector` itself. Refusing here closes the one live-status
+ *     shape the read-side wiring cannot cover today: a grouped-but-still-
+ *     'active' fragment would keep enumerating under its own raw id for any
+ *     grant-scoped RECORDS read (not search), even though search/Sources/
+ *     Explore would already show it grouped.)
  *   - the fragment carries live credentials or an enabled schedule (grouping
  *     it would silently orphan real sync state)
  */
-async function applyMapping(
+export async function applyMapping(
   pool: Pool,
   entry: MappingEntry,
   { apply, actor, now }: { apply: boolean; actor: string; now: string }
@@ -230,6 +240,16 @@ async function applyMapping(
       canonicalConnectorInstanceId: canonicalId,
       connectorInstanceId: entry.connectorInstanceId,
       detail: `Refused: '${canonicalId}' is itself a grouped fragment; canonical targets must be terminal (no transitive chains).`,
+      outcome: "refused",
+      reason: entry.reason,
+    };
+  }
+
+  if (fragment.status === "active") {
+    return {
+      canonicalConnectorInstanceId: canonicalId,
+      connectorInstanceId: entry.connectorInstanceId,
+      detail: `Refused: fragment '${entry.connectorInstanceId}' is status 'active'; grouping an active row would leave it enumerable under its own id by grant-scoped records reads (canonicalization is applied at search/Sources/Explore's read boundary, not inside the active-connector-instance enumerator). Revoke or pause the fragment first if it is genuinely a duplicate.`,
       outcome: "refused",
       reason: entry.reason,
     };
@@ -366,7 +386,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+// Guarded so this module is import-safe for `applyMapping`'s own unit tests
+// (test/connector-instance-groups-migrate.test.ts) — only run the CLI body
+// when this file is the process entry point, not merely imported.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}
