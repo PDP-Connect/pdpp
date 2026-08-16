@@ -14,6 +14,11 @@
  */
 
 import { projectStorageDisplayName, resolveRequestConnectionId } from "./connection-id-request.ts";
+import {
+  loadOwnerConnectorInstanceGroupsPostgres,
+  loadOwnerConnectorInstanceGroupsSqlite,
+  resolveCanonicalConnectorInstanceId,
+} from "./connector-instance-canonicalization.ts";
 import { isPostgresStorageBackend } from "./postgres-storage.ts";
 import {
   createPostgresConnectorInstanceStore,
@@ -135,6 +140,38 @@ export async function resolveDisplayNamesForBindings(
 }
 
 /**
+ * Resolve each distinct `connectorInstanceId` among `bindings` to its
+ * canonical connector-instance id, for surfaces (lexical/semantic search)
+ * that attribute a hit to a raw connector_instance_id today and must instead
+ * report the canonical identity for a grouped fragment. One bounded owner
+ * group preload per call (never a per-row DB round trip), mirroring
+ * `resolveDisplayNamesForBindings`'s dedup-then-batch shape. Ungrouped ids
+ * resolve to themselves (the resolver's identity-function guarantee).
+ */
+export async function resolveCanonicalConnectorInstanceIdsForBindings({
+  ownerSubjectId,
+  connectorInstanceIds,
+}: {
+  ownerSubjectId: string;
+  connectorInstanceIds: readonly (string | null | undefined)[];
+}): Promise<Map<string, string>> {
+  const distinct = [
+    ...new Set(connectorInstanceIds.filter((id): id is string => typeof id === "string" && id.length > 0)),
+  ];
+  const out = new Map<string, string>();
+  if (distinct.length === 0) {
+    return out;
+  }
+  const groups = isPostgresStorageBackend()
+    ? await loadOwnerConnectorInstanceGroupsPostgres(ownerSubjectId)
+    : loadOwnerConnectorInstanceGroupsSqlite(ownerSubjectId);
+  for (const id of distinct) {
+    out.set(id, resolveCanonicalConnectorInstanceId(id, groups));
+  }
+  return out;
+}
+
+/**
  * Typed error emitted by record-detail / blob-read when an addressed
  * identifier resolves to more than one connection under the caller's grant.
  *
@@ -192,6 +229,21 @@ export function projectBindingForWire(
  * List all active connector_instances for a connector under an owner. Awaits
  * an async-or-sync store result so callers can use one shape regardless of
  * SQLite vs Postgres backend.
+ *
+ * Deliberately does NOT canonicalize `connectorInstanceId` here: every
+ * binding this returns still points at a REAL, independently-indexed
+ * storage binding (its own lexical/semantic index rows, its own record
+ * rows) that a caller must query as-is — collapsing a fragment's id to its
+ * canonical sibling's id at this enumeration step would make the fan-in
+ * plan query the canonical binding's storage twice (once for the real
+ * canonical entry, once for the rewritten fragment) while never reading the
+ * fragment's own indexed content. Callers that need canonical-identity
+ * ATTRIBUTION on their output (not on which storage they read) resolve it
+ * at their own result-shaping boundary instead — see
+ * `resolveCanonicalConnectorInstanceIdsForBindings` and its call sites in
+ * `server/search.ts` / `server/search-semantic.ts` (`buildSnapshot`), which
+ * rewrite each HIT's `connectorInstanceId` after the real per-binding query
+ * already ran.
  */
 export async function listActiveBindingsForGrant({
   ownerSubjectId,

@@ -2,9 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
+import {
+  type ConnectorInstanceGroupRow,
+  loadOwnerConnectorInstanceGroupsPostgres,
+  loadOwnerConnectorInstanceGroupsSqlite,
+  resolveCanonicalConnectorInstanceId,
+} from "../connector-instance-canonicalization.ts";
 
 // Type definitions
 interface ConnectorInstance {
+  // Present only on rows returned by `listOwnerVisibleIdentityPage` (Explore's
+  // facet listing), which preloads the owner's `connector_instance_groups` map
+  // and resolves each row through `resolveCanonicalConnectorInstanceId`.
+  // Identity function (equal to `connectorInstanceId`) for an ungrouped row or
+  // any other read path that does not pass a group map into `mapInstance`.
+  canonicalConnectorInstanceId?: string;
   connectorId: string;
   connectorInstanceId: string;
   createdAt?: string;
@@ -443,6 +455,10 @@ WHERE owner_subject_id = ?
     OR json_extract(source_binding_json, '$.latest_uat_source_instance_id') IS NOT NULL
     OR json_extract(source_binding_json, '$.recovery_reason') IS 'uat_record_transfer'
   )
+  AND NOT EXISTS (
+    SELECT 1 FROM connector_instance_groups
+    WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
+  )
   AND (
     ? IS NULL
     OR connector_id > ?
@@ -770,13 +786,36 @@ function normalizeRecord(record: ConnectorInstanceUpsertRecord): NormalizedConne
   };
 }
 
+// Preloaded, request-scoped default: `mapInstance` never issues a per-row DB
+// round trip to resolve canonicalization. Callers with owner context (e.g.
+// `listOwnerVisibleIdentityPage`) pass an owner-preloaded map (see
+// `loadOwnerConnectorInstanceGroups{Sqlite,Postgres}`); every other call site
+// (point lookups, delete flows, other list surfaces) passes nothing and gets
+// this shared empty map, so `canonicalConnectorInstanceId` resolves to the
+// identity function unless a caller opts in.
+const EMPTY_CONNECTOR_INSTANCE_GROUPS: ReadonlyMap<string, ConnectorInstanceGroupRow> = new Map();
+
 function mapInstance(row: ConnectorInstanceRow | null): ConnectorInstance | null;
 function mapInstance(row: ConnectorInstanceRow): ConnectorInstance;
 function mapInstance(row: ConnectorInstanceRow | null): ConnectorInstance | null {
   if (!row) {
     return null;
   }
+  return mapInstanceWithGroups(row, EMPTY_CONNECTOR_INSTANCE_GROUPS);
+}
+
+// `mapInstance` variant that resolves `canonicalConnectorInstanceId` through a
+// preloaded owner group map, rather than the shared empty default. Kept as a
+// distinct name (not an optional second parameter on `mapInstance`) because
+// `mapInstance` is used bare as an `Array.prototype.map` callback throughout
+// this file, and `Array.map` would otherwise pass its numeric index as that
+// second argument.
+function mapInstanceWithGroups(
+  row: ConnectorInstanceRow,
+  groups: ReadonlyMap<string, ConnectorInstanceGroupRow>
+): ConnectorInstance {
   return {
+    canonicalConnectorInstanceId: resolveCanonicalConnectorInstanceId(row.connector_instance_id, groups),
     connectorId: row.connector_id,
     connectorInstanceId: row.connector_instance_id,
     createdAt: row.created_at,
@@ -1595,7 +1634,8 @@ export function createSqliteConnectorInstanceStore() {
       // call site below.
       const rows = Array.from(iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(sql, params));
       const hasMore = rows.length > limit;
-      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+      const groups = loadOwnerConnectorInstanceGroupsSqlite(ownerSubjectId);
+      return { hasMore, rows: rows.slice(0, limit).map((row) => mapInstanceWithGroups(row, groups)) };
     },
 
     // Sources-page-only sibling of `listOwnerVisibleIdentityPage`: excludes a
@@ -2014,6 +2054,10 @@ WHERE owner_subject_id = $1
     OR source_binding_json->>'latest_uat_source_instance_id' IS NOT NULL
     OR source_binding_json->>'recovery_reason' = 'uat_record_transfer'
   )
+  AND NOT EXISTS (
+    SELECT 1 FROM connector_instance_groups
+    WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
+  )
   AND (
     $3::text IS NULL
     OR connector_id > $4
@@ -2405,7 +2449,8 @@ export function createPostgresConnectorInstanceStore() {
       const result = await postgresQuery(sql, params);
       const rows = result.rows as ConnectorInstanceRow[];
       const hasMore = rows.length > limit;
-      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+      const groups = await loadOwnerConnectorInstanceGroupsPostgres(ownerSubjectId);
+      return { hasMore, rows: rows.slice(0, limit).map((row) => mapInstanceWithGroups(row, groups)) };
     },
 
     // Postgres mirror of the SQLite `listSourcesVisibleIdentityPage` arm

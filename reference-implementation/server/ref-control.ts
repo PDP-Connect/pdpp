@@ -137,6 +137,11 @@ import {
 } from "./connector-gap-classification.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
 import {
+  loadOwnerConnectorInstanceGroupsPostgres,
+  loadOwnerConnectorInstanceGroupsSqlite,
+  resolveCanonicalConnectorInstanceId,
+} from "./connector-instance-canonicalization.ts";
+import {
   type HeartbeatRow,
   projectConnectorOutboxAxisFromHeartbeats,
   projectLocalDeviceProgress,
@@ -7880,6 +7885,26 @@ async function resolveOwnerVisibleConnectionForRoute(routeId: string): Promise<C
   // browser-enrollment-shell/static-secret-draft/manual-upload-draft row is
   // hidden from every owner-visible read surface, not just the list.
   if (exact && exact.ownerSubjectId === REFERENCE_OWNER_SUBJECT_ID && isOwnerVisibleConnectorInstance(exact)) {
+    // A grouped fragment's own source-detail route resolves to its canonical
+    // sibling's row (one logical account, one detail page) rather than
+    // rendering the fragment's own identity/evidence — mirrors the Sources
+    // list's exclusion (`listSourcesVisibleIdentityPage`) so a bookmarked or
+    // typed `/sources/<fragment-id>` URL lands on the same connection Sources
+    // shows, instead of a page Sources never links to.
+    const groups = isPostgresStorageBackend()
+      ? await loadOwnerConnectorInstanceGroupsPostgres(REFERENCE_OWNER_SUBJECT_ID)
+      : loadOwnerConnectorInstanceGroupsSqlite(REFERENCE_OWNER_SUBJECT_ID);
+    const canonicalId = resolveCanonicalConnectorInstanceId(exact.connectorInstanceId, groups);
+    if (canonicalId !== exact.connectorInstanceId) {
+      const canonical = await Promise.resolve(store.get(canonicalId));
+      if (
+        canonical &&
+        canonical.ownerSubjectId === REFERENCE_OWNER_SUBJECT_ID &&
+        isOwnerVisibleConnectorInstance(canonical)
+      ) {
+        return { match: canonical as unknown as ConnectorInstanceRow, matchCount: 1 };
+      }
+    }
     return { match: exact as unknown as ConnectorInstanceRow, matchCount: 1 };
   }
   // Not an exact connector_instance_id (or owned by a different subject —
