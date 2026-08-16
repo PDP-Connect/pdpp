@@ -114,10 +114,24 @@ export function PdppFrontDoor() {
           </div>
         </div>
 
-        {/* RHS — fixed viz height at every width; stacks under LHS below lg */}
+        {/* RHS — the viz scales with the column, not just the viewport height;
+            stacks under LHS below lg.
+
+            Height was clamp(260px, 36vh, 380px), keyed to viewport HEIGHT
+            alone, so a column 325px wide and one 707px wide were both 380px
+            tall and the block's aspect ratio wandered from 0.86 to 1.86 —
+            nearly square on a phone, a wide letterbox at 768. Reference hero
+            visuals scale in both dimensions (measured 2026-08-15: Tailscale
+            521->294px tall as width narrows, MCP 263->213, OpenTelemetry
+            250->123). Adding a width term lets it shorten as the column
+            narrows; the vh term stays so it can never crowd a short viewport,
+            and the 260px floor keeps enough rows for the drift to read. */}
         <div className="flex min-h-0 min-w-0 flex-col">
-          <div className="min-h-0 flex-1 p-5 max-lg:px-0">
-            <div aria-hidden="true" className="pointer-events-none h-[clamp(260px,36vh,380px)] w-full min-w-0">
+          <div className="@container min-h-0 flex-1 p-5 max-lg:px-0">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none h-[clamp(240px,min(36vh,52cqw),380px)] w-full min-w-0"
+            >
               <PdppHeroWaterStill />
             </div>
           </div>
