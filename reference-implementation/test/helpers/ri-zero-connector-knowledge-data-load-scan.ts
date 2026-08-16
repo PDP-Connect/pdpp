@@ -214,6 +214,14 @@ const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
   // inspection: `path` here is never derived from a connector_id/stream, only
   // from an env var with a fixed /var/lib/pdpp-relative default.
   "reference-implementation/server/version-disposition.ts:238",
+  // loadMappings(path) in connector-instance-groups-migrate.ts: readFileSync(path, "utf8")
+  // where `path` is the operator's own CLI positional argument (the grouping
+  // mappings JSON file), the same class of call this allowlist already
+  // covers (cache.ts:125, common.ts:35 above) -- an explicit CLI-supplied
+  // file path, never a connector-identity path. The mapping file's CONTENT is
+  // owner/operator-authored evidence about connector_instance_id groupings
+  // (opaque ids), not connector/provider policy data.
+  "reference-implementation/scripts/connector-instance-groups-migrate.ts:89",
 ]);
 
 /** Directory segments, relative to a production scan root (e.g. `server/`),
