@@ -38,7 +38,6 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/collector-registry.ts";
 import {
   buildConnectScopeRequest,
   type ConnectScopeChoice,
@@ -49,6 +48,7 @@ import {
 } from "../src/connect-scope.ts";
 import { resolveCollectorQueuePath } from "../src/durable-state.ts";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
+import { LOCAL_COLLECTOR_DEFINITIONS } from "../src/generated/collector-definitions.generated.ts";
 import {
   type BundledConnectorEntry,
   type BundledConnectorRegistry,
@@ -87,9 +87,17 @@ import {
  * Composition root: the generic runtime knows no connectors; here we inject
  * the connector-owned {@link LOCAL_COLLECTOR_DEFINITIONS} to obtain the
  * runnable, id-keyed registry the CLI resolves `--connector <id>` against.
- * Adding a filesystem-class connector to the bundle is a one-line change in
- * `@pdpp/polyfill-connectors/collectors` — this file and the runtime do not
- * change.
+ *
+ * `LOCAL_COLLECTOR_DEFINITIONS` is imported from this package's own
+ * generated snapshot (`src/generated/collector-definitions.generated.ts`),
+ * not from `@pdpp/polyfill-connectors` directly — this package must not
+ * carry a source dependency on the content package. The snapshot is
+ * regenerated from `@pdpp/polyfill-connectors`'s
+ * `LOCAL_COLLECTOR_DEFINITIONS` (see that script's header for the update
+ * path) and a drift test keeps it from going stale. Adding a
+ * filesystem-class connector to the bundle is a change in
+ * `@pdpp/polyfill-connectors/src/collector-registry.ts` followed by
+ * regenerating the snapshot — this file and the runtime do not change.
  */
 export const BUNDLED_CONNECTORS: BundledConnectorRegistry = createBundledConnectorRegistry(LOCAL_COLLECTOR_DEFINITIONS);
 
