@@ -1,3 +1,0 @@
-# Build output. Not tracked by git; consumers that need compiled JS run
-# `pnpm build` (wired into `prepare`/`prepack`).
-/dist/

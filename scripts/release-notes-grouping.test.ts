@@ -10,14 +10,21 @@ import { fileURLToPath } from "node:url";
 import createPreset from "conventional-changelog-conventionalcommits";
 
 // Task 6.3 — Conventional Commit scope grouping for the shared semantic-release
-// stream. Both @pdpp/cli and @pdpp/local-collector publish from one version,
-// so per-scope sections inside the shared release notes are the contract we
-// guarantee. This test exercises the same `presetConfig.types` block that
-// `.releaserc.yaml` feeds into `@semantic-release/release-notes-generator`,
+// stream. @pdpp/cli, @pdpp/mcp-server, and @pdpp/read-core publish from one
+// version, so per-scope sections inside the shared release notes are the
+// contract we guarantee. This test exercises the same `presetConfig.types`
+// block that `.releaserc.yaml` feeds into `@semantic-release/release-notes-generator`,
 // so any drift between the lockstep config in YAML and the contract this test
 // asserts surfaces immediately. See openspec/changes/publish-pdpp-local-collector/design.md §5.
+//
+// @pdpp/local-collector no longer publishes from this repo (its package
+// moved to data-connect, and publishing responsibility moved with it), but
+// its scope sections stay in .releaserc.yaml so historical commits made
+// while it did publish here still render into a readable section instead of
+// falling back to a generic one. The local-collector assertions below keep
+// covering that retained-for-history config, not an active publish target.
 
-const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 
 async function loadReleasercTypes() {
   const yaml = await readFile(new URL(".releaserc.yaml", `file://${repoRoot}`), "utf8");
