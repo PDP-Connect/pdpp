@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -324,6 +324,80 @@ test("release publishes immutable images before semantic-release, then promotes 
   assert.match(promote, /imagetools inspect[\s\S]*\$\{PDPP_IMAGE\}:\$\{VERSION\}/);
   assert.match(promote, /\$\{PDPP_IMAGE\}:latest/);
   assert.doesNotMatch(promote, /docker\/build-push-action/);
+});
+
+// The defect this guards: semantic-release creates a `v<version>` git tag, and
+// docker-images.yml was ALSO triggered by `tags: ["v*"]` with a publish job
+// gated on `startsWith(github.ref, 'refs/tags/v')` that wrote
+// `type=raw,value=latest`. That made two independent publishers of `latest` for
+// one release — promote-release-images copying the immutable candidate manifest,
+// and docker-images.yml rebuilding from source. Whichever finished last won, so
+// `latest` could end up as freshly-built bytes that no immutable tag points at,
+// silently breaking the "latest is the same bytes as the version tag" contract.
+//
+// Today the tag push happens to come from GITHUB_TOKEN, which GitHub does not
+// let trigger new workflow runs — so the race is currently masked. That is a
+// token-suppression side effect, not a design guarantee: a hand-pushed tag, a
+// re-tag, or swapping in a PAT/GitHub App token unmasks it immediately. This
+// asserts the single-owner property structurally instead of relying on it.
+//
+// Scoped to every workflow, not just docker-images.yml, so a NEW workflow can't
+// reintroduce an independent v*-triggered publisher either.
+test("no workflow other than semantic-release can publish the latest channel tag", () => {
+  const workflowDir = path.join(repoRoot, ".github", "workflows");
+  const workflowNames = readdirSync(workflowDir).filter((name) => /\.ya?ml$/.test(name));
+  assert.ok(workflowNames.includes("semantic-release.yml"), "release workflow must exist");
+  assert.ok(workflowNames.includes("docker-images.yml"), "docker-images workflow must exist");
+
+  // Comments in these workflows legitimately DISCUSS `latest`, `type=semver`
+  // and the old tag gate to explain why they're forbidden. Strip comment lines
+  // so the assertions below read real configuration, not prose about it.
+  const withoutComments = (workflow: string): string =>
+    workflow
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+
+  for (const name of workflowNames) {
+    const config = withoutComments(read(path.join(".github", "workflows", name)));
+
+    // A `v*` tag trigger is what wired the tag push into a second publisher.
+    // Not even the release workflow may carry one: it would re-enter itself on
+    // the very tag it creates. It drives everything from its own `main` push.
+    assert.doesNotMatch(config, /^\s*tags:\s*\[?\s*["']?v\*/m, `${name} must not be triggered by v* tags`);
+
+    if (name === "semantic-release.yml") continue;
+
+    // No non-release workflow may name `latest` as a tag to write, whether as a
+    // raw metadata-action tag or a literal registry reference.
+    assert.doesNotMatch(config, /type=raw,value=latest/, `${name} must not write the latest tag`);
+    assert.doesNotMatch(config, /:latest\b/, `${name} must not reference a latest image tag`);
+
+    // `type=semver` only ever resolves on a tag ref. Its presence means someone
+    // is reintroducing tag-driven release publishing here.
+    assert.doesNotMatch(config, /type=semver/, `${name} must not derive semver release tags`);
+
+    // The stale gate that made the tag-triggered publish job run at all.
+    assert.doesNotMatch(
+      config,
+      /startsWith\(github\.ref, 'refs\/tags\/v'\)/,
+      `${name} must not gate work on a v* tag ref`,
+    );
+  }
+
+  // docker-images.yml keeps its useful PR/main validation and an explicit
+  // manual diagnostic publish - the point is that neither can touch `latest`.
+  const dockerWorkflow = withoutComments(read(".github/workflows/docker-images.yml"));
+  assert.match(dockerWorkflow, /pull_request:/, "PR validation must survive");
+  assert.match(dockerWorkflow, /branches: \[main\]/, "main-push validation must survive");
+  assert.match(dockerWorkflow, /^\s+publish:$/m, "the manual diagnostic publish path must survive");
+  assert.match(
+    dockerWorkflow,
+    /^\s+publish:\n(?:.*\n)*?\s+if: github\.event_name == 'workflow_dispatch'\n/m,
+    "the diagnostic publish must be reachable only by manual dispatch",
+  );
+  // Its one published tag is immutable and namespaced away from release tags.
+  assert.match(dockerWorkflow, /type=sha,prefix=dispatch-sha-/);
 });
 
 test("Railway handoff wires the runnable GHCR public-image probe into the publish gate", () => {
