@@ -56,14 +56,14 @@ test("buildCollectorStartMessage can request explicit stream backfills", () => {
 test("buildTerminalCollectionFacts preserves raw coverage statuses without inventing a local policy", () => {
   const facts = buildTerminalCollectionFacts(
     new Map([
-      ["messages-store", { stream: "messages", status: "collected" }],
-      ["rules-store", { stream: "rules", status: "deferred" }],
-      ["rules-shadow", { stream: "rules", status: "unaccounted" }],
+      ["messages-store", { status: "collected", stream: "messages" }],
+      ["rules-store", { status: "deferred", stream: "rules" }],
+      ["rules-shadow", { status: "unaccounted", stream: "rules" }],
     ])
   );
   assert.deepEqual(facts, [
-    { stream: "messages", coverage_statuses: ["collected"] },
-    { stream: "rules", coverage_statuses: ["deferred", "unaccounted"] },
+    { coverage_statuses: ["collected"], stream: "messages" },
+    { coverage_statuses: ["deferred", "unaccounted"], stream: "rules" },
   ]);
 });
 
@@ -72,7 +72,9 @@ test("buildCollectorStartMessage can scope a stream to explicit resources", () =
     messages: ["C07JYF0U8BY"],
   });
   assert.deepEqual(start, {
-    scope: { streams: [{ name: "messages", resources: ["C07JYF0U8BY"] }, { name: "users" }] },
+    scope: {
+      streams: [{ name: "messages", resources: ["C07JYF0U8BY"] }, { name: "users" }],
+    },
     type: "START",
   });
 });
@@ -164,7 +166,10 @@ test("runCollectorConnector gives changed emitted_at records a distinct local ba
     assert.ok(batch, "expected one ingested batch");
     assert.equal(typeof batch.batch_id, "string");
     assert.equal(typeof batch.body_hash, "string");
-    return { batchId: batch.batch_id as string, bodyHash: batch.body_hash as string };
+    return {
+      batchId: batch.batch_id as string,
+      bodyHash: batch.body_hash as string,
+    };
   };
 
   try {
@@ -473,7 +478,10 @@ test("checkpoint PUT failure keeps the committed-run cursor durable and a later 
       process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 0 }) + "\\n");
     `,
   });
-  const failedHarness = await startCollectorHarness({ priorState: {}, stateWriteStatus: 503 });
+  const failedHarness = await startCollectorHarness({
+    priorState: {},
+    stateWriteStatus: 503,
+  });
   try {
     const failed = await runCollectorConnector({
       baseUrl: failedHarness.url,
@@ -517,7 +525,9 @@ test("checkpoint PUT failure keeps the committed-run cursor durable and a later 
     assert.equal(recovered.statePutFailed, false);
     const puts = recoveredHarness.stateOps.filter((operation) => operation.method === "PUT");
     assert.ok(puts.length >= 1, "the later runner must commit the durable predecessor checkpoint");
-    assert.deepEqual(puts[0]?.body, { state: { messages: "cursor-after-put-failure" } });
+    assert.deepEqual(puts[0]?.body, {
+      state: { messages: "cursor-after-put-failure" },
+    });
   } finally {
     await recoveredHarness.close();
   }
@@ -539,7 +549,9 @@ test("runCollectorConnector auto-prunes over-retention succeeded rows after a cl
   const harness = await startCollectorHarness({ priorState: {} });
   try {
     const queuePath = await tempQueuePath();
-    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const fixture = await writeFixtureConnector({
+      script: ONE_RECORD_CONNECTOR_SCRIPT,
+    });
     const baseConfig = {
       // Keep only the single most-recent succeeded row. The bound is count-only
       // — no age floor — so even the second pass's freshly-acknowledged batch
@@ -606,7 +618,9 @@ test("runCollectorConnector reports the build-derived agent version on every hea
   const harness = await startCollectorHarness({});
   try {
     const queuePath = await tempQueuePath();
-    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const fixture = await writeFixtureConnector({
+      script: ONE_RECORD_CONNECTOR_SCRIPT,
+    });
     const result = await runCollectorConnector({
       baseUrl: harness.url,
       connector: {
@@ -647,7 +661,9 @@ test("runCollectorConnector leaves succeeded rows intact when auto-prune is disa
   const harness = await startCollectorHarness({ priorState: {} });
   try {
     const queuePath = await tempQueuePath();
-    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const fixture = await writeFixtureConnector({
+      script: ONE_RECORD_CONNECTOR_SCRIPT,
+    });
     const baseConfig = {
       // Disabled despite an aggressive count bound that would otherwise prune.
       autoPrune: { enabled: false, keepRecentCount: 0 },
@@ -690,7 +706,9 @@ test("runCollectorConnector under the default policy retains a clean run's ackno
   const harness = await startCollectorHarness({ priorState: {} });
   try {
     const queuePath = await tempQueuePath();
-    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const fixture = await writeFixtureConnector({
+      script: ONE_RECORD_CONNECTOR_SCRIPT,
+    });
     // No autoPrune override → default policy (keep the most-recent 10,000).
     // A single clean run's one acknowledged batch is well inside the cap.
     const result = await runCollectorConnector({
@@ -786,8 +804,18 @@ test("drainCollectorQueue marks sent and preserves retryable failures", async ()
     ],
     sourceInstanceId: "src-1",
   });
-  await queue.enqueue({ batchId: "batch-1", batchSeq: 1, records, sourceInstanceId: "src-1" });
-  await queue.enqueue({ batchId: "batch-2", batchSeq: 2, records, sourceInstanceId: "src-1" });
+  await queue.enqueue({
+    batchId: "batch-1",
+    batchSeq: 1,
+    records,
+    sourceInstanceId: "src-1",
+  });
+  await queue.enqueue({
+    batchId: "batch-2",
+    batchSeq: 2,
+    records,
+    sourceInstanceId: "src-1",
+  });
 
   const sent: IngestBatchRequest[] = [];
   const client = {
@@ -817,6 +845,8 @@ test("runCollectorConnector refuses a connector requiring a binding the collecto
       runCollectorConnector({
         baseUrl: "http://127.0.0.1:1",
         connector: {
+          args: ["does-not-matter.ts"],
+          command: "tsx",
           connector_id: "fictional-quantum-runtime",
           runtime_requirements: {
             // `quantum` is not in the RuntimeBindingName set, but
@@ -831,8 +861,6 @@ test("runCollectorConnector refuses a connector requiring a binding the collecto
             },
           },
           streams: ["events"],
-          command: "tsx",
-          args: ["does-not-matter.ts"],
         },
         deviceId: "device-1",
         deviceToken: "token-1",
@@ -992,7 +1020,11 @@ function seedDeadLetteredRecordBatch(input: {
       },
       sourceInstanceId: input.sourceInstanceId,
     });
-    const [claim] = outbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId: input.sourceInstanceId });
+    const [claim] = outbox.claimReady({
+      holder: "seed",
+      leaseMs: 60_000,
+      sourceInstanceId: input.sourceInstanceId,
+    });
     assert.ok(claim, "seeded batch must be claimable");
     outbox.deadLetter({
       error: input.error,
@@ -1090,8 +1122,8 @@ test("runCollectorConnector replays prior STATE into the connector's START.state
 
 test("runCollectorConnector skips state PUT when the queue still has retrying items, preserving prior state", async () => {
   const harness = await startCollectorHarness({
-    priorState: {},
     ingestFailureMode: "always-503",
+    priorState: {},
   });
   try {
     const queuePath = await tempQueuePath();
@@ -1133,12 +1165,12 @@ test("runCollectorConnector skips state PUT when the queue still has retrying it
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      queuePath,
-      sourceInstanceId: "src-1",
       outboxPolicy: {
         maxDrainDurationMs: 2000,
         retryBackoffMs: 100,
       },
+      queuePath,
+      sourceInstanceId: "src-1",
     });
 
     // Ingest never succeeded → state must NOT have been advanced.
@@ -1156,8 +1188,8 @@ test("runCollectorConnector does not checkpoint when record work dead-letters", 
   // maxAttempts and dead-letters — a 503/device_ingest_retryable no longer
   // dead-letters purely on attempt-count exhaustion (local-ingest-backpressure-0810).
   const harness = await startCollectorHarness({
-    priorState: {},
     ingestFailureMode: "always-400",
+    priorState: {},
   });
   try {
     const queuePath = await tempQueuePath();
@@ -1522,7 +1554,10 @@ test("runCollectorConnector validates the reference route before mutating durabl
   });
   try {
     const queuePath = await tempQueuePath();
-    seedBacklogRecordBatch({ connectorId: "fixture-route-preflight", queuePath });
+    seedBacklogRecordBatch({
+      connectorId: "fixture-route-preflight",
+      queuePath,
+    });
 
     const fixture = await writeFixtureConnector({
       script: `
@@ -1627,7 +1662,10 @@ test("runCollectorConnector fails backlog-skip pass when terminal heartbeat is r
   });
   try {
     const queuePath = await tempQueuePath();
-    seedBacklogRecordBatch({ connectorId: "fixture-backlog-heartbeat-fail", queuePath });
+    seedBacklogRecordBatch({
+      connectorId: "fixture-backlog-heartbeat-fail",
+      queuePath,
+    });
 
     const fixture = await writeFixtureConnector({
       script: `
@@ -1709,7 +1747,10 @@ test("a backlog-open second pass re-enqueues nothing: the durable rows are byte-
   // local backlog is open. The sharpest proof is row identity — the prior
   // pass's durable rows (id, body_hash, insert_order) must be unchanged after
   // a second pass whose connector child, if it ran, would emit new records.
-  const harness = await startCollectorHarness({ ingestFailureMode: "always-503", priorState: {} });
+  const harness = await startCollectorHarness({
+    ingestFailureMode: "always-503",
+    priorState: {},
+  });
   try {
     const queuePath = await tempQueuePath();
     const sourceInstanceId = "src-no-reenqueue";
@@ -1751,9 +1792,12 @@ test("a backlog-open second pass re-enqueues nothing: the durable rows are byte-
     const snapshot = () => {
       const outbox = new LocalDeviceOutbox({ path: queuePath });
       try {
-        return outbox
-          .list({ sourceInstanceId })
-          .map((row) => ({ body_hash: row.body_hash, id: row.id, insert_order: row.insert_order, kind: row.kind }));
+        return outbox.list({ sourceInstanceId }).map((row) => ({
+          body_hash: row.body_hash,
+          id: row.id,
+          insert_order: row.insert_order,
+          kind: row.kind,
+        }));
       } finally {
         outbox.close();
       }
@@ -1949,7 +1993,10 @@ interface CollectorHarness {
   gapAcks: Record<string, unknown>[];
   gapRecoveries: Record<string, unknown>[];
   heartbeats: Array<{ status: string; [k: string]: unknown }>;
-  ingestedBatches: Array<{ records?: Array<{ data?: Record<string, unknown> }>; [k: string]: unknown }>;
+  ingestedBatches: Array<{
+    records?: Array<{ data?: Record<string, unknown> }>;
+    [k: string]: unknown;
+  }>;
   stateOps: Array<{ body: unknown; method: string }>;
   url: string;
 }
@@ -1973,13 +2020,15 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
       stateOps.push({ body: parsed, method });
       if (method === "GET") {
         if (options.stateReadStatus && options.stateReadStatus >= 400) {
-          res.writeHead(options.stateReadStatus, { "content-type": "application/json" });
+          res.writeHead(options.stateReadStatus, {
+            "content-type": "application/json",
+          });
           res.end(JSON.stringify({ error: { code: "synthetic" } }));
           return;
         }
         sendJson(res, 200, {
-          object: "device_source_instance_state",
           device_id: "device-1",
+          object: "device_source_instance_state",
           source_instance_id: "src-1",
           state: persistedState,
           updated_at: null,
@@ -1988,7 +2037,9 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
       }
       // PUT
       if (options.stateWriteStatus && options.stateWriteStatus >= 400) {
-        res.writeHead(options.stateWriteStatus, { "content-type": "application/json" });
+        res.writeHead(options.stateWriteStatus, {
+          "content-type": "application/json",
+        });
         res.end(JSON.stringify({ error: { code: "synthetic_state_write_failure" } }));
         return;
       }
@@ -1997,8 +2048,8 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
         persistedState = { ...persistedState, ...next };
       }
       sendJson(res, 200, {
-        object: "device_source_instance_state",
         device_id: "device-1",
+        object: "device_source_instance_state",
         source_instance_id: "src-1",
         state: persistedState,
         updated_at: new Date().toISOString(),
@@ -2010,11 +2061,16 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
       const heartbeatStatus = options.heartbeatStatuses?.[heartbeatIndex] ?? options.heartbeatStatus;
       heartbeatIndex += 1;
       if (heartbeatStatus && heartbeatStatus >= 400) {
-        res.writeHead(heartbeatStatus, { "content-type": "application/json" });
+        res.writeHead(heartbeatStatus, {
+          "content-type": "application/json",
+        });
         res.end(JSON.stringify({ error: { code: "synthetic_heartbeat_failure" } }));
         return;
       }
-      sendJson(res, 200, { object: "device_exporter_heartbeat", status: "accepted" });
+      sendJson(res, 200, {
+        object: "device_exporter_heartbeat",
+        status: "accepted",
+      });
       return;
     }
     if (url.includes("/local-collector-gaps/recovered")) {
@@ -2023,20 +2079,20 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
       const reason = typeof recovery.reason === "string" ? recovery.reason : "policy_budget";
       const stream = typeof recovery.stream === "string" ? recovery.stream : null;
       sendJson(res, 200, {
-        object: "device_local_collector_gap",
-        device_id: "device-1",
+        attempt_count: 0,
         connector_id: recovery.connector_id ?? "unknown",
         connector_instance_id: "cin_fake",
-        source_instance_id: recovery.source_instance_id ?? "src-1",
-        gap_id: "gap_fake",
-        stream: stream ? `local-collector/${reason}/${stream}` : `local-collector/${reason}`,
-        reason,
-        retryable: false,
-        status: "recovered",
-        attempt_count: 0,
+        device_id: "device-1",
         first_seen_at: null,
         first_seen_run_id: null,
+        gap_id: "gap_fake",
         last_run_id: recovery.recovered_run_id ?? null,
+        object: "device_local_collector_gap",
+        reason,
+        retryable: false,
+        source_instance_id: recovery.source_instance_id ?? "src-1",
+        status: "recovered",
+        stream: stream ? `local-collector/${reason}/${stream}` : `local-collector/${reason}`,
         updated_at: new Date().toISOString(),
       });
       return;
@@ -2047,20 +2103,20 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
       const reason = typeof ack.reason === "string" ? ack.reason : "policy_budget";
       const stream = typeof ack.stream === "string" ? ack.stream : null;
       sendJson(res, 201, {
-        object: "device_local_collector_gap",
-        device_id: "device-1",
+        attempt_count: 0,
         connector_id: ack.connector_id ?? "unknown",
         connector_instance_id: "cin_fake",
-        source_instance_id: ack.source_instance_id ?? "src-1",
-        gap_id: "gap_fake",
-        stream: stream ? `local-collector/${reason}/${stream}` : `local-collector/${reason}`,
-        reason,
-        retryable: ack.retryable ?? true,
-        status: "pending",
-        attempt_count: 0,
+        device_id: "device-1",
         first_seen_at: ack.first_seen_at ?? null,
         first_seen_run_id: ack.first_seen_run_id ?? null,
+        gap_id: "gap_fake",
         last_run_id: ack.last_run_id ?? null,
+        object: "device_local_collector_gap",
+        reason,
+        retryable: ack.retryable ?? true,
+        source_instance_id: ack.source_instance_id ?? "src-1",
+        status: "pending",
+        stream: stream ? `local-collector/${reason}/${stream}` : `local-collector/${reason}`,
         updated_at: new Date().toISOString(),
       });
       return;
@@ -2084,10 +2140,10 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
       }
       ingestedBatches.push(parsed as { records?: Array<{ data?: Record<string, unknown> }> });
       sendJson(res, 201, {
-        object: "device_ingest_batch_result",
-        status: "accepted",
         accepted_record_count: (parsed as { records?: unknown[] }).records?.length ?? 0,
+        object: "device_ingest_batch_result",
         rejected_record_count: 0,
+        status: "accepted",
       });
       return;
     }
@@ -2229,7 +2285,10 @@ test("runCollectorConnector honors AbortSignal at the pre-spawn gate", async () 
 test("recoverAndSummarizeOutbox recovers expired leases and returns a fast summary", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
   const dir = await mkdtemp(join(tmpdir(), "pdpp-recover-summary-"));
-  const outbox = new LocalDeviceOutbox({ clock: () => now, path: join(dir, "outbox.sqlite") });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => now,
+    path: join(dir, "outbox.sqlite"),
+  });
   try {
     outbox.enqueue({
       id: "src-1:record_batch:1",
@@ -2244,10 +2303,17 @@ test("recoverAndSummarizeOutbox recovers expired leases and returns a fast summa
       sourceInstanceId: "src-1",
     });
     // Lease both briefly so they expire when the clock advances.
-    outbox.claimReady({ holder: "worker-old", leaseMs: 1000, limit: 2, sourceInstanceId: "src-1" });
+    outbox.claimReady({
+      holder: "worker-old",
+      leaseMs: 1000,
+      limit: 2,
+      sourceInstanceId: "src-1",
+    });
     now = new Date("2026-05-19T12:00:05.000Z");
 
-    const { recovered, summary } = recoverAndSummarizeOutbox(outbox, { sourceInstanceId: "src-1" });
+    const { recovered, summary } = recoverAndSummarizeOutbox(outbox, {
+      sourceInstanceId: "src-1",
+    });
     assert.equal(recovered, 2);
     assert.equal(summary.ready, 2);
     assert.equal(summary.leased, 0);
@@ -2452,7 +2518,9 @@ test("runCollectorConnector caps one first-backfill scan without losing queued w
     });
     assert.equal(largerBudgetRetry.skippedScanForBacklog, false);
     assert.equal(largerBudgetRetry.scanBudgetExceeded, false);
-    assert.deepEqual(largerBudgetRetry.flushedState, { messages: "must-not-commit" });
+    assert.deepEqual(largerBudgetRetry.flushedState, {
+      messages: "must-not-commit",
+    });
   } finally {
     await harness.close();
   }
@@ -2542,7 +2610,10 @@ test("runCollectorConnector defers checkpoint until every streamed record batch 
 
 test("drainCollectorOutbox blocks checkpoint behind retry-delayed predecessors by insert order", async () => {
   const fixedClock = () => new Date("2026-05-20T12:00:00.000Z");
-  const outbox = new LocalDeviceOutbox({ clock: fixedClock, path: await tempQueuePath() });
+  const outbox = new LocalDeviceOutbox({
+    clock: fixedClock,
+    path: await tempQueuePath(),
+  });
   try {
     const record = outbox.enqueue({
       id: "zzzz-record-predecessor",
@@ -2557,7 +2628,11 @@ test("drainCollectorOutbox blocks checkpoint behind retry-delayed predecessors b
       },
       sourceInstanceId: "src-order",
     });
-    const [claim] = outbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId: "src-order" });
+    const [claim] = outbox.claimReady({
+      holder: "seed",
+      leaseMs: 60_000,
+      sourceInstanceId: "src-order",
+    });
     assert.equal(claim?.id, record.id);
     outbox.failRetryable({
       error: "temporary ingest failure",
@@ -3121,7 +3196,10 @@ test("runCollectorConnector recovers a stale-leased record batch and drains it w
     // runner's outbox (real clock, far in the future) will treat the
     // lease as expired and recover it before doing anything else.
     let setupClock = new Date("2026-05-19T12:00:00.000Z");
-    const setupOutbox = new LocalDeviceOutbox({ clock: () => setupClock, path: queuePath });
+    const setupOutbox = new LocalDeviceOutbox({
+      clock: () => setupClock,
+      path: queuePath,
+    });
     try {
       setupOutbox.enqueue({
         id: staleBatchId,
@@ -3522,7 +3600,11 @@ test("runCollectorConnector skips spawn and reports blocked when queue depth cro
       deviceToken: "device-token",
       // Long retry backoff so the seeded batches stay retrying rather
       // than collapsing to ready during a possible second drain pass.
-      outboxPolicy: { maxDrainDurationMs: 100, maxQueueDepth, retryBackoffMs: 60_000 },
+      outboxPolicy: {
+        maxDrainDurationMs: 100,
+        maxQueueDepth,
+        retryBackoffMs: 60_000,
+      },
       queuePath,
       sourceInstanceId: "src-1",
     });
@@ -3737,8 +3819,8 @@ async function startTogglableHarness(options: {
       stateOps.push({ body: parsed, method });
       if (method === "GET") {
         sendJson(res, 200, {
-          object: "device_source_instance_state",
           device_id: "device-1",
+          object: "device_source_instance_state",
           source_instance_id: "src-1",
           state: persistedState,
           updated_at: null,
@@ -3750,8 +3832,8 @@ async function startTogglableHarness(options: {
         persistedState = { ...persistedState, ...next };
       }
       sendJson(res, 200, {
-        object: "device_source_instance_state",
         device_id: "device-1",
+        object: "device_source_instance_state",
         source_instance_id: "src-1",
         state: persistedState,
         updated_at: new Date().toISOString(),
@@ -3761,7 +3843,10 @@ async function startTogglableHarness(options: {
     if (url.includes("/heartbeat")) {
       events.push({ label: "heartbeat" });
       heartbeats.push(parsed as { status: string });
-      sendJson(res, 200, { object: "device_exporter_heartbeat", status: "accepted" });
+      sendJson(res, 200, {
+        object: "device_exporter_heartbeat",
+        status: "accepted",
+      });
       return;
     }
     if (url.includes("/local-collector-gaps/recovered")) {
@@ -3770,20 +3855,20 @@ async function startTogglableHarness(options: {
       gapRecoveries.push(recovery);
       const reason = typeof recovery.reason === "string" ? recovery.reason : "policy_budget";
       sendJson(res, 200, {
-        object: "device_local_collector_gap",
-        device_id: "device-1",
+        attempt_count: 0,
         connector_id: recovery.connector_id ?? "unknown",
         connector_instance_id: "cin_fake",
-        source_instance_id: recovery.source_instance_id ?? "src-1",
-        gap_id: "gap_fake",
-        stream: `local-collector/${reason}`,
-        reason,
-        retryable: false,
-        status: "recovered",
-        attempt_count: 0,
+        device_id: "device-1",
         first_seen_at: null,
         first_seen_run_id: null,
+        gap_id: "gap_fake",
         last_run_id: recovery.recovered_run_id ?? null,
+        object: "device_local_collector_gap",
+        reason,
+        retryable: false,
+        source_instance_id: recovery.source_instance_id ?? "src-1",
+        status: "recovered",
+        stream: `local-collector/${reason}`,
         updated_at: new Date().toISOString(),
       });
       return;
@@ -3794,20 +3879,20 @@ async function startTogglableHarness(options: {
       gapAcks.push(ack);
       const reason = typeof ack.reason === "string" ? ack.reason : "policy_budget";
       sendJson(res, 201, {
-        object: "device_local_collector_gap",
-        device_id: "device-1",
+        attempt_count: 0,
         connector_id: ack.connector_id ?? "unknown",
         connector_instance_id: "cin_fake",
-        source_instance_id: ack.source_instance_id ?? "src-1",
-        gap_id: "gap_fake",
-        stream: `local-collector/${reason}`,
-        reason,
-        retryable: ack.retryable ?? true,
-        status: "pending",
-        attempt_count: 0,
+        device_id: "device-1",
         first_seen_at: ack.first_seen_at ?? null,
         first_seen_run_id: ack.first_seen_run_id ?? null,
+        gap_id: "gap_fake",
         last_run_id: ack.last_run_id ?? null,
+        object: "device_local_collector_gap",
+        reason,
+        retryable: ack.retryable ?? true,
+        source_instance_id: ack.source_instance_id ?? "src-1",
+        status: "pending",
+        stream: `local-collector/${reason}`,
         updated_at: new Date().toISOString(),
       });
       return;
@@ -3823,10 +3908,10 @@ async function startTogglableHarness(options: {
       ingestedBatches.push(parsed as { records?: Array<{ data?: Record<string, unknown> }> });
       options.onIngestSucceeded?.();
       sendJson(res, 201, {
-        object: "device_ingest_batch_result",
-        status: "accepted",
         accepted_record_count: (parsed as { records?: unknown[] }).records?.length ?? 0,
+        object: "device_ingest_batch_result",
         rejected_record_count: 0,
+        status: "accepted",
       });
       return;
     }
@@ -3934,7 +4019,11 @@ test("runCollectorConnector enqueues a policy-budget gap row when queue depth bl
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000, maxDrainDurationMs: 100 },
+      outboxPolicy: {
+        maxDrainDurationMs: 100,
+        maxQueueDepth,
+        retryBackoffMs: 60_000,
+      },
       queuePath,
       runId: "run-policy-1",
       sourceInstanceId: "src-gap-policy",
@@ -3978,7 +4067,11 @@ test("runCollectorConnector enqueues a policy-budget gap row when queue depth bl
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000, maxDrainDurationMs: 100 },
+      outboxPolicy: {
+        maxDrainDurationMs: 100,
+        maxQueueDepth,
+        retryBackoffMs: 60_000,
+      },
       queuePath,
       runId: "run-policy-2",
       sourceInstanceId: "src-gap-policy",
@@ -4042,6 +4135,7 @@ test("runCollectorConnector records a connector_child_failure gap when the child
       () =>
         runCollectorConnector({
           baseUrl: harness.url,
+          batchSize: 1, // force the partial batch to flush before exit
           connector: {
             args: [fixture],
             command: "node",
@@ -4049,7 +4143,6 @@ test("runCollectorConnector records a connector_child_failure gap when the child
             runtime_requirements: { bindings: {} },
             streams: ["messages"],
           },
-          batchSize: 1, // force the partial batch to flush before exit
           deviceId: "device-1",
           deviceToken: "device-token",
           queuePath,
@@ -4139,6 +4232,7 @@ test("runCollectorConnector surfaces the connector's own terminal DONE error mes
       () =>
         runCollectorConnector({
           baseUrl: harness.url,
+          batchSize: 1,
           connector: {
             args: [fixture],
             command: "node",
@@ -4146,7 +4240,6 @@ test("runCollectorConnector surfaces the connector's own terminal DONE error mes
             runtime_requirements: { bindings: {} },
             streams: ["messages"],
           },
-          batchSize: 1,
           deviceId: "device-1",
           deviceToken: "device-token",
           queuePath,
@@ -4353,7 +4446,10 @@ test("drainCollectorOutbox sanitizes secrets out of the persisted last_error on 
       deviceId: "device-1",
       messages: [
         {
-          data: { id: "m-1", note: "ssn 123-45-6789 should never reach last_error" },
+          data: {
+            id: "m-1",
+            note: "ssn 123-45-6789 should never reach last_error",
+          },
           emitted_at: "2026-05-19T12:00:00.000Z",
           key: "m-1",
           stream: "messages",
@@ -4459,7 +4555,11 @@ test("runCollectorConnector does not let a dead-lettered gap row permanently ski
         },
         sourceInstanceId: "src-dead-gap",
       });
-      const [claim] = seedOutbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId: "src-dead-gap" });
+      const [claim] = seedOutbox.claimReady({
+        holder: "seed",
+        leaseMs: 60_000,
+        sourceInstanceId: "src-dead-gap",
+      });
       assert.ok(claim);
       seedOutbox.deadLetter({
         error: "synthetic gap ack failure",
@@ -4538,9 +4638,17 @@ test("runCollectorConnector recovers acknowledged local gaps only after a succes
         },
         sourceInstanceId: "src-recovered-gap",
       });
-      const [claim] = seedOutbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId: "src-recovered-gap" });
+      const [claim] = seedOutbox.claimReady({
+        holder: "seed",
+        leaseMs: 60_000,
+        sourceInstanceId: "src-recovered-gap",
+      });
       assert.ok(claim);
-      seedOutbox.acknowledge({ holder: "seed", id: claim.id, leaseEpoch: claim.lease_epoch });
+      seedOutbox.acknowledge({
+        holder: "seed",
+        id: claim.id,
+        leaseEpoch: claim.lease_epoch,
+      });
     } finally {
       seedOutbox.close();
     }
@@ -4616,15 +4724,6 @@ function createTestClient(): Pick<
   "ingestBatch" | "putSourceInstanceState" | "ackLocalCollectorGap"
 > {
   return {
-    ingestBatch: async (_request: IngestBatchRequest) => ({ ok: true }),
-    putSourceInstanceState: async (request: PutSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> => ({
-      connector_instance_id: "test-instance",
-      device_id: "test-device",
-      object: "device_source_instance_state" as const,
-      source_instance_id: request.sourceInstanceId,
-      state: request.state,
-      updated_at: new Date().toISOString(),
-    }),
     ackLocalCollectorGap: async (request: AckLocalCollectorGapRequest): Promise<AckLocalCollectorGapResponse> => ({
       attempt_count: 1,
       connector_id: request.connector_id,
@@ -4640,6 +4739,15 @@ function createTestClient(): Pick<
       source_instance_id: request.source_instance_id,
       status: "acknowledged",
       stream: request.stream ?? "unknown",
+      updated_at: new Date().toISOString(),
+    }),
+    ingestBatch: async (_request: IngestBatchRequest) => ({ ok: true }),
+    putSourceInstanceState: async (request: PutSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> => ({
+      connector_instance_id: "test-instance",
+      device_id: "test-device",
+      object: "device_source_instance_state" as const,
+      source_instance_id: request.sourceInstanceId,
+      state: request.state,
       updated_at: new Date().toISOString(),
     }),
   };
@@ -4968,7 +5076,13 @@ test("drainCollectorOutbox keeps a record_batch durably retryable under sustaine
       connectorId: "test_connector",
       deviceId: "test-device",
       messages: [
-        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-10T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
       ],
       sourceInstanceId: srcId,
     });
@@ -4998,7 +5112,11 @@ test("drainCollectorOutbox keeps a record_batch durably retryable under sustaine
     // the fix makes that irrelevant anyway, since an explicit-transient
     // failure now backs off by the server's own (tiny, real) Retry-After
     // instead of policy.retryBackoffMs.
-    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 20, retryBackoffMs: 1 };
+    const policy = {
+      ...DEFAULT_COLLECTOR_OUTBOX_POLICY,
+      maxDrainIterations: 20,
+      retryBackoffMs: 1,
+    };
     const result = await drainCollectorOutbox({
       client,
       connectorId: "test_connector",
@@ -5057,12 +5175,22 @@ test("drainCollectorOutbox honors a server Retry-After for an explicit-transient
       connectorId: "test_connector",
       deviceId: "test-device",
       messages: [
-        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-10T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
       ],
       sourceInstanceId: srcId,
     });
     outbox.enqueue({
-      id: buildLocalDeviceOutboxId({ kind: "record_batch", parts: ["batch-retry-after"], sourceInstanceId: srcId }),
+      id: buildLocalDeviceOutboxId({
+        kind: "record_batch",
+        parts: ["batch-retry-after"],
+        sourceInstanceId: srcId,
+      }),
       kind: "record_batch" as const,
       payload: {
         batchId: "batch-retry-after",
@@ -5140,7 +5268,13 @@ test("drainCollectorOutbox dead-letters on attempt-count exhaustion even when a 
       connectorId: "test_connector",
       deviceId: "test-device",
       messages: [
-        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-10T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
       ],
       sourceInstanceId: srcId,
     });
@@ -5220,7 +5354,13 @@ test("drainCollectorOutbox classifies LocalDeviceHttpError as transient by struc
       connectorId: "test_connector",
       deviceId: "test-device",
       messages: [
-        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-10T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
       ],
       sourceInstanceId: srcId,
     });
@@ -5243,7 +5383,11 @@ test("drainCollectorOutbox classifies LocalDeviceHttpError as transient by struc
       sourceInstanceId: srcId,
     });
 
-    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 20, retryBackoffMs: 1 };
+    const policy = {
+      ...DEFAULT_COLLECTOR_OUTBOX_POLICY,
+      maxDrainIterations: 20,
+      retryBackoffMs: 1,
+    };
     const result = await drainCollectorOutbox({
       client,
       connectorId: "test_connector",
@@ -5284,7 +5428,9 @@ test("drainCollectorOutbox classifies a network-transport fault as transient via
     const client = createTestClient();
     client.ingestBatch = () => {
       sendAttempts += 1;
-      const transportFault = new Error("read ECONNRESET") as Error & { code: string };
+      const transportFault = new Error("read ECONNRESET") as Error & {
+        code: string;
+      };
       transportFault.code = "ECONNRESET";
       const fetchFailed = new Error("fetch failed", { cause: transportFault });
       return Promise.reject(fetchFailed);
@@ -5297,7 +5443,13 @@ test("drainCollectorOutbox classifies a network-transport fault as transient via
       connectorId: "test_connector",
       deviceId: "test-device",
       messages: [
-        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-10T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
       ],
       sourceInstanceId: srcId,
     });
@@ -5320,7 +5472,11 @@ test("drainCollectorOutbox classifies a network-transport fault as transient via
       sourceInstanceId: srcId,
     });
 
-    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 20, retryBackoffMs: 1 };
+    const policy = {
+      ...DEFAULT_COLLECTOR_OUTBOX_POLICY,
+      maxDrainIterations: 20,
+      retryBackoffMs: 1,
+    };
     const result = await drainCollectorOutbox({
       client,
       connectorId: "test_connector",
@@ -5346,7 +5502,9 @@ test("drainCollectorOutbox dead-letters a network error whose .cause has no reco
   try {
     const client = createTestClient();
     client.ingestBatch = () => {
-      const unknownFault = new Error("something odd happened") as Error & { code: string };
+      const unknownFault = new Error("something odd happened") as Error & {
+        code: string;
+      };
       unknownFault.code = "EWEIRD_UNRECOGNIZED_CODE";
       return Promise.reject(new Error("fetch failed", { cause: unknownFault }));
     };
@@ -5358,7 +5516,13 @@ test("drainCollectorOutbox dead-letters a network error whose .cause has no reco
       connectorId: "test_connector",
       deviceId: "test-device",
       messages: [
-        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-10T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
       ],
       sourceInstanceId: srcId,
     });
@@ -5425,7 +5589,11 @@ test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", 
     sourceInstanceId: srcId,
   });
 
-  const [claimedItem] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
+  const [claimedItem] = outbox.claimReady({
+    holder: "test",
+    leaseMs: 60_000,
+    sourceInstanceId: srcId,
+  });
   assert.ok(claimedItem);
 
   outbox.failRetryable({
@@ -5662,9 +5830,9 @@ test("nextRetryTime excludes dead_letter rows (terminal, never retry)", async ()
   const item1 = outbox.enqueue({
     id: "test:ready-1",
     kind: "record_batch" as const,
+    nextAttemptAt: new Date(Date.now() + 5000),
     payload: { records: [] },
     sourceInstanceId: srcId,
-    nextAttemptAt: new Date(Date.now() + 5000),
   });
 
   outbox.enqueue({
@@ -5674,7 +5842,11 @@ test("nextRetryTime excludes dead_letter rows (terminal, never retry)", async ()
     sourceInstanceId: srcId,
   });
 
-  const [claimedItem] = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId });
+  const [claimedItem] = outbox.claimReady({
+    holder: "h1",
+    leaseMs: 60_000,
+    sourceInstanceId: srcId,
+  });
   assert.ok(claimedItem);
 
   outbox.deadLetter({
@@ -5703,9 +5875,9 @@ test("nextRetryTime excludes leased rows (belong to active drainers)", async () 
   const item1 = outbox.enqueue({
     id: "test:ready-2",
     kind: "record_batch" as const,
+    nextAttemptAt: new Date(Date.now() + 3000),
     payload: { records: [] },
     sourceInstanceId: srcId,
-    nextAttemptAt: new Date(Date.now() + 3000),
   });
 
   outbox.enqueue({
@@ -5715,7 +5887,11 @@ test("nextRetryTime excludes leased rows (belong to active drainers)", async () 
     sourceInstanceId: srcId,
   });
 
-  const [claimedImmediate] = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId });
+  const [claimedImmediate] = outbox.claimReady({
+    holder: "h1",
+    leaseMs: 60_000,
+    sourceInstanceId: srcId,
+  });
   assert.ok(claimedImmediate, "should claim the immediately-ready item");
 
   const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });

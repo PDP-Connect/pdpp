@@ -95,7 +95,11 @@ test("LocalDeviceClient sends enrollment exchange without bearer token", async (
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
     const response = await client.exchangeEnrollment({
       device_label: "Laptop",
       enrollment_code: "enroll-123",
@@ -118,7 +122,11 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
     await client.heartbeat({
       connector_id: "codex",
       records_pending: 3,
@@ -131,7 +139,14 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
       body_hash: "hash-1",
       connector_id: "codex",
       device_id: "device-1",
-      records: [{ data: {}, emitted_at: "2026-04-30T12:00:00.000Z", record_key: "record-1", stream: "messages" }],
+      records: [
+        {
+          data: {},
+          emitted_at: "2026-04-30T12:00:00.000Z",
+          record_key: "record-1",
+          stream: "messages",
+        },
+      ],
       source_instance_id: "source-1",
     });
 
@@ -153,7 +168,14 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
       body_hash: "hash-1",
       connector_id: "codex",
       device_id: "device-1",
-      records: [{ data: {}, emitted_at: "2026-04-30T12:00:00.000Z", record_key: "record-1", stream: "messages" }],
+      records: [
+        {
+          data: {},
+          emitted_at: "2026-04-30T12:00:00.000Z",
+          record_key: "record-1",
+          stream: "messages",
+        },
+      ],
       source_instance_id: "source-1",
     });
   } finally {
@@ -165,7 +187,11 @@ test("LocalDeviceClient sends bearer-authenticated self-revoke with no body", as
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
     await client.selfRevoke();
 
     assert.equal(seen[0]?.method, "POST");
@@ -182,8 +208,14 @@ test("LocalDeviceClient GET source-instance state hits the device-scoped state r
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
-    const response = await client.getSourceInstanceState({ sourceInstanceId: "source-1" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
+    const response = await client.getSourceInstanceState({
+      sourceInstanceId: "source-1",
+    });
     assert.equal(response.object, "device_source_instance_state");
     assert.equal(response.device_id, "device-1");
     assert.equal(response.source_instance_id, "source-1");
@@ -203,7 +235,11 @@ test("LocalDeviceClient PUT source-instance state sends bearer + JSON body", asy
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
     await client.putSourceInstanceState({
       sourceInstanceId: "source-1",
       state: { messages: { cursor: "next" } },
@@ -212,7 +248,9 @@ test("LocalDeviceClient PUT source-instance state sends bearer + JSON body", asy
     assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.sourceInstanceState("device-1", "source-1"));
     assert.equal(seen[0]?.authorization, "Bearer device-token");
     assert.equal(seen[0]?.collectorProtocol, COLLECTOR_PROTOCOL_VERSION);
-    assert.deepEqual(seen[0]?.body, { state: { messages: { cursor: "next" } } });
+    assert.deepEqual(seen[0]?.body, {
+      state: { messages: { cursor: "next" } },
+    });
   } finally {
     await server.close();
   }
@@ -222,7 +260,11 @@ test("LocalDeviceClient sends local collector gap ack and recovery through devic
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
     await client.ackLocalCollectorGap({
       connector_id: "codex",
       first_seen_at: "2026-05-19T12:00:00.000Z",
@@ -265,7 +307,11 @@ test("LocalDeviceClient sends local collector gap ack and recovery through devic
 test("LocalDeviceClient state methods reject 401/403 with LocalDeviceHttpError", async () => {
   const server = await startStatusServer(401, "denied");
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
     await assert.rejects(
       () => client.getSourceInstanceState({ sourceInstanceId: "source-1" }),
       (err: unknown) => {
@@ -334,7 +380,11 @@ test("LocalDeviceHttpError tolerates non-JSON bodies without exposing a parsed c
 test("LocalDeviceClient state methods surface 404 unknown source instance", async () => {
   const server = await startStatusServer(404, '{"error":{"code":"not_found"}}');
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
     await assert.rejects(
       () => client.getSourceInstanceState({ sourceInstanceId: "missing" }),
       (err: unknown) => {
@@ -363,7 +413,11 @@ test("LocalDeviceHttpError captures Retry-After structurally, not parsed from me
     { "retry-after": "1" }
   );
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
     await assert.rejects(
       () =>
         client.ingestBatch({
@@ -393,7 +447,11 @@ test("LocalDeviceHttpError captures Retry-After structurally, not parsed from me
 test("LocalDeviceHttpError has a null retryAfterMs when the server sends no Retry-After header", async () => {
   const server = await startStatusServer(500, '{"error":{"code":"internal_error"}}');
   try {
-    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+    });
     await assert.rejects(
       () =>
         client.ingestBatch({
@@ -461,7 +519,9 @@ test("LocalDeviceClient requestTimeoutMs=0 disables the ceiling and lets a fast 
       deviceToken: "device-token",
       requestTimeoutMs: 0,
     });
-    const response = await client.getSourceInstanceState({ sourceInstanceId: "source-1" });
+    const response = await client.getSourceInstanceState({
+      sourceInstanceId: "source-1",
+    });
     assert.equal(response.source_instance_id, "source-1");
     assert.equal(seen[0]?.method, "GET");
   } finally {
@@ -489,7 +549,11 @@ async function startJsonServer(seen: SeenRequest[]): Promise<{ close: () => Prom
       path,
     });
     if (path === LOCAL_DEVICE_ENDPOINTS.exchangeEnrollment) {
-      sendJson(res, 200, { device_id: "device-1", device_token: "token-1", source_instance_id: "source-1" });
+      sendJson(res, 200, {
+        device_id: "device-1",
+        device_token: "token-1",
+        source_instance_id: "source-1",
+      });
       return;
     }
     // Match either GET or PUT against the state route, regardless of which
@@ -498,8 +562,8 @@ async function startJsonServer(seen: SeenRequest[]): Promise<{ close: () => Prom
       const parts = path.split("/");
       const sourceInstanceId = decodeURIComponent(parts.at(-2) ?? "");
       sendJson(res, 200, {
-        object: "device_source_instance_state",
         device_id: "device-1",
+        object: "device_source_instance_state",
         source_instance_id: sourceInstanceId,
         state:
           req.method === "GET"
@@ -538,7 +602,10 @@ async function startStatusServer(
   };
 }
 
-async function startStallingServer(): Promise<{ close: () => Promise<void>; url: string }> {
+async function startStallingServer(): Promise<{
+  close: () => Promise<void>;
+  url: string;
+}> {
   const sockets = new Set<Socket>();
   // Never call res.end(): the request hangs open until the client's bounded
   // timeout aborts it. Track sockets so teardown can destroy the dangling

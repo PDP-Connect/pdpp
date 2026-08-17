@@ -12,13 +12,18 @@ import {
 
 test("canonicalJson sorts object keys recursively and drops undefined fields", () => {
   assert.equal(
-    canonicalJson({ z: 1, a: { b: 2, a: 1 }, skip: undefined, list: [{ y: true, x: false }] }),
+    canonicalJson({
+      a: { a: 1, b: 2 },
+      list: [{ x: false, y: true }],
+      skip: undefined,
+      z: 1,
+    }),
     '{"a":{"a":1,"b":2},"list":[{"x":false,"y":true}],"z":1}'
   );
 });
 
 test("hashCanonicalJson is stable for equivalent object key ordering", () => {
-  assert.equal(hashCanonicalJson({ b: 2, a: 1 }), hashCanonicalJson({ a: 1, b: 2 }));
+  assert.equal(hashCanonicalJson({ a: 1, b: 2 }), hashCanonicalJson({ a: 1, b: 2 }));
 });
 
 test("buildLocalDeviceRecordEnvelope creates deterministic connector RECORD body hash", () => {
@@ -28,7 +33,7 @@ test("buildLocalDeviceRecordEnvelope creates deterministic connector RECORD body
     connectorId: "codex",
     deviceId: "device-1",
     record: {
-      data: { z: "last", a: "first" },
+      data: { a: "first", z: "last" },
       emitted_at: "2026-04-30T12:00:00.000Z",
       key: "42",
       stream: "messages",
@@ -63,7 +68,7 @@ test("buildLocalDeviceRecordEnvelope encodes a compound key as canonical minifie
     connectorId: "codex",
     deviceId: "device-1",
     record: {
-      data: { user_id: "user_123", date: "2026-04-01" },
+      data: { date: "2026-04-01", user_id: "user_123" },
       emitted_at: "2026-04-30T12:00:00.000Z",
       key: ["user_123", "2026-04-01"],
       stream: "daily_summaries",

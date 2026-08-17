@@ -28,7 +28,6 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import { buildAgentVersion } from "./collector-build-info.ts";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import {
@@ -302,7 +301,10 @@ export function resolveCollectorAutoPrunePolicy(
   override?: Partial<CollectorAutoPrunePolicy>,
   env: NodeJS.ProcessEnv = process.env
 ): CollectorAutoPrunePolicy {
-  const policy: CollectorAutoPrunePolicy = { ...DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY, ...(override ?? {}) };
+  const policy: CollectorAutoPrunePolicy = {
+    ...DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY,
+    ...(override ?? {}),
+  };
 
   const enabledRaw = env.PDPP_COLLECTOR_AUTO_PRUNE;
   if (typeof enabledRaw === "string" && enabledRaw.trim() !== "") {
@@ -436,7 +438,10 @@ export function resolveCollectorAutoCompactPolicy(
   override?: Partial<CollectorAutoCompactPolicy>,
   env: NodeJS.ProcessEnv = process.env
 ): CollectorAutoCompactPolicy {
-  const policy: CollectorAutoCompactPolicy = { ...DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY, ...(override ?? {}) };
+  const policy: CollectorAutoCompactPolicy = {
+    ...DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY,
+    ...(override ?? {}),
+  };
 
   const enabledRaw = env.PDPP_COLLECTOR_AUTO_COMPACT;
   if (typeof enabledRaw === "string" && enabledRaw.trim() !== "") {
@@ -473,17 +478,37 @@ export function autoCompactOutboxIfBloated(input: {
   policy: CollectorAutoCompactPolicy;
 }): CollectorAutoCompactResult {
   if (!input.policy.enabled) {
-    return { compacted: false, enabled: false, reason: "disabled", reclaimedBytes: 0 };
+    return {
+      compacted: false,
+      enabled: false,
+      reason: "disabled",
+      reclaimedBytes: 0,
+    };
   }
   const before = input.outbox.pageStats();
   if (before.reclaimableBytes < input.policy.minReclaimableBytes) {
-    return { compacted: false, enabled: true, reason: "below_threshold", reclaimedBytes: 0 };
+    return {
+      compacted: false,
+      enabled: true,
+      reason: "below_threshold",
+      reclaimedBytes: 0,
+    };
   }
   if (input.outbox.countNonSucceeded() > 0) {
-    return { compacted: false, enabled: true, reason: "lane_not_quiet", reclaimedBytes: 0 };
+    return {
+      compacted: false,
+      enabled: true,
+      reason: "lane_not_quiet",
+      reclaimedBytes: 0,
+    };
   }
   const result = input.outbox.compact();
-  return { compacted: true, enabled: true, reason: "compacted", reclaimedBytes: result.reclaimedBytes };
+  return {
+    compacted: true,
+    enabled: true,
+    reason: "compacted",
+    reclaimedBytes: result.reclaimedBytes,
+  };
 }
 
 export interface CollectorAutoCompactResult {
@@ -497,7 +522,17 @@ export interface CollectorAutoCompactResult {
   reclaimedBytes: number;
 }
 
-const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
+// Spawn `cwd`/PATH base for a connector child. This is deliberately the
+// CALLER's process.cwd(), not a path derived from this module's own
+// `import.meta.url`: `connector.args` (e.g. ["connectors/claude_code/index.ts"])
+// is a path relative to wherever the connector content actually lives, and
+// this generic runtime carries no knowledge of that location (moved out of
+// `@pdpp/polyfill-connectors` in the engine-split; deriving from this file's
+// own location would silently point at this package instead). Every real
+// caller (the polyfill-connectors dev bin, its tests, the published
+// `@pdpp/local-collector` bin) already runs with its cwd set to the
+// connector-owning package root, matching pre-move behavior exactly.
+const PACKAGE_ROOT = process.cwd();
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
 export interface CollectorEnrollmentConfig {
@@ -840,7 +875,10 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
   throwIfAborted(config.abortSignal);
   const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
 
-  const policy: CollectorOutboxPolicy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
+  const policy: CollectorOutboxPolicy = {
+    ...DEFAULT_COLLECTOR_OUTBOX_POLICY,
+    ...(config.outboxPolicy ?? {}),
+  };
   const autoPrunePolicy = resolveCollectorAutoPrunePolicy(config.autoPrune);
   const autoCompactPolicy = resolveCollectorAutoCompactPolicy(config.autoCompact);
   const holderId = config.collectorHolderId ?? randomUUID();
@@ -866,7 +904,9 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
   // scan's coverage proof with a new child-failure barrier.
   let scanStarted = false;
   try {
-    const initialSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    const initialSummary = outbox.summary({
+      sourceInstanceId: config.sourceInstanceId,
+    });
     await client.heartbeat({
       agent_version: COLLECTOR_AGENT_VERSION,
       connector_id: config.connector.connector_id,
@@ -883,7 +923,9 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       outbox,
       sourceInstanceId: config.sourceInstanceId,
     });
-    const recoveredLeases = outbox.recoverExpiredLeases({ sourceInstanceId: config.sourceInstanceId });
+    const recoveredLeases = outbox.recoverExpiredLeases({
+      sourceInstanceId: config.sourceInstanceId,
+    });
     const preScanDrain = await drainCollectorOutbox({
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
       client,
@@ -894,9 +936,12 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       sourceInstanceId: config.sourceInstanceId,
     });
 
-    const postDrainSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    const postDrainSummary = outbox.summary({
+      sourceInstanceId: config.sourceInstanceId,
+    });
     const skipResult = await maybeSkipScanForBacklog({
       autoPrunePolicy,
+      autoRecoveredTransientDeadLetters,
       client,
       config,
       outbox,
@@ -904,7 +949,6 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       postDrainSummary,
       preScanDrain,
       recoveredLeases,
-      autoRecoveredTransientDeadLetters,
       satisfiedBindings,
     });
     if (skipResult) {
@@ -914,10 +958,10 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     const priorStateProjection = await readPriorStateOrBlock({
       client,
       config,
-      recordsPending: pendingOutboxWorkCount(postDrainSummary),
       onBlocked: () => {
         definitiveBlockedHeartbeatSent = true;
       },
+      recordsPending: pendingOutboxWorkCount(postDrainSummary),
     });
     const priorState = priorStateProjection.state;
 
@@ -967,7 +1011,9 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       sourceInstanceId: config.sourceInstanceId,
     });
 
-    const afterRecordsSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    const afterRecordsSummary = outbox.summary({
+      sourceInstanceId: config.sourceInstanceId,
+    });
     const scopedTimeRanges = resolveScopedStreamTimeRanges(declaredScope, config.connector.timeScopableStreams);
     const scopedRoots = resolveScopedSourceRoots(declaredScope);
     const terminalFacts =
@@ -1030,7 +1076,9 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     // on-disk file (and the page cache later runs charge to the cgroup) shrinks.
     autoCompactOutboxIfBloated({ outbox, policy: autoCompactPolicy });
 
-    const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    const finalSummary = outbox.summary({
+      sourceInstanceId: config.sourceInstanceId,
+    });
     const recordsPending = pendingOutboxWorkCount(finalSummary);
 
     if (!checkpointResult.statePutFailed) {
@@ -1051,6 +1099,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     }
 
     return {
+      autoRecoveredTransientDeadLetters,
       completeness: summarizeCollectorCompleteness(streamResult.coverageByStore),
       done,
       enqueuedBatches: enqueueResult.enqueuedBatches,
@@ -1060,11 +1109,10 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       prunedSent,
       recordsQueued: enqueueResult.recordsQueued,
       recoveredLeases,
-      autoRecoveredTransientDeadLetters,
       satisfiedBindings,
+      scanBudgetExceeded: streamResult.scanBudgetExceeded,
       sentBatches: (preScanDrain.sentByKind.record_batch ?? 0) + (recordDrain.sentByKind.record_batch ?? 0),
       skippedScanForBacklog: false,
-      scanBudgetExceeded: streamResult.scanBudgetExceeded,
       statePutFailed: checkpointResult.statePutFailed,
       streamingBufferHighWaterMark: streamResult.bufferHighWaterMark,
     };
@@ -1090,7 +1138,12 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
           sourceInstanceId: config.sourceInstanceId,
         });
       }
-      await emitCorrectiveHeartbeatFromOutbox({ client, config, outbox, policy });
+      await emitCorrectiveHeartbeatFromOutbox({
+        client,
+        config,
+        outbox,
+        policy,
+      });
     }
     throw error;
   } finally {
@@ -1112,7 +1165,9 @@ async function emitCorrectiveHeartbeatFromOutbox(input: {
   outbox: LocalDeviceOutbox;
   policy: CollectorOutboxPolicy;
 }): Promise<void> {
-  const summary = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+  const summary = input.outbox.summary({
+    sourceInstanceId: input.config.sourceInstanceId,
+  });
   const deadLetterError = buildHeartbeatDeadLetterError(input.outbox, input.config.sourceInstanceId);
   await safeHeartbeat(input.client, {
     connector_id: input.config.connector.connector_id,
@@ -1178,7 +1233,9 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     policy: input.autoPrunePolicy,
     sourceInstanceId: input.config.sourceInstanceId,
   });
-  const summaryAfterGap = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+  const summaryAfterGap = input.outbox.summary({
+    sourceInstanceId: input.config.sourceInstanceId,
+  });
   const recordsPendingAfterGap = pendingOutboxWorkCount(summaryAfterGap);
   await input.client.heartbeat({
     agent_version: COLLECTOR_AGENT_VERSION,
@@ -1195,6 +1252,7 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     ),
   });
   return {
+    autoRecoveredTransientDeadLetters: input.autoRecoveredTransientDeadLetters,
     // No connector spawned on a backlog skip, so no coverage was observed.
     completeness: null,
     done: null,
@@ -1205,11 +1263,10 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     prunedSent,
     recordsQueued: 0,
     recoveredLeases: input.recoveredLeases,
-    autoRecoveredTransientDeadLetters: input.autoRecoveredTransientDeadLetters,
     satisfiedBindings: input.satisfiedBindings,
+    scanBudgetExceeded: false,
     sentBatches: input.preScanDrain.sentByKind.record_batch ?? 0,
     skippedScanForBacklog: true,
-    scanBudgetExceeded: false,
     statePutFailed: false,
     streamingBufferHighWaterMark: 0,
   };
@@ -1220,10 +1277,15 @@ async function readPriorStateOrBlock(input: {
   config: CollectorRunConfig;
   onBlocked?: () => void;
   recordsPending: number;
-}): Promise<{ connectorInstanceId: string; state: Readonly<Record<string, unknown>> }> {
+}): Promise<{
+  connectorInstanceId: string;
+  state: Readonly<Record<string, unknown>>;
+}> {
   try {
     throwIfAborted(input.config.abortSignal);
-    const projection = await input.client.getSourceInstanceState({ sourceInstanceId: input.config.sourceInstanceId });
+    const projection = await input.client.getSourceInstanceState({
+      sourceInstanceId: input.config.sourceInstanceId,
+    });
     return {
       connectorInstanceId: projection.connector_instance_id,
       state:
@@ -1289,9 +1351,11 @@ const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
  * coverage record or lacks a store. An unrecognized status maps to
  * `unaccounted` so a future tool release cannot read as complete.
  */
-function coverageEntryFromRecord(
-  message: Extract<EmittedMessage, { type: "RECORD" }>
-): { status: CollectorCoverageStatus; store: string; stream: string | null } | null {
+function coverageEntryFromRecord(message: Extract<EmittedMessage, { type: "RECORD" }>): {
+  status: CollectorCoverageStatus;
+  store: string;
+  stream: string | null;
+} | null {
   if (message.stream !== COVERAGE_DIAGNOSTICS_STREAM) {
     return null;
   }
@@ -1383,13 +1447,15 @@ export function buildTerminalCollectionFacts(
   return [...statusesByStream.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([stream, statuses]) => ({
-      stream,
       coverage_statuses: [...statuses].sort(),
+      stream,
       // Only meaningful on a scoped run. `false` is the honest marker for a
       // stream the bound could not be enforced on: it was collected whole, so
       // its coverage must never be read as proving the declared boundary.
       ...(scopedRun
-        ? { scoped: Object.hasOwn(timeRanges, stream) || (rootsBounded && rootScopedStreams.has(stream)) }
+        ? {
+            scoped: Object.hasOwn(timeRanges, stream) || (rootsBounded && rootScopedStreams.has(stream)),
+          }
         : {}),
     }));
 }
@@ -1501,7 +1567,10 @@ async function streamConnectorIntoOutbox(
       return;
     }
     coverageByStore ??= new Map<string, { status: CollectorCoverageStatus; stream: string | null }>();
-    coverageByStore.set(entry.store, { status: entry.status, stream: entry.stream });
+    coverageByStore.set(entry.store, {
+      status: entry.status,
+      stream: entry.stream,
+    });
   };
 
   const notifyOnMessage = (message: EmittedMessage): void => {
@@ -1695,7 +1764,12 @@ function parseConnectorProtocolLine(line: string, lineNumber: number, connectorI
   try {
     return JSON.parse(line) as EmittedMessage;
   } catch (error) {
-    const debugPath = writeConnectorProtocolDebugLine({ connectorId, error, line, lineNumber });
+    const debugPath = writeConnectorProtocolDebugLine({
+      connectorId,
+      error,
+      line,
+      lineNumber,
+    });
     const suffix = debugPath ? `; raw line saved to ${debugPath}` : "";
     throw new Error(
       `${error instanceof Error ? error.message : String(error)} at connector protocol line ${lineNumber} (${line.length} chars)${suffix}`,
@@ -1831,7 +1905,10 @@ async function maybeCommitCheckpoint(input: {
   terminalFacts: readonly TerminalCollectionFact[] | null;
   terminalRunBoundary: string;
   terminalRunConnectorInstanceId: string;
-}): Promise<{ flushedState: Readonly<Record<string, unknown>> | null; statePutFailed: boolean }> {
+}): Promise<{
+  flushedState: Readonly<Record<string, unknown>> | null;
+  statePutFailed: boolean;
+}> {
   if (Object.keys(input.bufferedState).length === 0 && !input.terminalFacts) {
     return { flushedState: null, statePutFailed: false };
   }
@@ -1861,7 +1938,10 @@ async function maybeCommitCheckpoint(input: {
     id: checkpointId,
     kind,
     payload: terminalCommitIdentity
-      ? ({ ...terminalCommitIdentity, commit_id: commitId as string } satisfies TerminalRunCommitPayload)
+      ? ({
+          ...terminalCommitIdentity,
+          commit_id: commitId as string,
+        } satisfies TerminalRunCommitPayload)
       : ({
           connectorId: input.config.connector.connector_id,
           sourceInstanceId: input.config.sourceInstanceId,
@@ -1881,13 +1961,18 @@ async function maybeCommitCheckpoint(input: {
   });
   const checkpointAfter = input.outbox.get(checkpointId);
   if (checkpointAfter?.status === "succeeded") {
-    return { flushedState: Object.freeze({ ...input.bufferedState }), statePutFailed: false };
+    return {
+      flushedState: Object.freeze({ ...input.bufferedState }),
+      statePutFailed: false,
+    };
   }
   if (checkpointAfter && hasCheckpointPredecessorBlockingWork(input.outbox, checkpointAfter)) {
     return { flushedState: null, statePutFailed: false };
   }
 
-  const afterCommitSummary = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+  const afterCommitSummary = input.outbox.summary({
+    sourceInstanceId: input.config.sourceInstanceId,
+  });
   await safeHeartbeat(input.client, {
     connector_id: input.config.connector.connector_id,
     ...(kind === "terminal_run_commit" ? { last_error: { kind: "terminal_run_commit_unacknowledged" as const } } : {}),
@@ -1962,7 +2047,10 @@ async function safeHeartbeat(
     // (corrective post-throw, skip-for-backlog, state-read block), so a host
     // that only ever reports via these paths still surfaces its build. An
     // explicitly-provided value is preserved.
-    await client.heartbeat({ agent_version: COLLECTOR_AGENT_VERSION, ...request });
+    await client.heartbeat({
+      agent_version: COLLECTOR_AGENT_VERSION,
+      ...request,
+    });
   } catch {
     // Heartbeat is best-effort here; the caller is already handling a more
     // important failure and we do not want to mask it with a heartbeat error.
@@ -2507,7 +2595,11 @@ async function drainClaimedOutboxItem(
       leaseMs: input.policy.leaseMs,
     });
     await sendOutboxItem(input.client, current);
-    input.outbox.acknowledge({ holder: input.holderId, id: current.id, leaseEpoch: current.lease_epoch });
+    input.outbox.acknowledge({
+      holder: input.holderId,
+      id: current.id,
+      leaseEpoch: current.lease_epoch,
+    });
     result.sent += 1;
     sentByKind[current.kind] = (sentByKind[current.kind] ?? 0) + 1;
   } catch (error) {
@@ -3107,8 +3199,8 @@ export interface CollectorChildContext {
 
 function buildCollectorChildEnv(context: CollectorChildContext): Record<string, string> {
   const env: Record<string, string> = {
-    PDPP_REFERENCE_BASE_URL: context.baseUrl,
     PDPP_LOCAL_DEVICE_TOKEN: context.deviceToken,
+    PDPP_REFERENCE_BASE_URL: context.baseUrl,
   };
   if (context.runId) {
     env.PDPP_RUN_ID = context.runId;
@@ -3167,7 +3259,11 @@ function spawnConnector(
   connector: CollectorConnectorSpec,
   childContext: CollectorChildContext
 ): ChildProcessWithoutNullStreams {
-  const env = { ...process.env, ...buildCollectorChildEnv(childContext), ...connector.env };
+  const env = {
+    ...process.env,
+    ...buildCollectorChildEnv(childContext),
+    ...connector.env,
+  };
   env.PATH = buildCollectorChildPath(env.PATH);
   return spawn(connector.command, [...connector.args], {
     cwd: PACKAGE_ROOT,

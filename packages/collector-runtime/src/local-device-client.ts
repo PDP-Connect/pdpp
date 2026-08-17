@@ -9,18 +9,18 @@ import { hashCanonicalJson, type LocalDeviceIngestBatchRequest } from "./local-d
 export const LOCAL_DEVICE_ENDPOINTS = {
   exchangeEnrollment: "/_ref/device-exporters/enroll",
   heartbeat: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/heartbeat`,
-  selfRevoke: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/self-revoke`,
   ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
-  terminalCollection: (deviceId: string, sourceInstanceId: string) =>
-    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-collection`,
-  terminalRunCommit: (deviceId: string, sourceInstanceId: string) =>
-    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-run-commits`,
   localCollectorGap: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps`,
   localCollectorGapRecovered: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps/recovered`,
+  selfRevoke: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/self-revoke`,
   sourceInstanceState: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/state`,
+  terminalCollection: (deviceId: string, sourceInstanceId: string) =>
+    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-collection`,
+  terminalRunCommit: (deviceId: string, sourceInstanceId: string) =>
+    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-run-commits`,
 } as const;
 
 export interface LocalDeviceClientOptions {
@@ -314,7 +314,9 @@ function parseLocalDeviceErrorEnvelope(
   }
   try {
     const parsed = JSON.parse(body) as unknown;
-    const envelope = parsed as { error?: { code?: unknown; message?: unknown; param?: unknown } } | null;
+    const envelope = parsed as {
+      error?: { code?: unknown; message?: unknown; param?: unknown };
+    } | null;
     if (envelope && typeof envelope === "object" && envelope.error && typeof envelope.error.code === "string") {
       return {
         code: envelope.error.code,
@@ -499,7 +501,11 @@ export class LocalDeviceClient {
 
   async #request<TResponse>(
     path: string,
-    options: { authenticate: boolean; body?: unknown; method: "GET" | "POST" | "PUT" }
+    options: {
+      authenticate: boolean;
+      body?: unknown;
+      method: "GET" | "POST" | "PUT";
+    }
   ): Promise<TResponse> {
     const headers: Record<string, string> = {
       accept: "application/json",

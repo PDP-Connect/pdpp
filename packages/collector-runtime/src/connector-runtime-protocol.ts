@@ -240,7 +240,9 @@ export interface RuntimeContinuationFact {
   slice_start: number;
 }
 
-export function optionalContinuationField(value: unknown): { continuation?: RuntimeContinuationFact } {
+export function optionalContinuationField(value: unknown): {
+  continuation?: RuntimeContinuationFact;
+} {
   return value ? { continuation: value as RuntimeContinuationFact } : {};
 }
 
@@ -324,9 +326,11 @@ export function optionalRuntimeScopeFields(entry: Record<string, unknown>): Reco
   };
 }
 
-export function readRuntimeSkipFact(
-  value: unknown
-): { reason: string; continuation?: RuntimeContinuationFact; recovery_action?: string } | null {
+export function readRuntimeSkipFact(value: unknown): {
+  reason: string;
+  continuation?: RuntimeContinuationFact;
+  recovery_action?: string;
+} | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
@@ -389,7 +393,10 @@ export interface CollectionRateProgress {
   /** Current effective rate (requests/min) = 60000 / current_interval_ms. */
   effective_rate_per_min: number;
   /** Most recent back-off, or null when none has fired this run. */
-  last_backoff: { at_interval_ms: number; reason: "retry_after" | "throttle" } | null;
+  last_backoff: {
+    at_interval_ms: number;
+    reason: "retry_after" | "throttle";
+  } | null;
   object: "collection_rate";
 }
 

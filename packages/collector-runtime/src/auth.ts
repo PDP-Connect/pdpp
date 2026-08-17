@@ -111,12 +111,12 @@ function buildCredentialSchema(
   const properties: Record<string, CredentialProperty> = {};
   for (const name of missing) {
     const base: CredentialProperty = {
-      type: "string",
       description: `${name} for ${connectorName}`,
+      type: "string",
     };
     properties[name] = SECRET_NAME.test(name) ? { ...base, format: "password" } : base;
   }
-  return { type: "object", properties, required: missing };
+  return { properties, required: missing, type: "object" };
 }
 
 /**

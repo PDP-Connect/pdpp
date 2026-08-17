@@ -379,7 +379,12 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
       if (fatal) {
         throw fatal;
       }
-      const delayMs = jitteredExponentialDelayMs({ attempt, baseDelayMs, maxDelayMs, random });
+      const delayMs = jitteredExponentialDelayMs({
+        attempt,
+        baseDelayMs,
+        maxDelayMs,
+        random,
+      });
       await onRetry?.({ attempt, delayMs, error, maxAttempts });
       await sleep(delayMs);
       continue;
@@ -409,9 +414,19 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
 
     const delayMs =
       retryAfterMs === null
-        ? jitteredExponentialDelayMs({ attempt, baseDelayMs, maxDelayMs, random })
+        ? jitteredExponentialDelayMs({
+            attempt,
+            baseDelayMs,
+            maxDelayMs,
+            random,
+          })
         : Math.min(maxRetryAfterMs, retryAfterMs);
-    const retryAttempt: HttpRetryAttempt<T> = { attempt, delayMs, maxAttempts, response };
+    const retryAttempt: HttpRetryAttempt<T> = {
+      attempt,
+      delayMs,
+      maxAttempts,
+      response,
+    };
     if (retryAfterMs !== null) {
       retryAttempt.retryAfterMs = retryAfterMs;
     }
