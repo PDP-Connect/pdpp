@@ -54,8 +54,7 @@ export function PdppFrontDoor() {
               Personal Data Portability Protocol (PDPP) is an open protocol for scoped access to personal data.
             </Text>
             <Text className="opacity-60" size="title" weight="medium">
-              Apps and agents get fine-grained access to records and fields based on grants a user approves, enforced by
-              the resource server on every request.
+              Use your purchases, messages, and health metrics in an app or agent, and control exactly what you share.
             </Text>
             <Text color="muted" size="body" wrap="balanced">
               It profiles{" "}
