@@ -725,8 +725,8 @@ async function validateStagedArtifact(
     try {
       return await validateManualUploadArtifactFromFileByKind(kind, fd, fileSize, {
         fileName,
-        fileSha256: args.fileSha256,
         filePath: args.stagingPath,
+        fileSha256: args.fileSha256,
         maxFileBytes,
       });
     } finally {

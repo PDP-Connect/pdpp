@@ -20,7 +20,9 @@
 import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
 
 import type { CoverageAxis } from "../runtime/connection-health.ts";
+
 export type { CoverageAxis } from "../runtime/connection-health.ts";
+
 import { classifyContinuationCoverage, resolveSkippedCoverage } from "./continuation-proof.ts";
 import type { RuntimeCollectionFact, RuntimeCollectionFactSkip } from "./ref-control.ts";
 

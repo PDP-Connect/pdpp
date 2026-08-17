@@ -259,7 +259,10 @@ async function withDeploymentEnv<T>(values: Record<string, string>, operation: (
 // needs_config (deployment config missing).
 async function withServer(
   exchanger: ProviderAuthExchanger,
-  { configuredKeys = ["test_provider"], deploymentConfigured = true }: { configuredKeys?: string[]; deploymentConfigured?: boolean },
+  {
+    configuredKeys = ["test_provider"],
+    deploymentConfigured = true,
+  }: { configuredKeys?: string[]; deploymentConfigured?: boolean },
   fn: (handles: { asUrl: string; rsUrl: string; server: TestServer }) => Promise<void>
 ): Promise<void> {
   await withDeploymentEnv(deploymentConfigured ? TEST_PROVIDER_DEPLOYMENT_ENV : {}, async () => {
@@ -456,9 +459,7 @@ test("callback whose recomputed redirect_uri differs from the one used at initia
     const initiatedRedirectUri = initBody.next_step.redirect_uri;
     assert.ok(initiatedRedirectUri, "initiate must record the redirect_uri it used");
 
-    const stateToken = requiredStateToken(
-      exchanger.calls.initiate[exchanger.calls.initiate.length - 1]?.state
-    );
+    const stateToken = requiredStateToken(exchanger.calls.initiate[exchanger.calls.initiate.length - 1]?.state);
 
     // The callback recomputes redirect_uri from ITS OWN request
     // (resolveCallbackBaseUrl reads x-forwarded-host with no explicit
@@ -467,14 +468,17 @@ test("callback whose recomputed redirect_uri differs from the one used at initia
     // rotated/misconfigured public base URL, or a forged callback request
     // presenting a different origin than the one the owner actually
     // authorized against).
-    const { status, body } = await fetchJson(
-      `${asUrl}/_ref/provider-auth/callback?code=somecode&state=${stateToken}`,
-      { headers: { "x-forwarded-host": "attacker.example", "x-forwarded-proto": "https" } }
-    );
+    const { status, body } = await fetchJson(`${asUrl}/_ref/provider-auth/callback?code=somecode&state=${stateToken}`, {
+      headers: { "x-forwarded-host": "attacker.example", "x-forwarded-proto": "https" },
+    });
 
     assert.equal(status, 400, `expected 400, got ${status}: ${JSON.stringify(body)}`);
     assert.equal(body?.error?.code, "provider_auth_redirect_uri_mismatch");
-    assert.equal(exchanger.calls.exchange.length, 0, "code exchange must never be attempted on a redirect_uri mismatch");
+    assert.equal(
+      exchanger.calls.exchange.length,
+      0,
+      "code exchange must never be attempted on a redirect_uri mismatch"
+    );
     const connections = await createSqliteConnectorInstanceStore().listByOwner(OWNER_SUBJECT_ID);
     assert.equal(connections.length, 0, "no connection may be created on a redirect_uri mismatch");
 
@@ -492,9 +496,7 @@ test("callback whose recomputed redirect_uri matches the one used at initiate pr
   await withServer(exchanger, {}, async ({ asUrl }) => {
     const session = OPEN_SESSION_COOKIE;
     const { body: initBody } = await initiateProviderAuth(asUrl, session, "test_provider");
-    const stateToken = requiredStateToken(
-      exchanger.calls.initiate[exchanger.calls.initiate.length - 1]?.state
-    );
+    const stateToken = requiredStateToken(exchanger.calls.initiate[exchanger.calls.initiate.length - 1]?.state);
 
     const { status, body } = await fetchJson(`${asUrl}/_ref/provider-auth/callback?code=somecode&state=${stateToken}`);
 

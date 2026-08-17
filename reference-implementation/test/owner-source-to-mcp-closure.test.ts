@@ -5,16 +5,13 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { LocalDeviceClient } from "../../packages/polyfill-connectors/src/local-device-client.ts";
-import {
-  buildLocalDeviceIngestBatchRequest,
-  buildLocalDeviceRecordEnvelope,
-} from "../../packages/polyfill-connectors/src/local-device-envelope.ts";
+import { buildLocalDeviceRecordEnvelope, LocalDeviceClient } from "@pdpp/collector-runtime";
+import { buildLocalDeviceIngestBatchRequest } from "@pdpp/collector-runtime/local-device-envelope";
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
-import { introspectionHeaders } from "./helpers/introspection.ts";
-import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 import { startServer } from "../server/index.ts";
 import { CREDENTIAL_ENCRYPTION_KEY_ENV } from "../server/stores/credential-encryption.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const OWNER_PASSWORD = "owner-source-to-mcp-closure-password";
 const OWNER_SUBJECT_ID = "owner_local";

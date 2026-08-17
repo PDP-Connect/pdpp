@@ -64,9 +64,9 @@ function insertRecord(recordKey: string, data: Record<string, unknown>, semantic
 }
 
 function semanticTimeOf(recordKey: string): string {
-  const row = getDb()
-    .prepare(`SELECT semantic_time FROM records WHERE record_key = ?`)
-    .get(recordKey) as { semantic_time: string } | undefined;
+  const row = getDb().prepare("SELECT semantic_time FROM records WHERE record_key = ?").get(recordKey) as
+    | { semantic_time: string }
+    | undefined;
   assert.ok(row, `expected a row for ${recordKey}`);
   return row.semantic_time;
 }
@@ -138,7 +138,11 @@ test(
   withTempDb(async () => {
     // Counterweight to the test above: proves the preservation is the MODE's
     // doing, not an accident of the row's shape.
-    insertRecord("hand-corrected", { id: "hand-corrected", rtime_last_played: 1_452_378_173 }, "2015-05-05T00:00:00.000Z");
+    insertRecord(
+      "hand-corrected",
+      { id: "hand-corrected", rtime_last_played: 1_452_378_173 },
+      "2015-05-05T00:00:00.000Z"
+    );
 
     const result = await backfillSqliteRecordSemanticTimesForManifest(MANIFEST, { mode: "drift" });
 

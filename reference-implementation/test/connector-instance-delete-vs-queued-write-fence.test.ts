@@ -156,12 +156,12 @@ function manifest() {
       {
         name: STREAM,
         primary_key: ["id"],
-        selection: { fields: true, resources: true },
         schema: {
           properties: { id: { type: "string" }, value: { type: ["string", "null"] } },
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "mutable_state",
       },
     ],

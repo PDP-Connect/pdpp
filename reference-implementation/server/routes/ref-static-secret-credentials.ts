@@ -195,9 +195,6 @@ export interface MountRefStaticSecretCredentialsContext {
   // given (matching the existing draft-route fallback).
   canonicalConnectorKey?: (value: string | null | undefined) => string | null;
   createRequestConnectorInstanceCredentialStore: () => ConnectorInstanceCredentialStore;
-  // Credential capture changes the owner-facing connector summary state and
-  // must invalidate any in-flight summary projection before the response.
-  invalidateConnectorSummariesCache?: () => void;
   // Connector-instance store, used to recover/update non-secret setup fields
   // and claim a verified provider identity. Optional only for narrow injected
   // callers that do not use setup-field or identity-aware probing.
@@ -207,6 +204,9 @@ export interface MountRefStaticSecretCredentialsContext {
   ensureRequestId: (res: RouteResponse) => string;
   getOwnerSubjectId: (req: unknown) => string;
   handleError: (res: unknown, err: unknown) => void;
+  // Credential capture changes the owner-facing connector summary state and
+  // must invalidate any in-flight summary projection before the response.
+  invalidateConnectorSummariesCache?: () => void;
   now?: () => string;
   pdppError: PdppErrorFn;
   // Run the connector's synchronous credential probe. Injected so the route is

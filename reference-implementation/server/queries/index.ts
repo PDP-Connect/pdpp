@@ -345,6 +345,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // state lookups and similar runtime paths.
   readonly grantsGetScopedStateById: ReadOneQuery;
   readonly listRegisteredConnectors: SmallEnumerationQuery;
+  // Provider app config — deployment-scoped config (e.g. a shared OAuth
+  // client id/secret) keyed generically by (identity_group, logical_key).
+  readonly providerAppConfigDeleteByIdentityGroupAndLogicalKey: MutationQuery;
+  readonly providerAppConfigGetByIdentityGroupAndLogicalKey: ReadOneQuery;
+  readonly providerAppConfigListConfiguredKeysByIdentityGroup: SmallEnumerationQuery;
+  readonly providerAppConfigUpsert: MutationQuery;
   readonly recordRejectionsAdmitQuota: MutationQuery;
   readonly recordRejectionsCountForConnection: ReadOneQuery;
   readonly recordRejectionsDeleteForConnection: MutationQuery;
@@ -359,12 +365,6 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordRejectionsReleaseQuota: MutationQuery;
   readonly recordRejectionsSumPayloadBytesForConnection: ReadOneQuery;
   readonly recordRejectionsUpdateReplay: MutationQuery;
-  // Provider app config — deployment-scoped config (e.g. a shared OAuth
-  // client id/secret) keyed generically by (identity_group, logical_key).
-  readonly providerAppConfigDeleteByIdentityGroupAndLogicalKey: MutationQuery;
-  readonly providerAppConfigGetByIdentityGroupAndLogicalKey: ReadOneQuery;
-  readonly providerAppConfigListConfiguredKeysByIdentityGroup: SmallEnumerationQuery;
-  readonly providerAppConfigUpsert: MutationQuery;
   // Records — streaming aggregate scan over a single (connector, stream).
   readonly recordsAggregateIterateStreamRecordsForAggregation: IterateQuery;
   // Records — per-connector stream aggregate for `/_ref/connectors`.

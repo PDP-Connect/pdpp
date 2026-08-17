@@ -712,8 +712,11 @@ test("Development Venmo stays unavailable even when legacy UAT exposure is enabl
       assert.equal(setup.next_step_kind, "capture_static_secret");
     });
   } finally {
-    if (previous === undefined) delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
-    else process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = previous;
+    if (previous === undefined) {
+      delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    } else {
+      process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = previous;
+    }
   }
 });
 
@@ -791,15 +794,24 @@ test("with flag disabled, positive unproven owner-actionable connectors have uat
 });
 
 test("UAT allowlist: development connector exposed only when flag+key+valid-setup all present", async () => {
-  const priorEnv = { uat: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, allowlist: process.env.PDPP_UAT_CONNECTOR_ALLOWLIST };
+  const priorEnv = {
+    allowlist: process.env.PDPP_UAT_CONNECTOR_ALLOWLIST,
+    uat: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT,
+  };
   try {
     // Scenario table: all combinations of flag, allowlist, setup validity
     const scenarios = [
-      { uat: false, list: "", connectorKey: "venmo", expectedExposed: false, label: "no flag, with allowlist" },
-      { uat: true, list: "", connectorKey: "venmo", expectedExposed: false, label: "flag ON, empty allowlist" },
-      { uat: true, list: "venmo", connectorKey: "venmo", expectedExposed: true, label: "flag+allowlist+valid-setup" },
-      { uat: true, list: "doordash", connectorKey: "doordash", expectedExposed: false, label: "allowlist but no valid setup" },
-      { uat: true, list: "steam", connectorKey: "steam", expectedExposed: true, label: "preview tier via legacy path" },
+      { connectorKey: "venmo", expectedExposed: false, label: "no flag, with allowlist", list: "", uat: false },
+      { connectorKey: "venmo", expectedExposed: false, label: "flag ON, empty allowlist", list: "", uat: true },
+      { connectorKey: "venmo", expectedExposed: true, label: "flag+allowlist+valid-setup", list: "venmo", uat: true },
+      {
+        connectorKey: "doordash",
+        expectedExposed: false,
+        label: "allowlist but no valid setup",
+        list: "doordash",
+        uat: true,
+      },
+      { connectorKey: "steam", expectedExposed: true, label: "preview tier via legacy path", list: "steam", uat: true },
     ];
 
     for (const scenario of scenarios) {
@@ -808,18 +820,26 @@ test("UAT allowlist: development connector exposed only when flag+key+valid-setu
         delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
       };
       cleanEnv();
-      if (scenario.uat) process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
-      if (scenario.list) process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = scenario.list;
+      if (scenario.uat) {
+        process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
+      }
+      if (scenario.list) {
+        process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = scenario.list;
+      }
 
       await withServer(async ({ asUrl, rsUrl }) => {
         // Register the connector to test
-        if (scenario.connectorKey === "venmo") await registerConnector(asUrl, loadManifest("venmo"));
+        if (scenario.connectorKey === "venmo") {
+          await registerConnector(asUrl, loadManifest("venmo"));
+        }
         if (scenario.connectorKey === "doordash") {
           const m = loadManifest("doordash");
           m.capabilities = { ...asRecord(m.capabilities), public_listing: { tier: "development" } };
           await registerConnector(asUrl, m);
         }
-        if (scenario.connectorKey === "steam") await registerConnector(asUrl, loadManifest("steam"));
+        if (scenario.connectorKey === "steam") {
+          await registerConnector(asUrl, loadManifest("steam"));
+        }
 
         const ownerToken = await issueOwnerToken(asUrl);
         const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
@@ -835,16 +855,25 @@ test("UAT allowlist: development connector exposed only when flag+key+valid-setu
       });
     }
   } finally {
-    if (priorEnv.uat === undefined) delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
-    else process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = priorEnv.uat;
-    if (priorEnv.allowlist === undefined) delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
-    else process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = priorEnv.allowlist;
+    if (priorEnv.uat === undefined) {
+      delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    } else {
+      process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = priorEnv.uat;
+    }
+    if (priorEnv.allowlist === undefined) {
+      delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
+    } else {
+      process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = priorEnv.allowlist;
+    }
   }
 });
 
 test("allowlist parser: rejects malformed entries, admits valid connector keys", async () => {
   // This is a route-level discriminator test via environment parsing
-  const priorEnv = { uat: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, allowlist: process.env.PDPP_UAT_CONNECTOR_ALLOWLIST };
+  const priorEnv = {
+    allowlist: process.env.PDPP_UAT_CONNECTOR_ALLOWLIST,
+    uat: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT,
+  };
   try {
     process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
     process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = "venmo, invalid@key, netflix-export, ../evil, my_connector";
@@ -870,9 +899,15 @@ test("allowlist parser: rejects malformed entries, admits valid connector keys",
       // Malformed keys (invalid@key, ../evil) are rejected silently; no server error
     });
   } finally {
-    if (priorEnv.uat === undefined) delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
-    else process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = priorEnv.uat;
-    if (priorEnv.allowlist === undefined) delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
-    else process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = priorEnv.allowlist;
+    if (priorEnv.uat === undefined) {
+      delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    } else {
+      process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = priorEnv.uat;
+    }
+    if (priorEnv.allowlist === undefined) {
+      delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
+    } else {
+      process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = priorEnv.allowlist;
+    }
   }
 });

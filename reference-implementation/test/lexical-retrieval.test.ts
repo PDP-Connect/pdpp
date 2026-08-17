@@ -42,8 +42,8 @@ import test from "node:test";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { closePostgresStorage } from "../server/postgres-storage.ts";
-import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { drainConnectorInstanceIndexWork } from "../server/records.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { buildSearchPlanForGrant, parseSearchParams } from "../server/search.ts";
 
 // ─── harness ────────────────────────────────────────────────────────────────
