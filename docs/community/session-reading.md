@@ -59,7 +59,7 @@ Questions we will explore:
   platforms, open protocols, and personal data stores. This paper provides
   context, not normative guidance.
 
-## Session 2: Records, manifests, and requests
+## Session 2: Records, source declarations, and requests
 
 This session covers three steps: describing records, declaring the data a
 source can offer, and requesting a subset. It covers Core Sections 4–6.
@@ -73,9 +73,9 @@ a later session.
 
    - In Section 4: streams, `append_only` and `mutable_state` semantics,
      incremental sync, and the RECORD envelope.
-   - In Section 5: what a manifest declares, the data and choices it makes
-     available for consent, `consent_time_field`, views, and manifest
-     versioning.
+   - In Section 5: what a source declaration covers (earlier materials
+     called this the manifest), the data and choices it makes available for
+     consent, `consent_time_field`, views, and declaration versioning.
    - In Section 6: source kinds, stream and profile selection, and the
      difference between protocol-enforced constraints, structured policy
      declarations, and attributed client claims.
@@ -96,7 +96,52 @@ Questions for discussion:
   consent metadata come from?
 - Which selection-request fields can the protocol enforce, and how should
   consent distinguish policy declarations from client claims?
-- When a source's manifest changes — a view gains new fields, or a view
+- When a source's declaration changes — a view gains new fields, or a view
   definition itself changes — should a client that already selected that
   view see the update automatically, or does every such change require a new
   selection?
+
+## Session 3: Grants and the resource server interface
+
+This session covers the two halves of enforcement: the grant, the durable
+record of what the user approved, and the resource server interface, where
+every read is checked against that record. It covers Core Sections 7–8.
+
+### Required (about 23 minutes)
+
+1. [PDPP Core, Sections 7–8](https://pdpp.dev/docs/spec-core#grant).
+   Focus on how the two sections fit together:
+
+   - In Section 7: grant fields and resolved stream grants, access modes
+     (`single_use` and `continuous`), time concepts and version layering,
+     grant narrowing, records from revoked grants, and retention.
+   - In Section 8: grant enforcement, token introspection, the read
+     endpoints and `changes_since`, and the error model.
+
+   Skim the JSON examples and field tables. The enforcement rules matter
+   more than any individual member.
+
+2. If time allows, skim Sections 9–11 (Conformance, Security, Privacy),
+   about 10 minutes. These sections do not get their own session; the
+   final session covers governance.
+
+### Context (optional, about 5 minutes)
+
+- [RFC 7009, Section 2.2](https://www.rfc-editor.org/rfc/rfc7009.html#section-2.2):
+  OAuth token revocation invalidates the token going forward and says
+  nothing about data already disclosed. Compare with PDPP's records from
+  revoked grants.
+- [Plaid /transactions/sync](https://plaid.com/docs/api/products/transactions/#transactionssync):
+  production cursor-based incremental sync returning added, modified, and
+  removed items. The same shape as PDPP's `changes_since`.
+
+Questions for discussion:
+
+- When a source declaration or a view changes, should an existing grant
+  keep serving its resolved fields unchanged, and how does a client move to
+  the new shape? (Carried from session 2.)
+- Revocation stops future access only. Is that the right boundary, and what
+  should retention commitments promise about records already delivered?
+- Should the resource server interface ever offer bulk export — a
+  grant-scoped archive produced on a schedule — alongside the live read
+  API?
