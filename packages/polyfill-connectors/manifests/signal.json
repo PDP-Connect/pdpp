@@ -31,12 +31,12 @@
       "local_collector": true
     },
     "public_listing": {
-      "tier": "development",
-      "rationale": "Real collection logic exists (query/parse/emit against a live Signal Desktop database via the sigtop sidecar), verified by unit tests and a mocked-subprocess integration test only — unverified against a real sigtop binary, a real Signal account, or any platform other than Linux. Hidden from the reference dashboard catalog until an operator proves a real run and explicitly opts it into listing."
+      "tier": "preview",
+      "rationale": "Real collection logic (query/parse/emit against a live Signal Desktop database via the sigtop sidecar), verified by unit tests and a mocked-subprocess integration test. The sigtop binary itself is now built from pinned source (v0.24.0, ISC) into the Core image and smoke-verified at build time, so the sidecar is proven present and executable on the shipped runtime. Listed as Preview rather than Supported because no repeatable live run against a real Signal account has been recorded yet, and only Linux is exercised. The owner opted this into listing to perform that first real run."
     },
     "reachability": {
       "applicable": false,
-      "rationale": "This connector has no network surface at all: it shells out to a local subprocess (sigtop) that reads a local encrypted file. There is no fixed public API base or unauthenticated-probeable endpoint to reach. Reachability and mock-mutation checks report UNKNOWN by design, the same as imessage/claude_code/whatsapp — see CONNECTOR-CHECKLIST.md's exemption rule."
+      "rationale": "This connector has no network surface at all: it shells out to a local subprocess (sigtop) that reads a local encrypted file. There is no fixed public API base or unauthenticated-probeable endpoint to reach. Reachability and mock-mutation checks report UNKNOWN by design, the same as imessage/claude_code/whatsapp \u2014 see CONNECTOR-CHECKLIST.md's exemption rule."
     },
     "refresh_policy": {
       "recommended_mode": "manual",
@@ -70,7 +70,10 @@
             "type": "string"
           },
           "sender": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "x_pdpp_role": "actor"
           },
           "sent_at": {
@@ -79,11 +82,17 @@
             "x_pdpp_role": "event-time"
           },
           "body": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "x_pdpp_role": "primary-title"
           },
           "type": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "has_attachments": {
             "type": "boolean"
@@ -92,9 +101,15 @@
             "type": "boolean"
           }
         },
-        "required": ["id", "conversation_id", "sent_at"]
+        "required": [
+          "id",
+          "conversation_id",
+          "sent_at"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "cursor_field": "sent_at",
       "consent_time_field": "sent_at",
       "selection": {
@@ -104,8 +119,13 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": ["body", "sender"],
-          "semantic_fields": ["body"]
+          "lexical_fields": [
+            "body",
+            "sender"
+          ],
+          "semantic_fields": [
+            "body"
+          ]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -127,20 +147,37 @@
             "type": "string"
           },
           "type": {
-            "type": ["string", "null"],
-            "enum": ["private", "group", null]
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "private",
+              "group",
+              null
+            ]
           },
           "title": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "x_pdpp_role": "primary-title"
           },
           "member_count": {
-            "type": ["integer", "null"]
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "selection": {
         "fields": true,
         "resources": true
@@ -148,8 +185,12 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": ["title"],
-          "semantic_fields": ["title"]
+          "lexical_fields": [
+            "title"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -182,9 +223,16 @@
             "x_pdpp_role": "actor"
           }
         },
-        "required": ["id", "message_id", "emoji", "sender"]
+        "required": [
+          "id",
+          "message_id",
+          "emoji",
+          "sender"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "selection": {
         "fields": true,
         "resources": true
@@ -192,7 +240,9 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": ["sender"]
+          "lexical_fields": [
+            "sender"
+          ]
         }
       },
       "relationships": [
@@ -212,7 +262,7 @@
       "description": "Attachment metadata and bytes exported via `sigtop export-attachments`, joined against Signal Desktop's message_attachments table when available (schema version >= 1360 only).",
       "display": {
         "label": "Your Signal attachments",
-        "detail": "Filename, MIME type, size, linked message when the join succeeds, and a blob reference when the local file was hydrated. Bytes are read only from inside sigtop's own decrypted export directory (a connector-controlled trusted root — canonicalized and verified before any read, rejecting `../` traversal and a symlink that escapes the root) since Signal Desktop encrypts attachment blobs at rest and only sigtop knows how to decrypt them. Optional: on a Signal Desktop schema older than version 1360 (no message_attachments table), attachment bytes still hydrate but message_id/content_type degrade to null/best-effort rather than the stream failing."
+        "detail": "Filename, MIME type, size, linked message when the join succeeds, and a blob reference when the local file was hydrated. Bytes are read only from inside sigtop's own decrypted export directory (a connector-controlled trusted root \u2014 canonicalized and verified before any read, rejecting `../` traversal and a symlink that escapes the root) since Signal Desktop encrypts attachment blobs at rest and only sigtop knows how to decrypt them. Optional: on a Signal Desktop schema older than version 1360 (no message_attachments table), attachment bytes still hydrate but message_id/content_type degrade to null/best-effort rather than the stream failing."
       },
       "semantics": "append_only",
       "schema": {
@@ -222,10 +272,16 @@
             "type": "string"
           },
           "message_id": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "conversation_id": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "filename": {
             "type": "string",
@@ -235,20 +291,38 @@
             "type": "string"
           },
           "size_bytes": {
-            "type": ["integer", "null"]
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "content_sha256": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "hydration_status": {
             "type": "string",
-            "enum": ["deferred", "hydrated", "failed", "too_large", "missing"]
+            "enum": [
+              "deferred",
+              "hydrated",
+              "failed",
+              "too_large",
+              "missing"
+            ]
           },
           "hydration_error": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "blob_ref": {
-            "type": ["object", "null"],
+            "type": [
+              "object",
+              "null"
+            ],
             "properties": {
               "blob_id": {
                 "type": "string"
@@ -263,12 +337,24 @@
                 "type": "integer"
               }
             },
-            "required": ["blob_id", "mime_type", "sha256", "size_bytes"]
+            "required": [
+              "blob_id",
+              "mime_type",
+              "sha256",
+              "size_bytes"
+            ]
           }
         },
-        "required": ["id", "filename", "content_type", "hydration_status"]
+        "required": [
+          "id",
+          "filename",
+          "content_type",
+          "hydration_status"
+        ]
       },
-      "primary_key": ["id"],
+      "primary_key": [
+        "id"
+      ],
       "selection": {
         "fields": true,
         "resources": true
