@@ -89,6 +89,30 @@ services:
       POSTGRES_USER: pdpp
       POSTGRES_PASSWORD: ${PDPP_POSTGRES_PASSWORD:-pdpp}
       POSTGRES_DB: pdpp
+    # Postgres ships defaults sized for a small dev database. A PDPP node is a
+    # write-heavy record store: a real instance reached 5.4M records / 76 GB,
+    # where the stock max_wal_size of 1GB forced a checkpoint every 16-22
+    # seconds. Postgres logged "checkpoints are occurring too frequently"
+    # 8,209 times, ingest returned intermittent 503
+    # (ingest_batch_storage_error), and two backend processes were killed
+    # under the write pressure. Raising the WAL ceiling and checkpoint window
+    # removed the warnings outright.
+    #
+    # These are deliberately modest -- safe on a 4 GB VPS, and far better than
+    # the defaults on anything larger. An operator with more RAM should raise
+    # shared_buffers (~25% of RAM) and effective_cache_size (~50-75%).
+    command:
+      - postgres
+      - -c
+      - max_wal_size=${PDPP_POSTGRES_MAX_WAL_SIZE:-8GB}
+      - -c
+      - min_wal_size=${PDPP_POSTGRES_MIN_WAL_SIZE:-1GB}
+      - -c
+      - checkpoint_timeout=${PDPP_POSTGRES_CHECKPOINT_TIMEOUT:-15min}
+      - -c
+      - shared_buffers=${PDPP_POSTGRES_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${PDPP_POSTGRES_EFFECTIVE_CACHE_SIZE:-1536MB}
     # No published port: Postgres is reachable only from the compose network.
     # If you publish one, change PDPP_POSTGRES_PASSWORD first.
     volumes:
