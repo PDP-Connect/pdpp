@@ -7,7 +7,7 @@ settings:
 overrides:
   '@pdpp/cli': workspace:*
   '@pdpp/read-core': workspace:*
-  '@pdpp/connector-protocol': github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/connector-protocol
+  '@pdpp/connector-protocol': file:./vendor/pdpp-connector-protocol-0.0.1.tgz
   '@pdpp/reference-contract': workspace:*
 
 importers:
@@ -443,11 +443,11 @@ importers:
   packages/polyfill-connectors:
     dependencies:
       '@pdpp/collector-runtime':
-        specifier: github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/collector-runtime
-        version: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/collector-runtime
+        specifier: file:../../vendor/pdpp-collector-runtime-0.0.1.tgz
+        version: file:vendor/pdpp-collector-runtime-0.0.1.tgz
       '@pdpp/connector-protocol':
-        specifier: github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/connector-protocol
-        version: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol
+        specifier: file:../../vendor/pdpp-connector-protocol-0.0.1.tgz
+        version: file:vendor/pdpp-connector-protocol-0.0.1.tgz
       '@pdpp/reference-contract':
         specifier: workspace:*
         version: link:../reference-contract
@@ -537,11 +537,11 @@ importers:
         specifier: ^4.2.0
         version: 4.2.0
       '@pdpp/collector-runtime':
-        specifier: github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/collector-runtime
-        version: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/collector-runtime
+        specifier: file:../vendor/pdpp-collector-runtime-0.0.1.tgz
+        version: file:vendor/pdpp-collector-runtime-0.0.1.tgz
       '@pdpp/connector-protocol':
-        specifier: github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/connector-protocol
-        version: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol
+        specifier: file:../vendor/pdpp-connector-protocol-0.0.1.tgz
+        version: file:vendor/pdpp-connector-protocol-0.0.1.tgz
       '@pdpp/mcp-server':
         specifier: workspace:*
         version: link:../packages/mcp-server
@@ -1974,13 +1974,13 @@ packages:
     resolution: {integrity: sha512-C7fOmIV6HP0vVclWJZr4us0ZqBhw4zZU/ikPjoChiNW/VlFXl5TrBWsK9V8f/Es99vaul4Edh3981eruln1PYw==}
     engines: {node: '>=24'}
 
-  '@pdpp/collector-runtime@https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/collector-runtime':
-    resolution: {path: packages/collector-runtime, tarball: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a}
+  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.1.tgz':
+    resolution: {integrity: sha512-B47/VEPyHUraY/EksH8b0wNILRaIeE76D9iUWfob4JC7HKs8eThweMTgBlzWt8U8Ql/yAYAF8LjbHEfMQILPyw==, tarball: file:vendor/pdpp-collector-runtime-0.0.1.tgz}
     version: 0.0.1
     engines: {node: '>=22.14.0'}
 
-  '@pdpp/connector-protocol@https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol':
-    resolution: {path: packages/connector-protocol, tarball: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a}
+  '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.1.tgz':
+    resolution: {integrity: sha512-C08WlUpkIRhzHAzyu9FHxSwiU4uGPvDIzqwZpUYd0PyNGokWHSoW72iPaZVEvqauR64nwHGeFU3Q+FOJMei/hA==, tarball: file:vendor/pdpp-connector-protocol-0.0.1.tgz}
     version: 0.0.1
     engines: {node: '>=22.14.0'}
 
@@ -7947,12 +7947,12 @@ snapshots:
     dependencies:
       transformation-matrix: 3.1.0
 
-  '@pdpp/collector-runtime@https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/collector-runtime':
+  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.1.tgz':
     dependencies:
-      '@pdpp/connector-protocol': https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol
+      '@pdpp/connector-protocol': file:vendor/pdpp-connector-protocol-0.0.1.tgz
       '@pdpp/reference-contract': link:packages/reference-contract
 
-  '@pdpp/connector-protocol@https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol':
+  '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.1.tgz':
     dependencies:
       zod: 4.4.3
 
