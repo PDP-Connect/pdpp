@@ -35,14 +35,24 @@ Trial organizations (no credit card) are refused at the final release step with
 trial organizations`, even though app creation, Postgres provisioning, and IP
 allocation succeed. Add a card at the Fly billing dashboard before launching.
 
-Fast image-backed path, using the current public Core image:
+Two launch paths, and the difference matters:
+
+- **Image-backed** (below) — Fly pulls the prebuilt public Core image from
+  GHCR. Nothing is compiled; the deploy is fast and runs the same artifact the
+  Docker and Railway paths run.
+- **Source-build** (further down) — Fly builds the root `Dockerfile` target
+  `core` from the repository via [`fly.toml`](./fly.toml). Use it to deploy
+  local modifications or an unreleased commit. It is slower and its result is
+  whatever the source tree produces, not the published release.
+
+Fast image-backed path, using the released public Core image:
 
 ```sh
 APP="pdpp-core-$(openssl rand -hex 3)"
 OWNER_PASSWORD="$(openssl rand -base64 24)"
 
 fly launch \
-  --image ghcr.io/pdp-connect/pdpp/core:sha-39232ac \
+  --image ghcr.io/pdp-connect/pdpp/core:latest \
   --name "$APP" \
   --region iad \
   --internal-port 3000 \
@@ -58,7 +68,13 @@ fly launch \
 printf 'Origin: https://%s.fly.dev\nOwner password: %s\n' "$APP" "$OWNER_PASSWORD"
 ```
 
-Source-build fallback from the public repository:
+`:latest` moves only when a release succeeds and always resolves to the same
+image as that release's version tag. To pin a deployment, substitute an
+immutable tag (`core:1.5.1` or `core:sha-<rev>`); the rollback command below
+takes the same form.
+
+Source-build path from the public repository. This builds the `core` target
+from source rather than pulling the published image:
 
 ```sh
 APP="pdpp-core-$(openssl rand -hex 3)"

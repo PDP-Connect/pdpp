@@ -17,7 +17,7 @@ search downloads, and persists its model cache under `/var/lib/pdpp`.
 
 ```sh
 docker run -d --name pdpp --restart unless-stopped -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
-  ghcr.io/pdp-connect/pdpp/core:main
+  ghcr.io/pdp-connect/pdpp/core:latest
 docker logs -f pdpp
 ```
 
@@ -129,13 +129,21 @@ runtime diagnostics surface (`GET /_ref/deployment`).
 Upgrade by pulling and recreating; volumes persist:
 
 ```sh
-docker pull ghcr.io/pdp-connect/pdpp/core:main && docker rm -f pdpp && <your docker run>
+docker pull ghcr.io/pdp-connect/pdpp/core:latest && docker rm -f pdpp && <your docker run>
 # or, compose:
 docker compose pull && docker compose up -d
 ```
 
-The published `:main` tag tracks the repository default branch. Pin a
-`sha-<rev>` tag (see GHCR) if you want explicit, reproducible upgrades.
+`:latest` is the released channel: it moves only when a release succeeds, and
+it always resolves to the same image as that release's own version tag. Prefer
+it for a node you want to keep current.
+
+For a reproducible deployment — pinning a known-good build, or reproducing a
+bug against one exact image — name an immutable tag instead. Both the release
+version (`core:1.5.1`) and the commit build (`core:sha-<rev>`) are published
+and never move; browse GHCR for the available tags. `:main` also exists and
+tracks the default branch, ahead of any release; it is a development tag, not
+an onboarding target.
 
 ## Teardown
 

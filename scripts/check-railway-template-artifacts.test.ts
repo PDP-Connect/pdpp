@@ -59,7 +59,8 @@ const CORE_CREDENTIAL_ENCRYPTION_KEY_PATTERN = /core\.PDPP_CREDENTIAL_ENCRYPTION
 const AS_URL_REFERENCE_PRIVATE_DOMAIN_PATTERN = /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}/;
 const REFERENCE_PORT_PATTERN = /reference\.PORT/;
 const ONE_APPLICATION_SERVICE_POSTGRES_PLUGIN_PATTERN = /one application service plus a Postgres plugin/i;
-const NEVER_LATEST_PATTERN = /never\s+`?latest`?/i;
+const NEVER_MOVING_TAG_PATTERN = /never a moving tag/i;
+const CORE_LATEST_PATTERN = /ghcr\.io\/pdp-connect\/pdpp\/core:latest/;
 const VERSION_TAG_PLACEHOLDER_PATTERN = /<version-tag>/;
 const CONSOLE_RAILWAY_PORT_PATTERN = /console[\s\S]*Railway[\s\S]*\$PORT/i;
 const RAILWAY_GHCR_PUBLIC_COMMAND_PATTERN = /pnpm railway:ghcr-public/;
@@ -195,7 +196,11 @@ test("streaming launcher publishes a real Chromium TCP endpoint", () => {
 test("deploy Docker Compose uses one Core service plus Postgres and durable data", () => {
   const compose = read("deploy/docker/docker-compose.yml");
   assert.match(compose, /^  core:/m);
-  assert.match(compose, /ghcr\.io\/pdp-connect\/pdpp\/core:main/);
+  // Onboarding names the released channel, never the default-branch tag.
+  // `:main` tracks main ahead of any release; pointing a self-host quickstart
+  // at it ships operators unreleased code.
+  assert.match(compose, /ghcr\.io\/pdp-connect\/pdpp\/core:latest/);
+  assert.doesNotMatch(compose, /ghcr\.io\/pdp-connect\/pdpp\/core:main/);
   assert.match(compose, /^  postgres:/m);
   assert.match(compose, /pdpp-data:\/var\/lib\/pdpp/);
   assert.match(compose, /PDPP_EMBEDDING_CACHE_DIR: \/var\/lib\/pdpp\/transformers/);
@@ -237,8 +242,13 @@ test("Railway handoff documents the public core image-source template shape", ()
   assert.match(handoff, GHCR_PDP_CONNECT_CORE_PATTERN);
   assert.match(handoff, ONE_APPLICATION_SERVICE_POSTGRES_PLUGIN_PATTERN);
 
-  // A concrete version tag must be pinned; latest/moving tags are disallowed.
-  assert.match(handoff, NEVER_LATEST_PATTERN);
+  // Both paths must stay documented and distinguishable: `core:latest` as the
+  // moving public image path, and a concrete immutable `<version-tag>` for a
+  // reproducible template revision. The reproducibility rule survives as
+  // "pin one, never a moving tag" — it now scopes the pin instead of banning
+  // `latest` outright, which the release pipeline publishes deliberately.
+  assert.match(handoff, CORE_LATEST_PATTERN);
+  assert.match(handoff, NEVER_MOVING_TAG_PATTERN);
   assert.match(handoff, VERSION_TAG_PLACEHOLDER_PATTERN);
 });
 
@@ -270,6 +280,50 @@ test("release matrices publish Core and do not expose compatibility aliases", ()
     assert.doesNotMatch(read(publicPath), /ghcr\.io\/pdp-connect\/pdpp\/core-browser/);
   }
   assert.doesNotMatch(read("deploy/railway/template.md").split(historicalMarker)[0], /core-browser/);
+});
+
+// The defect this guards: `publish-images` used to run AFTER `release`, so an
+// image build that failed left a published GitHub release and git tag naming a
+// version whose images were never pushed. Repairing that meant deleting a
+// public release. The ordering below makes the failure mode "no release
+// happened" instead, and `latest` moves only by copying the manifest that was
+// already published under the immutable tag.
+test("release publishes immutable images before semantic-release, then promotes latest", () => {
+  const workflow = read(".github/workflows/semantic-release.yml");
+  const jobs = workflow.split(/\n {2}(?=[a-z-]+:\n)/);
+  const jobNamed = (name: string): string => {
+    const job = jobs.find((entry) => entry.trimStart().startsWith(`${name}:`));
+    assert.ok(job, `workflow must define the ${name} job`);
+    return job;
+  };
+
+  const candidate = jobNamed("publish-candidate-images");
+  const release = jobNamed("release");
+  const promote = jobNamed("promote-release-images");
+
+  // semantic-release cannot create the tag until the images are pushed.
+  assert.match(release, /needs:\s*\[[^\]]*publish-candidate-images[^\]]*\]/);
+
+  // The candidate publish writes immutable tags only. A `latest` here would
+  // advertise a version semantic-release has not yet committed to.
+  assert.match(candidate, /type=raw,value=\$\{\{ needs\.resolve-version\.outputs\.new-release-version \}\}/);
+  assert.match(candidate, /type=sha,prefix=sha-/);
+  assert.doesNotMatch(candidate, /type=raw,value=latest/);
+  assert.doesNotMatch(candidate, /needs\.release\.outputs/);
+
+  // Multi-arch, SBOM and provenance stay on the immutable publish.
+  assert.match(candidate, /platforms: linux\/amd64,linux\/arm64/);
+  assert.match(candidate, /provenance: mode=max/);
+  assert.match(candidate, /sbom: true/);
+
+  // Promotion runs only after a real release, copies the manifest rather than
+  // rebuilding, and proves both the source and the result resolve.
+  assert.match(promote, /needs:\s*\[[^\]]*release[^\]]*\]/);
+  assert.match(promote, /needs\.release\.outputs\.published == 'true'/);
+  assert.match(promote, /docker buildx imagetools create/);
+  assert.match(promote, /imagetools inspect[\s\S]*\$\{PDPP_IMAGE\}:\$\{VERSION\}/);
+  assert.match(promote, /\$\{PDPP_IMAGE\}:latest/);
+  assert.doesNotMatch(promote, /docker\/build-push-action/);
 });
 
 test("Railway handoff wires the runnable GHCR public-image probe into the publish gate", () => {

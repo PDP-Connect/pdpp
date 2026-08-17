@@ -220,7 +220,7 @@ jobs:
 
   release:
     name: publish GitHub and npm release
-    needs: [resolve-version, quality]
+    needs: [resolve-version, quality, publish-candidate-images]
     if: needs.resolve-version.outputs.new-release-published == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -260,10 +260,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm release
 
-  publish-images:
-    name: publish release image ${{ matrix.image }}
-    needs: [release, validate-release-images]
-    if: needs.release.outputs.published == 'true'
+  # Publishes the candidate images BEFORE semantic-release creates the GitHub
+  # release and git tag. Ordering is the whole point: when this job ran after
+  # `release`, an image build that failed left a published GitHub release and
+  # tag advertising a version whose images never existed, and the only repair
+  # was to delete a public release. Building first makes the failure mode
+  # "no release happened", which is recoverable by pushing again.
+  #
+  # Only immutable tags are written here (the candidate version and sha-<rev>).
+  # `latest` is deliberately NOT in this tag list: a moving channel tag must
+  # not advertise a version that semantic-release has not yet committed to.
+  # The promote-release-images job below moves `latest` onto the exact manifest
+  # this job published, after the release succeeds.
+  publish-candidate-images:
+    name: publish candidate image ${{ matrix.image }}
+    needs: [resolve-version, quality, validate-release-images]
+    if: needs.resolve-version.outputs.new-release-published == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -325,10 +337,9 @@ jobs:
             org.opencontainers.image.title=${{ matrix.title }}
             org.opencontainers.image.description=${{ matrix.description }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ needs.release.outputs.version }}
+            org.opencontainers.image.version=${{ needs.resolve-version.outputs.new-release-version }}
           tags: |
-            type=raw,value=${{ needs.release.outputs.version }}
-            type=raw,value=latest
+            type=raw,value=${{ needs.resolve-version.outputs.new-release-version }}
             type=sha,prefix=sha-
 
       - name: Build and push image
@@ -349,3 +360,82 @@ jobs:
           sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           target: ${{ matrix.target }}
+
+  # Moves the `latest` channel tag onto the EXACT manifest that
+  # publish-candidate-images already pushed, once semantic-release has actually
+  # created the release. This is a registry-side manifest copy, not a rebuild:
+  # `docker buildx imagetools create -t <dst> <src>` copies the source manifest
+  # list by digest, so `latest` and the immutable version tag are guaranteed to
+  # be the same bytes — multi-arch entries, SBOM and provenance attestations
+  # included. Rebuilding here would instead produce a second, differently-built
+  # image under `latest` that no immutable tag points at.
+  promote-release-images:
+    name: promote ${{ matrix.image }} to latest
+    needs: [release, publish-candidate-images]
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [reference, reference-browser, web, core]
+
+    steps:
+      - name: Compute image name
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          echo "PDPP_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fail before touching `latest` if the candidate is missing. Without this,
+      # a promotion typo would surface as a confusing imagetools error after
+      # the release already exists.
+      - name: Verify the candidate manifest exists
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${PDPP_IMAGE}:${VERSION}" > /dev/null
+
+      - name: Promote candidate to latest
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${PDPP_IMAGE}:latest" \
+            "${PDPP_IMAGE}:${VERSION}"
+
+      # Proves the promotion actually landed: `latest` must now resolve to the
+      # same digest as the immutable candidate tag. A silent no-op or a partial
+      # copy fails here rather than shipping a stale `latest` to every operator
+      # whose onboarding docs name that tag.
+      - name: Verify latest resolves to the promoted manifest
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          candidate_digest="$(docker buildx imagetools inspect \
+            --format '{{json .Manifest.Digest}}' "${PDPP_IMAGE}:${VERSION}")"
+          latest_digest="$(docker buildx imagetools inspect \
+            --format '{{json .Manifest.Digest}}' "${PDPP_IMAGE}:latest")"
+          echo "candidate ${PDPP_IMAGE}:${VERSION} -> ${candidate_digest}"
+          echo "promoted  ${PDPP_IMAGE}:latest -> ${latest_digest}"
+          if [ "${candidate_digest}" != "${latest_digest}" ]; then
+            echo "::error::latest does not resolve to the promoted candidate manifest" >&2
+            exit 1
+          fi
