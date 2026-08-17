@@ -35,6 +35,7 @@ export const HERO_WATER_STREAMS: readonly (readonly (readonly [string, string])[
     ["total_sleep", "7h39m"],
     ["sleep_score", "74"],
     ["day", "2026-03-09"],
+    ["total_sleep", "6h12m"],
   ],
   [
     ["artist", "Grouper"],
@@ -54,6 +55,7 @@ export const HERO_WATER_STREAMS: readonly (readonly (readonly [string, string])[
     ["rank", "5"],
     ["artist", "Biosphere"],
     ["play_count", "33"],
+    ["rank", "6"],
   ],
   [
     ["title", "Weather"],
@@ -73,5 +75,6 @@ export const HERO_WATER_STREAMS: readonly (readonly (readonly [string, string])[
     ["messages", "17"],
     ["title", "Standup notes"],
     ["role", "agent"],
+    ["messages", "9"],
   ],
 ];

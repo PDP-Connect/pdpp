@@ -4,9 +4,18 @@
 import { cn } from "@/lib/utils.ts";
 import { HERO_WATER_STREAMS } from "./hero-water-data.ts";
 
-// Must be <= the shortest stream in hero-water-data.ts, or a column repeats
-// itself on screen (`rowIndex % stream.length` wraps early).
-const ROWS_PER_COLUMN = 17;
+// Must be a MULTIPLE OF 3 and <= the shortest stream in hero-water-data.ts.
+//
+// Each column is one record stream and each record is three fields, so the
+// labels recur every third row by design — that repetition is the schema, not
+// duplication. At 17 the loop cut the sixth record in half, so the drift never
+// repeated cleanly and the seam between the two stacked copies landed
+// mid-record. 18 is six whole records.
+//
+// The <= constraint is separate: a stream shorter than this repeats inside a
+// single visible column (`rowIndex % stream.length` wraps early), which is how
+// "title Weather" once appeared twice a few lines apart.
+const ROWS_PER_COLUMN = 18;
 
 // Durations are close together and deliberately NOT ordered by column index.
 // They were 41s / 33s / 22s left-to-right, which reads as one mechanism with a
