@@ -219,6 +219,24 @@ services:
       POSTGRES_USER: ${PDPP_POSTGRES_USER:-pdpp}
       POSTGRES_PASSWORD: ${PDPP_POSTGRES_PASSWORD:-pdpp}
       POSTGRES_DB: ${PDPP_POSTGRES_DB:-pdpp}
+    # Same tuning rationale as deploy/docker/docker-compose.yml: Postgres
+    # defaults are sized for a small dev database, and a PDPP node is a
+    # write-heavy record store. On the owner's 5.4M-record instance the stock
+    # 1GB max_wal_size forced checkpoints every 16-22 seconds, logged 8,209
+    # "checkpoints are occurring too frequently" warnings, produced
+    # intermittent 503s on ingest, and contributed to two backend crashes.
+    command:
+      - postgres
+      - -c
+      - max_wal_size=${PDPP_POSTGRES_MAX_WAL_SIZE:-8GB}
+      - -c
+      - min_wal_size=${PDPP_POSTGRES_MIN_WAL_SIZE:-1GB}
+      - -c
+      - checkpoint_timeout=${PDPP_POSTGRES_CHECKPOINT_TIMEOUT:-15min}
+      - -c
+      - shared_buffers=${PDPP_POSTGRES_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${PDPP_POSTGRES_EFFECTIVE_CACHE_SIZE:-1536MB}
     # Loopback-only by default. The proof service ships with default
     # `pdpp/pdpp` credentials and must not be reachable from LAN/WAN out of
     # the box. Operators who deliberately want LAN exposure must change
