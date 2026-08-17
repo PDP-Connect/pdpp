@@ -140,8 +140,8 @@ Questions for discussion:
 - When a source declaration or a view changes, should an existing grant
   keep serving its resolved fields unchanged, and how does a client move to
   the new shape? (Carried from session 2.)
-- Revocation stops future access only. Is that the right boundary, and what
-  should retention commitments promise about records already delivered?
-- Should the resource server interface ever offer bulk export — a
-  grant-scoped archive produced on a schedule — alongside the live read
-  API?
+- Retention is a commitment the protocol records but cannot enforce. What
+  should retention terms promise about records already delivered, and what
+  should happen to those records when a grant ends?
+- Should the resource server interface offer bulk export alongside the live
+  read API, so that a grant-scoped archive can be produced on a schedule?
