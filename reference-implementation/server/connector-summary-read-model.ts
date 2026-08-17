@@ -2915,6 +2915,35 @@ interface BoundedObservationPhases {
 }
 
 /**
+ * Alternates which repair phase — `missing` (rare: no evidence row at all,
+ * bounded/capped) or `generic` (the everyday case: dirty/stale/checkpoint-
+ * mismatched rows) — gets first opportunity at the deadline REMAINING after
+ * the fold (the fold itself always runs first, unconditionally — see its
+ * own comment in `runBoundedObservationPhases`). `missing`'s own discovery
+ * is a FIXED, batched read over the whole requested scope regardless of how
+ * few (or zero) rows it will actually repair — cheap in the common case, but
+ * not reserved-against, so under load (contended pool connections, a large
+ * scope) it can legitimately consume the rest of the round's cooperative
+ * deadline before `generic` ever starts. Observed in production
+ * (2026-08-17): 11 connections sat dirty with SUCCEEDED runs and current
+ * terminal facts for over an hour, every round reporting
+ * `candidatesInspected` from `missing`'s discovery alone and
+ * `candidateReasonCounts: {}` / `repaired: 0` / `skipped: 0` — `generic`'s
+ * own discovery, the only phase that ever classifies `"dirty"`, never ran.
+ * Fixed the same way `connector-maintenance-sweep.ts` closes the identical
+ * walk-vs-acceleration starvation: alternating first opportunity gives
+ * `generic` a hard 2-round bound on how long it can be denied its turn,
+ * rather than a reordering that would just relocate the same unbounded risk
+ * onto `missing`.
+ */
+let nextFirstObservationPhase: "missing" | "generic" = "missing";
+
+/** Test-only: pin the alternation state so a test does not depend on prior calls' ordering. */
+export function __testOnlySetNextFirstObservationPhase(phase: "missing" | "generic"): void {
+  nextFirstObservationPhase = phase;
+}
+
+/**
  * Run bounded phases under one cooperative deadline. The helper owns the
  * time-versus-work policy: a fold batch or writer-fenced repair may finish
  * after entry, but no later unit starts once the absolute deadline expires.
@@ -2956,18 +2985,47 @@ async function runBoundedObservationPhases(
     return result;
   };
 
+  // The fold always runs FIRST, unconditionally — existing participants'
+  // terminal-fact progress must never be held hostage by either repair
+  // phase's latency (a separately load-bearing, separately tested
+  // invariant: "SQLite: a 25-row first page folds before slow generic
+  // repairs..." in connector-summary-evidence-bounded-sweep.test.ts).
+  // Alternation below applies ONLY to `missing` vs `generic`'s relative
+  // order, after the fold has already had its turn.
   const firstFold = await startFold();
   if (firstFold !== null) {
     foldOutcome = firstFold;
   }
-  const missing = await startRepair(["missing"], BOUNDED_MISSING_REPAIR_CANDIDATES);
-  if (foldOutcome.participants === 0 && missing.repaired > 0) {
-    const coldFold = await startFold();
-    if (coldFold !== null) {
-      foldOutcome = coldFold;
+
+  const runMissing = () => startRepair(["missing"], BOUNDED_MISSING_REPAIR_CANDIDATES);
+  const runGeneric = () => startRepair(GENERIC_REPAIR_CANDIDATE_REASONS, options.maxCandidates);
+  const runColdFoldIfWarranted = async (missingResult: ReconcilePhaseResult) => {
+    if (foldOutcome.participants === 0 && missingResult.repaired > 0) {
+      const coldFold = await startFold();
+      if (coldFold !== null) {
+        foldOutcome = coldFold;
+      }
     }
+  };
+
+  // Committed before either repair phase runs, and flipped for the NEXT
+  // call regardless of this call's outcome — same contract as
+  // `connector-maintenance-sweep.ts`'s `nextFirstTranche`: `generic` can be
+  // denied first opportunity for at most one consecutive call.
+  const genericFirst = nextFirstObservationPhase === "generic";
+  nextFirstObservationPhase = genericFirst ? "missing" : "generic";
+
+  let missing: ReconcilePhaseResult;
+  let generic: ReconcilePhaseResult;
+  if (genericFirst) {
+    generic = await runGeneric();
+    missing = await runMissing();
+    await runColdFoldIfWarranted(missing);
+  } else {
+    missing = await runMissing();
+    await runColdFoldIfWarranted(missing);
+    generic = await runGeneric();
   }
-  const generic = await startRepair(GENERIC_REPAIR_CANDIDATE_REASONS, options.maxCandidates);
   const result = mergeReconcilePhaseResults(missing, generic);
   // A repair that started before the deadline may finish after it. The
   // cooperative contract makes that unit finish cleanly; it is incomplete
