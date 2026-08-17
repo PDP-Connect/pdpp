@@ -23,11 +23,16 @@ The published template uses:
 
 | Service | Source | Public? | Purpose |
 |---|---|---:|---|
-| `core` | `ghcr.io/pdp-connect/pdpp/core:<version-tag>` | yes | Console on Railway `$PORT`; reference AS/RS and browser connectors inside the same container. |
+| `core` | `ghcr.io/pdp-connect/pdpp/core:latest` (or a pinned `<version-tag>`) | yes | Console on Railway `$PORT`; reference AS/RS and browser connectors inside the same container. |
 | `Postgres` | Railway plugin | no | Durable records, grants, runs, sessions, and tokens. |
 
-Pin a concrete version tag, not `latest`, so the template is reproducible. The
-GHCR package must be anonymously pullable before the template is published:
+`core:latest` is the moving public image path: it advances only on a successful
+release and always resolves to the same manifest as that release's version tag.
+Name a concrete immutable tag instead (`core:1.5.1`, `core:sha-<rev>`) when a
+template revision must be reproducible or when debugging one exact image.
+
+Whichever tag the template names, the GHCR package must be anonymously pullable
+before the template is published:
 
 ```sh
 pnpm railway:ghcr-public --tag <version-tag>
@@ -153,8 +158,8 @@ pnpm docker:smoke
 
 For a live source project or scratch template deploy:
 
-1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/core:<version-tag>` and add
-   Railway Postgres.
+1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/core:latest` (or a pinned
+   `<version-tag>`) and add Railway Postgres.
 2. Set `PDPP_REFERENCE_ORIGIN`, `PDPP_OWNER_PASSWORD`, and
    `PDPP_DATABASE_URL` exactly as above.
 3. Generate a public domain for `core`.
@@ -179,7 +184,8 @@ For a live source project or scratch template deploy:
 Use [`template.md`](./template.md) for the publication handoff. The button is
 ready for user-facing placement after the 2026-06-06 live gate:
 
-- `pnpm railway:ghcr-public --tag sha-6581820` passed.
+- `pnpm railway:ghcr-public` passed against the tag current at that gate
+  (`sha-6581820`, since superseded and no longer published).
 - A source project with exactly `core` plus Postgres passes the live gate above.
 - Railway generates and publishes the template.
 - A fresh scratch project deployed from the published template passes the live
