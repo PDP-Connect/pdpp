@@ -73,6 +73,12 @@ function processBinding(
   return { connectorId, logicalKey, source: { key: sourceKey, kind: "process_env" }, targetKey };
 }
 
+test("empty operator policy values mean no policy", () => {
+  const empty = { approvedBindings: [], approvedProxyConnectorIds: [] };
+  assert.deepEqual(parseConnectorEnvironmentPolicy(""), empty);
+  assert.deepEqual(parseConnectorEnvironmentPolicy(" \t\n"), empty);
+});
+
 test("operator policy parsing fails closed on malformed sources and collisions", () => {
   assert.throws(
     () =>

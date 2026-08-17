@@ -267,10 +267,14 @@ export function parseConnectorEnvironmentPolicy(
 ): ConnectorEnvironmentPolicy {
   let value = raw;
   if (typeof raw === "string") {
-    try {
-      value = JSON.parse(raw);
-    } catch (error) {
-      throw new Error(`${label} must contain valid JSON`, { cause: error });
+    if (raw.trim().length === 0) {
+      value = undefined;
+    } else {
+      try {
+        value = JSON.parse(raw);
+      } catch (error) {
+        throw new Error(`${label} must contain valid JSON`, { cause: error });
+      }
     }
   }
   if (value === undefined || value === null) {
