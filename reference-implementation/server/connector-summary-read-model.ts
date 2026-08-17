@@ -1986,7 +1986,13 @@ function seedFoldState(participants: readonly Row[]): {
     // it; it simply must not drag the shared read cursor backward. When EVERY
     // participant lacks a checkpoint the floor stays 0, so a fresh install
     // still reads from the beginning.
-    if (checkpoint !== null) {
+    // Guard 0 as well as null. A row that has never had a terminal event
+    // folded into it stores a literal 0 checkpoint, not NULL, so guarding
+    // only null still let it pull the shared floor to the beginning of the
+    // log -- observed after the first fix shipped: the floor read 0 again
+    // with four participants, and the sweep resumed burning its budget from
+    // seq 0 against a 1.44M-event log.
+    if (checkpoint !== null && checkpoint > 0) {
       sinceSeq = Math.min(sinceSeq, checkpoint);
     }
   }
@@ -2138,6 +2144,16 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
     return true;
   }
   const checkpoint = row.stream_facts_event_seq;
+  // A row refused as historical with a zero checkpoint has no terminal event
+  // at its own generation AND no position in the log. Checkpoint-lag is
+  // trivially true for it (0 < maxSeq always), so falling through to that
+  // predicate makes it rejoin every pass forever -- exactly the starvation
+  // the historical carve-out above was meant to end. It re-enters only when
+  // something actually changes for it: a new event lands and the generic
+  // dirty/candidate path marks it, or its checkpoint advances past zero.
+  if (Number(checkpoint ?? 0) === 0 && row.terminal_facts_reason_code === "terminal_facts_historical") {
+    return false;
+  }
   return checkpoint === null || (maxSeq !== null && Number(checkpoint) < maxSeq);
 }
 
