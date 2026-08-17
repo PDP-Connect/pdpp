@@ -9,6 +9,10 @@
     "bindings": {
       "filesystem": {
         "required": true
+      },
+      "desktop_session": {
+        "required": true,
+        "rationale": "Signal Desktop's SQLCipher key is stored encrypted in config.json behind Electron safeStorage and unwraps only through a session-bound OS keyring (kwallet6/gnome-keyring, Keychain, DPAPI). Copying the database to another host is insufficient: the key is not in the file. This connector can therefore only run on the owner's logged-in desktop session."
       }
     },
     "environment_variables": [
