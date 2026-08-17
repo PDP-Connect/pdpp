@@ -217,9 +217,9 @@ function readPolyfillConnectorsManifests(): ManifestLike[] {
 }
 
 /** Every `*.json` manifest directly under `reference-implementation/
- * manifests/`, parsed. Same posture as {@link readPolyfillConnectorsManifests}. */
+ * fixtures/seed-manifests/`, parsed. Same posture as {@link readPolyfillConnectorsManifests}. */
 function readReferenceImplementationManifests(): ManifestLike[] {
-  const referenceImplementationManifestsDir = resolve(riRoot, "manifests");
+  const referenceImplementationManifestsDir = resolve(riRoot, "fixtures", "seed-manifests");
   const out: ManifestLike[] = [];
   let files: string[];
   try {

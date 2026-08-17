@@ -48,7 +48,9 @@ function mustRow<T extends Record<string, unknown>>(value: T | undefined, descri
   return value;
 }
 
-const SPOTIFY_MANIFEST = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests", "spotify.json"), "utf8"));
+const SPOTIFY_MANIFEST = JSON.parse(
+  readFileSync(join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests", "spotify.json"), "utf8")
+);
 const SPOTIFY_CONNECTOR_KEY_RAW = canonicalConnectorKey(SPOTIFY_MANIFEST.connector_id);
 assert.ok(SPOTIFY_CONNECTOR_KEY_RAW, "fixture: spotify.json must declare a canonicalizable connector_id");
 const SPOTIFY_CONNECTOR_KEY: string = SPOTIFY_CONNECTOR_KEY_RAW;

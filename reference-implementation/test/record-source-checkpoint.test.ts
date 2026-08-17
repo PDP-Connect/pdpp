@@ -39,7 +39,9 @@ const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const OWNER_SUBJECT_ID = "owner_local";
 const NOW = "2026-07-17T00:00:00.000Z";
 
-const SPOTIFY_MANIFEST = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests", "spotify.json"), "utf8"));
+const SPOTIFY_MANIFEST = JSON.parse(
+  readFileSync(join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests", "spotify.json"), "utf8")
+);
 const SPOTIFY_CONNECTOR_KEY_RAW = canonicalConnectorKey(SPOTIFY_MANIFEST.connector_id);
 assert.ok(SPOTIFY_CONNECTOR_KEY_RAW, "fixture: spotify.json must declare a canonicalizable connector_id");
 const SPOTIFY_CONNECTOR_KEY: string = SPOTIFY_CONNECTOR_KEY_RAW;

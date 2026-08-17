@@ -422,12 +422,15 @@ test("falsifiability (P2 fix): a non-manifest JSON file dropped in a manifest ro
     "synthetic-manifest-root-provenance-load.ts",
     [
       'import { readFileSync } from "node:fs";',
-      'const POLICY_PATH = new URL("../manifests/not-a-manifest-secret-policy.json", import.meta.url);',
+      'const POLICY_PATH = new URL("../fixtures/seed-manifests/not-a-manifest-secret-policy.json", import.meta.url);',
       'const POLICY = JSON.parse(readFileSync(POLICY_PATH, "utf8"));',
       "",
     ].join("\n"),
     (relPath) => {
-      const fakeManifestPath = join(repoRoot, "reference-implementation/manifests/not-a-manifest-secret-policy.json");
+      const fakeManifestPath = join(
+        repoRoot,
+        "reference-implementation/fixtures/seed-manifests/not-a-manifest-secret-policy.json"
+      );
       writeFileSync(fakeManifestPath, JSON.stringify({ some_policy_blob: true }));
       try {
         const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
@@ -447,12 +450,15 @@ test("falsifiability: a real manifest-root file WITH manifest provenance is not 
     "synthetic-manifest-root-real-provenance-load.ts",
     [
       'import { readFileSync } from "node:fs";',
-      'const MANIFEST_PATH = new URL("../manifests/synthetic-provenance-ok.json", import.meta.url);',
+      'const MANIFEST_PATH = new URL("../fixtures/seed-manifests/synthetic-provenance-ok.json", import.meta.url);',
       'const MANIFEST = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));',
       "",
     ].join("\n"),
     (relPath) => {
-      const realManifestPath = join(repoRoot, "reference-implementation/manifests/synthetic-provenance-ok.json");
+      const realManifestPath = join(
+        repoRoot,
+        "reference-implementation/fixtures/seed-manifests/synthetic-provenance-ok.json"
+      );
       writeFileSync(realManifestPath, JSON.stringify({ connector_id: "synthetic-test-connector" }));
       try {
         const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
@@ -1301,14 +1307,17 @@ test("AST authority: importing a connector manifest JSON directly and reading .s
   withSyntheticProductionFile(
     "synthetic-manifest-import-extract-kind.ts",
     [
-      'import whatsappManifest from "../manifests/whatsapp-manifest-import-probe.json" with { type: "json" };',
+      'import whatsappManifest from "../fixtures/seed-manifests/whatsapp-manifest-import-probe.json" with { type: "json" };',
       "export function isWhatsAppKind(kind: string | null): boolean {",
       "  return kind === whatsappManifest.setup.manual_or_upload.validation.kind;",
       "}",
       "",
     ].join("\n"),
     (relPath) => {
-      const fakeManifestPath = join(repoRoot, "reference-implementation/manifests/whatsapp-manifest-import-probe.json");
+      const fakeManifestPath = join(
+        repoRoot,
+        "reference-implementation/fixtures/seed-manifests/whatsapp-manifest-import-probe.json"
+      );
       writeFileSync(
         fakeManifestPath,
         JSON.stringify({
@@ -1333,14 +1342,17 @@ test("AST authority: importing a connector manifest JSON and reading .connector_
   withSyntheticProductionFile(
     "synthetic-manifest-import-extract-connector-key.ts",
     [
-      'import gmailManifest from "../manifests/gmail-manifest-import-probe.json" with { type: "json" };',
+      'import gmailManifest from "../fixtures/seed-manifests/gmail-manifest-import-probe.json" with { type: "json" };',
       "export function isGmail(): string {",
       "  return gmailManifest.connector_key;",
       "}",
       "",
     ].join("\n"),
     (relPath) => {
-      const fakeManifestPath = join(repoRoot, "reference-implementation/manifests/gmail-manifest-import-probe.json");
+      const fakeManifestPath = join(
+        repoRoot,
+        "reference-implementation/fixtures/seed-manifests/gmail-manifest-import-probe.json"
+      );
       writeFileSync(
         fakeManifestPath,
         JSON.stringify({ connector_id: "synthetic-gmail-probe", connector_key: "gmail" })
@@ -1777,14 +1789,17 @@ test("AST authority counterweight: importing a manifest for a legitimate generic
   withSyntheticProductionFile(
     "synthetic-manifest-import-generic-read.ts",
     [
-      'import connectorManifest from "../manifests/generic-display-name-probe.json" with { type: "json" };',
+      'import connectorManifest from "../fixtures/seed-manifests/generic-display-name-probe.json" with { type: "json" };',
       "export function displayName(): string {",
       "  return connectorManifest.display_name;",
       "}",
       "",
     ].join("\n"),
     (relPath) => {
-      const fakeManifestPath = join(repoRoot, "reference-implementation/manifests/generic-display-name-probe.json");
+      const fakeManifestPath = join(
+        repoRoot,
+        "reference-implementation/fixtures/seed-manifests/generic-display-name-probe.json"
+      );
       writeFileSync(
         fakeManifestPath,
         JSON.stringify({ connector_id: "synthetic-generic-probe", display_name: "Synthetic Probe" })
