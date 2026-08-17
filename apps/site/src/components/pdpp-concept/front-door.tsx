@@ -51,13 +51,13 @@ export function PdppFrontDoor() {
             {/* The h1 for `/`. The wordmark above is an image and the lockup's
                 status stamp is chrome, so this line is the page's only heading. */}
             <Text as="h1" size="title" weight="medium">
-              Personal Data Portability Protocol (PDPP) is an open protocol for scoped access to personal data.
+              PDPP is an open protocol for scoped access to personal data.
             </Text>
             <Text className="opacity-60" size="title" weight="medium">
-              Use your purchases, messages, workouts, and more in apps and agents. Share only what you choose.
+              Use your purchases, messages, workouts, and more in apps and agents.
             </Text>
             <Text color="muted" size="body" wrap="balanced">
-              It profiles{" "}
+              PDPP profiles{" "}
               <a href="https://oauth.net/2/" rel="noopener noreferrer" target="_blank">
                 OAuth 2.0
               </a>{" "}
@@ -65,7 +65,7 @@ export function PdppFrontDoor() {
               <a href="https://www.rfc-editor.org/info/rfc9396" rel="noopener noreferrer" target="_blank">
                 RFC 9396
               </a>
-              , the same pattern as{" "}
+              , like{" "}
               <a href="https://www.smarthealthit.org/" rel="noopener noreferrer" target="_blank">
                 SMART on FHIR
               </a>{" "}
