@@ -2112,7 +2112,26 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
   // has nothing to be historical ABOUT. The same retry behavior (participate
   // every pass until genuinely converged) is correct for other recoverable
   // terminal-fold failures too.
-  if (row.terminal_facts_state !== "current") {
+  // A row refused as `terminal_facts_historical` has no attributable event at
+  // its own generation. Re-running the fold changes nothing until a NEW
+  // fact-carrying event lands at that generation -- which is exactly what
+  // `maxSeq` movement detects below. Participating unconditionally makes such
+  // a row rejoin every pass forever, converging to the identical verdict each
+  // time while consuming the shared budget.
+  //
+  // Observed in production 2026-08-17: seven sources whose records arrived
+  // outside a collection run (manual imports, device uploads, recovered
+  // archives) held this reason permanently. The sweep ran 10.5s against its
+  // 2s budget with those seven as participants, so eight OTHER rows that had
+  // genuinely just collected sat `dirty` and never got repaired -- the same
+  // starvation shape as the checkpoint floor, one layer up.
+  //
+  // Fall through to the checkpoint-lag predicate instead: the row still
+  // rejoins the moment the log advances past its checkpoint, so a real new
+  // event converges it, and pure silence no longer costs a pass. Every other
+  // non-current state (fold failure, contention, incomplete replay) is
+  // genuinely retryable and still participates unconditionally.
+  if (row.terminal_facts_state !== "current" && row.terminal_facts_reason_code !== "terminal_facts_historical") {
     return true;
   }
   if (rowIsFoldLogicVersionBehind(row)) {
