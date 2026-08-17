@@ -269,9 +269,22 @@ importers:
 
   packages/collector-runtime:
     dependencies:
+      '@pdpp/connector-protocol':
+        specifier: workspace:*
+        version: link:../connector-protocol
       '@pdpp/reference-contract':
         specifier: workspace:*
         version: link:../reference-contract
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 2.5.7
+        version: 2.5.7
+      ultracite:
+        specifier: 7.10.2
+        version: 7.10.2
+
+  packages/connector-protocol:
+    dependencies:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -306,6 +319,9 @@ importers:
       '@pdpp/collector-runtime':
         specifier: workspace:*
         version: link:../collector-runtime
+      '@pdpp/connector-protocol':
+        specifier: workspace:*
+        version: link:../connector-protocol
       conventional-changelog-conventionalcommits:
         specifier: ^10.2.1
         version: 10.2.1
@@ -472,6 +488,9 @@ importers:
       '@pdpp/collector-runtime':
         specifier: workspace:*
         version: link:../collector-runtime
+      '@pdpp/connector-protocol':
+        specifier: workspace:*
+        version: link:../connector-protocol
       '@pdpp/reference-contract':
         specifier: workspace:*
         version: link:../reference-contract
@@ -563,6 +582,9 @@ importers:
       '@pdpp/collector-runtime':
         specifier: workspace:*
         version: link:../packages/collector-runtime
+      '@pdpp/connector-protocol':
+        specifier: workspace:*
+        version: link:../packages/connector-protocol
       '@pdpp/mcp-server':
         specifier: workspace:*
         version: link:../packages/mcp-server

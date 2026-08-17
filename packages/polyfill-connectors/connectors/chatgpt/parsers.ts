@@ -6,7 +6,7 @@
 // browser-context auth, API client, and the collect() orchestrator live in
 // index.ts.
 
-import { pdppSafeText } from "@pdpp/collector-runtime/pdpp-safe-text";
+import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
 import type { RecordData } from "../../src/connector-runtime.ts";
 import type {
   ChatGptContent,

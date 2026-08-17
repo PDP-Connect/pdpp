@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { EmittedMessage } from "@pdpp/collector-runtime";
+import type { EmittedMessage } from "@pdpp/connector-protocol";
 import type { BrowserContext, Page } from "playwright";
 import {
   type BrowserLaunchSource,

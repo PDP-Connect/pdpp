@@ -59,7 +59,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import { SaxesParser } from "saxes";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {

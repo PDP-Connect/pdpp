@@ -4,7 +4,7 @@
 // Shapes for the Gmail connector. Extracted from index.ts so parsers.ts
 // and tests can import them without pulling in the IMAP runtime entry.
 
-import type { RuntimeContinuationFact } from "@pdpp/collector-runtime/connector-runtime-protocol";
+import type { RuntimeContinuationFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import type {
   AttachmentHydrationFailureOutcomeProgress,
   AttachmentRecoveryOutcomeProgress,

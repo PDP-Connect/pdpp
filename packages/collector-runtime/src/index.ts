@@ -15,10 +15,18 @@
  *   - drive the collector loop (collector-runner.ts);
  *   - speak the device-exporter ingest contract (local-device-client.ts,
  *     local-device-envelope.ts, local-device-queue.ts, local-device-outbox.ts);
- *   - advertise runtime capabilities (runtime-capabilities.ts);
- *   - implement the JSONL protocol primitives (safe-emit.ts,
- *     scope-filters.ts, is-main-module.ts) and the message-type shapes
- *     (connector-runtime-protocol.ts).
+ *   - advertise runtime capabilities (runtime-capabilities.ts).
+ *
+ * The connector-facing JSONL wire-protocol message types
+ * (connector-runtime-protocol.ts), the bootstrap guard (is-main-module.ts),
+ * and the emit/scope-filter primitives (safe-emit.ts, scope-filters.ts) moved
+ * out to `@pdpp/connector-protocol` — the connector AUTHORING CONTRACT — so
+ * connector authors do not have to depend on this runtime package (and its
+ * release cadence) just to get the files they author against. This package
+ * depends on `@pdpp/connector-protocol` (content→protocol←runtime is the
+ * intended terminal shape); it no longer re-exports that package's surface
+ * from this barrel — import `@pdpp/connector-protocol` directly for those
+ * types.
  *
  * `static-secret-injection.ts` deliberately did NOT move here even though it
  * was previously re-exported from this slice's old home
@@ -67,30 +75,6 @@ export {
   summarizeCollectorCompleteness,
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
-export type {
-  AssistanceAttachment,
-  AssistanceAttachmentKind,
-  AssistanceCompletion,
-  AssistanceCompletionStatus,
-  AssistanceOwnerAction,
-  AssistanceProgressPosture,
-  AssistanceRequest,
-  AssistanceResponseContract,
-  AssistanceSensitivity,
-  DetailCoverageMessage,
-  DetailGapMessage,
-  DetailGapRecoveredMessage,
-  DetailGapStartEntry,
-  EmittedMessage,
-  InteractionKind,
-  InteractionRequest,
-  InteractionResponse,
-  RecordData,
-  StartMessage,
-  StreamScope,
-  ValidateRecord,
-} from "./connector-runtime-protocol.ts";
-export { isMainModule } from "./is-main-module.ts";
 export {
   DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS,
   type EnrollmentExchangeRequest,
@@ -159,23 +143,3 @@ export {
   RuntimeCapabilityMismatchError,
   type RuntimeCapabilityProfile,
 } from "./runtime-capabilities.ts";
-export {
-  emitToStdout,
-  parseJsonlLine,
-  stringifyForJsonl,
-} from "./safe-emit.ts";
-export {
-  type EmitGate,
-  type EmitGateRecord,
-  type EmitTombstonesArgs,
-  emitTombstones,
-  type MakeEmitGateOptions,
-  makeEmitGate,
-  passesResourceFilter,
-  passesTimeRange,
-  type RequireCredentialsOrAskArgs,
-  requireCredentialsOrAsk,
-  resourceSet,
-  type StreamRequest,
-  type TimeRange,
-} from "./scope-filters.ts";

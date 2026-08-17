@@ -9,7 +9,7 @@
  */
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
-import { validateRuntimeContinuationFact } from "@pdpp/collector-runtime/connector-runtime-protocol";
+import { validateRuntimeContinuationFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";

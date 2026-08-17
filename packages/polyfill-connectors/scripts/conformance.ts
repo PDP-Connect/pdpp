@@ -40,7 +40,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import { KNOWN_SCAFFOLD_CONNECTORS } from "../src/connector-conformance-roster.ts";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");

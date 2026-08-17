@@ -16,7 +16,7 @@
  * bundle stays filesystem-class only so the publish stays browser-free.
  */
 
-import type { LocalCollectorDefinition } from "@pdpp/collector-runtime/collector-definition";
+import type { LocalCollectorDefinition } from "@pdpp/connector-protocol/collector-definition";
 import { applePhotosCollectorDefinition } from "../connectors/apple_photos/collector-definition.ts";
 import { claudeCodeCollectorDefinition } from "../connectors/claude_code/collector-definition.ts";
 import { codexCollectorDefinition } from "../connectors/codex/collector-definition.ts";
@@ -24,7 +24,7 @@ import { googleMessagesCollectorDefinition } from "../connectors/google_messages
 import { googleTakeoutCollectorDefinition } from "../connectors/google_takeout/collector-definition.ts";
 import { imessageCollectorDefinition } from "../connectors/imessage/collector-definition.ts";
 
-export type { LocalCollectorBinding, LocalCollectorDefinition } from "@pdpp/collector-runtime/collector-definition";
+export type { LocalCollectorBinding, LocalCollectorDefinition } from "@pdpp/connector-protocol/collector-definition";
 
 /**
  * Every connector definition the published local collector bundles, in the

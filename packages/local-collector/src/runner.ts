@@ -4,10 +4,14 @@
 /**
  * Programmatic entrypoint for `@pdpp/local-collector`.
  *
- * Re-exports the runner-side surface (collector loop, device-exporter
- * ingest client, runtime-capabilities profile, JSONL primitives, and
- * protocol message types) from the source-of-truth package,
- * `@pdpp/collector-runtime`.
+ * Re-exports the runner-side surface from its two source-of-truth packages:
+ * `@pdpp/collector-runtime` (the collector loop, device-exporter ingest
+ * client, durable outbox, runtime-capabilities profile) and
+ * `@pdpp/connector-protocol` (the connector authoring contract: JSONL
+ * wire-protocol message types and emit/scope-filter primitives —
+ * `is-main-module.ts`/`safe-emit.ts`/`scope-filters.ts`/
+ * `connector-runtime-protocol.ts`), which `@pdpp/collector-runtime` itself
+ * depends on.
  *
  * This runtime is connector-AGNOSTIC. It does not know which connectors
  * support local collection or what streams they emit — a connector declares
@@ -18,19 +22,19 @@
  *
  * Boundary: this module MUST NOT import `playwright`, `patchright`, any other
  * browser-bound dependency, OR any specific connector's code. Its only
- * dependency is the generic `@pdpp/collector-runtime` substrate. The
- * `@pdpp/local-collector` publish pipeline asserts the browser-free half with
- * a CI grep gate over the produced tarball.
+ * dependencies are the generic `@pdpp/collector-runtime` substrate and the
+ * `@pdpp/connector-protocol` authoring contract. The `@pdpp/local-collector`
+ * publish pipeline asserts the browser-free half with a CI grep gate over the
+ * produced tarball.
  *
- * Imports below use RELATIVE paths into `@pdpp/collector-runtime`'s source
- * (not the `@pdpp/collector-runtime` package specifier), matching this
- * package's build: `tsconfig.build.json` compiles collector-runtime's source
- * directly into this package's own `dist/` tree (the same vendoring already
- * used for the bundled polyfill-connectors connectors), so the published
- * tarball ships self-contained and never depends on `@pdpp/collector-runtime`
- * being installed. A bare package-specifier import would emit unresolvable
- * in the compiled output, since this package's `dist/` ships with no
- * `node_modules`.
+ * Imports below use RELATIVE paths into each package's source (not the
+ * package specifiers), matching this package's build: `tsconfig.build.json`
+ * compiles both packages' source directly into this package's own `dist/`
+ * tree (the same vendoring already used for the bundled polyfill-connectors
+ * connectors), so the published tarball ships self-contained and never
+ * depends on either package being installed. A bare package-specifier import
+ * would emit unresolvable in the compiled output, since this package's
+ * `dist/` ships with no `node_modules`.
  *
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §1–§3.
  */
@@ -39,7 +43,7 @@ import { existsSync } from "node:fs";
 import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { LocalCollectorDefinition } from "../../collector-runtime/src/collector-definition.ts";
+import type { LocalCollectorDefinition } from "../../connector-protocol/src/collector-definition.ts";
 import {
   COLLECTOR_RUNTIME_CAPABILITIES as POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES,
   COLLECTOR_PROTOCOL_VERSION as PROTOCOL_VERSION,
@@ -73,13 +77,10 @@ export {
   deriveLocalCollectorLifecycleState,
   diffRequiredBindings,
   drainCollectorQueue,
-  type EmittedMessage,
   type EnrollmentExchangeResponse,
-  emitToStdout,
   enrollCollector,
   evaluatePlacement,
   hashCanonicalJson,
-  isMainModule,
   LOCAL_COLLECTOR_LIFECYCLE_STATES,
   type LocalCollectorLifecycleInput,
   type LocalCollectorLifecycleState,
@@ -110,21 +111,26 @@ export {
   LocalDeviceRequestTimeoutError,
   type PlacementDecision,
   PROVIDER_RUNTIME_CAPABILITIES,
-  parseJsonlLine,
   RUNTIME_CAPABILITY_MISMATCH_CODE,
   type RuntimeBindingName,
   RuntimeCapabilityMismatchError,
   type RuntimeCapabilityProfile,
   readCollectionScopeFromState,
   resolveScopedStreamTimeRanges,
-  resourceSet,
   runCollectorConnector,
-  type StartMessage,
-  type StreamScope,
-  stringifyForJsonl,
   summarizeCollectorCompleteness,
   transformRecordsToCollectorEnvelopes,
 } from "../../collector-runtime/src/index.ts";
+export {
+  type EmittedMessage,
+  emitToStdout,
+  isMainModule,
+  parseJsonlLine,
+  resourceSet,
+  type StartMessage,
+  type StreamScope,
+  stringifyForJsonl,
+} from "../../connector-protocol/src/index.ts";
 
 /**
  * Public package capability profile.

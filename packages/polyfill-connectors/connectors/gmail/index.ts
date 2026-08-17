@@ -26,7 +26,7 @@
  */
 
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import { isMainModule, requireCredentialsOrAsk, resourceSet, stringifyForJsonl } from "@pdpp/collector-runtime";
+import { isMainModule, requireCredentialsOrAsk, resourceSet, stringifyForJsonl } from "@pdpp/connector-protocol";
 import {
   type FetchMessageObject,
   type FetchQueryObject,

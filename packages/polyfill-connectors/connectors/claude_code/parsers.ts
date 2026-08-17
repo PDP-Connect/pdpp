@@ -5,7 +5,7 @@
 // they can be unit-tested in isolation (see parsers.test.ts). The file
 // walker and JSONL iterator live in index.ts.
 
-import { safeTextPreview } from "@pdpp/collector-runtime/safe-text-preview";
+import { safeTextPreview } from "@pdpp/connector-protocol/safe-text-preview";
 import type { ContentPart, ParsedFrontmatter, SessionAccumulator } from "./types.ts";
 
 // ─── Constants ──────────────────────────────────────────────────────────

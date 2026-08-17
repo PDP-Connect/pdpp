@@ -14,7 +14,7 @@
  * Use permissive regex ^[A-Z][A-Z0-9]+$ rather than strict prefix validation.
  */
 
-import { pdppSafeText } from "@pdpp/collector-runtime/pdpp-safe-text";
+import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
 import { z } from "zod";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 

@@ -41,7 +41,11 @@
     // than cherry-picked file-by-file like the polyfill-connectors entries
     // above, matching this tsconfig's own top-level "src/**/*.ts" pattern;
     // "**/*.test.ts" is already excluded below.
-    "../collector-runtime/src/**/*.ts"
+    "../collector-runtime/src/**/*.ts",
+    // Connector authoring contract, carved out of collector-runtime into its
+    // own workspace package (engine-split slice 1b) so connector authors do
+    // not depend on the runtime package's release cadence.
+    "../connector-protocol/src/**/*.ts"
   ],
   "exclude": [
     "**/*.test.ts",

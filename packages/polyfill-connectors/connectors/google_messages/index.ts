@@ -142,7 +142,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import { type CollectContext, emitDetailCoverage, runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import type { CoverageRecord } from "../../src/local-source-inventory.ts";

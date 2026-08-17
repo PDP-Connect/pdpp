@@ -24,7 +24,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import type { BrowserContext, Locator, Page } from "playwright";
 import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
 import {

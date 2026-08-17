@@ -1,0 +1,58 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "root": false,
+  "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
+  "formatter": {
+    "lineWidth": 120
+  },
+  "overrides": [
+    {
+      // Carried over from `@pdpp/polyfill-connectors`'s biome.jsonc, whose
+      // audited rationale covers this file's retry loop verbatim
+      // (bounded_retry_polling: each attempt's outcome gates the next, so
+      // the loop is inherently sequential, not an incidental style choice).
+      // Behavior-preserving move: this code did not change, only its
+      // package (twice, now — polyfill-connectors -> collector-runtime ->
+      // connector-protocol).
+      "includes": ["src/http-retry.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noAwaitInLoops": "off"
+          }
+        }
+      }
+    },
+    {
+      // Public barrel. `src/index.ts` is the load-bearing entry for this
+      // package — it exists specifically to give consumers a single import
+      // path. The noBarrelFile perf concern (large module graphs of unused
+      // modules) does not apply: every module re-exported here is part of
+      // the published authoring-contract surface, and the file is
+      // intentionally narrow.
+      "includes": ["src/index.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    },
+    {
+      // Test-file override, carried over from `@pdpp/polyfill-connectors`'s
+      // biome.jsonc: test bodies routinely use inline
+      // /^\d{3}-.../-style regex literals for `assert.match` calls; perf is
+      // irrelevant in a test runner, and hoisting them would separate the
+      // pattern from the single call site it documents.
+      "includes": ["**/*.test.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "useTopLevelRegex": "off"
+          }
+        }
+      }
+    }
+  ]
+}

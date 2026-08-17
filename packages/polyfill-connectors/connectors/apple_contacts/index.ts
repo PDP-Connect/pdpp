@@ -39,7 +39,7 @@
  * the RFC 6350-standard field every server honors).
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import {
   buildFullScanCoverageMessage,
   createConnectorFailure,

@@ -29,7 +29,7 @@
  * grant). See src/google-oauth.ts for the shared refresh primitive.
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { type CollectContext, emitDetailCoverage, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";

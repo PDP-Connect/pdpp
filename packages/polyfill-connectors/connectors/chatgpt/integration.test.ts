@@ -50,7 +50,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { RetryExhaustedError, retryHttp } from "@pdpp/collector-runtime/http-retry";
+import { RetryExhaustedError, retryHttp } from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
 import { currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
 import { CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE } from "../../src/auto-login/chatgpt.ts";

@@ -24,7 +24,7 @@
 
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { stringifyForJsonl } from "@pdpp/collector-runtime";
+import { stringifyForJsonl } from "@pdpp/connector-protocol";
 import type { DetailGapStartEntry, EmittedMessage, RecordData, ValidateRecord } from "./connector-runtime.ts";
 
 const VM_RSS_STATUS_RE = /VmRSS:\s*(\d+)\s*kB/;

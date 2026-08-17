@@ -8,17 +8,15 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
   buildLocalDeviceRecordEnvelope,
-  type EmittedMessage,
   type EnrollmentExchangeResponse,
   LocalDeviceClient,
   LocalDeviceQueue,
   type LocalDeviceQueueItem,
   type LocalDeviceRecordEnvelope,
-  type StartMessage,
-  type StreamScope,
 } from "@pdpp/collector-runtime";
 import { buildAgentVersion } from "@pdpp/collector-runtime/collector-build-info";
 import { buildLocalDeviceIngestBatchRequest } from "@pdpp/collector-runtime/local-device-envelope";
+import type { EmittedMessage, StartMessage, StreamScope } from "@pdpp/connector-protocol";
 
 /**
  * Stream name a connector's per-store proof claims (e.g. `collected`) ride

@@ -48,7 +48,7 @@
  *   See docs/reference/connector-authoring-guide.md §9.1.
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import type { Page } from "playwright";
 import { ensureRedditSession, isSessionLive } from "../../src/auto-login/reddit.ts";
 import {

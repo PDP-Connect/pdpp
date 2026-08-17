@@ -1,9 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { retryAfterMsFromHeaders } from "@pdpp/connector-protocol/http-retry";
 import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
 import { COLLECTOR_PROTOCOL_HEADER, COLLECTOR_PROTOCOL_VERSION } from "./collector-protocol.ts";
-import { retryAfterMsFromHeaders } from "./http-retry.ts";
 import { hashCanonicalJson, type LocalDeviceIngestBatchRequest } from "./local-device-envelope.ts";
 
 export const LOCAL_DEVICE_ENDPOINTS = {

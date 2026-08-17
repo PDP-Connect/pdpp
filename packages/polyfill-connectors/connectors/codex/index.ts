@@ -56,7 +56,7 @@ import {
   resourceSet,
   type StreamScope,
   stringifyForJsonl,
-} from "@pdpp/collector-runtime";
+} from "@pdpp/connector-protocol";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import {
   dateDirectoryInRange,

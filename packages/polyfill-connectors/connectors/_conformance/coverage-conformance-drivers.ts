@@ -49,7 +49,7 @@
 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { EmittedMessage } from "@pdpp/collector-runtime";
+import type { EmittedMessage } from "@pdpp/connector-protocol";
 import type { CollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit, type RecordingEmit } from "../../src/test-harness.ts";
 

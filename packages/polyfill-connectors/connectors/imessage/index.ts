@@ -64,7 +64,7 @@ import { closeSync, existsSync, constants as fsConstants, fstatSync, openSync, r
 import { homedir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import { type EmittedMessage, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import {
   makeReferenceBlobUploader,

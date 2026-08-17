@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@pdpp/collector-runtime": "workspace:*",
+    "@pdpp/connector-protocol": "workspace:*",
     "@pdpp/reference-contract": "workspace:*",
     "@streamparser/json": "^0.0.23",
     "better-sqlite3": "^13.0.3",

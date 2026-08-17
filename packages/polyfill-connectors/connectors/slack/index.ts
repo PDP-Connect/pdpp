@@ -58,7 +58,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { isMainModule, resourceSet } from "@pdpp/collector-runtime";
+import { isMainModule, resourceSet } from "@pdpp/connector-protocol";
 import { describeConnectorArtifactRoot, resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import { readOptions } from "../../src/connector-options.ts";
 import {

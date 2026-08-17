@@ -22,7 +22,7 @@
  * honors that header and uses a conservative provider-local pacing profile.
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   type CollectContext,

@@ -20,7 +20,7 @@
  * On session expiry, emits INTERACTION kind=manual_action with sign-in URL.
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import pRetry, { AbortError } from "p-retry";
 import type { BrowserContext, Page } from "playwright";
 import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";

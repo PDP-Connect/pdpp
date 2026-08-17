@@ -34,7 +34,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isMainModule, resourceSet } from "@pdpp/collector-runtime";
+import { isMainModule, resourceSet } from "@pdpp/connector-protocol";
 import type { Page } from "playwright";
 import { ensureChaseSession } from "../../src/auto-login/chase.ts";
 import {

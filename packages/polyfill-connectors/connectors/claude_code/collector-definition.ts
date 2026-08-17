@@ -15,7 +15,7 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §3.
  */
 
-import type { LocalCollectorDefinition } from "@pdpp/collector-runtime/collector-definition";
+import type { LocalCollectorDefinition } from "@pdpp/connector-protocol/collector-definition";
 
 /**
  * Default stream set for an unscoped `claude_code` local-collector run.

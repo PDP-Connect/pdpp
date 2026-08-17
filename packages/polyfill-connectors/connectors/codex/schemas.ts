@@ -17,8 +17,8 @@
  *     for the +1-for-ellipsis bound; equivalent invariant to pdppSafeText.
  */
 
-import { pdppSafeText } from "@pdpp/collector-runtime/pdpp-safe-text";
-import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "@pdpp/collector-runtime/safe-text-preview";
+import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
+import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "@pdpp/connector-protocol/safe-text-preview";
 import { z } from "zod";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 

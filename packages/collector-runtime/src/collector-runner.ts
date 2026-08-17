@@ -28,8 +28,8 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
+import type { EmittedMessage, StartMessage, StreamScope } from "@pdpp/connector-protocol";
 import { buildAgentVersion } from "./collector-build-info.ts";
-import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import {
   type EnrollmentExchangeResponse,
   type HeartbeatLastError,

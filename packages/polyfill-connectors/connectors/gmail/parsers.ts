@@ -5,7 +5,7 @@
 // they can be unit-tested in isolation (see parsers.test.ts). The IMAP
 // client, its side effects, and clock-dependent helpers live in index.ts.
 
-import { safeTextPreview, stripForbiddenControlChars } from "@pdpp/collector-runtime/safe-text-preview";
+import { safeTextPreview, stripForbiddenControlChars } from "@pdpp/connector-protocol/safe-text-preview";
 import type { MessageAddressObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
 import { recordFingerprint } from "../../src/fingerprint-cursor.ts";
 import type { AttachmentRecord, BodySource, ClassifiedBody, ThreadAggregate } from "./types.ts";

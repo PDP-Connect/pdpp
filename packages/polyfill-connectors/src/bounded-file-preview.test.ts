@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { safeTextPreview } from "@pdpp/collector-runtime/safe-text-preview";
+import { safeTextPreview } from "@pdpp/connector-protocol/safe-text-preview";
 import { BOUNDED_PREVIEW_MAX_BYTES, readBoundedFilePreview } from "./bounded-file-preview.ts";
 
 let dir: string;

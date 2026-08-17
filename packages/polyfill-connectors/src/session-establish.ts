@@ -23,8 +23,8 @@ import type {
   AssistanceRequest,
   InteractionRequest,
   InteractionResponse,
-} from "@pdpp/collector-runtime";
-import type { ProgressExtra } from "@pdpp/collector-runtime/connector-runtime-protocol";
+} from "@pdpp/connector-protocol";
+import type { ProgressExtra } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import type { BrowserContext, Page } from "playwright";
 import { manualAction } from "./browser-handoff.ts";
 import type { CaptureSession } from "./fixture-capture.ts";

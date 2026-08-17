@@ -14,7 +14,7 @@
  * Rate limit: 3 req/s average.
  */
 
-import type { EmittedMessage } from "@pdpp/collector-runtime";
+import type { EmittedMessage } from "@pdpp/connector-protocol";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { buildFullScanCoverageMessage, politeDelay, runConnector } from "../../src/connector-runtime.ts";
 import { notionPacingProfile } from "../../src/provider-profile.ts";

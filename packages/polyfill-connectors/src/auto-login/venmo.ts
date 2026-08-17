@@ -28,7 +28,7 @@
  *      shape as reddit/amazon's OTP handoff.
  */
 
-import { redactTransportDetail } from "@pdpp/collector-runtime/http-retry";
+import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
 import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";

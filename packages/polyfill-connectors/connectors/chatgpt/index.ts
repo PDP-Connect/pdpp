@@ -21,13 +21,13 @@
  * conversation. Incremental via update_time cursor.
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import {
   RetryExhaustedError,
   retryAfterMsFromHeaders,
   retryHttp,
   TerminalHttpStatusError,
-} from "@pdpp/collector-runtime/http-retry";
+} from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
 import {
   type AdaptiveLane,

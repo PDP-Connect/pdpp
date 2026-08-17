@@ -23,7 +23,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { EmittedMessage } from "@pdpp/collector-runtime";
+import type { EmittedMessage } from "@pdpp/connector-protocol";
 import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";

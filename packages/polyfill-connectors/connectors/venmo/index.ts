@@ -63,8 +63,8 @@
  *   v0.1.0 — initial (unproven, never listed) password-grant connector.
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
-import { redactTransportDetail } from "@pdpp/collector-runtime/http-retry";
+import { isMainModule } from "@pdpp/connector-protocol";
+import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
 import { ensureVenmoOrigin, ensureVenmoSession } from "../../src/auto-login/venmo.ts";
 import {

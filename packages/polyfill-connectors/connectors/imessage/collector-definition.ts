@@ -27,7 +27,7 @@
  * the per-store diagnostic rollup claude_code/codex use.
  */
 
-import type { LocalCollectorDefinition } from "@pdpp/collector-runtime/collector-definition";
+import type { LocalCollectorDefinition } from "@pdpp/connector-protocol/collector-definition";
 
 export const IMESSAGE_DEFAULT_STREAMS = ["messages", "participants", "attachments"] as const;
 

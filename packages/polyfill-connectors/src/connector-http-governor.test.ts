@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { RetryExhaustedError } from "@pdpp/collector-runtime/http-retry";
+import { RetryExhaustedError } from "@pdpp/connector-protocol/http-retry";
 import {
   buildCollectionRateProgress,
   buildPacingStateFields,

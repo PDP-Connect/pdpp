@@ -2,21 +2,15 @@
   "name": "@pdpp/collector-runtime",
   "version": "0.0.1",
   "private": true,
-  "description": "Generic connector-execution runtime for PDPP local (device-side) collection: the collector loop, device-exporter ingest client, durable outbox, runtime-capabilities placement gate, and JSONL protocol primitives. Connector-agnostic — carries no connector definitions or content.",
+  "description": "Generic connector-execution runtime for PDPP local (device-side) collection: the collector loop, device-exporter ingest client, durable outbox, and runtime-capabilities placement gate. Depends on @pdpp/connector-protocol for the connector authoring contract (wire-protocol types, JSONL primitives). Connector-agnostic — carries no connector definitions or content.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./auth": "./src/auth.ts",
     "./collector-build-info": "./src/collector-build-info.ts",
-    "./collector-definition": "./src/collector-definition.ts",
     "./collector-runner": "./src/collector-runner.ts",
-    "./connector-runtime-protocol": "./src/connector-runtime-protocol.ts",
-    "./http-retry": "./src/http-retry.ts",
     "./local-device-client": "./src/local-device-client.ts",
-    "./local-device-envelope": "./src/local-device-envelope.ts",
-    "./pdpp-safe-text": "./src/pdpp-safe-text.ts",
-    "./safe-text-preview": "./src/safe-text-preview.ts"
+    "./local-device-envelope": "./src/local-device-envelope.ts"
   },
   "scripts": {
     "check": "ultracite check",
@@ -27,8 +21,8 @@
     "verify": "pnpm typecheck && pnpm check && pnpm check:noUnnecessaryConditions-expiry && pnpm test"
   },
   "dependencies": {
-    "@pdpp/reference-contract": "workspace:*",
-    "zod": "^4.4.3"
+    "@pdpp/connector-protocol": "workspace:*",
+    "@pdpp/reference-contract": "workspace:*"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.7",

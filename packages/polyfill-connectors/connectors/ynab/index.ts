@@ -32,8 +32,8 @@
  * and most-recent month).
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
-import { redactTransportDetail } from "@pdpp/collector-runtime/http-retry";
+import { isMainModule } from "@pdpp/connector-protocol";
+import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import { type ConnectorHttpGovernor, createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   type CollectContext,

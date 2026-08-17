@@ -24,7 +24,7 @@
  * which main() surfaces as a retryable DONE failure (see catch at bottom).
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import {
   buildCollectionRateProgress,
   buildPacingStateFields,

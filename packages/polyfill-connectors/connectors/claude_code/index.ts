@@ -31,8 +31,9 @@ import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
-import { canonicalJson, isMainModule } from "@pdpp/collector-runtime";
-import { safeTextPreview } from "@pdpp/collector-runtime/safe-text-preview";
+import { canonicalJson } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
+import { safeTextPreview } from "@pdpp/connector-protocol/safe-text-preview";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import {
   type EnumerationScope,

@@ -21,7 +21,7 @@
  * or challenge completion.
  */
 
-import { isMainModule } from "@pdpp/collector-runtime";
+import { isMainModule } from "@pdpp/connector-protocol";
 import pRetry from "p-retry";
 import type { Page } from "playwright";
 import { ensureHebSession, probeHebSession } from "../../src/auto-login/heb.ts";

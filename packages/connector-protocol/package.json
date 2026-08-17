@@ -1,0 +1,34 @@
+{
+  "name": "@pdpp/connector-protocol",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The connector authoring contract for PDPP: the JSONL wire-protocol message types, the LocalCollectorDefinition type contract, the bootstrap/emit/scope-filter primitives connector authors import directly, and small text/auth/retry utilities connectors depend on. Bottom of the dependency graph — depends on nothing in @pdpp/collector-runtime or @pdpp/polyfill-connectors, so connector authors never pull in the runtime package or its release cadence just to get the files they author against.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./auth": "./src/auth.ts",
+    "./collector-definition": "./src/collector-definition.ts",
+    "./connector-runtime-protocol": "./src/connector-runtime-protocol.ts",
+    "./http-retry": "./src/http-retry.ts",
+    "./pdpp-safe-text": "./src/pdpp-safe-text.ts",
+    "./safe-text-preview": "./src/safe-text-preview.ts"
+  },
+  "scripts": {
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node --test --import tsx --test-concurrency=2 --test-timeout=120000 \"src/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm typecheck && pnpm check && pnpm test"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "ultracite": "7.10.2"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  }
+}

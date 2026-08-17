@@ -31,7 +31,7 @@
  *     copied verbatim from the source, nullable.
  */
 
-import { pdppSafeText } from "@pdpp/collector-runtime/pdpp-safe-text";
+import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
 import { z } from "zod";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 

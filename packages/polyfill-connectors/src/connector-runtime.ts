@@ -46,9 +46,9 @@
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { emitToStdout, resourceSet } from "@pdpp/collector-runtime";
+import { emitToStdout, resourceSet } from "@pdpp/connector-protocol";
 
-import { type AuthConfig, resolveAuth } from "@pdpp/collector-runtime/auth";
+import { type AuthConfig, resolveAuth } from "@pdpp/connector-protocol/auth";
 import type {
   AssistanceCompletionStatus,
   AssistanceRequest,
@@ -66,7 +66,7 @@ import type {
   StartMessage,
   StreamScope,
   ValidateRecord,
-} from "@pdpp/collector-runtime/connector-runtime-protocol";
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 import {
   DEADLINE_TIMEOUT,
@@ -122,7 +122,7 @@ export type {
   StartMessage,
   StreamScope,
   ValidateRecord,
-} from "@pdpp/collector-runtime/connector-runtime-protocol";
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 
 // The session-establishment flow and the typed terminal-error primitive live
 // in `session-establish.ts` / `terminal-error.ts` (this runtime is their
