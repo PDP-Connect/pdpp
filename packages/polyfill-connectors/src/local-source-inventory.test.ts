@@ -528,3 +528,43 @@ test("descriptor authority carries no store whose stream is absent from its own 
     );
   }
 });
+
+test("coverage STATE parser tolerates an unexpected store while every expected store is present", () => {
+  // A collector build older than the server reports a store the current
+  // descriptor table no longer declares. It scanned MORE than asked, which
+  // cannot weaken the coverage claim: the parser already excludes unexpected
+  // stores from `rows`, so they can never corrupt the proof.
+  //
+  // Live case this reproduces: cin_ece4bfe5096b8bf67a1468c2 ("peregrine Codex")
+  // reported a legacy `logs` store alongside every declared store. That single
+  // extra name discarded a complete coverage proof over 1,293,596 collected
+  // records and rendered the source "Not measured".
+  const expected = expectedLocalCoverageStoreDescriptors("claude-code");
+  assert.ok(expected);
+  const parsed = parseCoverageDiagnosticsStateSnapshot("claude-code", {
+    fetched_at: "2026-07-21T12:00:00.000Z",
+    stores: [
+      ...expected.map(({ store, stream }) => ({ status: "inventory_only" as const, store, stream })),
+      { status: "inventory_only" as const, store: "logs", stream: "sessions" },
+    ],
+  });
+  assert.equal(parsed.hasCommittedSnapshot, true);
+  assert.deepEqual(parsed.unexpectedStores, ["logs"]);
+  assert.equal(parsed.malformed, false);
+  assert.equal(parsed.missingStores.length, 0);
+  assert.equal(
+    parsed.rows.some((row) => row.store === "logs"),
+    false
+  );
+});
+
+test("coverage STATE parser still fails closed when a required store is missing", () => {
+  const expected = expectedLocalCoverageStoreDescriptors("claude-code");
+  assert.ok(expected);
+  const parsed = parseCoverageDiagnosticsStateSnapshot("claude-code", {
+    fetched_at: "2026-07-21T12:00:00.000Z",
+    stores: expected.slice(1).map(({ store, stream }) => ({ status: "inventory_only" as const, store, stream })),
+  });
+  assert.equal(parsed.hasCommittedSnapshot, false);
+  assert.equal(parsed.missingStores.length, 1);
+});
