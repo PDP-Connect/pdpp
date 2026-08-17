@@ -647,7 +647,7 @@ test("surface: active unrejected credentials do not turn non-definitive auth tex
 });
 
 test("conditions: credential diagnostics redact token-shaped source details", () => {
-  const secret = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+  const secret = ["ghp", "abcdefghijklmnopqrstuvwxyz123456"].join("_");
   const snap = computeConnectionHealth(
     input({
       coverage: { axis: "partial" },

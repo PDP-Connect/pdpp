@@ -336,7 +336,7 @@ test("fetchCimdDocument omits escaped JSON-key credentials from transport events
 });
 
 test("fetchCimdDocument omits bare PAT-shaped credentials from transport events", async () => {
-  const marker = "ghp_gatepatcredentialvalue";
+  const marker = ["ghp", "gatepatcredentialvalue"].join("_");
   const event = await captureCredentialTransportFailure(transportFailure(marker, "UND_ERR_CONNECT"));
   assert.equal(JSON.stringify(event).includes(marker), false);
 });

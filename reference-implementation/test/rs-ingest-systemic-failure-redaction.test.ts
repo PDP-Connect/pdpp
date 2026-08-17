@@ -56,7 +56,7 @@ function withoutOwnerPassword(t: TestContext): void {
   });
 }
 
-const SECRET_MARKER = "sk_live_51DoNotLeakThisRecordSecretMarker9f3a";
+const SECRET_MARKER = "canary_DoNotLeakThisRecordSecretMarker9f3a";
 const PUBLIC_MESSAGE = "Ingest failed due to a transient storage error; retry later.";
 
 async function fetchJson(

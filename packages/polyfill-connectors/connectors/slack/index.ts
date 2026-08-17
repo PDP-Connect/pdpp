@@ -1722,6 +1722,35 @@ async function declareMessageFamilyCoverage(deps: StreamDeps, considered: number
 }
 
 /**
+ * Declares the messages self-coverage plus the reactions/message_attachments
+ * family coverage, ONCE, using the fully-merged `considered` total (the base
+ * archive plus every scoped archive `mergeScopedMessageArchivePasses` folded
+ * in). A no-op when the message family wasn't requested this run. Called
+ * unconditionally, once per run, from `collect()` — never from inside
+ * `runRequestedStreams`, which runs once per scoped archive during a fold,
+ * and the runtime rejects a repeated (state_stream, stream) DETAIL_COVERAGE
+ * pair.
+ */
+async function declareMergedMessageCoverage(deps: StreamDeps, considered: number): Promise<void> {
+  if (
+    !(deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments"))
+  ) {
+    return;
+  }
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream: "messages",
+      stateStream: "messages",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered,
+      covered: considered,
+    })
+  );
+  await declareMessageFamilyCoverage(deps, considered);
+}
+
+/**
  * Streams that use the per-record fingerprint cursor. Workspace + users +
  * files were re-emitting on every slackdump pass even when source state
  * hadn't moved — see record-version-churn-data-quality-report.md
@@ -2605,24 +2634,12 @@ export async function runRequestedStreams(
       legacyLastTs: priorTs,
       sinceTs: options.sinceTs ?? null,
     });
-    // One archive traversal supplies the parent denominator. Reactions and
-    // attachments ride this checkpoint window via manifest state_stream and
-    // must not receive a fabricated child-row denominator.
-    await deps.emit(
-      buildDetailCoverageMessage({
-        stream: "messages",
-        stateStream: "messages",
-        requiredKeys: [],
-        hydratedKeys: [],
-        considered: result.considered,
-        covered: result.considered,
-      })
-    );
-    // Reactions and message attachments are derived from the same retained
-    // MESSAGE rows. Declare that archive enumeration as their measured
-    // checkpoint boundary too; never use the child-record counts, which are
-    // not the boundary this pass enumerates.
-    await declareMessageFamilyCoverage(deps, result.considered);
+    // The messages/reactions/message_attachments DETAIL_COVERAGE is NOT
+    // emitted here: a scoped-archive fold calls this function once per
+    // archive (mergeScopedMessageArchivePasses), and the runtime rejects a
+    // repeated (state_stream, stream) DETAIL_COVERAGE pair. The caller emits
+    // coverage once, after every archive this run touches has been folded
+    // into a single merged `considered` total.
   }
   if (deps.requested.has("files")) {
     deps.progress("Slack: emitting files", { stream: "files" });
@@ -2928,6 +2945,8 @@ if (isMainModule(import.meta.url)) {
           streamDeps: deps,
         });
       }
+
+      await declareMergedMessageCoverage(deps, messageResult.considered);
 
       // Drop fingerprint entries for IDs that disappeared from the source
       // since the prior run on streams we actually requested. Streams the
