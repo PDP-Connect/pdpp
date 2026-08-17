@@ -261,29 +261,29 @@ test("runRequestedStreams: archive message enumeration bounds both derived strea
     requested,
   };
 
+  let result: Awaited<ReturnType<typeof runRequestedStreams>>;
   try {
-    await runRequestedStreams(deps, {}, {} as Parameters<typeof runRequestedStreams>[2], harness.emit);
+    result = await runRequestedStreams(deps, {}, {} as Parameters<typeof runRequestedStreams>[2], harness.emit);
   } finally {
     db.close();
   }
 
-  const coverage = harness.protocolMessages
-    .filter((message) => message.type === "DETAIL_COVERAGE")
-    .map((message) => ({
-      stream: message.stream,
-      stateStream: message.state_stream,
-      considered: message.considered,
-      covered: message.covered,
-    }));
-  assert.deepEqual(
-    coverage,
-    [
-      { stream: "messages", stateStream: "messages", considered: 2, covered: 2 },
-      { stream: "reactions", stateStream: "messages", considered: 2, covered: 2 },
-      { stream: "message_attachments", stateStream: "messages", considered: 2, covered: 2 },
-    ],
-    "each derived stream uses the two retained MESSAGE rows as its measured boundary, not child counts"
+  // runRequestedStreams itself no longer emits the messages/reactions/
+  // message_attachments DETAIL_COVERAGE (see
+  // openspec/changes/fix-slack-scoped-archive-coverage-duplication): a
+  // scoped-archive fold calls this function once per archive, and emitting
+  // here made every call after the first a duplicate (state_stream, stream)
+  // pair the runtime rejects. The caller now emits once, after every archive
+  // is folded into one merged total. What's still true here, and what this
+  // test asserts: the two retained MESSAGE rows are the boundary BOTH
+  // derived streams' eventual coverage is measured against, carried on the
+  // returned `considered`, not the emitted child-record counts (3 reactions,
+  // 2 attachments).
+  assert.equal(
+    harness.protocolMessages.some((message) => message.type === "DETAIL_COVERAGE"),
+    false
   );
+  assert.equal(result.considered, 2, "considered is the two retained MESSAGE rows, not the child counts");
 });
 
 // ─── Invariant 7a: parent-before-child within a single row ───────────────
