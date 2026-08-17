@@ -38,17 +38,15 @@ export function PdppConceptPage({ children, home = false, className }: ConceptPa
         // growing to 540px (39% of the viewport) at 1440x1400, larger than any
         // of seven reference landing pages at that size (Deno 1%, MCP 3%,
         // Tailscale 6%, Stripe 7%, Kubernetes 11%, Let's Encrypt 20%, Vercel
-        // 30%). Fixed by capping how much main will take (see max-h below)
-        // rather than by grow-0, which stops main growing but then strands the
-        // footer 404px above the bottom of a tall window. items-center on the
-        // grid distributes the surplus above AND below the hero instead of
-        // dumping all of it underneath.
+        // 30%). items-center distributes that surplus above AND below the hero
+        // instead of dumping all of it underneath. grow-0 was tried first and
+        // reverted: it stops main growing, which fixes the band but strands the
+        // footer 404px above the bottom of a tall window.
         home && "items-center",
         home &&
           "**:data-[slot=pdpp-concept-doc]:pt-7! **:data-[slot=pdpp-concept-doc]:pb-5! max-md:**:data-[slot=pdpp-concept-doc]:pt-0!",
         className
       )}
-      data-page={home ? "home" : undefined}
       data-slot="pdpp-concept-page"
     >
       {children}

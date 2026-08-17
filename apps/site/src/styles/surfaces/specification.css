@@ -14,9 +14,16 @@
  */
 
 [data-pdpp-doc-theme] {
-  /* Widest a figure (table, diagram) may grow. Prose holds --container-measure;
-     both live on the surface root so the hero and the body cannot drift onto
-     different edges. */
+  /* All three width tokens are declared HERE, on the surface root, so the hero
+     and the body cannot drift onto different edges.
+     --container-measure is restated rather than inherited on purpose:
+     PdppConceptShell puts data-surface="concept" and data-pdpp-doc-theme on the
+     SAME element, and both selectors are specificity (0,1,0). Leaving this to
+     the concept surface's 600px meant the spec's measure was decided by the
+     import order in specification/layout.tsx — swap those two lines and it
+     silently changes. The 1600px override below raises this same token. */
+  --container-measure: 600px;
+  /* Widest a figure (table, diagram) may grow. */
   --container-figure: 860px;
   /* How far a table may outdent past the prose measure on each side. Zero
      below the point where the measure is already the full column width —
@@ -328,15 +335,16 @@
  * else — and the edges drifted apart: at 1920 the table started at 525, the
  * prose at 595 and the hero at 703, three ragged edges down one page.
  *
- * The grid states the intent once instead. Three named columns:
+ * The grid states the intent once instead: one centred `measure` track with a
+ * flexible bleed either side.
  *
- *   [figure-start] ...bleed... [measure-start] ...text... [measure-end] ...bleed... [figure-end]
+ *   ...bleed... [measure-start] ...text... [measure-end] ...bleed...
  *
- * Prose occupies `measure`. Figures that genuinely need more room — wide
- * tables, diagrams — occupy `figure` and grow symmetrically about the same
- * centre line, so a table is wider than the prose but still concentric with
- * it. Nothing needs its own margin: the grid centres the whole stack, so the
- * measure stays optically centred between the two rails at every viewport.
+ * Every block sits in `measure`, so the whole stack shares one edge and stays
+ * optically centred between the two rails at every viewport. A table that
+ * needs more room outdents symmetrically from that edge (see --table-outset
+ * below) rather than occupying a second track — one mechanism decides
+ * horizontal placement, and the outset is a stated exception to it.
  *
  * This is the pattern Stripe and Cloudflare docs use (a measure column with an
  * opt-in wide track), and it is why their edges hold steady while scrolling.
@@ -347,9 +355,9 @@
 [data-pdpp-doc-theme] .pdpp-docs-body {
   display: grid;
   grid-template-columns:
-    [figure-start] minmax(0, 1fr)
+    minmax(0, 1fr)
     [measure-start] min(100%, var(--container-measure)) [measure-end]
-    minmax(0, 1fr) [figure-end];
+    minmax(0, 1fr);
   width: 100%;
   max-width: var(--container-figure);
   margin-inline: auto;

@@ -20,7 +20,8 @@
  * MCP 1472, Terraform 1600, SQLite uncapped). Raised on the token rather
  * than per-page so masthead, hero and footer keep one left edge; scoping it
  * to the page container alone left the hero hanging 100px outside the chrome
- * that frames it. Railed surfaces override to 1560 in components.css.
+ * that frames it. One container serves every surface — there is no railed
+ * override, which is what keeps the masthead at the same x on every page.
  *
  * Shared `Text` colors use brand/shadcn utils (text-foreground, text-primary, …).
  * Legacy ink/paper/teal TW classes remain in compat-palette.css until migrated.

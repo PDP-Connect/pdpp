@@ -85,63 +85,14 @@
    involved; OpenTelemetry, a 19-item list at 1220px). Multi-column grids in
    this class are overwhelmingly link cards, which .pdpp-channels already is. */
 @media (min-width: 1280px) {
-  /* ONE container for every surface, and the wordmark holds still because of
-     it. /specification runs three tracks (rail, measure, section TOC) and
-     needs to clear 480px of rails plus the measure plus gutters; at 1400 its
-     centre track fell to 536px at 1440 and squeezed the measure to 440, under
-     the 60-75ch convention and narrower than any of the 24 sites surveyed
-     (min 482). 1560 holds the full 600px measure with both rails present and
-     sits inside the surveyed band (median 1312, max 1904).
-
-     The concept pages run two tracks, so the surplus lands as right-hand air.
-     That is what the reference class does rather than a per-surface container:
-     Astro serves a 2-track page and a 3-track page from the same container
-     with the wordmark at an identical x on both (24/24), the 2-track page
-     simply carrying more air (232 vs 315). Better Stack, MCP, OpenTelemetry
-     and Kubernetes likewise hold one wordmark position across surfaces
-     (measured 2026-08-14). Two alternatives were tried and reverted: moving
-     the concept rail to the right balanced the outer edges but stranded the
-     gap in the middle and detached the contents list from its heading, and a
-     narrower concept-only container moved the masthead 190px between pages. */
-  /* Only pages that actually carry a rail. The front door has no rail and no
-     TOC — it is a single centred column, and widening its container to 1560
-     stranded the hero in the left half with ~690px of dead space beside it,
-     clipped the data columns mid-word, and wrapped the CTA row. Production
-     holds it at 1080 and that is correct for a one-track page. */
-  /* Scoped on the SHELL, not on the page container. The masthead is a sibling
-     of the page, so a :has() on the container widens the document track while
-     leaving the nav at the old width — measured 175px of split between the
-     wordmark and the rail on /self-host. The shell contains both, so both move
-     together and the wordmark stays put across surfaces. */
-
-  /* ONE container for every page and every part of it — chrome and body
-     alike. There is no railed-surface override, and that single fact is what
-     holds all three properties the reference class holds at once: the
-     masthead sits at the same x on the front door and on /specification, the
-     rail's links line up with the wordmark, and the measure stays centred.
-
-     Two narrower schemes were built and reverted. A railed-only override at
-     1560 aligned the rail but moved the masthead 75px between landing and
-     docs. Pinning the chrome back to the landing width fixed the masthead but
-     pushed the rail 75px outside it. Both are false trades: measured
-     2026-08-15, the three same-origin sites that hold one masthead position
-     (OpenTelemetry, MCP, Better Stack) also align rail to wordmark within
-     16px, because one container drives both.
-
-     The cost is a 640px measure at 1920 instead of 720. That is inside the
-     class — Better Stack ships 616 on a comparable three-track page, GitHub
-     720, Cloudflare 784, OpenTelemetry 976 — and the resulting rail-to-TOC
-     span of 1216px sits between Better Stack's 1146 and MCP's 1408. */
-
-  /* The document track keeps the figure bound so the widened container buys
-     margin, not line length. Capping individual tables does not work — they
-     carry max-width:100% of their section, which is already narrower — so the
+  /* The document track carries the figure bound so the container's extra width
+     becomes margin, not line length. Capping individual tables does not work —
+     they carry max-width:100% of a section that is already narrower — so the
      bound belongs on the track every wide block shares.
 
      Railed pages only. The front door is a full-bleed two-column hero, not a
-     measured document: capping it at the figure width squeezed it into the
-     left 720px of a 1080px container, clipped the data columns mid-word
-     ("artist Grou", "title Weath") and wrapped the three CTAs onto two rows. */
+     measured document: capping it here squeezed it into the left 720px of its
+     container, clipped the data columns mid-word and wrapped the CTA row. */
   [data-surface="concept"]:has([data-slot="pdpp-concept-rail"]) .pdpp-doc {
     max-width: var(--container-concept-figure);
   }
