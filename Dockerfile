@@ -116,13 +116,13 @@ CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_U
 # sigtop publishes only a Windows binary on its releases, so Linux is built
 # from the pinned source tag in a throwaway Go stage. Only the resulting
 # binary and its license are copied into the final image -- Go itself is not.
-FROM golang:1.23-bookworm AS sigtop-builder
+FROM golang:latest AS sigtop-builder
 
 ARG SIGTOP_VERSION=v0.24.0
 
 WORKDIR /build
 
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && \
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates pkg-config libsecret-1-dev && \
     rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 --branch "${SIGTOP_VERSION}" https://github.com/tbvdm/sigtop.git src && \
@@ -130,7 +130,7 @@ RUN git clone --depth 1 --branch "${SIGTOP_VERSION}" https://github.com/tbvdm/si
     git rev-parse HEAD > /build/SOURCE_COMMIT && \
     CGO_ENABLED=1 go build -o /build/sigtop . && \
     test -x /build/sigtop && \
-    cp LICENSE /build/LICENSE && \
+    cp LICENSE.md /build/LICENSE && \
     printf 'https://github.com/tbvdm/sigtop/tree/%s\n' "$(cat /build/SOURCE_COMMIT)" > /build/SOURCE_URL
 
 FROM debian:bookworm-slim AS slackdump-builder
