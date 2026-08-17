@@ -412,6 +412,17 @@ export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
  * counts only toward the denominator. Pure: mutates the passed accumulator.
  */
 export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, record: AttachmentRecord): void {
+  // The runtime rejects a DETAIL_COVERAGE whose required_keys repeats a key.
+  // The same attachment id can legitimately reach this accumulator twice in a
+  // run -- a message re-observed across pages, or a retry re-walking a
+  // partially hydrated thread -- so pushing unconditionally turns an ordinary
+  // duplicate observation into a hard run failure ("invalid
+  // DETAIL_COVERAGE.required_keys: duplicate key"), which is what took Gmail
+  // out on 2026-08-17. Record each key once; the terminal-outcome buckets
+  // below are already keyed by the same id and stay consistent with it.
+  if (coverage.requiredKeys.includes(record.id)) {
+    return;
+  }
   coverage.requiredKeys.push(record.id);
   switch (record.hydration_status) {
     case "hydrated":

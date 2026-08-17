@@ -524,7 +524,18 @@ async function collectRecentlyPlayed(
     { stream: "recently_played_games" }
   );
   const response = requireSteamResponse(recentRes);
-  const recentGames = requireSteamArray<SteamRecentlyPlayed>(response.games, "response.games");
+  // GetRecentlyPlayedGames omits `games` entirely when the account has played
+  // nothing in the trailing two-week window -- the documented shape is
+  // `{"response":{"total_count":0}}`. That is a well-formed empty answer, not a
+  // malformed one, so requiring an array here failed the whole run for an
+  // account that simply had not played recently (observed 2026-08-17:
+  // `steam_response_malformed: response.games must be an array`). Absent is
+  // empty; a present non-array is still a real protocol violation and still
+  // throws.
+  const recentGames =
+    response.games === undefined
+      ? []
+      : requireSteamArray<SteamRecentlyPlayed>(response.games, "response.games");
   await deps.progress("Fetched recently played games", {
     stream: "recently_played_games",
     count: recentGames.length,
