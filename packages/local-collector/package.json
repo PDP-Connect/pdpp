@@ -1,14 +1,25 @@
 {
   "name": "@pdpp/local-collector",
   "version": "0.0.0",
-  "description": "Publishable local collector runtime for PDPP: filesystem-class connectors (Claude Code, Codex) plus the device-exporter ingest client.",
-  "type": "module",
   "private": false,
-  "main": "./dist/local-collector/src/runner.js",
-  "types": "./dist/local-collector/src/runner.d.ts",
-  "bin": {
-    "pdpp-local-collector": "dist/local-collector/bin/pdpp-local-collector.js"
+  "description": "Publishable local collector runtime for PDPP: filesystem-class connectors (Claude Code, Codex) plus the device-exporter ingest client.",
+  "keywords": [
+    "pdpp",
+    "personal-data",
+    "collector",
+    "data-portability"
+  ],
+  "homepage": "https://github.com/PDP-Connect/pdpp#readme",
+  "bugs": {
+    "url": "https://github.com/PDP-Connect/pdpp/issues"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PDP-Connect/pdpp.git",
+    "directory": "packages/local-collector"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
   "exports": {
     ".": {
       "types": "./dist/local-collector/src/runner.d.ts",
@@ -24,16 +35,21 @@
     },
     "./package.json": "./package.json"
   },
+  "main": "./dist/local-collector/src/runner.js",
+  "types": "./dist/local-collector/src/runner.d.ts",
+  "bin": {
+    "pdpp-local-collector": "dist/local-collector/bin/pdpp-local-collector.js"
+  },
   "files": [
     "dist/",
     "README.md"
   ],
   "scripts": {
     "build": "pnpm --filter @pdpp/collector-runtime --filter @pdpp/connector-protocol run build && rm -rf dist && tsc -p tsconfig.build.json && tsx scripts/postbuild.ts",
-    "prepare": "pnpm build",
     "prepack": "pnpm build",
-    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- tsx scripts/run-tests.ts",
     "pack-install-run": "node --import tsx scripts/pack-install-run.ts",
+    "prepare": "pnpm build",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- tsx scripts/run-tests.ts",
     "validate:package": "tsx scripts/validate-package.ts",
     "verify": "pnpm test && pnpm validate:package"
   },
@@ -45,22 +61,6 @@
     "@pdpp/connector-protocol": "workspace:*",
     "conventional-changelog-conventionalcommits": "^10.2.1"
   },
-  "keywords": [
-    "pdpp",
-    "personal-data",
-    "collector",
-    "data-portability"
-  ],
-  "license": "Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/PDP-Connect/pdpp.git",
-    "directory": "packages/local-collector"
-  },
-  "bugs": {
-    "url": "https://github.com/PDP-Connect/pdpp/issues"
-  },
-  "homepage": "https://github.com/PDP-Connect/pdpp#readme",
   "engines": {
     "node": ">=22.14.0"
   },

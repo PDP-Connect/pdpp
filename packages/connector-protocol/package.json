@@ -14,23 +14,6 @@
     "./pdpp-safe-text": "./src/pdpp-safe-text.ts",
     "./safe-text-preview": "./src/safe-text-preview.ts"
   },
-  "publishConfig": {
-    "exports": {
-      ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-      "./auth": { "types": "./dist/auth.d.ts", "import": "./dist/auth.js" },
-      "./collector-definition": {
-        "types": "./dist/collector-definition.d.ts",
-        "import": "./dist/collector-definition.js"
-      },
-      "./connector-runtime-protocol": {
-        "types": "./dist/connector-runtime-protocol.d.ts",
-        "import": "./dist/connector-runtime-protocol.js"
-      },
-      "./http-retry": { "types": "./dist/http-retry.d.ts", "import": "./dist/http-retry.js" },
-      "./pdpp-safe-text": { "types": "./dist/pdpp-safe-text.d.ts", "import": "./dist/pdpp-safe-text.js" },
-      "./safe-text-preview": { "types": "./dist/safe-text-preview.d.ts", "import": "./dist/safe-text-preview.js" }
-    }
-  },
   "scripts": {
     "build": "node --experimental-strip-types scripts/build.ts",
     "check": "ultracite check",
@@ -50,5 +33,37 @@
   },
   "engines": {
     "node": ">=22.14.0"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./auth": {
+        "types": "./dist/auth.d.ts",
+        "import": "./dist/auth.js"
+      },
+      "./collector-definition": {
+        "types": "./dist/collector-definition.d.ts",
+        "import": "./dist/collector-definition.js"
+      },
+      "./connector-runtime-protocol": {
+        "types": "./dist/connector-runtime-protocol.d.ts",
+        "import": "./dist/connector-runtime-protocol.js"
+      },
+      "./http-retry": {
+        "types": "./dist/http-retry.d.ts",
+        "import": "./dist/http-retry.js"
+      },
+      "./pdpp-safe-text": {
+        "types": "./dist/pdpp-safe-text.d.ts",
+        "import": "./dist/pdpp-safe-text.js"
+      },
+      "./safe-text-preview": {
+        "types": "./dist/safe-text-preview.d.ts",
+        "import": "./dist/safe-text-preview.js"
+      }
+    }
   }
 }

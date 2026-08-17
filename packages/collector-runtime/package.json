@@ -12,24 +12,6 @@
     "./local-device-client": "./src/local-device-client.ts",
     "./local-device-envelope": "./src/local-device-envelope.ts"
   },
-  "publishConfig": {
-    "exports": {
-      ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-      "./collector-build-info": {
-        "types": "./dist/collector-build-info.d.ts",
-        "import": "./dist/collector-build-info.js"
-      },
-      "./collector-runner": { "types": "./dist/collector-runner.d.ts", "import": "./dist/collector-runner.js" },
-      "./local-device-client": {
-        "types": "./dist/local-device-client.d.ts",
-        "import": "./dist/local-device-client.js"
-      },
-      "./local-device-envelope": {
-        "types": "./dist/local-device-envelope.d.ts",
-        "import": "./dist/local-device-envelope.js"
-      }
-    }
-  },
   "scripts": {
     "build": "node --experimental-strip-types scripts/build.ts",
     "check": "ultracite check",
@@ -51,5 +33,29 @@
   },
   "engines": {
     "node": ">=22.14.0"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./collector-build-info": {
+        "types": "./dist/collector-build-info.d.ts",
+        "import": "./dist/collector-build-info.js"
+      },
+      "./collector-runner": {
+        "types": "./dist/collector-runner.d.ts",
+        "import": "./dist/collector-runner.js"
+      },
+      "./local-device-client": {
+        "types": "./dist/local-device-client.d.ts",
+        "import": "./dist/local-device-client.js"
+      },
+      "./local-device-envelope": {
+        "types": "./dist/local-device-envelope.d.ts",
+        "import": "./dist/local-device-envelope.js"
+      }
+    }
   }
 }
