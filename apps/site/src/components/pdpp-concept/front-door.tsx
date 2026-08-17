@@ -50,11 +50,11 @@ export function PdppFrontDoor() {
           <div className="flex flex-col gap-5 pt-4 pb-5">
             {/* The h1 for `/`. The wordmark above is an image and the lockup's
                 status stamp is chrome, so this line is the page's only heading. */}
-            <Text as="h1" size="title" weight="medium">
+            <Text as="h1" size="display" weight="medium">
               An open protocol for scoped access to personal data.
             </Text>
-            <Text className="opacity-60" size="title" weight="medium">
-              Use your purchases, messages, workouts, and more in apps and agents.
+            <Text className="opacity-60" size="lede">
+              Use your purchases, messages, workouts, and more in apps and with agents.
             </Text>
             <Text color="muted" size="body" wrap="balanced">
               PDPP profiles{" "}
