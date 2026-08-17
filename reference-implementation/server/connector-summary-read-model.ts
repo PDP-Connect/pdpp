@@ -1164,7 +1164,6 @@ export async function markAllConnectorSummaryEvidenceDiscoveryFailed(
 
 const TERMINAL_RUN_EVENT_TYPES = ["run.completed", "run.failed", "run.browser_surface_failed", "run.cancelled"];
 const TERMINAL_TYPES_SQL = TERMINAL_RUN_EVENT_TYPES.map((t) => `'${t}'`).join(", ");
-const STREAM_FACTS_FOLD_BATCH = 2000;
 
 /**
  * The fold's own logic version. A row's stored `stream_facts_event_seq`
@@ -1202,7 +1201,26 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
 // connection's generation), so it is never a valid baseline after this
 // upgrade either: `seedFoldState` replays it from an empty map on the first
 // observation, exactly like the v2->v3 upgrade.
-const STREAM_FACTS_FOLD_LOGIC_VERSION = 4;
+//
+// Version 5 teaches the fold to read a recovery-only run's terminal
+// `recovery_gap_closure_facts` block (`applyRecoveryGapClosureFacts`) — a
+// narrower, durable-gap-sourced fact that narrows an existing fact's
+// `covered` count. A row whose checkpoint already sits past such a
+// recovery-only event under OLD v4 logic folded it as a complete no-op
+// (the event carried no `collection_facts`, so `parseTerminalFactEvent`
+// alone gated the entire row out before this change). This is crucial
+// for rolling mixed-version deployments: a NEW v5 runtime emits the
+// `recovery_gap_closure_facts` block for recovery-only runs, but an OLD
+// v4 folder has no `applyRecoveryGapClosureFacts` hook and ignores it.
+// That v4 folder's stored fact remains stale. Under v5, replay healing
+// matters: a v5 folder re-reading an old v4-folded row will see the
+// missed recovery-gap-closure event and narrow the fact. Genuinely
+// pre-change (pre-v5) terminal events for recovery-only runs never carry
+// the block (the old runtime never emitted it), so they are unaffected:
+// the fold only re-reads to narrow EXISTING facts, never to originate
+// fresh ones. A v4 current map is never a valid baseline after this
+// upgrade, for the same self-healing reason as v2->v3 and v3->v4.
+const STREAM_FACTS_FOLD_LOGIC_VERSION = 5;
 // A route may retry a replay once after a concurrent writer wins its CAS.
 // This is deliberately small: each retry rereads the durable baseline, and
 // persistent contention fails closed in memory rather than spinning or
@@ -1281,6 +1299,22 @@ function createStreamFactsFoldStore() {
         );
         const value = (result.rows[0] as Row | undefined)?.max_seq;
         return value === null ? null : Number(value);
+      },
+      async readMaxTerminalEventSeqByInstance(scope: readonly string[] | null): Promise<ReadonlyMap<string, number>> {
+        const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentPostgres(scope, 1);
+        const result = await postgresQuery(
+          `SELECT connector_instance_id, MAX(event_seq) AS max_seq
+             FROM spine_events
+            WHERE event_type IN (${TERMINAL_TYPES_SQL})
+              AND connector_instance_id IS NOT NULL${scopeSql}
+            GROUP BY connector_instance_id`,
+          scopeParams
+        );
+        const byInstance = new Map<string, number>();
+        for (const row of result.rows as Row[]) {
+          byInstance.set(String(row.connector_instance_id), Number(row.max_seq));
+        }
+        return byInstance;
       },
       async readTerminalFactEvents({
         sinceSeq,
@@ -1368,6 +1402,23 @@ function createStreamFactsFoldStore() {
         .get(...scopeParams) as Row | undefined;
       const value = row?.max_seq;
       return value === null ? null : Number(value);
+    },
+    readMaxTerminalEventSeqByInstance(scope: readonly string[] | null): ReadonlyMap<string, number> {
+      const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentSqlite(scope);
+      const rows = getDb()
+        .prepare(
+          `SELECT connector_instance_id, MAX(event_seq) AS max_seq
+             FROM spine_events
+            WHERE event_type IN (${TERMINAL_TYPES_SQL})
+              AND connector_instance_id IS NOT NULL${scopeSql}
+            GROUP BY connector_instance_id`
+        )
+        .all(...scopeParams) as Row[];
+      const byInstance = new Map<string, number>();
+      for (const row of rows) {
+        byInstance.set(String(row.connector_instance_id), Number(row.max_seq));
+      }
+      return byInstance;
     },
     readTerminalFactEvents({
       sinceSeq,
@@ -1490,8 +1541,8 @@ function readEventConnectionId(data: Row): string | null {
   return null;
 }
 
-/** Parse a terminal event row's payload into its fact stream array, or `null` when it carries none. */
-function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } | null {
+/** Parse a terminal event row's raw JSON payload, or `null` on a malformed row. */
+function parseTerminalEventPayload(row: Row): Row | null {
   let data: unknown;
   try {
     data = JSON.parse(String(row.data_json ?? "null"));
@@ -1501,8 +1552,34 @@ function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } 
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return null;
   }
-  const payload = data as Row;
+  return data as Row;
+}
+
+/** Parse a terminal event row's payload into its fact stream array, or `null` when it carries none. */
+function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } | null {
+  const payload = parseTerminalEventPayload(row);
+  if (!payload) {
+    return null;
+  }
   const block = payload.collection_facts as Row | undefined;
+  const streams = block && typeof block === "object" && Array.isArray(block.streams) ? block.streams : null;
+  return streams && streams.length > 0 ? { payload, streams } : null;
+}
+
+/**
+ * Parse a terminal event row's payload into its `recovery_gap_closure_facts`
+ * stream array, or `null` when it carries none. Distinct from
+ * `parseTerminalFactEvent`/`collection_facts`: see
+ * `buildRecoveryGapClosureFacts` (`runtime/connector-gap-bounding.ts`) for
+ * why this is a separate block with separate merge semantics
+ * (`applyRecoveryGapClosureFacts`, below).
+ */
+function parseRecoveryGapClosureFactEvent(row: Row): { payload: Row; streams: unknown[] } | null {
+  const payload = parseTerminalEventPayload(row);
+  if (!payload) {
+    return null;
+  }
+  const block = payload.recovery_gap_closure_facts as Row | undefined;
   const streams = block && typeof block === "object" && Array.isArray(block.streams) ? block.streams : null;
   return streams && streams.length > 0 ? { payload, streams } : null;
 }
@@ -1599,7 +1676,91 @@ function mergeEventStreamFacts(
   }
 }
 
-/** Fold one terminal event's fact block into the per-instance maps. */
+/**
+ * Merge one recovery-only terminal event's `recovery_gap_closure_facts` into
+ * a connection's stream-fact map. Unlike `mergeEventStreamFacts` (newest
+ * attempt WINS, wholesale), this NARROWS an existing durably-proven fact —
+ * it never originates a fresh fact for a stream this run did not otherwise
+ * measure, and never changes a stream's `considered` denominator.
+ *
+ * Preconditions to apply, per stream (all must hold, else the stream's
+ * closure count for THIS event is silently dropped — never queued or
+ * retried, since a later genuine measurement or recovery event is the only
+ * thing that can ever produce new proof for it):
+ *   - a stored fact already exists AND its own `checkpoint` proves durable
+ *     coverage (`committed`/`disabled` — same predicate the ordinary
+ *     monotonicity guard uses). A stream with no durably-proven fact yet has
+ *     nothing this can narrow: closing gaps against unmeasured inventory
+ *     would be inventing a `considered` denominator this run never proved.
+ *   - the stored fact declares a known `considered` (else there is no
+ *     denominator to close against).
+ *
+ * The delta itself: `covered` advances by `recovered_count`, floored at the
+ * stream's current `covered ?? collected` and capped at `considered` (a
+ * recovered gap can never push `covered` past the stream's own proven
+ * denominator — that would be claiming MORE than the last genuine
+ * measurement itself claimed). `collected`/`checkpoint`/every other field on
+ * the stored fact is left untouched. Provenance (`run_id`/`evidence_as_of`/
+ * `event_seq`) DOES advance to this recovery event — this is honest, not
+ * provenance falsification, because the delta being stamped (`covered`
+ * narrowing toward `considered`) is exactly what this run durably proved
+ * (real `DETAIL_GAP_RECOVERED` store transitions), not a carried-forward
+ * inventory claim dressed up as fresh.
+ *
+ * Composes correctly across multiple recovery events for the same stream
+ * within one fold pass: each call reads/writes `facts[stream]` in place, so
+ * a second recovery event's delta narrows the first's already-narrowed
+ * result, in ascending `event_seq` order (see `drainTerminalEventBatches`).
+ */
+function applyRecoveryGapClosureFacts(
+  facts: Record<string, StoredStreamFactEntry>,
+  streams: readonly unknown[],
+  provenance: { evidenceAsOf: string | null; runId: string | null; eventSeq: number },
+  counters: { folded: number; refused: number }
+): void {
+  for (const rawEntry of streams) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+      continue;
+    }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+    const stream = (rawEntry as Row).stream;
+    const recoveredCount = (rawEntry as Row).recovered_count;
+    if (typeof stream !== "string" || !stream || typeof recoveredCount !== "number" || recoveredCount <= 0) {
+      continue;
+    }
+    const existing = facts[stream];
+    if (!existing || existing.event_seq > provenance.eventSeq) {
+      continue;
+    }
+    if (!factCheckpointProvesDurableCoverage(existing.fact)) {
+      // No durably-proven inventory to narrow — never originate a fact here.
+      continue;
+    }
+    // biome-ignore lint/style/useDestructuring: Explicit property access documents this compatibility boundary.
+    const considered = existing.fact.considered;
+    if (typeof considered !== "number") {
+      // No known denominator to close gaps against.
+      continue;
+    }
+    const priorCovered = typeof existing.fact.covered === "number" ? existing.fact.covered : existing.fact.collected;
+    if (typeof priorCovered !== "number") {
+      continue;
+    }
+    const nextCovered = Math.min(considered, priorCovered + recoveredCount);
+    if (nextCovered === priorCovered) {
+      continue;
+    }
+    facts[stream] = {
+      event_seq: provenance.eventSeq,
+      evidence_as_of: provenance.evidenceAsOf,
+      fact: { ...existing.fact, covered: nextCovered },
+      run_id: provenance.runId,
+    };
+    counters.folded += 1;
+  }
+}
+
+/** Fold one terminal event's fact block(s) into the per-instance maps. */
 function foldTerminalEventFacts(
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>,
   checkpointByInstance: Map<string, number | null>,
@@ -1609,10 +1770,16 @@ function foldTerminalEventFacts(
   counters: { folded: number; refused: number }
 ): void {
   const parsed = parseTerminalFactEvent(row);
-  if (!parsed) {
+  // Distinct, independently-optional block (see `buildRecoveryGapClosureFacts`):
+  // a recovery-only run's `run.completed` carries THIS but never
+  // `collection_facts`, so `parsed` alone must not gate whether the row is
+  // worth attributing/generation-fenced/checkpoint-gated below.
+  const parsedGapClosure = parseRecoveryGapClosureFactEvent(row);
+  if (!(parsed || parsedGapClosure)) {
     return;
   }
-  const instanceId = readEventConnectionId(parsed.payload);
+  const payload = (parsed || parsedGapClosure)?.payload as Row;
+  const instanceId = readEventConnectionId(payload);
   if (!instanceId) {
     // Legacy connector-wide event: cannot be attributed to exactly one
     // connection, so it is refused rather than mixed across accounts.
@@ -1653,16 +1820,17 @@ function foldTerminalEventFacts(
   if (!Number.isFinite(eventSeq) || (checkpoint !== null && checkpoint !== undefined && eventSeq <= checkpoint)) {
     return;
   }
-  mergeEventStreamFacts(
-    facts,
-    parsed.streams,
-    {
-      eventSeq,
-      evidenceAsOf: typeof row.occurred_at === "string" && row.occurred_at ? row.occurred_at : null,
-      runId: typeof row.run_id === "string" && row.run_id ? row.run_id : null,
-    },
-    counters
-  );
+  const provenance = {
+    eventSeq,
+    evidenceAsOf: typeof row.occurred_at === "string" && row.occurred_at ? row.occurred_at : null,
+    runId: typeof row.run_id === "string" && row.run_id ? row.run_id : null,
+  };
+  if (parsed) {
+    mergeEventStreamFacts(facts, parsed.streams, provenance, counters);
+  }
+  if (parsedGapClosure) {
+    applyRecoveryGapClosureFacts(facts, parsedGapClosure.streams, provenance, counters);
+  }
 }
 
 /**
@@ -1808,20 +1976,16 @@ function seedFoldState(participants: readonly Row[]): {
     // whole fold to the beginning of the log.
     //
     // Observed in production 2026-08-17: three sources whose records arrived
-    // outside a collection run (a stale device collector, a Google Maps
-    // timeline import, a WhatsApp export) each sat at checkpoint 0. The fold
-    // floor was therefore 0 against a 1,438,556-event log, while the oldest
-    // checkpoint among the 22 sources that HAD collected was 1,350,342 --
-    // about 88k events of real work. Every bounded 2s pass restarted at 0,
-    // exhausted its budget having read ZERO qualifying events, wrote nothing,
-    // reported `incomplete`, and repeated. All 25 rows stayed
-    // `terminal_facts_historical` indefinitely and no source could go healthy.
+    // outside a collection run each sat at checkpoint 0, so the fold floor was
+    // 0 against a 1,438,556-event log while the oldest real checkpoint was
+    // 1,350,342 (~88k events of genuine work). Every bounded 2s pass restarted
+    // at 0, read ZERO qualifying events, wrote nothing, reported `incomplete`,
+    // and repeated -- leaving every row stale indefinitely.
     //
-    // A checkpoint-less participant still takes part in the pass and is still
-    // written by it; it simply must not drag the shared read cursor backward,
-    // having no evidence positioned there to recover. When EVERY participant
-    // lacks a checkpoint the floor stays 0, so a genuinely fresh install still
-    // reads from the beginning.
+    // Such a participant still takes part in the pass and is still written by
+    // it; it simply must not drag the shared read cursor backward. When EVERY
+    // participant lacks a checkpoint the floor stays 0, so a fresh install
+    // still reads from the beginning.
     if (checkpoint !== null) {
       sinceSeq = Math.min(sinceSeq, checkpoint);
     }
@@ -1907,10 +2071,10 @@ export interface FoldStreamFactsResult {
  */
 /**
  * Whether a row must (re-)participate in this fold pass: either its stored
- * checkpoint genuinely lags the pass's high-water mark, OR it is fold-logic-
- * version-behind (see `rowIsFoldLogicVersionBehind`) — in which case it
- * participates regardless of how far its stale checkpoint already advanced,
- * so a fold-semantics fix self-heals every existing row rather than only
+ * checkpoint genuinely lags `maxSeq`, OR it is fold-logic-version-behind
+ * (see `rowIsFoldLogicVersionBehind`) — in which case it participates
+ * regardless of how far its stale checkpoint already advanced, so a
+ * fold-semantics fix self-heals every existing row rather than only
  * affecting future terminal events. A row left mid-UPGRADE-REPLAY by a
  * budget-exhausted prior pass needs no separate branch here: its stored
  * `stream_facts_event_seq` is necessarily below `maxSeq` (the drain that
@@ -1920,6 +2084,13 @@ export interface FoldStreamFactsResult {
  * version-AHEAD row (see `rowIsFoldLogicVersionAhead`) NEVER participates —
  * this binary must not fold, replay, or overwrite output a newer fold
  * contract produced.
+ *
+ * `maxSeq` here is the CALLER-CHOSEN high-water to judge this one row
+ * against — `foldConnectorSummaryStreamFactsOnce` passes this row's own
+ * per-instance `MAX(event_seq)`, never the shared page-wide one, so a row
+ * whose own attributable history was already fully folded does not keep
+ * re-participating in every subsequent page-scoped pass merely because an
+ * unrelated connection sharing the page still has a higher event_seq.
  */
 function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
   if (rowIsFoldLogicVersionAhead(row)) {
@@ -1998,46 +2169,54 @@ async function stampZeroCheckpointForBootstrap(
   return { casRejectedInstanceIds, incomplete: false };
 }
 
+/** One round-robin slice's read size per participant per rotation. */
+const STREAM_FACTS_FOLD_ROUND_ROBIN_SLICE = 200;
+
 /**
- * Drain terminal-event batches from `startCursor` up to `maxSeq`, folding
- * each into `factsByInstance`/`checkpointByInstance`, until either the drain
- * genuinely reaches `maxSeq` or the caller's budget (`deadline`/`maxEvents`)
- * is exhausted. Checked BETWEEN batches, never mid-batch, so a batch already
- * in flight always finishes cleanly (Sol fourth-verdict P1.2). Returns the
- * cursor the drain actually reached and whether the budget cut it short.
+ * Drain terminal-event batches per PARTICIPANT, round-robin, until every
+ * participant's own cursor reaches its own `ownMaxSeqByInstance` high-water
+ * or the caller's shared budget (`deadline`/`maxEvents`) is exhausted.
+ * Folds each read row into `factsByInstance`/`checkpointByInstance`, exactly
+ * as the prior single-cursor drain did. Checked between per-participant
+ * slices, never mid-slice, so a slice already in flight always finishes
+ * cleanly (Sol fourth-verdict P1.2).
  *
- * Each batch read's own `limit` is capped at the REMAINING `maxEvents`
- * budget (`min(STREAM_FACTS_FOLD_BATCH, maxEvents - eventsProcessed)`), not
- * unconditionally `STREAM_FACTS_FOLD_BATCH`. Without this, `maxEvents` is a
- * budget in name only: a single already-in-flight batch read still always
- * requests up to `STREAM_FACTS_FOLD_BATCH` (2000) rows regardless of how
- * small the caller's remaining budget is, so e.g. `maxEvents: 1` against a
- * scope with 2000 attributable events would still process all 2000 in one
- * batch before the between-batches budget check ever gets a second chance
- * to fire — silently processing 2000x the requested bound. Capping the
- * request itself is what makes `maxEvents` an ACTUAL per-call ceiling, not
- * merely an early-exit hint for a batch that was already oversized.
+ * FAIRNESS (this function's reason to exist): a single shared cursor
+ * scanning the whole scope in one ascending `event_seq` order lets a
+ * connection with a large backlog and the LOWEST checkpoint consume the
+ * entire shared budget before the cursor ever reaches a later
+ * participant's own high-water — even when that later participant's own
+ * attributable history is short or already fully read. Round-robin gives
+ * every participant a bounded `STREAM_FACTS_FOLD_ROUND_ROBIN_SLICE`-sized
+ * turn each rotation, in `ownCursorByInstance` order, so a participant whose
+ * own history is short (or already caught up) converges within its own
+ * first turn or two regardless of how large another participant's backlog
+ * is. A participant already at/above its own high-water (`ownCursor >=
+ * ownMaxSeq`) is skipped entirely — zero read cost, not merely a fast
+ * no-op read — so it cannot be starved of a turn by participants still
+ * mid-backlog.
  *
- * The completion check (`batch.length < limit`) compares against the
- * batch's OWN requested `limit` — never the constant
- * `STREAM_FACTS_FOLD_BATCH` — for the identical reason: once `limit` can be
- * smaller than `STREAM_FACTS_FOLD_BATCH`, a budget-capped one-row batch
- * (`limit: 1`, `batch.length: 1`) would otherwise satisfy
- * `batch.length < STREAM_FACTS_FOLD_BATCH` and be misread as "short batch,
- * genuinely reached the end of history" when it was actually just
- * budget-limited.
+ * Each per-participant read is itself scoped to exactly that one
+ * `connector_instance_id` (`scope: [instanceId]`) and bounded above by that
+ * participant's OWN `ownMaxSeq`, never the page-wide `maxSeq` — the same
+ * per-instance high-water the 05b7ac592 write-phase fairness fix already
+ * introduced (`maxSeqByInstance`). This is what makes a fully-caught-up
+ * participant's read return in one empty/short round-trip rather than
+ * scanning past other participants' interleaved events to find its own.
  *
- * `budgetExhausted` is derived from `cursor === maxSeq` at the point the
- * loop exits — NEVER from which branch returned. A full batch (exactly
- * `limit` rows, where `limit` may itself equal the pass's remaining true
- * high-water distance) whose last event lands exactly on `maxSeq` genuinely
- * converges: the very next iteration's budget check firing first (before
- * that converged batch is even read for size) would otherwise report a
- * false `budgetExhausted: true` despite `cursor` already equaling `maxSeq`
- * — silently leaving a fully-converged pass unable to ever mark itself
- * `current` (see `foldConnectorSummaryStreamFacts`'s convergence gate,
- * which trusts this flag verbatim).
+ * `maxEvents`, when provided, remains ONE real budget shared across every
+ * participant's slices this call makes (summed, not per-participant) —
+ * exactly the existing "one real overall maxEvents/maxDuration budget"
+ * contract. `deadline` is likewise one shared wall-clock cutoff.
+ *
+ * Returns the per-instance cursor every participant's replay actually
+ * reached (`cursorByInstance`) plus the aggregate `eventsRead` and whether
+ * ANY participant's own high-water was not reached before the budget ran
+ * out (`budgetExhausted`) — the caller (`foldConnectorSummaryStreamFactsOnce`)
+ * already judges each participant's OWN convergence against its OWN
+ * `ownMaxSeq`/cursor pair, never a shared one.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The round-robin fairness scheduler owns interleaved per-participant budget/convergence state that must remain local.
 async function drainTerminalEventBatches({
   foldStore,
   factsByInstance,
@@ -2045,9 +2224,8 @@ async function drainTerminalEventBatches({
   generationByInstance,
   generationCurrentByInstance,
   counters,
-  connectorInstanceIds,
-  maxSeq,
-  startCursor,
+  ownMaxSeqByInstance,
+  startCursorByInstance,
   deadline,
   maxEvents,
 }: {
@@ -2057,48 +2235,96 @@ async function drainTerminalEventBatches({
   generationByInstance: ReadonlyMap<string, number>;
   generationCurrentByInstance: Map<string, boolean>;
   counters: { folded: number; refused: number };
-  connectorInstanceIds: readonly string[] | null;
-  maxSeq: number;
-  startCursor: number;
+  ownMaxSeqByInstance: ReadonlyMap<string, number>;
+  startCursorByInstance: ReadonlyMap<string, number>;
   deadline: number | null;
   maxEvents: number | null;
-}): Promise<{ cursor: number; budgetExhausted: boolean; eventsRead: number }> {
-  let cursor = startCursor;
+}): Promise<{ cursorByInstance: Map<string, number>; budgetExhausted: boolean; eventsRead: number }> {
+  const instanceIds = [...startCursorByInstance.keys()];
+  const cursorByInstance = new Map<string, number>(startCursorByInstance);
   let eventsProcessed = 0;
-  for (;;) {
-    if (cursor >= maxSeq) {
-      return { budgetExhausted: false, cursor, eventsRead: eventsProcessed };
-    }
+  // A participant reaches its own high-water and drops out of the
+  // rotation permanently — re-checking it every round would waste a
+  // round-trip on a guaranteed-empty read once it has already converged.
+  const pending = new Set(
+    instanceIds.filter((id) => (cursorByInstance.get(id) ?? 0) < (ownMaxSeqByInstance.get(id) ?? 0))
+  );
+  while (pending.size > 0) {
     if ((deadline !== null && Date.now() >= deadline) || (maxEvents !== null && eventsProcessed >= maxEvents)) {
-      return { budgetExhausted: true, cursor, eventsRead: eventsProcessed };
+      return { budgetExhausted: true, cursorByInstance, eventsRead: eventsProcessed };
     }
-    const limit =
-      maxEvents === null ? STREAM_FACTS_FOLD_BATCH : Math.min(STREAM_FACTS_FOLD_BATCH, maxEvents - eventsProcessed);
-    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-    const batch = await foldStore.readTerminalFactEvents({
-      limit,
-      maxSeq,
-      scope: connectorInstanceIds,
-      sinceSeq: cursor,
-    });
-    for (const row of batch) {
-      foldTerminalEventFacts(
-        factsByInstance,
-        checkpointByInstance,
-        generationByInstance,
-        generationCurrentByInstance,
-        row,
-        counters
-      );
+    let madeProgressThisRotation = false;
+    // Recomputed once per ROTATION (not per turn): an even share of the
+    // remaining budget across every participant still pending THIS
+    // rotation. Without this, a single busy participant's first turn could
+    // request up to `STREAM_FACTS_FOLD_ROUND_ROBIN_SLICE` and, if that
+    // alone consumes the entire remaining `maxEvents`, starve every OTHER
+    // pending participant of a turn before the budget check ever runs
+    // again — reproducing the exact fairness bug this drain exists to fix,
+    // just at the per-rotation granularity instead of the whole-pass one.
+    const remainingBudget = maxEvents === null ? null : maxEvents - eventsProcessed;
+    const fairShareThisRotation =
+      remainingBudget === null ? null : Math.max(1, Math.floor(remainingBudget / pending.size));
+    for (const instanceId of pending) {
+      if ((deadline !== null && Date.now() >= deadline) || (maxEvents !== null && eventsProcessed >= maxEvents)) {
+        return { budgetExhausted: true, cursorByInstance, eventsRead: eventsProcessed };
+      }
+      const ownMaxSeq = ownMaxSeqByInstance.get(instanceId) ?? 0;
+      const cursor = cursorByInstance.get(instanceId) ?? 0;
+      const limit =
+        fairShareThisRotation === null
+          ? STREAM_FACTS_FOLD_ROUND_ROBIN_SLICE
+          : Math.min(STREAM_FACTS_FOLD_ROUND_ROBIN_SLICE, fairShareThisRotation);
+      // biome-ignore lint/performance/noAwaitInLoops: Round-robin turns are intentionally sequential so the shared budget check between them is exact.
+      const batch = await foldStore.readTerminalFactEvents({
+        limit,
+        maxSeq: ownMaxSeq,
+        scope: [instanceId],
+        sinceSeq: cursor,
+      });
+      for (const row of batch) {
+        foldTerminalEventFacts(
+          factsByInstance,
+          checkpointByInstance,
+          generationByInstance,
+          generationCurrentByInstance,
+          row,
+          counters
+        );
+      }
+      eventsProcessed += batch.length;
+      if (batch.length > 0) {
+        madeProgressThisRotation = true;
+        cursorByInstance.set(instanceId, Number((batch.at(-1) as Row).event_seq));
+      }
+      if (batch.length < limit) {
+        // A short/empty batch already proves there is nothing further
+        // below `ownMaxSeq` attributable to this instance — the scoped
+        // read requested up to `ownMaxSeq` and got back fewer rows than
+        // asked for, so every attributable event through `ownMaxSeq` has
+        // genuinely been read. Advance the cursor to `ownMaxSeq` itself
+        // (not merely to the last event's own `event_seq`, which for a
+        // zero-history participant never moves off its start cursor) —
+        // this is what lets a zero-or-short-history participant converge
+        // to the pass's true high-water at write time, exactly like the
+        // pre-round-robin single-cursor drain did for it.
+        cursorByInstance.set(instanceId, ownMaxSeq);
+        madeProgressThisRotation = true;
+        pending.delete(instanceId);
+      } else if (cursorByInstance.get(instanceId) === ownMaxSeq) {
+        pending.delete(instanceId);
+      }
     }
-    eventsProcessed += batch.length;
-    if (batch.length > 0) {
-      cursor = Number((batch.at(-1) as Row).event_seq);
-    }
-    if (batch.length < limit) {
-      return { budgetExhausted: false, cursor, eventsRead: eventsProcessed };
+    if (!madeProgressThisRotation && pending.size > 0) {
+      // No participant's slice returned any row and none converged this
+      // rotation (impossible under correct data, but fail closed rather
+      // than spin): treat remaining participants as budget-exhausted so
+      // their checkpoints hold at partial progress instead of looping
+      // forever.
+      return { budgetExhausted: true, cursorByInstance, eventsRead: eventsProcessed };
     }
   }
+  return { budgetExhausted: false, cursorByInstance, eventsRead: eventsProcessed };
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The complete-fold wrapper owns the instance-scoped budget and aggregate receipt contract.
@@ -2209,7 +2435,32 @@ async function foldConnectorSummaryStreamFactsOnce(
     };
   }
   const maxSeq = await foldStore.readMaxTerminalEventSeq(connectorInstanceIds);
-  const participants = rows.filter((row) => rowNeedsFoldParticipation(row, maxSeq));
+  // Each participant's OWN attributable high-water — never the shared
+  // page-wide `maxSeq` — is what fairly gates whether ITS replay converged
+  // and whether it must keep re-participating on a follow-up pass. A
+  // page-wide `maxSeq`/cursor is still the correct upper bound for the
+  // drain's single interleaved batch read (below), but using it alone to
+  // judge convergence/participation let one connection with a large backlog
+  // consume the whole page's budget and leave every OTHER participant —
+  // including ones whose own history the drain had already fully read —
+  // durably marked `stale` (or re-selected for participation every
+  // subsequent pass despite having nothing left to fold), merely because
+  // the shared cursor had not yet reached the page's global max. Queried
+  // once per pass, scoped to this page's rows only.
+  const maxSeqByInstance =
+    maxSeq === null
+      ? new Map<string, number>()
+      : await foldStore.readMaxTerminalEventSeqByInstance(connectorInstanceIds);
+  // A row absent from `maxSeqByInstance` has genuinely ZERO attributable
+  // terminal events of its own — its own scoped read below is instant and
+  // empty regardless of what high-water it is judged against, so falling
+  // back to the shared page-wide `maxSeq` here (the existing contract: a
+  // zero-history row's checkpoint tracks the page's high-water, so it
+  // never needs re-scanning once the page has been observed) costs it
+  // nothing extra and preserves that existing self-heal/converge contract.
+  const participants = rows.filter((row) =>
+    rowNeedsFoldParticipation(row, maxSeqByInstance.get(String(row.connector_instance_id)) ?? maxSeq)
+  );
   if (participants.length === 0) {
     return {
       casRejectedInstanceIds: [],
@@ -2272,9 +2523,21 @@ async function foldConnectorSummaryStreamFactsOnce(
   await testOnlyFoldPauseHook("after_seed_before_read");
   const counters = { folded: 0, refused: 0 };
   const generationCurrentByInstance = new Map<string, boolean>(generationCurrentSeedByInstance);
+  // Each participant's own high-water/start-cursor, never the page-wide
+  // `maxSeq`/shared minimum — this is what makes the round-robin drain
+  // below fair: a participant whose own history is short (or already
+  // caught up) gets its own bounded turn instead of waiting behind another
+  // participant's much larger backlog in one shared ascending-`event_seq`
+  // scan.
+  const ownMaxSeqByInstance = new Map<string, number>();
+  const startCursorByInstance = new Map<string, number>();
+  for (const row of participants) {
+    const instanceId = String(row.connector_instance_id);
+    ownMaxSeqByInstance.set(instanceId, maxSeqByInstance.get(instanceId) ?? maxSeq);
+    startCursorByInstance.set(instanceId, checkpointByInstance.get(instanceId) ?? 0);
+  }
   const drain = await drainTerminalEventBatches({
     checkpointByInstance,
-    connectorInstanceIds,
     counters,
     deadline,
     factsByInstance,
@@ -2282,18 +2545,19 @@ async function foldConnectorSummaryStreamFactsOnce(
     generationByInstance,
     generationCurrentByInstance,
     maxEvents: typeof options.maxEvents === "number" ? options.maxEvents : null,
-    maxSeq,
-    startCursor: Number.isFinite(sinceSeq) ? sinceSeq : 0,
+    ownMaxSeqByInstance,
+    startCursorByInstance,
   });
-  const { cursor, budgetExhausted, eventsRead } = drain;
-  // Every participant advances to the pass's max sequence when the drain
-  // genuinely reached it — all attributable events at or below it have
-  // been folded, so later passes read only the delta. When the budget was
-  // exhausted first, every participant instead advances only to `cursor`
-  // (the exact event_seq the drain actually reached) — a genuine partial-
-  // progress checkpoint a follow-up call resumes from, never the pass's
-  // full `maxSeq` (which would falsely claim events between `cursor` and
-  // `maxSeq` were folded when they were not).
+  const { cursorByInstance, budgetExhausted, eventsRead } = drain;
+  // Every participant advances to ITS OWN pass max sequence when the
+  // round-robin drain genuinely reached it — all attributable events at or
+  // below it have been folded, so later passes read only the delta. When
+  // the shared budget was exhausted first, a participant not yet caught up
+  // instead advances only to its own `cursorByInstance` entry (the exact
+  // event_seq that participant's own slices actually reached) — a genuine
+  // partial-progress checkpoint a follow-up call resumes from, never the
+  // pass's full high-water (which would falsely claim events this
+  // participant's own read never reached were folded).
   //
   // Compare-and-set against each participant's baseline checkpoint (the
   // value read at seedFoldState time, before this pass's work began): if a
@@ -2306,20 +2570,9 @@ async function foldConnectorSummaryStreamFactsOnce(
   // Test-only: see `testOnlyFoldPauseHook` — the second deterministic pause
   // point, immediately before this pass's own CAS write loop.
   await testOnlyFoldPauseHook("before_cas_write");
-  const writeSeq = budgetExhausted ? cursor : maxSeq;
-  // A pass CONVERGED — reached the pass's true high-water mark, not merely
-  // "this pass's own budget check didn't fire" — only when the drain
-  // itself was not cut short (`!budgetExhausted`, itself now correctly
-  // derived from `cursor === maxSeq`; see `drainTerminalEventBatches`).
-  // This is a SINGLE pass-wide flag, not a per-participant one: a
-  // budget-exhausted pass leaves EVERY participant's write this round
-  // genuinely incomplete (their own `eventSeq` write is `cursor`, strictly
-  // below `maxSeq`), so the existing checkpoint-lag participation predicate
-  // is what actually drives correct multi-round resumption — no reason-keyed
-  // state machine is needed on top of it.
-  const replayConverged = !budgetExhausted;
   const casRejectedInstanceIds: string[] = [];
   let writePhaseIncomplete = false;
+  let minimumWriteSeq: number | null = null;
   for (const [instanceId, facts] of factsByInstance) {
     // The same absolute cooperative deadline gates EVERY independent
     // participant checkpoint write. A write already entered below may finish
@@ -2339,13 +2592,39 @@ async function foldConnectorSummaryStreamFactsOnce(
     // refused event flipped to `false`, rather than silently healing to
     // `true` on pure silence.
     const sourceGenerationCurrent = generationCurrentByInstance.get(instanceId) !== false;
-    const terminalFactsCurrent = replayConverged && sourceGenerationCurrent;
+    // Fairness fix (round-robin drain): a participant's OWN replay
+    // converged when ITS OWN drain cursor has reached (or passed) THIS
+    // instance's own attributable high-water — never a shared page-wide
+    // cursor/`maxSeq`. The round-robin drain above gives every participant
+    // its own bounded turns against its own `ownMaxSeq`, so a busy
+    // connection elsewhere in the same bounded page consuming the shared
+    // budget cannot leave an already-caught-up participant's own cursor
+    // short of its own high-water. Fail-closed is preserved: `ownMaxSeq`
+    // defaults to the page's shared `maxSeq` for the (impossible-in-
+    // practice) case a participant has no attributable terminal-event row
+    // at all (its own scoped read is instant/empty regardless, so this
+    // costs nothing), and a participant whose own history genuinely was
+    // not fully drained (`ownCursor < ownMaxSeq`) still correctly reads
+    // incomplete.
+    const ownMaxSeq = ownMaxSeqByInstance.get(instanceId) ?? maxSeq;
+    const ownCursor = cursorByInstance.get(instanceId) ?? 0;
+    const ownReplayConverged = ownCursor >= ownMaxSeq;
+    const terminalFactsCurrent = ownReplayConverged && sourceGenerationCurrent;
+    // A participant's durable checkpoint is always floored at its OWN
+    // drain cursor — converged participants write exactly their own
+    // `ownMaxSeq` (the round-robin drain proved it read every attributable
+    // event up to there), and a not-yet-converged participant writes
+    // exactly the event_seq its own slices actually reached, never a
+    // shared page-wide value that could falsely claim coverage of events
+    // this participant's own read never saw.
+    const participantWriteSeq = ownReplayConverged ? ownMaxSeq : ownCursor;
+    minimumWriteSeq = minimumWriteSeq === null ? participantWriteSeq : Math.min(minimumWriteSeq, participantWriteSeq);
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const accepted = await writeParticipantStreamFacts(
       foldStore,
       instanceId,
       facts,
-      sourceGenerationCurrent ? writeSeq : (checkpointByInstance.get(instanceId) ?? 0),
+      sourceGenerationCurrent ? participantWriteSeq : (checkpointByInstance.get(instanceId) ?? 0),
       terminalFactsCurrent
         ? null
         : // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
@@ -2361,11 +2640,19 @@ async function foldConnectorSummaryStreamFactsOnce(
     }
   }
   const incomplete = budgetExhausted || writePhaseIncomplete;
+  // The minimum of every participant's OWN written checkpoint this pass —
+  // the round-robin drain's per-instance fairness means participants can
+  // legitimately land at DIFFERENT event_seq values in the same pass (one
+  // converged to its own high-water, another still mid-backlog), so there
+  // is no single shared `writeSeq` any more; this mirrors
+  // `minimumCheckpointBefore`'s existing "worst case across participants"
+  // contract for the after-pass receipt.
+  const writtenMinimum = minimumWriteSeq ?? minimumCheckpointBefore;
   let resumeAfterSeq: number | null = null;
   if (writePhaseIncomplete) {
     resumeAfterSeq = minimumCheckpointBefore;
   } else if (budgetExhausted) {
-    resumeAfterSeq = writeSeq;
+    resumeAfterSeq = writtenMinimum;
   }
   return {
     casRejectedInstanceIds,
@@ -2375,7 +2662,7 @@ async function foldConnectorSummaryStreamFactsOnce(
     // A write-phase cutoff can leave later participants at their original
     // checkpoint, so the durable minimum remains the pre-pass minimum even
     // when an earlier, already-started write finished successfully.
-    minimumCheckpointAfter: writePhaseIncomplete ? minimumCheckpointBefore : writeSeq,
+    minimumCheckpointAfter: writePhaseIncomplete ? minimumCheckpointBefore : writtenMinimum,
     minimumCheckpointBefore: sinceSeq,
     participants: participants.length,
     refused: counters.refused,

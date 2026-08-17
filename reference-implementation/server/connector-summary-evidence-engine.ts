@@ -182,6 +182,7 @@ export type RepairCandidateReason =
   | "missing"
   | "dirty"
   | "state_stale"
+  | "component_stale"
   | "record_checkpoint_mismatch"
   | "identity_mismatch"
   | "manifest_mismatch"
@@ -345,6 +346,34 @@ interface DiscoveryInput {
 }
 
 /**
+ * Evidence components whose per-component state column must never read
+ * `"stale"`/`"failed"` on a row that needs no repair — components with NO
+ * legitimate steady non-current state while the row itself is genuinely
+ * fresh, so a `"stale"`/`"failed"` reading here can only mean a stale
+ * component the authority comparisons below never re-derive on their own
+ * (this closes exactly that gap). Deliberately excludes:
+ *   - `manifest_declaration_state`: parks at `"unavailable"` forever for a
+ *     genuinely malformed manifest (`parseManifestDeclaration`) — that is a
+ *     stable, correct terminal state, not staleness to repair-loop on.
+ *   - `retained_bytes_state`: its own convergence is fully covered by
+ *     `retainedBytesNeedsRepair`'s source-vs-stored comparison below, which
+ *     already handles a source-legitimately-absent `"stale"` value.
+ *
+ * `"unobserved"` is deliberately NOT treated as needing repair here: it is
+ * this engine's own legitimate baseline before the separate terminal-fold
+ * phase (`rowNeedsFoldParticipation` in connector-summary-read-model.ts, run
+ * by the `rebuildConnectorSummaryEvidence` barrier immediately after this
+ * engine's reconcile) has ever run for a connection — the fold, not this
+ * repair, is what resolves `unobserved`, and it already retries independent
+ * of this engine's own candidate classification. Treating `unobserved` as a
+ * candidate here would make every standalone reconcile pass over a
+ * fold-never-run connection repair-loop forever, which the "retained bytes
+ * convergence is stable" test guards against.
+ */
+const COMPONENT_STATE_COLUMNS = ["terminal_facts_state"] as const;
+const NON_REPAIRABLE_COMPONENT_STATES = new Set(["current", "unobserved"]);
+
+/**
  * Classify one connection against canonical authorities. Returns the exact
  * repair reason (highest-precedence first) or `null` when the row is
  * `current` and needs no repair. Never reads the evidence row's own claim
@@ -368,6 +397,17 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   // projection publisher.
   if (existingEvidence.state !== "fresh") {
     return "state_stale";
+  }
+  // A fresh, clean envelope can still carry an individually stale/failed
+  // component: e.g. a prior repair's `manifestGenerationChanged` branch
+  // (`terminalFactsForRepair`) persists `terminal_facts_state: "stale"` while
+  // leaving `state`/`dirty` clean, and no later authority comparison below
+  // ever re-derives that same reason once the generation itself stops
+  // changing. Without this check such a component can never converge again.
+  for (const column of COMPONENT_STATE_COLUMNS) {
+    if (!NON_REPAIRABLE_COMPONENT_STATES.has(String(existingEvidence[column]))) {
+      return "component_stale";
+    }
   }
   if (
     existingEvidence.display_name !== instance.display_name ||
