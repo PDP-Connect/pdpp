@@ -108,27 +108,6 @@ CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_U
 # Isolated slackdump (v4.4.2, AGPL-3.0) builder stage.
 # Downloads pre-built tarball, verifies SHA256, extracts binary and license.
 # Only the binary (not build deps or Go) is copied to final image.
-# Isolated sigtop (v0.24.0, ISC) builder stage.
-# sigtop publishes only a Windows binary on its releases, so Linux is built
-# from the pinned source tag in a throwaway Go stage. Only the resulting
-# binary and its license are copied into the final image -- Go itself is not.
-FROM golang:bookworm AS sigtop-builder
-
-ARG SIGTOP_VERSION=v0.24.0
-
-WORKDIR /build
-
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates pkg-config libsecret-1-dev && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN git clone --depth 1 --branch "${SIGTOP_VERSION}" https://github.com/tbvdm/sigtop.git src && \
-    cd src && \
-    git rev-parse HEAD > /build/SOURCE_COMMIT && \
-    CGO_ENABLED=1 go build -o /build/sigtop . && \
-    test -x /build/sigtop && \
-    cp LICENSE.md /build/LICENSE && \
-    printf 'https://github.com/tbvdm/sigtop/tree/%s\n' "$(cat /build/SOURCE_COMMIT)" > /build/SOURCE_URL
-
 FROM debian:bookworm-slim AS slackdump-builder
 
 ARG TARGETARCH
@@ -332,21 +311,6 @@ COPY --from=console-builder /app/apps/console/public /console/apps/console/publi
 COPY --from=slackdump-builder /build/slackdump /usr/local/bin/slackdump
 COPY --from=slackdump-builder /build/LICENSE /usr/local/share/slackdump/LICENSE.agpl-3.0.txt
 COPY --from=slackdump-builder /build/SOURCE_URL /usr/local/share/slackdump/SOURCE_URL
-COPY --from=sigtop-builder /build/sigtop /usr/local/bin/sigtop
-COPY --from=sigtop-builder /build/LICENSE /usr/local/share/sigtop/LICENSE.isc.txt
-COPY --from=sigtop-builder /build/SOURCE_URL /usr/local/share/sigtop/SOURCE_URL
-# sigtop links against libsecret at runtime (Signal Desktop keyring access),
-# so the shared library must exist in the final image, not just the builder.
-RUN apt-get update && apt-get install -y --no-install-recommends libsecret-1-0 && \
-    rm -rf /var/lib/apt/lists/* && \
-    chmod +x /usr/local/bin/sigtop && \
-    # sigtop has no version/-v subcommand; invoking it bare prints usage and
-    # exits non-zero. That still proves the binary loads its shared libraries
-    # and parses arguments, which is exactly what this check is for -- a
-    # GLIBC or libsecret mismatch fails here instead of on the owner's first
-    # Signal sync. Grep for the usage banner so a genuine load failure (which
-    # prints a linker error, not usage) is still fatal.
-    /usr/local/bin/sigtop 2>&1 | grep -q 'usage' || (echo 'sigtop failed to execute' >&2; exit 1)
 
 # Verify slackdump is executable and functional
 RUN chmod +x /usr/local/bin/slackdump && /usr/local/bin/slackdump version
