@@ -6,8 +6,8 @@
  *
  * Re-exports the runner-side surface (collector loop, device-exporter
  * ingest client, runtime-capabilities profile, JSONL primitives, and
- * protocol message types) from the source-of-truth slice in
- * `@pdpp/polyfill-connectors/runner`.
+ * protocol message types) from the source-of-truth package,
+ * `@pdpp/collector-runtime`.
  *
  * This runtime is connector-AGNOSTIC. It does not know which connectors
  * support local collection or what streams they emit — a connector declares
@@ -18,9 +18,19 @@
  *
  * Boundary: this module MUST NOT import `playwright`, `patchright`, any other
  * browser-bound dependency, OR any specific connector's code. Its only
- * `@pdpp/polyfill-connectors` dependency is the generic runner-slice runtime
- * substrate. The `@pdpp/local-collector` publish pipeline asserts the
- * browser-free half with a CI grep gate over the produced tarball.
+ * dependency is the generic `@pdpp/collector-runtime` substrate. The
+ * `@pdpp/local-collector` publish pipeline asserts the browser-free half with
+ * a CI grep gate over the produced tarball.
+ *
+ * Imports below use RELATIVE paths into `@pdpp/collector-runtime`'s source
+ * (not the `@pdpp/collector-runtime` package specifier), matching this
+ * package's build: `tsconfig.build.json` compiles collector-runtime's source
+ * directly into this package's own `dist/` tree (the same vendoring already
+ * used for the bundled polyfill-connectors connectors), so the published
+ * tarball ships self-contained and never depends on `@pdpp/collector-runtime`
+ * being installed. A bare package-specifier import would emit unresolvable
+ * in the compiled output, since this package's `dist/` ships with no
+ * `node_modules`.
  *
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §1–§3.
  */
@@ -29,11 +39,12 @@ import { existsSync } from "node:fs";
 import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { LocalCollectorDefinition } from "../../collector-runtime/src/collector-definition.ts";
 import {
   COLLECTOR_RUNTIME_CAPABILITIES as POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES,
   COLLECTOR_PROTOCOL_VERSION as PROTOCOL_VERSION,
   type RuntimeCapabilityProfile,
-} from "../../polyfill-connectors/src/runner/index.ts";
+} from "../../collector-runtime/src/index.ts";
 
 // biome-ignore lint/performance/noBarrelFile: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export {
@@ -113,7 +124,7 @@ export {
   stringifyForJsonl,
   summarizeCollectorCompleteness,
   transformRecordsToCollectorEnvelopes,
-} from "../../polyfill-connectors/src/runner/index.ts";
+} from "../../collector-runtime/src/index.ts";
 
 /**
  * Public package capability profile.
@@ -129,39 +140,6 @@ export const COLLECTOR_RUNTIME_CAPABILITIES: RuntimeCapabilityProfile = {
   id: POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES.id,
   bindings: new Set(["network", "filesystem", "local_device"]),
 };
-
-/**
- * A connector's declaration of how it participates in local collection.
- *
- * The generic runtime accepts these — it does not author them. Each
- * filesystem-class connector exports its own definition (see
- * `@pdpp/polyfill-connectors/collectors`); the collector's composition root
- * injects the set through {@link createBundledConnectorRegistry}.
- */
-export interface LocalCollectorDefinition {
-  /** Runtime bindings the connector requires (e.g. `filesystem`). */
-  readonly bindings: Readonly<Record<string, { required: boolean }>>;
-  /** Stable connector id (matches the manifest + ingest envelope). */
-  readonly connector_id: string;
-  /** Whether the connector enforces path roots at enumeration time. */
-  readonly enforces_source_roots?: boolean;
-  /**
-   * The connector's directory name under `connectors/`. The runtime resolves
-   * the spawnable entry from it (`connectors/<entry>/index.{js,ts}`); the
-   * definition stays a pure value and never carries a path.
-   */
-  readonly entry: string;
-  /** Streams whose enumeration honors declared source roots. */
-  readonly source_root_scopable_streams?: readonly string[];
-  /** Default stream set; operators can override with `--streams`. */
-  readonly streams: readonly string[];
-  /**
-   * Streams an owner-declared `since` can be PROVEN against (mirrors the
-   * connector manifest's `consent_time_field`). Streams outside this set are
-   * collected whole rather than narrowed against a field they do not have.
-   */
-  readonly time_scopable_streams?: readonly string[];
-}
 
 /**
  * Runtime invocation of a bundled connector's child process.
