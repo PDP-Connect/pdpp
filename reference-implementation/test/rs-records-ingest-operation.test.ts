@@ -278,7 +278,7 @@ test("rs.records.ingest does not halt on a failing line; subsequent lines still 
 // ── Systemic/retryable classification (RecordsIngestSystemicFailureError) ──
 
 test("RecordsIngestSystemicFailureError carries ONLY fixed, public-safe fields — no field retains the underlying classified failure's own text", async () => {
-  const secretMarker = "sk_live_51StructuralAssertionMarkerMustNeverSurvive";
+  const secretMarker = "canary_StructuralAssertionMarkerMustNeverSurvive";
   await assert.rejects(
     () =>
       executeRecordsIngest(
