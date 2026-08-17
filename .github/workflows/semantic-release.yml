@@ -267,11 +267,16 @@ jobs:
   # was to delete a public release. Building first makes the failure mode
   # "no release happened", which is recoverable by pushing again.
   #
-  # Only immutable tags are written here (the candidate version and sha-<rev>).
-  # `latest` is deliberately NOT in this tag list: a moving channel tag must
-  # not advertise a version that semantic-release has not yet committed to.
-  # The promote-release-images job below moves `latest` onto the exact manifest
-  # this job published, after the release succeeds.
+  # No release-looking tag is written here. `candidate-<version>-sha-<rev>`
+  # cannot be mistaken for the final `<version>` release tag - a reader who
+  # sees it in a registry listing knows on sight that it precedes a release,
+  # not that it is one. `latest` is also absent: a moving channel tag must not
+  # advertise a version that semantic-release has not yet committed to.
+  #
+  # promote-release-images below does not read this tag at all. It reads the
+  # manifest digest recorded by the `id: build` step and carried forward as a
+  # durable artifact, so promotion binds to the exact bytes this job produced
+  # rather than to any mutable tag - candidate or otherwise.
   publish-candidate-images:
     name: publish candidate image ${{ matrix.image }}
     needs: [resolve-version, quality, validate-release-images]
@@ -339,10 +344,11 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.resolve-version.outputs.new-release-version }}
           tags: |
-            type=raw,value=${{ needs.resolve-version.outputs.new-release-version }}
+            type=raw,value=candidate-${{ needs.resolve-version.outputs.new-release-version }}-sha-${{ github.sha }}
             type=sha,prefix=sha-
 
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           cache-from: |
@@ -361,16 +367,43 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           target: ${{ matrix.target }}
 
-  # Moves the `latest` channel tag onto the EXACT manifest that
-  # publish-candidate-images already pushed, once semantic-release has actually
-  # created the release. This is a registry-side manifest copy, not a rebuild:
-  # `docker buildx imagetools create -t <dst> <src>` copies the source manifest
-  # list by digest, so `latest` and the immutable version tag are guaranteed to
-  # be the same bytes — multi-arch entries, SBOM and provenance attestations
-  # included. Rebuilding here would instead produce a second, differently-built
-  # image under `latest` that no immutable tag points at.
+      # Durable per-image record of the exact manifest this job pushed.
+      # promote-release-images consumes this artifact rather than re-resolving
+      # a tag, so promotion is bound to these bytes even if a tag is later
+      # moved, reused, or raced by a concurrent operator action.
+      - name: Record candidate digest
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/candidate-digests"
+          printf '%s' "$DIGEST" > "$RUNNER_TEMP/candidate-digests/${IMAGE_NAME}"
+
+      - name: Upload candidate digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-digest-${{ matrix.image }}
+          path: ${{ runner.temp }}/candidate-digests/${{ matrix.image }}
+          retention-days: 14
+          if-no-files-found: error
+
+  # Creates the final `<version>` and `latest` tags from the EXACT manifest
+  # digest publish-candidate-images recorded, once semantic-release has
+  # actually created the release. This is a registry-side manifest copy, not a
+  # rebuild: `docker buildx imagetools create -t <dst> <src>` copies the
+  # source manifest list by digest, so both final tags are guaranteed to be
+  # the same bytes as the candidate build - multi-arch entries, SBOM and
+  # provenance attestations included. Rebuilding here would instead produce a
+  # differently-built image under the release tags that no candidate build
+  # ever produced.
+  #
+  # Promotion reads the digest artifact, never a tag. A version tag, a
+  # candidate tag, or `latest` can all be moved, reused, or raced by a
+  # concurrent operator action without changing what gets promoted here - the
+  # digest recorded at build time is the only source of truth.
   promote-release-images:
-    name: promote ${{ matrix.image }} to latest
+    name: promote ${{ matrix.image }} to the release channel
     needs: [release, publish-candidate-images]
     if: needs.release.outputs.published == 'true'
     runs-on: ubuntu-latest
@@ -391,6 +424,24 @@ jobs:
         run: |
           echo "PDPP_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
 
+      - name: Download recorded candidate digest
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: candidate-digest-${{ matrix.image }}
+          path: ${{ runner.temp }}/candidate-digests
+
+      - name: Read candidate digest
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          digest="$(cat "$RUNNER_TEMP/candidate-digests/${IMAGE_NAME}")"
+          if [ -z "$digest" ]; then
+            echo "::error::empty candidate digest for ${IMAGE_NAME}" >&2
+            exit 1
+          fi
+          echo "CANDIDATE_DIGEST=${digest}" >> "$GITHUB_ENV"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -401,41 +452,125 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Fail before touching `latest` if the candidate is missing. Without this,
-      # a promotion typo would surface as a confusing imagetools error after
-      # the release already exists.
-      - name: Verify the candidate manifest exists
-        env:
-          VERSION: ${{ needs.release.outputs.version }}
+      # Fail before touching the release channel if the recorded digest no
+      # longer resolves. Without this, a registry-retention or typo problem
+      # would surface as a confusing imagetools error after the release
+      # already exists.
+      - name: Verify the recorded candidate digest exists
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect "${PDPP_IMAGE}:${VERSION}" > /dev/null
+          docker buildx imagetools inspect "${PDPP_IMAGE}@${CANDIDATE_DIGEST}" > /dev/null
 
-      - name: Promote candidate to latest
+      - name: Promote candidate digest to the version tag
         env:
           VERSION: ${{ needs.release.outputs.version }}
         run: |
           set -euo pipefail
           docker buildx imagetools create \
-            --tag "${PDPP_IMAGE}:latest" \
-            "${PDPP_IMAGE}:${VERSION}"
+            --tag "${PDPP_IMAGE}:${VERSION}" \
+            "${PDPP_IMAGE}@${CANDIDATE_DIGEST}"
 
-      # Proves the promotion actually landed: `latest` must now resolve to the
-      # same digest as the immutable candidate tag. A silent no-op or a partial
-      # copy fails here rather than shipping a stale `latest` to every operator
-      # whose onboarding docs name that tag.
-      - name: Verify latest resolves to the promoted manifest
+      - name: Promote candidate digest to latest
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${PDPP_IMAGE}:latest" \
+            "${PDPP_IMAGE}@${CANDIDATE_DIGEST}"
+
+      # Proves the promotion actually landed: both the version tag and
+      # `latest` must now resolve to the exact digest that was recorded at
+      # build time. A silent no-op or a partial copy fails here rather than
+      # shipping a stale or divergent tag to every operator whose onboarding
+      # docs name it.
+      - name: Verify the version tag and latest resolve to the recorded digest
         env:
           VERSION: ${{ needs.release.outputs.version }}
         run: |
           set -euo pipefail
-          candidate_digest="$(docker buildx imagetools inspect \
+          version_digest="$(docker buildx imagetools inspect \
             --format '{{json .Manifest.Digest}}' "${PDPP_IMAGE}:${VERSION}")"
           latest_digest="$(docker buildx imagetools inspect \
             --format '{{json .Manifest.Digest}}' "${PDPP_IMAGE}:latest")"
-          echo "candidate ${PDPP_IMAGE}:${VERSION} -> ${candidate_digest}"
-          echo "promoted  ${PDPP_IMAGE}:latest -> ${latest_digest}"
-          if [ "${candidate_digest}" != "${latest_digest}" ]; then
-            echo "::error::latest does not resolve to the promoted candidate manifest" >&2
+          recorded_digest="\"${CANDIDATE_DIGEST}\""
+          echo "recorded ${PDPP_IMAGE}@${CANDIDATE_DIGEST}"
+          echo "version  ${PDPP_IMAGE}:${VERSION} -> ${version_digest}"
+          echo "latest   ${PDPP_IMAGE}:latest -> ${latest_digest}"
+          if [ "${version_digest}" != "${recorded_digest}" ]; then
+            echo "::error::${PDPP_IMAGE}:${VERSION} does not resolve to the recorded candidate digest" >&2
+            exit 1
+          fi
+          if [ "${latest_digest}" != "${recorded_digest}" ]; then
+            echo "::error::${PDPP_IMAGE}:latest does not resolve to the recorded candidate digest" >&2
+            exit 1
+          fi
+
+  # Aggregate gate over the whole release channel. Each promote-release-images
+  # matrix leg proves its own image, but `fail-fast: false` means one image's
+  # transient failure does not stop the others - so the release can otherwise
+  # end with three images promoted and one left on the previous release with
+  # no single job whose failure says so. This job re-verifies all four images
+  # against their recorded candidate digests after the matrix completes, so a
+  # partial promotion fails the workflow run as a whole rather than only the
+  # one matrix leg that hit it. It performs no promotion itself: recovery from
+  # a partial promotion is re-running the failed promote-release-images matrix
+  # legs (or the whole job) from the Actions UI, which is idempotent because
+  # `imagetools create` is a manifest copy, not a rebuild.
+  verify-release-channel:
+    name: verify release channel is fully promoted
+    needs: [release, promote-release-images]
+    # always() is required here, not just needs.release.outputs.published:
+    # promote-release-images runs with fail-fast: false, and GitHub Actions'
+    # default job condition is needs.*.result == 'success' for every entry in
+    # `needs`. Without always(), one failed promotion matrix leg would mark
+    # promote-release-images as failed and skip this job entirely - the exact
+    # partial-promotion case this gate exists to catch would never run it.
+    if: always() && needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download recorded candidate digests
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: candidate-digest-*
+          path: ${{ runner.temp }}/candidate-digests
+          merge-multiple: false
+
+      - name: Verify every release image's version and latest tags match its recorded digest
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for image in reference reference-browser web core; do
+            pdpp_image="ghcr.io/${GITHUB_REPOSITORY,,}/${image}"
+            recorded_digest="$(cat "$RUNNER_TEMP/candidate-digests/candidate-digest-${image}/${image}")"
+            if [ -z "$recorded_digest" ]; then
+              echo "::error::empty recorded digest for ${image}" >&2
+              failed=1
+              continue
+            fi
+            for alias in "${VERSION}" latest; do
+              alias_digest="$(docker buildx imagetools inspect \
+                --format '{{json .Manifest.Digest}}' "${pdpp_image}:${alias}")"
+              echo "${pdpp_image}:${alias} -> ${alias_digest} (recorded \"${recorded_digest}\")"
+              if [ "${alias_digest}" != "\"${recorded_digest}\"" ]; then
+                echo "::error::${pdpp_image}:${alias} does not match the recorded candidate digest for ${image}" >&2
+                failed=1
+              fi
+            done
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::release channel is not fully promoted; re-run the failed promote-release-images matrix legs" >&2
             exit 1
           fi

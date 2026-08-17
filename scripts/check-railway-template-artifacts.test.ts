@@ -286,9 +286,12 @@ test("release matrices publish Core and do not expose compatibility aliases", ()
 // image build that failed left a published GitHub release and git tag naming a
 // version whose images were never pushed. Repairing that meant deleting a
 // public release. The ordering below makes the failure mode "no release
-// happened" instead, and `latest` moves only by copying the manifest that was
-// already published under the immutable tag.
-test("release publishes immutable images before semantic-release, then promotes latest", () => {
+// happened" instead. `latest` and the version tag are both created only after
+// the release exists, from the exact digest publish-candidate-images recorded
+// - not from re-resolving a mutable tag, which a concurrent run, a rerun, or
+// an operator action could have moved between candidate publication and
+// promotion.
+test("release publishes a non-release-looking candidate before semantic-release, then promotes from its recorded digest", () => {
   const workflow = read(".github/workflows/semantic-release.yml");
   const jobs = workflow.split(/\n {2}(?=[a-z-]+:\n)/);
   const jobNamed = (name: string): string => {
@@ -300,30 +303,61 @@ test("release publishes immutable images before semantic-release, then promotes 
   const candidate = jobNamed("publish-candidate-images");
   const release = jobNamed("release");
   const promote = jobNamed("promote-release-images");
+  const verify = jobNamed("verify-release-channel");
 
   // semantic-release cannot create the tag until the images are pushed.
   assert.match(release, /needs:\s*\[[^\]]*publish-candidate-images[^\]]*\]/);
 
-  // The candidate publish writes immutable tags only. A `latest` here would
-  // advertise a version semantic-release has not yet committed to.
-  assert.match(candidate, /type=raw,value=\$\{\{ needs\.resolve-version\.outputs\.new-release-version \}\}/);
+  // The candidate publish writes a staging tag that cannot be mistaken for a
+  // released semver tag, plus the immutable commit-sha tag. It never writes
+  // the bare version or `latest`: those are release-channel aliases that only
+  // exist once semantic-release has committed to the release.
+  assert.match(
+    candidate,
+    /type=raw,value=candidate-\$\{\{ needs\.resolve-version\.outputs\.new-release-version \}\}-sha-\$\{\{ github\.sha \}\}/
+  );
   assert.match(candidate, /type=sha,prefix=sha-/);
+  assert.doesNotMatch(candidate, /type=raw,value=\$\{\{ needs\.resolve-version\.outputs\.new-release-version \}\}\n/);
   assert.doesNotMatch(candidate, /type=raw,value=latest/);
   assert.doesNotMatch(candidate, /needs\.release\.outputs/);
 
-  // Multi-arch, SBOM and provenance stay on the immutable publish.
+  // Multi-arch, SBOM and provenance stay on the candidate publish.
   assert.match(candidate, /platforms: linux\/amd64,linux\/arm64/);
   assert.match(candidate, /provenance: mode=max/);
   assert.match(candidate, /sbom: true/);
 
-  // Promotion runs only after a real release, copies the manifest rather than
-  // rebuilding, and proves both the source and the result resolve.
+  // The build step is identified and its digest recorded to a durable
+  // artifact, so promotion has a content address to consume instead of a tag.
+  assert.match(candidate, /- name: Build and push image\n\s+id: build/);
+  assert.match(candidate, /DIGEST: \$\{\{ steps\.build\.outputs\.digest \}\}/);
+  assert.match(candidate, /uses: actions\/upload-artifact@/);
+  assert.match(candidate, /name: candidate-digest-\$\{\{ matrix\.image \}\}/);
+
+  // Promotion runs only after a real release, downloads the recorded digest,
+  // and copies that exact manifest rather than rebuilding or re-resolving a
+  // tag. Both the version tag and latest are created from it.
   assert.match(promote, /needs:\s*\[[^\]]*release[^\]]*\]/);
   assert.match(promote, /needs\.release\.outputs\.published == 'true'/);
+  assert.match(promote, /uses: actions\/download-artifact@/);
+  assert.match(promote, /name: candidate-digest-\$\{\{ matrix\.image \}\}/);
   assert.match(promote, /docker buildx imagetools create/);
-  assert.match(promote, /imagetools inspect[\s\S]*\$\{PDPP_IMAGE\}:\$\{VERSION\}/);
-  assert.match(promote, /\$\{PDPP_IMAGE\}:latest/);
+  assert.match(promote, /imagetools inspect[\s\S]*\$\{PDPP_IMAGE\}@\$\{CANDIDATE_DIGEST\}/);
+  assert.match(promote, /--tag "\$\{PDPP_IMAGE\}:\$\{VERSION\}"[\s\S]*"\$\{PDPP_IMAGE\}@\$\{CANDIDATE_DIGEST\}"/);
+  assert.match(promote, /--tag "\$\{PDPP_IMAGE\}:latest"[\s\S]*"\$\{PDPP_IMAGE\}@\$\{CANDIDATE_DIGEST\}"/);
   assert.doesNotMatch(promote, /docker\/build-push-action/);
+
+  // An aggregate job re-verifies all four images against their recorded
+  // digests after the promotion matrix, so a partial promotion (permitted by
+  // promote-release-images' fail-fast: false) fails the run as a whole.
+  assert.match(verify, /needs:\s*\[[^\]]*promote-release-images[^\]]*\]/);
+  // always() is required, not just the published check: promote-release-images
+  // runs fail-fast: false, and a failed matrix leg would otherwise skip this
+  // gate entirely under the default needs.*.result == 'success' condition -
+  // exactly when a partial promotion needs it to run.
+  assert.match(verify, /if:\s*always\(\)\s*&&\s*needs\.release\.outputs\.published == 'true'/);
+  assert.match(verify, /reference reference-browser web core/);
+  assert.match(verify, /for alias in "\$\{VERSION\}" latest/);
+  assert.doesNotMatch(verify, /docker buildx imagetools create/);
 });
 
 // The defect this guards: semantic-release creates a `v<version>` git tag, and
