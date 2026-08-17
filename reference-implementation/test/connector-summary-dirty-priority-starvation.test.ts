@@ -56,7 +56,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  __testOnlySetNextFirstObservationPhase,
   markConnectorSummaryEvidenceDirty,
+  reconcileDirtyConnectorSummaryEvidence,
   runBoundedSummaryEvidenceSweep,
 } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
@@ -691,6 +693,79 @@ test(
     assert.ok(
       connectionIsCurrentAfterRound(target),
       "a dirty row converges through the cursor walk alone when acceleration never runs"
+    );
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Missing-vs-generic phase starvation (2026-08-17 production incident): the
+// SAME class of bug as the walk-vs-acceleration starvation above, one layer
+// deeper. `runBoundedObservationPhases` (inside `observeConnectorSummaryEvidence`,
+// which BOTH the cursor walk and the dirty-priority tranche call per page/
+// bite) runs a `missing`-only repair phase before the `generic` phase that
+// actually classifies `dirty`/`state_stale`/etc. `missing`'s own batched
+// discovery is a FIXED cost paid over its ENTIRE requested scope regardless
+// of how many rows turn out to genuinely be missing — including zero. Under
+// load that discovery alone can exhaust the round's cooperative deadline,
+// and `generic` then never runs at all: `canStartWork()` reports false,
+// `discoverCandidates` is never called, and the round returns
+// `candidateReasonCounts: {}` / `repaired: 0` / `skipped: 0` / `failed: 0` —
+// a dirty row is left dirty forever with no visible sign anything was wrong.
+//
+// Live incident: 11 of 27 sources (GitHub, Gmail, USAA, Amazon, YNAB, ...)
+// sat at health state `unknown` (`summary_evidence_dirty_backstop`) for over
+// an hour with SUCCEEDED runs and current terminal facts — every maintenance
+// tick reported exactly this all-zero, empty-reason-counts shape.
+// ---------------------------------------------------------------------------
+
+test(
+  "MISSING-VS-GENERIC STARVATION: a slow 'missing' discovery phase never starves 'generic' for more than one consecutive round",
+  withTempDb(async () => {
+    // A large sibling fleet with no evidence at all yet — `missing`'s own
+    // discovery must inspect every id in scope regardless of how many it
+    // will actually repair (capped at BOUNDED_MISSING_REPAIR_CANDIDATES=25),
+    // making that phase's discovery cost real and measurable rather than
+    // simulated. This is what stood in for the live incident's slow/
+    // contended discovery under a tight cooperative budget.
+    const missingIds = seedConnections(200);
+
+    // One already-warm, genuinely dirty connection — exactly the live
+    // incident's shape (SUCCEEDED run, current terminal facts, dirty=1).
+    const [dirtyId] = seedConnections(1, { connectorId: "dirty" });
+    assert.ok(dirtyId);
+    seedSuccessfulRun(dirtyId, 1);
+    await runBoundedSummaryEvidenceSweep({ maxDurationMs: 60_000, pageSize: PRODUCTION_PAGE_SIZE });
+    await markConnectorSummaryEvidenceDirty({ connectorInstanceId: dirtyId, reason: "run.completed" });
+
+    // Pin the alternation so this test does not depend on ordering from
+    // other tests in the same process — the first round below deliberately
+    // starts with `missing` first (the worst case for `generic`).
+    __testOnlySetNextFirstObservationPhase("missing");
+
+    const scope = [dirtyId, ...missingIds];
+    let sawDirtyClassified = false;
+    for (let round = 0; round < 2; round += 1) {
+      // biome-ignore lint/performance/noAwaitInLoops: Each round must observe the prior round's alternation state.
+      const outcome = await reconcileDirtyConnectorSummaryEvidence(scope, {
+        // Large enough for a real repair transaction to complete once
+        // `generic` gets first opportunity, small enough that `missing`'s
+        // 201-row discovery (when it goes first) can exhaust it before
+        // `generic` ever starts.
+        maxDurationMs: 50,
+      });
+      sawDirtyClassified ||= "dirty" in outcome.candidateReasonCounts;
+      if (connectionIsCurrentAfterRound(dirtyId)) {
+        break;
+      }
+    }
+
+    assert.ok(
+      sawDirtyClassified,
+      "the dirty candidate must be classified by the generic phase within the alternation's 2-round bound"
+    );
+    assert.ok(
+      connectionIsCurrentAfterRound(dirtyId),
+      "the dirty row must converge within 2 rounds, not stay dirty forever behind a slow 'missing' discovery"
     );
   })
 );
