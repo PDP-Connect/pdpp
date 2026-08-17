@@ -57,7 +57,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMainModule } from "../src/is-main-module.ts";
+import { isMainModule } from "@pdpp/collector-runtime";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONNECTORS_DIR = join(PACKAGE_ROOT, "connectors");

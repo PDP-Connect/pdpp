@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -28,6 +29,7 @@
  * from API pacing).
  */
 
+import { isMainModule } from "@pdpp/collector-runtime";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   type CollectContext,
@@ -39,7 +41,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { steamPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 

@@ -22,7 +22,7 @@
  * always leaves durable coverage evidence.
  */
 
-import type { LocalCollectorDefinition } from "../../src/collector-definition.ts";
+import type { LocalCollectorDefinition } from "@pdpp/collector-runtime/collector-definition";
 
 export const APPLE_PHOTOS_DEFAULT_STREAMS = ["photos", "coverage_diagnostics"] as const;
 

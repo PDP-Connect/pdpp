@@ -15,7 +15,7 @@
  * message and SHALL NOT gain one for this — reference needs must not leak into
  * protocol semantics until they earn it. So this is an OPTIONAL, reference-only
  * connector hook, not a Collection Profile message and not PDPP Core. It is also
- * intentionally NOT re-exported from the runner barrel (`src/runner/index.ts`):
+ * intentionally NOT re-exported from the runner barrel (`@pdpp/collector-runtime`):
  * the publishable local-collector slice never probes provider credentials.
  *
  * Promotion trigger (flow design): if three or more connectors implement the

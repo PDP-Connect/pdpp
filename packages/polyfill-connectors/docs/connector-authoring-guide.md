@@ -250,7 +250,7 @@ Every text-bearing field in a connector schema (`schemas.ts`) MUST use the `pdpp
 
 ```ts
 import { z } from "zod";
-import { pdppSafeText, nullablePdppSafeText } from "../../src/pdpp-safe-text.ts";
+import { pdppSafeText, nullablePdppSafeText } from "@pdpp/collector-runtime/pdpp-safe-text";
 
 // Free-form human-readable text:
 const titleSchema = pdppSafeText.max(500).nullable();
@@ -269,7 +269,7 @@ The `pdppSafeText` brand produces a TypeScript nominal type `PdppSafeText`. Down
 ### The canonical parse-time pattern
 
 ```ts
-import { safeTextPreview, PDPP_PREVIEW_MAX_CHARS } from "../../src/safe-text-preview.ts";
+import { safeTextPreview, PDPP_PREVIEW_MAX_CHARS } from "@pdpp/collector-runtime/safe-text-preview";
 
 // Simple case: a string-typed preview field.
 export function textPreview(s: unknown, max = PDPP_PREVIEW_MAX_CHARS): string | null {

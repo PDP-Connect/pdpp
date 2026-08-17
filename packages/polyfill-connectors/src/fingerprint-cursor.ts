@@ -28,7 +28,7 @@
 // substitute for this gate.
 
 import { createHash } from "node:crypto";
-import type { RecordData } from "./connector-runtime-protocol.ts";
+import type { RecordData } from "@pdpp/collector-runtime";
 
 // ─── Carry-forward lifecycle (shared construction boundary) ──────────────
 //

@@ -18,15 +18,15 @@
  * tests exercise the same exports through this module boundary.
  */
 
-import type { BrowserContext, Page } from "playwright";
-import { manualAction } from "./browser-handoff.ts";
 import type {
   AssistanceCompletionStatus,
   AssistanceRequest,
   InteractionRequest,
   InteractionResponse,
-  ProgressExtra,
-} from "./connector-runtime-protocol.ts";
+} from "@pdpp/collector-runtime";
+import type { ProgressExtra } from "@pdpp/collector-runtime/connector-runtime-protocol";
+import type { BrowserContext, Page } from "playwright";
+import { manualAction } from "./browser-handoff.ts";
 import type { CaptureSession } from "./fixture-capture.ts";
 import { TerminalError, type TerminalErrorDetails } from "./terminal-error.ts";
 

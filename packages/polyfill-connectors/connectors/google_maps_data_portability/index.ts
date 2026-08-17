@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { isMainModule } from "@pdpp/collector-runtime";
 import {
   type CollectContext,
   emitDetailCoverage,
@@ -9,7 +11,6 @@ import {
   type RecordData,
   runConnector,
 } from "../../src/connector-runtime.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import {
   type AccessTypeResult,
   GOOGLE_MAPS_DATA_PORTABILITY_RESOURCE_GROUPS,

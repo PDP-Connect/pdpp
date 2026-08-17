@@ -23,19 +23,18 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
-
 import {
   buildCollectorStartMessage,
-  buildTerminalCollectionFacts,
   COLLECTION_SCOPE_STATE_KEY,
   collectorScopeFingerprint,
+  hashCanonicalJson,
   readCollectionScopeFromState,
   resolveScopedStreamTimeRanges,
   runCollectorConnector,
-} from "./collector-runner.ts";
-import type { TerminalRunCommitRequest } from "./local-device-client.ts";
-import { hashCanonicalJson } from "./local-device-envelope.ts";
+} from "@pdpp/collector-runtime";
+import { buildTerminalCollectionFacts } from "@pdpp/collector-runtime/collector-runner";
+import type { TerminalRunCommitRequest } from "@pdpp/collector-runtime/local-device-client";
+import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
 
 const SINCE = "2026-06-01T00:00:00.000Z";
 /** Mirrors the claude_code/codex manifest split: 3 timed streams, the rest not. */

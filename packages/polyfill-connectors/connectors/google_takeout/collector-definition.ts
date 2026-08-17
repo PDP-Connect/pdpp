@@ -14,7 +14,7 @@
  * why).
  */
 
-import type { LocalCollectorDefinition } from "../../src/collector-definition.ts";
+import type { LocalCollectorDefinition } from "@pdpp/collector-runtime/collector-definition";
 
 /**
  * Default stream set for an unscoped `google_takeout` local-collector run.

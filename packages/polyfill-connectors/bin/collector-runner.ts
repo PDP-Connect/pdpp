@@ -66,8 +66,12 @@
 
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type CollectorConnectorSpec, enrollCollector, runCollectorConnector } from "../src/collector-runner.ts";
-import { COLLECTOR_RUNTIME_CAPABILITIES } from "../src/runtime-capabilities.ts";
+import {
+  COLLECTOR_RUNTIME_CAPABILITIES,
+  type CollectorConnectorSpec,
+  enrollCollector,
+  runCollectorConnector,
+} from "@pdpp/collector-runtime";
 
 const DEFAULT_QUEUE_PATH = join(
   dirname(fileURLToPath(import.meta.url)),

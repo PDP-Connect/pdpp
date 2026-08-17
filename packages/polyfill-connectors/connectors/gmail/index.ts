@@ -26,6 +26,7 @@
  */
 
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { isMainModule, requireCredentialsOrAsk, resourceSet, stringifyForJsonl } from "@pdpp/collector-runtime";
 import {
   type FetchMessageObject,
   type FetchQueryObject,
@@ -44,15 +45,12 @@ import {
   describeUnexpectedFailure,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import type { ReferenceBlobUploadFn } from "../../src/reference-blob-uploader.ts";
 import {
   makeReferenceBlobUploader as makeSharedReferenceBlobUploader,
   ReferenceBlobUploadFailure,
   runtimeBlobUploadAvailable as sharedRuntimeBlobUploadAvailable,
 } from "../../src/reference-blob-uploader.ts";
-import { stringifyForJsonl } from "../../src/safe-emit.ts";
-import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
 import { isImapTransientError } from "./imap-error-classification.ts";
 import {
   type BodyPartSelection,

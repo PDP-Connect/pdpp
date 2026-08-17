@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -62,6 +63,8 @@
  *   v0.1.0 — initial (unproven, never listed) password-grant connector.
  */
 
+import { isMainModule } from "@pdpp/collector-runtime";
+import { redactTransportDetail } from "@pdpp/collector-runtime/http-retry";
 import type { Page } from "playwright";
 import { ensureVenmoOrigin, ensureVenmoSession } from "../../src/auto-login/venmo.ts";
 import {
@@ -71,8 +74,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { redactTransportDetail } from "../../src/http-retry.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { API_BASE, profileRecord, transactionRecord, userRecord } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type {

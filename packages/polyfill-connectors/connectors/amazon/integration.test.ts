@@ -31,9 +31,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import type { EmittedMessage } from "@pdpp/collector-runtime";
 import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
-import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
 import { openFingerprintCursor, recordFingerprint } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {

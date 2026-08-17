@@ -66,6 +66,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { isMainModule } from "@pdpp/collector-runtime";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   buildDetailCoverageMessage,
@@ -77,7 +78,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { jellyfinPacingProfile } from "../../src/provider-profile.ts";
 import { createRepairBudget } from "../../src/repair-budget.ts";
 import { validateItemsResponse, validateRecord, validateSystemInfo, validateViewsResponse } from "./schemas.ts";

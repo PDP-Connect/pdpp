@@ -23,8 +23,8 @@
  * This file is a contract scaffold, not a fixture-proven schema.
  */
 
+import { pdppSafeText } from "@pdpp/collector-runtime/pdpp-safe-text";
 import { z } from "zod";
-import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Module-scoped regex (Biome useTopLevelRegex). Manifest declares date-time

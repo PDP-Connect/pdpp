@@ -54,7 +54,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMainModule } from "../src/is-main-module.ts";
+import { isMainModule } from "@pdpp/collector-runtime";
 import { NO_AWAIT_IN_LOOPS_ALLOWLIST } from "./no-await-in-loops-allowlist.ts";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");

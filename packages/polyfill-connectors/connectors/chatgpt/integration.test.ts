@@ -50,11 +50,11 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { RetryExhaustedError, retryHttp } from "@pdpp/collector-runtime/http-retry";
 import type { Page } from "playwright";
 import { currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
 import { CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE } from "../../src/auto-login/chatgpt.ts";
 import type { CollectContext, EmittedMessage } from "../../src/connector-runtime.ts";
-import { RetryExhaustedError, retryHttp } from "../../src/http-retry.ts";
 import { ProviderBudgetController } from "../../src/provider-budget.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {

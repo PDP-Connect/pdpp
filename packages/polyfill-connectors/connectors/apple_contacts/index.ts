@@ -39,6 +39,7 @@
  * the RFC 6350-standard field every server honors).
  */
 
+import { isMainModule } from "@pdpp/collector-runtime";
 import {
   buildFullScanCoverageMessage,
   createConnectorFailure,
@@ -48,7 +49,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import {
   addressbookQueryAll,
   CardDavStructuralError,

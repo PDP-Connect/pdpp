@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { runCollectorConnector } from "../../src/collector-runner.ts";
+import { runCollectorConnector } from "@pdpp/collector-runtime";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { scanLocalJsonl } from "../../src/local-jsonl-cursor.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";

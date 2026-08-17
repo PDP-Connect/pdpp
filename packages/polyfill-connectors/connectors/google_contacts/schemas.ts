@@ -1,8 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { pdppSafeText } from "@pdpp/collector-runtime/pdpp-safe-text";
 import { z } from "zod";
-import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 const nameSchema = z.object({

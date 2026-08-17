@@ -27,8 +27,8 @@
  *     array of property-name strings; each is free-form so uses pdppSafeText.
  */
 
+import { pdppSafeText } from "@pdpp/collector-runtime/pdpp-safe-text";
 import { z } from "zod";
-import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Module-scoped regexes (Biome useTopLevelRegex).

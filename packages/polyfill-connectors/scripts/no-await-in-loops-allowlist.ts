@@ -1811,34 +1811,6 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
     note: "readFile(): test drives/asserts an ordered per-case side effect",
   },
   {
-    path: "src/collector-runner.ts",
-    line: 1937,
-    column: 7,
-    category: "provider_pacing_backpressure",
-    note: "input.client.recoverLocalCollectorGap(): rate-limited/budget-gated external call",
-  },
-  {
-    path: "src/collector-runner.ts",
-    line: 2358,
-    column: 9,
-    category: "bounded_retry_polling",
-    note: "waitMs_(): retry/backoff/poll loop gated on the prior attempt's outcome (waits for the outbox's own next-retry time before re-checking for newly-ready items)",
-  },
-  {
-    path: "src/collector-runner.ts",
-    line: 2364,
-    column: 7,
-    category: "shared_mutable_accumulator",
-    note: "drainClaimedOutboxItem(): loop body mutates a shared accumulator the next iteration reads",
-  },
-  {
-    path: "src/collector-runner.ts",
-    line: 3030,
-    column: 18,
-    category: "shared_mutable_accumulator",
-    note: "input.queue.dequeueReady(): loop body mutates a shared accumulator the next iteration reads",
-  },
-  {
     path: "src/connector-http-governor.test.ts",
     line: 279,
     column: 5,
@@ -1872,13 +1844,6 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
     column: 9,
     category: "shared_mutable_accumulator",
     note: "closeBrowserPage(): loop body mutates a shared accumulator the next iteration reads",
-  },
-  {
-    path: "src/http-retry.ts",
-    line: 372,
-    column: 5,
-    category: "bounded_retry_polling",
-    note: "beforeAttempt(): retry/backoff/poll loop gated on the prior attempt's outcome",
   },
   {
     path: "src/interaction-handler.ts",

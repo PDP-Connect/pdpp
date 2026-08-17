@@ -59,6 +59,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { isMainModule } from "@pdpp/collector-runtime";
 import { SaxesParser } from "saxes";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
@@ -70,7 +71,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { groupmePacingProfile } from "../../src/provider-profile.ts";
 import {
   makeReferenceBlobUploader,

@@ -49,6 +49,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import {
+  type EmittedMessage,
+  isMainModule,
+  type RecordData,
+  resourceSet,
+  type StreamScope,
+  stringifyForJsonl,
+} from "@pdpp/collector-runtime";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import {
   dateDirectoryInRange,
@@ -59,9 +67,7 @@ import {
   scopeBoundsEnumeration,
 } from "../../src/collection-scope-enumeration.ts";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
-import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime-protocol.ts";
 import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildCoverageDiagnosticsStateSnapshot,
   buildDerivedCoverageRecord,
@@ -71,8 +77,6 @@ import {
   listDirectoryInventory,
   openInventoryFingerprintCursor,
 } from "../../src/local-source-inventory.ts";
-import { stringifyForJsonl } from "../../src/safe-emit.ts";
-import { resourceSet } from "../../src/scope-filters.ts";
 import {
   buildPromptRecord,
   buildRolloutOnlySessionRecord,

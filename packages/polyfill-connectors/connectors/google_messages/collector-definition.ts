@@ -26,7 +26,7 @@
  * unavailable.
  */
 
-import type { LocalCollectorDefinition } from "../../src/collector-definition.ts";
+import type { LocalCollectorDefinition } from "@pdpp/collector-runtime/collector-definition";
 
 export const GOOGLE_MESSAGES_DEFAULT_STREAMS = ["messages", "coverage_diagnostics"] as const;
 

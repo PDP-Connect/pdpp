@@ -5,7 +5,7 @@
 // be unit-tested in isolation (see parsers.test.ts). The filesystem
 // walker, sqlite reader, and JSONL iterator live in index.ts.
 
-import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "../../src/safe-text-preview.ts";
+import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "@pdpp/collector-runtime/safe-text-preview";
 import type { ParsedFrontmatter, RolloutAggregate, RolloutPayload, ThreadFingerprint, ThreadRow } from "./types.ts";
 
 // ─── Constants & regexes (module-scope per Biome useTopLevelRegex) ──────

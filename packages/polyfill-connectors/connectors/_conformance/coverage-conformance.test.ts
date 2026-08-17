@@ -84,6 +84,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import type { EmittedMessage } from "@pdpp/collector-runtime";
 import {
   type CoverageProofStrategy,
   evaluateStreamCoherence,
@@ -95,7 +96,6 @@ import {
   PRODUCTION_READY_CONNECTORS,
   REAL_UNLISTED_CONNECTORS,
 } from "../../src/connector-conformance-roster.ts";
-import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
 import {
   AMAZON_ZERO_RESULT_DRIVER,
   APPLE_CONTACTS_AUTH_FAILURE_DRIVER,

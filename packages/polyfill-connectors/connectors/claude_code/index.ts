@@ -31,6 +31,8 @@ import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
+import { canonicalJson, isMainModule } from "@pdpp/collector-runtime";
+import { safeTextPreview } from "@pdpp/collector-runtime/safe-text-preview";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import {
   type EnumerationScope,
@@ -40,8 +42,6 @@ import {
   scopeBoundsEnumeration,
 } from "../../src/collection-scope-enumeration.ts";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
-import { canonicalJson } from "../../src/local-device-envelope.ts";
 import {
   isLocalJsonlPhysicalCursorV1,
   type LocalJsonlScanResult,
@@ -56,7 +56,6 @@ import {
   listDirectoryInventory,
   openInventoryFingerprintCursor,
 } from "../../src/local-source-inventory.ts";
-import { safeTextPreview } from "../../src/safe-text-preview.ts";
 import {
   ATTACHMENT_PREVIEW_CHARS,
   applyProjectDirScope,

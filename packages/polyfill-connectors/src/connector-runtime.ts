@@ -46,16 +46,9 @@
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
+import { emitToStdout, resourceSet } from "@pdpp/collector-runtime";
 
-import { type AuthConfig, resolveAuth } from "./auth.ts";
-import {
-  DEADLINE_TIMEOUT,
-  prepareBrowserInteractionTarget,
-  unregisterBrowserInteractionTarget,
-  withDeadline,
-} from "./browser-handoff.ts";
-import { flushAndExitAfterRuntimeAck } from "./connector-exit.ts";
+import { type AuthConfig, resolveAuth } from "@pdpp/collector-runtime/auth";
 import type {
   AssistanceCompletionStatus,
   AssistanceRequest,
@@ -73,10 +66,16 @@ import type {
   StartMessage,
   StreamScope,
   ValidateRecord,
-} from "./connector-runtime-protocol.ts";
+} from "@pdpp/collector-runtime/connector-runtime-protocol";
+import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
+import {
+  DEADLINE_TIMEOUT,
+  prepareBrowserInteractionTarget,
+  unregisterBrowserInteractionTarget,
+  withDeadline,
+} from "./browser-handoff.ts";
+import { flushAndExitAfterRuntimeAck } from "./connector-exit.ts";
 import { type CaptureSession, createCaptureSession } from "./fixture-capture.ts";
-import { emitToStdout } from "./safe-emit.ts";
-import { resourceSet } from "./scope-filters.ts";
 import {
   DEFAULT_RETRYABLE_PATTERN,
   type EnsureSessionArgs,
@@ -123,7 +122,7 @@ export type {
   StartMessage,
   StreamScope,
   ValidateRecord,
-} from "./connector-runtime-protocol.ts";
+} from "@pdpp/collector-runtime/connector-runtime-protocol";
 
 // The session-establishment flow and the typed terminal-error primitive live
 // in `session-establish.ts` / `terminal-error.ts` (this runtime is their

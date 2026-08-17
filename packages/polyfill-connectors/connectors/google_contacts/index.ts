@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -34,6 +35,7 @@
  * grant, distinct from Calendar's).
  */
 
+import { isMainModule } from "@pdpp/collector-runtime";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { type CollectContext, emitDetailCoverage, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
@@ -43,7 +45,6 @@ import {
   refreshGoogleAccessToken,
   resolveGoogleOAuthCredentials,
 } from "../../src/google-oauth.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { google_contactsPacingProfile } from "../../src/provider-profile.ts";
 import type { ConnectionsPage, ContactGroup, Person } from "./api.ts";
 import { GooglePeopleClient, PeopleSyncTokenExpiredError } from "./api.ts";

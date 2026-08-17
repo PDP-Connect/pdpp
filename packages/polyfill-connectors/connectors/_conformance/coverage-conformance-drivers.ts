@@ -49,8 +49,8 @@
 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { EmittedMessage } from "@pdpp/collector-runtime";
 import type { CollectContext } from "../../src/connector-runtime.ts";
-import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
 import { makeRecordingEmit, type RecordingEmit } from "../../src/test-harness.ts";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
