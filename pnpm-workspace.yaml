@@ -2,9 +2,29 @@ packages:
   - "apps/*"
   - "packages/*"
   - "reference-implementation"
+# @pdpp/collector-runtime and @pdpp/connector-protocol left this monorepo for
+# data-connect (PDP-Connect/data-connect, this is now a consumer of them via a
+# commit-pinned git dependency; see packages/polyfill-connectors/package.json
+# and reference-implementation/package.json). pnpm resolves a git-hosted
+# package's own build scripts in an isolated tmpdir before it's linked into
+# any workspace, so blockExoticSubdeps must be off — otherwise pnpm refuses to
+# let the overrides below resolve a git-hosted package's transitive deps.
+blockExoticSubdeps: false
 overrides:
   "@pdpp/cli": "workspace:*"
   "@pdpp/read-core": "workspace:*"
+  # @pdpp/collector-runtime declares "@pdpp/connector-protocol": "*" and
+  # "@pdpp/reference-contract": "*" in its own package.json (npm's convention
+  # for "resolve from the workspace root," which is how data-connect itself
+  # resolves it). Outside that workspace, pnpm has nothing to resolve "*"
+  # against and falls through to the public npm registry, where both names
+  # 404 (they're private). These overrides supply the resolution pnpm can't
+  # infer on its own: connector-protocol to the same pinned git commit,
+  # reference-contract to this repo's own real package (not
+  # data-connect's minimal same-named stand-in — see its README for why that
+  # distinction matters).
+  "@pdpp/connector-protocol": "github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/connector-protocol"
+  "@pdpp/reference-contract": "workspace:*"
 # React's own package ships no types, so a dependency's `import * as React from
 # "react"` resolves types by walking up from its isolated pnpm store directory —
 # where `@types/react` is not reachable. next-themes' `ThemeProviderProps extends

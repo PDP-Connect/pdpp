@@ -7,6 +7,8 @@ settings:
 overrides:
   '@pdpp/cli': workspace:*
   '@pdpp/read-core': workspace:*
+  '@pdpp/connector-protocol': github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/connector-protocol
+  '@pdpp/reference-contract': workspace:*
 
 importers:
 
@@ -267,35 +269,6 @@ importers:
         specifier: ^26.2.0
         version: 26.2.0
 
-  packages/collector-runtime:
-    dependencies:
-      '@pdpp/connector-protocol':
-        specifier: workspace:*
-        version: link:../connector-protocol
-      '@pdpp/reference-contract':
-        specifier: workspace:*
-        version: link:../reference-contract
-    devDependencies:
-      '@biomejs/biome':
-        specifier: 2.5.7
-        version: 2.5.7
-      ultracite:
-        specifier: 7.10.2
-        version: 7.10.2
-
-  packages/connector-protocol:
-    dependencies:
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
-    devDependencies:
-      '@biomejs/biome':
-        specifier: 2.5.7
-        version: 2.5.7
-      ultracite:
-        specifier: 7.10.2
-        version: 7.10.2
-
   packages/display:
     devDependencies:
       '@types/node':
@@ -309,22 +282,6 @@ importers:
         version: 7.0.2
 
   packages/list-envelope: {}
-
-  packages/local-collector:
-    dependencies:
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
-    devDependencies:
-      '@pdpp/collector-runtime':
-        specifier: workspace:*
-        version: link:../collector-runtime
-      '@pdpp/connector-protocol':
-        specifier: workspace:*
-        version: link:../connector-protocol
-      conventional-changelog-conventionalcommits:
-        specifier: ^10.2.1
-        version: 10.2.1
 
   packages/mcp-server:
     dependencies:
@@ -486,11 +443,11 @@ importers:
   packages/polyfill-connectors:
     dependencies:
       '@pdpp/collector-runtime':
-        specifier: workspace:*
-        version: link:../collector-runtime
+        specifier: github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/collector-runtime
+        version: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/collector-runtime
       '@pdpp/connector-protocol':
-        specifier: workspace:*
-        version: link:../connector-protocol
+        specifier: github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/connector-protocol
+        version: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol
       '@pdpp/reference-contract':
         specifier: workspace:*
         version: link:../reference-contract
@@ -580,11 +537,11 @@ importers:
         specifier: ^4.2.0
         version: 4.2.0
       '@pdpp/collector-runtime':
-        specifier: workspace:*
-        version: link:../packages/collector-runtime
+        specifier: github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/collector-runtime
+        version: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/collector-runtime
       '@pdpp/connector-protocol':
-        specifier: workspace:*
-        version: link:../packages/connector-protocol
+        specifier: github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/connector-protocol
+        version: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol
       '@pdpp/mcp-server':
         specifier: workspace:*
         version: link:../packages/mcp-server
@@ -2016,6 +1973,16 @@ packages:
   '@opendatalabs/remote-surface@1.5.2':
     resolution: {integrity: sha512-C7fOmIV6HP0vVclWJZr4us0ZqBhw4zZU/ikPjoChiNW/VlFXl5TrBWsK9V8f/Es99vaul4Edh3981eruln1PYw==}
     engines: {node: '>=24'}
+
+  '@pdpp/collector-runtime@https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/collector-runtime':
+    resolution: {path: packages/collector-runtime, tarball: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a}
+    version: 0.0.1
+    engines: {node: '>=22.14.0'}
+
+  '@pdpp/connector-protocol@https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol':
+    resolution: {path: packages/connector-protocol, tarball: https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a}
+    version: 0.0.1
+    engines: {node: '>=22.14.0'}
 
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
@@ -7979,6 +7946,15 @@ snapshots:
   '@opendatalabs/remote-surface@1.5.2':
     dependencies:
       transformation-matrix: 3.1.0
+
+  '@pdpp/collector-runtime@https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/collector-runtime':
+    dependencies:
+      '@pdpp/connector-protocol': https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol
+      '@pdpp/reference-contract': link:packages/reference-contract
+
+  '@pdpp/connector-protocol@https://codeload.github.com/PDP-Connect/data-connect/tar.gz/7b46f9a0ee28fafb421018ff283a329e4623e44a#path:packages/connector-protocol':
+    dependencies:
+      zod: 4.4.3
 
   '@pinojs/redact@0.4.0': {}
 

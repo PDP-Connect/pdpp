@@ -59,8 +59,8 @@
   "dependencies": {
     "@fastify/formbody": "^8.0.2",
     "@huggingface/transformers": "^4.2.0",
-    "@pdpp/collector-runtime": "workspace:*",
-    "@pdpp/connector-protocol": "workspace:*",
+    "@pdpp/collector-runtime": "github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/collector-runtime",
+    "@pdpp/connector-protocol": "github:PDP-Connect/data-connect#7b46f9a0ee28fafb421018ff283a329e4623e44a&path:packages/connector-protocol",
     "@pdpp/mcp-server": "workspace:*",
     "@pdpp/reference-contract": "workspace:*",
     "better-sqlite3": "^13.0.3",
