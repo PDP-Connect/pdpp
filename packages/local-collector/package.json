@@ -29,7 +29,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && tsx scripts/postbuild.ts",
+    "build": "pnpm --filter @pdpp/collector-runtime --filter @pdpp/connector-protocol run build && rm -rf dist && tsc -p tsconfig.build.json && tsx scripts/postbuild.ts",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
     "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- tsx scripts/run-tests.ts",

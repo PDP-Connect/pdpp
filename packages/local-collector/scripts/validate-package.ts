@@ -97,9 +97,26 @@ const forbiddenChecks = await Promise.all(
     }))
 );
 for (const { file, text } of forbiddenChecks) {
+  // `package.json`'s `devDependencies` is exempt from the `workspace:` scan
+  // below: devDependencies are never installed for a consumer of the
+  // published package (npm/pnpm both skip them), and the dependency-range
+  // loop above already forbids `workspace:` in every section a consumer
+  // WOULD install (dependencies/optionalDependencies/peerDependencies). A
+  // `workspace:*` devDependency here is real — e.g. a private, unpublished
+  // in-repo package needed only so `tsc` can typecheck a type-only import —
+  // and has zero runtime footprint once TypeScript erases that import; only
+  // the literal manifest string would otherwise trip this scan.
+  const scanText = file === "package.json" ? textWithoutDevDependencies(text) : text;
   for (const pattern of forbidden) {
-    assert.equal(pattern.test(text), false, `${file} contains forbidden pattern ${pattern}`);
+    assert.equal(pattern.test(scanText), false, `${file} contains forbidden pattern ${pattern}`);
   }
+}
+
+/** Strip the `devDependencies` block out of a package.json's raw text before a substring/regex scan. */
+function textWithoutDevDependencies(packageJsonText: string): string {
+  const manifest = JSON.parse(packageJsonText) as Record<string, unknown>;
+  const { devDependencies, ...rest } = manifest;
+  return JSON.stringify(rest);
 }
 
 /**

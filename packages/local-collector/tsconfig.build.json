@@ -28,7 +28,6 @@
     "../polyfill-connectors/connectors/google_takeout/**/*.ts",
     "../polyfill-connectors/connectors/apple_photos/**/*.ts",
     "../polyfill-connectors/connectors/google_messages/**/*.ts",
-    "../polyfill-connectors/src/collector-registry.ts",
     "../polyfill-connectors/src/browser-handoff.ts",
     "../polyfill-connectors/src/connector-runtime.ts",
     "../polyfill-connectors/src/fixture-capture.ts",
@@ -36,16 +35,24 @@
     "../polyfill-connectors/src/schema-registry.ts",
     "../polyfill-connectors/src/shutdown-hook.ts",
     "../polyfill-connectors/src/streaming-target-registration.ts",
-    // Generic connector-execution runtime, carved out of polyfill-connectors
-    // into its own workspace package (engine-split slice 1). Globbed rather
-    // than cherry-picked file-by-file like the polyfill-connectors entries
-    // above, matching this tsconfig's own top-level "src/**/*.ts" pattern;
-    // "**/*.test.ts" is already excluded below.
-    "../collector-runtime/src/**/*.ts",
-    // Connector authoring contract, carved out of collector-runtime into its
-    // own workspace package (engine-split slice 1b) so connector authors do
-    // not depend on the runtime package's release cadence.
-    "../connector-protocol/src/**/*.ts"
+    // @pdpp/collector-runtime's local-device-client.ts has always imported
+    // canonicalTerminalRunCommitEnvelope from @pdpp/reference-contract/common
+    // as a real runtime dependency (flagged, not introduced, by engine-split
+    // slice 1's report §7 as a pre-existing gap: this package never vendored
+    // or declared @pdpp/reference-contract). common/ is self-contained (zero
+    // imports outside itself) and small, so it is vendored here directly —
+    // the same pattern already used for the polyfill-connectors entries
+    // above — rather than adding a new package-wide build to
+    // reference-contract for one function. Transitional: reference-contract
+    // is the neutral, publishable contract package; once it ships, this
+    // becomes an ordinary published dependency instead of a vendored copy.
+    "../reference-contract/src/common/**/*.ts"
+    // @pdpp/collector-runtime and @pdpp/connector-protocol are NOT vendored
+    // here (engine-split slice 2). Both are ordinary workspace dependencies
+    // (see package.json) with their own build producing dist/ + .d.ts; this
+    // package imports their compiled output like any other npm dependency,
+    // not their .ts source. See scripts/postbuild.ts's copyBuiltPackageDist
+    // for how their dist/ trees land inside this package's own dist/.
   ],
   "exclude": [
     "**/*.test.ts",
