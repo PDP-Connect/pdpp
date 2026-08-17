@@ -246,6 +246,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
    cap moves onto the elements that are actually prose. Headings are included
    because the concept includes them: an uncapped h1/h2 runs the full 870px
    track and breaks the descending title/lede/body rhythm. */
+
 .pdpp-doc h1,
 .pdpp-doc h2,
 .pdpp-doc h3,
@@ -255,6 +256,37 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 .pdpp-doc blockquote,
 .pdpp-doc .pdpp-note {
   max-width: var(--container-measure);
+}
+
+/* ...but the front door is display copy, not a reading column, and the measure
+   is the wrong constraint for it. Pinned at 600px the hero headline could not
+   grow with its container: it held 600 from 700px of viewport all the way to
+   1000 while the container grew to 933 (the slack the owner saw), then DROPPED
+   to 531 when the two-column split engaged at 1024 before recovering at 1170.
+   Wider viewport, narrower headline.
+
+   Measured across seven comparable landing pages on 2026-08-17, not one pins
+   its hero copy: Deno, Let's Encrypt and MCP all compute `max-width: none` and
+   let it grow with the container (Deno +238px and Let's Encrypt +200px between
+   800 and 1100), while Kubernetes, Astro and Tailscale simply fill the track.
+   Slack beside the copy is itself normal — Deno runs 400-500px of it, more than
+   ours — so the defect is not the space, it is the fixed cap that makes the
+   width non-monotonic. The grid track already bounds this column. */
+[data-slot="pdpp-front-door"] h1,
+[data-slot="pdpp-front-door"] h2,
+[data-slot="pdpp-front-door"] h3,
+[data-slot="pdpp-front-door"] h4,
+[data-slot="pdpp-front-door"] p,
+[data-slot="pdpp-front-door"] li,
+[data-slot="pdpp-front-door"] blockquote {
+  /* A ceiling, not the reading measure. Uncapped, the stacked headline grew to
+     1127px and then fell to 670 when the two-column split engaged — a 41% cliff
+     that only moved when the split moved, because the two sides were never
+     going to meet. 720px is close to the width the copy column settles at once
+     split (676px), so the transition is a step of tens of pixels rather than
+     hundreds, and it sits inside the reference range for a hero headline just
+     below its split (MCP 604, Let's Encrypt 748). */
+  max-width: 720px;
 }
 .pdpp-caption {
   margin-top: 16px;
