@@ -52,7 +52,7 @@ const EMPTY_STREAM = "empty_stream";
 const UNEXPECTED_STREAM = "legacy_stream";
 const MANIFEST: any = {
   capabilities: {
-    public_listing: { listed: true, status: "test" },
+    public_listing: { tier: "supported" },
     refresh_policy: {
       maximum_staleness_seconds: 3_153_600_000,
       rationale: "Dedicated evidence-oracle fixture has no automatic refresh.",
@@ -238,6 +238,21 @@ function seedCanonicalRecordSqlite({
     );
 }
 
+/**
+ * Record that a stream was canonically OBSERVED — what ingest does when it
+ * allocates a version. An empty stream is only a PROVEN zero (`known_zero`)
+ * once this exists; without it the stream is merely `unobserved`. See
+ * `connector-summary-count-state-proof.test.ts`.
+ */
+function seedObservedStreamSqlite({ connectorInstanceId = INSTANCE_ID, stream = STREAM, maxVersion = 1 }: any = {}) {
+  getDb()
+    .prepare(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES (?, ?, ?, ?)`
+    )
+    .run(CONNECTOR_ID, connectorInstanceId, stream, maxVersion);
+}
+
 function seedRetainedConnectionSqlite({ dirty = 0, computedAt = NOW }: any = {}) {
   getDb()
     .prepare(
@@ -373,6 +388,9 @@ test("declared empty stream exposes known_zero only after a current canonical sn
     seedConnectorSqlite();
     seedInstanceSqlite();
     seedHealthyRetainedSnapshotSqlite({ streamCount: 1 });
+    // The stream was canonically observed and holds no records — the only
+    // shape that proves an exact zero rather than a never-collected absence.
+    seedObservedStreamSqlite({ stream: EMPTY_STREAM });
     await rebuildRetainedSize();
     // Terminal-gate revision (2026-07-29): the summary-evidence barrier is no
     // longer implicit on read — simulate the maintenance sweep explicitly so
@@ -1334,6 +1352,12 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
            source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
          ) VALUES($1, $2, $3, $4, 'active', 'account', $1, '{}'::jsonb, $5, $5, NULL)`,
       [INSTANCE_ID, OWNER, CONNECTOR_ID, "Summary evidence oracle", NOW]
+    );
+    await postgresQuery(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES($1, $2, $3, 1), ($1, $2, $4, 1)
+       ON CONFLICT (connector_instance_id, stream) DO UPDATE SET max_version = EXCLUDED.max_version`,
+      [CONNECTOR_ID, INSTANCE_ID, EMPTY_STREAM, STREAM]
     );
 
     const summaries = await rebuildConnectorSummaryEvidence();

@@ -19,12 +19,12 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-import {
-  CHATGPT_COOLDOWN_PROFILE,
-  computeSourcePressureCooldown,
-} from "../runtime/scheduler-source-pressure-cooldown.ts";
+import { computeSourcePressureCooldown } from "../runtime/scheduler-source-pressure-cooldown.ts";
 
 import { classifyRecoveryError, isAuthFailure, isNonTransientError } from "../server/stores/terminal-gap-classifier.ts";
 
@@ -160,21 +160,20 @@ test("§10-B computeSourcePressureCooldown: without consecutiveCooldownCycles (d
   );
 });
 
-// ─── §10-B CHATGPT_COOLDOWN_PROFILE pin ────────────────────────────────────
+// ─── §10-B ChatGPT manifest-declared cooldown-cycle pin ─────────────────────
 //
-// maxCooldownCycles is a ProviderProfile field — NO cross-provider default.
-// Pin the ChatGPT value so drift is intentional.
+// maxCooldownCycles is now read from the connector's manifest
+// (`capabilities.refresh_policy.max_cooldown_cycles`), not a hardcoded
+// registry — see `cooldown-profile-required.test.ts` for the full
+// manifest-driven resolution (incl. the malicious-value ceiling proof). Here
+// we just pin the live number declared in the shipped manifest so drift is
+// intentional.
 
-test("§10-B CHATGPT_COOLDOWN_PROFILE.maxCooldownCycles is a finite positive integer", () => {
-  assert.ok(
-    Number.isInteger(CHATGPT_COOLDOWN_PROFILE.maxCooldownCycles) && CHATGPT_COOLDOWN_PROFILE.maxCooldownCycles > 0,
-    `CHATGPT_COOLDOWN_PROFILE.maxCooldownCycles must be a positive integer, got ${CHATGPT_COOLDOWN_PROFILE.maxCooldownCycles}`
-  );
-});
-
-test("§10-B CHATGPT_COOLDOWN_PROFILE has no cross-provider default key", () => {
-  // Structural guard: no "default" or "fallback" key that other connectors
-  // could silently inherit (spec §3 rule 6).
-  assert.equal("default" in CHATGPT_COOLDOWN_PROFILE, false);
-  assert.equal("fallback" in CHATGPT_COOLDOWN_PROFILE, false);
+test("§10-B ChatGPT manifest declares a finite positive-integer max_cooldown_cycles", () => {
+  const manifest = JSON.parse(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "packages", "polyfill-connectors", "manifests", "chatgpt.json"), "utf8")
+  ) as { capabilities: { refresh_policy: { max_cooldown_cycles: number } } };
+  const value = manifest.capabilities.refresh_policy.max_cooldown_cycles;
+  assert.ok(Number.isInteger(value) && value > 0, `max_cooldown_cycles must be a positive integer, got ${value}`);
+  assert.equal(value, 8, "ChatGPT's declared cooldown-cycle budget must stay 8 (live-number preservation)");
 });

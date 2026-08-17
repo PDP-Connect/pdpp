@@ -16,7 +16,9 @@ import {
   formatDominantCondition,
   formatForwardDisposition,
   formatProjectionFreshness,
+  formatSourceHeartbeat,
   formatSourceOutboxState,
+  formatSupportingCondition,
   summarizeAxisChips,
   summarizeOutboxStallRemediation,
   summarizeSchedule,
@@ -28,6 +30,7 @@ import type {
   RefLocalDeviceProgress,
   RefRenderedVerdict,
   RefSchedule,
+  RefSuppressedSignal,
 } from "../../lib/ref-client.ts";
 import {
   deriveRenderedSourceStatus,
@@ -128,7 +131,7 @@ export function ConnectionDiagnostics({
       : null;
   return (
     <Section
-      description="Evidence the dashboard derives from the reference's connection projection, scheduler, and device-exporter diagnostics. Unknown fields render explicitly, never as zeroes or green."
+      description="Technical detail for troubleshooting. Anything not measured yet shows as unknown, never a guess."
       title="Diagnostics"
     >
       {renderedVerdict ? <RenderedVerdictSummary verdict={renderedVerdict} /> : null}
@@ -140,13 +143,13 @@ export function ConnectionDiagnostics({
         open={hasDeviceLocalRemediation || undefined}
       >
         <summary className="pdpp-body flex cursor-pointer items-center justify-between px-3 py-3 hover:bg-muted/40">
-          <span className="font-medium">Projection, schedule, sources</span>
+          <span className="font-medium">More detail</span>
           <span className="pdpp-caption text-muted-foreground group-open:hidden">Expand</span>
           <span className="pdpp-caption hidden text-muted-foreground group-open:inline">Collapse</span>
         </summary>
 
         <div className="flex flex-col gap-5 px-3 py-4">
-          <DiagnosticsBlock title="Projected state">
+          <DiagnosticsBlock title="Current state">
             <ProjectedStateDiagnostics
               connectionHealth={connectionHealth}
               connectionId={connectionId}
@@ -164,11 +167,11 @@ export function ConnectionDiagnostics({
             <CollectionRateDiagnostics connectionHealth={connectionHealth} />
           </DiagnosticsBlock>
 
-          <DiagnosticsBlock title="Schedule & backoff">
+          <DiagnosticsBlock title="Schedule">
             <ScheduleDiagnostics schedule={schedule} scheduleError={scheduleError} />
           </DiagnosticsBlock>
 
-          <DiagnosticsBlock title="Source instances">
+          <DiagnosticsBlock title="Devices">
             <SourceInstancesDiagnostics sourceInstances={sourceInstances} sourceInstancesError={sourceInstancesError} />
           </DiagnosticsBlock>
         </div>
@@ -292,6 +295,14 @@ function RecoveryPanel({ model }: { model: RecoveryPanelViewModel }) {
   );
 }
 
+/** Owner-facing labels for the suppressed-signal kind enum. */
+const SUPPRESSED_SIGNAL_KIND_LABELS: Readonly<Record<RefSuppressedSignal["kind"], string>> = Object.freeze({
+  cooldown: "Waiting to retry",
+  drain: "Uploading in the background",
+  runtime_fault: "A system error",
+  syncing: "Currently syncing",
+});
+
 function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: RefRenderedVerdict | null }) {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const suppressed = renderedVerdict?.detail.suppressed ?? [];
@@ -299,7 +310,7 @@ function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: R
     return null;
   }
   return (
-    <DiagnosticsBlock title="Suppressed evidence">
+    <DiagnosticsBlock title="Other things noticed, not shown above">
       <ul
         className="pdpp-caption flex flex-col gap-1 text-muted-foreground"
         data-testid="diagnostics-suppressed-evidence"
@@ -310,7 +321,7 @@ function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: R
             data-suppressed-kind={signal.kind}
             key={`${signal.kind}:${signal.detail_field}`}
           >
-            <span className="text-foreground">{signal.kind.replaceAll("_", " ")}</span>: {signal.reason}
+            <span className="text-foreground">{SUPPRESSED_SIGNAL_KIND_LABELS[signal.kind] ?? "Noted"}</span>
           </li>
         ))}
       </ul>
@@ -327,10 +338,19 @@ const SOURCE_STATUS_BADGE_TONES = {
   warning: "warning",
 } satisfies Record<RenderedSourceStatus["tone"], StatusVocabulary[string]["tone"]>;
 
-function renderedSourceStatusVocabulary(status: RenderedSourceStatus): StatusVocabulary {
+/**
+ * Badge vocabulary for a rendered status.
+ *
+ * `label` is optional so the detail page can pass the bare pill label.
+ * `deriveRenderedSourceStatus` appends the freshness note to `status.label` for
+ * the Sources list row, where that row is the only surface carrying the fact.
+ * This page already states freshness in the annotations list, so repeating it
+ * inside the badge says the same thing twice.
+ */
+function renderedSourceStatusVocabulary(status: RenderedSourceStatus, label?: string): StatusVocabulary {
   return {
     [status.kind]: {
-      label: status.label,
+      label: label ?? status.label,
       tone: SOURCE_STATUS_BADGE_TONES[status.tone],
     },
   };
@@ -342,9 +362,9 @@ function RenderedVerdictSummary({ verdict }: { verdict: RefRenderedVerdict }) {
   return (
     <div className="mb-3 flex flex-col gap-2 border-border/70 border-y px-3 py-3" data-testid="rendered-verdict">
       <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">
-        <span>Verdict:</span>
+        <span>Status:</span>
         <span title={verdict.forward_statement}>
-          <StatusBadge status={status.kind} vocabulary={renderedSourceStatusVocabulary(status)} />
+          <StatusBadge status={status.kind} vocabulary={renderedSourceStatusVocabulary(status, verdict.pill.label)} />
         </span>
         <span aria-hidden>·</span>
         <span data-testid="rendered-verdict-channel">{verdict.channel}</span>
@@ -359,7 +379,7 @@ function RenderedVerdictSummary({ verdict }: { verdict: RefRenderedVerdict }) {
         <ul className="flex flex-col gap-1" data-testid="rendered-verdict-annotations">
           {verdict.annotations.map((annotation) => (
             <li className="pdpp-caption text-muted-foreground" key={`${annotation.kind}:${annotation.text}`}>
-              <span className="text-foreground">{annotation.kind}:</span> {annotation.text}
+              <span className="text-foreground">{annotation.kind.replaceAll("_", " ")}:</span> {annotation.text}
             </li>
           ))}
         </ul>
@@ -445,7 +465,7 @@ function ProjectedStateDiagnostics({
         data-testid="diagnostics-projection-missing"
         title="The reference did not return a connection_health snapshot for this connector."
       >
-        Projection evidence unavailable.
+        Projection unavailable.
       </p>
     );
   }
@@ -471,7 +491,12 @@ function ProjectedStateDiagnostics({
   const conditionById = new Map((connectionHealth.conditions ?? []).map((condition) => [condition.id, condition]));
   const visibleConditions = (connectionHealth.supporting_condition_ids ?? [])
     .map((id) => conditionById.get(id))
-    .filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+    .filter((condition): condition is NonNullable<typeof condition> => Boolean(condition))
+    // A reference that predates the `not_applicable` status still lists these in
+    // `supporting_condition_ids`; drop them here too so an older backend does not
+    // reintroduce the permanent "Unknown" rows this section exists to remove.
+    .filter((condition) => condition.status !== "not_applicable")
+    .map(formatSupportingCondition);
   const recoverySourceInstances = sourceInstancesForRecovery(sourceInstances, connectionId);
   const recoverySourceId = recoverySourceInstanceId(sourceInstances, connectionId);
 
@@ -485,13 +510,17 @@ function ProjectedStateDiagnostics({
   // (Wave 10a/10b, 2026-07-09 state-model convergence — the server owns the
   // one verdict; the console never re-derives a second one from raw state).
   const renderedStatus = renderedVerdict ? deriveRenderedSourceStatus(renderedVerdict, false) : null;
-  const badge = renderedStatus ? (
-    <StatusBadge status={renderedStatus.kind} vocabulary={renderedSourceStatusVocabulary(renderedStatus)} />
-  ) : (
-    <StatusBadge status="unknown" vocabulary={CONNECTION_HEALTH_VOCABULARY} />
-  );
+  const badge =
+    renderedStatus && renderedVerdict ? (
+      <StatusBadge
+        status={renderedStatus.kind}
+        vocabulary={renderedSourceStatusVocabulary(renderedStatus, renderedVerdict.pill.label)}
+      />
+    ) : (
+      <StatusBadge status="unknown" vocabulary={CONNECTION_HEALTH_VOCABULARY} />
+    );
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
-  const badgeTitle = renderedVerdict?.forward_statement ?? "Verdict unavailable.";
+  const badgeTitle = renderedVerdict?.forward_statement ?? "Status unavailable.";
   return (
     <div className="flex flex-col gap-2">
       <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">
@@ -524,7 +553,7 @@ function ProjectedStateDiagnostics({
           data-testid="diagnostics-dominant-condition"
           title={dominantCondition.title}
         >
-          Dominant condition: <span className="text-foreground">{dominantCondition.label}</span>
+          What's happening: <span className="text-foreground">{dominantCondition.label}</span>
         </p>
       ) : null}
       {axisChips.length > 0 ? (
@@ -536,7 +565,7 @@ function ProjectedStateDiagnostics({
               key={c.label}
               title={c.title}
             >
-              {c.label}
+              <span className="opacity-60">{c.dimension}:</span> {c.value}
             </li>
           ))}
         </ul>
@@ -547,7 +576,7 @@ function ProjectedStateDiagnostics({
           data-testid="diagnostics-projection-unreliable"
           title={projection.detail}
         >
-          Projection unreliable: {projection.reasons.join(", ")}.
+          Can't fully verify current state: {projection.reasons.join(", ")}.
         </p>
       ) : null}
       {outboxRemediation ? (
@@ -564,9 +593,9 @@ function ProjectedStateDiagnostics({
       {visibleConditions.length ? (
         <ul className="pdpp-caption flex flex-col gap-1 text-muted-foreground" data-testid="diagnostics-conditions">
           {visibleConditions.map((condition) => (
-            <li key={condition.id} title={condition.reason}>
-              {condition.type}: <span className="text-foreground">{condition.status}</span>
-              {condition.status === "false" ? (
+            <li data-condition-status={condition.status} key={condition.id} title={condition.title}>
+              {condition.label}: <span className="text-foreground">{condition.statusLabel}</span>
+              {condition.message ? (
                 <>
                   {" · "}
                   {condition.message}
@@ -774,17 +803,7 @@ function SourceInstanceDiagnostics({ source }: { source: DeviceSourceInstance })
             </>
           )}
         </span>
-        <span className="pdpp-caption text-muted-foreground tabular-nums">
-          Heartbeat: {source.last_heartbeat_status ?? "status unknown"}
-          {source.last_heartbeat_at ? (
-            <>
-              {" · "}
-              <IcTimestamp value={source.last_heartbeat_at} />
-            </>
-          ) : (
-            " · never seen"
-          )}
-        </span>
+        <SourceHeartbeat source={source} />
         <span className="pdpp-caption text-muted-foreground tabular-nums">{recordsPending}</span>
         <SourceOutboxState source={source} />
         <LocalCollectorGapDiagnostics source={source} />
@@ -867,6 +886,39 @@ function localCollectorGapToneClass(gaps: NonNullable<DeviceSourceInstance["loca
     return "text-[color:var(--warning)]";
   }
   return "text-muted-foreground";
+}
+
+/**
+ * Heartbeat line for one source instance.
+ *
+ * Renders the server-derived `heartbeat_health`, never the raw
+ * `last_heartbeat_status`. The collector is one-shot, so nothing rewrites that
+ * column when the process dies: a collector killed mid-run left `starting`
+ * there and this line reported a healthy, actively-starting collector for 38
+ * hours. Past the lease the line says the check-in is stale and how old it is,
+ * and keeps what the collector last said as clearly-labelled evidence.
+ */
+function SourceHeartbeat({ source }: { source: DeviceSourceInstance }) {
+  const heartbeat = formatSourceHeartbeat(source);
+  const beyondLease = heartbeat.value === "stale";
+  return (
+    <span
+      className={["pdpp-caption tabular-nums", sourceOutboxToneClass(heartbeat.tone)].join(" ")}
+      data-testid="diagnostics-source-heartbeat"
+      title={heartbeat.title}
+    >
+      {heartbeat.label}
+      {source.last_heartbeat_at ? (
+        <>
+          {" · "}
+          <IcTimestamp value={source.last_heartbeat_at} />
+        </>
+      ) : (
+        " · never seen"
+      )}
+      {beyondLease && source.last_heartbeat_status ? ` · last reported "${source.last_heartbeat_status}"` : ""}
+    </span>
+  );
 }
 
 function SourceOutboxState({ source }: { source: DeviceSourceInstance }) {

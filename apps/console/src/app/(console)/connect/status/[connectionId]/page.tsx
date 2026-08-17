@@ -2,11 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants } from "@pdpp/brand-react";
+import { deriveSourceDisplayNameFallback } from "@pdpp/display";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { type ConnectionSetupStatus, getConnectionSetupStatus, RefNotFoundError } from "../../../lib/ref-client.ts";
+import { LivePoller } from "../../../components/live-poller.tsx";
+import {
+  type ConnectionSetupStatus,
+  getConnectionSetupStatus,
+  RefNotFoundError,
+  type StaticSecretSetupStateValue,
+} from "../../../lib/ref-client.ts";
+import { setupHref, sourceDetailHref, sourceRecordsHref } from "./connect-status-links.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -89,7 +97,47 @@ function describeActiveConnectionState(status: ConnectionSetupStatus): StatusDes
   };
 }
 
+function describeZeroYieldState(status: ConnectionSetupStatus): StatusDescription {
+  let detail = "The first sync finished without saving records. Retry if you expected data.";
+  if (status.setup_kind === "browser_session") {
+    detail = "The browser run finished without saving records. Start browser setup again if you expected data.";
+  } else if (status.setup_kind === "manual_upload") {
+    detail = "The import finished without saving records. Choose another file if you expected data.";
+  }
+  return { detail, headline: "No records collected", tone: "pending" };
+}
+
+function describeTerminalSetupDisposition(status: ConnectionSetupStatus): StatusDescription | null {
+  switch (status.terminal_setup_disposition) {
+    case "verified_empty":
+      return {
+        detail: "The first sync verified that this source has no records. Review the setup result before trying again.",
+        headline: "First sync verified empty",
+        tone: "pending",
+      };
+    case "unverified_missing_counts":
+      return {
+        detail: "The first sync completed without durable count evidence. Review the connection before retrying.",
+        headline: "First sync incomplete",
+        tone: "pending",
+      };
+    case "unverified_zero":
+      return {
+        detail:
+          "The first sync returned zero records without proving the account was empty. Review the connection and retry if you expected data.",
+        headline: "No records confirmed",
+        tone: "pending",
+      };
+    default:
+      return null;
+  }
+}
+
 function describeImportState(status: ConnectionSetupStatus): StatusDescription {
+  const terminalDisposition = describeTerminalSetupDisposition(status);
+  if (terminalDisposition) {
+    return terminalDisposition;
+  }
   switch (status.setup_state) {
     case "active":
       return {
@@ -101,16 +149,18 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
       };
     case "first_sync_running":
       return {
-        detail: "The import file is captured and the import is in progress. This page updates as it finishes.",
+        detail: "The import file is captured and the import is running. It will continue automatically.",
         headline: "Import running",
         tone: "pending",
       };
     case "first_sync_pending":
       return {
-        detail: "The import file is captured and the import is queued. This page updates as it runs.",
+        detail: "The import file is captured and the import is queued. It will start automatically.",
         headline: "Import starting",
         tone: "pending",
       };
+    case "first_sync_zero_yield":
+      return describeZeroYieldState(status);
     case "awaiting_credential":
       return {
         detail: "This source is set up but no import file is captured yet.",
@@ -130,7 +180,7 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
       return { detail: "This connection has been revoked.", headline: "Connection revoked", tone: "failed" };
     default:
       return {
-        detail: "This connection is being set up. This page updates as the setup progresses.",
+        detail: "This connection is being set up. Setup will continue automatically.",
         headline: "Setting up",
         tone: "pending",
       };
@@ -138,22 +188,27 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
 }
 
 function describeConnectionState(status: ConnectionSetupStatus): StatusDescription {
+  const terminalDisposition = describeTerminalSetupDisposition(status);
+  if (terminalDisposition) {
+    return terminalDisposition;
+  }
   switch (status.setup_state) {
     case "active":
       return describeActiveConnectionState(status);
     case "first_sync_running":
       return {
-        detail:
-          "The provider credential is captured and the first sync is in progress. This page updates as it finishes.",
+        detail: "The provider credential is captured and the first sync is running. It will continue automatically.",
         headline: "First sync running",
         tone: "pending",
       };
     case "first_sync_pending":
       return {
-        detail: "The provider credential is captured and the first sync is queued. This page updates as it runs.",
+        detail: "The provider credential is captured and the first sync is queued. It will start automatically.",
         headline: "First sync starting",
         tone: "pending",
       };
+    case "first_sync_zero_yield":
+      return describeZeroYieldState(status);
     case "awaiting_credential":
       return {
         detail: "This connection is set up but no provider credential is captured yet.",
@@ -173,7 +228,7 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
       return { detail: "This connection has been revoked.", headline: "Connection revoked", tone: "failed" };
     default:
       return {
-        detail: "This connection is being set up. This page updates as the setup progresses.",
+        detail: "This connection is being set up. Setup will continue automatically.",
         headline: "Setting up",
         tone: "pending",
       };
@@ -186,24 +241,30 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
 // even before any material is captured; see `deriveSetupState`'s
 // browser_session handling in the RI runtime projection.
 function describeBrowserSessionState(status: ConnectionSetupStatus): StatusDescription {
+  const terminalDisposition = describeTerminalSetupDisposition(status);
+  if (terminalDisposition) {
+    return terminalDisposition;
+  }
   switch (status.setup_state) {
     case "active":
       return describeActiveConnectionState(status);
     case "first_sync_running":
       return {
-        detail: "Login is complete and the first sync is in progress. This page updates as it finishes.",
+        detail: "Login is complete and the first sync is running. It will continue automatically.",
         headline: "First sync running",
         tone: "pending",
       };
     case "first_sync_pending":
       return {
-        detail: "Login is complete and the first sync is queued. This page updates as it runs.",
+        detail: "Login is complete and the first sync is queued. It will start automatically.",
         headline: "First sync starting",
         tone: "pending",
       };
+    case "first_sync_zero_yield":
+      return describeZeroYieldState(status);
     case "awaiting_browser_login":
       return {
-        detail: "Continue in the secure browser to finish signing in. This page updates once login completes.",
+        detail: "Continue in the secure browser to finish signing in. The first sync starts after login.",
         headline: "Sign-in needed",
         tone: "pending",
       };
@@ -220,7 +281,7 @@ function describeBrowserSessionState(status: ConnectionSetupStatus): StatusDescr
       return { detail: "This connection has been revoked.", headline: "Connection revoked", tone: "failed" };
     default:
       return {
-        detail: "This connection is being set up. This page updates as the setup progresses.",
+        detail: "This connection is being set up. Setup will continue automatically.",
         headline: "Setting up",
         tone: "pending",
       };
@@ -237,38 +298,58 @@ function describeState(status: ConnectionSetupStatus): StatusDescription {
   return describeConnectionState(status);
 }
 
-function setupHref(status: ConnectionSetupStatus): string {
-  const encoded = encodeURIComponent(status.connector_id);
-  if (status.setup_kind === "manual_upload") {
-    return `/connect/manual-upload/${encoded}?connection_id=${encodeURIComponent(status.connection_id)}`;
-  }
-  if (status.setup_kind === "browser_session") {
-    // A revoked browser-session shell can't be relaunched — send the owner
-    // back to the connect form to start a fresh enrollment instead of the
-    // launch route, which requires a live (draft or active) connection.
-    if (status.status === "revoked") {
-      return `/connect/browser-session/${encoded}`;
+/**
+ * Human label for the raw `setup_state` enum, for the "Setup state" technical
+ * detail row below the humanized headline/detail above it. Every other line
+ * on this page is translated prose; this one used to print the raw
+ * snake_case value verbatim.
+ */
+function describeSetupState(setupState: StaticSecretSetupStateValue): string {
+  switch (setupState) {
+    case "active":
+      return "Active";
+    case "awaiting_browser_login":
+      return "Awaiting browser login";
+    case "awaiting_credential":
+      return "Awaiting credential";
+    case "first_sync_failed":
+      return "First sync failed";
+    case "first_sync_pending":
+      return "First sync pending";
+    case "first_sync_running":
+      return "First sync running";
+    case "first_sync_unverified_missing_counts":
+      return "First sync finished, coverage unverified";
+    case "first_sync_unverified_zero":
+      return "First sync finished with no records, unverified";
+    case "first_sync_verified_empty":
+      return "First sync verified empty";
+    case "first_sync_zero_yield":
+      return "First sync finished with no records";
+    case "paused":
+      return "Paused";
+    case "revoked":
+      return "Revoked";
+    case "unknown":
+      return "Unknown";
+    default: {
+      const _exhaustive: never = setupState;
+      throw new Error(`Unhandled setup state ${_exhaustive}`);
     }
-    const params = new URLSearchParams({
-      connection_id: status.connection_id,
-      draft: status.status === "draft" ? "1" : "0",
-    });
-    return `/connect/browser-session/${encoded}/launch?${params.toString()}`;
   }
-  return `/connect/static-secret/${encoded}`;
-}
-
-function sourceDetailHref(status: ConnectionSetupStatus): string {
-  const params = new URLSearchParams({ connection_id: status.connection_id });
-  return `/sources/${encodeURIComponent(status.connector_id)}?${params.toString()}`;
-}
-
-function sourceRecordsHref(status: ConnectionSetupStatus): string {
-  const params = new URLSearchParams({ connection: status.connection_id });
-  return `/explore?${params.toString()}`;
 }
 
 function retryLabel(status: ConnectionSetupStatus): string {
+  switch (status.terminal_setup_disposition) {
+    case "verified_empty":
+      return "Review setup result";
+    case "unverified_missing_counts":
+      return "Review setup";
+    case "unverified_zero":
+      break;
+    default:
+      break;
+  }
   if (status.setup_kind === "manual_upload") {
     return "Choose another file and retry";
   }
@@ -541,6 +622,17 @@ function ImportProgressCard({ phases }: { phases: readonly ImportPhase[] }) {
   );
 }
 
+function deriveSetupStatusDisplayName(status: ConnectionSetupStatus): string {
+  if (status.display_name) {
+    return status.display_name;
+  }
+  return deriveSourceDisplayNameFallback({
+    connectorId: status.connector_id,
+    displayName: null,
+    name: null,
+  });
+}
+
 function CoverageReceiptCard({ receipt }: { receipt: ImportReceipt }) {
   const warning = formatWarnings(receipt.warnings);
   return (
@@ -548,8 +640,7 @@ function CoverageReceiptCard({ receipt }: { receipt: ImportReceipt }) {
       <p className="pdpp-eyebrow text-muted-foreground">Coverage preview</p>
       <h2 className="pdpp-section-title mt-1">What PDPP found</h2>
       <p className="pdpp-caption mt-1 text-muted-foreground">
-        This receipt combines parser validation with committed acquisition-batch counts. Repeating the same file returns
-        this receipt instead of creating another import.
+        Repeating the same file returns this receipt instead of creating another import.
       </p>
       <dl className="mt-4 grid gap-2">
         {receiptRows(receipt).map((row) => (
@@ -590,14 +681,11 @@ export default async function ConnectionSetupStatusPage({
   const accountIdentity = status.account_identity ?? pageParams.identity ?? null;
   const described = describeState(status);
   const importPhases = importPhaseProgress(status);
-  const title = accountIdentity
-    ? `${status.display_name ?? status.connector_id} · ${accountIdentity}`
-    : (status.display_name ?? status.connector_id);
-  const refreshQuery = pageParams.run_id ? `?${new URLSearchParams({ run_id: pageParams.run_id }).toString()}` : "";
-  const refreshHref = `/connect/status/${encodeURIComponent(connectionId)}${refreshQuery}`;
-
+  const displayName = deriveSetupStatusDisplayName(status);
+  const title = accountIdentity ? `${displayName} · ${accountIdentity}` : displayName;
   return (
     <RecordroomShellWithPalette>
+      <LivePoller enabled={status.pending} />
       <PageHeader
         actions={
           <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
@@ -605,7 +693,7 @@ export default async function ConnectionSetupStatusPage({
           </Link>
         }
         breadcrumbs={[{ href: "/sources", label: "Sources" }, { label: "Setup status" }]}
-        description="This is the durable status for the account or import you just submitted. Bookmark or revisit it any time."
+        description="Durable status for the account or import you just submitted. Bookmark it and come back any time."
         title={title}
       />
 
@@ -622,12 +710,8 @@ export default async function ConnectionSetupStatusPage({
             <dd className="pdpp-caption font-mono">{status.connection_id}</dd>
           </div>
           <div className="flex justify-between gap-4">
-            <dt className="pdpp-caption text-muted-foreground">Status</dt>
-            <dd className="pdpp-caption">{status.status}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
             <dt className="pdpp-caption text-muted-foreground">Setup state</dt>
-            <dd className="pdpp-caption">{status.setup_state}</dd>
+            <dd className="pdpp-caption">{describeSetupState(status.setup_state)}</dd>
           </div>
           <div className="flex justify-between gap-4">
             <dt className="pdpp-caption text-muted-foreground">{status.setup_material.label}</dt>
@@ -671,16 +755,13 @@ export default async function ConnectionSetupStatusPage({
           ) : null}
           {described.tone === "failed" ||
           status.setup_state === "awaiting_credential" ||
-          status.setup_state === "awaiting_browser_login" ? (
+          status.setup_state === "awaiting_browser_login" ||
+          status.setup_state === "first_sync_zero_yield" ||
+          status.setup_state === "first_sync_verified_empty" ||
+          status.setup_state === "first_sync_unverified_zero" ||
+          status.setup_state === "first_sync_unverified_missing_counts" ? (
             <Link className={buttonVariants({ size: "sm", variant: "default" })} href={setupHref(status)}>
               {retryLabel(status)}
-            </Link>
-          ) : null}
-          {described.tone === "pending" &&
-          status.setup_state !== "awaiting_credential" &&
-          status.setup_state !== "awaiting_browser_login" ? (
-            <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={refreshHref}>
-              Refresh status
             </Link>
           ) : null}
         </div>

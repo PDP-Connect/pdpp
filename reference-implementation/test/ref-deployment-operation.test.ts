@@ -23,7 +23,7 @@ import { executeRefDeployment } from "../operations/ref-deployment/index.ts";
 
 function makeReport(overrides: Partial<RefDeploymentReport> = {}): RefDeploymentReport {
   const base: RefDeploymentReport = {
-    database: { path: ":memory:" },
+    database: { backend: "unknown", path: ":memory:" },
     environment: [
       { name: "NODE_ENV", provenance: "present", secret: false, value: "test" },
       { name: "PDPP_OWNER_PASSWORD", provenance: "redacted", secret: true, value: null },

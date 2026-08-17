@@ -20,6 +20,10 @@ import {
   createSqliteManualUploadArtifactStore,
 } from "./stores/manual-upload-artifact-store.ts";
 import { createRecordRejectionStore } from "./stores/record-rejection-store.ts";
+import {
+  createPostgresProviderAppConfigStore,
+  createSqliteProviderAppConfigStore,
+} from "./stores/provider-app-config-store.ts";
 
 interface ConnectorNamespace {
   connectorId: string;
@@ -48,6 +52,10 @@ export function createRequestManualUploadArtifactStore() {
 
 export function createRequestRecordRejectionStore() {
   return createRecordRejectionStore();
+}
+
+export function createRequestProviderAppConfigStore() {
+  return isPostgresStorageBackend() ? createPostgresProviderAppConfigStore() : createSqliteProviderAppConfigStore();
 }
 
 export function storageTargetForConnectorNamespace(namespace: ConnectorNamespace) {

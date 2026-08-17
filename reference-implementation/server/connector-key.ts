@@ -37,84 +37,27 @@
  * unit-test and safe to import from any layer.
  */
 
+import {
+  FIRST_PARTY_CONNECTOR_KEYS,
+  LEGACY_LOCAL_ALIASES,
+  NATIVE_CONNECTOR_KEYS,
+} from "./generated/connector-registry.generated.ts";
+
 const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.dev/connectors/";
 
-// Canonical connector keys for every first-party manifest currently shipped
-// by the reference implementation and the polyfill-connectors package.
-//
-// Listed by hand (not derived from the registry URL by stripping the prefix)
-// so that adding a new first-party connector is a deliberate edit here, and
-// so the test suite can pin the exact allowlist instead of asserting against
-// a derived set.
-//
-// IMPORTANT: hyphens, not underscores. The polyfill-connectors manifests
-// already use the hyphenated form in their `connector_id` URLs
-// (`.../connectors/claude-code`, `.../connectors/google-takeout`,
-// `.../connectors/apple-health`, `.../connectors/twitter-archive`). The
-// legacy `claude_code` / `codex` snake_case aliases below are migration-only.
-const FIRST_PARTY_CONNECTOR_KEYS = Object.freeze([
-  "amazon",
-  "anthropic",
-  "apple-health",
-  "chase",
-  "chatgpt",
-  "claude-code",
-  "codex",
-  "doordash",
-  "github",
-  "gmail",
-  "google-maps",
-  "google-maps-data-portability",
-  "google-takeout",
-  "heb",
-  "ical",
-  "imessage",
-  "linkedin",
-  "loom",
-  "meta",
-  "notion",
-  "oura",
-  "pocket",
-  "reddit",
-  "shopify",
-  "slack",
-  "spotify",
-  "strava",
-  "twitter-archive",
-  "uber",
-  "usaa",
-  "whatsapp",
-  "wholefoods",
-  "whoop",
-  "ynab",
-]);
+// FIRST_PARTY_CONNECTOR_KEYS, NATIVE_CONNECTOR_KEYS, and LEGACY_LOCAL_ALIASES
+// are generated from the shipped connector manifests and the connector
+// package's own local-collector bundle registry — see
+// connector-registry.generated.ts and
+// scripts/generate-connector-registry.ts. This module only builds the
+// lookup structures (Sets/inverse maps) around that manifest-derived data;
+// it does not hand-maintain a connector-id list itself. Third-party/custom
+// connectors are unaffected: they simply are not in the generated set, and
+// `canonicalConnectorKey` already fails closed (returns `null`) for anything
+// outside it — see the module docstring above.
 
 const FIRST_PARTY_CONNECTOR_KEY_SET = new Set(FIRST_PARTY_CONNECTOR_KEYS);
-
-// Native (non-URL) connector ids shipped under reference-implementation/
-// manifests/. These manifests do NOT declare a top-level `connector_id`;
-// instead the operational identity is `storage_binding.connector_id` and
-// already a bare slug. The canonical key here is the slug itself; callers
-// that key by the native binding string get the same value back.
-const NATIVE_CONNECTOR_KEYS = Object.freeze(["northstar_hr_native"]);
-
 const NATIVE_CONNECTOR_KEY_SET = new Set(NATIVE_CONNECTOR_KEYS);
-
-// Snake_case local-collector aliases that historically appeared as bare
-// `connector_id` values in pending-consent rows and as runtime
-// envelope keys, before the polyfill manifests adopted the hyphenated form.
-// Migration-only: post-migration code should not write these. Pinning them
-// here keeps the mapping under one allowlist so the migration plan, the
-// hosted-MCP picker, and the manifest reconciler agree on the canonical key.
-//
-// Source of truth for the historical alias set:
-//   reference-implementation/server/auth.js
-//     `LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES`
-const LEGACY_LOCAL_ALIASES = Object.freeze({
-  claude_code: "claude-code",
-  codex: "codex",
-});
-
 const LEGACY_LOCAL_ALIAS_SET = new Set(Object.keys(LEGACY_LOCAL_ALIASES));
 const CONNECTOR_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
@@ -201,7 +144,10 @@ export function canonicalConnectorKey(value: unknown): string | null {
     return trimmed;
   }
   if (isLegacyLocalAliasKey(trimmed)) {
-    return LEGACY_LOCAL_ALIASES[trimmed];
+    // isLegacyLocalAliasKey already proved membership via LEGACY_LOCAL_ALIAS_SET;
+    // the `?? null` only satisfies noUncheckedIndexedAccess on the generated
+    // Record's index signature.
+    return LEGACY_LOCAL_ALIASES[trimmed] ?? null;
   }
   return null;
 }

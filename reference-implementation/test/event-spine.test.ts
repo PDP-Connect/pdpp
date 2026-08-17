@@ -686,6 +686,127 @@ test("event spine", async (t) => {
     }
   });
 
+  await t.test("backfills event_seq safely after an interrupted concurrent Gmail append", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pdpp-spine-event-seq-concurrent-migration-"));
+    const dbPath = join(dir, "legacy.sqlite");
+    const legacyDb = new Database(dbPath);
+
+    try {
+      legacyDb.exec(`
+        CREATE TABLE spine_events (
+          event_id         TEXT PRIMARY KEY,
+          event_type       TEXT NOT NULL,
+          occurred_at      TEXT NOT NULL,
+          recorded_at      TEXT NOT NULL,
+          scenario_id      TEXT NOT NULL,
+          trace_id         TEXT NOT NULL,
+          actor_type       TEXT NOT NULL,
+          actor_id         TEXT NOT NULL,
+          subject_type     TEXT,
+          subject_id       TEXT,
+          object_type      TEXT NOT NULL,
+          object_id        TEXT NOT NULL,
+          status           TEXT NOT NULL,
+          request_id       TEXT,
+          grant_id         TEXT,
+          run_id           TEXT,
+          source_kind      TEXT,
+          source_id        TEXT,
+          client_id        TEXT,
+          stream_id        TEXT,
+          token_id         TEXT,
+          interaction_id   TEXT,
+          data_json        TEXT NOT NULL,
+          version          TEXT NOT NULL
+        )
+      `);
+      const insertLegacyEvent = legacyDb.prepare(`
+        INSERT INTO spine_events(
+          event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+          actor_type, actor_id, object_type, object_id, status, run_id, data_json, version
+        ) VALUES (@event_id, @event_type, @occurred_at, @recorded_at, 'gmail', @trace_id,
+          'runtime', 'gmail', 'run', @run_id, @status, @run_id, @data_json, 'spine.v1')
+      `);
+      for (const event of [
+        {
+          data_json: JSON.stringify({ connector_id: "gmail", connector_instance_id: "gmail-a" }),
+          event_id: "evt_gmail_legacy_a",
+          event_type: "run.started",
+          occurred_at: "2026-08-07T12:00:00.000Z",
+          recorded_at: "2026-08-07T12:00:00.000Z",
+          run_id: "run_gmail_a",
+          status: "running",
+          trace_id: "trace_gmail_a",
+        },
+        {
+          data_json: JSON.stringify({ connector_id: "gmail", connector_instance_id: "gmail-b" }),
+          event_id: "evt_gmail_legacy_b",
+          event_type: "run.started",
+          occurred_at: "2026-08-07T12:00:01.000Z",
+          recorded_at: "2026-08-07T12:00:01.000Z",
+          run_id: "run_gmail_b",
+          status: "running",
+          trace_id: "trace_gmail_b",
+        },
+      ]) {
+        insertLegacyEvent.run(event);
+      }
+    } finally {
+      legacyDb.close();
+    }
+
+    // The interrupted first boot committed the additive column but not its
+    // backfill. A concurrent Gmail writer then used the normal MAX()+1
+    // allocator while the legacy rows still had NULL event_seq values.
+    const interruptedBootDb = new Database(dbPath);
+    interruptedBootDb.exec("ALTER TABLE spine_events ADD COLUMN event_seq INTEGER");
+    const concurrentGmailDb = new Database(dbPath);
+    try {
+      concurrentGmailDb
+        .prepare(`
+          INSERT INTO spine_events(
+            event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version
+        ) VALUES (
+            @event_id, (SELECT COALESCE(MAX(event_seq), 0) + 1 FROM spine_events),
+            @event_type, @occurred_at, @recorded_at, 'gmail', @trace_id,
+            'runtime', 'gmail', 'run', @run_id, @status, @run_id, @data_json, 'spine.v1'
+          )
+        `)
+        .run({
+          data_json: JSON.stringify({ connector_id: "gmail", connector_instance_id: "gmail-a" }),
+          event_id: "evt_gmail_concurrent_append",
+          event_type: "run.failed",
+          occurred_at: "2026-08-07T12:00:02.000Z",
+          recorded_at: "2026-08-07T12:00:02.000Z",
+          run_id: "run_gmail_a",
+          status: "failed",
+          trace_id: "trace_gmail_a",
+        });
+    } finally {
+      concurrentGmailDb.close();
+      interruptedBootDb.close();
+    }
+
+    try {
+      initDb(dbPath);
+      const db = getDb();
+      const rows = db
+        .prepare("SELECT event_id, event_seq FROM spine_events ORDER BY event_seq")
+        .all<{ event_id: string; event_seq: number }>();
+
+      assert.deepEqual(rows, [
+        { event_id: "evt_gmail_concurrent_append", event_seq: 1 },
+        { event_id: "evt_gmail_legacy_a", event_seq: 2 },
+        { event_id: "evt_gmail_legacy_b", event_seq: 3 },
+      ]);
+      assert.equal(new Set(rows.map((row) => row.event_seq)).size, rows.length);
+    } finally {
+      closeDb();
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
   await t.test("captures dynamic client registration success and rejection as trace artifacts", async () => {
     await withHarness(async ({ asUrl }) => {
       const registration = await registerDynamicClient(asUrl, {

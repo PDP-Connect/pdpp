@@ -27,8 +27,7 @@
       "rationale": "LinkedIn aggressively blocks automated access; profile refresh is manual-only."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [
@@ -255,5 +254,8 @@
       "coverage_strategy": "full_inventory",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "linkedin_voyager_wiring_pending": "LinkedIn support isn't wired up yet"
+  }
 }

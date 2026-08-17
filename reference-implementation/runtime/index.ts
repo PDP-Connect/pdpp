@@ -9,10 +9,12 @@
  */
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
+import { validateRuntimeContinuationFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { readStoredCollectionScope } from "../server/local-collection-scope.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 import {
@@ -30,6 +32,7 @@ import {
   composeConnectorChildEnvironment,
 } from "./connector-child-environment.ts";
 import {
+  boundConnectorErrorCode,
   boundConnectorErrorMessage,
   boundConsideredCount,
   boundGapString,
@@ -38,8 +41,8 @@ import {
   buildCollectionFacts,
   buildKnownGap,
   GAP_STRING_MAX,
+  isValidRecoveryHintShape,
   normalizeGapScope,
-  RECOVERY_ACTIONS,
   VIOLATION_LIST_MAX,
 } from "./connector-gap-bounding.ts";
 import { createDetailGapPageReader, validateDetailGapsPageRequest } from "./detail-gap-paging.ts";
@@ -49,7 +52,12 @@ import {
   validateDoneRecordsEmitted,
   validateDoneStatus,
 } from "./done-validators.ts";
-import { buildHttpFailure, buildIngestHttpFailure, buildInvalidIngestResponseFailure } from "./ingest-failures.ts";
+import {
+  buildHttpFailure,
+  buildIngestEnvelopeContractViolationFailure,
+  buildIngestHttpFailure,
+  buildInvalidIngestResponseFailure,
+} from "./ingest-failures.ts";
 import { isClosedPipeWriteError } from "./pipe-errors.ts";
 import {
   validateProgressAttachmentHydrationFailureOutcome,
@@ -58,6 +66,7 @@ import {
   validateProgressCollectionRate,
   validateProgressProviderBudget,
 } from "./progress-validators.ts";
+import { assertValidRecordEnvelope } from "./record-message-validator.ts";
 import { classifyRecoveryGap } from "./recovery-decision.ts";
 import { DEFAULT_QUARANTINE_POLICY } from "./recovery-quarantine.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
@@ -90,9 +99,10 @@ interface ManifestStream {
   availability?: { state?: string } | null;
   consent_time_field?: string | null;
   name: string;
+  parent_streams?: string[] | null;
   primary_key?: string | string[] | null;
-  schema?: { required?: string[] } | null;
-  selection?: { resource_field?: string } | null;
+  schema?: { required?: string[]; [key: string]: unknown } | null;
+  selection?: { fields?: boolean; resources?: boolean; resource_field?: string } | null;
   state_stream?: string | null;
   [key: string]: unknown;
 }
@@ -179,10 +189,19 @@ interface RuntimeRunError extends Error {
   trace_id?: string;
 }
 
-/** The `error` object a connector may attach to a failed DONE. */
+/**
+ * The `error` object a connector may attach to a failed DONE. `code`
+ * identifies the cause (e.g. `credential_rejected`) and is connector-defined,
+ * opaque to the RI. `recovery_hint` is the separate, closed-vocabulary
+ * ACTION channel (same shape/vocabulary as `SKIP_RESULT.recovery_hint` —
+ * see `RECOVERY_ACTIONS` / `isValidRecoveryHintShape` in
+ * connector-gap-bounding.ts) — the only field `recoveryHintFromTerminalConnectorError`
+ * reads to decide the owner-facing recovery action.
+ */
 interface ConnectorDoneError {
   code?: string;
   message?: string;
+  recovery_hint?: string | { action: string; retryable?: boolean } | null;
   retryable?: boolean | null;
   [key: string]: unknown;
 }
@@ -254,6 +273,7 @@ interface ServedGapLease {
   attempted: boolean;
   gapId: string;
   leaseId: string;
+  parentStream: string | null;
   recordKey: string | null;
   runId: string;
   stream: string | null;
@@ -307,14 +327,41 @@ function unsupportedDetailGapStoreCapability(capability: string): () => never {
   };
 }
 
-/** Per-`state_stream` DETAIL_COVERAGE accounting collected during a run. */
+/** Per-parent-boundary DETAIL_COVERAGE accounting collected during a run. */
 interface DetailCoverageEntry {
   considered: number | null;
   covered: number | null;
+  /**
+   * Keys the connector declared it could not hydrate this run. Diagnostic
+   * only: checkpoint authority still requires a matching durable DETAIL_GAP
+   * for the same stream, key, and parent boundary.
+   */
+  gapKeys: Set<string>;
   hydratedKeys: Set<string>;
+  /** Keys accepted by the connector's explicit optional-detail policy. */
   optionalSkipKeys: Set<string>;
   requiredKeys: string[];
   stream: string;
+}
+
+function durableGapMatchesCoverageParent(
+  gapParentStream: string | null | undefined,
+  stateStream: string,
+  hasMultipleParents: boolean
+): boolean {
+  if (gapParentStream) {
+    return gapParentStream === stateStream;
+  }
+  return !hasMultipleParents;
+}
+
+/**
+ * Single source for the coverage-shortfall explanation, shared by the known-gap
+ * message and the terminal `failure_message`, so the owner reads the same
+ * sentence wherever the shortfall surfaces.
+ */
+function detailCoverageShortfallMessage(stateStream: string, stream: string, missingKeyCount: number): string {
+  return `Connector detail coverage incomplete: state_stream=${stateStream} stream=${stream} missing_required_keys=${missingKeyCount}`;
 }
 
 /** An open structured-ASSISTANCE prompt awaiting a terminal status. */
@@ -846,6 +893,34 @@ function buildConnectorExitFailureMessage({
   return "Connector exited before emitting DONE.";
 }
 
+// Bounds a runtime-thrown Error's own message before it's persisted as
+// `failure_message` on a terminal spine event, mirroring
+// `controller.ts`'s `boundedLaunchFailureMessage` — a pathological error
+// (e.g. one embedding a large payload) can't bloat the terminal row.
+const RUNTIME_FAILURE_MESSAGE_MAX = 500;
+
+function boundedRuntimeFailureMessage(message: string): string {
+  return message.length > RUNTIME_FAILURE_MESSAGE_MAX ? `${message.slice(0, RUNTIME_FAILURE_MESSAGE_MAX)}…` : message;
+}
+
+// A runtime-side throw (mid-stream message processing, or the post-close
+// finalize path) with no more specific structured shape — a
+// connector-reported DONE.error, an ingest failure detail, or a protocol
+// violation, each of which already carries its own explanation — would
+// otherwise reach the terminal spine event with nothing beyond the
+// classified `reason` code (usually the generic "runtime_error" fallback).
+// Shared by handleMessageFailure and handleCloseFailure so the terminal
+// event always carries the thrown error's own message when nothing else
+// explains the failure.
+function runtimeAuthoredFailureMessage(
+  err: RuntimeRunError,
+  doneMessageError: ConnectorDoneError | null | undefined
+): string | null {
+  const hasStructuredFailureDetail =
+    Boolean(doneMessageError) || Boolean(err.ingest_failure) || err instanceof ProtocolViolation;
+  return !hasStructuredFailureDetail && err.message ? boundedRuntimeFailureMessage(err.message) : null;
+}
+
 function buildStderrTailDiagnostic(tail: StderrTail | null | undefined): Record<string, unknown> | null {
   if (!tail || typeof tail !== "object") {
     return null;
@@ -1054,7 +1129,8 @@ function validateStartScopeStream(streamScope: StreamScope, manifestStream: Mani
 
 function buildStartScope(
   manifest: ConnectorManifest | null | undefined,
-  providedScope: { streams?: unknown } | null | undefined
+  providedScope: { streams?: unknown } | null | undefined,
+  declaredCollectionScopeSince?: string | null
 ): StartScope {
   const manifestByStream = new Map<string, ManifestStream>(
     (manifest?.streams || []).map((stream) => [stream.name, stream])
@@ -1072,9 +1148,30 @@ function buildStartScope(
     };
   }
 
+  // No explicit per-run scope: fold in the connection's own durably-declared
+  // `collection_scope.since` (owner-set via
+  // `PUT /v1/owner/connections/:id/collection-scope`) as the default
+  // `time_range.since` for streams the MANIFEST itself declares as temporal
+  // (a non-empty `consent_time_field`). This is the only place a hosted (non
+  // local-device) run's scope reaches the connector: `runNow` never builds an
+  // explicit `providedScope` for an ordinary sync, so without this the owner's
+  // declared boundary would be persisted but never delivered. Gating by
+  // `consent_time_field` matters: a stream with no such field has no
+  // manifest-declared notion of "when" a row happened, so attaching a
+  // `time_range` to it would assert a temporal scope the stream can neither
+  // define nor enforce (and the emission gate, `passesTimeRange`, only ever
+  // checks a `consent_time_field` value in the first place — a non-temporal
+  // stream given a `time_range` would have it silently ignored downstream
+  // too, so omitting it here keeps the START message honest about which
+  // streams the boundary actually applies to).
   const streams = (manifest?.streams || [])
     .filter((stream) => !streamUnsupportedInDefaultScope(stream))
-    .map((stream) => ({ name: stream.name }));
+    .map((stream) => ({
+      name: stream.name,
+      ...(declaredCollectionScopeSince && stream.consent_time_field
+        ? { time_range: { since: declaredCollectionScopeSince } }
+        : {}),
+    }));
   if (!streams.length) {
     throw new Error("START.scope requires at least one stream");
   }
@@ -1216,17 +1313,7 @@ function validateProgressMessage(msg: ConnectorMessage, scopeByStream: ScopeBySt
 }
 
 function validateSkipRecoveryHint(value: unknown): void {
-  if (isNullish(value)) {
-    return;
-  }
-  const hint = value as { action?: unknown; retryable?: unknown };
-  const valid =
-    (typeof value === "string" && RECOVERY_ACTIONS.has(value)) ||
-    (typeof value === "object" &&
-      !Array.isArray(value) &&
-      (isNullish(hint.action) || RECOVERY_ACTIONS.has(hint.action as string)) &&
-      (isNullish(hint.retryable) || typeof hint.retryable === "boolean"));
-  if (!valid) {
+  if (!isValidRecoveryHintShape(value)) {
     throw new Error("Connector emitted invalid SKIP_RESULT.recovery_hint");
   }
 }
@@ -1262,6 +1349,9 @@ function validateSkipResultMessage(msg: ConnectorMessage, scopeByStream: ScopeBy
   requireOptionalNonEmptyString(msg.reason, "SKIP_RESULT.reason");
   requireOptionalNonEmptyString(msg.message, "SKIP_RESULT.message");
   validateSkipRecoveryHint(msg.recovery_hint);
+  if (!isNullish(msg.continuation)) {
+    validateRuntimeContinuationFact(msg.continuation);
+  }
   validateSkipStringArray(msg.resource_ids, "resource_ids");
   validateSkipStringArray(msg.resources, "resources");
   validateSkipTimeRange(msg.time_range);
@@ -1298,12 +1388,11 @@ function findServedDetailGapLease(leases: Map<string, ServedGapLease>, msg: Conn
     return null;
   }
   const recordKey = String(msg.record_key);
-  for (const lease of leases.values()) {
-    if (lease.stream === msg.stream && lease.recordKey === recordKey) {
-      return lease;
-    }
-  }
-  return null;
+  const parentStream = typeof msg.parent_stream === "string" ? msg.parent_stream : null;
+  const matches = [...leases.values()].filter(
+    (lease) => lease.stream === msg.stream && lease.recordKey === recordKey && lease.parentStream === parentStream
+  );
+  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 function validateDetailGapAttemptedMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
@@ -1331,7 +1420,70 @@ function normalizeCoverageKey(key: string | number): string {
   return String(key);
 }
 
-function validateDetailCoverageMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
+function validateCoverageKeySets(msg: ConnectorMessage): void {
+  const fields = ["required_keys", "hydrated_keys", "gap_keys", "optional_skip_keys"] as const;
+  const keysByField = new Map<string, Set<string>>();
+  for (const field of fields) {
+    const values = (msg[field] as (string | number)[] | null | undefined) || [];
+    const normalized = values.map(normalizeCoverageKey);
+    const unique = new Set(normalized);
+    if (unique.size !== normalized.length) {
+      throw new Error(`Connector emitted invalid DETAIL_COVERAGE.${field}: duplicate key`);
+    }
+    keysByField.set(field, unique);
+  }
+
+  const required = keysByField.get("required_keys") as Set<string>;
+  const outcomes = ["hydrated_keys", "gap_keys", "optional_skip_keys"] as const;
+  const seenOutcomes = new Set<string>();
+  for (const field of outcomes) {
+    for (const key of keysByField.get(field) as Set<string>) {
+      if (!required.has(key)) {
+        throw new Error(`Connector emitted invalid DETAIL_COVERAGE.${field}: key not present in required_keys`);
+      }
+      if (seenOutcomes.has(key)) {
+        throw new Error("Connector emitted invalid DETAIL_COVERAGE: outcome key appears in multiple sets");
+      }
+      seenOutcomes.add(key);
+    }
+  }
+}
+
+// Manifest-authoritative guard on live DETAIL_COVERAGE evidence (see
+// spec-collection-profile.md, "Precedence between manifest and run-time
+// evidence"). The manifest declares the *permitted* parent shape; live
+// evidence may only select/report within it, never introduce a parent the
+// manifest didn't declare, and a `state_stream`-declared (static single
+// parent) stream must never emit DETAIL_COVERAGE at all — its checkpoint
+// status is always projected from the declared parent's own commit outcome.
+function validateDetailCoverageAgainstManifest(
+  msg: ConnectorMessage,
+  manifestStateStreamByStream: Map<string, string>,
+  manifestDetailParentStreamsByStream: Map<string, Set<string>>
+): void {
+  const coverageStream = msg.stream as string;
+  const coverageStateStream = msg.state_stream as string;
+  if (manifestStateStreamByStream.has(coverageStream)) {
+    throw new Error(
+      `Connector emitted DETAIL_COVERAGE for stream '${coverageStream}', which the manifest declares with a` +
+        " static state_stream parent; a state_stream-declared stream MUST NOT emit DETAIL_COVERAGE"
+    );
+  }
+  const declaredParents = manifestDetailParentStreamsByStream.get(coverageStream);
+  if (declaredParents && !declaredParents.has(coverageStateStream)) {
+    throw new Error(
+      `Connector emitted DETAIL_COVERAGE for stream '${coverageStream}' naming state_stream` +
+        ` '${coverageStateStream}', which is not in the manifest's declared parent_streams for that stream`
+    );
+  }
+}
+
+function validateDetailCoverageMessage(
+  msg: ConnectorMessage,
+  scopeByStream: ScopeByStream,
+  manifestStateStreamByStream: Map<string, string>,
+  manifestDetailParentStreamsByStream: Map<string, Set<string>>
+): void {
   if (msg.reference_only !== true) {
     throw new Error("Connector emitted invalid DETAIL_COVERAGE.reference_only: expected true");
   }
@@ -1354,6 +1506,8 @@ function validateDetailCoverageMessage(msg: ConnectorMessage, scopeByStream: Sco
   if (!isNullish(msg.optional_skip_keys)) {
     assertCoverageKeyArray(msg.optional_skip_keys, "optional_skip_keys");
   }
+  validateCoverageKeySets(msg);
+  validateDetailCoverageAgainstManifest(msg, manifestStateStreamByStream, manifestDetailParentStreamsByStream);
 }
 
 function validateDetailGapRecoveredMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
@@ -1782,6 +1936,22 @@ function buildManifestStateStreamMap(manifest: ConnectorManifest): Map<string, s
   return stateStreams;
 }
 
+function buildManifestDetailParentStreamsMap(manifest: ConnectorManifest): Map<string, Set<string>> {
+  const parentsByStream = new Map<string, Set<string>>();
+  for (const stream of manifest.streams || []) {
+    if (!(stream && Array.isArray(stream.parent_streams))) {
+      continue;
+    }
+    if (stream.parent_streams.length) {
+      // Keep the complete declared set. Its cardinality is an authority fact:
+      // scoping a two-parent run to one parent must not make a legacy,
+      // parentless gap appear unambiguous.
+      parentsByStream.set(stream.name, new Set(stream.parent_streams));
+    }
+  }
+  return parentsByStream;
+}
+
 function openRuntimeTraceFile(traceDir: string | undefined, connectorId: string, runId: string): string | null {
   if (!traceDir) {
     return null;
@@ -1968,7 +2138,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   validateRequiredRuntimeBindings(requiredBindings, availableBindings);
 
   const explicitlyRequestedStreams = requestedRuntimeStreams(providedScope);
-  const startScope = buildStartScope(manifest, providedScope);
+  const declaredCollectionScope = readStoredCollectionScope(state).scope;
+  const startScope = buildStartScope(manifest, providedScope, declaredCollectionScope?.since ?? null);
   const startCollectionMode = validateCollectionMode(collectionMode);
   const startState = persistState ? validateStartState(state) : null;
   // §4.3: validate and normalize recoveryOnly — must be a boolean if provided
@@ -1985,6 +2156,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // co-emitted stream's `checkpoint` reflects the parent's committed cursor
   // instead of a spurious `not_staged`.
   const manifestStateStreamByStream = buildManifestStateStreamMap(manifest);
+  const manifestDetailParentStreamsByStream = buildManifestDetailParentStreamsMap(manifest);
   // `getDefaultConnectorDetailGapStore()` is declared `unknown` at its own
   // module boundary (that store has not been migrated yet), so the runtime
   // states the surface it actually drives here.
@@ -2064,6 +2236,28 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       manifest,
     }),
     stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  // Register terminal observation immediately after spawn, before any of the
+  // asynchronous pre-START work below. A fast connector can consume START,
+  // emit DONE, and exit before runConnector reaches its terminal handlers;
+  // listening only at the end of setup loses Node's one-shot `close` event and
+  // leaves the run pending forever. Buffer the first terminal event now and
+  // process it once the run-scoped state machine is ready.
+  type ConnectorChildTerminalEvent =
+    | { readonly code: number | null; readonly kind: "close" }
+    | { readonly error: Error; readonly kind: "error" };
+  const childTerminalEvent = new Promise<ConnectorChildTerminalEvent>((resolve) => {
+    let observed = false;
+    const observe = (event: ConnectorChildTerminalEvent) => {
+      if (observed) {
+        return;
+      }
+      observed = true;
+      resolve(event);
+    };
+    proc.once("error", (error) => observe({ error, kind: "error" }));
+    proc.once("close", (code) => observe({ code, kind: "close" }));
   });
 
   // Group-aware termination. Because the child leads its own process group
@@ -2529,6 +2723,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   let ownerCancelRequested = false;
   let runTimedOut = false;
   let ownerCancelForced = false;
+  const terminalStopRequested = (): boolean => ownerCancelRequested || runTimedOut;
   const knownGaps: Record<string, unknown>[] = [];
   // Streams whose batch ingest was rejected as not_found for a stream the runtime
   // already validated present in the manifest at START (transient manifest drift
@@ -2537,6 +2732,14 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // the next run re-collects them once the RS manifest row re-heals. See OpenSpec
   // change harden-ingest-against-transient-manifest-drift.
   const driftSkippedStreams = new Set<string>();
+  // Streams that reported their own terminal failure via
+  // SKIP_RESULT{reason:"stream_collection_failed", stream}. Populated only
+  // when `stream` is present (in-scope, proven by validateSkipResultMessage)
+  // — an untargeted SKIP_RESULT never certifies any specific stream as
+  // failed. Read by handleDoneClose: a failed DONE is trusted as a
+  // stream-scoped (rather than whole-run) failure only when this set is
+  // non-empty, and only the streams named here are excluded from commit.
+  const streamCollectionFailedStreams = new Set<string>();
   const durableDetailGaps: DurableDetailGap[] = [];
   // First-sighting idempotency for run.detail_gap_recorded: gap_ids already
   // emitted as `recorded` THIS run. Closes the resumed-run-stdout-replay edge
@@ -2599,27 +2802,35 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     knownGaps.push(gap);
   }
 
+  /**
+   * A connector requests a recovery action only via `connector_error.recovery_hint`
+   * — the same closed vocabulary/shape as `SKIP_RESULT.recovery_hint`
+   * (validated on ingest by `validateDoneError`, so an invalid shape can never
+   * reach here). `code`/`message` are cause identity and free-form text; the
+   * RI never inspects either to choose an action.
+   *
+   * A present, validated hint is authoritative and wins outright — including
+   * over the runtime's own CDP/browser-infrastructure text match below. The
+   * text match exists only to give runtime infrastructure failures (a dead
+   * browser process, not connector logic) a sane default action when the
+   * connector declared no hint at all; it is a fallback for an ABSENT hint,
+   * never an override for a PRESENT one. `buildKnownGap` (via
+   * `normalizeRecoveryHint`) already fails closed on a missing/unrecognized
+   * hint by falling back to its own generic, vocabulary-based inference —
+   * this function does not need to duplicate that.
+   */
   function recoveryHintFromTerminalConnectorError(
     connectorError: ConnectorDoneError | null | undefined
-  ): string | null {
-    if (connectorError?.code === "credential_rejected") {
-      return "refresh_credentials";
+  ): string | { action?: string; retryable?: boolean } | null {
+    if (connectorError?.recovery_hint) {
+      return connectorError.recovery_hint;
     }
     const message = typeof connectorError?.message === "string" ? connectorError.message : "";
     if (isRuntimeRetryableBrowserProfileError(message)) {
       return "retry_by_runtime";
     }
-    if (message.includes("chatgpt_preprogress_failure: refresh_credentials:")) {
-      return "refresh_credentials";
-    }
-    if (message.includes("chatgpt_preprogress_failure: manual_action_required:")) {
-      return "manual_action_required";
-    }
     if (connectorError?.retryable === true) {
       return "retry_by_runtime";
-    }
-    if (message.includes("chatgpt_preprogress_failure: runtime_exception:")) {
-      return "retry_on_connector_upgrade";
     }
     return null;
   }
@@ -2695,8 +2906,15 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     if (connectorError?.message) {
       data.connector_error_message = boundConnectorErrorMessage(connectorError.message);
     }
-    if (connectorError?.code) {
-      data.connector_error_code = connectorError.code;
+    // Unlike `message`, `code` is copied without redaction — it is a typed,
+    // non-secret channel by contract, so it MUST be validated (not
+    // redacted) before crossing into the unredacted `connector_error_code`
+    // column. boundConnectorErrorCode fails closed to null on anything
+    // malformed, so an invalid/malicious code is dropped rather than
+    // trusted just because the connector sent it.
+    const validatedCode = connectorError?.code ? boundConnectorErrorCode(connectorError.code) : null;
+    if (validatedCode) {
+      data.connector_error_code = validatedCode;
     }
     if (connectorError?.retryable !== null && connectorError?.retryable !== undefined) {
       data.connector_error_retryable = connectorError.retryable;
@@ -2847,6 +3065,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       durableDetailGaps,
       emittedByStream,
       knownGaps,
+      manifestDetailParentStreamsByStream,
       manifestStateStreamByStream,
       newState,
       persistState,
@@ -2910,7 +3129,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     // `validateDetailCoverageMessage` ran first: state_stream/stream are
     // non-empty strings and the three key arrays are string/number arrays.
     const stateStream = msg.state_stream as string;
+    const stream = msg.stream as string;
     const entries = detailCoverageByStateStream.get(stateStream) || [];
+    if (entries.some((entry) => entry.stream === stream)) {
+      throw new Error(`Connector emitted duplicate DETAIL_COVERAGE for state_stream=${stateStream} stream=${stream}`);
+    }
     entries.push({
       // Optional connector-declared considered denominator (task 2.1). Retained
       // here — normalized to a trusted safe non-negative integer or null — so
@@ -2923,26 +3146,86 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // against `covered` when present so a steady-state full-sync run reads
       // `complete`, never inferred from collected.
       covered: boundConsideredCount(msg.covered),
+      // Connector-declared unhydrated keys. Retained for collection facts and
+      // diagnostics, but never authoritative by themselves: the checkpoint
+      // gate credits a gap only when the same key has a durable DETAIL_GAP.
+      gapKeys: new Set(((msg.gap_keys as (string | number)[] | null) || []).map(normalizeCoverageKey)),
       hydratedKeys: new Set((msg.hydrated_keys as (string | number)[]).map(normalizeCoverageKey)),
       optionalSkipKeys: new Set(
         ((msg.optional_skip_keys as (string | number)[] | null) || []).map(normalizeCoverageKey)
       ),
       requiredKeys: (msg.required_keys as (string | number)[]).map(normalizeCoverageKey),
-      stream: msg.stream as string,
+      stream,
     });
     detailCoverageByStateStream.set(stateStream, entries);
   }
 
-  function assertDetailCoverageSatisfiedBeforeCommit(): void {
+  // Resolve every STATE_STREAM checkpoint key owned by a data stream, for
+  // excluding a failed stream's checkpoint parent(s) from commit. Manifest
+  // declaration is authoritative and takes precedence: a `parent_streams`
+  // stream's every declared parent is a candidate to withhold, whether or
+  // not that parent got a live DETAIL_COVERAGE report this run (a failed
+  // stream's live evidence is inherently incomplete, so under-excluding by
+  // trusting only what happened to arrive live would be unsafe). The static
+  // `state_stream` mapping is the fallback for a stream with no
+  // `parent_streams` declaration, and the data stream's own name is the
+  // final fallback for a self-mapped stream.
+  function resolveStateStreamsForDataStream(dataStream: string): ReadonlySet<string> {
+    const declaredParents = manifestDetailParentStreamsByStream.get(dataStream);
+    if (declaredParents?.size) {
+      return declaredParents;
+    }
+    return new Set([manifestStateStreamByStream.get(dataStream) || dataStream]);
+  }
+
+  // A DETAIL_COVERAGE shortfall is a coverage GAP, not a protocol violation.
+  // The connector spoke a well-formed protocol and told the truth about what it
+  // could not hydrate this run; the honest response is to report the shortfall
+  // and withhold the affected `state_stream`'s cursor so the next run
+  // re-collects it — never to fail a run whose records are already ingested and
+  // durable. (A claim of completeness must carry proof, so an unproven key
+  // still blocks the cursor advance; incomplete coverage is reported, not
+  // fatal.) Mirrors the transient-manifest-drift posture in
+  // `recordManifestDriftStreamSkip`: per-stream gap + no cursor advance.
+  //
+  // Returns the `state_stream`s whose coverage is unproven; the caller skips
+  // exactly those commits and commits the rest.
+  function missingDetailCoverageReports(
+    stateStream: string,
+    coverageEntries: readonly DetailCoverageEntry[]
+  ): string[] {
+    const missing: string[] = [];
+    for (const [detailStream, parents] of manifestDetailParentStreamsByStream) {
+      if (
+        scopeByStream.has(detailStream) &&
+        parents.has(stateStream) &&
+        !coverageEntries.some((coverage) => coverage.stream === detailStream)
+      ) {
+        missing.push(detailStream);
+      }
+    }
+    return missing;
+  }
+
+  async function recordDetailCoverageShortfalls(): Promise<Set<string>> {
+    const shortfallStateStreams = new Set<string>();
     for (const stateStream of Object.keys(newState)) {
       const coverageEntries = detailCoverageByStateStream.get(stateStream) || [];
+      for (const detailStream of missingDetailCoverageReports(stateStream, coverageEntries)) {
+        shortfallStateStreams.add(stateStream);
+        // biome-ignore lint/performance/noAwaitInLoops: one bounded gap per missing parent report; sequential ordering keeps the timeline honest.
+        await recordMissingDetailCoverageReport(stateStream, detailStream);
+      }
       for (const coverage of coverageEntries) {
+        const coverageParents = manifestDetailParentStreamsByStream.get(coverage.stream);
+        const hasMultipleParents = (coverageParents?.size || 0) > 1;
         const accountedGapKeys = new Set(
           durableDetailGaps
             .filter(
               (gap) =>
                 gap.stream === coverage.stream &&
                 (gap.status === "pending" || gap.status === "recovered") &&
+                durableGapMatchesCoverageParent(gap.parent_stream, stateStream, hasMultipleParents) &&
                 !isNullish(gap.record_key)
             )
             .map((gap) => normalizeCoverageKey(gap.record_key as string | number))
@@ -2953,12 +3236,91 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         if (!missingKeys.length) {
           continue;
         }
-
-        throw new Error(
-          `Connector detail coverage incomplete: state_stream=${stateStream} stream=${coverage.stream} missing_required_keys=${missingKeys.length}`
-        );
+        shortfallStateStreams.add(stateStream);
+        // biome-ignore lint/performance/noAwaitInLoops: one bounded gap per shortfalling coverage entry; sequential ordering keeps the timeline honest.
+        await recordDetailCoverageShortfall(stateStream, coverage, missingKeys.length);
       }
     }
+    return shortfallStateStreams;
+  }
+
+  async function recordMissingDetailCoverageReport(stateStream: string, stream: string): Promise<void> {
+    const message = `Connector detail coverage incomplete: state_stream=${stateStream} stream=${stream} coverage_report=missing`;
+    const gap = buildKnownGap({
+      diagnostics: { coverage_report: "missing", state_stream: stateStream },
+      kind: "detail_coverage",
+      message,
+      reason: "detail_coverage_incomplete",
+      recoveryHint: "retry_by_runtime",
+      stream,
+    });
+    appendKnownGap(gap);
+    await emitSpineEventTracked({
+      actor_id: connectorId,
+      actor_type: "runtime",
+      data: {
+        known_gap: gap,
+        message,
+        reason: "detail_coverage_incomplete",
+        source: runSource,
+        state_stream: stateStream,
+        stream,
+      },
+      event_type: "run.stream_skipped",
+      object_id: runId,
+      object_type: "run",
+      run_id: runId,
+      scenario_id: traceContext.scenario_id,
+      status: "skipped",
+      stream_id: stream,
+      trace_id: traceContext.trace_id,
+    });
+    onProgress({ reason: "detail_coverage_incomplete", stream, type: "stream_skipped" });
+  }
+
+  // Per-shortfall known gap + timeline event. `detail_coverage_incomplete` is a
+  // transient reason: the next run retries the same keys, so the owner sees a
+  // reported gap with a real explanation rather than a bare failure.
+  async function recordDetailCoverageShortfall(
+    stateStream: string,
+    coverage: DetailCoverageEntry,
+    missingKeyCount: number
+  ): Promise<void> {
+    const message = detailCoverageShortfallMessage(stateStream, coverage.stream, missingKeyCount);
+    const gap = buildKnownGap({
+      diagnostics: {
+        missing_required_keys: missingKeyCount,
+        required_keys: coverage.requiredKeys.length,
+        state_stream: stateStream,
+      },
+      kind: "detail_coverage",
+      message,
+      reason: "detail_coverage_incomplete",
+      recoveryHint: "retry_by_runtime",
+      stream: coverage.stream,
+    });
+    appendKnownGap(gap);
+    await emitSpineEventTracked({
+      actor_id: connectorId,
+      actor_type: "runtime",
+      data: {
+        known_gap: gap,
+        message,
+        reason: "detail_coverage_incomplete",
+        source: runSource,
+        state_stream: stateStream,
+        stream: coverage.stream,
+      },
+      event_type: "run.stream_skipped",
+      object_id: runId,
+      object_type: "run",
+      run_id: runId,
+      scenario_id: traceContext.scenario_id,
+      status: "skipped",
+      stream_id: coverage.stream,
+      trace_id: traceContext.trace_id,
+    });
+    onProgress({ reason: "detail_coverage_incomplete", stream: coverage.stream, type: "stream_skipped" });
   }
 
   // Record a transient per-stream gap for a stream whose ingest was rejected as
@@ -3007,6 +3369,14 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   }
 
   async function flushBatch(stream: string): Promise<void> {
+    // Cancellation owns the terminal outcome. Do not start another ingest for
+    // a RECORD that was already buffered in the parent after the child was
+    // stopped; doing so makes terminalization wait behind an unbounded Gmail
+    // message/attachment queue.
+    if (terminalStopRequested()) {
+      recordBatch[stream] = [];
+      return;
+    }
     // Already deferred this run for transient manifest drift: don't re-POST (it
     // would just 404 again). Drop any further buffered records for the stream.
     if (driftSkippedStreams.has(stream)) {
@@ -3032,7 +3402,15 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         "Content-Type": "application/x-ndjson",
       },
       method: "POST",
+      signal: cancelSignal ?? null,
     });
+    // Cancellation may have been requested while this fetch was in flight, but
+    // the response already arrived: the RS committed its durable receipts
+    // (acceptance or permanent rejection) before answering. Discarding that
+    // response here would silently drop already-durable rejection evidence
+    // from the run's own counters, even though the receipt survives in RS
+    // storage. Count it like any other completed batch; cancellation still
+    // blocks state/cursor commit separately (see the persistState gate below).
     let result: Awaited<ReturnType<typeof readIngestResponse>>;
     try {
       result = await readIngestResponse(resp, stream, batch.length);
@@ -3053,6 +3431,37 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         return;
       }
       throw err;
+    }
+    // Defensive protocol-violation net, NOT the primary retry classifier.
+    // The RS contract (rs.records.ingest) now guarantees that any SYSTEMIC
+    // per-record failure — a storage/coordination error that never proved a
+    // record's own data invalid — makes the whole HTTP response non-2xx
+    // (RecordsIngestSystemicFailureError, mapped to 503), which the `!resp.ok`
+    // branch above already turns into a thrown, retryable failure via
+    // buildIngestHttpFailure. A PERMANENT per-record rejection (malformed
+    // JSON, a genuine schema/identity defect) legitimately stays inside a
+    // 2xx envelope with records_rejected > 0 — that is the intentional
+    // per-record isolation contract, whether it covers one record or every
+    // record in the batch, and must NOT be treated as retryable just because
+    // the count happens to equal the batch size (that conflated N legitimate
+    // permanent failures with a systemic one — the defect a prior revision of
+    // this check introduced). What SHOULD be structurally unreachable against
+    // a conforming RS is records_accepted === 0 on a 2xx WHOSE envelope also
+    // reports zero errors, or a 2xx whose records_accepted/records_rejected
+    // don't sum to the batch size — either shape means the RS is not honoring
+    // its own contract (an old/non-reference RS, or a bug), not that the
+    // records were validly rejected. Only that impossible shape trips this
+    // net; a normal permanent-rejection envelope (errors.length matching
+    // records_rejected) never does, no matter how many records it rejects.
+    const reportedTotal = result.records_accepted + result.records_rejected;
+    if (batch.length > 0 && result.records_accepted === 0 && reportedTotal !== batch.length) {
+      throw buildIngestEnvelopeContractViolationFailure({
+        batchSize: batch.length,
+        recordsAccepted: result.records_accepted,
+        recordsRejected: result.records_rejected,
+        status: resp.status,
+        stream,
+      });
     }
     recordsAccepted += result.records_accepted;
     recordsPermanentlyRejected += result.records_rejected;
@@ -3260,7 +3669,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     // listener is removed in cleanupChildHandles so a settled run does not leak
     // it on the controller's shared AbortController.
     function handleCancellation() {
-      if (terminalEventRecorded || ownerCancelRequested || runTimedOut) {
+      if (terminalEventRecorded || terminalStopRequested()) {
         return;
       }
       runTimedOut = cancelSignal?.reason === "run_timed_out";
@@ -3284,6 +3693,10 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         });
         onProgress({ run_id: runId, type: "cancel_requested" });
       }
+      // The child has stopped being a source of work. Discard messages already
+      // buffered in the parent; only the single handler currently in flight
+      // remains, and its ingest transport observes this cancellation signal.
+      msgQueue.length = 0;
       terminateChild();
     }
     if (cancelSignal) {
@@ -3361,6 +3774,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
 
     function waitForQueueDrain(): Promise<void> {
+      if (terminalStopRequested()) {
+        msgQueue.length = 0;
+        if (!processing) {
+          return Promise.resolve();
+        }
+      }
       if (!(msgQueue.length || processing)) {
         return Promise.resolve();
       }
@@ -3392,6 +3811,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       err.terminal_reason = failureReason;
       err.connector_error = null;
       err.known_gaps = buildKnownGapsForTerminal(failureReason, null);
+      const runtimeFailureMessage = runtimeAuthoredFailureMessage(err, null);
 
       if (!terminalEventRecorded) {
         try {
@@ -3401,6 +3821,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
             actor_type: "runtime",
             data: buildRunTerminalData({
               connectorError: null,
+              failureMessage: runtimeFailureMessage,
+              failureOrigin: runtimeFailureMessage ? "runtime" : null,
               ingestFailure: err.ingest_failure || null,
               reason: failureReason,
               recordsEmitted: totalEmitted,
@@ -3431,6 +3853,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
 
     async function processNext(): Promise<void> {
+      if (terminalStopRequested()) {
+        msgQueue.length = 0;
+        notifyQueueDrained();
+        return;
+      }
       if (processing || !msgQueue.length) {
         return;
       }
@@ -3442,6 +3869,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       try {
         await handleMsg(msg);
       } catch (caught) {
+        if (terminalStopRequested()) {
+          return;
+        }
         await handleMessageFailure(caught);
         return;
       } finally {
@@ -3449,11 +3879,21 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         notifyQueueDrained();
       }
 
-      processNext();
+      if (terminalStopRequested()) {
+        msgQueue.length = 0;
+        notifyQueueDrained();
+      } else {
+        processNext();
+      }
     }
 
     async function handleDetailCoverageMessage(msg: ConnectorMessage): Promise<void> {
-      validateDetailCoverageMessage(msg, scopeByStream);
+      validateDetailCoverageMessage(
+        msg,
+        scopeByStream,
+        manifestStateStreamByStream,
+        manifestDetailParentStreamsByStream
+      );
       // Proven by the validator: state_stream/stream are non-empty
       // in-scope names and the key arrays are string/number arrays.
       const coverageStateStream = msg.state_stream as string;
@@ -3717,6 +4157,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       if (msg.lease_id && (!leasedGap || leasedGap.leaseId !== msg.lease_id)) {
         throw new Error("Connector re-deferred a detail gap without the current run-owned lease");
       }
+      if (leasedGap && leasedGap.parentStream !== gapParentStream) {
+        throw new Error("Connector re-deferred a detail gap under a different parent stream");
+      }
       const gapInput = {
         connectorId,
         connectorInstanceId: normalizedConnectorInstanceId,
@@ -3825,7 +4268,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         detailGapStore as unknown as Parameters<typeof maybeTerminateGap>[0],
         storedGap.gap_id,
         errorInfo,
-        resolveTerminalGapPolicy(connectorId)
+        await resolveTerminalGapPolicy(connectorId)
       );
       return recordTerminalDetailGap(outcome, msg, gapStream, gapReason, gapParentStream, errorInfo);
     }
@@ -3970,6 +4413,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
 
     async function handleRecordMessage(msg: ConnectorMessage): Promise<void> {
+      assertValidRecordEnvelope(msg);
       const { key, data, emitted_at, op } = msg;
       // The scope-membership check below is what proves `stream` is a
       // declared stream name; a non-string simply misses the map.
@@ -4002,7 +4446,15 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // proved it is a non-empty, in-scope stream name.
       const skipStream = (msg.stream as string | undefined) || null;
       const skippedManifestStream = skipStream ? manifestByStream.get(skipStream) : null;
+      if (skipStream && msg.reason === "stream_collection_failed") {
+        streamCollectionFailedStreams.add(skipStream);
+      }
+      const continuation = msg.continuation ?? null;
+      if (continuation !== null) {
+        validateRuntimeContinuationFact(continuation);
+      }
       const gap = buildKnownGap({
+        continuation,
         diagnostics: msg.diagnostics ?? null,
         explicitSelection: Boolean(skipStream && explicitlyRequestedStreams?.has(skipStream)),
         kind: "skip_result",
@@ -4569,13 +5021,71 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
 
       const terminalStatus = effectiveDoneStatus(done.status);
       finalStatus = terminalStatus;
+      const isCertifiedStreamCollectionFailure =
+        done.status === "failed" &&
+        done.error?.code === "stream_collection_failed" &&
+        streamCollectionFailedStreams.size > 0;
 
-      if (terminalStatus === "succeeded" && persistState) {
-        assertDetailCoverageSatisfiedBeforeCommit();
-        await Object.entries(newState).reduce(
-          (previous, [stream, cursor]) => previous.then(() => commitState(stream, cursor)),
-          Promise.resolve()
-        );
+      if (persistState && (terminalStatus === "succeeded" || isCertifiedStreamCollectionFailure)) {
+        // Unproven coverage withholds only its own state_stream's cursor; every
+        // other stream still commits, and the run stays successful with the
+        // shortfall reported as a known gap.
+        const coverageShortfallStateStreams = await recordDetailCoverageShortfalls();
+        if (done.status === "succeeded") {
+          // Unproven coverage withholds only its own state_stream's cursor; every
+          // other stream still commits, and the run stays successful with the
+          // shortfall reported as a known gap.
+          await Object.entries(newState)
+            .filter(([stream]) => !coverageShortfallStateStreams.has(stream))
+            .reduce(
+              (previous, [stream, cursor]) => previous.then(() => commitState(stream, cursor)),
+              Promise.resolve()
+            );
+        } else {
+          // A failed DONE is normally a global failure: the run's state map is
+          // unproven and nothing commits (the else-branch this replaces for
+          // every other failed/cancelled/crashed/protocol-mismatched close).
+          // The one exception the runtime can verify structurally: the
+          // connector certified the failure as stream-scoped by (a) declaring
+          // DONE.error.code === "stream_collection_failed" AND (b) emitting at
+          // least one in-scope SKIP_RESULT{reason:"stream_collection_failed"}
+          // naming the specific stream(s) that failed. Only those named
+          // streams' cursors are withheld; every other staged stream reached
+          // its own terminal STATE with no reported failure and is provably
+          // safe to commit. A DONE claiming this code with zero matching
+          // SKIP_RESULT (streamCollectionFailedStreams.size === 0) is not
+          // structurally certified and falls through to the fail-closed
+          // default — never trust the code string alone.
+          //
+          // SKIP_RESULT.stream names a DATA stream, but `newState`/`commitState`
+          // are keyed by STATE_STREAM (the checkpoint's own key), which a
+          // manifest may declare as a distinct parent key shared by several
+          // data streams (`stream.state_stream`, see buildManifestStateStreamMap).
+          // Mapping the failed DATA stream straight through as if it were the
+          // STATE_STREAM key would filter nothing (no match in newState) and
+          // falsely commit the parent checkpoint a failed CHILD stream shares
+          // with untouched siblings. `resolveStateStreamsForDataStream` resolves
+          // from the manifest's static declaration ONLY (`state_stream`, or the
+          // full declared `parent_streams` set) — never from live DETAIL_COVERAGE,
+          // which can only select/report within the declared set and must never
+          // widen or override it (see "Precedence between manifest and run-time
+          // evidence"). Using the full declared set here, not just the parents
+          // that happened to report live this run, is deliberately conservative:
+          // a failed stream's live evidence is inherently incomplete, so every
+          // declared parent is a candidate to withhold.
+          const failedStateStreams = new Set(
+            Array.from(streamCollectionFailedStreams).flatMap((stream) => [...resolveStateStreamsForDataStream(stream)])
+          );
+          await Object.entries(newState)
+            .filter(
+              ([stateStream]) =>
+                !(failedStateStreams.has(stateStream) || coverageShortfallStateStreams.has(stateStream))
+            )
+            .reduce(
+              (previous, [stateStream, cursor]) => previous.then(() => commitState(stateStream, cursor)),
+              Promise.resolve()
+            );
+        }
       }
       const assistanceStatus = terminalStatus === "succeeded" ? "resolved" : "cancelled";
       const assistanceReason =
@@ -4779,6 +5289,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       if (doneMessage) {
         err.reported_records_emitted = doneMessage.records_emitted;
       }
+      const runtimeFailureMessage = runtimeAuthoredFailureMessage(err, doneMessage?.error);
 
       if (!terminalEventRecorded) {
         try {
@@ -4789,6 +5300,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
             data: buildRunTerminalData({
               connectorError: doneMessage?.error || null,
               exitCode: code,
+              failureMessage: runtimeFailureMessage,
+              failureOrigin: runtimeFailureMessage ? "runtime" : null,
               ingestFailure: err.ingest_failure || null,
               reason: failureReason,
               recordsEmitted: doneMessage ? doneMessage.records_emitted : totalEmitted,
@@ -4818,41 +5331,46 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       await rejectAfterLeaseAccounting(err);
     }
 
-    proc.on("close", async (code) => {
-      clearTerminateTimer();
-      const stderrTailRaw = stderrTail.finalize();
-      if (stderrTailRaw.text) {
-        onProgress({ text: redactStderrTail(stderrTailRaw.text).text, type: "stderr" });
-      }
-      // Connector stderr is untrusted; redact recognized secret markers before
-      // retaining the bounded diagnostic for owner/control-plane evidence.
-      const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw);
-
-      try {
-        await waitForQueueDrain();
-        if (!terminalEventRecorded) {
-          if (runTimedOut) {
-            await recordRunTimedOutTerminal(code);
-          } else if (doneMessage) {
-            if (await handleDoneClose(code)) {
-              return;
-            }
-          } else if (ownerCancelRequested) {
-            await handleOwnerCancellationClose(code);
-          } else {
-            await handleConnectorExitClose(code, stderrTailDiagnostic);
-          }
-          terminalEventRecorded = true;
+    childTerminalEvent
+      .then(async (terminalEvent) => {
+        if (terminalEvent.kind === "error") {
+          await rejectAfterLeaseAccounting(terminalEvent.error);
+          return;
         }
-        await resolveClosedRun(code, stderrTailDiagnostic);
-      } catch (caught) {
-        await handleCloseFailure(code, caught);
-      }
-    });
+        const { code } = terminalEvent;
+        clearTerminateTimer();
+        const stderrTailRaw = stderrTail.finalize();
+        // Connector stderr is untrusted; redact recognized secret markers
+        // before it reaches progress OR the retained diagnostic — progress is
+        // not a lower-trust sink than the retained evidence, so it gets the
+        // same treatment.
+        if (stderrTailRaw.text) {
+          onProgress({ text: redactStderrTail(stderrTailRaw.text).text, type: "stderr" });
+        }
+        const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw);
 
-    proc.on("error", async (err) => {
-      await rejectAfterLeaseAccounting(err);
-    });
+        try {
+          await waitForQueueDrain();
+          if (!terminalEventRecorded) {
+            if (runTimedOut) {
+              await recordRunTimedOutTerminal(code);
+            } else if (ownerCancelRequested) {
+              await handleOwnerCancellationClose(code);
+            } else if (doneMessage) {
+              if (await handleDoneClose(code)) {
+                return;
+              }
+            } else {
+              await handleConnectorExitClose(code, stderrTailDiagnostic);
+            }
+            terminalEventRecorded = true;
+          }
+          await resolveClosedRun(code, stderrTailDiagnostic);
+        } catch (caught) {
+          await handleCloseFailure(code, caught);
+        }
+      })
+      .catch((error: unknown) => reject(error));
   });
 }
 

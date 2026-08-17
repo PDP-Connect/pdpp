@@ -11,6 +11,7 @@ import type {
   RefRequiredAction,
 } from "./ref-client.ts";
 import {
+  deriveRenderedSourceStatus,
   hasPrimaryOwnerLocalDeviceRemediation,
   isSetupInProgressConnector,
   primaryOwnerActionRemediation,
@@ -20,6 +21,7 @@ import {
   SOURCE_WORK_GROUP_COPY,
   sourceAttentionHeadline,
   sourceWorkFromConnectors,
+  TERMINAL_SETUP_DISPOSITION_COPY,
   verdictRequiresOwnerNow,
 } from "./source-actionability.ts";
 
@@ -87,6 +89,7 @@ function connector(overrides: Partial<RefConnectorSummary> = {}): RefConnectorSu
     next_action: null,
     rendered_verdict: verdict(),
     schedule: null,
+    source_work: "needs_owner",
     streams: ["messages"],
     total_records: 0,
     ...overrides,
@@ -208,6 +211,7 @@ test("source actionability does not convert maintainer-primary work into owner w
   const actionability = projectSourceActionability(
     connector({
       connection_health: health({ state: "degraded" }),
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "attention",
         forward_statement: "Connector code needs a fix before this can collect again.",
@@ -243,6 +247,7 @@ test("source actionability routes a Needs refresh pill (no wired owner action) t
   // copy is a lie for a paused-schedule connection the owner can resume.
   const actionability = projectSourceActionability(
     connector({
+      source_work: "review",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "This connection is paused.",
@@ -253,7 +258,7 @@ test("source actionability routes a Needs refresh pill (no wired owner action) t
   );
 
   assert.equal(actionability.work?.group, "review");
-  assert.equal(actionability.work?.statusLabel, "needs a refresh");
+  assert.equal(actionability.work?.statusLabel, "needs review");
 });
 
 test("source actionability routes a Syncing pill (active run over stale/owner-refresh-due evidence) to working, not systemIssue", () => {
@@ -268,6 +273,7 @@ test("source actionability routes a Syncing pill (active run over stale/owner-re
         axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
         badges: { stale: true, syncing: true },
       }),
+      source_work: "working",
       rendered_verdict: verdict({
         channel: "calm",
         forward_statement: "Refreshing now.",
@@ -281,12 +287,29 @@ test("source actionability routes a Syncing pill (active run over stale/owner-re
   assert.equal(actionability.work?.statusLabel, "is working");
 });
 
+test("source status names an active run instead of showing an unknown freshness verdict", () => {
+  const flag = deriveRenderedSourceStatus(
+    verdict({
+      annotations: [{ kind: "freshness", text: "Freshness has not been measured yet." }],
+      pill: { label: "Checking", tone: "grey" },
+    }),
+    false,
+    false,
+    null,
+    true
+  );
+  assert.equal(flag.kind, "pending");
+  assert.equal(flag.freshnessNote, null);
+  assert.equal(flag.label, "Syncing");
+});
+
 test("source actionability keeps a Degraded pill (no wired owner action) in systemIssue", () => {
   // Contrast case: a real Degraded verdict without an owner-satisfiable action
   // (e.g. maintainer-only code_fix) correctly stays in systemIssue with "is
   // degraded" copy — only the Needs refresh label reroutes.
   const actionability = projectSourceActionability(
     connector({
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Connector code needs a fix before this can collect again.",
@@ -305,12 +328,13 @@ test("source actionability keeps a Degraded pill (no wired owner action) in syst
   );
 
   assert.equal(actionability.work?.group, "systemIssue");
-  assert.equal(actionability.work?.statusLabel, "is degraded");
+  assert.equal(actionability.work?.statusLabel, "needs attention");
 });
 
 test("source actionability does not infer owner repair from reconnect copy without an owner-satisfiable action", () => {
   const actionability = projectSourceActionability(
     connector({
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "attention",
         forward_statement: "Reconnect this account and collection resumes.",
@@ -330,6 +354,7 @@ test("source actionability treats provider-specific auth prose as inert without 
     connector({
       connector_id: "chatgpt",
       display_name: "ChatGPT",
+      source_work: "none",
       rendered_verdict: verdict({
         channel: "calm",
         forward_statement: "Password reset, browser login, OTP, and push approval text here are diagnostics only.",
@@ -399,13 +424,13 @@ test("source actionability resolves per-stream owner action availability from ac
 // ─── setup_in_progress (draft connection) projection ───────────────────────
 
 test("isSetupInProgressConnector reads the server owner_state.resolver, not raw status, when both are present", () => {
-  // owner_state is the closed source of truth (owner-state.ts); a reference
-  // build that sends a stale/absent owner_state falls back to raw status.
+  // owner_state is the closed source of truth (owner-state.ts). A missing
+  // owner_state fails closed; raw lifecycle status is not a client classifier.
   assert.equal(isSetupInProgressConnector(draftConnector()), true);
   assert.equal(
     isSetupInProgressConnector(draftConnector({ owner_state: null, status: "draft" })),
-    true,
-    "falls back to raw status when owner_state is absent (older reference build)"
+    false,
+    "missing server owner_state must not be reconstructed from raw status"
   );
   assert.equal(
     isSetupInProgressConnector(
@@ -437,6 +462,25 @@ test("source actionability projects a draft connection as needs-you setup_in_pro
   assert.equal(actionability.work?.statusLabel, "needs you");
 });
 
+test("terminal setup dispositions replace generic draft copy while staying inactive setup work", () => {
+  for (const disposition of ["verified_empty", "unverified_zero", "unverified_missing_counts"] as const) {
+    const copy = TERMINAL_SETUP_DISPOSITION_COPY[disposition];
+    const actionability = projectSourceActionability(draftConnector({ terminal_setup_disposition: disposition }));
+
+    assert.equal(isSetupInProgressConnector(draftConnector({ terminal_setup_disposition: disposition })), true);
+    assert.equal(actionability.renderedStatus.label, copy.statusLabel);
+    assert.equal(actionability.renderedStatus.kind, "degraded");
+    assert.equal(actionability.nextAction?.label, copy.actionLabel);
+    assert.equal(actionability.primaryVerdictAction?.cta, copy.actionLabel);
+    assert.equal(actionability.primaryVerdictAction?.terminal, true);
+    assert.equal(actionability.ownerActionCue?.label, copy.actionLabel);
+    assert.equal(actionability.work?.group, "needsOwner");
+    assert.equal(actionability.work?.actionLabel, copy.actionLabel);
+    assert.equal(actionability.work?.statusLabel, copy.statusLabel);
+    assert.equal(actionability.work?.what, copy.what);
+  }
+});
+
 test("source actionability: revoked outranks draft — a revoked connection never reads as setup_in_progress", () => {
   const actionability = projectSourceActionability(
     draftConnector({ revoked_at: "2026-07-10T00:00:00Z", status: "revoked" })
@@ -461,6 +505,7 @@ test("sourceWorkFromConnectors puts a draft in needsOwner and counts it in the n
     draftConnector(),
     connector({
       connection_id: "cin_healthy",
+      source_work: "none",
       rendered_verdict: verdict({ channel: "calm", pill: { label: "Healthy", tone: "green" }, required_actions: [] }),
     }),
   ]);
@@ -492,6 +537,7 @@ test("source actionability headline counts only needs-owner work and exposes sta
     connector({
       connection_id: "cin_review",
       display_name: "Review source",
+      source_work: "review",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Run a refresh to bring this up to date.",
@@ -509,6 +555,7 @@ test("source actionability headline counts only needs-owner work and exposes sta
     connector({
       connection_id: "cin_system",
       display_name: "System source",
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Connector code needs a fix before this can collect again.",
@@ -527,6 +574,7 @@ test("source actionability headline counts only needs-owner work and exposes sta
     connector({
       connection_id: "cin_not_measured",
       display_name: "Not measured source",
+      source_work: "not_measured",
       rendered_verdict: verdict({
         channel: "calm",
         forward_statement: "Freshness has not been measured yet.",
@@ -537,6 +585,7 @@ test("source actionability headline counts only needs-owner work and exposes sta
     connector({
       connection_id: "cin_working",
       display_name: "Working source",
+      source_work: "working",
       rendered_verdict: verdict({
         channel: "calm",
         forward_statement: "Measuring coverage now.",
@@ -549,6 +598,7 @@ test("source actionability headline counts only needs-owner work and exposes sta
   assert.equal(groups.needsOwner.length, 2);
   assert.equal(groups.review.length, 1);
   assert.equal(groups.systemIssues.length, 1);
+  assert.equal(groups.unavailable.length, 0);
   assert.equal(groups.notMeasured.length, 1);
   assert.equal(groups.working.length, 1);
   assert.equal(sourceAttentionHeadline(groups).needsYou, 2);
@@ -569,11 +619,123 @@ test("source actionability headline counts only needs-owner work and exposes sta
       label: "System or connector issue",
       note: "PDPP needs to fix or retry this; no account action is needed from you.",
     },
+    unavailable: {
+      label: "Status unavailable",
+      note: "This source is still listed, but its server-owned work status could not be read.",
+    },
     working: {
       label: "PDPP is working",
       note: "Collection, recovery, or a bounded check is active.",
     },
   });
+});
+
+test("Sources grouping follows server source_work for degraded wait, passive cooling, and owner attention", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({
+      connection_id: "cin_failed_backoff",
+      source_work: "system_issue",
+      connection_health: health({ state: "degraded" }),
+      owner_state: {
+        evidence_as_of: "2026-08-12T12:00:00Z",
+        owner_of_state: "system",
+        posture: "frozen-since-last-run",
+        resolver: "system_degraded",
+      },
+      rendered_verdict: verdict({
+        channel: "calm",
+        required_actions: [
+          action({
+            audience: "none",
+            cta: "Collecting — no action needed",
+            kind: "wait",
+            satisfied_when: { kind: "none" },
+          }),
+        ],
+      }),
+    }),
+    connector({
+      connection_id: "cin_passive_cooling",
+      source_work: "none",
+      connection_health: health({ state: "cooling_off", next_attempt_at: "2026-08-12T12:30:00Z" }),
+      owner_state: {
+        evidence_as_of: "2026-08-12T11:55:00Z",
+        owner_of_state: "system",
+        posture: "observed",
+        resolver: "healthy",
+      },
+      rendered_verdict: verdict({
+        channel: "calm",
+        pill: { label: "Degraded", tone: "amber" },
+        required_actions: [],
+      }),
+    }),
+    connector({
+      connection_id: "cin_owner_attention",
+      source_work: "needs_owner",
+      owner_state: {
+        evidence_as_of: "2026-08-12T12:00:00Z",
+        owner_of_state: "owner",
+        posture: "frozen-since-last-run",
+        resolver: "needs_owner",
+      },
+    }),
+  ]);
+
+  assert.deepEqual(
+    groups.systemIssues.map((item) => item.routeId),
+    ["cin_failed_backoff"]
+  );
+  assert.deepEqual(
+    groups.needsOwner.map((item) => item.routeId),
+    ["cin_owner_attention"]
+  );
+  assert.equal(groups.review.length, 0);
+  assert.equal(groups.working.length, 0);
+  assert.equal(groups.notMeasured.length, 0);
+  assert.equal(groups.unavailable.length, 0);
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 1);
+});
+
+test("source actionability fails closed for absent, malformed, and collision-key source_work values", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({ connection_id: "cin_absent", display_name: "Absent source", source_work: undefined }),
+    connector({
+      connection_id: "cin_malformed",
+      display_name: "Malformed source",
+      source_work: "bogus" as never,
+    }),
+    connector({ connection_id: "cin_unavailable", display_name: "Unavailable source", source_work: null as never }),
+    ...(["constructor", "toString", "__proto__"] as const).map((source_work, index) =>
+      connector({
+        connection_id: `cin_collision_${index}`,
+        display_name: `${source_work} source`,
+        source_work: source_work as never,
+      })
+    ),
+    connector({ connection_id: "cin_none", display_name: "Calm source", source_work: "none" }),
+    connector({ connection_id: "cin_working", display_name: "Working source", source_work: "working" }),
+    connector({ connection_id: "cin_review", display_name: "Review source", source_work: "review" }),
+  ]);
+
+  assert.deepEqual(
+    groups.unavailable.map((item) => [item.connectorKey, item.routeId]),
+    [
+      ["test", "cin_absent"],
+      ["test", "cin_malformed"],
+      ["test", "cin_unavailable"],
+      ["test", "cin_collision_0"],
+      ["test", "cin_collision_1"],
+      ["test", "cin_collision_2"],
+    ]
+  );
+  assert.equal(groups.working.length, 1);
+  assert.equal(groups.review.length, 1);
+  assert.equal(groups.needsOwner.length, 0);
+  assert.equal(groups.systemIssues.length, 0);
+  assert.equal(groups.notMeasured.length, 0);
+  assert.equal(groups.unavailable[0]?.statusLabel, "is unavailable");
+  assert.match(groups.unavailable[0]?.what, SOURCE_DETAILS_RE);
 });
 
 test("source actionability groups a Needs refresh connection under review, never systemIssue or the needs-you headline", () => {
@@ -585,6 +747,7 @@ test("source actionability groups a Needs refresh connection under review, never
     connector({
       connection_id: "cin_needs_refresh",
       display_name: "Paused source",
+      source_work: "review",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "This connection is paused.",
@@ -597,13 +760,14 @@ test("source actionability groups a Needs refresh connection under review, never
   assert.equal(groups.review.length, 1);
   assert.equal(groups.systemIssues.length, 0);
   assert.equal(groups.needsOwner.length, 0);
-  assert.equal(groups.review[0]?.statusLabel, "needs a refresh");
+  assert.equal(groups.review[0]?.statusLabel, "needs review");
   assert.equal(sourceAttentionHeadline(groups).needsYou, 0);
 });
 
 // ─── Recovery-state grouping (connector-neutral recovery governor UI tranche) ──
 
 const RECOVERY_CHECKING_RE = /checking/i;
+const SOURCE_DETAILS_RE = /Open source details/;
 const RECOVERY_SYNCING_RE = /syncing details/i;
 const RECOVERY_CATCHING_UP_RE = /catching up/i;
 
@@ -657,7 +821,8 @@ test("recovery grouping: an inactive queued recovery row is passive progress, ne
         detail_gap_backlog: recoveryBacklog(),
         state: "degraded",
       }),
-      rendered_verdict: deferredRecoveryVerdict(),
+      source_work: "working",
+      rendered_verdict: deferredRecoveryVerdict({ forward_statement: "Catching up on the remaining data." }),
     }),
   ]);
 
@@ -682,6 +847,7 @@ test("passive wait is status, not the primary source action", () => {
         detail_gap_backlog: recoveryBacklog(),
         state: "degraded",
       }),
+      source_work: "working",
       rendered_verdict: passive,
     })
   );
@@ -698,7 +864,8 @@ test("recovery grouping: active recovery names the work like syncing order detai
         detail_gap_backlog: recoveryBacklog(),
         state: "healthy",
       }),
-      rendered_verdict: deferredRecoveryVerdict(),
+      source_work: "working",
+      rendered_verdict: deferredRecoveryVerdict({ forward_statement: "Syncing details now." }),
     }),
   ]);
 
@@ -720,6 +887,7 @@ test("recovery grouping: an unsafe cooldown retry shows a wait row and no owner 
       next_attempt_at: "2026-07-06T15:40:00Z",
       state: "cooling_off",
     }),
+    source_work: "working",
     rendered_verdict: deferredRecoveryVerdict(),
   });
   const groups = sourceWorkFromConnectors([summary]);
@@ -743,6 +911,7 @@ test("recovery grouping: a connector-defect verdict with recoverable gaps stays 
         detail_gap_backlog: recoveryBacklog(),
         state: "degraded",
       }),
+      source_work: "system_issue",
       rendered_verdict: deferredRecoveryVerdict({
         channel: "advisory",
         forward_statement: "This connector needs a code fix before it can collect again.",
@@ -777,8 +946,10 @@ test("recovery grouping: an inactive backlog routes to NAMED recovery before the
       detail_gap_backlog: recoveryBacklog(),
       state: "degraded",
     }),
+    source_work: "working",
     rendered_verdict: deferredRecoveryVerdict({
       // An adversarial "Checking" pill on an inactive backlog must NOT win.
+      forward_statement: "Catching up on the remaining data.",
       pill: { label: "Checking", tone: "grey" },
     }),
   });

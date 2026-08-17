@@ -44,6 +44,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/_ref/device-exporters/source-instances` | `refListDeviceExporterSourceInstances` | List local device exporter source instances without promoting source-instance identity to the public PDPP contract. |
 | **GET** | `/_ref/device-exporters/diagnostics` | `refListDeviceExporterDiagnostics` | List owner/operator diagnostics for local device exporters, including heartbeat and ingest freshness. |
 | **POST** | `/_ref/device-exporters/{deviceId}/revoke` | `refRevokeDeviceExporter` | Revoke a local device exporter credential and stop future heartbeats or ingest from that device. |
+| **POST** | `/_ref/device-exporters/{deviceId}/self-revoke` | `refSelfRevokeDeviceExporter` | Revoke a local device exporter's own credential using its own device bearer token. A device credential may only revoke itself, never another device; the path deviceId must match the authenticated credential's device. Used by local-collector `logout` to close the server-side lane before deleting local credentials. |
 | **POST** | `/_ref/device-exporters/{deviceId}/heartbeat` | `refHeartbeatDeviceExporter` | Accept a heartbeat from a device-scoped local exporter credential. |
 | **POST** | `/_ref/device-exporters/{deviceId}/ingest-batches` | `refIngestDeviceExporterBatch` | Accept an idempotent source-instance-aware ingest batch from a local device exporter. |
 | **GET** | `/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state` | `refGetDeviceExporterSourceInstanceState` | Read device-scoped local collector state for a source instance. Owner-token and client-token routes do not accept device credentials and vice versa. |
@@ -772,6 +773,25 @@ List owner/operator diagnostics for local device exporters, including heartbeat 
 `POST /_ref/device-exporters/{deviceId}/revoke`
 
 Revoke a local device exporter credential and stop future heartbeats or ingest from that device.
+
+### Path parameters
+
+- `deviceId` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `401` — Authentication required
+- `403` — Permission denied
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refSelfRevokeDeviceExporter
+
+`POST /_ref/device-exporters/{deviceId}/self-revoke`
+
+Revoke a local device exporter's own credential using its own device bearer token. A device credential may only revoke itself, never another device; the path deviceId must match the authenticated credential's device. Used by local-collector `logout` to close the server-side lane before deleting local credentials.
 
 ### Path parameters
 

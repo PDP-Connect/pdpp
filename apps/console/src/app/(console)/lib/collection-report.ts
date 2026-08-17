@@ -97,6 +97,24 @@ function proofLabelForStrategy(strategy: RefCollectionReportEntry["coverage_stra
   }
 }
 
+/** Owner-facing description of how this stream's boundary was proven, for the counts tooltip. */
+function proofExplanationForStrategy(strategy: RefCollectionReportEntry["coverage_strategy"]): string {
+  switch (strategy) {
+    case "checkpoint_window":
+      return "This stream tracks a saved checkpoint to know how far it has gotten.";
+    case "full_inventory":
+      return "This stream lists everything available, then confirms nothing was missed.";
+    case "parent_detail_accounting":
+      return "This stream's detail count is checked against its parent records.";
+    case "snapshot_import_receipt":
+      return "This stream came from an imported snapshot file.";
+    case "singleton_presence":
+      return "This stream just confirms the item is present.";
+    default:
+      return "This stream's coverage was confirmed by the connector.";
+  }
+}
+
 function checkpointProvesBoundary(checkpoint: string | null | undefined): boolean {
   return checkpoint === "committed" || checkpoint === "disabled";
 }
@@ -169,11 +187,12 @@ function buildCountsLine(entry: RefCollectionReportEntry): { label: string | nul
       typeof entry.considered === "number" && Number.isFinite(entry.considered)
         ? entry.considered.toLocaleString()
         : null;
+    const proofExplanation = proofExplanationForStrategy(entry.coverage_strategy);
     return {
       label: collected > 0 ? `${proofLabel} · ${collectedText} collected` : proofLabel,
       title: considered
-        ? `This stream uses the ${entry.coverage_strategy} coverage strategy. The committed checkpoint proves the stream boundary; the run considered ${considered} records and collected ${collectedText}. Collected is the number emitted this run, not the coverage numerator for strategy-backed streams.`
-        : `This stream uses the ${entry.coverage_strategy} coverage strategy. The committed checkpoint proves the stream boundary; the run collected ${collectedText}. Collected is the number emitted this run, not the coverage numerator for strategy-backed streams.`,
+        ? `${proofExplanation} It considered ${considered} records and collected ${collectedText} this run. Collected is not the coverage numerator — this stream is proven complete a different way.`
+        : `${proofExplanation} It collected ${collectedText} records this run. Collected is not the coverage numerator — this stream is proven complete a different way.`,
     };
   }
   if (typeof entry.considered === "number" && Number.isFinite(entry.considered)) {

@@ -46,16 +46,22 @@ export function CopyButton({ value, ariaLabel, size = "sm", className }: CopyBut
 
   const dim = size === "sm" ? "h-5 w-5" : "h-6 w-6";
   const icon = size === "sm" ? "h-3 w-3" : "h-3.5 w-3.5";
+  // Visual box stays small (20px/24px, per the design system); the
+  // pseudo-element grows the actual hit area to >=44px in each dimension
+  // without changing visual weight.
+  const hitAreaExpansion = size === "sm" ? "before:inset-[-12px]" : "before:inset-[-10px]";
   const label = ariaLabel ?? `Copy ${value}`;
 
   return (
     <button
       aria-label={label}
       className={[
-        "inline-flex shrink-0 items-center justify-center rounded",
+        "relative inline-flex shrink-0 items-center justify-center rounded",
         dim,
         "text-muted-foreground/70 transition-colors hover:bg-muted/60 hover:text-foreground",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+        "before:absolute before:content-['']",
+        hitAreaExpansion,
         className ?? "",
       ].join(" ")}
       data-copied={copied ? "true" : undefined}

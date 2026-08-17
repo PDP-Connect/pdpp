@@ -25,8 +25,7 @@
       "rationale": "The owner signs in through an isolated WHOOP browser profile. A live owner run proved the full backfill and a second checkpointed run reused the saved session without prompting, so the owner can opt into background scheduling after authenticating the connection."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth",
+      "tier": "preview",
       "rationale": "Live owner testing proved all six streams and checkpointed session reuse; first connection still requires the owner to sign in through the isolated WHOOP browser profile."
     }
   },

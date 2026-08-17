@@ -57,7 +57,7 @@ import { listSpineEventsPage, type SpineEventRecord } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
-import { ingestRecord } from "../server/records.ts";
+import { deleteConnectionRecordRowsSqlite, ingestRecord } from "../server/records.ts";
 import {
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
@@ -70,6 +70,7 @@ const OWNER_SUBJECT_ID = "owner_local";
 const OTHER_SUBJECT_ID = "owner_other";
 const OWNER_CLIENT_ID = "cli_longview";
 const NOW = "2026-05-31T00:00:00.000Z";
+const POST_PURGE_FAILURE = /injected post-purge failure after 1 records/;
 
 function mustRow<T extends Record<string, unknown>>(value: T | undefined, description: string): T {
   assert.ok(value, description);
@@ -241,6 +242,7 @@ interface SeedInstanceOptions {
   sourceBinding?: Record<string, unknown>;
   sourceBindingKey: string;
   sourceKind?: string;
+  status?: string;
 }
 
 async function seedInstance({
@@ -251,6 +253,7 @@ async function seedInstance({
   sourceKind = "account",
   sourceBinding,
   ownerSubjectId = OWNER_SUBJECT_ID,
+  status = "active",
 }: SeedInstanceOptions): Promise<void> {
   const store = createSqliteConnectorInstanceStore();
   await store.upsert({
@@ -262,7 +265,7 @@ async function seedInstance({
     sourceBinding: sourceBinding ?? { account_hint: sourceBindingKey },
     sourceBindingKey,
     sourceKind,
-    status: "active",
+    status,
     updatedAt: NOW,
   });
 }
@@ -335,6 +338,110 @@ function seedBlob({ connectorId, connectorInstanceId, stream, recordKey, blobId 
        VALUES(?, ?, ?, ?, ?, '@record')`
     )
     .run(blobId, connectorId, connectorInstanceId, stream, recordKey);
+}
+
+// Gmail attachments are content-addressed. A duplicate Gmail connection can
+// bind the same blob_id even though the blob row records the first connection
+// that stored the bytes. This fixture keeps one shared blob plus one
+// target-only blob, with durable record and summary-evidence rows for both
+// connections, so deletion exercises the actual cross-connection FK edge.
+function seedSharedGmailFixture({
+  connectorId,
+  stream,
+  targetConnectionId,
+  siblingConnectionId,
+}: {
+  connectorId: string;
+  stream: string;
+  targetConnectionId: string;
+  siblingConnectionId: string;
+}): void {
+  const db = getDb();
+  assert.equal(db.pragma("foreign_keys", { simple: true }), 1, "disposable SQLite enforces foreign keys");
+  const messages = [
+    [targetConnectionId, "gmail_primary_message"],
+    [siblingConnectionId, "gmail_duplicate_message"],
+  ] as const;
+  for (const [connectorInstanceId, recordKey] of messages) {
+    db.prepare(
+      `INSERT INTO records(
+         connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version
+       ) VALUES(?, ?, ?, ?, ?, ?, 1)`
+    ).run(
+      connectorId,
+      connectorInstanceId,
+      stream,
+      recordKey,
+      JSON.stringify({
+        id: recordKey,
+        labelIds: ["INBOX"],
+        payload: { headers: [{ name: "Subject", value: "Quarterly report" }] },
+        snippet: "Synthetic Gmail message for the connection-delete FK proof.",
+        threadId: "thread_duplicate_fixture",
+      }),
+      NOW
+    );
+    db.prepare(
+      `INSERT INTO record_changes(
+         connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at
+       ) VALUES(?, ?, ?, ?, 1, ?, ?)`
+    ).run(connectorId, connectorInstanceId, stream, recordKey, JSON.stringify({ id: recordKey }), NOW);
+    db.prepare(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES(?, ?, ?, 1)`
+    ).run(connectorId, connectorInstanceId, stream);
+    db.prepare(
+      `INSERT INTO connector_summary_evidence(
+         connector_instance_id, connector_id, display_name, total_records, stream_count, stream_records_json
+       ) VALUES(?, ?, ?, 1, 1, ?)`
+    ).run(connectorInstanceId, connectorId, connectorInstanceId, JSON.stringify([{ record_count: 1, stream }]));
+  }
+
+  const sharedBytes = Buffer.from("From: automated@example.test\\r\\nSubject: Quarterly report\\r\\n", "utf8");
+  db.prepare(
+    `INSERT INTO blobs(
+       blob_id, connector_id, connector_instance_id, stream, record_key,
+       mime_type, size_bytes, sha256, data
+     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    "blob_gmail_shared",
+    connectorId,
+    targetConnectionId,
+    stream,
+    "gmail_primary_message",
+    "message/rfc822",
+    sharedBytes.byteLength,
+    "sha256_gmail_shared",
+    sharedBytes
+  );
+  const targetOnlyBytes = Buffer.from("target-only Gmail bytes", "utf8");
+  db.prepare(
+    `INSERT INTO blobs(
+       blob_id, connector_id, connector_instance_id, stream, record_key,
+       mime_type, size_bytes, sha256, data
+     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    "blob_gmail_target_only",
+    connectorId,
+    targetConnectionId,
+    stream,
+    "gmail_primary_message",
+    "application/octet-stream",
+    targetOnlyBytes.byteLength,
+    "sha256_gmail_target_only",
+    targetOnlyBytes
+  );
+  for (const [connectorInstanceId, recordKey, blobId] of [
+    [targetConnectionId, "gmail_primary_message", "blob_gmail_shared"],
+    [siblingConnectionId, "gmail_duplicate_message", "blob_gmail_shared"],
+    [targetConnectionId, "gmail_primary_message", "blob_gmail_target_only"],
+  ] as const) {
+    db.prepare(
+      `INSERT INTO blob_bindings(
+         blob_id, connector_id, connector_instance_id, stream, record_key, json_path
+       ) VALUES(?, ?, ?, ?, ?, '@record')`
+    ).run(blobId, connectorId, connectorInstanceId, stream, recordKey);
+  }
 }
 
 interface SeedAttentionOptions {
@@ -557,6 +664,151 @@ test("owner-agent delete erases a connection completely: records, history, blobs
     assert.equal(auditDataValue.selector, "connection_id");
     assert.equal(auditDataValue.deletion_summary?.deleted_record_count, 2);
     assert.equal(auditDataValue.deletion_summary?.schedule_deleted, true);
+  });
+});
+
+test("owner-agent delete removes revoked Gmail data without deleting a shared blob or sibling duplicate", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = JSON.parse(
+      readFileSync(join(__dirname, "../../packages/polyfill-connectors/manifests/gmail.json"), "utf8")
+    ) as ReferenceManifest;
+    const registeredManifest = await registerConnector(asUrl, manifest);
+    const connectorKey = canonicalConnectorKey(registeredManifest.connector_id);
+    assert.ok(connectorKey, "expected a canonical Gmail connector key");
+    // biome-ignore lint/style/useDestructuring: index access documents the asserted ordered position
+    const firstStream = registeredManifest.streams[0];
+    assert.ok(firstStream, "expected the Gmail manifest to declare at least one stream");
+    const stream = firstStream.name;
+    const target = "cin_gmail_primary";
+    const sibling = "cin_gmail_duplicate";
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId: target,
+      displayName: "Gmail primary",
+      sourceBindingKey: "primary@example.test",
+      status: "revoked",
+    });
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId: sibling,
+      displayName: "Gmail duplicate",
+      sourceBindingKey: "duplicate@example.test",
+    });
+    seedSharedGmailFixture({
+      connectorId: connectorKey,
+      siblingConnectionId: sibling,
+      stream,
+      targetConnectionId: target,
+    });
+
+    const blobCount = (blobId: string): number =>
+      (getDb().prepare("SELECT COUNT(*) AS n FROM blobs WHERE blob_id = ?").get(blobId) as { n: number }).n;
+    assert.equal(countRows("blob_bindings", target), 2, "target has shared and target-only bindings before");
+    assert.equal(countRows("blob_bindings", sibling), 1, "sibling shares the content-addressed blob before");
+    assert.equal(blobCount("blob_gmail_shared"), 1, "shared Gmail blob exists before");
+    assert.equal(blobCount("blob_gmail_target_only"), 1, "target-only Gmail blob exists before");
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const del = await deleteConnection(rsUrl, ownerToken, `/v1/owner/connections/${target}`);
+    assert.equal(del.status, 200);
+    assert.equal(deleteBody(del).deleted_record_count, 1);
+
+    assert.equal(getInstance(target), null, "revoked target connection is deleted");
+    assert.equal(countRows("records", target), 0, "target Gmail records erased");
+    assert.equal(countRows("record_changes", target), 0, "target Gmail history erased");
+    assert.equal(countRows("version_counter", target), 0, "target Gmail version state erased");
+    assert.equal(countRows("blob_bindings", target), 0, "target Gmail blob bindings erased");
+    assert.equal(countRows("connector_summary_evidence", target), 0, "target summary evidence erased");
+    assert.equal(blobCount("blob_gmail_target_only"), 0, "unreferenced target blob erased");
+
+    assert.equal(getInstance(sibling)?.status, "active", "sibling connection remains active");
+    assert.equal(countRows("records", sibling), 1, "sibling Gmail record remains");
+    assert.equal(countRows("blob_bindings", sibling), 1, "sibling Gmail binding remains");
+    assert.equal(countRows("connector_summary_evidence", sibling), 1, "sibling summary evidence remains");
+    assert.equal(blobCount("blob_gmail_shared"), 1, "shared blob remains for sibling");
+  });
+});
+
+test("shared-blob connection deletion rolls back the full SQLite cascade after the record purge", async () => {
+  await withServer(async ({ asUrl }) => {
+    const manifest = JSON.parse(
+      readFileSync(join(__dirname, "../../packages/polyfill-connectors/manifests/gmail.json"), "utf8")
+    ) as ReferenceManifest;
+    const registeredManifest = await registerConnector(asUrl, manifest);
+    const connectorKey = canonicalConnectorKey(registeredManifest.connector_id);
+    assert.ok(connectorKey, "expected a canonical Gmail connector key");
+    // biome-ignore lint/style/useDestructuring: index access documents the asserted ordered position
+    const firstStream = registeredManifest.streams[0];
+    assert.ok(firstStream, "expected the Gmail manifest to declare at least one stream");
+    const target = "cin_gmail_rollback_target";
+    const sibling = "cin_gmail_rollback_sibling";
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId: target,
+      displayName: "Gmail rollback target",
+      sourceBindingKey: "rollback-target@example.test",
+      status: "revoked",
+    });
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId: sibling,
+      displayName: "Gmail rollback sibling",
+      sourceBindingKey: "rollback-sibling@example.test",
+    });
+    seedSharedGmailFixture({
+      connectorId: connectorKey,
+      siblingConnectionId: sibling,
+      stream: firstStream.name,
+      targetConnectionId: target,
+    });
+
+    const store = createSqliteConnectorInstanceStore();
+    await assert.rejects(
+      () =>
+        store.deleteConnection(target, {
+          now: NOW,
+          ownerSubjectId: OWNER_SUBJECT_ID,
+          purge: {
+            deleteRecordRejectionsPostgres: (): Promise<number> => {
+              throw new Error(
+                "unreachable: the SQLite connection-purge path never calls deleteRecordRejectionsPostgres"
+              );
+            },
+            deleteRecordRejectionsSqlite: () => 0,
+            deleteRecordRowsPostgres: (): Promise<number> => {
+              throw new Error("unreachable: the SQLite connection-purge path never calls deleteRecordRowsPostgres");
+            },
+            deleteRecordRowsSqlite: (id: string) => {
+              const deleted = deleteConnectionRecordRowsSqlite(id);
+              assert.equal(countRows("records", id), 0, "record purge ran before injected later failure");
+              throw new Error(`injected post-purge failure after ${deleted} records`);
+            },
+            enumerateStreams: async () => ({
+              connectorId: connectorKey,
+              connectorInstanceId: target,
+              streams: [firstStream.name],
+            }),
+            teardownProjection: () => Promise.resolve(),
+          },
+        }),
+      POST_PURGE_FAILURE
+    );
+
+    // The record purge and terminal row delete share one transaction. The
+    // injected failure therefore restores the target data, evidence, shared
+    // blob, and sibling rows instead of leaving a half-deleted connection.
+    assert.ok(getInstance(target), "target instance survives rollback");
+    assert.equal(countRows("records", target), 1, "target records restored");
+    assert.equal(countRows("record_changes", target), 1, "target history restored");
+    assert.equal(countRows("blob_bindings", target), 2, "target bindings restored");
+    assert.equal(countRows("connector_summary_evidence", target), 1, "target evidence restored");
+    assert.equal(countRows("records", sibling), 1, "sibling records remain after rollback");
+    assert.equal(countRows("blob_bindings", sibling), 1, "sibling binding remains after rollback");
+    assert.equal(
+      (getDb().prepare("SELECT COUNT(*) AS n FROM blobs").get() as { n: number }).n,
+      2,
+      "shared and target-only blobs both survive rollback"
+    );
   });
 });
 

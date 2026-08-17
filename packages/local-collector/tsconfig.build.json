@@ -24,6 +24,10 @@
     // asserts the two never drift. The runtime itself names no connector.
     "../polyfill-connectors/connectors/claude_code/**/*.ts",
     "../polyfill-connectors/connectors/codex/**/*.ts",
+    "../polyfill-connectors/connectors/imessage/**/*.ts",
+    "../polyfill-connectors/connectors/google_takeout/**/*.ts",
+    "../polyfill-connectors/connectors/apple_photos/**/*.ts",
+    "../polyfill-connectors/connectors/google_messages/**/*.ts",
     "../polyfill-connectors/src/collector-definition.ts",
     "../polyfill-connectors/src/collector-registry.ts",
     "../polyfill-connectors/src/auth.ts",
@@ -54,6 +58,11 @@
     "**/*.test.ts",
     "../polyfill-connectors/**/*.test.ts",
     "**/__fixtures__/**",
-    "../polyfill-connectors/fixtures/**"
+    "../polyfill-connectors/fixtures/**",
+    // Test-support fixture builder, not a connector runtime dependency — it
+    // imports better-sqlite3 (a native compiled module this published
+    // package must never bundle; see connectors/imessage/index.ts's module
+    // doc and validate-package.ts's forbidden-pattern list).
+    "../polyfill-connectors/connectors/imessage/fixtures.ts"
   ]
 }

@@ -110,3 +110,52 @@ test("redactStderrTail does not redact short innocuous tokens", () => {
   assert.equal(text, "Error code: 42, status: OK, retries: 3");
   assert.equal(redacted, false);
 });
+
+// Regression coverage for a rejected earlier fix attempt at this same UAT
+// bug (apple_contacts `connector_error_json` collapsing to
+// `{"message":"[REDACTED]"}`). That attempt exempted pure-lowercase-
+// underscore runs from the long-opaque-token rule on the theory that shape
+// can never be a secret — false: lowercase hex digests, lowercase base32
+// secrets, and underscore-joined passphrase-style secrets are all real,
+// observed secret shapes that are pure lowercase+underscore. The redaction
+// contract is shape-agnostic by design (see the module doc comment); it
+// must never special-case a charset as "safe." The actual fix routes
+// connector error *codes* through a separate typed, validated channel
+// (`ConnectorDoneError.code`, see connector-runtime.ts's
+// `TerminalErrorCode`/`terminalFailure`) that never touches this free-form
+// redaction path at all. These tests pin that free-form `message` text
+// stays fully subject to redaction, with no charset-based carve-out.
+test("redactStderrTail redacts pure-lowercase-underscore runs exactly like any other opaque token", () => {
+  const cases = [
+    // A lowercase hex digest (e.g. an MD5/SHA1 hex string) is pure
+    // lowercase+underscore-free but every char is [a-z0-9] -- the prior
+    // exemption's `^[a-z]+(?:_[a-z]+)*$` pattern did not match this, but a
+    // broader "looks like an identifier" heuristic could plausibly have
+    // been extended to. Confirm hex digests are unaffected either way.
+    "deadbeefcafebabe0123456789abcdef",
+    // Underscore-joined lowercase secret shapes: a passphrase-style API
+    // key, or a lowercase base32 secret -- both pure lowercase+underscore,
+    // both real secret shapes seen in the wild.
+    "correct_horse_battery_staple_secret",
+    "totp_seed_abcdefghijklmnopqrstuvwxyz",
+  ];
+  for (const value of cases) {
+    const { text, redacted } = redactStderrTail(`context: ${value}`);
+    assert.ok(!text.includes(value), `expected "${value}" to be redacted like any other opaque run, got "${text}"`);
+    assert.equal(redacted, true, `expected redacted=true for "${value}"`);
+  }
+});
+
+test("redactStderrTail redacts a connector's own long snake_case error identifier when it appears in free-form message text", () => {
+  // A connector error CODE never reaches redactStderrTail at all in the
+  // fixed pipeline (it rides ConnectorDoneError.code through a separate,
+  // validated, non-redacted channel). If an error identifier like this one
+  // shows up inside free-form MESSAGE text instead, redaction must still
+  // apply uniformly -- there is no safe way to distinguish "connector
+  // wrote this on purpose" from "this happens to look like an identifier"
+  // from the string alone.
+  const identifier = "carddav_discovery_propfind_failed";
+  const { text, redacted } = redactStderrTail(`${identifier}: status=401`);
+  assert.ok(!text.includes(identifier), `expected "${identifier}" to be redacted in free-form text, got "${text}"`);
+  assert.equal(redacted, true);
+});

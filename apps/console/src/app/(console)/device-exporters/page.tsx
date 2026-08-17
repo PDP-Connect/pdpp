@@ -8,7 +8,7 @@ import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { Callout, DataList, MetaPill, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
 import { isBrowserBoundConnector, isSupportedLocalCollectorConnector } from "../lib/connection-modality.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
@@ -85,7 +85,7 @@ export default async function DeviceExportersPage({
         <PageHeader
           breadcrumbs={addConnectionBreadcrumbs}
           count={`${devices.length}`}
-          description="Reference-experimental diagnostics for local collector agents. The device or host supervisor decides when local collectors run; the server owns enrollment, ingestion, state, health, and advisory freshness/run signals."
+          description="Connect a supported local collector to send data from the machine where it is stored. The collector controls when it runs; this server manages enrollment, data receipt, and connection health."
           meta={
             <>
               <MetaPill label="surface" tone="protocol" value="reference-experimental" />
@@ -102,12 +102,12 @@ export default async function DeviceExportersPage({
         </Section>
 
         <Section
-          description="Server-side registration, ingestion, health, diagnostics, and per-connection source identity. Run cadence remains local-supervisor owned."
+          description="This server shows enrolled devices, received data, and connection health. The device controls when collection runs."
           title="Enrolled devices"
         >
           {devices.length === 0 ? (
             <EmptyState
-              hint="Create an enrollment code, run a local collector from a host supervisor or shell, then refresh this page after its first heartbeat."
+              hint="Create an enrollment code and run the local collector on the device that has the data. This list updates after the device sends its first heartbeat."
               title="No local device exporters enrolled"
             />
           ) : (
@@ -140,15 +140,14 @@ function BrowserBoundEnrollmentNotice({ connectorId }: { connectorId: string }) 
   return (
     <Callout
       className="mb-4"
-      description={`${formatConnectorKeyForDisplay(connectorId)} needs a browser login flow. The owner-usable version belongs in the dashboard and is not packaged in this build yet.`}
+      description={`${formatConnectorKeyForDisplay(connectorId)} needs a browser sign-in. Browser setup is not available in this dashboard yet.`}
       surface="human"
-      title="Dashboard browser setup is pending"
+      title="Browser setup not available yet"
     >
       <p className="pdpp-caption text-muted-foreground">
-        Existing collected data remains usable. Adding another account is waiting on the packaged browser setup flow.
-        See the full add-source list on the{" "}
-        <Link className="underline underline-offset-2 hover:text-foreground" href="/connect">
-          Connect
+        Existing data remains available. Adding another account is not available yet. See available setup paths on the{" "}
+        <Link className="underline underline-offset-2 hover:text-foreground" href="/sources/add">
+          Add source
         </Link>{" "}
         page.
       </p>

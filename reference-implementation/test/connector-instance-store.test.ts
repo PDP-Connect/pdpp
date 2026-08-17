@@ -1495,6 +1495,70 @@ test("SQLite startup migration (migrateLocalDeviceConnectorInstances) does not r
   }
 });
 
+test("SQLite startup migration preserves an owner-revoked local-device connection when its device row remains active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-owner-revoke-migration-restart-"));
+  const dbPath = join(dir, "pdpp.sqlite");
+  try {
+    initDb(dbPath);
+    await seedSqliteConnector("codex");
+    let store = createSqliteConnectorInstanceStore();
+    const original = store.upsert({
+      connectorId: "codex",
+      createdAt: NOW,
+      displayName: "Codex",
+      ownerSubjectId: "owner_revoke_restart",
+      sourceBinding: {
+        device_id: "dexp_revoke",
+        kind: "local_device",
+        local_binding_name: "default",
+        source_instance_id: "dsrc_revoke",
+      },
+      sourceBindingKey: makeConnectorInstanceSourceBindingKey({
+        kind: "local_device",
+        local_binding_name: "default",
+      }),
+      sourceKind: "local_device",
+      status: "active",
+      updatedAt: NOW,
+    });
+    assert.ok(original);
+    getDb()
+      .prepare(
+        `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+         VALUES('dexp_revoke','owner_revoke_restart','Codex laptop','active',?,?)`
+      )
+      .run(NOW, NOW);
+    getDb()
+      .prepare(
+        `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, created_at, updated_at)
+         VALUES('dsrc_revoke','dexp_revoke','codex',?,'default','local_device','Codex laptop','active',?,?)`
+      )
+      .run(original.connectorInstanceId, NOW, NOW);
+
+    const revoked = store.updateStatus(original.connectorInstanceId, {
+      revokedAt: LATER,
+      status: "revoked",
+      updatedAt: LATER,
+    });
+    assert.equal(revoked?.status, "revoked");
+
+    closeDb();
+    initDb(dbPath);
+    store = createSqliteConnectorInstanceStore();
+
+    const afterRestart = store.get(original.connectorInstanceId);
+    assert.equal(afterRestart?.status, "revoked");
+    assert.equal(afterRestart?.revokedAt, LATER);
+    const source = getDb()
+      .prepare("SELECT status, revoked_at FROM device_source_instances WHERE source_instance_id = 'dsrc_revoke'")
+      .get() as { revoked_at: string | null; status: string };
+    assert.deepEqual(source, { revoked_at: null, status: "active" }, "connection revoke remains zero-cascade");
+  } finally {
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("SQLite mutation proof: without the tombstone check, the resurrecting upsert would silently succeed (documents the pre-fix defect)", async () => {
   // This is the pre-fix reproduction, kept as a permanent regression test on
   // the OLD behavior being wrong — not just a happy-path assertion that the
@@ -1889,7 +1953,7 @@ test("Postgres ConnectorInstanceStore conforms when PDPP_TEST_POSTGRES_URL is se
   }
 });
 
-test("Postgres startup migration (migratePostgresLocalDeviceConnectorInstances) does not resurrect a deleted connection on restart (skipped: PDPP_TEST_POSTGRES_URL unset)", {
+test("Postgres startup migration does not resurrect deleted or revoked local-device connections (skipped: PDPP_TEST_POSTGRES_URL unset)", {
   skip: !process.env.PDPP_TEST_POSTGRES_URL,
 }, async () => {
   // Postgres counterpart of the SQLite startup-migration restart regression
@@ -1985,6 +2049,53 @@ test("Postgres startup migration (migratePostgresLocalDeviceConnectorInstances) 
       null,
       "the migration must not re-link the device_source_instances row to a resurrected/new connector_instances row"
     );
+
+    await cleanupDeviceRows();
+    const revokedCandidate = await store.upsert({
+      connectorId: "codex",
+      createdAt: NOW,
+      displayName: "Codex",
+      ownerSubjectId,
+      sourceBinding: {
+        device_id: deviceId,
+        kind: "local_device",
+        local_binding_name: "default",
+        source_instance_id: sourceInstanceId,
+      },
+      sourceBindingKey: bindingKey,
+      sourceKind: "local_device",
+      status: "active",
+      updatedAt: NOW,
+    });
+    assert.ok(revokedCandidate);
+    await postgresQuery(
+      `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+       VALUES($1, $2, 'Codex laptop', 'active', $3, $3)`,
+      [deviceId, ownerSubjectId, NOW]
+    );
+    await postgresQuery(
+      `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, created_at, updated_at)
+       VALUES($1, $2, 'codex', $3, 'default', 'local_device', 'Codex laptop', 'active', $4, $4)`,
+      [sourceInstanceId, deviceId, revokedCandidate.connectorInstanceId, NOW]
+    );
+    await store.updateStatus(revokedCandidate.connectorInstanceId, {
+      revokedAt: LATER,
+      status: "revoked",
+      updatedAt: LATER,
+    });
+
+    await initPostgresStorage({ backend: "postgres", databaseUrl: configuredPostgresUrl() });
+
+    const afterRevokedRestart = await store.get(revokedCandidate.connectorInstanceId);
+    assert.equal(afterRevokedRestart?.status, "revoked");
+    assert.equal(afterRevokedRestart?.revokedAt, LATER);
+    const activeDeviceSource = await postgresQuery(
+      "SELECT status, revoked_at FROM device_source_instances WHERE source_instance_id = $1",
+      [sourceInstanceId]
+    );
+    const activeDeviceSourceRow = mustRow(activeDeviceSource.rows[0], "device source remains after revoke");
+    assert.equal(activeDeviceSourceRow.status, "active");
+    assert.equal(activeDeviceSourceRow.revoked_at, null);
   } finally {
     await cleanupDeviceRows();
     await cleanConformanceFixtures();

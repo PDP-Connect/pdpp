@@ -47,6 +47,7 @@ interface EnsureChatGptSessionArgs {
     extra?: { message?: string }
   ) => Promise<void>;
   context: BrowserContext;
+  onCredentialSubmit?: () => void;
   page: Page;
   progress?: (message: string, extra?: { stream?: string }) => Promise<void>;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -821,13 +822,21 @@ async function submitPasswordAndHandleSecondFactor({
   capture,
   checkpoint,
   completeAssistance,
+  onCredentialSubmit,
   page,
   password,
   progress,
   sendInteraction,
 }: Pick<
   EnsureChatGptSessionArgs,
-  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+  | "assist"
+  | "capture"
+  | "checkpoint"
+  | "completeAssistance"
+  | "onCredentialSubmit"
+  | "page"
+  | "progress"
+  | "sendInteraction"
 > & {
   readonly password: string;
 }): Promise<boolean> {
@@ -842,6 +851,7 @@ async function submitPasswordAndHandleSecondFactor({
     .first()
     .click()
     .catch((): undefined => undefined);
+  onCredentialSubmit?.();
   await page.waitForTimeout(5000);
   await capture?.captureDom(page, "auth-after-password-submit");
 
@@ -917,13 +927,21 @@ async function driveLoginFormAndConfirm({
   capture,
   checkpoint,
   completeAssistance,
+  onCredentialSubmit,
   page,
   password,
   progress,
   sendInteraction,
 }: Pick<
   EnsureChatGptSessionArgs,
-  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+  | "assist"
+  | "capture"
+  | "checkpoint"
+  | "completeAssistance"
+  | "onCredentialSubmit"
+  | "page"
+  | "progress"
+  | "sendInteraction"
 > & {
   readonly password: string;
 }): Promise<boolean> {
@@ -933,6 +951,7 @@ async function driveLoginFormAndConfirm({
   if (
     await submitPasswordAndHandleSecondFactor({
       ...hooks,
+      ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
       page,
       password,
       sendInteraction,
@@ -989,13 +1008,21 @@ async function driveStoredCredentialAuthRepair({
   checkpoint,
   completeAssistance,
   email,
+  onCredentialSubmit,
   page,
   password,
   progress,
   sendInteraction,
 }: Pick<
   EnsureChatGptSessionArgs,
-  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+  | "assist"
+  | "capture"
+  | "checkpoint"
+  | "completeAssistance"
+  | "onCredentialSubmit"
+  | "page"
+  | "progress"
+  | "sendInteraction"
 > & {
   readonly email: string;
   readonly password: string;
@@ -1026,6 +1053,7 @@ async function driveStoredCredentialAuthRepair({
     ...(capture ? { capture } : {}),
     ...checkpointOption(checkpoint),
     ...(completeAssistance ? { completeAssistance } : {}),
+    ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
     page,
     password,
     ...(progress ? { progress } : {}),
@@ -1040,6 +1068,7 @@ export async function ensureChatGptSession({
   checkpoint,
   completeAssistance,
   context: _context,
+  onCredentialSubmit,
   page,
   progress,
   sendInteraction,
@@ -1081,6 +1110,7 @@ export async function ensureChatGptSession({
   return await driveStoredCredentialAuthRepair({
     ...hooks,
     email,
+    ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
     page,
     password,
     sendInteraction,

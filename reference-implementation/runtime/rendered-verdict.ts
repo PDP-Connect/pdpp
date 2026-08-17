@@ -41,6 +41,7 @@ import {
   type CoverageAxis,
   deriveForwardDisposition,
   type ForwardDisposition,
+  hasAffirmativePassiveRecoveryEvidence,
   isAssistedRefresh,
   isManualRefreshOnly,
   type OwnerActionSurface,
@@ -394,10 +395,10 @@ const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
 /**
  * Axes whose amber-or-worse tone always means real collection trouble, never a
  * routine nudge: `coverage` (a stream gap), `attention` (owner-attention open),
- * `outbox` (stalled uploads). `state` reaching `degraded`/`needs_attention`/
- * `cooling_off` is likewise always real trouble (`classifyDegradedEvidence`,
- * `connection-health.ts`, only fires on a genuine degrading condition) — the
- * ONLY state that can be amber-but-not-broken is `idle` with a prior success.
+ * `outbox` (stalled uploads). `state` reaching `degraded`/`needs_attention` is
+ * likewise always real trouble. The amber-but-not-broken states are `idle`
+ * with a prior success and `cooling_off`, whose health authority requires
+ * affirmative passive-recovery evidence.
  * `disposition` similarly is always real trouble EXCEPT `owner_refresh_due`
  * (`resumable`/`awaiting_owner` only ever arise from an outstanding coverage
  * gap — `deriveForwardDisposition`, `connection-health.ts` — so they always
@@ -405,14 +406,15 @@ const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
  * here rather than relying on that co-occurrence).
  */
 const DEGRADING_AXES = new Set(["coverage", "attention", "outbox"]);
+const NON_DEGRADING_AMBER_STATES = new Set(["idle", "cooling_off"]);
 
 /**
  * Decide the amber label. "Needs refresh" only when EVERY reason the tone
  * reached amber-or-worse is one of the not-actually-broken shapes: `state:
- * idle` (with a prior success), `freshness: stale`, or `disposition:
+ * idle` (with a prior success), `state: cooling_off`, `freshness: stale`, or `disposition:
  * owner_refresh_due`. Any other axis reaching amber-or-worse — or `state`
- * being anything other than `idle`, or `disposition` being anything other
- * than `owner_refresh_due` — means real trouble, so it stays "Degraded".
+ * being outside those non-degrading states, or `disposition` being anything
+ * other than `owner_refresh_due` — means real trouble, so it stays "Degraded".
  */
 function amberLabel(
   snapshot: ConnectionHealthSnapshot,
@@ -420,7 +422,8 @@ function amberLabel(
   toneInputs: readonly { axis: string; tone: VerdictTone }[]
 ): VerdictLabel {
   const stateIsBroken =
-    snapshot.state !== "idle" && TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
+    !NON_DEGRADING_AMBER_STATES.has(snapshot.state) &&
+    TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
   const dispositionIsBroken =
     disposition !== "owner_refresh_due" && TONE_RANK[dispositionTone(disposition)] >= TONE_RANK.amber;
   const hasDegradingAxis = toneInputs.some(
@@ -613,15 +616,13 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
  * `accepted_absence`/`optional` stream that is merely stale or partial annotates but
  * does NOT downgrade the pill below the required-stream tone (mitigates "worst-wins
  * over-ambers on a trivial optional stream", design Risks). A required stream always
- * contributes its full tone. A terminal/unsupported coverage on ANY stream is a real
- * red regardless of priority — a lost stream is a lost stream.
+ * contributes its full tone; optional stream coverage remains an advisory fact.
  */
 function worstStreamCoverageTone(streams: readonly StreamRollup[]): VerdictTone {
   let worstTone: VerdictTone = "green";
   for (const stream of streams) {
     const tone = coverageTone(stream.coverage);
-    const isHardRed = tone === "red"; // terminal/unsupported/unavailable
-    if (stream.priority === "required" || isHardRed) {
+    if (stream.priority === "required") {
       worstTone = worse(worstTone, tone);
     }
     // optional/accepted-absence non-red coverage annotates only; does not downgrade.
@@ -658,7 +659,7 @@ function connectionDisposition(
   let worst: ForwardDisposition = snapshot.forward_disposition;
   for (const stream of streams) {
     const disposition = streamDisposition(stream, snapshot, refresh, scheduleEvidence);
-    const counts = stream.priority === "required" || disposition === "terminal";
+    const counts = stream.priority === "required";
     if (!counts) {
       continue;
     }
@@ -752,6 +753,37 @@ function exactSyncTargetFromAttention(attention: ConnectionAttentionEvidence | n
 
 function hasOwnerAction(actions: readonly RequiredAction[]): boolean {
   return actions.some((action) => action.audience === "owner" && action.satisfied_when.kind !== "none");
+}
+
+/** Typed owner-sole-resolution predicate shared by owner and fleet projections. */
+export function hasOwnerBlockingAction(verdict: Pick<RenderedVerdict, "channel" | "required_actions">): boolean {
+  // `channel` is the typed owner-interruption decision: advisory actions are
+  // optional accelerants, while attention means the owner is the sole resolver.
+  return verdict.channel === "attention" && hasOwnerAction(verdict.required_actions);
+}
+
+/** Typed maintainer repair predicate shared by owner and fleet projections. */
+export function hasMaintainerCodeFix(verdict: Pick<RenderedVerdict, "required_actions">): boolean {
+  return verdict.required_actions.some((action) => action.audience === "maintainer" && action.kind === "code_fix");
+}
+
+/**
+ * Shared owner/fleet predicate for a passive scheduled retry. This is a narrow
+ * projection predicate, not another health state: connection health must first
+ * establish `cooling_off`, and affirmative collection, coverage, freshness,
+ * schedule, and no-blocker evidence must agree. Independent degrading evidence,
+ * owner action, and maintainer repair always win over scheduler timing.
+ */
+export function isPassiveScheduledRecovery(
+  snapshot: ConnectionHealthSnapshot,
+  verdict: Pick<RenderedVerdict, "channel" | "required_actions">
+): boolean {
+  return (
+    snapshot.state === "cooling_off" &&
+    hasAffirmativePassiveRecoveryEvidence(snapshot) &&
+    !hasOwnerBlockingAction(verdict) &&
+    !hasMaintainerCodeFix(verdict)
+  );
 }
 
 /**

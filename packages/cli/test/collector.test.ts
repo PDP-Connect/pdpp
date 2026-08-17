@@ -49,10 +49,16 @@ function makeIo() {
   };
 }
 
-test("collector help lists the three subcommands and operator flow", async () => {
+test("collector help lists the guided and manual subcommands and both flows", async () => {
   const io = makeIo();
   const code = await runCollector([], io.io);
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(io.stdout, /pdpp collector setup/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(io.stdout, /pdpp collector connectors/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(io.stdout, /pdpp collector logout/);
   // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /pdpp collector advertise/);
   // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
@@ -60,7 +66,9 @@ test("collector help lists the three subcommands and operator flow", async () =>
   // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /pdpp collector run/);
   // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
-  assert.match(io.stdout, /Suggested operator flow/);
+  assert.match(io.stdout, /Guided flow/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(io.stdout, /Manual \/ scriptable flow/);
   // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /device-scoped/);
 });

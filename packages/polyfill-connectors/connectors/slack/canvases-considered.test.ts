@@ -28,7 +28,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { StreamScope } from "../../src/connector-runtime.ts";
+import type { DetailCoverageMessage, StreamScope } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit, type RecordingEmit } from "../../src/test-harness.ts";
 import { runCanvasesStream, type StreamDeps } from "./index.ts";
 
@@ -80,11 +80,11 @@ function makeDeps(db: DatabaseSync, harness: RecordingEmit): StreamDeps {
 
 /** Pull the single self-coverage DETAIL_COVERAGE for `canvases` from the
  *  protocol side-channel. Returns `null` when none was emitted. */
-function canvasCoverage(harness: RecordingEmit): Record<string, unknown> | null {
+function canvasCoverage(harness: RecordingEmit): DetailCoverageMessage | null {
   const msg = harness.protocolMessages.find(
-    (m) => m.type === "DETAIL_COVERAGE" && (m as { stream?: string }).stream === "canvases"
+    (message): message is DetailCoverageMessage => message.type === "DETAIL_COVERAGE" && message.stream === "canvases"
   );
-  return msg ? (msg as unknown as Record<string, unknown>) : null;
+  return msg ?? null;
 }
 
 test("runCanvasesStream: declares considered === the enumerated quip inventory (a real complete denominator)", async () => {
@@ -102,11 +102,12 @@ test("runCanvasesStream: declares considered === the enumerated quip inventory (
 
   const cov = canvasCoverage(harness);
   assert.ok(cov, "expected a self-coverage DETAIL_COVERAGE for canvases");
-  const c = cov as Record<string, unknown>;
+  const c = cov;
   assert.equal(c.type, "DETAIL_COVERAGE");
   assert.equal(c.stream, "canvases");
   assert.equal(c.state_stream, "canvases", "self-coverage: state_stream === stream");
   assert.equal(c.considered, 3, "considered is the deduped enumerated count");
+  assert.equal(c.covered, 3, "every validated canvas in the enumerated snapshot is covered");
   // Empty key arrays so the pre-commit coverage gate has nothing to mark
   // missing — the committed STATE still commits.
   assert.deepEqual(c.required_keys, []);
@@ -142,11 +143,8 @@ test("runCanvasesStream: an empty canvas inventory still declares considered: 0 
   assert.equal(harness.emitted.filter((r) => r.stream === "canvases").length, 0, "no canvases to emit");
   const cov = canvasCoverage(harness);
   assert.ok(cov, "even an empty inventory declares its denominator");
-  assert.equal(
-    (cov as Record<string, unknown>).considered,
-    0,
-    "considered: 0 — an enumerated empty inventory, not unknown"
-  );
+  assert.equal(cov.considered, 0, "considered: 0 — an enumerated empty inventory, not unknown");
+  assert.equal(cov.covered, 0, "an enumerated empty snapshot is fully covered");
 });
 
 test("runCanvasesStream: emits the considered DETAIL_COVERAGE AFTER the last canvas RECORD", async () => {

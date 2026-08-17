@@ -19,10 +19,9 @@
  *   4. On "go", immediately calls reconcileConnectorSummaryEvidence for
  *      PDPP_TWO_PROCESS_FIXTURE_CONNECTOR_INSTANCE_ID. The engine's
  *      test-only PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS hook (set via
- *      inherited env, same value the parent uses) holds whichever process
- *      wins BEGIN IMMEDIATE inside its transaction for the delay window,
- *      forcing the loser to genuinely block on SQLite's write lock rather
- *      than racing on timing luck.
+ *      inherited env, same value the parent uses) pauses the fenced read
+ *      before its evidence upsert while SQLite's `BEGIN IMMEDIATE` lock is
+ *      held. The other process therefore waits at transaction start.
  *   5. Prints one final JSON line with the repair result and exits 0, or
  *      prints `{"error":...}` and exits 1 on any thrown error.
  */

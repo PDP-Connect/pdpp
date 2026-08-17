@@ -21,7 +21,11 @@ export interface PacingOptions {
   /**
    * Maximum credit (ms of pacing head-room) the bucket may accumulate while
    * the connector is idle between runs. Prevents a burst on resume.
-   * Corresponds to GCRA burst tolerance L. Defaults to 2 × initialIntervalMs.
+   * Corresponds to GCRA burst tolerance L. Defaults to 2 × the effective
+   * initial interval. At admission time, credit is capped at
+   * max(0, 2 × currentIntervalMs − minIntervalMs): this preserves bounded idle
+   * credit, including one immediate admission when valid, without allowing the
+   * following admission gap to fall below the provider floor.
    */
   burstToleranceMs?: number;
   /**
@@ -67,8 +71,8 @@ export interface PacingOptions {
    */
   maxWarmStartAgeMs?: number;
   /**
-   * Minimum inter-request interval (ms). The floor the AIMD fill rate can
-   * reach via additive increase. Defaults to 0 (no floor below initial).
+   * Minimum inter-request interval (ms). The hard floor for both the AIMD fill
+   * rate and provider admission. Defaults to 0 (no floor below initial).
    */
   minIntervalMs?: number;
   /** Multiplicative decrease factor on each throttle signal. Retained for the retry-after/hard path and backward compat; the plain-throttle path now uses `softThrottleGain` instead. Default: 0.5. */
@@ -226,7 +230,10 @@ function defaultSleep(ms: number): Promise<void> {
  * The bucket tracks a Theoretical Arrival Time (TAT): the earliest moment the
  * next request may be admitted. On idle gap the TAT is reset to
  * `now + currentIntervalMs` (capped to burstToleranceMs ahead), preventing
- * unbounded credit accumulation between scheduled runs.
+ * unbounded credit accumulation between scheduled runs. The effective burst
+ * tolerance is bounded from the current interval and `minIntervalMs`, so one
+ * idle-credit admission may be immediate but the next request cannot cross the
+ * declared provider floor.
  */
 export class ProviderPacing {
   private readonly initialIntervalMs: number;
@@ -259,8 +266,13 @@ export class ProviderPacing {
   private lastSuccessAtMs: number | null = null;
 
   constructor(options: PacingOptions) {
-    this.initialIntervalMs = options.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS;
+    const configuredInitialIntervalMs = options.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS;
     this.minIntervalMs = options.minIntervalMs ?? 0;
+    // The provider floor is an admission invariant, not only an AIMD endpoint.
+    // Normalize the cold-start operating point before deriving any other pacing
+    // state so the first request and the rate-space calibration cannot start
+    // faster than the declared minimum.
+    this.initialIntervalMs = Math.max(configuredInitialIntervalMs, this.minIntervalMs);
     this.burstToleranceMs = options.burstToleranceMs ?? 2 * this.initialIntervalMs;
     this.additiveIncreaseMs = options.additiveIncreaseMs ?? DEFAULT_ADDITIVE_INCREASE_MS;
     // §9-C2: calibrate the constant rate-space additive step from the configured
@@ -372,10 +384,23 @@ export class ProviderPacing {
   nextDelayMs(): number {
     const nowMs = this.now();
 
-    // Honor a pending Retry-After override exactly.
+    // Honor a pending Retry-After as a minimum, combined with the normal GCRA
+    // debt. Retry-After is a server minimum, not permission to erase the
+    // client's sustained floor. If the server wait is larger, it wins exactly;
+    // if the pacing debt is larger, return only that remaining debt so callers
+    // do not sleep both waits.
     if (this.nextRetryAfterMs !== null) {
-      const delay = this.nextRetryAfterMs;
+      const retryAfterMs = this.nextRetryAfterMs;
       this.nextRetryAfterMs = null;
+      if (this.tat === null) {
+        const delay = Math.max(0, retryAfterMs);
+        this.tat = nowMs + delay;
+        return delay;
+      }
+
+      const floorTat = this.nextTatAfterIdleCredit(nowMs);
+      const floorDelay = Math.max(0, floorTat - nowMs);
+      const delay = Math.max(0, retryAfterMs, floorDelay);
       this.tat = nowMs + delay;
       return Math.max(0, delay);
     }
@@ -386,17 +411,28 @@ export class ProviderPacing {
       return this._currentIntervalMs;
     }
 
-    // GCRA: if there's been a long idle gap, cap the accumulated credit to
-    // burstToleranceMs. This prevents a burst on resume.
-    const maxTat = nowMs + this.burstToleranceMs;
-    if (this.tat < nowMs - this.burstToleranceMs) {
-      this.tat = nowMs - this.burstToleranceMs;
-    }
-
-    const nextTat = this.tat + this._currentIntervalMs;
+    // GCRA: if there's been a long idle gap, cap the accumulated credit to the
+    // configured tolerance. A tolerance larger than the current interval can
+    // produce multiple zero-delay admissions. The second gap after a long idle
+    // is 2I-L, so L <= 2I-F is the exact bound that keeps it at least the
+    // provider floor F while retaining one valid immediate admission.
+    const nextTat = this.nextTatAfterIdleCredit(nowMs);
     const delay = Math.max(0, nextTat - nowMs);
-    this.tat = Math.min(nextTat, maxTat);
+    // Cap only the idle anchor above. Carry the earned nextTat forward; capping
+    // this write-back would make a waited admission look idle again and repeat
+    // a sub-floor delay for tolerances between zero and the current interval.
+    this.tat = nextTat;
     return delay;
+  }
+
+  /** Normalize idle credit and return the next ordinary GCRA TAT. */
+  private nextTatAfterIdleCredit(nowMs: number): number {
+    const maxIdleCreditMs = Math.max(0, 2 * this._currentIntervalMs - this.minIntervalMs);
+    const effectiveBurstToleranceMs = Math.min(this.burstToleranceMs, maxIdleCreditMs);
+    if (this.tat !== null && this.tat < nowMs - effectiveBurstToleranceMs) {
+      this.tat = nowMs - effectiveBurstToleranceMs;
+    }
+    return (this.tat ?? nowMs) + this._currentIntervalMs;
   }
 
   /**
@@ -529,7 +565,8 @@ export class ProviderPacing {
 
   /**
    * Record a throttle signal — multiplicative decrease (increase interval, never below initialIntervalMs).
-   * If `signal.retryAfterMs` is set, the next admit() will honor it exactly.
+   * If `signal.retryAfterMs` is set, the next admit() honors it as a minimum,
+   * combined with any remaining GCRA floor debt without double-sleeping.
    *
    * Part B (steady-state honesty): a Retry-After is a ONE-SHOT instruction —
    * "wait exactly this long THIS time" — not a statement about the sustained
@@ -556,9 +593,12 @@ export class ProviderPacing {
     // Plain throttle: bounded multiplicative step. Multiply by (1 + softThrottleGain)
     // instead of the old ÷multiplicativeDecreaseFactor (×2). Default softThrottleGain=0.5
     // gives a 1.5× step, inside the Leonardos stable band. Clamped to maxIntervalMs
-    // to bound the blast radius of a burst of 429s. Never goes below initialIntervalMs.
+    // to bound the blast radius of a burst of 429s. Never goes below minIntervalMs.
     const increased = this._currentIntervalMs * (1 + this.softThrottleGain);
-    this._currentIntervalMs = Math.min(this.maxIntervalMs, Math.max(this.initialIntervalMs, increased));
+    this._currentIntervalMs = Math.max(
+      this.minIntervalMs,
+      Math.min(this.maxIntervalMs, Math.max(this.initialIntervalMs, increased))
+    );
     this._lastBackoff = { atIntervalMs: this._currentIntervalMs, reason };
   }
 

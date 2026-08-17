@@ -25,13 +25,79 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { Page } from "playwright";
+import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
+import { createRepairBudget } from "../../src/repair-budget.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
-import { buildStreamTable, collectStream, paginate, type RedditListingFetch } from "./index.ts";
+import {
+  buildStreamTable,
+  collectAllStreams,
+  collectStream,
+  makeReauth,
+  normalizeRedditTerminalError,
+  paginate,
+  type RedditListingFetch,
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { RedditChild, RedditFetchResult, RedditListing } from "./types.ts";
 
 const EMITTED_AT = "2026-04-24T12:00:00.000Z";
 const USER_PATH = "/user/anon";
+
+test("normalizeRedditTerminalError maps auth failures to credential recovery and redacts account paths", () => {
+  const normalized = normalizeRedditTerminalError({
+    message:
+      "reddit_auth_failed: 401 on /user/private-account/submitted.json?after=private-cursor&query=private-query " +
+      "id=private-id",
+    retryable: false,
+  });
+
+  assert.equal(normalized.recovery_hint, "refresh_credentials");
+  assert.equal(normalized.retryable, false);
+  assert.match(normalized.message, /reddit_preprogress_failure: refresh_credentials/u);
+  assert.match(normalized.message, /\/user\/\[redacted\]\/submitted\.json/u);
+  assert.doesNotMatch(normalized.message, /private-account/u);
+  assert.doesNotMatch(normalized.message, /private-cursor|private-query|private-id/u);
+  assert.doesNotMatch(normalized.message, /\$1/u, "redaction replacements must not leak capture placeholders");
+});
+
+const REDDIT_MANUAL_ACTION_ERROR_CODES = [
+  "reddit_login_manual_incomplete",
+  "reddit_login_unexpected_ui",
+  "reddit_login_submit_missing",
+  "reddit_2fa_cancelled",
+  "reddit_login_post_submit_failed",
+] as const;
+
+for (const code of REDDIT_MANUAL_ACTION_ERROR_CODES) {
+  test(`normalizeRedditTerminalError classifies exact production code ${code} as manual action`, () => {
+    assert.deepEqual(normalizeRedditTerminalError({ message: code, retryable: false }), {
+      message: `reddit_preprogress_failure: manual_action_required: ${code}`,
+      recovery_hint: "manual_action_required",
+      retryable: false,
+    });
+  });
+}
+
+test("normalizeRedditTerminalError maps a generic Cloudflare challenge to manual action", () => {
+  const normalized = normalizeRedditTerminalError({
+    message: "Cloudflare challenge remains",
+    retryable: false,
+  });
+  assert.equal(normalized.recovery_hint, "manual_action_required");
+  assert.equal(normalized.retryable, false);
+});
+
+test("normalizeRedditTerminalError does not turn retryable rate limits into reconnects", () => {
+  const normalized = normalizeRedditTerminalError({
+    message: "reddit_rate_limited: 429 on /user/private-account/submitted.json",
+    retryable: true,
+  });
+
+  assert.equal(normalized.retryable, true);
+  assert.equal("recovery_hint" in normalized, false);
+  assert.doesNotMatch(normalized.message, /private-account/u);
+});
 
 // ─── Synthetic fixture helpers ─────────────────────────────────────────
 
@@ -75,6 +141,13 @@ function makeComment(id: string, createdUtc: number, overrides: Partial<RedditCh
   };
 }
 
+function makeStreamChild(streamName: string, suffix: "old" | "new", createdUtc: number): RedditChild {
+  if (streamName === "comments") {
+    return makeComment(`t1_${streamName}${suffix}`, createdUtc);
+  }
+  return makePost(`t3_${streamName}${suffix}`, createdUtc);
+}
+
 function listing(children: RedditChild[], after: string | null = null): RedditListing {
   return { data: { children, after } };
 }
@@ -82,6 +155,18 @@ function listing(children: RedditChild[], after: string | null = null): RedditLi
 function okResult(redditListing: RedditListing): RedditFetchResult {
   return { status: 200, json: redditListing };
 }
+
+function asWrongShapeRedditListing(value: unknown): RedditListing {
+  return value as RedditListing;
+}
+
+const REDDIT_MALFORMED_SUCCESS_BODIES: ReadonlyArray<readonly [string, RedditListing | null]> = [
+  ["null body", null],
+  ["missing data envelope", asWrongShapeRedditListing({})],
+  ["missing children array", asWrongShapeRedditListing({ data: {} })],
+  ["null children", asWrongShapeRedditListing({ data: { children: null } })],
+  ["malformed child entry", asWrongShapeRedditListing({ data: { children: [null] } })],
+];
 
 /** Build a RedditListingFetch that serves pre-scripted responses keyed
  *  by `endpoint` (path before `?`). Subsequent calls to the same
@@ -204,6 +289,53 @@ test("collectStream: since-epoch stops pagination once an item crosses the curso
   assert.equal((stateMsg.cursor as { last_created_utc: number }).last_created_utc, 300);
 });
 
+for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+  test(`collectStream: ${stream.name} restart resumes strictly after its cursor`, async () => {
+    const firstHarness = makeRecordingEmit(validateRecord);
+    const firstFetch = makeScriptedFetch({
+      [stream.endpoint]: [okResult(listing([makeStreamChild(stream.name, "old", 200)]))],
+    }).fetch;
+    await collectStream({
+      stream,
+      fetchPath: firstFetch,
+      state: {},
+      emit: firstHarness.emit,
+      emitRecord: firstHarness.emitRecord,
+      progress: async () => undefined,
+      capture: null,
+      delay: NO_DELAY,
+    });
+    const firstState = firstHarness.protocolMessages.find((message) => message.type === "STATE");
+    assert.ok(firstState && firstState.type === "STATE");
+
+    const secondHarness = makeRecordingEmit(validateRecord);
+    const secondFetch = makeScriptedFetch({
+      [stream.endpoint]: [
+        okResult(listing([makeStreamChild(stream.name, "new", 300), makeStreamChild(stream.name, "old", 200)])),
+      ],
+    }).fetch;
+    await collectStream({
+      stream,
+      fetchPath: secondFetch,
+      state: { [stream.name]: firstState.cursor },
+      emit: secondHarness.emit,
+      emitRecord: secondHarness.emitRecord,
+      progress: async () => undefined,
+      capture: null,
+      delay: NO_DELAY,
+    });
+
+    assert.deepEqual(
+      secondHarness.emitted.map((record) => record.data.id),
+      [stream.name === "comments" ? `t1_${stream.name}new` : `t3_${stream.name}new`],
+      `${stream.name}: a restart must not re-emit the cursor boundary`
+    );
+    const secondState = secondHarness.protocolMessages.find((message) => message.type === "STATE");
+    assert.ok(secondState && secondState.type === "STATE");
+    assert.deepEqual(secondState.cursor, { last_created_utc: 300 });
+  });
+}
+
 // ─── Invariant 4: multi-page pagination threads the 'after' cursor ──────
 
 test("paginate: follows 'after' through multiple pages until exhausted", async () => {
@@ -220,6 +352,23 @@ test("paginate: follows 'after' through multiple pages until exhausted", async (
   assert.ok(calls[0]?.includes("limit=100"));
   assert.ok(calls[1]?.includes("after=t1_b"), "page 2 must carry the 'after' cursor");
 });
+
+for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+  test(`paginate: ${stream.name} follows the opaque after cursor`, async () => {
+    const after = `after-${stream.name}`;
+    const { fetch, calls } = makeScriptedFetch({
+      [stream.endpoint]: [
+        okResult(listing([makePost(`t3_${stream.name}_1`, 300)], after)),
+        okResult(listing([makePost(`t3_${stream.name}_2`, 200)], null)),
+      ],
+    });
+
+    const out = await paginate(fetch, stream.endpoint, null, null, NO_DELAY);
+
+    assert.equal(out.length, 2, `${stream.name}: both pages contribute children`);
+    assert.deepEqual(calls, [`${stream.endpoint}?limit=100`, `${stream.endpoint}?limit=100&after=${after}`]);
+  });
+}
 
 test("paginate: progress reports cursor presence without raw cursor values", async () => {
   const progressEvents: Array<{ message: string; extra?: { cursor_present?: boolean; page_index?: number } }> = [];
@@ -290,6 +439,603 @@ test("paginate: 500 → generic http_error", async () => {
   await assert.rejects(paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY), /reddit_http_500/);
 });
 
+// ─── Invariant 6b: mid-run stale-session self-heal (401/403) ────────────
+
+test("paginate: page 1 succeeds, page 2 401s, repair succeeds, retry of the SAME page succeeds", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [
+      okResult(listing([makePost("t3_a", 300)], "t3_a")),
+      { status: 401, json: null },
+      okResult(listing([makePost("t3_b", 200)], null)),
+    ],
+  });
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+  const onAuthFailed = async (): Promise<boolean> => {
+    reauthCalls += 1;
+    return true;
+  };
+
+  const out = await paginate(
+    fetch,
+    `${USER_PATH}/submitted.json`,
+    null,
+    null,
+    NO_DELAY,
+    undefined,
+    "submitted",
+    onAuthFailed
+  );
+
+  assert.equal(reauthCalls, 1, "repair must be attempted exactly once");
+  assert.equal(calls.length, 3, "page 1, failed page 2, retried page 2 — no extra calls");
+  assert.deepEqual(calls[1], calls[2], "the retry after repair must hit the EXACT SAME path as the failed request");
+  assert.deepEqual(
+    out.map((c) => c.data.name),
+    ["t3_a", "t3_b"],
+    "both pre- and post-repair pages contribute records"
+  );
+});
+
+test("paginate: 401 persists after repair succeeds → still terminal auth_failed, exactly one retry attempted", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [
+      { status: 401, json: null },
+      { status: 401, json: null },
+    ],
+  });
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+  const onAuthFailed = async (): Promise<boolean> => {
+    reauthCalls += 1;
+    return true;
+  };
+
+  await assert.rejects(
+    paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY, undefined, "submitted", onAuthFailed),
+    /reddit_auth_failed/
+  );
+  assert.equal(reauthCalls, 1, "repair must not be retried in a loop");
+  assert.equal(calls.length, 2, "exactly one retry of the failed request, then give up");
+});
+
+test("paginate: repair itself fails (returns false) → terminal auth_failed, no retry request sent", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [{ status: 403, json: null }],
+  });
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+  const onAuthFailed = async (): Promise<boolean> => {
+    reauthCalls += 1;
+    return false;
+  };
+
+  await assert.rejects(
+    paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY, undefined, "submitted", onAuthFailed),
+    /reddit_auth_failed/
+  );
+  assert.equal(reauthCalls, 1, "repair is attempted once even though it fails");
+  assert.equal(calls.length, 1, "a failed repair must not spend a retry request");
+});
+
+test("paginate: repair is attempted at most once across the whole pagination loop, not once per page", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [
+      { status: 401, json: null },
+      okResult(listing([makePost("t3_a", 300)], "t3_a")),
+      { status: 401, json: null },
+    ],
+  });
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+  const onAuthFailed = async (): Promise<boolean> => {
+    reauthCalls += 1;
+    return true;
+  };
+
+  await assert.rejects(
+    paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY, undefined, "submitted", onAuthFailed),
+    /reddit_auth_failed/
+  );
+  assert.equal(reauthCalls, 1, "the one-shot repair budget is per paginate() call, not per page");
+  assert.equal(calls.length, 3, "page1-failed, page1-retry-ok, page2-failed (no second repair)");
+});
+
+test("paginate: no onAuthFailed hook supplied → 401 fails immediately (pre-fix behavior unchanged)", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }],
+  });
+
+  await assert.rejects(paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY), /reddit_auth_failed/);
+  assert.equal(calls.length, 1, "no hook means no retry attempt");
+});
+
+// ─── Invariant 6c: makeReauth is credential-gated against process.env ───
+//
+// Unit-tests makeReauth DIRECTLY rather than only through collectAllStreams:
+// a collectAllStreams-level test with an under-specified mock
+// context/page can't discriminate "the env gate refused" from "some
+// unrelated call on the stub context/page threw" — both look identical
+// (makeReauth's outer catch swallows either) from the outside. Testing
+// makeReauth in isolation, with a NEVER_CALLED sendInteraction and a page
+// that would prove a real ensureRedditSession call was reached (by
+// throwing distinctively), makes the gate itself the thing under test.
+
+const REDDIT_ENV_KEYS = ["REDDIT_USERNAME", "REDDIT_PASSWORD"] as const;
+
+function withoutRedditEnvCredentials<T>(fn: () => Promise<T>): Promise<T> {
+  const prior = REDDIT_ENV_KEYS.map((k) => process.env[k]);
+  for (const k of REDDIT_ENV_KEYS) {
+    delete process.env[k];
+  }
+  return fn().finally(() => {
+    REDDIT_ENV_KEYS.forEach((k, i) => {
+      const v = prior[i];
+      if (v !== undefined) {
+        process.env[k] = v;
+      }
+    });
+  });
+}
+
+function withRedditEnvCredentials<T>(
+  username: string | undefined,
+  password: string | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prior = REDDIT_ENV_KEYS.map((k) => process.env[k]);
+  if (username === undefined) {
+    delete process.env.REDDIT_USERNAME;
+  } else {
+    process.env.REDDIT_USERNAME = username;
+  }
+  if (password === undefined) {
+    delete process.env.REDDIT_PASSWORD;
+  } else {
+    process.env.REDDIT_PASSWORD = password;
+  }
+  return fn().finally(() => {
+    REDDIT_ENV_KEYS.forEach((k, i) => {
+      const v = prior[i];
+      if (v === undefined) {
+        delete process.env[k];
+      } else {
+        process.env[k] = v;
+      }
+    });
+  });
+}
+
+/** A ctx whose context/page/sendInteraction record every property touch in
+ *  `touches` before throwing (so `ensureRedditSession` can't proceed past
+ *  the first access, but the fact that it was REACHED is directly
+ *  observable) — the discriminating signal a bare `assert.equal(result,
+ *  false)` can't provide, since makeReauth's own try/catch makes "gate
+ *  refused" and "gate bypassed then failed downstream" both return `false`.
+ *  Fills every `BrowserCollectContext` field (matching
+ *  `createMockBrowserContext` below), with `as any` on the two
+ *  Playwright-shaped fields rather than a double-cast on the whole object —
+ *  those two are the only fields whose real type this stub doesn't
+ *  structurally satisfy. */
+function makeInstrumentedRedditCtx(): { ctx: BrowserCollectContext; touches: string[] } {
+  const touches: string[] = [];
+  const proxyOf = (label: string) =>
+    new Proxy(
+      {},
+      {
+        get: (_t, prop) => {
+          touches.push(`${label}.${String(prop)}`);
+          throw new Error(`stub ${label} cannot complete ${String(prop)}`);
+        },
+      }
+    );
+  const ctx: BrowserCollectContext = {
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    assist: async (): Promise<never> => {
+      throw new Error("mock assist not implemented");
+    },
+    capture: null,
+    completeAssistance: async () => undefined,
+    context: proxyOf("context") as any,
+    credentials: {},
+    detailGaps: [],
+    emit: async () => undefined,
+    emitRecord: async () => undefined,
+    emittedAt: EMITTED_AT,
+    page: proxyOf("page") as any,
+    progress: async () => undefined,
+    requestDetailGapPage: async (): Promise<readonly never[]> => [],
+    requested: new Map(),
+    scope: { streams: [] },
+    // biome-ignore lint/suspicious/useAwait: mock throws synchronously to prove the gate short-circuits before any await
+    sendInteraction: async () => {
+      touches.push("sendInteraction");
+      throw new Error("stub sendInteraction cannot complete");
+    },
+    state: {},
+  };
+  return { ctx, touches };
+}
+
+test("makeReauth: no REDDIT_USERNAME/REDDIT_PASSWORD in process.env → refuses immediately, never touches context/page/sendInteraction", async () => {
+  await withoutRedditEnvCredentials(async () => {
+    const { ctx, touches } = makeInstrumentedRedditCtx();
+    const result = await makeReauth(ctx)();
+    assert.equal(result, false);
+    assert.deepEqual(
+      touches,
+      [],
+      "GATE MUTANT GUARD: with the env-credential check removed, ensureRedditSession would immediately touch context/page/sendInteraction — this list would be non-empty"
+    );
+  });
+});
+
+test("makeReauth: REDDIT_USERNAME set but REDDIT_PASSWORD absent → gate still refuses, still no touch (both vars required, not just username)", async () => {
+  await withRedditEnvCredentials("anon", undefined, async () => {
+    const { ctx, touches } = makeInstrumentedRedditCtx();
+    const result = await makeReauth(ctx)();
+    assert.equal(result, false);
+    assert.deepEqual(touches, [], "password-less env must be treated the same as fully absent");
+  });
+});
+
+test("makeReauth: both env vars present → gate passes through, ensureRedditSession is actually reached (context IS touched)", async () => {
+  await withRedditEnvCredentials("anon", "hunter2", async () => {
+    const { ctx, touches } = makeInstrumentedRedditCtx();
+    const result = await makeReauth(ctx)();
+    assert.equal(result, false, "the stub context/page still can't complete a real session establishment");
+    assert.ok(
+      touches.length > 0,
+      "with credentials present, the gate must pass through and ensureRedditSession must actually touch context/page"
+    );
+  });
+});
+
+// ─── Invariant 6d: makeReauth trusts the post-repair isSessionLive probe, ───
+// not a bare "ensureRedditSession didn't throw"
+//
+// `ensureRedditSession`'s own fast path (a live cookie already present) can
+// return without throwing while the session dies again immediately after —
+// e.g. Reddit revokes the cookie server-side between the fast-path check and
+// the caller resuming. A mutant that replaces makeReauth's post-repair
+// `isSessionLive(ctx.page)` call with a bare `return true` would pass every
+// other Reddit test (none of them assert on the probe), because
+// `ensureRedditSession` not throwing is otherwise indistinguishable from a
+// truly live session. This builds a page/context pair where
+// `ensureRedditSession`'s internal fast-path probe reports live (so it
+// returns cleanly, no throw) but the FOLLOWING probe call — the one
+// `makeReauth` issues itself — reports dead. Only a real, order-sensitive
+// call to `isSessionLive` after `ensureRedditSession` returns can produce
+// `false` here; a mutant returning bare `true` cannot.
+
+/** A fake Playwright Page satisfying only what `isSessionLive` touches
+ *  (`goto`, `locator(...).count()`). Each call to `.count()` consumes the
+ *  next scripted answer, in order — this is what makes "live on call N,
+ *  dead on call N+1" observable without a real browser. */
+function makeSequencedLiveProbePage(sequence: boolean[]): Page {
+  let call = 0;
+  return {
+    goto: async () => null,
+    locator: () => ({
+      // biome-ignore lint/suspicious/useAwait: mock matches Locator.count's Promise-returning signature
+      count: async () => {
+        const isLive = sequence[call] ?? false;
+        call += 1;
+        return isLive ? 1 : 0;
+      },
+    }),
+  } as any;
+}
+
+test("makeReauth: ensureRedditSession's fast-path returns cleanly (session reads live internally) but the post-repair isSessionLive probe then reports dead → makeReauth returns false, not a bare pass-through true", async () => {
+  await withRedditEnvCredentials("anon", "hunter2", async () => {
+    const page = makeSequencedLiveProbePage([true, false]);
+    const context = {
+      // hasSessionCookie's context.cookies() gate — must report the cookie
+      // present so ensureRedditSession's fast path is the branch taken
+      // (skipping the full login flow this stub can't perform).
+      cookies: async () => [{ name: "reddit_session", value: "stale-but-present" }],
+    } as any;
+    const ctx: BrowserCollectContext = {
+      // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+      assist: async (): Promise<never> => {
+        throw new Error("mock assist not implemented");
+      },
+      capture: null,
+      completeAssistance: async () => undefined,
+      context,
+      credentials: {},
+      detailGaps: [],
+      emit: async () => undefined,
+      emitRecord: async () => undefined,
+      emittedAt: EMITTED_AT,
+      page,
+      progress: async () => undefined,
+      requestDetailGapPage: async (): Promise<readonly never[]> => [],
+      requested: new Map(),
+      scope: { streams: [] },
+      // biome-ignore lint/suspicious/useAwait: mock throws synchronously to prove the fast path is real, not swallowed
+      sendInteraction: async (): Promise<never> => {
+        throw new Error("stub sendInteraction cannot complete");
+      },
+      state: {},
+    };
+
+    const result = await makeReauth(ctx)();
+    assert.equal(
+      result,
+      false,
+      "PROBE GUARD: ensureRedditSession returned without throwing (fast-path saw a live session), " +
+        "but the session was scripted dead on the NEXT probe call — makeReauth must trust that " +
+        "post-repair probe, not treat 'didn't throw' as truth. A mutant replacing the probe call " +
+        "with `return true` would make this assertion fail."
+    );
+  });
+});
+
+test("collectAllStreams: mid-run 401 with credentials only on baseCtx (prompted, not env) never reaches the manual 1800s hand-off — terminal auth_failed instead, and the gate is proven by NO extra page fetch", async () => {
+  await withoutRedditEnvCredentials(async () => {
+    const harness = makeRecordingEmit(validateRecord);
+    const { fetch, calls } = makeScriptedFetch({
+      [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }],
+    });
+    const ctx = createMockBrowserContext(fetch, harness, ["submitted"]);
+    // Credentials arrived via the interaction prompt (baseCtx.credentials is
+    // populated) but never landed in process.env — the exact gap this fix
+    // closes.
+    await assert.rejects(collectAllStreams(ctx as Parameters<typeof collectAllStreams>[0]), /reddit_auth_failed/);
+    assert.equal(
+      calls.length,
+      1,
+      "no retry: the credential-less reauth hook reports failure without a second page fetch — proves no repair-then-retry cycle ran"
+    );
+  });
+});
+
+test("collectAllStreams: credential-less env gate stops the FIRST requested stream's terminal failure before a second stream ever runs — not a per-stream-budget assertion (collectAllStreams doesn't catch-and-continue)", async () => {
+  await withoutRedditEnvCredentials(async () => {
+    const harness = makeRecordingEmit(validateRecord);
+    const { fetch, calls } = makeScriptedFetch({
+      [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }],
+      [`${USER_PATH}/comments.json`]: [{ status: 401, json: null }],
+    });
+    const ctx = createMockBrowserContext(fetch, harness, ["submitted", "comments"]);
+
+    await assert.rejects(collectAllStreams(ctx as Parameters<typeof collectAllStreams>[0]), /reddit_auth_failed/);
+    // The "comments" stream is never reached: collectAllStreams throws on
+    // the first stream's terminal reddit_auth_failed instead of catching
+    // and continuing. This is NOT evidence of a per-stream budget — see the
+    // six-stream credentialed oracle below for the actual run-scoped-budget
+    // proof (old per-paginate()-call budget: 6 logins; shared budget: 1).
+    assert.equal(calls.length, 1, "the credential-less gate returns false without any additional fetch");
+  });
+});
+
+// ─── B2 fix: run-scoped repair budget, not per-stream ───────────────────
+//
+// buildStreamTable returns 6 streams (submitted, comments, saved, upvoted,
+// downvoted, hidden). Each one 401s on its first page. Old behavior:
+// `attemptedReauth = { done: false }` was declared INSIDE paginate(), which
+// runs once per stream, so the "one-shot" budget reset 6 times per run — 6
+// automated logins. Fixed behavior: a single repairBudget is created once in
+// collectAllStreams and shared across every collectStream() call, so the
+// login count is exactly 1 regardless of how many streams 401.
+
+/** A fake Playwright Page that (a) always reports a live session to
+ *  `isSessionLive`'s `goto` + `locator(...).count()` probe — so every reauth
+ *  attempt genuinely succeeds, never masked by a scripted-sequence
+ *  exhaustion — while counting each `goto` call (the real navigation
+ *  `isSessionLive` performs) as one login-repair attempt, and (b) answers
+ *  `page.evaluate(fetch, ...)` — the real production shape `makePageFetch`
+ *  builds — by routing to a scripted `RedditListingFetch`. One object plays
+ *  both roles because production `collectAllStreams` drives both `fetchPath`
+ *  (via `makePageFetch(page)`) and `makeReauth(ctx)` (via
+ *  `isSessionLive(ctx.page)`) off the SAME `ctx.page`. Counting real `goto`
+ *  navigations (rather than a bounded scripted-answer sequence) is what
+ *  makes this discriminate a per-stream-budget regression: with a real
+ *  budget shared across the run, `goto` fires at most twice total (the two
+ *  `isSessionLive` probes inside ONE repair); a regressed per-call budget
+ *  would let every one of the 6 streams attempt its own repair, each firing
+ *  two more `goto` calls, so the count would climb unboundedly instead of
+ *  capping at 2 — a scripted-sequence approach would instead just run out
+ *  and silently report "not live" for the extra attempts, hiding the defect. */
+function makeReauthCapablePage(fetch: RedditListingFetch): { gotoCalls: number; page: Page } {
+  const state = { gotoCalls: 0 };
+  const page = {
+    evaluate: (_fn: unknown, args: unknown): Promise<unknown> => {
+      const { path } = args as { path: string };
+      return fetch(path);
+    },
+    goto: () => {
+      state.gotoCalls += 1;
+      return Promise.resolve(null);
+    },
+    locator: () => ({
+      count: async () => 1, // always reports the logout link present: session reads live
+    }),
+  } as any;
+  return {
+    get gotoCalls() {
+      return state.gotoCalls;
+    },
+    page,
+  };
+}
+
+/** A real `BrowserCollectContext` wired for `collectAllStreams`, with
+ *  `context`/`page` shaped so `makeReauth`'s actual `ensureRedditSession`
+ *  fast path (`hasSessionCookie` + `isSessionLive`) succeeds without a real
+ *  browser: `context.cookies()` reports the session cookie present, so
+ *  `ensureRedditSession` takes its no-login fast path and returns cleanly,
+ *  and `isSessionLive` always reads live off `page`. */
+function createCredentialedMockBrowserContext(
+  page: Page,
+  harness: ReturnType<typeof makeRecordingEmit>,
+  requestedStreams: string[]
+): BrowserCollectContext {
+  const requested = new Map(requestedStreams.map((s) => [s, { name: s }]));
+  return {
+    capture: null,
+    context: { cookies: async () => [{ name: "reddit_session", value: "live-cookie" }] } as any,
+    credentials: { REDDIT_USERNAME: "anon" },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: EMITTED_AT,
+    page,
+    progress: async () => undefined,
+    requested,
+    state: {},
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    assist: async (): Promise<never> => {
+      throw new Error("mock assist not implemented");
+    },
+    completeAssistance: async () => undefined,
+    detailGaps: [],
+    requestDetailGapPage: async (): Promise<readonly never[]> => [],
+    scope: { streams: [] },
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    sendInteraction: async (): Promise<never> => {
+      throw new Error("mock sendInteraction not implemented");
+    },
+  };
+}
+
+test("collectAllStreams: 6 credentialed streams each 401 on their first page — production wiring caps automated logins at exactly 1 for the whole run, not 1 per stream", async () => {
+  // Drives the REAL production entry point (collectAllStreams), the real
+  // makeReauth (real ensureRedditSession fast path + real isSessionLive
+  // probe, no injected onAuthFailed stub), and the real page.evaluate(fetch)
+  // shape makePageFetch builds — the exact wiring a live run uses. This is
+  // deliberately NOT collectStream driven in a hand-rolled loop: that shape
+  // can pass even if collectAllStreams itself stopped threading one shared
+  // repairBudget through (e.g. reverted to `repairBudget: createRepairBudget()`
+  // as a per-call default at the collectStream() call site inside
+  // collectAllStreams) because the test would still be supplying its own
+  // shared instance rather than proving collectAllStreams constructs one.
+  await withRedditEnvCredentials("anon", "hunter2", async () => {
+    const harness = makeRecordingEmit(validateRecord);
+    const streamTable = buildStreamTable(USER_PATH, EMITTED_AT);
+    const script: Record<string, RedditFetchResult[]> = {};
+    for (const stream of streamTable) {
+      script[stream.endpoint] = [{ status: 401, json: null }, okResult(listing([makePost(`t3_${stream.name}`, 100)]))];
+    }
+    const { fetch } = makeScriptedFetch(script);
+
+    // The fake page ALWAYS reports the session live (never a bounded
+    // scripted-answer sequence that could run out and silently mask a
+    // regression by reading "not live" for extra attempts) — every reauth
+    // attempted, whether 1 or 6, would genuinely succeed if attempted. The
+    // discriminating signal is therefore how many times a repair is
+    // attempted at all, measured by counting `page.goto` calls: `isSessionLive`
+    // navigates once per probe, and one successful repair costs exactly two
+    // navigations (ensureRedditSession's own fast-path probe, then
+    // makeReauth's follow-up probe). A run-scoped budget spends this ONCE for
+    // the whole run: 2 navigations total, no matter how many of the 6
+    // streams 401. A regressed per-call/per-stream budget would let every
+    // 401'ing stream attempt its own repair, each costing 2 more
+    // navigations — the count would grow with stream count instead of
+    // staying flat at 2.
+    const pageHandle = makeReauthCapablePage(fetch);
+    const { page } = pageHandle;
+    const ctx = createCredentialedMockBrowserContext(
+      page,
+      harness,
+      streamTable.map((s) => s.name)
+    );
+
+    // FIXED behavior: the first stream's 401 spends the run's one repair,
+    // succeeds, and collects its record. Every later stream's 401 finds the
+    // shared budget already spent, so makeReauth is never even invoked for
+    // them — they fail immediately with the real terminal reddit_auth_failed,
+    // without ever calling ensureRedditSession/isSessionLive again.
+    await assert.rejects(
+      () => collectAllStreams(ctx),
+      /reddit_auth_failed/,
+      "the run-scoped budget must let exactly one stream repair, then fail terminally on the next 401"
+    );
+
+    assert.equal(
+      pageHandle.gotoCalls,
+      2,
+      "exactly one repair's worth of session-live navigation (2 goto calls) for the WHOLE run, regardless of " +
+        "how many of the 6 streams 401 — a per-stream/per-call budget would let every 401'ing stream repair " +
+        "independently and this count would climb with stream count instead of staying at 2"
+    );
+
+    // Only the FIRST stream (submitted) could have retried past its 401 and
+    // collected a record; every later stream's 401 must be terminal before
+    // any record is produced for it.
+    const emittedStreams = harness.emitted.map((e) => e.stream);
+    assert.deepEqual(
+      emittedStreams,
+      ["submitted"],
+      "exactly one stream (the first, whose repair spent the shared budget) reaches record emission"
+    );
+  });
+});
+
+test("collectStream: a single successful repair resumes collection for the CURRENT stream past its 401 (counterweight — the budget caps automated logins, it does not just fail everything closed)", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }, okResult(listing([makePost("t3_a", 300)]))],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+    onAuthFailed: () => Promise.resolve(true),
+    repairBudget: createRepairBudget(),
+  });
+
+  assert.equal(
+    result.considered,
+    1,
+    "the post-repair retry's record is collected, not just the login itself succeeding"
+  );
+  assert.equal(
+    harness.skipped.length,
+    0,
+    "no SKIP_RESULT: the repaired session's retry is treated as a normal successful page"
+  );
+});
+
+test("collectStream: threads onAuthFailed through to paginate and self-heals a mid-stream 401", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }, okResult(listing([makePost("t3_a", 300)]))],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+  let reauthCalls = 0;
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+    // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+    onAuthFailed: async () => {
+      reauthCalls += 1;
+      return true;
+    },
+  });
+
+  assert.equal(reauthCalls, 1);
+  assert.equal(result.considered, 1, "the record from the post-repair retry is collected");
+  assert.equal(harness.emitted.length, 1);
+});
+
 // ─── Invariant 7: every stream in the stream table passes its schema ────
 
 test("buildStreamTable: records from every stream pass their zod schema", async () => {
@@ -354,6 +1100,10 @@ test("buildStreamTable: records from every stream pass their zod schema", async 
   assert.equal(streamCounts.upvoted, 2);
   assert.equal(streamCounts.downvoted, 1);
   assert.equal(streamCounts.hidden, 1);
+  for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+    const ids = harness.emitted.filter((record) => record.stream === stream.name).map((record) => record.data.id);
+    assert.equal(new Set(ids).size, ids.length, `${stream.name}: emitted primary IDs must be unique within a run`);
+  }
 });
 
 // ─── Invariant 8: no emit when stream isn't requested ───────────────────
@@ -427,4 +1177,228 @@ test("collectStream: a record missing required created_utc lands in SKIP_RESULT,
   assert.equal(harness.emitted.length, 0, "broken record must not land in emitted[]");
   assert.equal(harness.skipped.length, 1, "broken record must land in skipped[]");
   assert.equal(harness.skipped[0]?.stream, "submitted");
+});
+
+// ─── Invariant 10: collectStream tracks coverage ──────────────────────────
+
+test("collectStream: zero results return considered=0 and covered=0", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [okResult(listing([], null))],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+  });
+
+  assert.equal(result.considered, 0);
+  assert.equal(result.covered, 0);
+});
+
+test("collectStream: nonzero results return correct considered and covered counts", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [
+      okResult(listing([makePost("t3_a", 300), makePost("t3_b", 200), makePost("t3_c", 100)])),
+    ],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+  });
+
+  assert.equal(result.considered, 3);
+  assert.equal(result.covered, 3);
+});
+
+test("collectStream: schema-invalid item not counted in covered, still emitted for runtime SKIP_RESULT", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const broken: RedditChild = {
+    kind: "t3",
+    data: {
+      name: "t3_broken01",
+      subreddit: "test",
+      title: "broken",
+      permalink: "/r/test/comments/broken01/broken/",
+      url: null,
+      created_utc: 0, // Invalid: isoFromUnix(0) → null, schema rejects empty created_utc
+    },
+  };
+  const valid = makePost("t3_valid", 200);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [okResult(listing([broken, valid]))],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+  });
+
+  assert.equal(result.considered, 2, "considered: both enumerated items (weighed)");
+  assert.equal(result.covered, 1, "covered: only schema-valid item (contract: weighed-but-dropped ≠ covered)");
+  assert.equal(harness.emitted.length, 1, "runtime receives only valid record");
+  assert.equal(harness.skipped.length, 1, "runtime SKIP_RESULT logs broken record");
+});
+
+// ─── Invariant 11: real collectAllStreams emits DETAIL_COVERAGE ───────────
+
+/** Create a mock page that redirects evaluate calls to a scripted fetch */
+function createMockPageForFetch(fetch: RedditListingFetch) {
+  return {
+    evaluate: (_fn: (args: unknown) => Promise<unknown>, args: unknown): Promise<unknown> => {
+      const { path } = args as { path: string };
+      return fetch(path);
+    },
+  };
+}
+
+/** Create minimal BrowserCollectContext for oracle tests */
+function createMockBrowserContext(
+  fetch: RedditListingFetch,
+  harness: ReturnType<typeof makeRecordingEmit>,
+  requestedStreams: string[]
+) {
+  const requested = new Map(requestedStreams.map((s) => [s, { name: s }]));
+  return {
+    capture: null,
+    credentials: { REDDIT_USERNAME: "anon" },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: EMITTED_AT,
+    page: createMockPageForFetch(fetch) as any,
+    progress: async () => undefined,
+    requested,
+    state: {},
+    context: {} as any,
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    assist: async (): Promise<never> => {
+      throw new Error("mock assist not implemented");
+    },
+    completeAssistance: async () => undefined,
+    detailGaps: [],
+    requestDetailGapPage: async (): Promise<readonly never[]> => [],
+    scope: { streams: [] },
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    sendInteraction: async (): Promise<never> => {
+      throw new Error("mock sendInteraction not implemented");
+    },
+  };
+}
+
+for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+  test(`collectAllStreams: ${stream.name} verified-empty listing emits STATE and zero coverage`, async () => {
+    const harness = makeRecordingEmit(validateRecord);
+    const { fetch } = makeScriptedFetch({ [stream.endpoint]: [okResult(listing([], null))] });
+
+    await collectAllStreams(createMockBrowserContext(fetch, harness, [stream.name]));
+
+    assert.equal(harness.emitted.length, 0, `${stream.name}: verified empty emits no records`);
+    assert.equal(
+      harness.protocolMessages.filter((message) => message.type === "STATE" && message.stream === stream.name).length,
+      1,
+      `${stream.name}: verified empty commits its stream cursor`
+    );
+    const coverage = harness.protocolMessages.find(
+      (message) => message.type === "DETAIL_COVERAGE" && message.stream === stream.name
+    );
+    assert.ok(coverage && coverage.type === "DETAIL_COVERAGE");
+    assert.equal(coverage.considered, 0);
+    assert.equal(coverage.covered, 0);
+  });
+}
+
+for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+  for (const [label, body] of REDDIT_MALFORMED_SUCCESS_BODIES) {
+    test(`collectAllStreams: ${stream.name} rejects ${label} before STATE or coverage`, async () => {
+      const harness = makeRecordingEmit(validateRecord);
+      const { fetch } = makeScriptedFetch({ [stream.endpoint]: [{ status: 200, json: body }] });
+
+      await assert.rejects(
+        () => collectAllStreams(createMockBrowserContext(fetch, harness, [stream.name])),
+        /reddit_parse_error/u
+      );
+      assert.equal(
+        harness.protocolMessages.some((message) => message.type === "STATE"),
+        false,
+        `${stream.name}/${label}: malformed success must not commit STATE`
+      );
+      assert.equal(
+        harness.protocolMessages.some((message) => message.type === "DETAIL_COVERAGE"),
+        false,
+        `${stream.name}/${label}: malformed success must not prove coverage`
+      );
+      assert.equal(harness.emitted.length, 0, `${stream.name}/${label}: malformed success emits no records`);
+    });
+  }
+}
+
+test("collectAllStreams: zero-count stream emits DETAIL_COVERAGE with considered=0, covered=0", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [okResult(listing([], null))],
+  });
+
+  await collectAllStreams(createMockBrowserContext(fetch, harness, ["submitted"]));
+
+  const coverageMsg = harness.protocolMessages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "submitted");
+  assert.ok(coverageMsg, "DETAIL_COVERAGE must be emitted for empty stream");
+  assert.ok(coverageMsg && coverageMsg.type === "DETAIL_COVERAGE");
+  assert.equal(coverageMsg.considered, 0, "zero enumeration proves boundary was checked");
+  assert.equal(coverageMsg.covered, 0, "covered matches considered");
+});
+
+test("collectAllStreams: one valid + one invalid child emits DETAIL_COVERAGE with considered=2, covered=1", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const broken: RedditChild = {
+    kind: "t1",
+    data: {
+      name: "t1_broken",
+      subreddit: "test",
+      body: "broken",
+      link_id: "t3_post01",
+      parent_id: "t3_post01",
+      permalink: "/r/test/comments/post01/x/broken/",
+      score: 0,
+      created_utc: 0, // Invalid
+    },
+  };
+  const valid = makeComment("t1_valid", 500);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/comments.json`]: [okResult(listing([broken, valid]))],
+  });
+
+  await collectAllStreams(createMockBrowserContext(fetch, harness, ["comments"]));
+
+  const coverageMsg = harness.protocolMessages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "comments");
+  assert.ok(coverageMsg && coverageMsg.type === "DETAIL_COVERAGE");
+  assert.equal(coverageMsg.considered, 2, "both enumerated items");
+  assert.equal(coverageMsg.covered, 1, "only schema-valid item counts as covered");
+  assert.equal(harness.emitted.length, 1, "runtime emits only valid record");
+  assert.equal(harness.skipped.length, 1, "runtime SKIP_RESULT logs invalid record");
 });

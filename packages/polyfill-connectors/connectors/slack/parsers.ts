@@ -58,14 +58,21 @@ export function parseBlob(blob: Uint8Array | string | null | undefined): SlackDa
   }
 }
 
-/** Slack "seconds.micros" string → ISO-8601 string (or null). */
+/** Slack "seconds.micros" string → ISO-8601 string (or null). A zero or
+ *  unparseable ts is absence, not 1970 — those feed `sent_at`/`last_read`,
+ *  which the manifest declares as the semantic-time source. */
 export function tsToIso(ts: string | null | undefined): string | null {
-  return ts ? new Date(Number.parseFloat(ts) * 1000).toISOString() : null;
+  if (!ts) {
+    return null;
+  }
+  const sec = Number.parseFloat(ts);
+  return Number.isFinite(sec) && sec > 0 ? new Date(sec * 1000).toISOString() : null;
 }
 
-/** Epoch seconds → ISO-8601 string (or null). */
+/** Epoch seconds → ISO-8601 string (or null). Zero is Slack's "unset", not
+ *  1970-01-01 — see tsToIso. */
 export function epochToIso(sec: number | null | undefined): string | null {
-  return Number.isFinite(sec) ? new Date((sec as number) * 1000).toISOString() : null;
+  return typeof sec === "number" && Number.isFinite(sec) && sec > 0 ? new Date(sec * 1000).toISOString() : null;
 }
 
 /**

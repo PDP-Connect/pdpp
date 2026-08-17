@@ -138,12 +138,15 @@ export const PAGE_TARGETS = [
   { route: "/", marker: 'class="rr-stand"' },
   // This source-specific ownership copy is a semantic route marker, unlike
   // the heading's generated style/class ordering which changes legitimately.
-  { route: "/sources", marker: "your loading dock · each source pushes into your streams · nothing leaves" },
+  {
+    route: "/sources",
+    marker: "Sources populate streams in this instance. Connected apps read only what a grant allows.",
+  },
   { route: "/sources/add", marker: '<h1 class="pdpp-heading break-words text-foreground">Add source</h1>' },
   { route: "/explore", marker: 'aria-label="Search or filter"' },
   { route: "/syncs", marker: '<h1 class="rr-sync__title">Syncs</h1>' },
   { route: "/grants", marker: '<h1 class="pdpp-heading break-words text-foreground">Grants</h1>' },
-  { route: "/connect", marker: '<h1 class="pdpp-heading break-words text-foreground">Connect AI apps</h1>' },
+  { route: "/connect", marker: '<h1 class="pdpp-heading break-words text-foreground">Connect apps</h1>' },
   { route: "/search", marker: '<h1 class="pdpp-heading break-words text-foreground">Jump to artifact</h1>' },
 ] as const;
 

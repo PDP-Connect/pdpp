@@ -79,7 +79,7 @@ test("semantic ingest resolves arbitrary literal consent_time_field names", () =
 
       assert.equal(getManifestConsentTimeField(connectorId, stream), field);
       assert.equal(
-        computeIngestSemanticTime(connectorId, stream, { [field]: AUTHORED_AT, id: String(index) }, EMITTED_AT),
+        computeIngestSemanticTime(connectorId, stream, { [field]: AUTHORED_AT, id: String(index) }),
         AUTHORED_AT,
         field
       );

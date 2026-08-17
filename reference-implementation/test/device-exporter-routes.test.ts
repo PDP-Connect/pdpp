@@ -12,6 +12,7 @@ import {
 import { registerConnector } from "../server/auth.ts";
 import { COLLECTOR_PROTOCOL_VERSION } from "../server/collector-protocol.ts";
 import { getDb } from "../server/db.ts";
+import { HEARTBEAT_LEASE_MS } from "../server/heartbeat-lease.ts";
 import { startServer } from "../server/index.ts";
 import {
   __setIngestFaultHookForTest,
@@ -26,6 +27,7 @@ import { createSqliteConnectorInstanceStore } from "../server/stores/connector-i
 
 const PROTOCOL_HEADERS = { "X-PDPP-Collector-Protocol": COLLECTOR_PROTOCOL_VERSION };
 const CONNECTOR_INSTANCE_ID_PATTERN = /^cin_/;
+const NARROW_ONLY_REJECTION_MESSAGE_PATTERN = /may only narrow, never widen/;
 const ATTEMPT_MODEL_PATTERN = /attempt-model-c/;
 const SEMANTIC_SENTINEL_PATTERN = /private-semantic-preflight-sentinel/;
 const UNBOUNDED_SENTINEL_PATTERN = /private-unbounded-backend-sentinel/;
@@ -1257,7 +1259,7 @@ test("a post-durable index retry repairs from the newer authoritative writer on 
   });
 });
 
-test("device batch and direct ingest serialize on one instance while a sibling instance overlaps", async () => {
+test("device batch's derived (embedding) section does not block a same-instance direct writer; a sibling instance overlaps too", async () => {
   const previousSemanticLimit = process.env.PDPP_SEMANTIC_WORK_LIMIT;
   process.env.PDPP_SEMANTIC_WORK_LIMIT = "2";
   const deviceEmbeddingEntered = deferred();
@@ -1298,7 +1300,7 @@ test("device batch and direct ingest serialize on one instance while a sibling i
         },
       ];
       let batch: Promise<JsonResponse> | null = null;
-      let sameInstanceDirect: Promise<void> | null = null;
+      let sameInstanceDirect: Promise<unknown> | null = null;
       try {
         batch = postJson(
           `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
@@ -1315,7 +1317,16 @@ test("device batch and direct ingest serialize on one instance while a sibling i
         );
         await deviceEmbeddingEntered.promise;
 
-        let sameInstanceFinished = false;
+        // By the time embedding is entered, the device batch's durable
+        // record write already committed (durable phase runs BEFORE the
+        // derived/embedding phase) and released its per-record fence — the
+        // fence is never held through embedding (see
+        // harden-connector-instance-write-fence-transaction-native). A
+        // same-instance direct writer for the SAME key must therefore be
+        // able to proceed and complete WITHOUT waiting for the device
+        // batch's still-in-flight embedding: this is the exact live-incident
+        // shape being fixed (GroupMe run_1786387569309_3: same-instance
+        // /v1/blobs 503s while a batch's derived work was still in flight).
         sameInstanceDirect = ingestRecord(
           { connector_id: device.connector_id, connector_instance_id: device.connector_instance_id },
           {
@@ -1324,9 +1335,8 @@ test("device batch and direct ingest serialize on one instance while a sibling i
             key: "same-key",
             stream: "messages",
           }
-        ).then(() => {
-          sameInstanceFinished = true;
-        });
+        );
+        await sameInstanceDirect;
 
         await ingestRecord(
           { connector_id: device.connector_id, connector_instance_id: "cin_device_direct_sibling" },
@@ -1337,22 +1347,42 @@ test("device batch and direct ingest serialize on one instance while a sibling i
             stream: "messages",
           }
         );
-        assert.equal(
-          sameInstanceFinished,
-          false,
-          "direct writer waits for the device batch’s complete derived section"
-        );
 
         releaseDeviceEmbedding.resolve();
         const result = await batch;
         assert.equal(result.status, 201);
-        await sameInstanceDirect;
+        // The durable RECORD row must reflect the direct writer (it
+        // committed after the device's own durable write, per-record
+        // fenced).
         const finalRecord = selectRow<{ record_json: string }>(
           `SELECT record_json FROM records
           WHERE connector_instance_id = ? AND stream = 'messages' AND record_key = 'same-key'`,
           device.connector_instance_id
         );
         assert.equal(JSON.parse(finalRecord.record_json).content, "direct after device");
+        // Mutation-discriminating oracle: the device batch's embedding was
+        // still in-flight (stalled on `releaseDeviceEmbedding`) when the
+        // direct writer's OWN durable write and index publication already
+        // ran and completed. If the device batch's LATER, stale publication
+        // (still holding "device blocked" in its captured snapshot) were
+        // allowed to overwrite the index after the direct writer's correct
+        // publication, this would read "device blocked" instead of "direct
+        // after device" — the derived-index staleness race this test
+        // exists to rule out (see `enqueueDeviceIndexMaintenance`'s header
+        // in records.ts). Awaiting `batch` above already waited for the
+        // device batch's own index-lane job to finish (the route awaits it
+        // before responding 201), so no extra drain is needed here.
+        const lexicalRow = getDb()
+          .prepare(
+            `SELECT text FROM lexical_search_index
+            WHERE connector_instance_id = ? AND stream = 'messages' AND record_key = 'same-key' AND field = 'content'`
+          )
+          .get(device.connector_instance_id) as { text: string } | undefined;
+        assert.equal(
+          mustExist(lexicalRow, "lexical index row must exist for same-key").text,
+          "direct after device",
+          "lexical index must reflect the WINNING (direct) write, not a stale device-batch snapshot"
+        );
       } finally {
         releaseDeviceEmbedding.resolve();
         await Promise.allSettled([batch, sameInstanceDirect].filter(Boolean));
@@ -1487,6 +1517,18 @@ test("device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
       "second device diagnostics must exist"
     );
     assert.equal(secondDiagnostics.agent_version, null);
+    // Presented health is DERIVED from heartbeat age against the declared
+    // lease, not read off `last_heartbeat_status`. A just-sent heartbeat is
+    // within lease, so the collector's own status passes through — and the
+    // age and the lease it was judged against travel with it, which is what
+    // lets a reader tell a live `starting` from a 38-hour-dead one.
+    const firstSource = mustExist(firstDiagnostics.source_instances[0], "first source instance must exist");
+    assert.equal(firstSource.heartbeat_health, "healthy", "a heartbeat sent moments ago is within lease");
+    assert.equal(firstSource.heartbeat_lease_ms, HEARTBEAT_LEASE_MS, "the projection declares the lease it applied");
+    assert.ok(
+      typeof firstSource.heartbeat_age_ms === "number" && firstSource.heartbeat_age_ms < HEARTBEAT_LEASE_MS,
+      "and reports the measured age that produced the verdict"
+    );
     assert.equal(
       mustExist(firstDiagnostics.source_instances[0], "first source instance must exist").connector_instance_id,
       first.connector_instance_id
@@ -1508,6 +1550,115 @@ test("device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
       authHeaders(first.device_token)
     );
     assert.equal(revokedHeartbeat.status, 401);
+  });
+});
+
+test("self-revoke lets a device close its own credential using only its own bearer token", async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, "self-revoke-laptop");
+
+    const selfRevokeResp = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      authHeaders(device.device_token)
+    );
+    assert.equal(selfRevokeResp.status, 200);
+    const body = bodyOf(selfRevokeResp);
+    assert.equal(body.object, "device_exporter_revocation");
+    assert.equal(body.device_id, device.device_id);
+    assert.ok(typeof body.revoked_at === "string" && Number.isFinite(Date.parse(body.revoked_at as string)));
+
+    const heartbeatAfterRevoke = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/heartbeat`,
+      { source_instances: [{ source_instance_id: device.source_instance_id }] },
+      authHeaders(device.device_token)
+    );
+    assert.equal(heartbeatAfterRevoke.status, 401, "the revoked credential must not authenticate any further request");
+  });
+});
+
+test("self-revoke rejects an owner session and any other unauthenticated caller", async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, "self-revoke-no-owner");
+
+    const missingAuth = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      PROTOCOL_HEADERS
+    );
+    assert.equal(missingAuth.status, 401);
+    assert.equal(errorCode(missingAuth), "authentication_error");
+
+    getDb()
+      .prepare(
+        `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+       VALUES(?, NULL, ?, NULL, 'owner', ?)`
+      )
+      .run("owner-token-for-self-revoke-test", "owner_ref", "2999-01-01T00:00:00.000Z");
+    const ownerTokenRejected = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      authHeaders("owner-token-for-self-revoke-test")
+    );
+    assert.equal(
+      ownerTokenRejected.status,
+      403,
+      "an owner/client bearer token is not a valid device exporter credential"
+    );
+    assert.equal(errorCode(ownerTokenRejected), "permission_error");
+  });
+});
+
+test("self-revoke is scoped to the authenticated device: a device cannot revoke a different device", async () => {
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, "self-revoke-victim");
+    const second = await enrollDevice(asUrl, "self-revoke-attacker");
+
+    const crossDeviceRevoke = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/self-revoke`,
+      {},
+      authHeaders(second.device_token)
+    );
+    assert.equal(
+      crossDeviceRevoke.status,
+      403,
+      "a device credential must never be able to revoke a different device by URL id"
+    );
+    assert.equal(errorCode(crossDeviceRevoke), "permission_error");
+
+    // The victim device's credential must still be live — the cross-device
+    // attempt above must not have revoked it as a side effect.
+    const heartbeatStillWorks = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
+      { source_instances: [{ source_instance_id: first.source_instance_id }] },
+      authHeaders(first.device_token)
+    );
+    assert.equal(heartbeatStillWorks.status, 200);
+  });
+});
+
+test("self-revoke retried after the credential is already revoked fails closed with 401, not a crash", async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, "self-revoke-retry");
+
+    const first = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      authHeaders(device.device_token)
+    );
+    assert.equal(first.status, 200);
+
+    // A retry with the same (now-revoked) token cannot re-authenticate — the
+    // device-credential middleware itself rejects a revoked credential before
+    // the route body runs. This 401 is the exact signal `logout` on the CLI
+    // side treats as "already revoked" and proceeds to delete local state.
+    const retry = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      authHeaders(device.device_token)
+    );
+    assert.equal(retry.status, 401);
+    assert.equal(errorCode(retry), "authentication_error");
   });
 });
 
@@ -1621,11 +1772,19 @@ test("two source homes keep collector state/checkpoints isolated by connector in
     const homeB = await enrollDevice(asUrl, "desktop-state-b", "claude-code");
     assert.notEqual(homeA.connector_instance_id, homeB.connector_instance_id);
 
-    // Both homes start with empty state — neither can see the other before
-    // either has written anything.
+    // Both homes start with no STREAM cursors — neither can see the other
+    // before either has written anything. Enrollment itself writes exactly
+    // one reserved, non-stream key (`$collection_scope`, the honest
+    // recent-history default an undeclared enrollment gets — see
+    // enrollment-scope-narrowing.ts), so state is not literally `{}`; the
+    // isolation property under test is that no STREAM key leaked across
+    // connector instances.
     const emptyA = await getSourceInstanceState(asUrl, homeA);
     assert.equal(emptyA.status, 200);
-    assert.deepEqual(bodyOf(emptyA).state, {});
+    assert.deepEqual(
+      Object.keys(stateOf(emptyA)).filter((key) => !key.startsWith("$")),
+      []
+    );
     assert.equal(bodyOf(emptyA).connector_instance_id, homeA.connector_instance_id);
 
     // Each home checkpoints the SAME connector-local stream cursor keys with
@@ -2684,6 +2843,9 @@ interface DiagnosticsSourceInstance extends Row {
   connector_id: string;
   connector_instance_id: string;
   device_id: string;
+  heartbeat_age_ms: number | null;
+  heartbeat_health: string;
+  heartbeat_lease_ms: number;
   last_heartbeat_at: string | null;
   last_heartbeat_status: string | null;
   last_ingest_at: string | null;
@@ -2806,5 +2968,272 @@ test("device staleness badge stays honestly non-stale when no refresh policy res
     const projected = await diagnosticsForDevice(asUrl, device.device_id);
     assert.equal(projected.last_heartbeat_at, longAgo);
     assert.equal(projected.stale, false, "with no resolvable refresh policy the badge must stay honestly non-stale");
+  });
+});
+
+// --- connect's narrowing-only device scope, end to end against the real enroll route ---
+
+function readEffectiveScope(connectorInstanceId: string): { since?: string; source_roots?: string[] } | null {
+  const row = getDb()
+    .prepare("SELECT state_json FROM connector_state WHERE connector_instance_id = ? AND stream = ?")
+    .get(connectorInstanceId, "$collection_scope") as { state_json: string } | undefined;
+  if (!row) {
+    return null;
+  }
+  const stored = JSON.parse(row.state_json) as { scope: { since?: string; source_roots?: string[] } | null };
+  return stored.scope;
+}
+
+async function mintEnrollmentCode(
+  asUrl: string,
+  localBindingName: string,
+  connectorId = "codex",
+  ownerDeclaredScope?: { since?: string; source_roots?: string[] } | null
+): Promise<string> {
+  const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+    connector_id: connectorId,
+    local_binding_name: localBindingName,
+    ...(ownerDeclaredScope === undefined ? {} : { collection_scope: ownerDeclaredScope }),
+  });
+  assert.equal(codeResp.status, 201, JSON.stringify(codeResp.body));
+  return stringField(bodyOf(codeResp), "enrollment_code");
+}
+
+function enrollWithScope(
+  asUrl: string,
+  enrollmentCode: string,
+  collectionScope: { since?: string; source_roots?: string[] } | null | undefined
+): Promise<JsonResponse> {
+  return postJson(
+    `${asUrl}/_ref/device-exporters/enroll`,
+    { collection_scope: collectionScope, enrollment_code: enrollmentCode },
+    PROTOCOL_HEADERS
+  );
+}
+
+test("connect: enrolling with no scope declared defaults to recent history, not an implicit full pass", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "recent-default-laptop");
+    const resp = await enrollWithScope(asUrl, code, undefined);
+    assert.equal(resp.status, 201);
+    const connectorInstanceId = stringField(bodyOf(resp), "connector_instance_id");
+    const effective = readEffectiveScope(connectorInstanceId);
+    assert.ok(effective?.since, "an undeclared enrollment must default to a recent-history since");
+    const daysAgo = (Date.now() - Date.parse(effective?.since ?? "")) / 86_400_000;
+    assert.ok(daysAgo > 29 && daysAgo < 31, `expected ~30 days back, got ${daysAgo}`);
+  });
+});
+
+test("connect: --all requests an explicit full pass, honored when the server declared nothing", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "all-history-laptop");
+    const resp = await enrollWithScope(asUrl, code, null);
+    assert.equal(resp.status, 201);
+    const connectorInstanceId = stringField(bodyOf(resp), "connector_instance_id");
+    assert.equal(
+      readEffectiveScope(connectorInstanceId),
+      null,
+      "an explicit all request must land as unscoped, not defaulted to recent"
+    );
+  });
+});
+
+test("connect: --recent <days> is honored exactly when the server declared nothing", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "custom-recent-laptop");
+    const since = "2026-07-01T00:00:00.000Z";
+    const resp = await enrollWithScope(asUrl, code, { since });
+    assert.equal(resp.status, 201);
+    const connectorInstanceId = stringField(bodyOf(resp), "connector_instance_id");
+    assert.deepEqual(readEffectiveScope(connectorInstanceId), { since });
+  });
+});
+
+test("connect: custom --since/--source-roots validates and is honored exactly when the server declared nothing", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "custom-roots-laptop");
+    const resp = await enrollWithScope(asUrl, code, {
+      since: "2026-06-01T00:00:00.000Z",
+      source_roots: ["proj-a", "proj-b"],
+    });
+    assert.equal(resp.status, 201);
+    const connectorInstanceId = stringField(bodyOf(resp), "connector_instance_id");
+    assert.deepEqual(readEffectiveScope(connectorInstanceId), {
+      since: "2026-06-01T00:00:00.000Z",
+      source_roots: ["proj-a", "proj-b"],
+    });
+  });
+});
+
+test("connect: a malformed collection_scope (unparseable since) is rejected with a typed 400 and enrolls nothing", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "malformed-since-laptop");
+    const resp = await enrollWithScope(asUrl, code, { since: "not-a-date" });
+    assert.equal(resp.status, 400);
+    assert.equal(errorCode(resp), "invalid_request");
+
+    // Nothing was consumed: the SAME code can still be used for a valid enroll.
+    const retry = await enrollWithScope(asUrl, code, undefined);
+    assert.equal(retry.status, 201, "a rejected malformed request must not consume the one-time code");
+  });
+});
+
+test("connect: a malformed collection_scope (empty source_roots entry) is rejected with a typed 400", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "malformed-roots-laptop");
+    const resp = await enrollWithScope(asUrl, code, { source_roots: ["ok", ""] });
+    assert.equal(resp.status, 400);
+    assert.equal(errorCode(resp), "invalid_request");
+  });
+});
+
+test("connect: a device --all request is REJECTED when the owner already staged a narrower boundary on the code", async () => {
+  await withServer(async ({ asUrl }) => {
+    // The owner (dashboard/enrollment-codes mint) already declared a
+    // boundary on the CODE itself. A device requesting --all at enroll time
+    // is a widening request against it and must be refused outright — never
+    // silently clamped back down to the owner's boundary, and never honored
+    // as the wider ask.
+    const code = await mintEnrollmentCode(asUrl, "widen-laptop", "codex", { since: "2026-06-01T00:00:00.000Z" });
+    const resp = await enrollWithScope(asUrl, code, null);
+    assert.equal(resp.status, 400);
+    assert.equal(errorCode(resp), "invalid_request");
+    assert.match(
+      String((bodyOf(resp).error as Record<string, unknown> | undefined)?.message),
+      NARROW_ONLY_REJECTION_MESSAGE_PATTERN
+    );
+
+    // Nothing was consumed or materialized by the rejected attempt: the SAME
+    // code can still be used with a compliant (narrower-or-equal) request.
+    const compliant = await enrollWithScope(asUrl, code, { since: "2026-07-01T00:00:00.000Z" });
+    assert.equal(compliant.status, 201, "a rejected widening attempt must not consume the code");
+    assert.deepEqual(readEffectiveScope(stringField(bodyOf(compliant), "connector_instance_id")), {
+      since: "2026-07-01T00:00:00.000Z",
+    });
+  });
+});
+
+test("connect: a device --since request EARLIER than the owner-staged boundary is REJECTED as widening", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "widen-since-laptop", "codex", {
+      since: "2026-06-01T00:00:00.000Z",
+    });
+    const resp = await enrollWithScope(asUrl, code, { since: "2026-01-01T00:00:00.000Z" });
+    assert.equal(resp.status, 400);
+    assert.equal(errorCode(resp), "invalid_request");
+  });
+});
+
+test("connect: a device --source-roots request outside the owner-staged root is REJECTED as widening", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "widen-roots-laptop", "codex", {
+      source_roots: ["/home/owner/code/pdpp"],
+    });
+    const resp = await enrollWithScope(asUrl, code, { source_roots: ["/home/owner/code/other-project"] });
+    assert.equal(resp.status, 400);
+    assert.equal(errorCode(resp), "invalid_request");
+
+    // A NARROWER root (a subdirectory of the owner's declared root) is honored.
+    const narrower = await enrollWithScope(asUrl, code, { source_roots: ["/home/owner/code/pdpp/sub"] });
+    assert.equal(narrower.status, 201);
+    assert.deepEqual(readEffectiveScope(stringField(bodyOf(narrower), "connector_instance_id")), {
+      source_roots: ["/home/owner/code/pdpp/sub"],
+    });
+  });
+});
+
+test("connect: a device request with no preference honors the owner-staged boundary unchanged", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "no-preference-laptop", "codex", {
+      since: "2026-06-01T00:00:00.000Z",
+    });
+    const resp = await enrollWithScope(asUrl, code, undefined);
+    assert.equal(resp.status, 201);
+    assert.deepEqual(readEffectiveScope(stringField(bodyOf(resp), "connector_instance_id")), {
+      since: "2026-06-01T00:00:00.000Z",
+    });
+  });
+});
+
+test("connect: one-time enrollment code cannot be replayed to mint a second unrelated device", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "replay-laptop");
+    const first = await enrollWithScope(asUrl, code, undefined);
+    assert.equal(first.status, 201);
+    const firstDeviceId = stringField(bodyOf(first), "device_id");
+
+    // Replaying the SAME code from a "different" caller (no device credential
+    // reused) must not mint a second device: it can only resume the SAME
+    // binding it already materialized (design D2's idempotent re-enroll), or
+    // be refused outright if that binding no longer matches.
+    const replay = await enrollWithScope(asUrl, code, undefined);
+    assert.equal(replay.status, 201, "a consumed code replay resumes the same binding rather than erroring");
+    assert.equal(
+      stringField(bodyOf(replay), "device_id"),
+      firstDeviceId,
+      "replay must resolve to the SAME device, never mint a second, unrelated one"
+    );
+
+    // A THIRD replay, this time with an incompatible local_binding_name
+    // encoded into a fresh code for the same owner, is a genuinely different
+    // enrollment and must mint its own device — proving replay-detection
+    // is about the CODE, not a blanket refusal of all subsequent enrolls.
+    const otherCode = await mintEnrollmentCode(asUrl, "replay-laptop-2");
+    const other = await enrollWithScope(asUrl, otherCode, undefined);
+    assert.equal(other.status, 201);
+    assert.notEqual(stringField(bodyOf(other), "device_id"), firstDeviceId);
+  });
+});
+
+test("connect: a fully consumed and expired code cannot be reused at all", async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "expired-laptop");
+    const first = await enrollWithScope(asUrl, code, undefined);
+    assert.equal(first.status, 201);
+
+    // Force the enrollment code row into an already-expired state, mirroring
+    // a code replayed long after its TTL — the expiry check runs even on a
+    // consumed code's retry path.
+    const latestCode = getDb()
+      .prepare("SELECT code_hash FROM device_enrollment_codes ORDER BY created_at DESC LIMIT 1")
+      .get() as { code_hash: string } | undefined;
+    const updated = getDb()
+      .prepare("UPDATE device_enrollment_codes SET expires_at = ? WHERE code_hash = ?")
+      .run(new Date(Date.now() - 60_000).toISOString(), latestCode?.code_hash);
+    assert.equal(updated.changes, 1);
+
+    const replay = await enrollWithScope(asUrl, code, undefined);
+    assert.equal(replay.status, 410, "an expired code, even one already consumed once, must be refused outright");
+  });
+});
+
+test("connect: local profile permissions and redaction are unaffected by the scope request (regression via the shared writeLocalCollectorProfile path)", async () => {
+  // This is a route-level sanity check that the enroll response's SECRET
+  // fields (device_token) are the only sensitive material returned, and that
+  // no scope-related detail leaks a path, payload, or PII. The local-collector
+  // package's own test (`runConnect: writes the local profile with
+  // restrictive permissions, same as setup`) proves file-mode 0600/0700; this
+  // proves the SERVER side returns nothing extra to redact.
+  await withServer(async ({ asUrl }) => {
+    const code = await mintEnrollmentCode(asUrl, "redaction-laptop");
+    const resp = await enrollWithScope(asUrl, code, { source_roots: ["/home/owner/secret-project-name"] });
+    assert.equal(resp.status, 201);
+    const body = bodyOf(resp);
+    assert.deepEqual(
+      new Set(Object.keys(body)),
+      new Set([
+        "connector_id",
+        "connector_instance_id",
+        "device_id",
+        "device_token",
+        "local_binding_name",
+        "object",
+        "source_instance_id",
+      ])
+    );
+    // The declared root path is real owner data (a project path) — it must
+    // never be echoed back in the enroll response itself; it lives only in
+    // connector_state, read back through the dedicated scope route/CLI.
+    assert.equal(JSON.stringify(body).includes("secret-project-name"), false);
   });
 });

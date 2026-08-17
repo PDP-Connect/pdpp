@@ -193,3 +193,53 @@ test("Google Maps Data Portability connector resumes an in-progress archive inst
   assert.ok(firstRecord);
   assert.equal(firstRecord.data.archive_job_id, "job-existing");
 });
+
+test("Google Maps Data Portability leaves unauthorized resource groups unaccounted", async () => {
+  const fakeClient = new FakeGoogleDataPortabilityClient();
+  const { ctx, messages, records } = makeContext({
+    streams: [{ name: "archive_jobs", resources: ["maps.starred_places", "maps.photos_videos"] }],
+  });
+
+  await collectGoogleMapsDataPortability(ctx, {
+    clientFactory: () => fakeClient,
+    env: {
+      GOOGLE_DATAPORTABILITY_ACCESS_TOKEN: "ya29.access",
+      GOOGLE_DATAPORTABILITY_AUTHORIZED_RESOURCE_GROUPS: "maps.starred_places",
+    },
+  });
+
+  assert.equal(records.length, 1);
+  const coverage = messages.find((msg) => msg.type === "DETAIL_COVERAGE");
+  assert.ok(coverage);
+  assert.deepEqual(coverage.required_keys, ["maps.starred_places", "maps.photos_videos"]);
+  assert.deepEqual(coverage.hydrated_keys, ["maps.starred_places"]);
+  assert.deepEqual(coverage.optional_skip_keys ?? [], []);
+  assert.equal(coverage.considered, 2);
+  assert.equal(coverage.covered, 1);
+});
+
+test("Google Maps Data Portability reports zero authorized groups without accepting their absence", async () => {
+  const fakeClient = new FakeGoogleDataPortabilityClient();
+  const { ctx, messages, records } = makeContext({
+    streams: [{ name: "archive_jobs", resources: ["maps.photos_videos"] }],
+  });
+
+  await assert.rejects(
+    collectGoogleMapsDataPortability(ctx, {
+      clientFactory: () => fakeClient,
+      env: {
+        GOOGLE_DATAPORTABILITY_ACCESS_TOKEN: "ya29.access",
+      },
+    }),
+    /google_dataportability_no_authorized_resource_groups/
+  );
+
+  assert.equal(records.length, 0);
+  const coverage = messages.find((msg) => msg.type === "DETAIL_COVERAGE");
+  assert.ok(coverage);
+  assert.deepEqual(coverage.required_keys, ["maps.photos_videos"]);
+  assert.deepEqual(coverage.hydrated_keys, []);
+  assert.deepEqual(coverage.optional_skip_keys ?? [], []);
+  assert.equal(coverage.considered, 1);
+  assert.equal(coverage.covered, 0);
+});

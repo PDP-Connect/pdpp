@@ -17,11 +17,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildCoverageDiagnosticsStateSnapshot,
+  buildDerivedCoverageRecord,
+  describeDerivedCoverageReason,
   expectedLocalCoverageStoreDescriptors,
   INVENTORY_FINGERPRINT_EXCLUDE_KEYS,
+  LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR,
+  localCoverageStreamsMissingDescriptors,
   openInventoryFingerprintCursor,
   parseCoverageDiagnosticsStateSnapshot,
 } from "./local-source-inventory.ts";
+import { readPolyfillManifests } from "./manifest-registry.ts";
 
 function inventoryRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -224,4 +229,302 @@ test("legacy cursor (no fingerprints field) re-emits everything once", () => {
   // must re-emit every record exactly once so the gate self-heals.
   const cursor = openInventoryFingerprintCursor({ fetched_at: "2026-06-01T00:00:00Z" });
   assert.equal(cursor.shouldEmit(inventoryRecord()), true, "legacy cursor re-emits");
+});
+
+// ─── buildDerivedCoverageRecord / describeDerivedCoverageReason ──────────
+//
+// The shared mechanical policy for a "derived" stream — one parsed out of
+// another, already-scanned stream's source rather than its own
+// KnownLocalStore entry (Claude Code's messages/attachments/memory_notes;
+// Codex's messages/function_calls). This is the single source of truth for
+// the status/reason rule both connectors' `emitDerivedCoverage` call into —
+// it must not be reimplemented per connector.
+
+test("buildDerivedCoverageRecord: a completed scan with emitted records is collected, reason names the count", () => {
+  const record = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
+    emitted: 3,
+    examined: 5,
+    label: "message",
+    scanComplete: true,
+    stream: "messages",
+  });
+  assert.equal(record.status, "collected");
+  assert.equal(record.reason, "3 message records emitted");
+});
+
+test("buildDerivedCoverageRecord: a completed scan with zero examined is collected, not missing", () => {
+  const record = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
+    emitted: 0,
+    examined: 0,
+    label: "message",
+    scanComplete: true,
+    stream: "messages",
+  });
+  assert.equal(record.status, "collected", "an empty-but-complete scan is collected, not missing/unaccounted");
+  assert.equal(record.reason, "enumeration complete, 0 examined");
+});
+
+test("buildDerivedCoverageRecord: examined>0 but emitted=0 (fingerprint-suppressed) is still collected", () => {
+  const record = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
+    emitted: 0,
+    examined: 4,
+    label: "message",
+    scanComplete: true,
+    stream: "messages",
+  });
+  assert.equal(record.status, "collected");
+  assert.equal(record.reason, "enumeration complete, 4 examined (0 emitted)");
+});
+
+test("buildDerivedCoverageRecord: an incomplete scan is unaccounted with a generic fallback reason", () => {
+  const record = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
+    emitted: 0,
+    examined: 0,
+    label: "message",
+    scanComplete: false,
+    stream: "messages",
+  });
+  assert.equal(record.status, "unaccounted");
+  assert.equal(record.reason, "enumeration did not complete");
+});
+
+test("buildDerivedCoverageRecord: a connector-supplied incompleteReason overrides the generic fallback", () => {
+  const record = buildDerivedCoverageRecord({
+    connectorId: "codex",
+    emitted: 0,
+    examined: 0,
+    incompleteReason: "rollout enumeration failed: parse_error",
+    label: "function_call",
+    scanComplete: false,
+    stream: "function_calls",
+  });
+  assert.equal(record.status, "unaccounted");
+  assert.equal(
+    record.reason,
+    "rollout enumeration failed: parse_error",
+    "a connector's own scan-outcome detail must survive through the shared builder"
+  );
+});
+
+// ─── emitter <-> authority structural link ────────────────────────────────
+//
+// buildDerivedCoverageRecord no longer accepts a `store`/`id` from its
+// caller -- it SELECTS them from LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR
+// via selectLocalCoverageDerivedDescriptor, keyed on (connectorId, stream).
+// This closes the drift class a manifest<->descriptor conformance test alone
+// cannot: a connector's derived emitter could previously hard-code a store id
+// string that silently diverged from the table with no failure anywhere.
+// These tests exercise the actual selection path, not a hand-supplied store.
+
+test("buildDerivedCoverageRecord: the emitted store id is exactly what the authority table declares for this (connector, stream) pair", () => {
+  for (const [connectorId, stream, expectedStore] of [
+    ["claude_code", "messages", "derived_messages"],
+    ["claude_code", "attachments", "derived_attachments"],
+    ["claude_code", "memory_notes", "derived_memory_notes"],
+    ["codex", "messages", "derived_messages"],
+    ["codex", "function_calls", "derived_function_calls"],
+  ] as const) {
+    const record = buildDerivedCoverageRecord({
+      connectorId,
+      emitted: 1,
+      examined: 1,
+      label: "x",
+      scanComplete: true,
+      stream,
+    });
+    assert.equal(
+      record.store,
+      expectedStore,
+      `${connectorId}/${stream}: store id must come from the authority table, not a hard-coded literal`
+    );
+    assert.equal(record.id, `coverage:${expectedStore}`, "record id must be derived from the selected store");
+  }
+});
+
+test("buildDerivedCoverageRecord: refuses to build a record for a stream the authority table doesn't declare a descriptor for", () => {
+  assert.throws(
+    () =>
+      buildDerivedCoverageRecord({
+        connectorId: "claude_code",
+        emitted: 1,
+        examined: 1,
+        label: "x",
+        scanComplete: true,
+        stream: "some_future_stream_with_no_descriptor",
+      }),
+    /expected exactly one descriptor/,
+    "an emitter cannot fabricate coverage for a stream the shared authority has not declared -- this is the exact " +
+      "structural failure mode a hard-coded store id previously allowed silently"
+  );
+});
+
+test("buildDerivedCoverageRecord: refuses an ambiguous stream mapped by more than one descriptor rather than silently picking one", () => {
+  // codex's `sessions` stream is deliberately declared by TWO static
+  // descriptors (`sessions` and `state_db`) -- a derived-stream caller for
+  // `sessions` has no single authoritative store to select and must fail
+  // loud, not guess.
+  assert.throws(
+    () =>
+      buildDerivedCoverageRecord({
+        connectorId: "codex",
+        emitted: 1,
+        examined: 1,
+        label: "x",
+        scanComplete: true,
+        stream: "sessions",
+      }),
+    /expected exactly one descriptor for derived stream 'sessions', found 2/
+  );
+});
+
+test("buildDerivedCoverageRecord: refuses a connector with no authoritative descriptor table at all", () => {
+  assert.throws(
+    () =>
+      buildDerivedCoverageRecord({
+        connectorId: "some_unregistered_connector",
+        emitted: 1,
+        examined: 1,
+        label: "x",
+        scanComplete: true,
+        stream: "messages",
+      }),
+    /no authoritative local coverage inventory/
+  );
+});
+
+test("buildDerivedCoverageRecord: carries an optional scopeFingerprint as collection_scope, omits it when absent", () => {
+  const withScope = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
+    emitted: 1,
+    examined: 1,
+    label: "message",
+    scanComplete: true,
+    scopeFingerprint: "fp-abc",
+    stream: "messages",
+  });
+  assert.equal((withScope as { collection_scope?: string }).collection_scope, "fp-abc");
+
+  const withoutScope = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
+    emitted: 1,
+    examined: 1,
+    label: "message",
+    scanComplete: true,
+    stream: "messages",
+  });
+  assert.equal(
+    "collection_scope" in withoutScope,
+    false,
+    "an omitted scopeFingerprint must not appear as an explicit undefined key"
+  );
+});
+
+test("describeDerivedCoverageReason: identical inputs from two different connectors produce the identical reason string", () => {
+  // The whole point of the extraction: two connectors calling the SAME
+  // function with the SAME shape must not be able to drift.
+  const claudeCodeStyle = describeDerivedCoverageReason({
+    emitted: 2,
+    examined: 2,
+    label: "message",
+    scanComplete: true,
+  });
+  const codexStyle = describeDerivedCoverageReason({
+    emitted: 2,
+    examined: 2,
+    label: "message",
+    scanComplete: true,
+  });
+  assert.equal(claudeCodeStyle, codexStyle);
+  assert.equal(claudeCodeStyle, "2 message records emitted");
+});
+
+// ─── descriptor-authority / manifest conformance ──────────────────────────
+//
+// LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR is "an authority shared by
+// emitters and the server proof reader" (see its own doc comment above) --
+// its whole reason to exist is to make a partial/drifted descriptor set
+// detectable rather than silently capping a connector's provable coverage.
+// These tests pin that promise directly against the connector's own shipped
+// manifest, so a required stream that quietly loses its descriptor (as
+// claude_code's messages/attachments/memory_notes and codex's
+// messages/function_calls once did) fails CI instead of only being
+// discoverable by reading a live UAT snapshot.
+
+interface ManifestStreamEntry {
+  readonly name: string;
+  readonly required?: boolean;
+}
+
+interface LocalCoverageManifest {
+  readonly connector_key: string;
+  readonly streams: readonly ManifestStreamEntry[];
+}
+
+function isLocalCoverageManifest(manifest: unknown): manifest is LocalCoverageManifest {
+  if (!manifest || typeof manifest !== "object") {
+    return false;
+  }
+  const candidate = manifest as { connector_key?: unknown; streams?: unknown };
+  return typeof candidate.connector_key === "string" && Array.isArray(candidate.streams);
+}
+
+/** Every shipped manifest that declares a descriptor-table entry for its connector key. */
+function shippedManifestsWithDescriptorAuthority(): readonly LocalCoverageManifest[] {
+  return readPolyfillManifests()
+    .map((entry) => entry.manifest)
+    .filter(isLocalCoverageManifest)
+    .filter((manifest) => expectedLocalCoverageStoreDescriptors(manifest.connector_key) !== null);
+}
+
+test("every shipped manifest with a descriptor-table entry has a descriptor for each required stream", () => {
+  const manifests = shippedManifestsWithDescriptorAuthority();
+  // Guards the guard: if this list is empty the assertions below vacuously
+  // pass without proving anything.
+  assert.ok(
+    manifests.some((manifest) => manifest.connector_key === "claude-code") &&
+      manifests.some((manifest) => manifest.connector_key === "codex"),
+    "expected the claude-code and codex manifests to be discovered under the descriptor authority"
+  );
+
+  for (const manifest of manifests) {
+    const required = manifest.streams
+      .filter((stream) => stream.required !== false && stream.name !== "coverage_diagnostics")
+      .map((stream) => stream.name);
+    const missing = localCoverageStreamsMissingDescriptors(manifest.connector_key, required);
+    assert.deepEqual(
+      missing,
+      [],
+      `${manifest.connector_key}: required manifest stream(s) [${missing.join(", ")}] have no ` +
+        "LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR entry, so deriveLocalCoverageAxis can never " +
+        "mark them complete regardless of what the connector actually collects"
+    );
+  }
+});
+
+test("descriptor authority carries no store whose stream is absent from its own connector's manifest", () => {
+  // The inverse drift direction: a descriptor claims a stream the manifest
+  // does not (or no longer) declare. Catches a stale/renamed entry the same
+  // way -- e.g. a store left behind after a manifest stream rename, or a
+  // synthetic store id (like the "logs" store seen live on an older codex
+  // manifest_generation) that no longer corresponds to real emitter output.
+  const manifests = shippedManifestsWithDescriptorAuthority();
+  for (const manifest of manifests) {
+    const manifestStreams = new Set(manifest.streams.map((stream) => stream.name));
+    const descriptors =
+      LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR[
+        manifest.connector_key.replace(/-/g, "_") as keyof typeof LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR
+      ];
+    const orphaned = descriptors
+      .filter((descriptor) => descriptor.stream !== null && !manifestStreams.has(descriptor.stream))
+      .map((descriptor) => `${descriptor.store}->${descriptor.stream}`);
+    assert.deepEqual(
+      orphaned,
+      [],
+      `${manifest.connector_key}: descriptor(s) [${orphaned.join(", ")}] reference a stream the manifest does not declare`
+    );
+  }
 });

@@ -116,7 +116,6 @@ function mergeAccessType(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>
 ): {
   readonly authorized: ReadonlySet<string>;
-  readonly denied: ReadonlySet<string>;
   readonly oneTime: ReadonlySet<string>;
   readonly timeBased: ReadonlySet<string>;
 } {
@@ -129,9 +128,8 @@ function mergeAccessType(
     ...csvSet(env.GOOGLE_DATAPORTABILITY_TIME_BASED_RESOURCE_GROUPS),
   ]);
   const authorizedFromEnv = csvSet(env.GOOGLE_DATAPORTABILITY_AUTHORIZED_RESOURCE_GROUPS);
-  const denied = csvSet(env.GOOGLE_DATAPORTABILITY_DENIED_RESOURCE_GROUPS);
   const authorized = new Set([...oneTime, ...timeBased, ...authorizedFromEnv]);
-  return { authorized, denied, oneTime, timeBased };
+  return { authorized, oneTime, timeBased };
 }
 
 function cursorForResource(state: DataPortabilityState, resourceGroup: string): ArchiveJobCursor | null {
@@ -248,18 +246,14 @@ export async function collectGoogleMapsDataPortability(
   const checkedAccessType = mergeAccessType(await client.checkAccessType(), env);
   const selected = selectedResourceGroups(ctx);
   const resourceGroups = selected.filter((resourceGroup) => checkedAccessType.authorized.has(resourceGroup));
-  const denied = selected.filter(
-    (resourceGroup) => checkedAccessType.denied.has(resourceGroup) || !checkedAccessType.authorized.has(resourceGroup)
-  );
   if (resourceGroups.length === 0) {
     await emitDetailCoverage(ctx, {
       stream: "archive_jobs",
       stateStream: "archive_jobs",
       requiredKeys: selected,
       hydratedKeys: [],
-      optionalSkipKeys: denied,
       considered: selected.length,
-      covered: denied.length,
+      covered: 0,
     });
     throw new Error("google_dataportability_no_authorized_resource_groups");
   }
@@ -285,11 +279,10 @@ export async function collectGoogleMapsDataPortability(
   await emitDetailCoverage(ctx, {
     stream: "archive_jobs",
     stateStream: "archive_jobs",
-    requiredKeys: [...resourceGroups, ...denied],
+    requiredKeys: selected,
     hydratedKeys: emitted,
-    optionalSkipKeys: denied,
-    considered: resourceGroups.length + denied.length,
-    covered: emitted.length + denied.length,
+    considered: selected.length,
+    covered: emitted.length,
   });
 
   await ctx.emit({

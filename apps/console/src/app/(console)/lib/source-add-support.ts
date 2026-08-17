@@ -46,13 +46,15 @@ export interface SourceAddSupport {
 
 const SUPPORT_LABELS: Record<AddAccountSupport, string> = {
   deployment_prerequisite: "Server setup required to add another account",
-  not_self_service: "Add path not available here",
-  packaged_path_pending: "Add path not packaged",
+  experimental_opt_in: "Adding another account is experimental here",
+  not_self_service: "Adding another account is not available here",
+  packaged_path_pending: "Adding another account is not available yet",
   self_service: "Add another account",
 };
 
 const SUPPORT_TONES: Record<AddAccountSupport, string> = {
   deployment_prerequisite: "border-amber-500/30 bg-amber-500/10 text-amber-700",
+  experimental_opt_in: "border-amber-500/30 bg-amber-500/10 text-amber-700",
   not_self_service: "border-border bg-muted/30 text-muted-foreground",
   packaged_path_pending: "border-amber-500/30 bg-amber-500/10 text-amber-700",
   self_service: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",

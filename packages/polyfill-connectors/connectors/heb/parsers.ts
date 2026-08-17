@@ -705,6 +705,20 @@ export function diagnoseEmptyListPage(html: string, url: string): ListPageDiagno
   };
 }
 
+/** Keep browser text local to classification. Durable SKIP_RESULT diagnostics
+ * retain structural facts but never page content, title, or URL. */
+export function redactHebListPageDiagnostics(diag: ListPageDiagnostics): ListPageDiagnostics {
+  return {
+    any_card: diag.any_card,
+    body_preview: "",
+    incapsula_block: diag.incapsula_block,
+    order_cards: diag.order_cards,
+    password_form: diag.password_form,
+    title: "",
+    url: "",
+  };
+}
+
 // ─── Record builders ──────────────────────────────────────────────────────
 
 export function buildOrderRecord(listOrder: ListPageOrder, orderDate: string, emittedAt: string): OrdersRecord {

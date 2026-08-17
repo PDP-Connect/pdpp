@@ -88,6 +88,7 @@ function fakeLeaseStore(): BrowserSurfaceLeaseStore {
     upsertLease: () => unimplemented("upsertLease"),
     upsertSurface: () => unimplemented("upsertSurface"),
     withLeaseTransaction: () => unimplemented("withLeaseTransaction"),
+    withPersistenceUnitOfWork: () => unimplemented("withPersistenceUnitOfWork"),
   };
 }
 
@@ -229,7 +230,7 @@ test("USAA remains an owner-present managed n.eko connector in the committed run
 
   assert.equal(usaaManifest.connector_id, USAA_CONNECTOR_ID);
   assert.equal(usaaManifest.runtime_requirements.bindings.browser.required, true);
-  assert.deepEqual(usaaManifest.capabilities.human_interaction, ["manual_action"]);
+  assert.deepEqual(usaaManifest.capabilities.human_interaction, ["manual_action", "otp"]);
   assert.equal(usaaManifest.capabilities.refresh_policy.recommended_mode, "manual");
   assert.equal(usaaManifest.capabilities.refresh_policy.background_safe, false);
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${USAA_CONNECTOR_ID}`));

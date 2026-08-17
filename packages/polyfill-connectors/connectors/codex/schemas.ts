@@ -154,7 +154,6 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   skills: skillsSchema,
   history: inventorySchema,
   session_index: inventorySchema,
-  logs: inventorySchema,
   shell_snapshots: inventorySchema,
   config_inventory: inventorySchema,
   cache_inventory: inventorySchema,

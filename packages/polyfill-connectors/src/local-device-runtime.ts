@@ -16,9 +16,18 @@ import {
 } from "./local-device-envelope.ts";
 import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queue.ts";
 
+/**
+ * Stream name a connector's per-store proof claims (e.g. `collected`) ride
+ * on. Kept in sync with the same literal in `collector-runner.ts` and
+ * `ref-control.ts` — the wire contract, not a shared module, is the source
+ * of truth for connectors written outside this package.
+ */
+const LOCAL_COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
+
 export const CODEX_CONNECTOR_ID = "codex";
 export const CLAUDE_CODE_CONNECTOR_ID = "claude-code";
 export const AMAZON_CONNECTOR_ID = "amazon";
+export const IMESSAGE_CONNECTOR_ID = "imessage";
 export const DEFAULT_CODEX_STREAMS = ["sessions", "messages", "function_calls", "rules", "prompts", "skills"] as const;
 export const DEFAULT_CLAUDE_CODE_STREAMS = [
   "sessions",
@@ -29,6 +38,7 @@ export const DEFAULT_CLAUDE_CODE_STREAMS = [
   "slash_commands",
 ] as const;
 export const DEFAULT_AMAZON_STREAMS = ["orders", "order_items"] as const;
+export const DEFAULT_IMESSAGE_STREAMS = ["messages", "participants", "attachments"] as const;
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
@@ -76,6 +86,19 @@ export const LOCAL_DEVICE_CONNECTOR_PROFILES: Readonly<Record<string, LocalDevic
     defaultStreams: DEFAULT_AMAZON_STREAMS,
     entrypoint: "connectors/amazon/index.ts",
   },
+  // iMessage's PRIMARY operator path is `npx @pdpp/local-collector setup`
+  // (it is a registered `LOCAL_COLLECTOR_DEFINITIONS` entry — see
+  // collector-registry.ts — because it reads chat.db via node:sqlite, not a
+  // native module, so it ships in that bundle like Claude Code/Codex). This
+  // profile registers the same connector on the lower-level monorepo-only
+  // exporter as an optional fallback for scripting/CI contexts that already
+  // run from a checkout — not a second advertised setup path. macOS-only,
+  // and requires Full Disk Access for the terminal/Node binary that runs it.
+  [IMESSAGE_CONNECTOR_ID]: {
+    connectorId: IMESSAGE_CONNECTOR_ID,
+    defaultStreams: DEFAULT_IMESSAGE_STREAMS,
+    entrypoint: "connectors/imessage/index.ts",
+  },
 };
 
 export function resolveLocalDeviceConnectorProfile(connectorId: string): LocalDeviceConnectorProfile {
@@ -117,6 +140,20 @@ export interface LocalDeviceRuntimeConfig {
   deviceId: string;
   deviceToken: string;
   queuePath: string;
+  /**
+   * Bound the number of records queued to a proof pass, e.g. for a UAT run
+   * that should not push an operator's full source on first try. The
+   * connector still reads its full local scope before this truncates the
+   * result (this runtime is batch, not streaming, so there is no cheaper
+   * abort point) — appropriate for a local-disk read like chat.db, not a
+   * paginated network source. Unset queues every record the connector emits.
+   *
+   * Counts SUBSTANTIVE records only — `coverage_diagnostics` proof rows
+   * (e.g. `collected`) are never part of the sampled count, so a small
+   * limit like `0` truncates data without being satisfied by a diagnostic
+   * row alone. See {@link LocalDeviceRuntimeResult.recordsQueued}.
+   */
+  sampleLimit?: number;
   sourceInstanceId: string;
   streams?: readonly string[];
 }
@@ -124,8 +161,21 @@ export interface LocalDeviceRuntimeConfig {
 export interface LocalDeviceRuntimeResult {
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
+  /**
+   * Records actually queued for ingest. `sampleLimit` bounds only the
+   * SUBSTANTIVE (non-`coverage_diagnostics`) portion of this count — on an
+   * UNTRUNCATED run (substantive records fit within `sampleLimit`, or no
+   * `sampleLimit` was given) this number may additionally include the
+   * run's `coverage_diagnostics` proof rows, which ride along uncounted
+   * against the limit. On a TRUNCATED run, `coverage_diagnostics` rows are
+   * withheld entirely — see `truncatedBySample`.
+   */
   recordsQueued: number;
+  /** Total records the connector emitted before any `sampleLimit` truncation. */
+  recordsSeen: number;
   sentBatches: number;
+  /** True when `sampleLimit` truncated the queued records below what the connector emitted. */
+  truncatedBySample: boolean;
 }
 
 export async function enrollLocalDevice(config: LocalDeviceEnrollmentConfig): Promise<EnrollmentExchangeResponse> {
@@ -165,9 +215,31 @@ export async function runLocalDeviceExporter(config: LocalDeviceRuntimeConfig): 
   });
 
   const messages = await collectConnectorMessages(profile, config);
-  const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
+  const allRecords = messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD"
+  );
   const done =
     messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE") ?? null;
+
+  const { sampleLimit } = config;
+  const recordsSeen = allRecords.length;
+  // `coverage_diagnostics` records are a per-store proof claim (e.g.
+  // `collected`), not sampled content — they must never ride through a
+  // sample-limit slice that cuts off the data records they vouch for. Sample
+  // ONLY the substantive records; a truncated run drops its coverage claims
+  // instead of asserting proof over data it never queued. This is
+  // ordering-independent (`allRecords` is partitioned by stream, not
+  // position), so it holds whether a connector emits diagnostics before or
+  // after its data. `sampleLimit: 0` truncates whenever any substantive
+  // record exists (0 < substantiveRecords.length); a verified-empty run
+  // with zero substantive records is never "truncated" by a limit it never
+  // needed, so its diagnostics still ride through.
+  const diagnosticRecords = allRecords.filter((record) => record.stream === LOCAL_COVERAGE_DIAGNOSTICS_STREAM);
+  const substantiveRecords = allRecords.filter((record) => record.stream !== LOCAL_COVERAGE_DIAGNOSTICS_STREAM);
+  const sampledSubstantive =
+    sampleLimit !== undefined && sampleLimit >= 0 ? substantiveRecords.slice(0, sampleLimit) : substantiveRecords;
+  const truncatedBySample = sampledSubstantive.length < substantiveRecords.length;
+  const records = truncatedBySample ? sampledSubstantive : [...sampledSubstantive, ...diagnosticRecords];
 
   let recordsQueued = 0;
   let enqueuedBatches = 0;
@@ -199,7 +271,7 @@ export async function runLocalDeviceExporter(config: LocalDeviceRuntimeConfig): 
     status: "healthy",
   });
 
-  return { done, enqueuedBatches, recordsQueued, sentBatches };
+  return { done, enqueuedBatches, recordsQueued, recordsSeen, sentBatches, truncatedBySample };
 }
 
 /** @deprecated use {@link runLocalDeviceExporter}; retained for back-compat. */

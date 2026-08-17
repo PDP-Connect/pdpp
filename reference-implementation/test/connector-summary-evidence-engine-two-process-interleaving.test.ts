@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Genuine two-process interleaving oracle for `repairCandidateSqlite`'s
- * BEGIN IMMEDIATE fence (openspec/changes/reconcile-active-summary-evidence
- * design.md; independent-reviewer follow-up: "add a genuine two-connection/
- * process interleaving oracle").
+ * Genuine two-process interleaving oracle for the source-revision repair
+ * primitive (openspec/changes/reconcile-active-summary-evidence design.md;
+ * independent-reviewer follow-up: "add a genuine two-connection/process
+ * interleaving oracle").
  *
  * better-sqlite3 is fully synchronous and single-connection per process, so
  * two `async` calls inside ONE Node.js process can never construct a
@@ -23,16 +23,10 @@
  * (`PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS`, see
  * `testOnlyRepairCandidateSqliteDelay` in
  * `server/connector-summary-evidence-engine.ts`) is set to the same value
- * in BOTH processes. Whichever process's `writeTransaction` (BEGIN
- * IMMEDIATE) wins the SQLite write lock first holds it for the full delay
- * window before writing and committing; the loser's own BEGIN IMMEDIATE
- * genuinely blocks on SQLite's lock (subject to the driver's busy_timeout,
- * default 30s — see `server/db.js`) for that entire window. This makes the
- * overlap deterministic: without the delay, whichever process happened to
- * reach BEGIN IMMEDIATE first would simply finish its whole (sub-millisecond)
- * transaction before the other started, and no genuine lock contention would
- * ever be observed — the delay is what turns "usually doesn't race" into "the
- * race window is reliably wide enough to hit on every run."
+ * in BOTH processes. The delay sits between the fenced canonical read and
+ * the evidence upsert while `BEGIN IMMEDIATE` is held. The second process
+ * therefore blocks at transaction start, proving that it cannot read a
+ * canonical snapshot that it may later publish after a writer overtakes it.
  *
  * What is proved, each of N attempts:
  *   (a) No lost update — after both processes complete, the persisted
@@ -42,31 +36,16 @@
  *       triple is INTERNALLY CONSISTENT (matches what a fresh, uncontended
  *       repair of the same canonical state would produce), never a torn
  *       mix of one process's checkpoint with another process's stale
- *       record count. A deferred (non-`IMMEDIATE`) transaction — the
- *       defect this test guards against — allows exactly this: both
- *       processes could read canonical state concurrently before either
- *       acquires the write lock, then serialize only on the final WRITE,
- *       so the loser's write (built from ITS OWN correctly-read canonical
- *       state) still lands safely last under WAL's actual conflict
- *       detection. The real risk `BEGIN IMMEDIATE` closes is subtler and
- *       is called out below.
+ *       record count. Each publisher reads and writes the complete evidence
+ *       row inside the same connector-instance transaction fence, so a build
+ *       from a different source state cannot be published.
  *   (c) Neither process's repair call throws / reports `failed: true` in
  *       a way that would be silently swallowed by the caller.
  *
- * Empirically verified regression sensitivity (not just theorized): with
- * `repairCandidateSqlite`'s `writeTransaction(...)` (BEGIN IMMEDIATE)
- * temporarily reverted to a deferred `db.transaction(...)` — i.e. the exact
- * defect the independent review flagged — this test FAILS deterministically
- * (3/3 manual runs) with "evidence row must exist after both processes
- * complete — a lost update would leave it absent": under the deferred
- * transaction, both processes' `SELECT * FROM connector_instances ...`
- * reads race ahead of either acquiring the write lock, and the eventual
- * writer-writer conflict at commit time throws inside `writeTransaction`'s
- * caller in a way that ends with the row missing rather than upserted. That
- * is a real, reproducible lost update, not a theoretical one — restoring
- * `writeTransaction(...)` makes the same test pass 3/3. This confirms the
- * oracle has genuine teeth against the class of defect it targets, rather
- * than merely "usually doesn't crash."
+ * The companion production-writer race in
+ * `connector-summary-source-revision.test.ts` proves the stronger failure
+ * case: a canonical write between build and publish leaves the candidate
+ * dirty/stale rather than publishing a stale row.
  */
 
 import assert from "node:assert/strict";
@@ -91,7 +70,7 @@ const ATTEMPTS = 6;
 function seedManifestConnector(connectorId: string, streams: string[]): void {
   const manifest = {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: connectorId,
     display_name: connectorId,
@@ -196,11 +175,13 @@ test("two genuine OS processes racing repairCandidateSqlite for the same connect
       // repair would compute) is unambiguous and non-trivial.
       await ingestRecord(
         { connector_id: connectorId, connector_instance_id: connectorInstanceId },
-        { data: { id: "msg_1" }, emitted_at: NOW, key: "msg_1", stream: "messages" }
+        { data: { id: "msg_1" }, emitted_at: NOW, key: "msg_1", stream: "messages" },
+        { deferIndexes: true }
       );
       await ingestRecord(
         { connector_id: connectorId, connector_instance_id: connectorInstanceId },
-        { data: { id: "msg_2" }, emitted_at: NOW, key: "msg_2", stream: "messages" }
+        { data: { id: "msg_2" }, emitted_at: NOW, key: "msg_2", stream: "messages" },
+        { deferIndexes: true }
       );
 
       // Create the repair CANDIDATE (a `missing` evidence row: nothing has
@@ -220,12 +201,9 @@ test("two genuine OS processes racing repairCandidateSqlite for the same connect
         assert.equal(ready.ready, true, `fixture did not report ready: ${readyLine}`);
 
         // Arm this (parent) process's own delay hook to the same window,
-        // then fire BOTH processes' repair attempts as close together as
-        // possible: tell the child to go, then immediately (no intervening
-        // await) start the parent's own repair. Whichever process's BEGIN
-        // IMMEDIATE actually wins the SQLite write lock holds it through the
-        // full delay; the other's BEGIN IMMEDIATE genuinely blocks on
-        // SQLite's lock for the duration, not on JS scheduling.
+        // then fire BOTH fenced repairs as close together as possible. The
+        // delay keeps the first transaction in its read-before-upsert window;
+        // the second repair must wait for the exact-instance fence.
         process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS = String(DELAY_MS);
         fixture.child.stdin.write("go\n");
         const parentResultPromise = reconcileConnectorSummaryEvidence([connectorInstanceId]);

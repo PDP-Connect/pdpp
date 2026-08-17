@@ -74,8 +74,8 @@ const MANUAL_UPLOAD_REPROCESS_BUTTON = /idleLabel="Reprocess all exports"/;
 const MANUAL_UPLOAD_RUNNING_LABEL = /runningLabel="Import running"/;
 const STATIC_SECRET_CAPTURE_RESOLVED_ONCE =
   /const staticSecretCapture = staticSecretCredentialCaptureFromManifest\(manifest\)/;
-const STATIC_SECRET_UPDATE_PRECEDES_BROWSER_SESSION =
-  /if \(storedCredentialUpdateHref !== null\) \{[\s\S]{0,180}return storedCredentialUpdateHref;[\s\S]{0,180}if \(browserSessionRepairHref !== null\) \{/;
+const SESSION_BOUND_REPAIR_PRECEDES_STATIC_SECRET =
+  /if \(sessionBound\) \{[\s\S]{0,120}return browserSessionRepairHref;[\s\S]{0,120}if \(storedCredentialUpdateHref !== null\) \{/;
 const STATIC_SECRET_UPDATE_CAPABILITY_PASSED =
   /hasStaticSecretCredentialUpdate=\{\s*storedCredentialUpdateHref !== null && !sessionBound && primaryActionSurface !== "stored_credential"\s*\}/;
 const STATIC_SECRET_UPDATE_LINK_VISIBLE = /storedCredentialUpdateHref && !revoked && hasStaticSecretCredentialUpdate/;
@@ -145,10 +145,10 @@ test("rendered verdict owner action owns the header before generic sync fallback
   assert.doesNotMatch(src, EXACT_SYNC_LINK_NO_GENERIC_FALLBACK);
 });
 
-test("stored-credential sources repair credentials before browser-session fallback", async () => {
+test("credential repair follows the connection binding before connector capabilities", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, STATIC_SECRET_CAPTURE_RESOLVED_ONCE);
-  assert.match(src, STATIC_SECRET_UPDATE_PRECEDES_BROWSER_SESSION);
+  assert.match(src, SESSION_BOUND_REPAIR_PRECEDES_STATIC_SECRET);
   assert.match(src, STATIC_SECRET_UPDATE_CAPABILITY_PASSED);
   assert.match(src, STATIC_SECRET_UPDATE_LINK_VISIBLE);
 });

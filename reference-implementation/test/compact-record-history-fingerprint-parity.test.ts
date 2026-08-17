@@ -995,7 +995,6 @@ if (canonicalRecordFingerprint) {
       "codex/shell_snapshots",
       "codex/config_inventory",
       "codex/cache_inventory",
-      "codex/logs",
     ]);
     for (const p of COMPACTION_POLICIES) {
       const pair = `${p.connectorIds[0]}/${p.stream}`;

@@ -356,13 +356,17 @@ async function uploadBlob(
   ownerToken: string,
   params: JsonObject,
   body: string | Uint8Array,
-  contentType = "application/octet-stream"
+  contentType = "application/octet-stream",
+  declaredMimeType?: string
 ): Promise<{ status: number; body: JsonObject }> {
   const query = new URLSearchParams({
     connector_id: params.connector_id,
     record_key: params.record_key,
     stream: params.stream,
   });
+  if (declaredMimeType) {
+    query.set("mime_type", declaredMimeType);
+  }
   return fetchJson(`${rsUrl}/v1/blobs?${query.toString()}`, {
     body,
     headers: {
@@ -2993,6 +2997,29 @@ test("blob upload is content-addressed, idempotent, and fetch-safe through visib
     assert.equal(blobResp.headers.get("content-type"), "application/pdf");
     assert.equal(blobResp.headers.get("content-length"), String(bytes.length));
     assert.deepEqual(Buffer.from(await blobResp.arrayBuffer()), bytes);
+  });
+});
+
+test("blob upload preserves non-UTF-8 bytes whose declared MIME type is text/plain", async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl, "blob_upload_text_binary_owner");
+    const connectorId = spotifyManifest.connector_id;
+    const bytes = Buffer.from([0xff, 0xfe, 0x00, 0x61]);
+    const expectedSha = createHash("sha256").update(bytes).digest("hex");
+
+    const uploaded = await uploadBlob(
+      rsUrl,
+      ownerToken,
+      { connector_id: connectorId, record_key: "binary_text_blob", stream: "saved_tracks" },
+      bytes,
+      "application/octet-stream",
+      "text/plain"
+    );
+
+    assert.equal(uploaded.status, 200);
+    assert.equal(uploaded.body.sha256, expectedSha);
+    assert.equal(uploaded.body.size_bytes, bytes.byteLength);
+    assert.equal(uploaded.body.mime_type, "text/plain");
   });
 });
 

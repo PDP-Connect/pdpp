@@ -557,6 +557,132 @@ function chunked<T>(values: readonly T[], size: number): T[][] {
   return chunks;
 }
 
+// One SQLite bind-limited chunk of the `countGapsByStatusByStreamForConnectorInstanceIds`
+// aggregate: queries a single chunk of connector-instance ids and merges its
+// stream-count rows into the caller-owned accumulator. Carries no lease/CAS
+// semantics.
+function mergeSqliteGapCountsByStream(
+  result: Map<string, Map<string, number>>,
+  connectorInstanceIdChunk: readonly string[],
+  status: string
+): void {
+  const placeholders = connectorInstanceIdChunk.map(() => "?").join(", ");
+  const rows = iterateDynamicSqlAcknowledged<{ connector_instance_id: string; stream: string; gap_count: number }>(
+    `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
+     WHERE connector_instance_id IN (${placeholders}) AND status = ?
+     GROUP BY connector_instance_id, stream`,
+    [...connectorInstanceIdChunk, status]
+  );
+  for (const row of rows) {
+    const counts = result.get(row.connector_instance_id) ?? new Map<string, number>();
+    counts.set(row.stream, coerceCount(row.gap_count));
+    result.set(row.connector_instance_id, counts);
+  }
+}
+
+// De-dupes the caller-supplied reason filter and splits it into SQLite
+// bind-limited chunks, matching the connector-instance-id chunking above. An
+// absent/empty filter still yields one "no reason scope" pass (`[null]`) so
+// `mergeSqliteGapCountsByStatus` always has exactly one iteration to run per
+// instance-id chunk.
+function chunkedReasonScope(reasons: readonly string[] | null | undefined): (readonly string[] | null)[] {
+  const reasonValues = [...new Set((reasons ?? []).filter((reason): reason is string => typeof reason === "string"))];
+  return reasonValues.length ? chunked(reasonValues, SQLITE_BATCH_REASON_CHUNK_SIZE) : [null];
+}
+
+// One SQLite bind-limited (instance-id chunk × reason chunk) cell of the
+// `countGapsByStatusForConnectorInstanceIds` aggregate: queries a single
+// chunk pair and sums its counts into the caller-owned accumulator. Carries
+// no lease/CAS semantics.
+function mergeSqliteGapCountsByStatus(
+  result: Map<string, number>,
+  connectorInstanceIdChunk: readonly string[],
+  status: string,
+  reasonChunk: readonly string[] | null
+): void {
+  const placeholders = connectorInstanceIdChunk.map(() => "?").join(", ");
+  const reasonPlaceholders = optionalSqlPlaceholders(reasonChunk);
+  const rows = iterateDynamicSqlAcknowledged<{ connector_instance_id: string; gap_count: number }>(
+    `SELECT connector_instance_id, COUNT(*) AS gap_count FROM connector_detail_gaps
+     WHERE connector_instance_id IN (${placeholders}) AND status = ?
+     ${reasonPlaceholders ? `AND reason IN (${reasonPlaceholders})` : ""}
+     GROUP BY connector_instance_id`,
+    [...connectorInstanceIdChunk, status, ...(reasonChunk ?? [])]
+  );
+  for (const row of rows) {
+    result.set(row.connector_instance_id, (result.get(row.connector_instance_id) ?? 0) + coerceCount(row.gap_count));
+  }
+}
+
+// One SQLite bind-limited instance-id chunk of the
+// `countGapsByStatusForConnectorInstanceIds` aggregate: runs every reason
+// chunk against this single instance-id chunk. Carries no lease/CAS
+// semantics.
+function mergeSqliteGapCountsForInstanceIdChunk(
+  result: Map<string, number>,
+  connectorInstanceIdChunk: readonly string[],
+  status: string,
+  reasonChunks: readonly (readonly string[] | null)[]
+): void {
+  for (const reasonChunk of reasonChunks) {
+    mergeSqliteGapCountsByStatus(result, connectorInstanceIdChunk, status, reasonChunk);
+  }
+}
+
+// One SQLite bind-limited chunk of the
+// `listPendingGapsByConnectorInstanceIds` per-instance top-N selection:
+// queries a single chunk of connector-instance ids (using the SAME
+// `pendingGapOrderBySql` rotation-with-age ranking every other pending-gap
+// read uses) and groups its rows into the caller-owned per-instance
+// accumulator. Carries no lease/CAS semantics.
+function mergeSqlitePendingGapsByConnectorInstanceId(
+  result: Map<string, DetailGap[]>,
+  connectorInstanceIdChunk: readonly string[],
+  eligibleAt: string,
+  bounded: number
+): void {
+  const placeholders = connectorInstanceIdChunk.map(() => "?").join(", ");
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<DetailGapRow>(
+      `WITH ranked AS (
+       SELECT connector_detail_gaps.*, ROW_NUMBER() OVER (
+         PARTITION BY connector_instance_id
+         ORDER BY ${pendingGapOrderBySql(false)}
+       ) AS row_number
+       FROM connector_detail_gaps
+       WHERE connector_instance_id IN (${placeholders})
+         AND status = 'pending'
+         AND (next_attempt_after IS NULL OR next_attempt_after <= ?)
+     ) SELECT * FROM ranked WHERE row_number <= ? ORDER BY connector_instance_id, row_number`,
+      [eligibleAt, ...connectorInstanceIdChunk, eligibleAt, bounded]
+    ),
+  ];
+  mergeGapRowsByConnectorInstanceId(result, rows);
+}
+
+// Groups a batch of already-ranked/limited detail-gap rows by their durable
+// connector-instance identity, merging into a caller-owned accumulator.
+// Shared by both backends' `listPendingGapsByConnectorInstanceIds`: the
+// SQLite path calls this once per bind-limited chunk, the Postgres path
+// (which has no bind limit) calls it once for the whole row set via
+// `groupGapRowsByConnectorInstanceId` below. Carries no lease/CAS semantics —
+// pure row-shape regrouping after the ordering/limit decision has already
+// been made by the SQL query.
+function mergeGapRowsByConnectorInstanceId(result: Map<string, DetailGap[]>, rows: readonly DetailGapRow[]): void {
+  for (const row of rows) {
+    const gap = rowToGap(row) as DetailGap;
+    const gaps = result.get(gap.connector_instance_id) ?? [];
+    gaps.push(gap);
+    result.set(gap.connector_instance_id, gaps);
+  }
+}
+
+function groupGapRowsByConnectorInstanceId(rows: readonly DetailGapRow[]): Map<string, DetailGap[]> {
+  const result = new Map<string, DetailGap[]>();
+  mergeGapRowsByConnectorInstanceId(result, rows);
+  return result;
+}
+
 // `NULLIF(last_attempt_at, '')` normalizes an empty-string last_attempt_at to
 // NULL before the COALESCE fallback to created_at, on BOTH engines. Not
 // reachable today (last_attempt_at is only ever NULL or a non-empty ISO
@@ -902,20 +1028,7 @@ export function createSqliteConnectorDetailGapStore() {
       }
       const result = new Map<string, Map<string, number>>();
       for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
-        const placeholders = chunk.map(() => "?").join(", ");
-        const rows = [
-          ...iterateDynamicSqlAcknowledged<{ connector_instance_id: string; stream: string; gap_count: number }>(
-            `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
-           WHERE connector_instance_id IN (${placeholders}) AND status = ?
-           GROUP BY connector_instance_id, stream`,
-            [...chunk, status]
-          ),
-        ];
-        for (const row of rows) {
-          const counts = result.get(row.connector_instance_id) ?? new Map<string, number>();
-          counts.set(row.stream, coerceCount(row.gap_count));
-          result.set(row.connector_instance_id, counts);
-        }
+        mergeSqliteGapCountsByStream(result, chunk, status);
       }
       return Promise.resolve(result);
     },
@@ -968,33 +1081,12 @@ export function createSqliteConnectorDetailGapStore() {
         return Promise.resolve(new Map());
       }
       const result = new Map<string, number>();
-      const reasonValues = [
-        ...new Set((reasons ?? []).filter((reason): reason is string => typeof reason === "string")),
-      ];
       // 900 instance ids + status + at most 98 reason values stays at the
       // historical SQLite 999-bind floor. Summing disjoint reason chunks
       // preserves the count for an arbitrarily long caller-supplied filter.
-      const reasonChunks = reasonValues.length ? chunked(reasonValues, SQLITE_BATCH_REASON_CHUNK_SIZE) : [null];
+      const reasonChunks = chunkedReasonScope(reasons);
       for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
-        const placeholders = chunk.map(() => "?").join(", ");
-        for (const reasonChunk of reasonChunks) {
-          const reasonPlaceholders = optionalSqlPlaceholders(reasonChunk);
-          const rows = [
-            ...iterateDynamicSqlAcknowledged<{ connector_instance_id: string; gap_count: number }>(
-              `SELECT connector_instance_id, COUNT(*) AS gap_count FROM connector_detail_gaps
-             WHERE connector_instance_id IN (${placeholders}) AND status = ?
-             ${reasonPlaceholders ? `AND reason IN (${reasonPlaceholders})` : ""}
-             GROUP BY connector_instance_id`,
-              [...chunk, status, ...(reasonChunk ?? [])]
-            ),
-          ];
-          for (const row of rows) {
-            result.set(
-              row.connector_instance_id,
-              (result.get(row.connector_instance_id) ?? 0) + coerceCount(row.gap_count)
-            );
-          }
-        }
+        mergeSqliteGapCountsForInstanceIdChunk(result, chunk, status, reasonChunks);
       }
       return Promise.resolve(result);
     },
@@ -1075,28 +1167,7 @@ export function createSqliteConnectorDetailGapStore() {
       const eligibleAt = nonEmptyString(now) || nowIso();
       const result = new Map<string, DetailGap[]>();
       for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
-        const placeholders = chunk.map(() => "?").join(", ");
-        const rows = [
-          ...iterateDynamicSqlAcknowledged<DetailGapRow>(
-            `WITH ranked AS (
-               SELECT connector_detail_gaps.*, ROW_NUMBER() OVER (
-                 PARTITION BY connector_instance_id
-                 ORDER BY ${pendingGapOrderBySql(false)}
-               ) AS row_number
-               FROM connector_detail_gaps
-               WHERE connector_instance_id IN (${placeholders})
-                 AND status = 'pending'
-                 AND (next_attempt_after IS NULL OR next_attempt_after <= ?)
-             ) SELECT * FROM ranked WHERE row_number <= ? ORDER BY connector_instance_id, row_number`,
-            [eligibleAt, ...chunk, eligibleAt, bounded]
-          ),
-        ];
-        for (const row of rows) {
-          const gap = rowToGap(row) as DetailGap;
-          const gaps = result.get(gap.connector_instance_id) ?? [];
-          gaps.push(gap);
-          result.set(gap.connector_instance_id, gaps);
-        }
+        mergeSqlitePendingGapsByConnectorInstanceId(result, chunk, eligibleAt, bounded);
       }
       return Promise.resolve(result);
     },
@@ -1723,14 +1794,7 @@ export function createPostgresConnectorDetailGapStore() {
          ) SELECT * FROM ranked WHERE row_number <= $3 ORDER BY connector_instance_id, row_number`,
         [ids, eligibleAt, bounded, eligibleAt]
       );
-      const result = new Map<string, DetailGap[]>();
-      for (const row of query.rows as DetailGapRow[]) {
-        const gap = rowToGap(row) as DetailGap;
-        const gaps = result.get(gap.connector_instance_id) ?? [];
-        gaps.push(gap);
-        result.set(gap.connector_instance_id, gaps);
-      }
-      return result;
+      return groupGapRowsByConnectorInstanceId(query.rows as DetailGapRow[]);
     },
 
     async listPendingGapsForConnector(

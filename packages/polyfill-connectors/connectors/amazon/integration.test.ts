@@ -34,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
+import { openFingerprintCursor, recordFingerprint } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   AMAZON_NO_ORDERS_TEXT_PATTERN,
@@ -45,9 +46,12 @@ import {
   type EmitDeps,
   emitOrderAndItems,
   emitOrderItemsCoverage,
+  emitOrdersCoverage,
   listSurfaceFingerprint,
   newOrderItemsCoverage,
+  newOrdersCoverage,
   type OrderItemsCoverage,
+  type OrdersCoverage,
   planIncrementalYears,
   processListOrder,
   type RunFlags,
@@ -56,9 +60,11 @@ import {
   recordDetailOutcome,
   recoverPendingOrderItemDetailGaps,
   recoverPendingOrderItemDetailGapsBeforeForwardRun,
+  redactAmazonListPageDiagnostics,
+  scrapeListPage,
   shouldEmitTrailingOrdersState,
 } from "./index.ts";
-import { parseOrderDate } from "./parsers.ts";
+import { buildOrderRecord, parseOrderDate } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
 
@@ -347,6 +353,7 @@ function makeRunFlags(): RunFlags {
     detailAttempts: 0,
     detailCaptured: false,
     failedDetailCaptured: false,
+    repairAttempted: false,
     sessionRepairRequired: false,
     temporaryDetailFailures: 0,
   };
@@ -496,6 +503,80 @@ test("classifyEmptyListPageDiagnostics: current empty-year copy is terminal desp
       reason: "no_orders_text",
     }
   );
+});
+
+test("Amazon empty-page diagnostics retain structural facts but redact page text, title, and URL", () => {
+  const redacted = redactAmazonListPageDiagnostics(
+    makeEmptyPageDiagnostics({
+      body_preview: "RECIPIENT NAME 123 Main Street",
+      title: "Orders for Recipient Name",
+      url: "https://www.amazon.com/your-orders?account=private",
+    })
+  );
+
+  assert.deepEqual(redacted, {
+    ...makeEmptyPageDiagnostics(),
+    body_preview: "",
+    title: "",
+    url: "",
+  });
+  assert.doesNotMatch(JSON.stringify(redacted), /RECIPIENT|123 Main Street|amazon\.com|private/);
+});
+
+test("scrapeListPage: a failed list navigation cannot reuse the prior page as a successful page", async () => {
+  const staleListHtml = readFileSync(new URL("./__fixtures__/orders-list-minimal.html", import.meta.url), "utf8");
+  const messages: EmittedMessage[] = [];
+  const page = Object.assign({} as Page, {
+    content: (): Promise<string> => Promise.resolve(staleListHtml),
+    goto: (): Promise<null> => Promise.reject(new Error("net::ERR_CONNECTION_RESET")),
+    locator: (): { first: () => { waitFor: () => Promise<null> } } => ({
+      first: () => ({ waitFor: (): Promise<null> => Promise.resolve(null) }),
+    }),
+  });
+
+  await assert.rejects(
+    scrapeListPage(page, null, 2026, 10, (message) => {
+      messages.push(message);
+      return Promise.resolve();
+    }),
+    /amazon_list_page_navigation_failed/
+  );
+
+  const skip = messages.find((message) => message.type === "SKIP_RESULT");
+  assert.ok(skip, "navigation failure must produce a durable diagnostic");
+  assert.equal(skip?.reason, "list_page_navigation_failed");
+  assert.doesNotMatch(JSON.stringify(messages), /orders-list-minimal|B0/);
+});
+
+test("scrapeListPage: a page-2 renderer diagnostic failure aborts without STATE or coverage", async () => {
+  const messages: EmittedMessage[] = [];
+  const page = Object.assign({} as Page, {
+    content: (): Promise<string> => Promise.resolve("<html><body></body></html>"),
+    evaluate: (): Promise<never> => Promise.reject(new Error("private renderer URL and owner label")),
+    goto: (): Promise<null> => Promise.resolve(null),
+    locator: (): { first: () => { waitFor: () => Promise<null> } } => ({
+      first: () => ({ waitFor: (): Promise<null> => Promise.resolve(null) }),
+    }),
+  });
+
+  await assert.rejects(
+    scrapeListPage(page, null, 2026, 10, (message) => {
+      messages.push(message);
+      return Promise.resolve();
+    }),
+    /amazon_empty_list_page_renderer_diagnostics_failed/
+  );
+
+  const skip = messages.find((message) => message.type === "SKIP_RESULT");
+  assert.ok(skip, "renderer failure must produce a structural diagnostic");
+  assert.equal(skip?.reason, "renderer_diagnostics_failed");
+  assert.deepEqual(skip?.diagnostics, { error_class: "Error" });
+  assert.equal(
+    messages.some((message) => message.type === "STATE" || message.type === "DETAIL_COVERAGE"),
+    false,
+    "renderer failure must not emit durable progress or coverage"
+  );
+  assert.doesNotMatch(JSON.stringify(messages), /private renderer|owner label|amazon\.com/);
 });
 
 // ─── planIncrementalYears ─────────────────────────────────────────────────
@@ -667,11 +748,11 @@ function findDetailGaps(messages: EmittedMessage[]): DetailGap[] {
   return messages.filter((m): m is DetailGap => m.type === "DETAIL_GAP");
 }
 
-test("classifyDetailOutcome: skip → skipped, null detail → gap, parsed detail → hydrated", () => {
-  assert.equal(classifyDetailOutcome(true, null), "skipped", "policy skip wins regardless of detail");
-  assert.equal(classifyDetailOutcome(true, makeDetail()), "skipped", "skip never reads as hydrated");
-  assert.equal(classifyDetailOutcome(false, null), "gap", "attempted-but-null is a degraded gap");
-  assert.equal(classifyDetailOutcome(false, makeDetail()), "hydrated", "a parsed detail is hydrated");
+test("classifyDetailOutcome: skipDetail→unaccounted, null→gap, detail→hydrated", () => {
+  assert.equal(classifyDetailOutcome(true, null), "unaccounted", "policy-skip unaccounted");
+  assert.equal(classifyDetailOutcome(true, makeDetail()), "unaccounted", "policy-skip unaccounted even with detail");
+  assert.equal(classifyDetailOutcome(false, null), "gap", "null/failed is gap");
+  assert.equal(classifyDetailOutcome(false, makeDetail()), "hydrated", "parsed detail hydrates");
 });
 
 test("reasonForDetailFailure: maps precise Amazon detail failures to redacted retry reasons", () => {
@@ -719,25 +800,22 @@ test("readPageContentWithin fails bounded when the renderer stops answering", as
   await assert.rejects(() => readPageContentWithin(page, 5), /page_content_timeout after 5ms/);
 });
 
-test("recordDetailOutcome: every recorded order joins required; outcome picks the numerator/skip set", () => {
+test("recordDetailOutcome: every recorded order joins required; outcome picks hydrated or gap", () => {
   const coverage = newOrderItemsCoverage();
   recordDetailOutcome(coverage, "ord-hydrated", "hydrated");
   recordDetailOutcome(coverage, "ord-gap", "gap");
-  recordDetailOutcome(coverage, "ord-skipped", "skipped");
 
-  assert.deepEqual(coverage.required, ["ord-hydrated", "ord-gap", "ord-skipped"], "required is the denominator");
+  assert.deepEqual(coverage.required, ["ord-hydrated", "ord-gap"], "required is the denominator");
   assert.deepEqual(coverage.hydrated, ["ord-hydrated"]);
   assert.deepEqual(coverage.gap, ["ord-gap"]);
-  assert.deepEqual(coverage.optionalSkip, ["ord-skipped"]);
 });
 
-test("emitOrderItemsCoverage: a fully hydrated run emits required=hydrated, no gap/skip fields", async () => {
+test("emitOrderItemsCoverage: a fully hydrated run emits required=hydrated, no gap_keys", async () => {
   const { deps, protocolMessages } = makeRecordingDeps();
   const coverage: OrderItemsCoverage = {
     required: ["a", "b"],
     hydrated: ["a", "b"],
     gap: [],
-    optionalSkip: [],
   };
   await emitOrderItemsCoverage(deps, coverage);
 
@@ -763,7 +841,6 @@ test("emitOrderItemsCoverage: a partial run reports gap_keys distinct from hydra
     required: ["a", "b", "c"],
     hydrated: ["a"],
     gap: ["b", "c"],
-    optionalSkip: [],
   };
   await emitOrderItemsCoverage(deps, coverage);
 
@@ -773,22 +850,6 @@ test("emitOrderItemsCoverage: a partial run reports gap_keys distinct from hydra
   assert.deepEqual(msg.hydrated_keys, ["a"]);
   assert.deepEqual(msg.gap_keys, ["b", "c"], "degraded detail fetches surface as a real gap");
   assert.equal(msg.optional_skip_keys, undefined);
-});
-
-test("emitOrderItemsCoverage: policy-skipped detail reports optional_skip_keys, not gap", async () => {
-  const { deps, protocolMessages } = makeRecordingDeps();
-  const coverage: OrderItemsCoverage = {
-    required: ["a", "b"],
-    hydrated: [],
-    gap: [],
-    optionalSkip: ["a", "b"],
-  };
-  await emitOrderItemsCoverage(deps, coverage);
-
-  const msg = findDetailCoverage(protocolMessages);
-  assert.ok(msg);
-  assert.deepEqual(msg.optional_skip_keys, ["a", "b"], "PDPP_AMAZON_SKIP_DETAIL is a scope choice, not a gap");
-  assert.equal(msg.gap_keys, undefined, "a deliberate skip must never read as a degraded gap");
 });
 
 test("emitOrderItemsCoverage: a steady-state run with zero required orders still emits considered 0 / covered 0", async () => {
@@ -811,6 +872,154 @@ test("emitOrderItemsCoverage: a steady-state run with zero required orders still
   assert.equal(msg.covered, 0);
   assert.equal(msg.gap_keys, undefined);
   assert.equal(msg.optional_skip_keys, undefined);
+});
+
+// ─── orders list-stream coverage evidence ──────────────────────────────────
+//
+// The manifest declares `orders` coverage_strategy: checkpoint_window, but
+// prior to this fix the connector never emitted DETAIL_COVERAGE for the
+// `orders` stream itself — only for `order_items` (the detail child). A run
+// scoped to `orders` only (wantsItems: false) left the orders list stream
+// permanently unmeasured at the connector-level projection even though real
+// orders were being collected. These tests pin the fix: emitOrderAndItems
+// records `orders` considered/covered independent of whether order_items is
+// in scope, and emitOrdersCoverage reports it via the same self-referential
+// emitDetailCoverage shape USAA/GitHub use for bare list streams.
+
+function findAllDetailCoverage(messages: EmittedMessage[]): DetailCoverage[] {
+  return messages.filter((m): m is DetailCoverage => m.type === "DETAIL_COVERAGE");
+}
+
+test("emitOrdersCoverage: reports considered/covered self-referentially on the orders stream", async () => {
+  const { deps, protocolMessages } = makeRecordingDeps();
+  const coverage: OrdersCoverage = { considered: ["a", "b"], covered: ["a", "b"], dateDropped: [] };
+  await emitOrdersCoverage(deps, coverage);
+
+  const msg = findDetailCoverage(protocolMessages);
+  assert.ok(msg, "expected a DETAIL_COVERAGE message");
+  assert.equal(msg.stream, "orders", "orders reports on itself — no separate detail-hydration phase");
+  assert.equal(msg.state_stream, "orders");
+  assert.deepEqual(msg.required_keys, []);
+  assert.deepEqual(msg.hydrated_keys, []);
+  assert.equal(msg.considered, 2);
+  assert.equal(msg.covered, 2);
+});
+
+test("emitOrdersCoverage: a steady-state run with zero considered orders still emits considered 0 / covered 0", async () => {
+  const { deps, protocolMessages } = makeRecordingDeps();
+  await emitOrdersCoverage(deps, newOrdersCoverage());
+
+  const msg = findDetailCoverage(protocolMessages);
+  assert.ok(msg, "a zero-considered run still emits DETAIL_COVERAGE");
+  assert.equal(msg.stream, "orders");
+  assert.equal(msg.considered, 0);
+  assert.equal(msg.covered, 0);
+});
+
+test("emitOrderAndItems: records an order as considered+covered in ordersCoverage on a normal emit", async () => {
+  const coverage = newOrdersCoverage();
+  const { deps } = makeRecordingDeps({ ordersCoverage: coverage });
+  await emitOrderAndItems(deps, makeListOrder({ orderId: "ord-1" }), null, "2026-01-05");
+
+  assert.deepEqual(coverage.considered, ["ord-1"]);
+  assert.deepEqual(coverage.covered, ["ord-1"]);
+  assert.deepEqual(coverage.dateDropped, []);
+});
+
+test("emitOrderAndItems: records orders coverage even when order_items is out of scope (wantsItems: false)", async () => {
+  const coverage = newOrdersCoverage();
+  const { deps, emitted } = makeRecordingDeps({ ordersCoverage: coverage, wantsItems: false, wantsOrders: true });
+  await emitOrderAndItems(deps, makeListOrder({ orderId: "ord-1" }), null, "2026-01-05");
+
+  assert.deepEqual(coverage.considered, ["ord-1"], "orders coverage does not depend on order_items scope");
+  assert.deepEqual(coverage.covered, ["ord-1"]);
+  assert.ok(
+    emitted.some((r) => r.stream === "orders"),
+    "the orders record itself still emits"
+  );
+  assert.ok(!emitted.some((r) => r.stream === "order_items"), "order_items stays out of scope");
+});
+
+test("emitOrderAndItems: a fingerprint-suppressed re-scrape still counts as covered (a real accounting decision)", async () => {
+  const coverage = newOrdersCoverage();
+  const listOrder = makeListOrder({ orderId: "ord-1" });
+  // Prime a real FingerprintCursor with the exact record emitOrderAndItems
+  // will build next, so shouldEmit() honestly reports "unchanged" — not a
+  // fake stub.
+  const orderRecord = buildOrderRecord(listOrder, null, "2026-01-05", "2026-04-22T12:00:00.000Z");
+  const ordersFingerprintCursor = openFingerprintCursor(
+    { fingerprints: { "ord-1": recordFingerprint(orderRecord, ["fetched_at"]) } },
+    { excludeFromFingerprint: ["fetched_at"] }
+  );
+  const { deps, emitted } = makeRecordingDeps({ ordersCoverage: coverage, ordersFingerprintCursor });
+  await emitOrderAndItems(deps, listOrder, null, "2026-01-05");
+
+  assert.deepEqual(coverage.considered, ["ord-1"]);
+  assert.deepEqual(coverage.covered, ["ord-1"], "a suppressed re-scrape is still a real accounting decision");
+  assert.ok(!emitted.some((r) => r.stream === "orders"), "the fingerprint suppressed the actual emit");
+});
+
+test("emitOrderAndItems: nothing recorded in ordersCoverage when orders is out of scope (wantsOrders: false)", async () => {
+  const coverage = newOrdersCoverage();
+  const { deps } = makeRecordingDeps({ ordersCoverage: coverage, wantsOrders: false, wantsItems: true });
+  await emitOrderAndItems(deps, makeListOrder({ orderId: "ord-1" }), null, "2026-01-05");
+
+  assert.deepEqual(coverage.considered, [], "orders out of scope means no orders-coverage accounting at all");
+  assert.deepEqual(coverage.covered, []);
+});
+
+test("processListOrder: an unparseable order date is considered but not covered in ordersCoverage", async () => {
+  const ordersCoverage = newOrdersCoverage();
+  const { deps } = makeRecordingDeps({ ordersCoverage });
+  const listOrder = makeListOrder({ orderId: "ord-bad-date", orderDateRaw: "not a real date" });
+
+  await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), listOrder);
+
+  assert.deepEqual(ordersCoverage.considered, ["ord-bad-date"], "the list scan still enumerated this order");
+  assert.deepEqual(ordersCoverage.covered, [], "no accounting decision was made for its orders record");
+  assert.deepEqual(ordersCoverage.dateDropped, ["ord-bad-date"]);
+});
+
+test("processListOrder: an already-hydrated-and-unchanged order still counts as considered+covered", async () => {
+  const ordersCoverage = newOrdersCoverage();
+  const listOrder = makeListOrder({ orderId: "ord-1" });
+  const orderDate = parseOrderDate(listOrder.orderDateRaw) as string;
+  const fingerprint = listSurfaceFingerprint(listOrder, orderDate, "2026-04-22T12:00:00.000Z");
+  const hydratedOrders = new Map([["ord-1", fingerprint]]);
+  const { deps } = makeRecordingDeps({ ordersCoverage, hydratedOrders, wantsItems: true });
+
+  const handled = await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), listOrder);
+
+  assert.equal(handled, true);
+  assert.deepEqual(ordersCoverage.considered, ["ord-1"]);
+  assert.deepEqual(ordersCoverage.covered, ["ord-1"], "an unchanged already-hydrated order is still covered");
+});
+
+test("collect(): orders scoped alone (order_items out of scope) still emits an orders DETAIL_COVERAGE", async () => {
+  // Regression guard for the real production gap: a run requesting only
+  // `orders` (no order_items) must still measure and report orders coverage.
+  // Exercises the exact emit sequence collect() drives: emitOrderAndItems
+  // (which populates ordersCoverage) followed by emitOrdersCoverage.
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({
+    ordersCoverage,
+    wantsItems: false,
+    wantsOrders: true,
+  });
+
+  await emitOrderAndItems(deps, makeListOrder({ orderId: "ord-1" }), null, "2026-01-05");
+  await emitOrderAndItems(deps, makeListOrder({ orderId: "ord-2" }), null, "2026-01-06");
+  await emitOrdersCoverage(deps, ordersCoverage);
+
+  const coverageMessages = findAllDetailCoverage(protocolMessages);
+  const ordersMsg = coverageMessages.find((m) => m.stream === "orders");
+  assert.ok(ordersMsg, "orders-scoped-only run must still emit an orders DETAIL_COVERAGE");
+  assert.equal(ordersMsg?.considered, 2);
+  assert.equal(ordersMsg?.covered, 2);
+  assert.ok(
+    !coverageMessages.some((m) => m.stream === "order_items"),
+    "order_items coverage is out of scope and must not appear"
+  );
 });
 
 test("processListOrder: a hydrated detail records the order id in required + hydrated", async () => {
@@ -1629,18 +1838,15 @@ test("recoverPendingOrderItemDetailGapsBeforeForwardRun: recovery-only suppresse
   assert.ok(protocolMessages.some((message) => message.type === "DETAIL_GAP_RECOVERED"));
 });
 
-test("processListOrder: skipDetail records an optional_skip, never touching the page", async () => {
+test("processListOrder: skipDetail records as unaccounted (required but no outcome), never touches page", async () => {
   const coverage = newOrderItemsCoverage();
-  const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage, skipDetail: true });
+  const { deps } = makeRecordingDeps({ orderItemsCoverage: coverage, skipDetail: true });
   await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), makeListOrder({ orderId: "ord-3" }));
 
-  assert.deepEqual(coverage.required, ["ord-3"]);
-  assert.deepEqual(coverage.optionalSkip, ["ord-3"], "PDPP_AMAZON_SKIP_DETAIL is a policy skip");
-  assert.deepEqual(coverage.gap, []);
-  assert.deepEqual(coverage.hydrated, []);
-  // A policy skip is a scope choice, not a degraded fetch — it must NOT emit a
-  // DETAIL_GAP (an optional_skip_key satisfies coverage on its own).
-  assert.equal(findDetailGaps(protocolMessages).length, 0, "a policy skip emits no DETAIL_GAP");
+  // Unaccounted: required but absent from hydrated and gap (per spec: required key w/o outcome defers checkpoint)
+  assert.deepEqual(coverage.required, ["ord-3"], "PDPP_AMAZON_SKIP_DETAIL: required");
+  assert.deepEqual(coverage.gap, [], "no gap (no retry evidence)");
+  assert.deepEqual(coverage.hydrated, [], "not hydrated");
 });
 
 test("processListOrder: an unparseable order date is never counted toward order-item coverage", async () => {
@@ -1778,20 +1984,43 @@ test("a fully hydrated run emits zero DETAIL_GAP messages", async () => {
   assert.equal(cov.gap_keys, undefined, "a clean run carries no gap_keys either");
 });
 
-test("a policy-skipped run (PDPP_AMAZON_SKIP_DETAIL) emits optional skips and zero DETAIL_GAP", async () => {
+test("discriminator: policy-deferred (unaccounted) vs attempted-failed (gap) differ in outcome set", async () => {
+  // Policy-deferred: required but not in gap (unaccounted: checkpoint withheld)
+  const deferred = newOrderItemsCoverage();
+  const { deps: deferredDeps } = makeRecordingDeps({ orderItemsCoverage: deferred, skipDetail: true });
+  await processListOrder(NEVER_CALLED_PAGE, deferredDeps, makeRunFlags(), makeListOrder({ orderId: "deferred-1" }));
+  assert.deepEqual(deferred.required, ["deferred-1"], "policy-deferred: required");
+  assert.deepEqual(deferred.gap, [], "policy-deferred: not in gap");
+
+  // Attempted-but-failed: required + gap, backed by DETAIL_GAP for recovery
+  const failed = newOrderItemsCoverage();
+  const { deps: failedDeps, protocolMessages: failedMsgs } = makeRecordingDeps({ orderItemsCoverage: failed });
+  const failedPage = makeDetailPageStub(NO_DETAIL_HTML); // detail page will fail
+  await processListOrder(failedPage, failedDeps, makeRunFlags(), makeListOrder({ orderId: "failed-1" }));
+  assert.deepEqual(failed.required, ["failed-1"], "attempted: required");
+  assert.deepEqual(failed.gap, ["failed-1"], "attempted-failed: in gap");
+  assert.ok(
+    findDetailGaps(failedMsgs).some((g) => g.record_key === "failed-1"),
+    "gap backed by DETAIL_GAP"
+  );
+});
+
+test("policy-skipped run (PDPP_AMAZON_SKIP_DETAIL): unaccounted required defers checkpoint", async () => {
   const coverage = newOrderItemsCoverage();
   const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage, skipDetail: true });
   await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), makeListOrder({ orderId: "ord-skip-a" }));
   await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), makeListOrder({ orderId: "ord-skip-b" }));
   await emitOrderItemsCoverage(deps, coverage);
 
-  assert.equal(findDetailGaps(protocolMessages).length, 0, "a deliberate skip is not a degraded gap");
+  assert.equal(findDetailGaps(protocolMessages).length, 0, "unaccounted emit no DETAIL_GAP");
   const cov = findDetailCoverage(protocolMessages);
   assert.ok(cov);
-  assert.deepEqual(cov.optional_skip_keys, ["ord-skip-a", "ord-skip-b"], "skips ride optional_skip_keys, not gap_keys");
-  assert.equal(cov.gap_keys, undefined, "a skip-only run carries no gap_keys");
-  assert.equal(cov.considered, 2, "both skipped orders were still considered");
-  assert.equal(cov.covered, 2, "policy skips are covered, not counted as gaps");
+  // Per spec: unaccounted required keys (in required but absent from hydrated/gap/optional) defer the checkpoint
+  assert.deepEqual(cov.required_keys, ["ord-skip-a", "ord-skip-b"], "policy-deferred: required");
+  assert.equal(cov.gap_keys, undefined, "no gap_keys (unaccounted, not attempted)");
+  assert.equal(cov.optional_skip_keys, undefined);
+  assert.equal(cov.considered, 2, "both orders considered");
+  assert.equal(cov.covered, 0, "zero covered (unaccounted required defers checkpoint)");
 });
 
 test("a run with zero considered orders still emits a zero-required DETAIL_COVERAGE, but no DETAIL_GAP", async () => {

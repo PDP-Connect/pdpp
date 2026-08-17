@@ -14,7 +14,8 @@
           "required": true,
           "skip_reasons": {
             "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-            "PDPP_TEST_POSTGRES_URL unset": 153,
+            "PDPP_TEST_POSTGRES_URL unset": 176,
+            "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 8,
             "dedicated disposable URL not selected": 1,
             "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
             "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
@@ -22,8 +23,11 @@
             "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
             "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
             "PDPP_TEST_POSTGRES_URL is required for PostgreSQL status-window authority": 1,
-            "Skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
-            "Postgres parity check skipped because PDPP_TEST_POSTGRES_URL is unset": 1
+            "requires --experimental-test-module-mocks (npm run test:whatsapp-no-whole-file-read)": 4,
+            "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)": 3,
+            "requires --experimental-test-module-mocks (spawns test/fixtures/manual-upload-write-error-server.ts directly)": 1,
+            "no dedicated PDPP_TEST_POSTGRES_URL": 1,
+            "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)": 1
           }
         },
         {
@@ -77,6 +81,7 @@
         "scripts/lib/*.test.ts",
         "scripts/perf/*.test.ts",
         "scripts/ri-suite/*.test.ts",
+        "scripts/stream-health-audit/*.test.ts",
         "scripts/test-accounting/*.test.ts",
         "scripts/test-migration/*.test.ts"
       ]
@@ -247,9 +252,12 @@
           "id": "default",
           "required": true,
           "skip_reasons": {
+            "GROUPME_ACCESS_TOKEN unset": 2,
             "local Amazon raw-DOM fixture directory not present": 2,
             "local Chase raw-DOM fixture directory not present": 3,
-            "local USAA raw fixture directory not present": 1
+            "local USAA raw fixture directory not present": 1,
+            "requires --experimental-test-module-mocks": 1,
+            "run with --expose-gc for a reliable memory-growth comparison": 1
           }
         }
       ],
@@ -358,6 +366,7 @@
       "authority_argument": null,
       "execution": "direct",
       "environment": { "TSX_TSCONFIG_PATH": "apps/site/tsconfig.json" },
+      "prepare": ["node", "apps/site/scripts/sync-spec-docs.mjs"],
       "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
       "command": [
         "node",

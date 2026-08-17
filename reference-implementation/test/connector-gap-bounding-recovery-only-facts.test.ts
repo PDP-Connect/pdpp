@@ -6,11 +6,9 @@ import test from "node:test";
 
 import { buildCollectionFacts } from "../runtime/connector-gap-bounding.ts";
 
-interface BaseInputOverrides {
-  committedStateStreams?: Set<string> | string[];
-  detailCoverageByStateStream?: Map<string, { stream: string; considered: number; covered: number }[]>;
-  durableDetailGaps?: { kind: string; stream: string; status: string }[];
-  emittedByStream?: Map<string, number>;
+type BuildCollectionFactsInput = Parameters<typeof buildCollectionFacts>[0];
+
+interface BaseInputOverrides extends Partial<BuildCollectionFactsInput> {
   recoveryOnly: boolean;
 }
 
@@ -40,7 +38,7 @@ interface BaseInputOverrides {
 // collection-report-projection.test.js for the fold/projection-level
 // coverage of that invariant.
 
-function baseInput(overrides: BaseInputOverrides) {
+function baseInput(overrides: BaseInputOverrides): BuildCollectionFactsInput {
   return {
     committedStateStreams: new Set<string>(),
     detailCoverageByStateStream: new Map(),
@@ -64,6 +62,37 @@ test("recoveryOnly=false: every in-scope stream gets an entry, matching pre-exis
   // biome-ignore lint/suspicious/useArraySortCompare: localized test assertion preserves its explicit contract.
   const streams = facts.streams.map((s) => (s as { stream: string }).stream).sort();
   assert.deepEqual(streams, ["order_items", "orders"]);
+});
+
+test("a newer terminal skip cannot inherit an older continuation in terminal collection facts", () => {
+  const facts = buildCollectionFacts(
+    baseInput({
+      knownGaps: [
+        {
+          continuation: {
+            boundary: "uidvalidity-123",
+            considered: 2,
+            covered: 2,
+            owner: "runtime",
+            remaining: true,
+            slice_end: 500,
+            slice_start: 1,
+          },
+          kind: "skip_result",
+          stream: "orders",
+        },
+        { kind: "skip_result", reason: "auth_failed", stream: "orders" },
+      ],
+      recoveryOnly: false,
+    })
+  );
+
+  assert.ok(facts);
+  const orders = facts.streams.find((stream) => (stream as { stream?: string }).stream === "orders") as
+    | { skipped?: unknown; collection_scope?: unknown }
+    | undefined;
+  assert.deepEqual(orders?.skipped, { reason: "auth_failed" });
+  assert.equal(orders?.collection_scope, undefined);
 });
 
 test("recoveryOnly=true: returns null even when the run emitted records for a stream", () => {

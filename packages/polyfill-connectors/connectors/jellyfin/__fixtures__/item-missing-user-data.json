@@ -1,0 +1,9 @@
+{
+  "Id": "fixture-item-no-user-data",
+  "Name": "Synthetic Fixture Movie",
+  "Type": "Movie",
+  "Genres": [],
+  "ProviderIds": {
+    "SyntheticProvider": "fixture-id"
+  }
+}

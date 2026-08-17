@@ -1,0 +1,160 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.dev/connectors/netflix-export",
+  "connector_key": "netflix-export",
+  "manifest_uri": "https://registry.pdpp.dev/connectors/netflix-export",
+  "version": "0.1.0",
+  "display_name": "Netflix Export",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": false
+      },
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "manual_or_upload",
+    "manual_or_upload": {
+      "label": "Netflix viewing activity export",
+      "description": "Download your viewing history instantly from netflix.com/viewingactivity (Download all), then upload the CSV here. If your account is inactive, use the full data export from netflix.com/account/getmyinfo instead (up to 30 days to prepare).",
+      "acquisition_methods": [
+        {
+          "label": "Download your viewing history now",
+          "platform": "web",
+          "posture": "primary",
+          "detail": "Go to netflix.com/viewingactivity (Account > Profiles > Viewing activity), select Download all at the bottom of the page, and upload the CSV here. Available immediately for each profile on an active account — titles and dates only.",
+          "help_url": "https://help.netflix.com/en/node/101917"
+        },
+        {
+          "label": "Full account data export (inactive accounts, or full detail)",
+          "platform": "web",
+          "posture": "secondary",
+          "detail": "If your account is inactive, or you want full detail (device, duration, per-session timestamps), request 'Download a copy of your personal information' at netflix.com/account/getmyinfo. Netflix emails you when it's ready — this can take up to 30 days. Upload the .zip directly, or extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv.",
+          "help_url": "https://www.netflix.com/account/getmyinfo"
+        }
+      ],
+      "accepted_file_extensions": [".csv", ".zip"],
+      "import_dir_env_var": "NETFLIX_EXPORT_DIR",
+      "help_url": "https://help.netflix.com/en/node/101917",
+      "help_text": "Netflix does not expose viewing history through an account API or OAuth grant. This source imports an owner-downloaded CSV: either the instant per-profile Download all export, or the full account data export.",
+      "large_file_fallback": "The full Netflix data export archive can include many CSVs beyond viewing history; if the .zip exceeds the upload limit, extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv instead of the whole archive.",
+      "validation": {
+        "kind": "netflix_viewing_activity",
+        "file_backed": true,
+        "max_file_bytes": 52428800
+      },
+      "validation_expectations": [
+        "Detected either the immediate Title,Date export or the full-export ViewingActivity.csv (standalone or inside the getmyinfo zip)",
+        "Estimated viewing activity record count",
+        "Detected watched-at date range",
+        "Duplicate, empty, unsupported, or too-large file status"
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Netflix official export (getmyinfo) requires manual download from netflix.com/account/getmyinfo. The export takes up to 30 days and must be extracted locally. No automated refresh path exists."
+    },
+    "public_listing": {
+      "tier": "development",
+      "proof_gate": "Import-only (CSV/zip upload); no collection path (API, OAuth, or browser capture) is implemented, so it stays out of the default picker until a real collection path lands or the owner explicitly opts in."
+    }
+  },
+  "streams": [
+    {
+      "name": "viewing_activity",
+      "required": false,
+      "description": "Netflix viewing activity from either the immediate Download all export or the full data export.",
+      "display": {
+        "label": "Your Netflix viewing history",
+        "detail": "Titles watched, with date (day-only from the immediate export, full timestamp/device/duration from the full data export). watched_at_precision and source_schema say which source each record came from."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": ["string", "null"]
+          },
+          "watched_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "watched_at_precision": {
+            "type": "string",
+            "enum": ["day", "instant"]
+          },
+          "watched_at_raw": {
+            "type": "string"
+          },
+          "device_type": {
+            "type": ["string", "null"]
+          },
+          "duration_seconds": {
+            "type": ["number", "null"]
+          },
+          "profile_name": {
+            "type": ["string", "null"]
+          },
+          "country": {
+            "type": ["string", "null"]
+          },
+          "source_schema": {
+            "type": "string",
+            "enum": ["direct_history", "full_export"]
+          }
+        },
+        "required": [
+          "id",
+          "watched_at",
+          "watched_at_precision",
+          "source_schema"
+        ]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "watched_at",
+      "consent_time_field": "watched_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "watched_at": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["watched_at"]
+        },
+        "search": {
+          "lexical_fields": ["title", "profile_name"],
+          "semantic_fields": ["title"]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    }
+  ],
+  "reason_display_messages": {
+    "ambiguous_date_order": "We couldn't tell whether the dates in that file are day-first or month-first",
+    "archive_security_violation": "We couldn't safely read that export archive",
+    "csv_parse_error": "We couldn't read the viewing history file",
+    "import_exceeds_bounded_read_policy": "That export was too large to safely read in one run",
+    "records_not_found": "We didn't find any records to import",
+    "unrecognized_csv_schema": "That file didn't match a Netflix viewing history format we recognize"
+  }
+}

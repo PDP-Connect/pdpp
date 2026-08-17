@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { performance } from "node:perf_hooks";
 /**
  * Bound a child process by output inactivity and by an independent absolute
  * per-file deadline.
@@ -43,7 +44,7 @@ export function startFileProcessWatchdog({
   hardDeadlineMs,
   idleBudgetMs,
   kill,
-  now = Date.now,
+  now = () => performance.now(),
   schedule = setInterval,
 }: FileProcessWatchdogOptions): FileProcessWatchdog {
   assertValidDuration("hardDeadlineMs", hardDeadlineMs);

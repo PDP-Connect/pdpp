@@ -21,10 +21,30 @@
  * This file is pure string mapping with no provider, network, or native
  * dependency, so it is safe inside the publishable runner slice. See
  * `add-static-secret-owner-connect-primitive` design Decision 5.
+ *
+ * The injection mapping (which env var(s) each connector's secret/setup
+ * fields land on) is manifest-derived, generated data — see
+ * `./generated/static-secret-registry.generated.ts` and
+ * `scripts/generate-static-secret-registry.ts`. That generator and setup's
+ * `connection-setup-plan.ts` both call the same
+ * `normalizeStaticSecretCredentialCapture`
+ * (`./static-secret-credential-capture.ts`) to decide which fields are
+ * secret — one shared predicate, not two independently-hand-maintained ones
+ * that could (and did, for venmo) drift. Only `LEGACY_CREDENTIAL_KIND_MIGRATIONS`
+ * below remains hand-maintained: it captures STORED credential shapes that
+ * predate a connector's current manifest and so cannot be regenerated from
+ * it.
  */
+
+import {
+  GENERATED_STATIC_SECRET_REGISTRY,
+  type GeneratedStaticSecretDescriptor,
+} from "./generated/static-secret-registry.generated.ts";
 
 /** Credential kinds the per-connection store can hold. Mirrors the store. */
 export type StaticSecretCredentialKind =
+  | "access_token"
+  | "api_key"
   | "app_password"
   | "personal_access_token"
   | "secret_bundle"
@@ -42,6 +62,16 @@ type StaticSecretSetupFields = Readonly<Record<string, string>>;
 interface StaticSecretInjectionMapping {
   /** Credential kind this connector authenticates with. */
   readonly credentialKind: StaticSecretCredentialKind;
+  /**
+   * Names from `secretFieldEnvVars` that may be absent from the recovered
+   * bundle without failing injection. Every other `secretFieldEnvVars` name
+   * remains required. Used when one connector accepts more than one
+   * credential shape sealed into the SAME bundle (e.g. jellyfin's
+   * username+password OR a bare api_key) rather than two mutually exclusive
+   * `acceptedCredentialVariants`, because the manifest's `credential_kind` is
+   * one fixed string and cannot switch between variants at capture time.
+   */
+  readonly optionalSecretBundleFields?: ReadonlySet<string>;
   /**
    * Env var name(s) the connector reads the secret from. The connector resolves
    * the first non-empty; the injection sets all of them to the same recovered
@@ -65,6 +95,17 @@ interface StaticSecretConnectorDescriptor extends StaticSecretInjectionMapping {
    * use; variants keep older stored rows runnable during migrations.
    */
   readonly acceptedCredentialVariants?: readonly StaticSecretInjectionMapping[];
+  /**
+   * `false` only when the manifest's block-level `credential_capture.required`
+   * is explicitly `false` (e.g. Venmo — the connector always falls back to a
+   * browser-driven sign-in that works with zero saved credentials); `true`
+   * for every connector that omits the fact. See `injectSecretBundle`'s use
+   * of this: it is what lets an entirely EMPTY recovered bundle inject
+   * nothing (valid "sign in by hand" choice) instead of throwing
+   * `recovered_secret_bundle_field_missing` on the first field a required
+   * capture (e.g. Jellyfin) would still correctly fail closed on.
+   */
+  readonly captureRequired: boolean;
 }
 
 function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescriptor): StaticSecretConnectorDescriptor {
@@ -101,6 +142,9 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
     }
     Object.freeze(descriptor.setupFieldEnvVars);
   }
+  if (descriptor.optionalSecretBundleFields) {
+    Object.freeze(descriptor.optionalSecretBundleFields);
+  }
   if (descriptor.acceptedCredentialVariants) {
     for (const variant of descriptor.acceptedCredentialVariants) {
       freezeMapping(variant);
@@ -110,110 +154,87 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
   return Object.freeze(descriptor);
 }
 
+function mappingFromGenerated(generated: GeneratedStaticSecretDescriptor): StaticSecretInjectionMapping {
+  return {
+    credentialKind: generated.credentialKind as StaticSecretCredentialKind,
+    ...(generated.optionalSecretBundleFields
+      ? { optionalSecretBundleFields: new Set(generated.optionalSecretBundleFields) }
+      : {}),
+    ...(generated.secretEnvVars ? { secretEnvVars: generated.secretEnvVars } : {}),
+    ...(generated.secretFieldEnvVars ? { secretFieldEnvVars: generated.secretFieldEnvVars } : {}),
+    ...(generated.setupFieldEnvVars ? { setupFieldEnvVars: generated.setupFieldEnvVars } : {}),
+  };
+}
+
+/**
+ * Stored credential shapes that predate a connector's CURRENT manifest and so
+ * cannot be regenerated from it — the one place this module still hardcodes
+ * connector-specific knowledge, deliberately kept minimal and separate from
+ * the generated, manifest-derived baseline above.
+ *
+ * Each entry is keyed by connector, but the transformation it describes is
+ * scoped by CREDENTIAL KIND (a stored `credentialKind` distinct from the
+ * connector's current manifest kind), not by connector identity: a
+ * newly-onboarded connector never needs an entry here unless it also ships a
+ * genuine legacy-capture migration. Adding a connector to a manifest never
+ * requires touching this table — only retiring an old capture shape does.
+ *
+ *   - reddit: before the connector switched to username_password, a sealed
+ *     OAuth bundle (credentialKind "secret_bundle") was captured with
+ *     provider-specific field names.
+ *   - jellyfin: before the connector switched to a username/password-or-
+ *     api_key bundle, a bare api_key string (credentialKind "api_key") was
+ *     captured directly, with no bundle at all.
+ */
+const LEGACY_CREDENTIAL_KIND_MIGRATIONS: Readonly<Record<string, readonly StaticSecretInjectionMapping[]>> =
+  Object.freeze({
+    jellyfin: [
+      {
+        credentialKind: "api_key",
+        secretEnvVars: ["JELLYFIN_API_KEY"],
+        setupFieldEnvVars: {
+          base_url: ["JELLYFIN_BASE_URL"],
+          jellyfin_user_id: ["JELLYFIN_USER_ID"],
+        },
+      },
+    ],
+    reddit: [
+      {
+        credentialKind: "secret_bundle",
+        secretFieldEnvVars: {
+          reddit_password: ["REDDIT_PASSWORD"],
+          reddit_username: ["REDDIT_USERNAME"],
+        },
+      },
+    ],
+  });
+
 /**
  * Registry of static-secret connectors and the env vars each reads its secret
- * from. The env var names are the ground truth in each connector's code:
- *   - gmail/index.ts `resolveGmailPasswordFromEnv`: GOOGLE_APP_PASSWORD_PDPP / GMAIL_APP_PASSWORD
- *   - github/index.ts auth.required: GITHUB_PERSONAL_ACCESS_TOKEN / GITHUB_TOKEN
- *   - ynab/index.ts auth.required: YNAB_PERSONAL_ACCESS_TOKEN / YNAB_PAT
- *   - slack/index.ts auth.required: SLACK_WORKSPACE / SLACK_TOKEN / SLACK_COOKIE
- *   - oura/index.ts auth.required: OURA_PERSONAL_ACCESS_TOKEN
- *   - notion/index.ts auth.required: NOTION_API_TOKEN
- *   - reddit/index.ts auth.required: REDDIT_USERNAME / REDDIT_PASSWORD
- *   - chatgpt/auto-login/chatgpt.ts: CHATGPT_USERNAME / CHATGPT_PASSWORD
- *   - amazon/auto-login/amazon.ts: AMAZON_USERNAME / AMAZON_PASSWORD
- *   - heb/auto-login/heb.ts: HEB_USERNAME / HEB_PASSWORD
- *   - chase/auto-login/chase.ts: CHASE_USERNAME / CHASE_PASSWORD
- *   - usaa/auto-login/usaa.ts: USAA_USERNAME / USAA_PASSWORD
+ * from, generated from every shipped manifest's `setup.credential_capture`
+ * (see `./generated/static-secret-registry.generated.ts`) plus the minimal,
+ * explicit `LEGACY_CREDENTIAL_KIND_MIGRATIONS` table above for stored
+ * credential shapes a current manifest cannot express.
  *
  * A connector absent from this registry is NOT a static-secret connector for
  * the purposes of injection; callers must not invent env var names for it.
  */
 export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSecretConnectorDescriptor>> =
-  Object.freeze({
-    amazon: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["AMAZON_PASSWORD"],
-        username: ["AMAZON_USERNAME"],
-      },
-    }),
-    heb: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["HEB_PASSWORD"],
-        username: ["HEB_USERNAME"],
-      },
-    }),
-    chatgpt: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["CHATGPT_PASSWORD"],
-        username: ["CHATGPT_USERNAME"],
-      },
-    }),
-    gmail: freezeStaticSecretDescriptor({
-      credentialKind: "app_password",
-      secretEnvVars: ["GOOGLE_APP_PASSWORD_PDPP", "GMAIL_APP_PASSWORD"],
-      setupFieldEnvVars: {
-        account_email: ["GMAIL_ADDRESS", "GMAIL_USER"],
-      },
-    }),
-    github: freezeStaticSecretDescriptor({
-      credentialKind: "personal_access_token",
-      secretEnvVars: ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"],
-    }),
-    ynab: freezeStaticSecretDescriptor({
-      credentialKind: "personal_access_token",
-      secretEnvVars: ["YNAB_PERSONAL_ACCESS_TOKEN", "YNAB_PAT"],
-    }),
-    slack: freezeStaticSecretDescriptor({
-      credentialKind: "secret_bundle",
-      secretFieldEnvVars: {
-        slack_workspace: ["SLACK_WORKSPACE"],
-        slack_token: ["SLACK_TOKEN"],
-        slack_cookie: ["SLACK_COOKIE"],
-      },
-    }),
-    oura: freezeStaticSecretDescriptor({
-      credentialKind: "personal_access_token",
-      secretEnvVars: ["OURA_PERSONAL_ACCESS_TOKEN"],
-    }),
-    notion: freezeStaticSecretDescriptor({
-      credentialKind: "personal_access_token",
-      secretEnvVars: ["NOTION_API_TOKEN"],
-    }),
-    reddit: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      acceptedCredentialVariants: [
-        {
-          credentialKind: "secret_bundle",
-          secretFieldEnvVars: {
-            reddit_password: ["REDDIT_PASSWORD"],
-            reddit_username: ["REDDIT_USERNAME"],
-          },
-        },
-      ],
-      secretFieldEnvVars: {
-        password: ["REDDIT_PASSWORD"],
-        username: ["REDDIT_USERNAME"],
-      },
-    }),
-    chase: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["CHASE_PASSWORD"],
-        username: ["CHASE_USERNAME"],
-      },
-    }),
-    usaa: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["USAA_PASSWORD"],
-        username: ["USAA_USERNAME"],
-      },
-    }),
-  });
+  Object.freeze(
+    Object.fromEntries(
+      Object.entries(GENERATED_STATIC_SECRET_REGISTRY).map(([connectorId, generated]) => {
+        const acceptedCredentialVariants = LEGACY_CREDENTIAL_KIND_MIGRATIONS[connectorId];
+        return [
+          connectorId,
+          freezeStaticSecretDescriptor({
+            ...mappingFromGenerated(generated),
+            captureRequired: generated.captureRequired !== false,
+            ...(acceptedCredentialVariants ? { acceptedCredentialVariants } : {}),
+          }),
+        ];
+      })
+    )
+  );
 
 export class StaticSecretInjectionError extends Error {
   readonly code: string;
@@ -227,6 +248,23 @@ export class StaticSecretInjectionError extends Error {
 /** True when the connector authenticates with an injectable static secret. */
 export function isStaticSecretConnector(connectorId: string): boolean {
   return Object.hasOwn(STATIC_SECRET_CONNECTOR_REGISTRY, connectorId);
+}
+
+/**
+ * True when THIS connector's manifest declares `credential_capture.required:
+ * false` — the same block-level, provider-neutral fact `captureRequired`
+ * already carries for injection (see `StaticSecretConnectorDescriptor`'s
+ * doc). Exposed as its own predicate so a run-orchestration seam that has no
+ * business reading manifests directly (e.g. `resolveStaticSecretRunEnv`) can
+ * still ask "does a missing credential here mean the owner chose manual
+ * sign-in, or is it a genuine fail-closed gap" without re-deriving the fact
+ * or introducing a second, connector-name-keyed source of truth. Returns
+ * `false` for a connector absent from the registry (not a static-secret
+ * connector at all) or with no explicit opt-out — the same
+ * backward-compatible default every other layer uses.
+ */
+export function isStaticSecretCaptureOptional(connectorId: string): boolean {
+  return STATIC_SECRET_CONNECTOR_REGISTRY[connectorId]?.captureRequired === false;
 }
 
 function setupFieldsFromSourceBinding(sourceBinding: unknown): StaticSecretSetupFields {
@@ -312,19 +350,39 @@ function injectSingleSecret(fragment: Record<string, string>, envVars: readonly 
   }
 }
 
+/**
+ * `captureRequired: false` (Venmo) means an entirely EMPTY bundle is the
+ * owner's valid "sign in by hand every time" choice, not a bug — inject
+ * nothing and let the connector's own `process.env.X && process.env.Y`
+ * check (e.g. `ensureVenmoSession`) fall back to its manual path. A bundle
+ * that has SOME but not all fields present is still fail-closed exactly like
+ * a required capture: BOTH-OR-NONE was already enforced at capture time
+ * (console/RI), so reaching injection with a genuinely partial bundle means
+ * something upstream let a broken row through, and injecting half a
+ * credential would risk a login attempt with a corrupt/incomplete
+ * credential rather than a clean fallback to manual sign-in.
+ */
 function injectSecretBundle(
   fragment: Record<string, string>,
   connectorId: string,
   secret: string,
-  secretFieldEnvVars: StaticSecretConnectorDescriptor["secretFieldEnvVars"]
+  secretFieldEnvVars: StaticSecretConnectorDescriptor["secretFieldEnvVars"],
+  optionalSecretBundleFields: StaticSecretInjectionMapping["optionalSecretBundleFields"],
+  captureRequired: boolean
 ) {
   if (!secretFieldEnvVars) {
     return;
   }
   const bundle = secretBundleFields(connectorId, secret);
+  if (!captureRequired && Object.keys(bundle).length === 0) {
+    return;
+  }
   for (const [fieldName, envVars] of Object.entries(secretFieldEnvVars)) {
     const value = bundle[fieldName];
     if (!value) {
+      if (optionalSecretBundleFields?.has(fieldName)) {
+        continue;
+      }
       throw new StaticSecretInjectionError(
         "recovered_secret_bundle_field_missing",
         `Connector '${connectorId}' credential bundle is missing required field '${fieldName}'.`
@@ -385,7 +443,14 @@ export function buildConnectionScopedSecretEnv(
   const mapping = injectionMappingForRecoveredSecret(connectorId, descriptor, recovered);
   const fragment: Record<string, string> = {};
   injectSingleSecret(fragment, mapping.secretEnvVars, recovered.secret);
-  injectSecretBundle(fragment, connectorId, recovered.secret, mapping.secretFieldEnvVars);
+  injectSecretBundle(
+    fragment,
+    connectorId,
+    recovered.secret,
+    mapping.secretFieldEnvVars,
+    mapping.optionalSecretBundleFields,
+    descriptor.captureRequired
+  );
   injectSetupFields(fragment, mapping.setupFieldEnvVars, sourceBinding);
   return fragment;
 }

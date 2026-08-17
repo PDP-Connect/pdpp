@@ -131,7 +131,10 @@ export interface RsProtectedResourceMetadataDependencies {
    * host already accounts for `lexicalRetrievalSupported === false` and
    * `lexicalRetrievalCapability` overrides before calling.
    */
-  resolveLexicalCapability: () => RsProtectedResourceMetadataLexicalCapability | null;
+  resolveLexicalCapability: () =>
+    | RsProtectedResourceMetadataLexicalCapability
+    | null
+    | Promise<RsProtectedResourceMetadataLexicalCapability | null>;
   /**
    * Returns the semantic capability the host wants advertised, or
    * `null` to omit the entry. The host gates this on
@@ -175,8 +178,8 @@ function isSemanticSupported(cap: RsProtectedResourceMetadataSemanticCapability 
  * resource/issuer URLs, the agent-discovery block, version metadata,
  * and run the wire-shape builder.
  *
- * Async because `resolveSemanticCapability` may consult the active
- * storage backend to derive the honest `index_state`.
+ * Async because `resolveLexicalCapability`/`resolveSemanticCapability` may
+ * consult the active storage backend to derive the honest `index_state`.
  */
 export async function executeRsProtectedResourceMetadata(
   _input: RsProtectedResourceMetadataInput,
@@ -184,7 +187,7 @@ export async function executeRsProtectedResourceMetadata(
 ): Promise<RsProtectedResourceMetadataOutput> {
   const capabilities: RsProtectedResourceMetadataCapabilities = {};
 
-  const lexical = dependencies.resolveLexicalCapability();
+  const lexical = await dependencies.resolveLexicalCapability();
   if (lexical) {
     capabilities.lexical_retrieval = lexical;
   }

@@ -53,12 +53,21 @@ export function hashCanonicalJson(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
+/**
+ * Canonical string form of a RECORD envelope key (spec-core.md "The RECORD
+ * envelope"): a scalar key is used as-is; a compound key is the minified
+ * JSON array of its string components, in manifest `primary_key` order.
+ */
+function canonicalRecordKey(key: string | readonly string[]): string {
+  return typeof key === "string" ? key : JSON.stringify(key);
+}
+
 export function buildLocalDeviceRecordEnvelope(input: BuildLocalDeviceRecordEnvelopeInput): LocalDeviceRecordEnvelope {
   const body = {
     connector_id: input.connectorId,
     data: toNormalizedRecordData(input.record.data),
     emitted_at: input.record.emitted_at,
-    record_key: String(input.record.key),
+    record_key: canonicalRecordKey(input.record.key),
     stream: input.record.stream,
   };
 

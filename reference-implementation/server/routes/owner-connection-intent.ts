@@ -82,6 +82,12 @@ interface DeviceExporterEnrollmentStore {
     displayName: string | null;
     createdAt: string;
     expiresAt: string;
+    // The boundary the owner declared while initiating this connection, or
+    // `null` for an unscoped (full-corpus) collection. Staged here because no
+    // connection exists yet to hold `connector_state.$collection_scope`; the
+    // enroll route (`ref-device-exporters.ts`) applies it to that reserved key
+    // the moment the connector instance first materializes.
+    collectionScope?: { since?: string; source_roots?: string[] } | null;
   }) => Promise<unknown> | unknown;
 }
 
@@ -202,14 +208,101 @@ function buildConnectionIntentRequireOwner(ctx: MountOwnerConnectionIntentContex
   };
 }
 
-// Validates connector_id and display_name from a raw request body. Returns a
-// parsed result on success, or a descriptor of the validation failure so the
-// caller can emit the audit event and respond consistently without nesting.
-function parseConnectionIntentBody(
-  body: Record<string, unknown>
-):
-  | { ok: true; connectorId: string; displayName: string | null; displayNameSupplied: boolean }
-  | { ok: false; field: "connector_id" | "display_name"; message: string; displayNameSupplied: boolean } {
+/** Validate `collection_scope.since`. `undefined`/`null` means "not declared", not an error. */
+function parseIntentScopeSince(value: unknown): { ok: true; since?: string } | { ok: false; message: string } {
+  if (value === undefined || value === null) {
+    return { ok: true };
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    return { message: "collection_scope.since must be a non-empty ISO-8601 string", ok: false };
+  }
+  if (Number.isNaN(Date.parse(value.trim()))) {
+    return { message: `collection_scope.since is not a parseable instant: ${value}`, ok: false };
+  }
+  return { ok: true, since: value.trim() };
+}
+
+/** Validate `collection_scope.source_roots`. `undefined`/`null` means "not declared", not an error. */
+function parseIntentScopeSourceRoots(
+  value: unknown
+): { ok: true; source_roots?: string[] } | { ok: false; message: string } {
+  if (value === undefined || value === null) {
+    return { ok: true };
+  }
+  if (!Array.isArray(value)) {
+    return { message: "collection_scope.source_roots must be an array of strings", ok: false };
+  }
+  const roots: string[] = [];
+  for (const root of value) {
+    if (typeof root !== "string" || !root.trim()) {
+      return { message: "collection_scope.source_roots entries must be non-empty strings", ok: false };
+    }
+    roots.push(root.trim());
+  }
+  return roots.length > 0 ? { ok: true, source_roots: roots } : { ok: true };
+}
+
+/**
+ * Validate an owner-declared `{ since?, source_roots? }` boundary from a raw
+ * request field.
+ *
+ * Deliberately the same rules as `owner-connection-collection-scope.ts`'s
+ * `parseScopeBody` (kept as a sibling copy rather than a shared import so this
+ * route's request shape does not couple to that route's module): reject
+ * rather than coerce, so a bound the server cannot parse never silently
+ * becomes "matches everything", and a malformed root never silently widens
+ * the selection.
+ */
+function parseIntentCollectionScope(
+  value: unknown
+): { ok: true; scope: { since?: string; source_roots?: string[] } | null } | { ok: false; message: string } {
+  if (value === undefined || value === null) {
+    return { ok: true, scope: null };
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return { message: "collection_scope must be an object", ok: false };
+  }
+  const body = value as Record<string, unknown>;
+  const since = parseIntentScopeSince(body.since);
+  if (!since.ok) {
+    return since;
+  }
+  const roots = parseIntentScopeSourceRoots(body.source_roots);
+  if (!roots.ok) {
+    return roots;
+  }
+  if (since.since === undefined && roots.source_roots === undefined) {
+    // An explicitly-empty `{}` declares no boundary; omit the field entirely
+    // to mean the same thing. Neither is an error — only a malformed value is.
+    return { ok: true, scope: null };
+  }
+  return {
+    ok: true,
+    scope: {
+      ...(since.since === undefined ? {} : { since: since.since }),
+      ...(roots.source_roots === undefined ? {} : { source_roots: roots.source_roots }),
+    },
+  };
+}
+
+// Validates connector_id, display_name, and an optional collection_scope from
+// a raw request body. Returns a parsed result on success, or a descriptor of
+// the validation failure so the caller can emit the audit event and respond
+// consistently without nesting.
+function parseConnectionIntentBody(body: Record<string, unknown>):
+  | {
+      ok: true;
+      connectorId: string;
+      displayName: string | null;
+      displayNameSupplied: boolean;
+      collectionScope: { since?: string; source_roots?: string[] } | null;
+    }
+  | {
+      ok: false;
+      field: "connector_id" | "display_name" | "collection_scope";
+      message: string;
+      displayNameSupplied: boolean;
+    } {
   const rawConnectorId = body.connector_id;
   if (typeof rawConnectorId !== "string" || !rawConnectorId.trim()) {
     return {
@@ -232,7 +325,17 @@ function parseConnectionIntentBody(
       ok: false,
     };
   }
+  const parsedScope = parseIntentCollectionScope(body.collection_scope);
+  if (!parsedScope.ok) {
+    return {
+      displayNameSupplied,
+      field: "collection_scope",
+      message: parsedScope.message,
+      ok: false,
+    };
+  }
   return {
+    collectionScope: parsedScope.scope,
     connectorId: rawConnectorId.trim(),
     displayName: typeof displayNameRaw === "string" ? displayNameRaw.trim() : null,
     displayNameSupplied,
@@ -246,7 +349,12 @@ function parseConnectionIntentBody(
 async function mintEnrollmentNextStep(
   ctx: MountOwnerConnectionIntentContext,
   req: RouteRequest,
-  args: { connectorKey: string; displayName: string | null; ownerSubjectId: string }
+  args: {
+    connectorKey: string;
+    displayName: string | null;
+    ownerSubjectId: string;
+    collectionScope: { since?: string; source_roots?: string[] } | null;
+  }
 ): Promise<{ enrollmentCode: string; enrollEndpoint: string; localBindingId: string; expiresAt: string }> {
   const enrollmentCode = ctx.generateReferenceSecret("lde", 18);
   const now = ctx.now ? ctx.now() : new Date().toISOString();
@@ -257,6 +365,7 @@ async function mintEnrollmentNextStep(
   const localBindingId = args.connectorKey;
   await ctx.deviceExporterStore.createEnrollmentCode({
     codeHash: ctx.hashDeviceSecret(enrollmentCode),
+    collectionScope: args.collectionScope,
     connectorId: args.connectorKey,
     createdAt: now,
     displayName: args.displayName,
@@ -296,7 +405,7 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
           ctx.pdppError(res, 400, "invalid_request", parsed.message, parsed.field);
           return;
         }
-        const { connectorId, displayName, displayNameSupplied } = parsed;
+        const { connectorId, displayName, displayNameSupplied, collectionScope } = parsed;
         const connectorKey = ctx.canonicalConnectorKey(connectorId) ?? connectorId;
 
         // Resolve the manifest from the local-collector catalog first (so a
@@ -320,6 +429,7 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
           // performs any provider/browser step locally. No connection row is
           // written here; the instance materializes on enroll + ingest.
           const { enrollmentCode, enrollEndpoint, localBindingId, expiresAt } = await mintEnrollmentNextStep(ctx, req, {
+            collectionScope,
             connectorKey,
             displayName,
             ownerSubjectId,
@@ -339,6 +449,11 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
             connector_modality: modality,
             deployment_readiness: plan.deploymentReadiness,
             next_step: {
+              // Echoed non-secret so the caller can confirm what boundary will
+              // apply once the device enrolls, without a second round trip to
+              // GET .../collection-scope. `null` means unscoped (full pass) —
+              // the same honest default as declaring no scope at all.
+              collection_scope: collectionScope,
               enroll_endpoint: enrollEndpoint,
               enrollment_code: enrollmentCode,
               expires_at: expiresAt,

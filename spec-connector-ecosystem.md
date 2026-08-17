@@ -33,7 +33,7 @@ How connectors get data from sources:
 
 | Tool | Data | Auth method | License | Wrap difficulty |
 |---|---|---|---|---|
-| **slackdump** (rusq/slackdump) | Slack messages, threads, files, users, emojis | Browser session cookie (`d` cookie) or export token | GPL-3.0 | Easy: already outputs JSON/SQLite |
+| **slackdump** (rusq/slackdump) | Slack messages, threads, files, users, emojis | Browser session cookie (`d` cookie) or export token | AGPL-3.0 | Easy: already outputs JSON/SQLite |
 | **Timelinize** (timelinize/timelinize) | 10+ sources: photos, Facebook, Instagram, Twitter, Google, iCloud, Strava, SMS, email, contacts | Per-source (OAuth, file import, API keys) | Apache-2.0 | Medium: need Go wrapper per data source |
 
 ### C# / .NET

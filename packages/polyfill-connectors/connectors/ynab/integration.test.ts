@@ -39,6 +39,7 @@ function makeCtx(overrides: Partial<BudgetCtx> = {}): {
     emit: harness.emit as BudgetCtx["emit"],
     newState: {},
     progress: (): Promise<void> => Promise.resolve(),
+    request: () => Promise.reject(new Error("not used")),
     requested: new Map([["month_categories", {}]]),
     state: {},
     token: "test-token",
@@ -111,6 +112,97 @@ test("collectMonthCategories: applies range/cutoff gates, emits records, and sto
   );
   assert.ok(stateMessage, "month_categories state cursor should be emitted");
   assert.deepEqual(stateMessage.cursor, ctx.newState.month_categories);
+});
+
+test("collectMonthCategories: empty-delta reconciliation keeps a 24-month detail walk bounded by lastFetchedMonth", async () => {
+  const { ctx } = makeCtx({
+    state: {
+      month_categories: {
+        "budget-main": { last_fetched_month: "2026-12-01" },
+      },
+    },
+  });
+  const months = Array.from({ length: 24 }, (_, index) => {
+    const month = String(index + 1).padStart(2, "0");
+    return { activity: 0, budgeted: 0, deleted: false, income: 0, month: `2026-${month}-01`, to_be_budgeted: 0 };
+  });
+  let reconciledDetailCalls = 0;
+  const reconciliationFact = await collectMonthCategories(
+    ctx,
+    months,
+    {},
+    () => {
+      reconciledDetailCalls += 1;
+      return Promise.resolve({
+        activity: 0,
+        budgeted: 0,
+        categories: [],
+        deleted: false,
+        income: 0,
+        month: "2026-12-01",
+        to_be_budgeted: 0,
+      });
+    },
+    false
+  );
+
+  assert.equal(reconciledDetailCalls, 13, "reconciliation walks only December and the rewound current window");
+  assert.deepEqual(reconciliationFact, { considered: 0, covered: 0, enumeratedFresh: false });
+});
+
+test("collectMonthCategories: a true first full run still walks all 24 historical months", async () => {
+  const { ctx } = makeCtx();
+  const months = Array.from({ length: 24 }, (_, index) => {
+    const month = String(index + 1).padStart(2, "0");
+    return { activity: 0, budgeted: 0, deleted: false, income: 0, month: `2026-${month}-01`, to_be_budgeted: 0 };
+  });
+  let firstRunDetailCalls = 0;
+  await collectMonthCategories(
+    ctx,
+    months,
+    {},
+    () => {
+      firstRunDetailCalls += 1;
+      return Promise.resolve({
+        activity: 0,
+        budgeted: 0,
+        categories: [],
+        deleted: false,
+        income: 0,
+        month: "2026-01-01",
+        to_be_budgeted: 0,
+      });
+    },
+    true
+  );
+  assert.equal(firstRunDetailCalls, 24);
+});
+
+test("collectMonthCategories: omitted nested categories fail before advancing the month checkpoint", async () => {
+  const { ctx, messages } = makeCtx();
+  const malformedMonth: Parameters<typeof collectMonthCategories>[1][number] = {
+    activity: 0,
+    budgeted: 0,
+    deleted: false,
+    income: 0,
+    month: "2026-04-01",
+    to_be_budgeted: 0,
+  };
+
+  await assert.rejects(
+    () => collectMonthCategories(ctx, [malformedMonth], {}, () => Promise.resolve(malformedMonth)),
+    /ynab_response_malformed/
+  );
+  assert.equal(
+    messages.some((message) => message.type === "STATE" && message.stream === "month_categories"),
+    false,
+    "a malformed month envelope must not advance last_fetched_month"
+  );
+  assert.equal(
+    messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "month_categories"),
+    false,
+    "a malformed month envelope must not prove a zero category boundary"
+  );
 });
 
 test("collectMonthCategories: progress omits budget ids and month values", async () => {

@@ -1,0 +1,162 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.dev/connectors/google-messages",
+  "connector_key": "google-messages",
+  "manifest_uri": "https://registry.pdpp.dev/connectors/google-messages",
+  "version": "0.1.0",
+  "display_name": "Google Messages (via gmcli)",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    },
+    "external_tools": [
+      {
+        "name": "gmcli",
+        "license": "AGPL-3.0",
+        "purpose": "QR-paired Google Messages (Android SMS/RCS) archive query",
+        "install_hint": "See github.com/johnlindquist/gmkit. Beta, single maintainer, no numbered release tags.",
+        "detect": {
+          "executable": "gmcli",
+          "args": ["version"],
+          "exit_code": 0
+        }
+      }
+    ]
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "proven": {
+      "local_collector": true
+    },
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Google Messages access requires a one-time QR pairing (`gmcli auth`, run manually by the user outside this connector) with an Android phone that must stay online and reachable for gmcli to sync. Pairing/session tokens require full manual re-pairing after roughly 14 days of inactivity, so an unattended background schedule cannot be relied on to keep working."
+    },
+    "public_listing": {
+      "tier": "development",
+      "rationale": "Requires a real gmcli binary (github.com/johnlindquist/gmkit, beta, single maintainer, AGPL-3.0) and a real QR-paired Google Messages account; not yet proven against a live paired device."
+    }
+  },
+  "streams": [
+    {
+      "name": "messages",
+      "required": true,
+      "description": "Google Messages read from the paired Android device's local gmcli archive: `gmcli --json --full chats list --limit <M>` enumerates conversations (M = GMCLI_MAX_CHATS + 1 — an explicit --limit is always passed, never left to gmcli's own default of 50, which would otherwise silently cap enumeration upstream of this connector's own bounding), then `gmcli messages list --conv <id> --json --full --limit <N> --order desc` fetches each conversation's NEWEST messages, up to the bound (Message rows — verified from github.com/johnlindquist/gmkit's internal/store/messages.go source: message_id, conversation_id, source_platform, sender_id, body, timestamp_ms, is_from_me). `--order desc` (not asc): with a flat --limit and no pagination cursor, a full page always drops whatever falls outside the fetched N — newest-first keeps a growing conversation's new activity observable on every run, at the cost of older history beyond the fetched window (a `gmcli_per_chat_limit_reached` SKIP_RESULT surfaces that honestly; it is not a claim of eventual historical convergence). This is a different, complete-listing command from `messages search` (which requires a query term and returns a different struct meant for keyword search) — this connector never uses search for archive collection. No exotic fields (reactions, media, reply-threading, RCS-vs-SMS transport distinction) are claimed. Media attachments are not downloaded (gmcli media download is out of scope). BOUNDED: gmcli's CLI exposes only a flat --limit (no pagination cursor) — this connector caps messages per conversation (GMCLI_MESSAGES_PER_CHAT_LIMIT, default 500) and conversations scanned per run (GMCLI_MAX_CHATS, default 200). gmcli's own `chats list` already returns conversations sorted newest-active-first server-side (`last_message_ts DESC, updated_at DESC`); this connector re-sorts by last_message_time_ms descending with a conversation_id tie-break for a documented total order it does not have to trust gmcli's own secondary-sort behavior to guarantee. A conversation that returns a full page is flagged via a `gmcli_per_chat_limit_reached` SKIP_RESULT, and a chat-list truncation (the probed M+1-th row present) is flagged via a separate `gmcli_chat_scan_limit_reached` SKIP_RESULT that reports only a lower-bound total ('at least N conversations exist') — neither is ever silently presented as complete history. Resume is best-effort only — gmcli's exact resume-cursor semantics were not independently verified from source.",
+      "display": {
+        "label": "Your Google Messages",
+        "detail": "Message id, conversation id/name, sender identifier, body text, sent timestamp, and direction (from/to you) for each message in the gmcli-synced archive, bounded per conversation. Requires the Android device to have been QR-paired via `gmcli auth` (run manually by you) and to remain online for gmcli to sync."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "chat_id": {
+            "type": "string"
+          },
+          "chat_name": {
+            "type": ["string", "null"]
+          },
+          "sender_id": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "actor"
+          },
+          "body": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "direction": {
+            "type": "string",
+            "enum": ["incoming", "outgoing"]
+          }
+        },
+        "required": ["id", "chat_id", "body", "sent_at", "direction"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "sent_at",
+      "consent_time_field": "sent_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": ["body"],
+          "semantic_fields": ["body"]
+        },
+        "range_filters": {
+          "sent_at": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["sent_at"],
+          "group_by": ["chat_id", "direction"]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "coverage_diagnostics",
+      "required": false,
+      "description": "Safe coverage status for this connector's one known local store (the gmcli-synced message archive), so a local-collector run always leaves durable, honest coverage evidence even when gmcli is missing, unpaired, or fails to query — never a silent zero-evidence run.",
+      "display": {
+        "label": "Local collector coverage status",
+        "detail": "Whether gmcli was found, paired, and successfully queried on this run."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "stream": {
+            "type": ["string", "null"]
+          },
+          "status": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          }
+        },
+        "required": ["id", "store", "status", "reason"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    }
+  ],
+  "reason_display_messages": {
+    "gmcli_chat_scan_limit_reached": "You have more conversations than we could scan in this run; the most recently active ones were kept",
+    "gmcli_not_installed": "The Google Messages helper tool isn't installed on this device",
+    "gmcli_not_paired": "Your Android device isn't paired with the Google Messages helper tool",
+    "gmcli_per_chat_limit_reached": "Some conversations had more messages than we could fetch in this run",
+    "gmcli_query_failed": "We couldn't read your Google Messages data from the helper tool",
+    "gmcli_schema_drift": "The Google Messages helper tool returned data in a format we didn't expect"
+  }
+}

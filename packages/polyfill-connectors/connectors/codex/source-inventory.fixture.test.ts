@@ -14,16 +14,16 @@ import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
  * Runs the real connector against the committed, fully-synthetic source homes
  * under `fixtures/codex/source-home/`. Pins the classification contract
  * against durable fixtures covering every store class: declared/collected
- * streams, inventory-only stores, the deferred `logs` store, an excluded
- * auth-adjacent file, diagnostics-only private stores (`memories`,
- * `context_mode`), an undeclared "unknown" store, and a second device home.
+ * streams, inventory-only stores, an excluded auth-adjacent file,
+ * diagnostics-only private stores (`memories`, `context_mode`), an undeclared
+ * "unknown" store, and a second device home.
  *
- * The risky-store fixtures (logs, shell-snapshots, cache, config, history,
+ * The risky-store fixtures (shell-snapshots, cache, config, history,
  * session_index, auth, memories, context-mode) embed obvious synthetic
  * sentinels of the form `FIXTURE_FAKE_*_DO_NOT_COLLECT`. The
  * redaction/negative tests assert those sentinels never appear in any emitted
- * RECORD or STATE — proving risky log/shell/config payloads stay
- * inventory-only, deferred, or excluded rather than being collected.
+ * RECORD or STATE — proving risky shell/config payloads stay inventory-only
+ * or excluded rather than being collected.
  */
 
 const FIXTURE_ROOT = join(import.meta.dirname, "../../fixtures/codex/source-home");
@@ -35,8 +35,6 @@ const SECRET_SENTINELS = [
   "FIXTURE_FAKE_SESSION_INDEX_PAYLOAD_DO_NOT_COLLECT",
   "FIXTURE_FAKE_SHELL_EXPORT_SECRET_DO_NOT_COLLECT",
   "FIXTURE_FAKE_SHELL_BEARER_DO_NOT_COLLECT",
-  "FIXTURE_FAKE_LOG_BEARER_DO_NOT_COLLECT",
-  "FIXTURE_FAKE_LOG_SECRET_DO_NOT_COLLECT",
   "FIXTURE_FAKE_CACHE_SECRET_DO_NOT_COLLECT",
   "FIXTURE_FAKE_CONFIG_SECRET_DO_NOT_COLLECT",
   "FIXTURE_FAKE_MEMORY_PRIVATE_DO_NOT_COLLECT",
@@ -55,7 +53,6 @@ const ALL_LOCAL_STREAMS = [
   { name: "shell_snapshots" },
   { name: "cache_inventory" },
   { name: "config_inventory" },
-  { name: "logs" },
   { name: "coverage_diagnostics" },
 ];
 
@@ -83,9 +80,6 @@ test("codex fixture home: coverage diagnostics classify every known store", asyn
   for (const store of ["history", "session_index", "shell_snapshots", "cache", "config"]) {
     assert.equal(coverageFor(recs, store)?.data.status, "inventory_only", `${store} should be inventory_only`);
   }
-  // Deferred store (no payload emission; metadata only).
-  assert.equal(coverageFor(recs, "logs")?.data.status, "deferred", "logs should be deferred");
-
   // Diagnostics-only private stores and excluded auth-adjacent store.
   for (const store of ["memories", "context_mode"]) {
     const cov = coverageFor(recs, store);
@@ -127,17 +121,6 @@ test("codex fixture home: inventory-only stores emit metadata without payload", 
     recs.some((r) => r.stream === "shell_snapshots" && r.data.relative_path === "shell-snapshots/snapshot-1.sh"),
     "shell_snapshots should inventory the snapshot file"
   );
-});
-
-test("codex fixture home: deferred logs store emits metadata but no log payload", async () => {
-  const result = await runFixtureConnector({ home: DEVICE_A_HOME, streams: ALL_LOCAL_STREAMS });
-  const recs = records(result.messages);
-
-  const logRec = recs.find((r) => r.stream === "logs");
-  if (logRec) {
-    assert.equal(logRec.data.classification, "defer", "logs record must be classified defer");
-    assert(!("content" in logRec.data), "logs must not carry payload content");
-  }
 });
 
 test("codex fixture home: undeclared 'unknown' store is never collected", async () => {

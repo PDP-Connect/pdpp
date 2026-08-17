@@ -25,7 +25,7 @@ import type { SearchLexicalManifest, SearchLexicalManifestStream } from "../oper
 import { registerConnector } from "../server/auth.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
-import { ingestRecord } from "../server/records.ts";
+import { drainConnectorInstanceIndexWork, ingestRecord } from "../server/records.ts";
 import { runLexicalSearch } from "../server/search.ts";
 import { buildSemanticSearchPlanForGrant as buildSemanticSearchPlanForGrantUntyped } from "../server/search-semantic.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
@@ -162,6 +162,16 @@ async function withDualBindingDb(testFn: () => Promise<void>) {
       target(INSTANCE_B),
       payload("alert-b-1", "overdraft alert from B", "2026-05-18T12:05:00.000Z", ALERTS_STREAM)
     );
+    // Durable record commit does not block on derived lexical/semantic index
+    // maintenance (records.ts's scheduleRecordIndexMaintenance runs it on a
+    // fire-and-forget per-connector-instance lane): every ingestRecord above
+    // already returned once its row was durably committed, not once it was
+    // searchable. Await the scheduler's own settlement barrier before
+    // running searches against this seed data, and before closeDb() below
+    // -- draining here also keeps this seed helper from racing closeDb()
+    // against an in-flight deferred job (the "[db] No database is open"
+    // failure mode a bare closeDb() in `finally` would otherwise risk).
+    await drainConnectorInstanceIndexWork();
     await testFn();
   } finally {
     closeDb();

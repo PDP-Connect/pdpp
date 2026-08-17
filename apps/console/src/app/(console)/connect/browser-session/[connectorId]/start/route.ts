@@ -11,6 +11,7 @@ import {
   getStaticSecretSetup,
   StaticSecretValidationError,
 } from "../../../../lib/ref-client.ts";
+import { originMatchesHost, redirectToPublicPath } from "../../../../lib/same-origin-route.ts";
 import {
   type OptionalBrowserCredentialSubmission,
   optionalBrowserCredentialSubmission,
@@ -40,34 +41,6 @@ function errorPath(
     query.set(`field_${name}`, value);
   }
   return `${pagePath(connectorId)}?${query.toString()}`;
-}
-
-function publicOrigin(request: Request): string {
-  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? new URL(request.url).host;
-  const proto =
-    request.headers.get("x-forwarded-proto") ??
-    (host.startsWith("localhost") || host.startsWith("127.") ? "http" : "https");
-  return `${proto}://${host}`;
-}
-
-function redirectTo(request: Request, path: string): NextResponse {
-  return NextResponse.redirect(new URL(path, publicOrigin(request)), 303);
-}
-
-function originMatchesHost(request: Request): boolean {
-  const origin = request.headers.get("origin");
-  if (!origin) {
-    return true;
-  }
-  const host = request.headers.get("host");
-  if (!host) {
-    return false;
-  }
-  try {
-    return new URL(origin).host === host;
-  } catch {
-    return false;
-  }
 }
 
 function readConnectionIdField(formData: FormData): string | null {
@@ -185,9 +158,13 @@ async function captureOptionalCredentialOrRedirect(
         // Best effort; the shell TTL retires any orphaned draft.
       }
     }
+    // A refusal (400 provider rejection / 409 replacement conflict) carries the
+    // reference server's own owner-causal copy — surface it verbatim rather
+    // than flattening every failure into one generic line the owner cannot act
+    // on. The fallback stays for transport-level failures with no envelope.
     const message =
       err instanceof StaticSecretValidationError ? err.message : "Could not save the optional sign-in details.";
-    return redirectTo(
+    return redirectToPublicPath(
       request,
       errorPath(connectorId, message, {
         connectionId: abandonOnFailure ? null : connectionId,
@@ -215,7 +192,7 @@ async function startNewBrowserEnrollment(
   if (captureError) {
     return captureError;
   }
-  return redirectTo(request, launchPath(connectorId, shell.connection_id, true));
+  return redirectToPublicPath(request, launchPath(connectorId, shell.connection_id, true));
 }
 
 export async function POST(request: Request, { params }: { params: Promise<RouteParams> }): Promise<NextResponse> {
@@ -229,14 +206,17 @@ export async function POST(request: Request, { params }: { params: Promise<Route
   }
 
   if (!isBrowserBoundConnector(connectorId)) {
-    return redirectTo(request, `/sources/add?error=${encodeURIComponent("This source does not use browser setup.")}`);
+    return redirectToPublicPath(
+      request,
+      `/sources/add?error=${encodeURIComponent("This source does not use browser setup.")}`
+    );
   }
 
   let formData: FormData;
   try {
     formData = await request.formData();
   } catch {
-    return redirectTo(request, errorPath(connectorId, "Invalid browser-session form."));
+    return redirectToPublicPath(request, errorPath(connectorId, "Invalid browser-session form."));
   }
 
   let existingConnectionId: string | null;
@@ -244,12 +224,12 @@ export async function POST(request: Request, { params }: { params: Promise<Route
     existingConnectionId = readConnectionIdField(formData);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid browser-session form";
-    return redirectTo(request, errorPath(connectorId, message));
+    return redirectToPublicPath(request, errorPath(connectorId, message));
   }
 
   try {
     if (!(isSupportedBrowserCollectorConnector(connectorId) || existingConnectionId)) {
-      return redirectTo(
+      return redirectToPublicPath(
         request,
         `/sources/add?error=${encodeURIComponent("This browser-backed source is not available for self-service setup.")}`
       );
@@ -260,9 +240,9 @@ export async function POST(request: Request, { params }: { params: Promise<Route
       optionalCredential = await readOptionalCredentialSubmission(connectorId, formData);
     } catch (err) {
       if (err instanceof BrowserCredentialFormError) {
-        return redirectTo(request, errorPath(connectorId, err.message, { setupFields: err.setupFields }));
+        return redirectToPublicPath(request, errorPath(connectorId, err.message, { setupFields: err.setupFields }));
       }
-      return redirectTo(request, errorPath(connectorId, "Could not load the optional sign-in details form."));
+      return redirectToPublicPath(request, errorPath(connectorId, "Could not load the optional sign-in details form."));
     }
 
     if (existingConnectionId) {
@@ -276,12 +256,12 @@ export async function POST(request: Request, { params }: { params: Promise<Route
       if (captureError) {
         return captureError;
       }
-      return redirectTo(request, launchPath(connectorId, existingConnectionId, false));
+      return redirectToPublicPath(request, launchPath(connectorId, existingConnectionId, false));
     }
 
     return await startNewBrowserEnrollment(request, connectorId, formData, optionalCredential);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to start browser session";
-    return redirectTo(request, errorPath(connectorId, message));
+    return redirectToPublicPath(request, errorPath(connectorId, message));
   }
 }

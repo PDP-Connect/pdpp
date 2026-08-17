@@ -6,6 +6,21 @@ import {
   type CredentialValidationMode,
   credentialValidationMode,
 } from "../../packages/polyfill-connectors/src/credential-probe.ts";
+import {
+  type NormalizedStaticSecretCredentialCapture,
+  type NormalizedStaticSecretField,
+  normalizeStaticSecretCredentialCapture,
+  type StaticSecretCredentialCaptureFieldLike,
+  type StaticSecretFieldType,
+} from "../../packages/polyfill-connectors/src/static-secret-credential-capture.ts";
+import { legacyLocalAliasMap } from "./connector-key.ts";
+import {
+  BROWSER_BOUND_KEYS,
+  LEGACY_LOCAL_ALIASES,
+  LOCAL_COLLECTOR_PROVEN_KEYS,
+  PROVIDER_AUTH_LIFECYCLE_PROVEN_KEYS,
+  STATIC_SECRET_LIVE_PROVEN_KEYS,
+} from "./generated/connector-registry.generated.ts";
 
 export type ConnectorIntentModality = "local_collector" | "browser_bound" | "api_network" | "unknown";
 
@@ -18,7 +33,12 @@ export type ConnectorSetupModality =
   | "unsupported"
   | "unknown";
 
-export type ConnectorSetupSupportState = "supported" | "proof_gated" | "unsupported" | "needs_deployment_config";
+export type ConnectorSetupSupportState =
+  | "supported"
+  | "experimental"
+  | "proof_gated"
+  | "unsupported"
+  | "needs_deployment_config";
 
 export type ConnectorSetupNextStepKind =
   | "enroll_local_collector"
@@ -36,12 +56,84 @@ export type ConnectorCatalogDisposition =
   | "browser_collector_manual"
   | "browser_bound_runbook"
   | "static_secret_connect"
+  | "static_secret_experimental"
   | "manual_upload_connect"
   | "manual_upload_pending"
   | "provider_auth_deployment_blocked"
+  | "provider_auth_connect"
   | "provider_auth_proof_gated"
   | "api_network_unsupported"
   | "unknown_unsupported";
+
+export interface DeploymentConfigKeyLike {
+  readonly key: string;
+  readonly label?: string | null;
+  readonly secret?: boolean | null;
+}
+
+/**
+ * The current, generic deployment-config entry shape: a manifest-declared
+ * logical role name (`client_id`, `client_secret`, ...), never a
+ * provider-specific literal. `env_alias` is optional and exists only so an
+ * operator can satisfy this entry via an env var instead of the DB-backed
+ * config store for infra-as-code deploys — it is resolved server-side only
+ * and is never surfaced to the operator UI (which renders `label`).
+ */
+export interface DeploymentConfigLogicalKeyLike {
+  readonly env_alias?: string | null;
+  readonly label?: string | null;
+  readonly logical_key: string;
+  readonly secret?: boolean | null;
+}
+
+export type DeploymentConfigDeclarationLike = readonly (
+  | string
+  | DeploymentConfigKeyLike
+  | DeploymentConfigLogicalKeyLike
+)[];
+
+/**
+ * One `connection_config` entry: the per-connection runtime env var a
+ * connector already reads, paired with the generic bundle field name that
+ * supplies its value. `single_field` manifests (one refresh token) and
+ * `multi_field` manifests (e.g. an access-type/resource-group bundle) both
+ * express themselves the same way — the RI never special-cases either shape.
+ */
+export interface ConnectionConfigEntryLike {
+  readonly bundle_field: string;
+  readonly env_var: string;
+  readonly required?: boolean | null;
+}
+
+/** Normalizes `connection_config` to the plain-object shape
+ * `provider-auth-run-credentials.ts` consumes, accepting only the current
+ * `{env_var,bundle_field,required?}` entry shape (no legacy bare-string form
+ * exists for this field — it was added generic from the start). */
+export function connectionConfigEntriesFromManifest(
+  manifest: ConnectorManifestLike | null
+): readonly { readonly envVar: string; readonly bundleField: string; readonly required?: boolean }[] {
+  const declared = manifest?.capabilities?.auth?.connection_config;
+  if (!Array.isArray(declared)) {
+    return [];
+  }
+  const out: { envVar: string; bundleField: string; required?: boolean }[] = [];
+  for (const entry of declared) {
+    if (typeof entry === "string" || !entry) {
+      continue;
+    }
+    const envVar = typeof entry.env_var === "string" ? entry.env_var.trim() : "";
+    const bundleField = typeof entry.bundle_field === "string" ? entry.bundle_field.trim() : "";
+    if (!(envVar && bundleField)) {
+      continue;
+    }
+    out.push({
+      bundleField,
+      envVar,
+      ...(typeof entry.required === "boolean" ? { required: entry.required } : {}),
+    });
+  }
+  return out;
+}
 
 export interface ConnectorManifestLike {
   readonly capabilities?: {
@@ -50,7 +142,36 @@ export interface ConnectorManifestLike {
       readonly mode?: string | null;
       readonly type?: string | null;
       readonly required?: readonly string[] | null;
-      readonly deployment_config?: readonly string[] | null;
+      readonly deployment_config?: DeploymentConfigDeclarationLike | null;
+      readonly connection_config?: readonly (string | ConnectionConfigEntryLike)[] | null;
+      readonly scopes?: readonly string[] | null;
+      readonly exchanger_kind?: string | null;
+      readonly authorization_url?: string | null;
+      readonly token_url?: string | null;
+      readonly userinfo_url?: string | null;
+      /** Opaque grouping token — manifests sharing this value share one
+       * deployment-config app registration and get scope-union at
+       * authorization time. Never treated as a provider name by the RI, and
+       * never rendered as display copy — the client-facing GET surface may
+       * return it verbatim as a hidden addressing token (so the client can
+       * make the matching POST call), but never as UI text; only
+       * `provider_identity_label` is display-safe. */
+      readonly provider_identity_group?: string | null;
+      /** Human-readable copy for the identity group, e.g. "Shared Google
+       * OAuth App". Opaque display text the RI passes through verbatim,
+       * exactly like `deployment_config[].label` — never parsed or branched
+       * on. This is the ONLY identity-group-related value ever rendered as
+       * UI copy. */
+      readonly provider_identity_label?: string | null;
+      /** Static query params merged onto the authorization URL. The RI/its
+       * adapters apply exactly what is declared here — no implicit defaults. */
+      readonly authorization_params?: Readonly<Record<string, string>> | null;
+      /** Closed enum of generic provider-token bundle shapes. */
+      readonly env_bundle_kind?: "single_field" | "multi_field" | null;
+      /** Connector-owned declarative migration metadata: generic bundle
+       * field name -> legacy field name written by a since-retired exchanger.
+       * The RI reads this mechanically; it never hardcodes a legacy name. */
+      readonly legacy_bundle_field_aliases?: Readonly<Record<string, string>> | null;
     } | null;
   } | null;
   readonly connector_id?: string | null;
@@ -67,6 +188,7 @@ export interface ConnectorManifestLike {
       readonly kind?: string | null;
       readonly credential_kind?: string | null;
       readonly label?: string | null;
+      readonly required?: boolean | null;
       readonly submit_label?: string | null;
     } | null;
     readonly manual_or_upload?: {
@@ -83,50 +205,18 @@ export interface ConnectorManifestLike {
       readonly validation_expectations?: readonly string[] | null;
     } | null;
     readonly modality?: string | null;
-    readonly deployment_config?: readonly string[] | null;
+    readonly deployment_config?: DeploymentConfigDeclarationLike | null;
   } | null;
   readonly version?: string | null;
 }
 
-export type StaticSecretSetupFieldType = "email" | "password" | "text";
-
-export interface StaticSecretSetupFieldLike {
-  readonly autocomplete?: string | null;
-  readonly description?: string | null;
-  readonly env?: readonly string[] | null;
-  readonly help_text?: string | null;
-  readonly help_url?: string | null;
-  readonly identity?: boolean | null;
-  readonly label?: string | null;
-  readonly name?: string | null;
-  readonly placeholder?: string | null;
-  readonly required?: boolean | null;
-  readonly secret?: boolean | null;
-  readonly type?: string | null;
-}
-
-export interface StaticSecretSetupField {
-  readonly autocomplete: string | null;
-  readonly description: string | null;
-  readonly env: readonly string[];
-  readonly helpText: string | null;
-  readonly helpUrl: string | null;
-  readonly identity: boolean;
-  readonly label: string;
-  readonly name: string;
-  readonly placeholder: string | null;
-  readonly required: boolean;
-  readonly secret: boolean;
-  readonly type: StaticSecretSetupFieldType;
-}
-
-export interface StaticSecretCredentialCaptureSetup {
-  readonly description: string | null;
-  readonly fields: readonly StaticSecretSetupField[];
-  readonly kind: string;
-  readonly label: string;
-  readonly submitLabel: string | null;
-}
+// Re-exported (not re-declared) from the shared, provider-neutral normalizer
+// so setup and runtime injection's generator describe one field contract,
+// not two independently-maintained copies of the same shape.
+export type StaticSecretSetupFieldType = StaticSecretFieldType;
+export type StaticSecretSetupFieldLike = StaticSecretCredentialCaptureFieldLike;
+export type StaticSecretSetupField = NormalizedStaticSecretField;
+export type StaticSecretCredentialCaptureSetup = NormalizedStaticSecretCredentialCapture;
 
 export interface ManualUploadSetup {
   readonly acceptedFileExtensions: readonly string[];
@@ -159,11 +249,20 @@ export interface ManualUploadAcquisitionMethod {
 }
 
 export interface ManualUploadValidationLike {
+  /** Declares that this kind's validator accepts a caller-owned file
+   *  descriptor (fd-backed, never buffers the whole artifact) rather than
+   *  requiring the full artifact bytes in memory first. A generic RI-side
+   *  capability flag, not a connector identity -- RI reads this boolean to
+   *  decide WHICH shared dispatcher to call
+   *  (validateManualUploadArtifactFromFileByKind vs.
+   *  validateManualUploadArtifactByKind), never which connector it is. */
+  readonly file_backed?: boolean | null;
   readonly kind?: string | null;
   readonly max_file_bytes?: number | null;
 }
 
 export interface ManualUploadValidation {
+  readonly fileBacked: boolean;
   readonly kind: string;
   readonly maxFileBytes: number | null;
 }
@@ -207,27 +306,32 @@ export interface ConnectionSetupPlan {
   readonly validationMode: CredentialValidationMode;
 }
 
-export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = ["claude_code", "codex"] as const;
+// The enrollment-key (bundle-directory-id) form of every manifest declaring
+// capabilities.proven.local_collector === true. LEGACY_LOCAL_ALIASES is
+// generated from LOCAL_COLLECTOR_DEFINITIONS (the connector package's own
+// local-collector bundle registry) keyed by bundle id -> canonical manifest
+// key; inverting it here (rather than re-deriving from canonical keys
+// forward) means a local-collector connector whose bundle id already equals
+// its canonical key still resolves correctly. See
+// connector-registry.generated.ts.
+const CANONICAL_TO_ENROLLMENT_KEY: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    Object.entries(LEGACY_LOCAL_ALIASES).map(([enrollmentKey, canonicalKey]) => [canonicalKey, enrollmentKey])
+  )
+);
+
+export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS: readonly string[] = Object.freeze(
+  LOCAL_COLLECTOR_PROVEN_KEYS.map((canonicalKey) => CANONICAL_TO_ENROLLMENT_KEY[canonicalKey] ?? canonicalKey)
+);
 
 export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR_CONNECTORS)[number];
 
-export const BROWSER_BOUND_CONNECTORS = [
-  "amazon",
-  "anthropic",
-  "chase",
-  "chatgpt",
-  "doordash",
-  "heb",
-  "linkedin",
-  "loom",
-  "meta",
-  "reddit",
-  "shopify",
-  "uber",
-  "usaa",
-  "whoop",
-  "wholefoods",
-] as const;
+// Every manifest declaring a runtime_requirements.bindings.browser binding —
+// see connector-registry.generated.ts. Equivalent to filtering the manifest
+// set through classifyConnectorIntentModality === "browser_bound", expressed
+// as generated data so this module (imported by apps/console; must stay
+// node:fs-free) never hand-copies the connector-id list.
+export const BROWSER_BOUND_CONNECTORS: readonly string[] = BROWSER_BOUND_KEYS;
 
 export type BrowserBoundConnector = (typeof BROWSER_BOUND_CONNECTORS)[number];
 
@@ -235,7 +339,7 @@ export type BrowserBoundConnector = (typeof BROWSER_BOUND_CONNECTORS)[number];
  * Browser enrollment is available when the shipped manifest/runtime pair is
  * both browser-bound and production-ready. The conformance roster is the
  * connector package's authority for the latter: it is checked against
- * `capabilities.public_listing.listed` and each entry names a real collection
+ * an owner-visible lifecycle tier and each entry names a real collection
  * oracle. Deriving this intersection keeps a scaffold such as Anthropic out
  * without maintaining a second browser setup allowlist.
  */
@@ -258,33 +362,55 @@ export const PROVIDER_AUTH_RUNBOOK_PATH = "docs/operator/add-connection.md";
 // next step. Real production connectors must NOT be added here until their
 // connector-specific inventory/test adapter is implemented and proven.
 //
-// "test_provider" is a synthetic connector used by the deterministic test suite
-// to exercise the full lifecycle without live provider credentials.
-export const PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS = ["test_provider", "google-maps-data-portability"] as const;
+// "test_provider" is a synthetic connector constructed only by the
+// deterministic test suite (test/provider-auth-lifecycle.test.ts fixtures);
+// it has no manifest file, so it cannot be manifest-derived and stays a
+// literal code-level addition alongside the generated,
+// capabilities.proven.provider_auth_lifecycle-backed entries. See
+// connector-registry.generated.ts.
+export const PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS: readonly string[] = Object.freeze([
+  "test_provider",
+  ...PROVIDER_AUTH_LIFECYCLE_PROVEN_KEYS,
+]);
 
 export type ProviderAuthLifecycleProvenConnector = (typeof PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS)[number];
 
 export function isProviderAuthLifecycleProven(connectorKey: string): boolean {
-  return (PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(
-    canonicalConnectorKey(connectorKey)
-  );
+  return PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS.includes(canonicalConnectorKey(connectorKey));
 }
 
 // Connector keys for which the static-secret credential flow (draft → capture →
 // first ingest) has been proven end-to-end via a live env-free container run.
-// Live proof recorded 2026-06-10T22:55Z (ri-owner-current-state.md window
-// "STORE-ONLY CREDENTIAL POSTURE LIVE AND PROVEN"):
-//   gmail  — run_1781131328336 completed/succeeded, env-free container
-//   github — run_1781131195649 completed/succeeded, env-free container
-//           + run_1781131489458 trigger_kind=scheduled unattended succeeded (4 records)
-//   slack  — run_1781131204868 completed/succeeded, env-free container
-// (ynab store path also proven; token is provider-side dead — not a capture-path failure)
-export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack"] as const;
+// This is a proof gate, not a classification: it is generated from each
+// manifest's capabilities.proven.static_secret_live.proven declaration (see
+// connector-registry.generated.ts), which also carries the run_id/date/note
+// evidence for each proof — this module only reads the boolean.
+export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS: readonly string[] = STATIC_SECRET_LIVE_PROVEN_KEYS;
 
 export type StaticSecretLiveProvenConnector = (typeof STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS)[number];
 
 export function isStaticSecretLiveProven(connectorKey: string): boolean {
-  return (STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(canonicalConnectorKey(connectorKey));
+  return STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS.includes(canonicalConnectorKey(connectorKey));
+}
+
+/**
+ * Whether a static-secret connector qualifies for owner opt-in UAT today.
+ *
+ * Capability-derived, not a hardcoded per-connector list: any connector whose
+ * manifest declares a real `credential_capture` block (a secret field, a
+ * label, a submit action — the same shape the live-proven connectors use)
+ * reaches the exact same generic capture-form → draft-connection →
+ * first-sync route already proven for gmail/github/slack/ynab. The only
+ * thing distinguishing "experimental" from "supported" is that no owner has
+ * completed a live run yet, which `STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS`
+ * still tracks.
+ *
+ * This check does NOT consult `capabilities.public_listing`: lifecycle tier
+ * controls offering, while this function answers whether the generic static-
+ * secret path is technically available. The console combines both facts.
+ */
+export function isStaticSecretExperimentalEligible(manifest: ConnectorManifestLike | null): boolean {
+  return staticSecretCredentialCaptureFromManifest(manifest) !== null;
 }
 
 const NOT_APPLICABLE_DEPLOYMENT_READINESS: ConnectorSetupDeploymentReadiness = Object.freeze({
@@ -320,9 +446,28 @@ export function connectorKeyFromManifest(manifest: ConnectorManifestLike, fallba
   return raw ? canonicalConnectorKey(raw) : null;
 }
 
+// Two canonical keys have a registry-URL slug that differs from the
+// connector directory / bundled-registry id (LOCAL_COLLECTOR_DEFINITIONS is
+// keyed by `connector_id`, which uses underscores for both): claude-code and
+// google-takeout. Every other bundled connector's canonical key already
+// equals its directory name.
+//
+// Derived from connector-key.ts's legacyLocalAliasMap() (legacy snake_case ->
+// canonical hyphenated key) by inverting it, rather than hand-maintaining a
+// second copy of the same mapping — that second copy had already diverged
+// from a third one in auth.ts. See
+// docs/inbox/report-connector-knowledge-clusters-bc.md. `codex` maps to
+// itself in legacyLocalAliasMap() and is intentionally excluded here (no
+// entry needed for an identity mapping).
+const HYPHENATED_CANONICAL_KEY_ALIASES: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(legacyLocalAliasMap())
+    .filter(([legacyKey, canonicalKey]) => legacyKey !== canonicalKey)
+    .map(([legacyKey, canonicalKey]) => [canonicalKey, legacyKey])
+);
+
 export function enrollmentKeyForCanonicalKey(canonicalKey: string): string {
   const key = canonicalConnectorKey(canonicalKey);
-  return key === "claude-code" ? "claude_code" : key;
+  return HYPHENATED_CANONICAL_KEY_ALIASES[key] ?? key;
 }
 
 export function displayNameForConnector(connectorKey: string, manifest?: ConnectorManifestLike | null): string {
@@ -333,68 +478,21 @@ function cleanString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function normalizeStaticSecretFieldType(raw: StaticSecretSetupFieldLike): StaticSecretSetupFieldType {
-  const rawType = cleanString(raw.type)?.toLowerCase();
-  if (rawType === "email" || rawType === "password" || rawType === "text") {
-    return rawType;
-  }
-  if (raw.secret === true) {
-    return "password";
-  }
-  return "text";
-}
-
-function normalizeStaticSecretField(raw: StaticSecretSetupFieldLike): StaticSecretSetupField | null {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const name = cleanString(raw?.name);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const label = cleanString(raw?.label);
-  if (!(name && label)) {
-    return null;
-  }
-  const type = normalizeStaticSecretFieldType(raw);
-  return {
-    autocomplete: cleanString(raw.autocomplete),
-    description: cleanString(raw.description),
-    env: Array.isArray(raw.env) ? raw.env.filter((value): value is string => cleanString(value) !== null) : [],
-    helpText: cleanString(raw.help_text),
-    helpUrl: cleanString(raw.help_url),
-    identity: raw.identity === true,
-    label,
-    name,
-    placeholder: cleanString(raw.placeholder),
-    required: raw.required !== false,
-    secret: raw.secret === true || type === "password",
-    type,
-  };
-}
-
+/**
+ * Delegates to the shared, provider-neutral normalizer
+ * (`packages/polyfill-connectors/src/static-secret-credential-capture.ts`) so
+ * setup and runtime injection's generator derive a connector's static-secret
+ * classification and field contract from ONE predicate. See that module's
+ * doc for why this can throw `StaticSecretCredentialCaptureError` (a secret
+ * field missing `label` or `env` is a manifest contract violation, not a
+ * value to silently drop) and for the `type: "password"` implies-secret
+ * rule.
+ */
 export function staticSecretCredentialCaptureFromManifest(
   manifest: ConnectorManifestLike | null | undefined
 ): StaticSecretCredentialCaptureSetup | null {
-  const capture = manifest?.setup?.credential_capture;
-  if (!capture || typeof capture !== "object") {
-    return null;
-  }
-  const kind = cleanString(capture.credential_kind) ?? cleanString(capture.kind);
-  if (!kind) {
-    return null;
-  }
-  const fields = Array.isArray(capture.fields)
-    ? capture.fields
-        .map((field) => normalizeStaticSecretField(field))
-        .filter((field): field is StaticSecretSetupField => field !== null)
-    : [];
-  if (!fields.some((field) => field.secret)) {
-    return null;
-  }
-  return {
-    description: cleanString(capture.description),
-    fields,
-    kind,
-    label: cleanString(capture.label) ?? kind,
-    submitLabel: cleanString(capture.submit_label),
-  };
+  const connectorKey = cleanString(manifest?.connector_key) ?? cleanString(manifest?.connector_id) ?? "unknown";
+  return normalizeStaticSecretCredentialCapture(connectorKey, manifest?.setup?.credential_capture);
 }
 
 export function manualUploadSetupFromManifest(
@@ -435,6 +533,7 @@ export function manualUploadSetupFromManifest(
     typeof meta?.validation?.max_file_bytes === "number" && Number.isFinite(meta.validation.max_file_bytes)
       ? meta.validation.max_file_bytes
       : null;
+  const fileBacked = meta?.validation?.file_backed === true;
   return {
     acceptedFileExtensions,
     acceptedFileNames,
@@ -445,7 +544,7 @@ export function manualUploadSetupFromManifest(
     importDirEnvVar: cleanString(meta?.import_dir_env_var),
     label: cleanString(meta?.label) ?? "Import file",
     largeFileFallback: cleanString(meta?.large_file_fallback),
-    validation: validationKind ? { kind: validationKind, maxFileBytes } : null,
+    validation: validationKind ? { fileBacked, kind: validationKind, maxFileBytes } : null,
     validationExpectations: Array.isArray(meta?.validation_expectations)
       ? meta.validation_expectations.filter((value): value is string => cleanString(value) !== null)
       : [],
@@ -560,21 +659,136 @@ export function classifyConnectorSetupModality(
   return connectorModality;
 }
 
-function deploymentConfigKeysFromManifest(manifest: ConnectorManifestLike | null): readonly string[] {
-  const setupKeys = manifest?.setup?.deployment_config;
-  if (Array.isArray(setupKeys) && setupKeys.length > 0) {
-    return setupKeys.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+/**
+ * One normalized `deployment_config` entry. `logicalKey` is always the
+ * operator-facing/blocker identity (never `envAlias`, never leaked to any
+ * client-visible surface). `envAlias`, when the manifest declares one, is
+ * the *only* env var name this module will ever read for that entry — a
+ * legacy bare-string or `{key,label,secret}` entry has no separate alias, so
+ * its own key string doubles as the env lookup name (preserves today's
+ * behavior for any manifest not yet migrated to the logical-key shape).
+ */
+interface NormalizedDeploymentConfigEntry {
+  readonly envAlias: string | null;
+  readonly label: string | null;
+  readonly logicalKey: string;
+  readonly secret: boolean | null;
+}
+
+// Accepts the legacy bare-string-array shape, the {key,label,secret} object
+// shape, and the current {logical_key,label,secret,env_alias} shape declared
+// by DeploymentConfigDeclarationLike, normalizing all three to one record
+// shape. The RI never re-derives label/secret by guessing at a legacy shape
+// when the manifest already declares them.
+function trimmedOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function trimmedOrEmpty(value: unknown): string {
+  return trimmedOrNull(value) ?? "";
+}
+
+function secretFlagOrNull(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function normalizedBareStringEntry(entry: string): NormalizedDeploymentConfigEntry | null {
+  const logicalKey = entry.trim();
+  return logicalKey ? { envAlias: null, label: null, logicalKey, secret: null } : null;
+}
+
+function normalizedLogicalKeyEntry(entry: DeploymentConfigLogicalKeyLike): NormalizedDeploymentConfigEntry | null {
+  const logicalKey = trimmedOrEmpty(entry.logical_key);
+  if (!logicalKey) {
+    return null;
   }
-  const authKeys = manifest?.capabilities?.auth?.deployment_config ?? manifest?.capabilities?.auth?.required;
-  if (Array.isArray(authKeys) && authKeys.length > 0) {
-    return authKeys.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return {
+    envAlias: trimmedOrNull(entry.env_alias),
+    label: trimmedOrNull(entry.label),
+    logicalKey,
+    secret: secretFlagOrNull(entry.secret),
+  };
+}
+
+function normalizedLegacyKeyEntry(entry: DeploymentConfigKeyLike): NormalizedDeploymentConfigEntry | null {
+  const logicalKey = trimmedOrEmpty(entry.key);
+  if (!logicalKey) {
+    return null;
   }
-  return [];
+  return { envAlias: null, label: trimmedOrNull(entry.label), logicalKey, secret: secretFlagOrNull(entry.secret) };
+}
+
+function normalizedDeploymentConfigEntry(
+  entry: string | DeploymentConfigKeyLike | DeploymentConfigLogicalKeyLike | null
+): NormalizedDeploymentConfigEntry | null {
+  if (typeof entry === "string") {
+    return normalizedBareStringEntry(entry);
+  }
+  if (!entry) {
+    return null;
+  }
+  return "logical_key" in entry ? normalizedLogicalKeyEntry(entry) : normalizedLegacyKeyEntry(entry);
+}
+
+function normalizedDeploymentConfigEntries(
+  declaration: DeploymentConfigDeclarationLike | null | undefined
+): readonly NormalizedDeploymentConfigEntry[] {
+  if (!Array.isArray(declaration)) {
+    return [];
+  }
+  return declaration
+    .map(normalizedDeploymentConfigEntry)
+    .filter((entry): entry is NormalizedDeploymentConfigEntry => entry !== null);
+}
+
+function deploymentConfigEntriesFromManifest(
+  manifest: ConnectorManifestLike | null
+): readonly NormalizedDeploymentConfigEntry[] {
+  const setupEntries = normalizedDeploymentConfigEntries(manifest?.setup?.deployment_config);
+  if (setupEntries.length > 0) {
+    return setupEntries;
+  }
+  const authEntries = normalizedDeploymentConfigEntries(manifest?.capabilities?.auth?.deployment_config);
+  if (authEntries.length > 0) {
+    return authEntries;
+  }
+  return (manifest?.capabilities?.auth?.required ?? [])
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((key) => ({ envAlias: null, label: null, logicalKey: key, secret: null }));
+}
+
+/**
+ * The observed deployment environment. Injected rather than read directly so
+ * this module stays a pure function of its inputs and a test can describe a
+ * deployment without mutating the process. Callers ahead of a
+ * provider-auth-relevant response pre-resolve this by merging `process.env`
+ * with a DB-backed provider-app-config lookup (env-first, then DB) for any
+ * declared `env_alias` missing from the process environment — this module
+ * itself never talks to that store, keeping it a pure sync function.
+ */
+export interface DeploymentEnvLike {
+  readonly [key: string]: string | undefined;
+}
+
+function needsDeploymentConfig(
+  missingEntries: readonly NormalizedDeploymentConfigEntry[]
+): ConnectorSetupDeploymentReadiness {
+  return {
+    blockers: missingEntries.map((entry) => ({
+      key: entry.logicalKey,
+      label: entry.label ?? entry.logicalKey,
+      secret: entry.secret ?? SECRET_DEPLOYMENT_KEY_RE.test(entry.logicalKey),
+    })),
+    guidance:
+      "Configure the instance-level provider application first. After that, each owner authorizes their own account through an owner-mediated provider authorization step.",
+    state: "needs_config",
+  };
 }
 
 function buildDeploymentReadiness(args: {
   readonly connectorKey: string;
   readonly configuredProviderAuthConnectorKeys?: readonly string[];
+  readonly deploymentEnv?: DeploymentEnvLike;
   readonly manifest: ConnectorManifestLike | null;
   readonly requiredKeys?: readonly string[];
   readonly setupModality: ConnectorSetupModality;
@@ -582,24 +796,34 @@ function buildDeploymentReadiness(args: {
   if (args.setupModality !== "provider_authorization") {
     return NOT_APPLICABLE_DEPLOYMENT_READINESS;
   }
+  const requiredEntries = args.requiredKeys?.length
+    ? args.requiredKeys.map((key) => ({ envAlias: null, label: null, logicalKey: key, secret: null }))
+    : deploymentConfigEntriesFromManifest(args.manifest);
+  // A manifest that declares its deployment prerequisites is answered from
+  // those entries against the observed environment. Readiness is then a
+  // property of the DEPLOYMENT, not of the connector's identity: any
+  // connector whose declared settings are all present reads ready, and any
+  // connector missing one reads needs_config with that exact setting named.
+  // Only a manifest declaring NO entries falls back to the adapter allowlist
+  // below, which is the one case where this module has nothing to measure.
+  if (requiredEntries.length > 0) {
+    const env = args.deploymentEnv ?? process.env;
+    // A setting counts as supplied only when it holds a non-blank value,
+    // read by its declared env_alias (or its own key, for legacy entries
+    // with no separate alias) — never by logicalKey directly, since
+    // logicalKey is an operator-facing role name, not an env var name.
+    const missing = requiredEntries.filter(
+      (entry) => (env[entry.envAlias ?? entry.logicalKey] ?? "").trim().length === 0
+    );
+    return missing.length === 0 ? READY_DEPLOYMENT_READINESS : needsDeploymentConfig(missing);
+  }
   const configured = new Set((args.configuredProviderAuthConnectorKeys ?? []).map(canonicalConnectorKey));
   if (configured.has(args.connectorKey)) {
     return READY_DEPLOYMENT_READINESS;
   }
-  const requiredKeys = args.requiredKeys?.length ? args.requiredKeys : deploymentConfigKeysFromManifest(args.manifest);
-  const blockers = (requiredKeys.length > 0 ? requiredKeys : [`${args.connectorKey.toUpperCase()}_OAUTH_CLIENT`]).map(
-    (key) => ({
-      key,
-      label: key,
-      secret: SECRET_DEPLOYMENT_KEY_RE.test(key),
-    })
-  );
-  return {
-    blockers,
-    guidance:
-      "Configure the instance-level provider application first. After that, each owner authorizes their own account through an owner-mediated provider authorization step.",
-    state: "needs_config",
-  };
+  return needsDeploymentConfig([
+    { envAlias: null, label: null, logicalKey: `${args.connectorKey.toUpperCase()}_OAUTH_CLIENT`, secret: null },
+  ]);
 }
 
 export function unsupportedReason(modality: ConnectorIntentModality | ConnectorSetupModality): string {
@@ -748,6 +972,58 @@ function buildBrowserBoundSetupPlan(ctx: ConnectionSetupPlanContext): Connection
 
 function buildStaticSecretSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionSetupPlan {
   const liveProven = isStaticSecretLiveProven(ctx.connectorKey);
+  if (liveProven) {
+    return {
+      catalogDisposition: "static_secret_connect",
+      connectorKey: ctx.connectorKey,
+      connectorModality: ctx.connectorModality,
+      deploymentReadiness: ctx.deploymentReadiness,
+      displayName: ctx.displayName,
+      nextStepKind: "capture_static_secret",
+      ownerAgentIntent: {
+        method: "POST",
+        nextStepKind: "capture_static_secret",
+        reason:
+          "Initiate static-secret credential capture from the owner session. The connection activates after the secret is validated and first ingest succeeds.",
+        status: "supported",
+      },
+      proofGate: null,
+      runbookPath: null,
+      setupModality: ctx.setupModality,
+      supportState: "supported",
+      validationMode: ctx.validationMode,
+    };
+  }
+  // Browser-bound connectors with stored-credential capture (e.g. amazon) keep
+  // their existing static_secret_connect/browser-session presentation — that
+  // path already has its own dedicated UI treatment
+  // (`browserBoundWithStoredCredentials`) independent of live-proof status,
+  // and promoting it to "experimental" here would just be new, unrequested
+  // scope on a connector this task never asked to touch.
+  const experimentalEligible =
+    ctx.connectorModality !== "browser_bound" && isStaticSecretExperimentalEligible(ctx.manifest);
+  if (experimentalEligible) {
+    return {
+      catalogDisposition: "static_secret_experimental",
+      connectorKey: ctx.connectorKey,
+      connectorModality: ctx.connectorModality,
+      deploymentReadiness: ctx.deploymentReadiness,
+      displayName: ctx.displayName,
+      nextStepKind: "capture_static_secret",
+      ownerAgentIntent: {
+        method: "POST",
+        nextStepKind: "capture_static_secret",
+        reason:
+          "Experimental. This setup path has not completed live validation. Continue to test it with your own data.",
+        status: "experimental",
+      },
+      proofGate: "static_secret_live_proof_missing",
+      runbookPath: null,
+      setupModality: ctx.setupModality,
+      supportState: "experimental",
+      validationMode: ctx.validationMode,
+    };
+  }
   return {
     catalogDisposition: "static_secret_connect",
     connectorKey: ctx.connectorKey,
@@ -756,17 +1032,15 @@ function buildStaticSecretSetupPlan(ctx: ConnectionSetupPlanContext): Connection
     displayName: ctx.displayName,
     nextStepKind: "capture_static_secret",
     ownerAgentIntent: {
-      method: liveProven ? "POST" : null,
+      method: null,
       nextStepKind: "capture_static_secret",
-      reason: liveProven
-        ? "Initiate static-secret credential capture from the owner session. The connection activates after the secret is validated and first ingest succeeds."
-        : unsupportedReason(ctx.setupModality),
-      status: liveProven ? "supported" : "proof_gated",
+      reason: unsupportedReason(ctx.setupModality),
+      status: "proof_gated",
     },
-    proofGate: liveProven ? null : "static_secret_live_proof_missing",
+    proofGate: "static_secret_live_proof_missing",
     runbookPath: null,
     setupModality: ctx.setupModality,
-    supportState: liveProven ? "supported" : "proof_gated",
+    supportState: "proof_gated",
     validationMode: ctx.validationMode,
   };
 }
@@ -776,7 +1050,7 @@ function buildProviderAuthorizationSetupPlan(ctx: ConnectionSetupPlanContext): C
   const lifecycleProven = !deploymentBlocked && isProviderAuthLifecycleProven(ctx.connectorKey);
   if (lifecycleProven) {
     return {
-      catalogDisposition: "provider_auth_proof_gated",
+      catalogDisposition: "provider_auth_connect",
       connectorKey: ctx.connectorKey,
       connectorModality: ctx.connectorModality,
       deploymentReadiness: ctx.deploymentReadiness,
@@ -875,6 +1149,7 @@ function buildUnsupportedSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionS
 export function buildConnectionSetupPlan(args: {
   readonly connectorKey?: string | null;
   readonly configuredProviderAuthConnectorKeys?: readonly string[];
+  readonly deploymentEnv?: DeploymentEnvLike;
   readonly manifest: ConnectorManifestLike | null;
 }): ConnectionSetupPlan {
   const rawConnectorKey = typeof args.connectorKey === "string" ? args.connectorKey.trim() : "";
@@ -888,6 +1163,7 @@ export function buildConnectionSetupPlan(args: {
   const deploymentArgs: {
     connectorKey: string;
     configuredProviderAuthConnectorKeys?: readonly string[];
+    deploymentEnv?: DeploymentEnvLike;
     manifest: ConnectorManifestLike | null;
     setupModality: ConnectorSetupModality;
   } = {
@@ -897,6 +1173,9 @@ export function buildConnectionSetupPlan(args: {
   };
   if (args.configuredProviderAuthConnectorKeys) {
     deploymentArgs.configuredProviderAuthConnectorKeys = args.configuredProviderAuthConnectorKeys;
+  }
+  if (args.deploymentEnv) {
+    deploymentArgs.deploymentEnv = args.deploymentEnv;
   }
   const deploymentReadiness = buildDeploymentReadiness(deploymentArgs);
   const enrollmentKey = enrollmentKeyForCanonicalKey(connectorKey);

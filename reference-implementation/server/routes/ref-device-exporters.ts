@@ -26,13 +26,17 @@
 // directly.
 
 import { createHash } from "node:crypto";
+import type { CollectionScope } from "@pdpp/reference-contract/evidence";
 import {
   handleLocalDeviceTerminalCollection,
   handleLocalDeviceTerminalRunCommit,
 } from "../../operations/local-device-terminal-collection.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
 import { type DeviceAttemptContext, fingerprintDeviceAttemptManifest } from "../device-ingest-attempt-context.ts";
+import { parseDeviceScopeRequest, resolveEnrollmentScope } from "../enrollment-scope-narrowing.ts";
 import { deriveReferenceFreshness } from "../freshness.ts";
+import { presentHeartbeatHealth } from "../heartbeat-lease.ts";
+import { buildStoredCollectionScope, COLLECTION_SCOPE_STATE_KEY } from "../local-collection-scope.ts";
 import { assertRecordIdentity, normalizePrimaryKey } from "../record-expand-helpers.ts";
 import { commitTerminalRun } from "../stores/terminal-run-commit-store.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -95,6 +99,38 @@ function maybeDeviceIngestStoreFault(point: string): void {
 
 async function maybeDeviceIngestPhaseFault(point: string, inputIndex?: number): Promise<void> {
   await deviceIngestPhaseFaultHook?.(point, inputIndex);
+}
+
+// Serializes concurrent HTTP attempts for the SAME (deviceId, batchId) — an
+// in-process, batch-identity-scoped lock, DELIBERATELY NOT the
+// connector-instance write coordinator. Two simultaneous retries of the
+// identical batch (a collector retry racing the original attempt after a
+// transport hiccup) must collapse onto one real execution -- one embedding
+// run, one durable write sequence -- rather than each redoing the same work
+// concurrently. Scoping this to the batch identity, not the connector
+// instance, is what keeps it from also blocking an unrelated writer (a
+// different batch, a blob upload) on the SAME connector instance: that
+// exclusion is what the connector-instance fence remains responsible for
+// (now per-record, not batch-duration), and it does not need to expand to
+// cover this. See harden-connector-instance-write-fence-transaction-native.
+const deviceIngestBatchAttemptTails = new Map<string, Promise<void>>();
+
+async function withDeviceIngestBatchAttempt<T>(deviceId: string, batchId: string, operation: () => Promise<T>) {
+  const key = `${deviceId}:${batchId}`;
+  const previous = deviceIngestBatchAttemptTails.get(key) ?? Promise.resolve();
+  const attempt = previous.then(operation, operation);
+  const tail = attempt.then(
+    () => undefined,
+    () => undefined
+  );
+  deviceIngestBatchAttemptTails.set(key, tail);
+  try {
+    return await attempt;
+  } finally {
+    if (deviceIngestBatchAttemptTails.get(key) === tail) {
+      deviceIngestBatchAttemptTails.delete(key);
+    }
+  }
 }
 
 let enrollPhaseFaultHook: ((point: string) => void | Promise<void>) | null = null;
@@ -244,6 +280,7 @@ interface DeviceExporterStore {
     displayName: string | null;
     createdAt: string;
     expiresAt: string;
+    collectionScope?: CollectionScope | null;
   }) => Promise<void>;
   ensureProcessingBatch: (params: {
     deviceId: string;
@@ -269,6 +306,7 @@ interface DeviceExporterStore {
     status: string;
     expiresAt: string;
     consumedAt: string | null;
+    collectionScope?: { since?: string; source_roots?: string[] } | null;
   } | null>;
   getBatchOutcome: (deviceId: string, batchId: string) => Promise<BatchOutcomeRow | null>;
   getDevice: (deviceId: string) => Promise<DeviceRow | null>;
@@ -456,6 +494,12 @@ export interface MountRefDeviceExportersContext {
   // Collector protocol enforcement (returns true if 409 was written)
   enforceCollectorProtocolVersion: (req: unknown, res: unknown) => boolean;
 
+  // Record ingest and sync state
+  // Schedules an operation onto the SAME per-connector-instance ordered index
+  // lane every other writer's derived-index maintenance uses — see
+  // `enqueueDeviceIndexMaintenance`'s header in server/records.ts.
+  enqueueDeviceIndexMaintenance: (connectorInstanceId: string, operation: () => Promise<void>) => Promise<void>;
+
   // Catalog entry registration at enroll time
   ensureReferenceConnectorCatalogEntry: (connectorId: string, displayName: string | null) => Promise<void>;
   generateReferenceSecret: (prefix: string, bytes: number) => string;
@@ -474,8 +518,6 @@ export interface MountRefDeviceExportersContext {
 
   // Hashing and sanitization
   hashDeviceSecret: (value: string) => string;
-
-  // Record ingest and sync state
   ingestRecord: (storageTarget: StorageTarget, record: unknown, options?: unknown) => Promise<unknown>;
   isDeviceSemanticAttemptSupported: () => boolean;
 
@@ -483,7 +525,12 @@ export interface MountRefDeviceExportersContext {
   // `{ store, stream, status }` triple per store — never paths, payloads,
   // the coverage `reason` text, or secrets.
   listLocalCoverageDiagnostics: (storageTarget: StorageTarget) => Promise<LocalCoverageRow[]>;
-  maintainRecordIndexes: (storageTarget: StorageTarget, record: unknown, options?: unknown) => Promise<void>;
+  maintainRecordIndexes: (
+    storageTarget: StorageTarget,
+    record: unknown,
+    expectedVersion: number,
+    options?: unknown
+  ) => Promise<unknown>;
   makeConnectorInstanceSourceBindingKey: (identity: { kind: string; local_binding_name: string }) => string;
   pdppError: PdppErrorFn;
   prepareDeviceFinalRecords: (
@@ -492,7 +539,7 @@ export interface MountRefDeviceExportersContext {
     attemptContext: DeviceAttemptContext,
     durablePrefixCount: number,
     ownership?: unknown
-  ) => Promise<{ inputIndex: number; record: unknown }[]>;
+  ) => Promise<{ inputIndex: number; record: unknown; version?: number }[]>;
   putSyncState: (
     storageTarget: StorageTarget,
     stateMap: Record<string, unknown>,
@@ -509,11 +556,6 @@ export interface MountRefDeviceExportersContext {
   requireOwnerSession: MiddlewareHandler;
   sanitizeDeviceExporterDiagnostic: (value: unknown, depth?: number) => unknown;
   sanitizeLocalCollectorGapDetails: (value: unknown) => string | null;
-  withConnectorInstanceWrite: <T>(
-    connectorInstanceId: string,
-    operation: (ownership: unknown) => Promise<T>,
-    ownership?: unknown
-  ) => Promise<T>;
 }
 
 // ─── Module-level helpers moved from server/index.js ────────────────────────
@@ -587,6 +629,7 @@ async function resolveEnrollmentSourceKind(
 }
 
 interface ReEnrollableEnrollment {
+  collectionScope?: { since?: string; source_roots?: string[] } | null;
   connectorId: string;
   consumedAt: string | null;
   deviceId: string | null;
@@ -768,7 +811,8 @@ async function performFirstEnrollment(
   res: RouteResponse,
   body: Record<string, unknown>,
   enrollment: ReEnrollableEnrollment,
-  now: Date
+  now: Date,
+  effectiveScope: CollectionScope | null
 ): Promise<void> {
   const collectorProtocolVersion = ctx.readCollectorProtocolHeader(req.headers);
   const candidateDeviceId = ctx.generateSpineId("dexp");
@@ -846,6 +890,21 @@ async function performFirstEnrollment(
     sourceKind,
     updatedAt: now.toISOString(),
   });
+
+  // Apply the EFFECTIVE boundary the route already resolved (server-declared
+  // narrowed-or-honored by the device's request, or the honest recent-history
+  // default when neither side declared anything — see
+  // `enrollment-scope-narrowing.ts`/`resolveEffectiveEnrollmentScope`). This
+  // is the FIRST write to `connector_state.$collection_scope` for this
+  // connection, so there is no prior proof to declassify — unlike
+  // `owner-connection-collection-scope.ts`'s PUT handler, which changes an
+  // already-declared boundary. `effectiveScope: null` is itself a real,
+  // deliberate declaration (an explicit full pass), written the same way as
+  // any other boundary — never left unwritten, which is why this call is
+  // unconditional rather than gated on truthiness.
+  const scopeTarget = referenceLocalDeviceStorageTarget(ctx, enrollConnectorKey, connectorInstance.connectorInstanceId);
+  const storedScope = buildStoredCollectionScope(effectiveScope, now.toISOString());
+  await ctx.putSyncState(scopeTarget, { [COLLECTION_SCOPE_STATE_KEY]: storedScope }, { grantId: null });
 
   // Test-only interruption point: identity (device, connector instance,
   // source instance) is now fully durable; the code is still pending. This is
@@ -1649,7 +1708,8 @@ function projectSourceInstance(
   outcomeStats: OutcomeStatMap,
   gapStats: GapStatMap,
   unreliableIds: Set<string>,
-  coverageByConnectorInstance: Map<string, LocalCoverageProjection>
+  coverageByConnectorInstance: Map<string, LocalCoverageProjection>,
+  now: number
 ): unknown {
   const stats = outcomeStats.get(source.sourceInstanceId) ?? { accepted: 0, lastIngestAt: null, rejected: 0 };
   const device = devicesById.get(source.deviceId);
@@ -1664,6 +1724,15 @@ function projectSourceInstance(
   }
   const gap = gapStats.get(source.sourceInstanceId) ?? null;
   const outboxDiagnostics = source.outboxDiagnostics ?? null;
+  // Last status without age is not current health. A one-shot collector that
+  // was killed leaves its last lifecycle status in the column forever, so the
+  // presented health is derived against the declared lease and the raw column
+  // is kept alongside as evidence rather than as the answer.
+  const heartbeatHealth = presentHeartbeatHealth({
+    lastHeartbeatAt: source.lastHeartbeatAt,
+    lastHeartbeatStatus: source.lastHeartbeatStatus,
+    nowIso: new Date(now).toISOString(),
+  });
   return {
     accepted_record_count: stats.accepted,
     connector_id: source.connectorId,
@@ -1671,8 +1740,17 @@ function projectSourceInstance(
     created_at: source.createdAt,
     device_id: source.deviceId,
     display_name: source.displayName,
+    heartbeat_age_ms: heartbeatHealth.ageMs,
+    // Presented health: the collector's status only while within lease,
+    // otherwise `stale`/`unknown`. This is what a reader should render.
+    heartbeat_health: heartbeatHealth.status,
+    // The lease the age was judged against, so a reader can see the policy
+    // that produced `heartbeat_health` instead of inferring it.
+    heartbeat_lease_ms: heartbeatHealth.leaseMs,
     last_error: source.lastError,
     last_heartbeat_at: source.lastHeartbeatAt ?? null,
+    // Raw last-observed column, retained as evidence. NOT current health —
+    // read `heartbeat_health` for that.
     last_heartbeat_status: source.lastHeartbeatStatus ?? null,
     last_ingest_at: stats.lastIngestAt,
     local_binding_name: source.localBindingId,
@@ -1796,7 +1874,8 @@ async function buildDeviceExporterDiagnostics(
       outcomeStats,
       gapStats,
       unreliableIds,
-      coverageByConnectorInstance
+      coverageByConnectorInstance,
+      now
     );
     const list = sourcesByDevice.get(source.deviceId) ?? [];
     list.push(projected);
@@ -1920,10 +1999,26 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
           );
           return;
         }
+        // The owner minting this code (dashboard/owner-agent) MAY declare the
+        // boundary the device should enroll within — the SAME
+        // `{since?, source_roots?}` shape and reject-not-coerce validation
+        // `enrollment-scope-narrowing.ts`'s `parseDeviceScopeRequest` already
+        // enforces for what a device may separately REQUEST at enroll time.
+        // Staged here on the code (mirroring `mintEnrollmentNextStep`'s
+        // owner-bearer path) rather than written to `connector_state`
+        // directly, because no connection exists yet to hold it.
+        const parsedOwnerScope = parseDeviceScopeRequest(body.collection_scope);
+        if (!parsedOwnerScope.ok) {
+          ctx.pdppError(res, 400, "invalid_request", parsedOwnerScope.message, "collection_scope");
+          return;
+        }
+        const ownerDeclaredScope = parsedOwnerScope.request.kind === "declared" ? parsedOwnerScope.request.scope : null;
+
         const enrollmentCode = ctx.generateReferenceSecret("lde", 18);
         const expiresAt = new Date(now.getTime() + expiresInSeconds * 1000).toISOString();
         await ctx.deviceExporterStore.createEnrollmentCode({
           codeHash: ctx.hashDeviceSecret(enrollmentCode),
+          collectionScope: ownerDeclaredScope,
           connectorId,
           createdAt: now.toISOString(),
           displayName:
@@ -1936,6 +2031,7 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
           ownerSubjectId: ctx.getOwnerSubjectId(req),
         });
         res.status(201).json({
+          collection_scope: ownerDeclaredScope,
           connector_id: connectorId,
           enrollment_code: enrollmentCode,
           expires_at: expiresAt,
@@ -2011,11 +2107,32 @@ export function mountRefDeviceExporterEnroll(app: AppLike, ctx: MountRefDeviceEx
           return;
         }
 
+        // A device MAY offer a scope alongside the code (a `connect`-style
+        // collector's --recent/--all/--since). It is validated and resolved
+        // against whatever the enrollment code already declared BEFORE any
+        // state changes, so a malformed or widening request is rejected with
+        // nothing consumed or written — same fail-closed posture as an
+        // invalid enrollment_code. See `enrollment-scope-narrowing.ts`.
+        const parsedScope = parseDeviceScopeRequest(body.collection_scope);
+        if (!parsedScope.ok) {
+          ctx.pdppError(res, 400, "invalid_request", parsedScope.message, "collection_scope");
+          return;
+        }
+        const scopeVerdict = resolveEnrollmentScope({
+          device: parsedScope.request,
+          now: now.toISOString(),
+          serverDeclared: enrollment.collectionScope,
+        });
+        if (!scopeVerdict.accepted) {
+          ctx.pdppError(res, 400, "invalid_request", scopeVerdict.reason, "collection_scope");
+          return;
+        }
+
         if (await respondIfConsumedCodeReplay(ctx, res, enrollment, now)) {
           return;
         }
 
-        await performFirstEnrollment(ctx, req, res, body, enrollment, now);
+        await performFirstEnrollment(ctx, req, res, body, enrollment, now, scopeVerdict.effective);
       } catch (err) {
         respondEnrollError(ctx, res, err);
       }
@@ -2108,6 +2225,37 @@ export function mountRefDeviceExporterRevoke(app: AppLike, ctx: MountRefDeviceEx
         const device = await ctx.deviceExporterStore.getDevice(deviceId);
         if (!device || device.ownerSubjectId !== ctx.getOwnerSubjectId(req)) {
           ctx.pdppError(res, 404, "not_found", "Device exporter not found");
+          return;
+        }
+        const revokedAt = new Date().toISOString();
+        await ctx.deviceExporterStore.revokeDevice(deviceId, revokedAt);
+        res.json({ device_id: deviceId, object: "device_exporter_revocation", revoked_at: revokedAt });
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+// POST /_ref/device-exporters/:deviceId/self-revoke
+//
+// A device credential may revoke itself, never another device: auth is the
+// device's own bearer token (not an owner session), and the path deviceId
+// must match the credential that authenticated the request. This is the
+// route `pdpp-local-collector logout` calls before deleting its local
+// profile — without it, a local device has no way to close its own
+// server-side lane, and logout could only ever delete local state while the
+// device token stayed live against the reference deployment indefinitely.
+export function mountRefDeviceExporterSelfRevoke(app: AppLike, ctx: MountRefDeviceExportersContext): void {
+  app.post(
+    "/_ref/device-exporters/:deviceId/self-revoke",
+    { contract: "refSelfRevokeDeviceExporter" },
+    ctx.requireDeviceExporterCredential,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const deviceId = decodeURIComponent(req.params.deviceId as string);
+        if (deviceId !== req.deviceExporter?.deviceId) {
+          ctx.pdppError(res, 403, "permission_error", "Device credential is not valid for this device");
           return;
         }
         const revokedAt = new Date().toISOString();
@@ -2343,7 +2491,18 @@ async function processDeviceIngestBatch(
   } = params;
   const identity = { batchSeq, bodyHash, connectorId, connectorInstanceId, sourceInstanceId };
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this boundary keeps reservation, durable prefix, derived repair, and terminal response precedence visible.
-  await ctx.withConnectorInstanceWrite(connectorInstanceId, async (coordinatorOwnership) => {
+  await withDeviceIngestBatchAttempt(deviceId, batchId, async () => {
+    // Reservation bookkeeping (lookup, ensure/refresh the `processing` row) is
+    // self-serialized on BATCH identity by `withDeviceIngestBatchAttempt`
+    // above (an in-process, batch-scoped lock) and by the store's own
+    // durable exclusion (`ensureProcessingBatch`'s INSERT-conflict on
+    // `(device_id, batch_id)`, `completeProcessingBatch`'s `SELECT ... FOR
+    // UPDATE` + `durable_prefix_count = record_count` CAS) — it never needs
+    // the connector-instance-wide fence. No connector-instance fence is held
+    // across this bookkeeping, so it can never make an unrelated
+    // same-instance writer (e.g. a concurrent blob upload) queue behind it,
+    // matching `ingestRecords`'s identical reasoning for the HTTP batch
+    // path. See harden-connector-instance-write-fence-transaction-native.
     maybeDeviceIngestStoreFault("before-get-batch-outcome");
     const existing = await ctx.deviceExporterStore.getBatchOutcome(deviceId, batchId);
     if (existing) {
@@ -2363,10 +2522,7 @@ async function processDeviceIngestBatch(
     }
 
     // New malformed candidates retain the historical 400, but an existing
-    // device/batch reservation owns conflict precedence.  Looking it up under
-    // the target fence first means a validly hashed same-batch request whose
-    // connector identity changes is a 409 with no new effects, rather than an
-    // unrelated pre-reservation validation error.
+    // device/batch reservation owns conflict precedence.
     if (!sourceConnectorMatches) {
       ctx.pdppError(res, 400, "invalid_request", "connector_id does not match source_instance_id", "connector_id");
       return;
@@ -2419,13 +2575,23 @@ async function processDeviceIngestBatch(
       const storageTarget = referenceLocalDeviceStorageTarget(ctx, connectorId, connectorInstanceId);
       const attemptDeadline = performance.now() + batchAttemptDeadlineMs();
       const start = reservation.durablePrefixCount ?? 0;
+      const durableVersionByInputIndex = new Map<number, number>();
       for (let inputIndex = start; inputIndex < records.length; inputIndex += 1) {
         const record = records[inputIndex];
         assertBatchAttemptBefore(attemptDeadline);
+        // EACH record acquires its own fresh, short-lived connector-instance
+        // fence here — no batch-long `coordinatorOwnership` is threaded
+        // through, unlike the old design. `requireConnectionAdmission: true`
+        // re-checks the connector-instance row still exists inside THIS
+        // record's own locked transaction, closing the delete/write TOCTOU
+        // for every record in the batch, not only the first (mirrors
+        // `ingestRecords`'s per-record HTTP-path fix). This is what keeps an
+        // UNRELATED same-instance writer (e.g. a concurrent blob upload) from
+        // queuing behind the whole batch's duration — see
+        // harden-connector-instance-write-fence-transaction-native.
         // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-        await ctx.ingestRecord(storageTarget, record, {
+        const ingestOutcome = await ctx.ingestRecord(storageTarget, record, {
           attemptContext,
-          coordinatorOwnership,
           deferIndexes: true,
           deviceReservation: {
             batchId,
@@ -2437,7 +2603,24 @@ async function processDeviceIngestBatch(
             inputIndex,
             sourceInstanceId,
           },
+          requireConnectionAdmission: true,
         });
+        // Captured for the final-plan's derived-index publish below: that
+        // step needs to know the version EACH final key's content was
+        // durably committed at, to gate lexical/semantic publication on it
+        // still being current (see maintainRecordIndexesWithinPermit's
+        // header). A no-op/unchanged write has no new version to capture —
+        // the prior durable version for that key (if this input collapses
+        // into a repeat within the same batch) or the reservation's replay
+        // path already covers that case via prepareDeviceFinalRecords.
+        if (
+          ingestOutcome &&
+          typeof ingestOutcome === "object" &&
+          "version" in ingestOutcome &&
+          typeof ingestOutcome.version === "number"
+        ) {
+          durableVersionByInputIndex.set(inputIndex, ingestOutcome.version);
+        }
         await maybeDeviceIngestPhaseFault("after-durable-record", inputIndex);
         assertBatchAttemptBefore(attemptDeadline);
       }
@@ -2445,24 +2628,61 @@ async function processDeviceIngestBatch(
 
       const finalPlan = finalDeviceRecordPlan(records, connectorInstanceId);
       assertBatchAttemptBefore(attemptDeadline);
-      const authoritativeFinalPlan = await ctx.prepareDeviceFinalRecords(
-        storageTarget,
-        finalPlan,
-        attemptContext,
-        start,
-        coordinatorOwnership
-      );
+      // No `coordinatorOwnership` passthrough here either: `prepareDeviceFinalRecords`
+      // acquires its own fresh fence ONLY when it actually has repair work to
+      // do (a retry whose durable prefix already covered some final keys) —
+      // see its own short-circuit for the common first-attempt case.
+      const preparedFinalPlan = await ctx.prepareDeviceFinalRecords(storageTarget, finalPlan, attemptContext, start);
       assertBatchAttemptBefore(attemptDeadline);
-      await mapWithConcurrency(authoritativeFinalPlan, finalIndexPlanConcurrency(), async ({ record, inputIndex }) => {
-        assertBatchAttemptBefore(attemptDeadline);
-        await ctx.maintainRecordIndexes(storageTarget, record, {
-          attemptContext,
-          deviceFinalInputIndex: inputIndex,
-        });
-        // `mapWithConcurrency` waits for every started operation before it
-        // rethrows the lowest-index error. This postcondition therefore never
-        // releases the batch/instance fence around still-live child compute.
-        assertBatchAttemptBefore(attemptDeadline);
+      // A repaired (retry-repaired) entry already carries its own fresh
+      // `version` from `prepareDeviceFinalRecords`'s reread. A fresh
+      // (non-repaired) entry's version comes from THIS attempt's own durable
+      // loop above, keyed by its final `inputIndex` (finalDeviceRecordPlan
+      // collapses duplicate keys to the last input index that wrote them).
+      const authoritativeFinalPlan = preparedFinalPlan.map((entry) => ({
+        ...entry,
+        version: typeof entry.version === "number" ? entry.version : durableVersionByInputIndex.get(entry.inputIndex),
+      }));
+      // Index maintenance stays SYNCHRONOUS (awaited before the HTTP
+      // response), preserving the device-exporter contract that 201 implies
+      // lexical/semantic state is already searchable — unlike `ingestRecords`,
+      // which defers this work fire-and-forget. It does NOT run inside any
+      // connector-instance FENCE: `maintainRecordIndexes` uses its own
+      // unrelated admission semaphore (`withIndexWork`), never the write
+      // coordinator, so running it here (after every record's fence has
+      // already released) cannot make an unrelated same-instance writer
+      // queue behind it. It runs on the shared per-instance ordered index
+      // LANE (`enqueueDeviceIndexMaintenance`) every other writer uses for
+      // THROUGHPUT/scheduling reasons only — keeping this batch's slow
+      // embedding work off an unrelated same-instance writer's critical
+      // path. Correctness against a same-instance direct writer racing this
+      // batch's publish does NOT come from the lane's ordering: each
+      // `maintainRecordIndexes` call below is gated on `records.version`
+      // still matching the `version` captured above at the moment its own
+      // short publish transaction commits (see
+      // `maintainRecordIndexesWithinPermit`'s header) — a stale publish
+      // silently no-ops regardless of enqueue/completion order. See
+      // harden-connector-instance-write-fence-transaction-native.
+      await ctx.enqueueDeviceIndexMaintenance(connectorInstanceId, async () => {
+        await mapWithConcurrency(
+          authoritativeFinalPlan,
+          finalIndexPlanConcurrency(),
+          async ({ record, inputIndex, version }) => {
+            assertBatchAttemptBefore(attemptDeadline);
+            if (typeof version !== "number") {
+              // No durable version could be resolved for this key (e.g. it was
+              // never actually written this attempt and has no repair reread
+              // either) — nothing to gate a publish against, so there is
+              // nothing safe to publish. Left dirty for the reconcile sweep.
+              return;
+            }
+            await ctx.maintainRecordIndexes(storageTarget, record, version, {
+              attemptContext,
+              deviceFinalInputIndex: inputIndex,
+            });
+            assertBatchAttemptBefore(attemptDeadline);
+          }
+        );
       });
       assertBatchAttemptBefore(attemptDeadline);
       const response = {

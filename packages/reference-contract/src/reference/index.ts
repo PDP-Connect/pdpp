@@ -1575,6 +1575,16 @@ const DeviceSourceInstanceSchema = {
     created_at: { type: "string" },
     device_id: { type: "string" },
     display_name: { type: ["string", "null"] },
+    heartbeat_age_ms: { type: ["integer", "null"] },
+    // Presented health, derived from heartbeat age against
+    // `heartbeat_lease_ms`. `stale`/`unknown` are derivations, not statuses a
+    // collector reports. Read this, not `last_heartbeat_status`, for whether
+    // a collector is currently alive.
+    heartbeat_health: {
+      enum: ["blocked", "healthy", "retrying", "stale", "starting", "stopped", "unknown"],
+      type: "string",
+    },
+    heartbeat_lease_ms: { minimum: 0, type: "integer" },
     last_error: { additionalProperties: true, type: ["object", "null"] },
     last_ingest_at: { type: ["string", "null"] },
     local_binding_name: { type: "string" },
@@ -2668,6 +2678,33 @@ export const referenceManifests = [
       ...DeviceExporterErrors,
     },
     summary: "Revoke a local device exporter credential and stop future heartbeats or ingest from that device.",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+  },
+  {
+    id: "refSelfRevokeDeviceExporter",
+    method: "POST",
+    path: "/_ref/device-exporters/{deviceId}/self-revoke",
+    request: { params: DeviceIdParamSchema },
+    responses: {
+      200: {
+        schema: {
+          additionalProperties: false,
+          properties: {
+            device_id: { type: "string" },
+            object: { const: "device_exporter_revocation" },
+            revoked_at: { type: "string" },
+          },
+          required: ["object", "device_id", "revoked_at"],
+          type: "object",
+        },
+      },
+      ...DeviceExporterErrors,
+    },
+    summary:
+      "Revoke a local device exporter's own credential using its own device bearer token. A device credential may " +
+      "only revoke itself, never another device; the path deviceId must match the authenticated credential's " +
+      "device. Used by local-collector `logout` to close the server-side lane before deleting local credentials.",
     surface: "reference",
     tags: ["reference", "device-exporters"],
   },

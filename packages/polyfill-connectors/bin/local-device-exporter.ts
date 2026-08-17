@@ -14,12 +14,13 @@ import {
 interface CliOptions {
   baseUrl: string;
   code?: string;
-  command: "enroll" | "run";
+  command: "enroll" | "run" | "setup";
   connectorId: string;
   deviceId?: string;
   deviceLabel?: string;
   deviceToken?: string;
   queuePath: string;
+  sample?: number;
   sourceInstanceId: string | undefined;
 }
 
@@ -45,6 +46,53 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (options.command === "setup") {
+    if (!options.code) {
+      throw new Error("setup requires --code <one-time-code>");
+    }
+    // Validate the connector up front so an unknown --connector fails before
+    // any network call.
+    resolveLocalDeviceConnectorProfile(options.connectorId);
+    const enrollment = await enrollLocalDevice({
+      baseUrl: options.baseUrl,
+      code: options.code,
+      ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
+    });
+    const result = await runLocalDeviceExporter({
+      baseUrl: options.baseUrl,
+      connectorId: options.connectorId,
+      deviceId: enrollment.device_id,
+      deviceToken: enrollment.device_token,
+      queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, enrollment.source_instance_id),
+      ...(options.sample === undefined ? {} : { sampleLimit: options.sample }),
+      sourceInstanceId: enrollment.source_instance_id,
+    });
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          device_id: enrollment.device_id,
+          note: options.sample
+            ? `Sample run: queued ${result.recordsQueued} of ${result.recordsSeen} record(s) seen (limit ${options.sample}). ` +
+              (result.truncatedBySample
+                ? "This is NOT a complete collection — re-run without --sample to collect the full source."
+                : "The connector emitted fewer records than the sample limit — this was a complete pass.")
+            : `Collected ${result.recordsQueued} record(s).`,
+          object: "local_device_exporter_setup",
+          record_queue_result: result,
+          run_command:
+            `PDPP_LOCAL_DEVICE_ID=${enrollment.device_id} PDPP_LOCAL_DEVICE_TOKEN=<device_token> ` +
+            `PDPP_CONNECTION_ID=${enrollment.source_instance_id} ` +
+            "pnpm --dir packages/polyfill-connectors exec tsx bin/local-device-exporter.ts run " +
+            `--base-url ${options.baseUrl} --connector ${options.connectorId}`,
+          source_instance_id: enrollment.source_instance_id,
+        },
+        null,
+        2
+      )}\n`
+    );
+    return;
+  }
+
   if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
     throw new Error("run requires --device-id <id>, --device-token <token>, and --connection-id <id>");
   }
@@ -57,6 +105,7 @@ async function main(): Promise<void> {
     deviceId: options.deviceId,
     deviceToken: options.deviceToken,
     queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId),
+    ...(options.sample === undefined ? {} : { sampleLimit: options.sample }),
     sourceInstanceId: options.sourceInstanceId,
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -64,8 +113,8 @@ async function main(): Promise<void> {
 
 function parseArgs(args: string[]): CliOptions {
   const [command, ...rest] = args;
-  if (command !== "enroll" && command !== "run") {
-    throw new Error("usage: local-device-exporter <enroll|run> --base-url <url> [options]");
+  if (command !== "enroll" && command !== "run" && command !== "setup") {
+    throw new Error("usage: local-device-exporter <enroll|run|setup> --base-url <url> [options]");
   }
   const options: CliOptions = {
     baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:3000",
@@ -125,6 +174,13 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     },
     "--source-instance-id": (next) => {
       options.sourceInstanceId = next;
+    },
+    "--sample": (next) => {
+      const parsed = Number.parseInt(next, 10);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error("--sample requires a positive integer");
+      }
+      options.sample = parsed;
     },
   };
   const set = setters[arg];

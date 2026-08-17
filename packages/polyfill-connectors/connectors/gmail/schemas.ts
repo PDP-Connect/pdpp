@@ -113,6 +113,7 @@ export const messageBodiesSchema = z.object({
   body_source: z.enum(["text_plain", "html_stripped", "text_html", "empty"]),
   content_languages: z.null(), // Always null in v1
   charset: pdppSafeText.nullable(),
+  message_received_at: isoDateTimeSchema,
 });
 
 // Attachments stream schema: one record per attachment/inline part.

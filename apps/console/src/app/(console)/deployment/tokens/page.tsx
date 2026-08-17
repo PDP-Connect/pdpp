@@ -6,7 +6,7 @@ import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../components/shell.tsx";
+import { ServerUnreachable } from "../../components/server-unreachable.tsx";
 import { buildOwnerBootstrapExamples, getOwnerBootstrapFlow } from "../../lib/operator-bootstrap.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
@@ -528,7 +528,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
         }
         breadcrumbs={[{ href: "/deployment", label: "Deployment" }, { label: "Tokens" }]}
         description="Set up trusted local owner automation without pasting bearer material. Manual owner bearers stay available below for debugging."
-        title="Owner-agent access"
+        title="Owner tokens"
       />
 
       <OwnerAgentOnboardingCard entrypoint={entrypoint} />

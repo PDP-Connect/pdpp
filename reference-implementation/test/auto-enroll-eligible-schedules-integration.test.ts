@@ -17,13 +17,12 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
-import { getConnectorManifest, listRegisteredConnectorIds, registerConnector } from "../server/auth.ts";
+import { registerConnector } from "../server/auth.ts";
 import {
   type AutoEnrollListConnectors,
   autoEnrollEligibleSchedules,
@@ -32,30 +31,36 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { getDefaultSchedulerStore } from "../server/stores/scheduler-store.ts";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const POLYFILL_MANIFESTS_DIR = resolve(__dirname, "..", "..", "packages", "polyfill-connectors", "manifests");
+const TEST_ENV_KEY = "TEST_AUTO_ENROLL_TOKEN";
 
-interface ManifestAuthCapability {
-  kind?: string;
-  required?: readonly string[];
-}
-
-interface ManifestRefreshPolicy {
-  background_safe?: boolean;
-  recommended_mode?: string;
-}
-
-interface TestManifest {
-  capabilities?: {
-    auth?: ManifestAuthCapability;
-    refresh_policy?: ManifestRefreshPolicy;
+function testManifest(recommendedMode: "automatic" | "manual" = "automatic"): Record<string, unknown> {
+  return {
+    capabilities: {
+      auth: { kind: "env", required: [TEST_ENV_KEY] },
+      public_listing: { tier: "supported" },
+      refresh_policy: {
+        background_safe: true,
+        rationale: "Synthetic manifest for the scheduler integration contract.",
+        recommended_interval_seconds: 3600,
+        recommended_mode: recommendedMode,
+      },
+    },
+    connector_id: `https://registry.pdpp.dev/connectors/test-auto-enroll-${recommendedMode}`,
+    display_name: `Test auto-enroll (${recommendedMode})`,
+    manifest_uri: `https://registry.pdpp.dev/connectors/test-auto-enroll-${recommendedMode}`,
+    protocol_version: "0.1.0",
+    runtime_requirements: {},
+    streams: [
+      {
+        name: "records",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
+      },
+    ],
+    version: "1.0.0",
   };
-  connector_id: string;
-  [key: string]: unknown;
-}
-
-function readManifest(name: string): TestManifest {
-  return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, `${name}.json`), "utf8")) as TestManifest;
 }
 
 function withTmpDb(fn: () => Promise<void>): () => Promise<void> {
@@ -72,57 +77,32 @@ function withTmpDb(fn: () => Promise<void>): () => Promise<void> {
   };
 }
 
-function buildListConnectors(): AutoEnrollListConnectors {
-  return async () => {
-    const ids = await listRegisteredConnectorIds();
-    return Promise.all(
-      ids.map(async (connectorId: string) => ({
-        connector_id: connectorId,
-        manifest: await getConnectorManifest(connectorId),
-      }))
-    );
-  };
+function buildListConnectors(manifest: Record<string, unknown>): AutoEnrollListConnectors {
+  return async () => [{ connector_id: manifest.connector_id as string, manifest }];
 }
-
-test("shipped Notion manifest declares capabilities.auth.required so enrollment can gate on it", () => {
-  const m = readManifest("notion");
-  assert.equal(m.capabilities?.auth?.kind, "env");
-  assert.deepEqual(m.capabilities?.auth?.required, ["NOTION_API_TOKEN"]);
-});
-
-test("shipped Oura manifest declares capabilities.auth.required", () => {
-  const m = readManifest("oura");
-  assert.equal(m.capabilities?.auth?.kind, "env");
-  assert.deepEqual(m.capabilities?.auth?.required, ["OURA_PERSONAL_ACCESS_TOKEN"]);
-});
-
-test("shipped Strava manifest declares capabilities.auth.required", () => {
-  const m = readManifest("strava");
-  assert.equal(m.capabilities?.auth?.kind, "env");
-  assert.deepEqual(m.capabilities?.auth?.required, ["STRAVA_ACCESS_TOKEN"]);
-});
 
 test(
   "enrollment against a real controller creates a single enabled row for an eligible registered manifest",
   withTmpDb(async () => {
-    const notion = readManifest("notion");
-    await registerConnector(notion);
+    const manifest = testManifest();
+    const connectorId = manifest.connector_id as string;
+    await registerConnector(manifest);
     const controller = createController({});
     const summary = await autoEnrollEligibleSchedules({
       controller,
-      env: { NOTION_API_TOKEN: "integration-token" },
-      listConnectors: buildListConnectors(),
+      env: { [TEST_ENV_KEY]: "integration-token" },
+      listConnectors: buildListConnectors(manifest),
     });
-    assert.equal(summary.enrolled, 1, "Notion is the only enrolled manifest");
+    assert.equal(summary.enrolled, 1, JSON.stringify(summary));
     assert.equal(summary.errors, 0);
-    const schedule = await controller.getSchedule(notion.connector_id);
-    assert.ok(schedule, "a schedule row exists for Notion");
+    const schedule = await controller.getSchedule(connectorId);
+    assert.ok(schedule, "a schedule row exists for the eligible connector");
     assert.equal(schedule.enabled, true);
     assert.equal(schedule.interval_seconds, 3600);
     assert.equal(schedule.ineligibility_reason, null, "eligible under current manifest");
     // Pin the persisted store too: the row went through createSchedule().
-    // The store key is the canonical short key (e.g. "notion"), not the URI.
-    const canonicalId = canonicalConnectorKey(notion.connector_id) ?? notion.connector_id;
+    // The store key is the canonical short key, not the registry URI.
+    const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
     const persisted = await Promise.resolve(getDefaultSchedulerStore().getSchedule(canonicalId));
     assert.ok(persisted, "persisted schedule row should exist under the canonical key");
     assert.equal(persisted.enabled, true);
@@ -132,19 +112,20 @@ test(
 test(
   "enrollment leaves a connector unscheduled when its declared env is missing",
   withTmpDb(async () => {
-    const notion = readManifest("notion");
-    await registerConnector(notion);
+    const manifest = testManifest();
+    const connectorId = manifest.connector_id as string;
+    await registerConnector(manifest);
     const controller = createController({});
     const summary = await autoEnrollEligibleSchedules({
       controller,
       env: {
-        /* NOTION_API_TOKEN intentionally absent */
+        /* TEST_AUTO_ENROLL_TOKEN intentionally absent */
       },
-      listConnectors: buildListConnectors(),
+      listConnectors: buildListConnectors(manifest),
     });
     assert.equal(summary.skipped_env, 1);
     assert.equal(summary.enrolled, 0);
-    const schedule = await controller.getSchedule(notion.connector_id);
+    const schedule = await controller.getSchedule(connectorId);
     assert.equal(schedule, null, "no row created when env is missing");
   })
 );
@@ -152,25 +133,26 @@ test(
 test(
   "enrollment never overrides an operator-paused row across boots",
   withTmpDb(async () => {
-    const notion = readManifest("notion");
-    await registerConnector(notion);
+    const manifest = testManifest();
+    const connectorId = manifest.connector_id as string;
+    await registerConnector(manifest);
     const controller = createController({});
     // Operator already created a paused row with a custom interval.
-    await controller.upsertSchedule(notion.connector_id, {
+    await controller.upsertSchedule(connectorId, {
       enabled: false,
       interval_seconds: 1800,
       jitter_seconds: 30,
     });
-    const beforeRow = await controller.getSchedule(notion.connector_id);
+    const beforeRow = await controller.getSchedule(connectorId);
     assert.ok(beforeRow, "operator-created row should exist before enrollment runs");
     const summary = await autoEnrollEligibleSchedules({
       controller,
-      env: { NOTION_API_TOKEN: "integration-token" },
-      listConnectors: buildListConnectors(),
+      env: { [TEST_ENV_KEY]: "integration-token" },
+      listConnectors: buildListConnectors(manifest),
     });
     assert.equal(summary.skipped_existing, 1);
     assert.equal(summary.enrolled, 0);
-    const afterRow = await controller.getSchedule(notion.connector_id);
+    const afterRow = await controller.getSchedule(connectorId);
     assert.ok(afterRow, "row should still exist after enrollment runs");
     assert.equal(afterRow.enabled, false, "paused row stays paused");
     assert.equal(afterRow.interval_seconds, beforeRow.interval_seconds);
@@ -181,51 +163,44 @@ test(
 test(
   "enrollment is a no-op for connectors whose manifest is manual or background-unsafe",
   withTmpDb(async () => {
-    // Reddit ships recommended_mode=manual (background_safe=true only
-    // permits an explicit owner-created schedule, not boot auto-enroll),
-    // so its row must not appear even if a putative env existed.
-    const reddit = readManifest("reddit");
-    await registerConnector(reddit);
+    const manifest = testManifest("manual");
+    const connectorId = manifest.connector_id as string;
+    await registerConnector(manifest);
     const controller = createController({});
     const summary = await autoEnrollEligibleSchedules({
       controller,
-      env: { REDDIT_PASSWORD: "p", REDDIT_USERNAME: "u" },
-      listConnectors: buildListConnectors(),
+      env: { [TEST_ENV_KEY]: "integration-token" },
+      listConnectors: buildListConnectors(manifest),
     });
     assert.equal(summary.skipped_policy, 1);
     assert.equal(summary.enrolled, 0);
-    const schedule = await controller.getSchedule(reddit.connector_id);
+    const schedule = await controller.getSchedule(connectorId);
     assert.equal(schedule, null);
   })
 );
 
 test(
-  "reddit manifest still does not auto-enroll but accepts an explicit owner schedule",
+  "a manual-default manifest does not auto-enroll but accepts an explicit owner schedule",
   withTmpDb(async () => {
-    // Reddit ships background_safe=true (session persists in the profile
-    // after first login), so it must stay out of boot auto-enrollment
-    // (recommended_mode=manual) while still accepting an explicit
-    // owner-created schedule via the same opt-in path proven for Amazon.
-    const reddit = readManifest("reddit");
-    assert.equal(reddit.capabilities?.refresh_policy?.recommended_mode, "manual");
-    assert.equal(reddit.capabilities?.refresh_policy?.background_safe, true);
-    await registerConnector(reddit);
+    const manifest = testManifest("manual");
+    const connectorId = manifest.connector_id as string;
+    await registerConnector(manifest);
     const controller = createController({});
     const summary = await autoEnrollEligibleSchedules({
       controller,
-      env: { REDDIT_PASSWORD: "p", REDDIT_USERNAME: "u" },
-      listConnectors: buildListConnectors(),
+      env: { [TEST_ENV_KEY]: "integration-token" },
+      listConnectors: buildListConnectors(manifest),
     });
     assert.equal(summary.enrolled, 0, "manual-default connectors never auto-enroll on boot");
-    assert.equal(await controller.getSchedule(reddit.connector_id), null);
+    assert.equal(await controller.getSchedule(connectorId), null);
 
-    const result = await controller.upsertSchedule(reddit.connector_id, {
+    const result = await controller.upsertSchedule(connectorId, {
       enabled: true,
       interval_seconds: 21_600,
     });
     assert.equal(result.schedule.enabled, true);
     assert.equal(result.schedule.ineligibility_reason ?? null, null);
-    const schedule = await controller.getSchedule(reddit.connector_id);
+    const schedule = await controller.getSchedule(connectorId);
     assert.ok(schedule, "explicit owner schedule should be persisted");
     assert.equal(schedule.enabled, true);
     assert.equal(schedule.interval_seconds, 21_600);

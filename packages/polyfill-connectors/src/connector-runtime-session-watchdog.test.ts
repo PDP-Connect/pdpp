@@ -24,7 +24,6 @@ import type { Page } from "playwright";
 import {
   type AssistanceCompletionStatus,
   type AssistanceRequest,
-  buildSessionEstablishTerminalError,
   captureBrowserPage,
   type InteractionRequest,
   type InteractionResponse,
@@ -32,6 +31,7 @@ import {
   resolveSessionEstablishWatchdogMs,
 } from "./connector-runtime.ts";
 import type { CaptureSession } from "./fixture-capture.ts";
+import { buildSessionEstablishTerminalError, establishSession } from "./session-establish.ts";
 
 // A controllable logical clock: tests advance `value` to simulate elapsed time
 // without waiting in real time. The watchdog's interval still ticks on real
@@ -374,6 +374,144 @@ test("session-establishment terminal errors preserve connector retryable pattern
     "usaa_session_failed: source_unavailable: USAA reported its login system is currently unavailable after Next click."
   );
   assert.equal(terminal.retryable, true);
+});
+
+// ─── post-submit retry-safety marker (systemic credential-submit fix) ──────
+//
+// The oracle established from Venmo B4 and generalized across USAA/Chase/
+// HEB/Amazon/Venmo/ChatGPT/Jellyfin: a fault occurring AFTER a saved
+// credential has been submitted to the provider's real sign-in form must be
+// forced non-retryable, regardless of whether its message text happens to
+// match the connector's `retryablePattern` (declared or default). This is
+// the single point that closes the naming-collision defect class.
+
+test("postSubmit forces retryable:false even though the message matches retryablePattern (the naming-collision case)", () => {
+  const terminal = buildSessionEstablishTerminalError(
+    "usaa",
+    "ECONNRESET", // matches DEFAULT_RETRYABLE_PATTERN AND every connector's declared pattern by construction
+    /ECONN|ETIMEDOUT|timeout|source_unavailable/i,
+    true // postSubmit
+  );
+  assert.equal(terminal.retryable, false);
+});
+
+test("mutation-kill: the SAME fault pre-submit (postSubmit=false) remains retryable — proves the two tests discriminate on the flag, not on the message", () => {
+  const terminal = buildSessionEstablishTerminalError(
+    "usaa",
+    "ECONNRESET",
+    /ECONN|ETIMEDOUT|timeout|source_unavailable/i,
+    false // postSubmit
+  );
+  assert.equal(terminal.retryable, true);
+});
+
+test("postSubmit forces retryable:false even with the DEFAULT pattern and no connector-declared pattern at all", () => {
+  // Covers Chase/HEB/Amazon/Jellyfin: none declares retryablePattern, so
+  // DEFAULT_RETRYABLE_PATTERN (/ECONN|ETIMEDOUT|timeout/i) applies. A bare
+  // Playwright "Timeout 30000ms exceeded" after password submit must still
+  // be forced non-retryable.
+  const terminal = buildSessionEstablishTerminalError(
+    "chase",
+    "chase_login_failed_before_otp_submit: surface=open: Timeout 5000ms exceeded",
+    undefined,
+    true
+  );
+  assert.equal(terminal.retryable, false);
+});
+
+test("mutation-kill: omitting postSubmit (default false) leaves the DEFAULT-pattern timeout retryable", () => {
+  const terminal = buildSessionEstablishTerminalError(
+    "chase",
+    "chase_login_failed_before_otp_submit: surface=open: Timeout 5000ms exceeded"
+  );
+  assert.equal(terminal.retryable, true);
+});
+
+test("postSubmit does not manufacture retryable:true — a non-matching post-submit message stays non-retryable for the ordinary reason too", () => {
+  const terminal = buildSessionEstablishTerminalError(
+    "reddit",
+    "reddit_login_post_submit_failed",
+    /ECONN|ETIMEDOUT|fetch failed|reddit_rate_limited/i,
+    true
+  );
+  assert.equal(terminal.retryable, false);
+});
+
+// ─── establishSession wiring: onCredentialSubmit → forced non-retryable ─────
+//
+// The classifier tests above prove buildSessionEstablishTerminalError's
+// postSubmit contract in isolation. These two prove the runtime actually
+// wires it: the callback establishSession hands to ensureSession must flip
+// the flag that reaches the classifier. A mutation that drops the callback
+// assignment, or drops the 4th argument at the call site, survives every
+// classifier test — only this pair kills it.
+
+function makeEstablishArgs(name: string): Parameters<typeof establishSession>[1] {
+  const noopAsync = async (): Promise<void> => {
+    // establishSession's ensureSession path only ever awaits checkpoint;
+    // assist/completeAssistance/progress/sendInteraction are pass-throughs
+    // the throwing stubs below never invoke.
+  };
+  return {
+    assist: (() => Promise.reject(new Error("assist must not be called"))) as never,
+    capture: null,
+    checkpoint: noopAsync,
+    completeAssistance: noopAsync as never,
+    context: {} as never,
+    name,
+    page: makeStubPage(),
+    progress: noopAsync as never,
+    retryablePattern: /ECONN|ETIMEDOUT|timeout|source_unavailable/i,
+    sendInteraction: (() => Promise.reject(new Error("sendInteraction must not be called"))) as never,
+  };
+}
+
+test("establishSession wiring: an ensureSession that calls onCredentialSubmit then throws a pattern-matching fault yields a NON-retryable terminal error", async () => {
+  await assert.rejects(
+    establishSession(
+      {
+        ensureSession: ({ onCredentialSubmit }) => {
+          onCredentialSubmit();
+          throw new Error("ECONNRESET");
+        },
+        probeSession: undefined,
+      },
+      makeEstablishArgs("usaa")
+    ),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /usaa_session_failed: ECONNRESET/);
+      assert.equal(
+        (err as { retryable?: boolean }).retryable,
+        false,
+        "credential already submitted — a redispatch would resubmit the saved password"
+      );
+      return true;
+    }
+  );
+});
+
+test("mutation-kill twin: the SAME ensureSession fault WITHOUT calling onCredentialSubmit stays retryable through the full wiring", async () => {
+  await assert.rejects(
+    establishSession(
+      {
+        ensureSession: () => {
+          throw new Error("ECONNRESET");
+        },
+        probeSession: undefined,
+      },
+      makeEstablishArgs("usaa")
+    ),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.equal(
+        (err as { retryable?: boolean }).retryable,
+        true,
+        "no credential went out — pre-submit transport faults must keep their ordinary retry classification"
+      );
+      return true;
+    }
+  );
 });
 
 // ─── bounded capture during teardown ────────────────────────────────────────

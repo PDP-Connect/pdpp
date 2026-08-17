@@ -7,9 +7,9 @@
  * (`emitMessagesPass`) that shares a single co-traversal of the MESSAGE
  * table across three streams.
  *
- * These tests DON'T spawn slackdump or open sqlite. They construct a fake
- * `MessagesPassDeps` that captures every (stream, data) pair pushed
- * through `emitRecord`, then assert on the observable invariants: per-row
+ * These tests DON'T spawn slackdump. Most construct a fake `MessagesPassDeps`
+ * that captures every (stream, data) pair pushed through `emitRecord`, then
+ * assert on the observable invariants: per-row
  * emit order (message before reactions before attachments), cross-stream
  * scope gating (disabling one stream doesn't break the other two), null-
  * enrichment fallback (message with no reactions / no attachments still
@@ -29,11 +29,9 @@
  *
  * NOTE on workspace/channel ordering (invariant 1 from the task brief):
  * the workspace → channels → messages ordering is owned by
- * `runRequestedStreams` in index.ts, not by this seam. That orchestrator
- * is sqlite-bound (each runner reads from DatabaseSync) and isn't
- * factored into a testable seam today; see the last test below for the
- * narrower "parent-before-child within a single row" assertion that this
- * seam does own.
+ * `runRequestedStreams` in index.ts. The coverage regression below drives
+ * that sqlite-bound orchestrator directly; the remaining emit-order tests
+ * cover the narrower "parent-before-child within a single row" seam.
  */
 
 import assert from "node:assert/strict";
@@ -42,7 +40,15 @@ import { test } from "node:test";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { emitMessagesPass, type MessagesPassDeps, runChannelsStream, type StreamDeps } from "./index.ts";
+import {
+  buildMessageRowsQuery,
+  emitMessagesPass,
+  type MessagesPassDeps,
+  parseIsoInstantToSlackTs,
+  runChannelsStream,
+  runRequestedStreams,
+  type StreamDeps,
+} from "./index.ts";
 import type { MessageRow, SlackDataBlob } from "./types.ts";
 
 interface RecordingHarness {
@@ -118,19 +124,42 @@ function makeChannelDb(): DatabaseSync {
   return db;
 }
 
+function makeMessageDb(rows: MessageRow[]): DatabaseSync {
+  const db = new DatabaseSync(":memory:");
+  db.exec(
+    "CREATE TABLE MESSAGE (CHANNEL_ID TEXT, TS TEXT, THREAD_TS TEXT, IS_PARENT INTEGER, TXT TEXT, NUM_FILES INTEGER, DATA BLOB, CHUNK_ID INTEGER)"
+  );
+  const insert = db.prepare(
+    "INSERT INTO MESSAGE (CHANNEL_ID, TS, THREAD_TS, IS_PARENT, TXT, NUM_FILES, DATA, CHUNK_ID) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  );
+  for (const row of rows) {
+    insert.run(row.CHANNEL_ID, row.TS, row.THREAD_TS, row.IS_PARENT, row.TXT, row.NUM_FILES, row.DATA, 1);
+  }
+  return db;
+}
+
 function makeChannelDeps(requestedStreams: readonly string[]): {
   close: () => void;
   deps: StreamDeps;
   emitted: EmittedRecord[];
+  coverage: { stream: string; considered?: number; covered?: number }[];
 } {
   const db = makeChannelDb();
   const harness = makeRecordingEmit();
+  const coverage: { stream: string; considered?: number; covered?: number }[] = [];
   const requested = new Map<string, StreamScope>(requestedStreams.map((name) => [name, { name }]));
   return {
     close: () => db.close(),
     deps: {
       db,
-      emit: harness.emit,
+      emit: (message) => {
+        coverage.push({
+          stream: message.stream,
+          ...(message.considered === undefined ? {} : { considered: message.considered }),
+          ...(message.covered === undefined ? {} : { covered: message.covered }),
+        });
+        return Promise.resolve();
+      },
       emitRecord: harness.emitRecord,
       emittedAt: "2026-06-03T12:00:00.000Z",
       fingerprintCursors: new Map([["channels", openFingerprintCursor({}, { excludeFromFingerprint: [] })]]),
@@ -138,6 +167,7 @@ function makeChannelDeps(requestedStreams: readonly string[]): {
       requested,
     },
     emitted: harness.emitted,
+    coverage,
   };
 }
 
@@ -171,6 +201,89 @@ test("runChannelsStream: channels-only scope emits no channel_stats observations
   );
   assert.equal(emitted[0]?.data.id, "C0001");
   assert.equal("num_members" in (emitted[0]?.data ?? {}), false);
+});
+
+test("runChannelsStream: channel_stats uses the channel enumeration as honest 1/1 coverage", async () => {
+  const { close, deps, coverage } = makeChannelDeps(["channel_stats"]);
+  try {
+    await runChannelsStream(deps);
+  } finally {
+    close();
+  }
+  assert.deepEqual(coverage, [{ stream: "channel_stats", considered: 1, covered: 1 }]);
+});
+
+test("runChannelsStream: an empty channel enumeration proves 0/0, not unknown", async () => {
+  const { close, deps, coverage } = makeChannelDeps(["channel_stats"]);
+  deps.db.exec("DELETE FROM CHANNEL");
+  try {
+    await runChannelsStream(deps);
+  } finally {
+    close();
+  }
+  assert.deepEqual(coverage, [{ stream: "channel_stats", considered: 0, covered: 0 }]);
+});
+
+test("runChannelsStream: archive enumeration failure emits no empty coverage claim", async () => {
+  const { close, deps, coverage } = makeChannelDeps(["channel_stats"]);
+  deps.db.exec("DROP TABLE CHANNEL");
+  try {
+    await runChannelsStream(deps);
+  } finally {
+    close();
+  }
+  assert.deepEqual(coverage, []);
+});
+
+test("runRequestedStreams: archive message enumeration bounds both derived streams", async () => {
+  const rows = [
+    makeRow(
+      { TS: "1700000000.000100" },
+      {
+        reactions: [{ name: "tada", users: ["U1", "U2", "U3"] }],
+        attachments: [{ fallback: "preview" }, { fallback: "bot card" }],
+      }
+    ),
+    makeRow({ TS: "1700000001.000100" }, {}),
+  ];
+  const db = makeMessageDb(rows);
+  const harness = makeRecordingEmit();
+  const requested = new Map<string, StreamScope>(
+    ["messages", "reactions", "message_attachments"].map((name) => [name, { name }])
+  );
+  const deps: StreamDeps = {
+    db,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: "2026-06-03T12:00:00.000Z",
+    fingerprintCursors: new Map(),
+    progress: () => Promise.resolve(),
+    requested,
+  };
+
+  try {
+    await runRequestedStreams(deps, {}, {} as Parameters<typeof runRequestedStreams>[2], harness.emit);
+  } finally {
+    db.close();
+  }
+
+  const coverage = harness.protocolMessages
+    .filter((message) => message.type === "DETAIL_COVERAGE")
+    .map((message) => ({
+      stream: message.stream,
+      stateStream: message.state_stream,
+      considered: message.considered,
+      covered: message.covered,
+    }));
+  assert.deepEqual(
+    coverage,
+    [
+      { stream: "messages", stateStream: "messages", considered: 2, covered: 2 },
+      { stream: "reactions", stateStream: "messages", considered: 2, covered: 2 },
+      { stream: "message_attachments", stateStream: "messages", considered: 2, covered: 2 },
+    ],
+    "each derived stream uses the two retained MESSAGE rows as its measured boundary, not child counts"
+  );
 });
 
 // ─── Invariant 7a: parent-before-child within a single row ───────────────
@@ -352,4 +465,169 @@ test("emitMessagesPass: priorTs=null — no incremental progress emit (full-run 
   const { deps, progressCalls } = makeHarness();
   await emitMessagesPass(deps, [makeRow({}, {})], null);
   assert.equal(progressCalls.length, 0, "full-run mode doesn't fire the incremental progress signal");
+});
+
+// ─── SQL-layer collection_scope.since filtering (buildMessageRowsQuery) ─────
+
+test("buildMessageRowsQuery: since boundary composed with legacy cursor via AND", () => {
+  // The since predicate is baked into the SQL WHERE clause via AND with cursor
+  // predicates. A row must satisfy BOTH to be included. The since predicate uses
+  // numeric comparison on parsed epoch seconds and microseconds to handle
+  // variable-width epochs correctly.
+  const thresholds = {
+    channelLastTs: {},
+    legacyLastTs: "1700000000.000000",
+    sinceTs: "1700000200.500000", // Slack ts format: seconds.microseconds
+  };
+  const query = buildMessageRowsQuery(thresholds);
+  // The query should include both predicates composed via AND:
+  // - m.TS > ? (from legacyLastTs, lexical for cursor)
+  // - numeric comparison on CAST(SUBSTR(...)) for sinceTs
+  assert.match(query.sql, /m\.TS\s+>\s+/);
+  assert.match(query.sql, /CAST.*SUBSTR.*AS INTEGER/); // numeric parsing
+  assert.match(query.sql, /AND/);
+  // Params should include legacy cursor, then epochSeconds and microseconds for since
+  assert.ok(query.params.includes("1700000000.000000"), "has legacy cursor param");
+  assert.ok(query.params.includes("1700000200"), "has since epochSeconds param");
+  assert.ok(query.params.includes("500000"), "has since microseconds param");
+});
+
+test("buildMessageRowsQuery: since boundary alone (no cursor)", () => {
+  // When no cursor is present, only the numeric since predicate applies.
+  const thresholds = {
+    channelLastTs: {},
+    legacyLastTs: null,
+    sinceTs: "1700000200.500000",
+  };
+  const query = buildMessageRowsQuery(thresholds);
+  assert.match(query.sql, /WHERE[\s\S]*CAST[\s\S]*SUBSTR[\s\S]*AS INTEGER/); // numeric comparison
+  assert.ok(query.params.includes("1700000200"), "has since epochSeconds param");
+  assert.ok(query.params.includes("500000"), "has since microseconds param");
+});
+
+test("buildMessageRowsQuery + SQLite execution: since boundary with cursor (cross-width epochs)", () => {
+  // Real SQLite execution test: verify numeric comparison handles variable-width
+  // epoch seconds correctly. Lexical comparison fails on cross-width rows:
+  //   "978307200.000000" (9 digits, 2001-01-01, pre-9999999999)
+  //   "1723248385.500000" (10 digits, 2024-08-09)
+  // Lexically: "978..." < "172..." (wrong), but numerically: 978M < 1723M (correct).
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE MESSAGE (
+      CHANNEL_ID TEXT NOT NULL,
+      TS TEXT NOT NULL,
+      THREAD_TS TEXT,
+      IS_PARENT INTEGER,
+      TXT TEXT,
+      NUM_FILES INTEGER,
+      DATA BLOB,
+      CHUNK_ID INTEGER NOT NULL
+    );
+  `);
+  // Insert rows covering pre-2001 (9-digit epoch), current (10-digit), and
+  // same-second sub-microsecond cases. Insert in scrambled order.
+  const rows = [
+    { ts: "1723248385.500000", expected: true }, // 2024-08-09 at boundary (inserted first)
+    { ts: "978307200.123456", expected: false }, // 2001-01-01 pre-2001 9-digit (inserted second)
+    { ts: "1723248385.400000", expected: false }, // same second, before boundary (inserted third)
+    { ts: "978307300.000000", expected: false }, // 2001-01-01 later time, still 9-digit (inserted fourth)
+    { ts: "1723248385.600000", expected: true }, // 2024-08-09 after boundary (inserted fifth)
+  ];
+  rows.forEach((row, idx) => {
+    db.prepare(`
+      INSERT INTO MESSAGE (CHANNEL_ID, TS, THREAD_TS, IS_PARENT, TXT, NUM_FILES, DATA, CHUNK_ID)
+      VALUES (?, ?, NULL, NULL, ?, NULL, NULL, ?)
+    `).run("C0001", row.ts, `msg-${idx}`, 1);
+  });
+
+  // Build query with no cursor (first run) + numeric since predicate at 2024 time.
+  // Boundary is "1723248385.500000" (10-digit epoch). The numeric comparison must
+  // include only rows where: epochSeconds > 1723248385 OR
+  // (epochSeconds == 1723248385 AND microsecs >= 500000).
+  const thresholds = {
+    channelLastTs: {},
+    legacyLastTs: null, // No cursor: full archive scan
+    sinceTs: "1723248385.500000", // Since boundary at .5 seconds in 2024
+  };
+  const query = buildMessageRowsQuery(thresholds);
+  const stmt = db.prepare(query.sql);
+  const results = stmt.all(...query.params) as Array<{ TS: string }>;
+
+  // Verify only rows >= boundary are returned, regardless of epoch width.
+  // Pre-2001 rows (978...) must be excluded even though they sort before 172...
+  // lexically. The numeric predicate must include only rows where:
+  //   epochSeconds > 1723248385 OR (epochSeconds == 1723248385 AND microsecs >= 500000)
+  const returnedTs = results
+    .map((r) => r.TS)
+    .sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    });
+  assert.deepEqual(
+    returnedTs,
+    ["1723248385.500000", "1723248385.600000"],
+    "numeric comparison filters correctly across epoch widths: pre-2001 9-digit excluded, current 10-digit at/after included"
+  );
+});
+
+test("parseIsoInstantToSlackTs: direct tests (exact production function)", () => {
+  // Calls the exact production function, not a copy of its logic.
+  // Tests: milliseconds, microseconds, no fraction, timezone offset, and errors.
+
+  // ISO with milliseconds (3 decimal places) → pad to 6 digits
+  const iso500ms = "2024-08-09T22:26:25.500Z";
+  const result500 = parseIsoInstantToSlackTs(iso500ms);
+  assert.match(result500, /^\d+\.500000$/, "milliseconds padded to 6 digits");
+
+  // ISO with microseconds (6 decimal places) → no padding needed
+  const iso6digits = "2024-08-09T22:26:25.123456Z";
+  const result6 = parseIsoInstantToSlackTs(iso6digits);
+  assert.match(result6, /^\d+\.123456$/, "microseconds unchanged");
+
+  // ISO without fractional seconds → defaults to .000000
+  const isoNoFrac = "2024-08-09T22:26:25Z";
+  const resultNoFrac = parseIsoInstantToSlackTs(isoNoFrac);
+  assert.match(resultNoFrac, /^\d+\.000000$/, "no fraction defaults to .000000");
+
+  // ISO with timezone offset (not Z) → same parsing
+  const isoWithTz = "2024-08-09T22:26:25.250-05:00";
+  const resultTz = parseIsoInstantToSlackTs(isoWithTz);
+  assert.match(resultTz, /^\d+\.250000$/, "timezone offset handled");
+
+  // Malformed: invalid date string → throws
+  assert.throws(() => parseIsoInstantToSlackTs("not-a-date"), Error, "rejects invalid ISO instant");
+
+  // Malformed: empty string → throws (Date.parse returns NaN)
+  assert.throws(() => parseIsoInstantToSlackTs(""), Error, "rejects empty string");
+
+  // Pre-epoch (negative epoch seconds) → throws
+  const preEpoch = "1969-12-31T23:59:59Z"; // Before Unix epoch
+  assert.throws(() => parseIsoInstantToSlackTs(preEpoch), Error, "rejects pre-epoch timestamps");
+
+  // Verify output format is always "seconds.6digits"
+  const epoch = "2024-01-01T00:00:00.123Z";
+  const result = parseIsoInstantToSlackTs(epoch);
+  assert.match(result, /^\d+\.\d{6}$/, "output format is seconds.6-digit-fraction");
+});
+
+test("emitMessagesPass: non-monotonic row order with SQL-filtered since boundary", async () => {
+  // Rows are already filtered at the SQL layer (WHERE m.TS >= since), so
+  // emitMessagesPass must emit all filtered rows regardless of order.
+  // If rows arrive out-of-order (not newest-first), emitMessagesPass cannot
+  // safely break on the first old ts — it must process every row.
+  const { deps, emitted } = makeHarness();
+  // Simulate SQL returning rows in non-chronological order (SQLite chose a
+  // query plan that sorted differently). All are in-scope (>= 1700000200):
+  const rows: MessageRow[] = [
+    makeRow({ TS: "1700000300.000000" }, {}), // middle
+    makeRow({ TS: "1700000500.000000" }, {}), // latest
+    makeRow({ TS: "1700000250.000000" }, {}), // just after boundary
+  ];
+  const result = await emitMessagesPass(deps, rows, null);
+
+  const messages = emitted.filter((r) => r.stream === "messages");
+  assert.equal(messages.length, 3, "all in-scope rows emitted regardless of arrival order (SQL already filtered)");
+  assert.equal(result.maxMessageTs, "1700000500.000000", "maxMessageTs is the true max");
 });

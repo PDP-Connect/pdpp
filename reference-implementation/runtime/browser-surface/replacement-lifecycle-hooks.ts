@@ -7,6 +7,11 @@ import type {
   BrowserSurfaceLeaseStore,
   BrowserSurfaceWithPersistenceMetadata,
 } from "../../server/stores/browser-surface-lease-store.ts";
+import type {
+  BrowserSurfacePersistenceLeaseCapability,
+  BrowserSurfacePersistenceReceiptCapability,
+  BrowserSurfacePersistenceUnitOfWork,
+} from "../../server/stores/browser-surface-persistence-unit-of-work.ts";
 import type { BrowserSurfaceReplacementReceiptStore } from "../../server/stores/browser-surface-replacement-ledger-store.ts";
 import type { BrowserSurfaceReadinessProbeResult } from "../browser-surface-readiness.ts";
 import {
@@ -34,11 +39,16 @@ export interface ReplacementLifecycleHooks {
     result: BrowserSurfaceReadinessProbeResult
   ) => Promise<void>;
   readonly recordExternalSurfaceLoss: (surface: BrowserSurface) => Promise<void>;
+  readonly recordExternalSurfaceLossWithReceiptStore: (
+    store: Pick<BrowserSurfacePersistenceReceiptCapability, "append">,
+    surface: BrowserSurface
+  ) => Promise<void>;
 }
 
 export function createReplacementLifecycleHooks(input: {
   readonly allocator: BrowserSurfaceAllocator | null;
   readonly leaseStore: BrowserSurfaceLeaseStore | null;
+  readonly persistenceUnitOfWork: BrowserSurfacePersistenceUnitOfWork | null;
   readonly receiptStore: BrowserSurfaceReplacementReceiptStore | null;
   readonly log: ControllerLogger;
 }): ReplacementLifecycleHooks {
@@ -52,12 +62,13 @@ export function createReplacementLifecycleHooks(input: {
         lease,
         leaseStore: input.leaseStore,
         ledger,
-        receiptStore: input.receiptStore,
+        persistenceUnitOfWork: input.persistenceUnitOfWork,
         result,
         runId,
         surface,
       }),
     recordExternalSurfaceLoss: (surface) => recordExternalSurfaceLoss(input.receiptStore, ledger, surface),
+    recordExternalSurfaceLossWithReceiptStore: (store, surface) => recordExternalSurfaceLoss(store, ledger, surface),
   };
 }
 
@@ -93,7 +104,7 @@ function wrapAllocator(
 }
 
 function persistReplacementReceipt(
-  store: BrowserSurfaceReplacementReceiptStore | null,
+  store: Pick<BrowserSurfaceReplacementReceiptStore, "append"> | null,
   receipt: ReplacementReceipt
 ): Promise<ReplacementReceipt> {
   return Promise.resolve(store ? store.append(receipt) : receipt);
@@ -105,7 +116,7 @@ function logReplacementPersistenceError(log: ControllerLogger, error: unknown): 
 }
 
 async function recordExternalSurfaceLoss(
-  store: BrowserSurfaceReplacementReceiptStore | null,
+  store: Pick<BrowserSurfaceReplacementReceiptStore, "append"> | null,
   ledger: BrowserSurfaceReplacementLedger,
   surface: BrowserSurface
 ): Promise<void> {
@@ -141,7 +152,7 @@ async function recordBrowserGeneration(input: {
   readonly runId: string;
   readonly result: BrowserSurfaceReadinessProbeResult;
   readonly leaseStore: BrowserSurfaceLeaseStore | null;
-  readonly receiptStore: BrowserSurfaceReplacementReceiptStore | null;
+  readonly persistenceUnitOfWork: BrowserSurfacePersistenceUnitOfWork | null;
   readonly ledger: BrowserSurfaceReplacementLedger;
 }): Promise<void> {
   if (!(input.leaseStore && input.surface)) {
@@ -151,26 +162,48 @@ async function recordBrowserGeneration(input: {
     return;
   }
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-  const leaseStore = input.leaseStore;
-  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const surface = input.surface;
   const generationHash = input.result.browserGenerationHash;
-  const persistedSurface = await leaseStore.getSurface(surface.surface_id);
-  const pending = await pendingForReadiness(input.receiptStore, surface);
-  if (pending) {
-    await completePendingGeneration({ ...input, leaseStore, surface }, pending, generationHash);
-    return;
+  const { persistenceUnitOfWork } = input;
+  if (!persistenceUnitOfWork) {
+    throw new Error("browser-surface readiness replacement requires a persistence unit of work");
   }
-  await recordCurrentGeneration({ ...input, leaseStore, surface }, persistedSurface, generationHash);
+  await persistenceUnitOfWork.withTransaction(async (stores) => {
+    const persistedSurface = await stores.leaseStore.getSurface(surface.surface_id);
+    const pending = await pendingForReadiness(stores.replacementReceiptStore, surface);
+    if (pending) {
+      await completePendingGeneration(
+        {
+          leaseStore: stores.leaseStore,
+          ledger: input.ledger,
+          receiptStore: stores.replacementReceiptStore,
+          surface,
+        },
+        pending,
+        generationHash
+      );
+      return;
+    }
+    await recordCurrentGeneration(
+      {
+        connectorId: input.connectorId,
+        lease: input.lease,
+        leaseStore: stores.leaseStore,
+        ledger: input.ledger,
+        receiptStore: stores.replacementReceiptStore,
+        runId: input.runId,
+        surface,
+      },
+      persistedSurface,
+      generationHash
+    );
+  });
 }
 
 async function pendingForReadiness(
-  store: BrowserSurfaceReplacementReceiptStore | null,
+  store: BrowserSurfacePersistenceReceiptCapability,
   surface: BrowserSurface
 ): Promise<ReplacementReceipt | null> {
-  if (!store) {
-    return null;
-  }
   const sameSurface = await store.findPendingForSurface(surface.surface_id);
   if (sameSurface) {
     return sameSurface;
@@ -185,8 +218,8 @@ async function pendingForReadiness(
 
 async function completePendingGeneration(
   input: {
-    readonly leaseStore: BrowserSurfaceLeaseStore;
-    readonly receiptStore: BrowserSurfaceReplacementReceiptStore | null;
+    readonly leaseStore: BrowserSurfacePersistenceLeaseCapability;
+    readonly receiptStore: BrowserSurfacePersistenceReceiptCapability;
     readonly ledger: BrowserSurfaceReplacementLedger;
     readonly surface: BrowserSurface;
   },
@@ -217,8 +250,8 @@ async function recordCurrentGeneration(
     readonly surface: BrowserSurface;
     readonly connectorId: string;
     readonly runId: string;
-    readonly receiptStore: BrowserSurfaceReplacementReceiptStore | null;
-    readonly leaseStore: BrowserSurfaceLeaseStore;
+    readonly receiptStore: BrowserSurfacePersistenceReceiptCapability;
+    readonly leaseStore: BrowserSurfacePersistenceLeaseCapability;
     readonly ledger: BrowserSurfaceReplacementLedger;
   },
   persistedSurface: BrowserSurfaceWithPersistenceMetadata | null,
@@ -245,16 +278,13 @@ async function recordCurrentGeneration(
 
 async function recordRecoveredFailedSuccessor(
   input: {
-    readonly receiptStore: BrowserSurfaceReplacementReceiptStore | null;
+    readonly receiptStore: BrowserSurfacePersistenceReceiptCapability;
     readonly ledger: BrowserSurfaceReplacementLedger;
     readonly surface: BrowserSurface;
   },
   generationHash: string
 ): Promise<void> {
   const store = input.receiptStore;
-  if (!store) {
-    return;
-  }
   const failed = await store.selectSystemActionable({
     connection_id: input.surface.surface_subject_id ?? input.surface.connector_id,
     profile_key: input.surface.profile_key,

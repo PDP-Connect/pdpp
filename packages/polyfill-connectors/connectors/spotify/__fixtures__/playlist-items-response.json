@@ -1,0 +1,15 @@
+{
+  "id": "fixtureplaylistitems",
+  "name": "Synthetic Fixture Playlist",
+  "owner": {
+    "id": "fixtureowner",
+    "display_name": "Fixture Owner"
+  },
+  "public": null,
+  "collaborative": false,
+  "items": {
+    "total": 7
+  },
+  "snapshot_id": "fixture-snapshot",
+  "description": null
+}

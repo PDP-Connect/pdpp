@@ -28,7 +28,7 @@ import type { CaptureSession } from "../fixture-capture.ts";
 const ORDERS_URL = "https://www.heb.com/my-account/your-orders";
 const SESSION_PROBE_WAIT_MS = 2000;
 const POST_SUBMIT_POLL_INTERVAL_MS = 200;
-const POST_SUBMIT_TIMEOUT_MS = 8000;
+const POST_SUBMIT_TIMEOUT_MS = 12_000;
 const FIELD_TIMEOUT_MS = 15_000;
 const EMAIL_SELECTOR =
   'input[name="email"], input[type="email"], input[autocomplete="username"], input[name="username"]';
@@ -36,6 +36,8 @@ const PASSWORD_SELECTOR = 'input[name="password"], input[type="password"], input
 const SUBMIT_SELECTOR = 'button[type="submit"], input[type="submit"]';
 const VERIFICATION_CODE_SELECTOR =
   'input[name="code"], input[name="otp"], input[name="verification_code"], input[autocomplete="one-time-code"]';
+const VERIFY_SUBMIT_TEXT_RE = /\b(verify|continue|submit)\b/i;
+const MAX_SPLIT_CODE_DIGITS = 8;
 const PASSKEY_RE = /\bpasskey\b/i;
 const VERIFICATION_CODE_RE = /\b(verification code|security code|one[- ]time code|code sent)\b/i;
 const CAPTCHA_RE = /\b(captcha|verify you are human|security check)\b/i;
@@ -54,6 +56,7 @@ export type HebAuthSurface =
 interface EnsureHebSessionArgs {
   capture?: CaptureSession | null;
   checkpoint?: SessionCheckpointFn;
+  onCredentialSubmit?: () => void;
   page: Page;
   postSubmitWaitClock?: PostSubmitWaitClock;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -163,6 +166,10 @@ async function resolveUniqueLoginFormRoot(page: Page): Promise<Locator | null> {
   return viableRoots === 1 ? resolved : null;
 }
 
+function isViableVerificationCodeDigitCount(codeCount: number): boolean {
+  return codeCount === 1 || (codeCount > 1 && codeCount <= MAX_SPLIT_CODE_DIGITS);
+}
+
 async function resolveUniqueVerificationCodeFormRoot(page: Page): Promise<Locator | null> {
   const forms = page.locator(LOGIN_FORM_SELECTOR);
   const count = await forms.count().catch((): number => 0);
@@ -179,7 +186,7 @@ async function resolveUniqueVerificationCodeFormRoot(page: Page): Promise<Locato
       continue;
     }
     const codeCount = await countUsableCandidates(root.locator(VERIFICATION_CODE_SELECTOR));
-    if (codeCount === 1) {
+    if (isViableVerificationCodeDigitCount(codeCount)) {
       viableRoots += 1;
       resolved = root;
       if (viableRoots > 1) {
@@ -373,6 +380,7 @@ async function handOffToOwner({
 async function handleVerifiedLoginFormSubmission({
   capture,
   checkpoint,
+  onCredentialSubmit,
   page,
   postSubmitWaitClock,
   password,
@@ -383,6 +391,7 @@ async function handleVerifiedLoginFormSubmission({
   readonly capture?: CaptureSession | null | undefined;
   readonly checkpoint?: SessionCheckpointFn | undefined;
   readonly loginFormRoot: Locator;
+  readonly onCredentialSubmit?: (() => void) | undefined;
   readonly postSubmitWaitClock?: PostSubmitWaitClock | undefined;
   readonly password: string;
   readonly username: string;
@@ -392,6 +401,7 @@ async function handleVerifiedLoginFormSubmission({
   if (!submitted) {
     return false;
   }
+  onCredentialSubmit?.();
 
   const postSubmitSurface = await waitForPostSubmitAuthSurface(
     page,
@@ -449,16 +459,63 @@ async function submitVerifiedLoginForm(
   return clicked;
 }
 
+async function fillSplitVerificationCodeDigits(
+  page: Page,
+  verificationCode: Locator,
+  digits: string,
+  digitCount: number
+): Promise<boolean> {
+  if (digits.length !== digitCount) {
+    return false;
+  }
+  for (let i = 0; i < digitCount; i += 1) {
+    const filled = await fillWhenUsable(page, verificationCode.nth(i), digits[i] ?? "", { timeout: 3000 });
+    if (!filled) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function clickVerifySubmit(page: Page, submit: Locator): Promise<boolean> {
+  const count = await submit.count().catch((): number => 0);
+  const start = Date.now();
+  while (Date.now() - start < 3000) {
+    for (let i = 0; i < count; i += 1) {
+      const candidate = submit.nth(i);
+      const [visible, enabled, text] = await Promise.all([
+        candidate.isVisible().catch((): boolean => false),
+        candidate.isEnabled().catch((): boolean => false),
+        candidate.innerText().catch((): string => ""),
+      ]);
+      if (visible && enabled && VERIFY_SUBMIT_TEXT_RE.test(text)) {
+        await candidate.click();
+        return true;
+      }
+    }
+    await page.waitForTimeout(200);
+  }
+  return false;
+}
+
 async function submitVerificationCodeForm(root: Locator, page: Page, code: string): Promise<boolean> {
   const verificationCode = root.locator(VERIFICATION_CODE_SELECTOR);
-  const codeFilled = await fillWhenUsable(page, verificationCode, code);
+  const codeCount = await countUsableCandidates(verificationCode);
+
+  const codeFilled =
+    codeCount > 1
+      ? await fillSplitVerificationCodeDigits(page, verificationCode, code, codeCount)
+      : await fillWhenUsable(page, verificationCode, code);
   if (!codeFilled) {
     return false;
   }
 
   const submit = root.locator(SUBMIT_SELECTOR);
   const submitCount = await countUsableCandidates(submit);
-  if (submitCount > 0) {
+  if (submitCount > 1) {
+    return await clickVerifySubmit(page, submit);
+  }
+  if (submitCount === 1) {
     const clicked = await clickWhenUsable(page, submit, { timeout: 3000 });
     if (!clicked) {
       return false;
@@ -501,7 +558,8 @@ async function handleVerificationCodeSubmission({
     throw new Error("heb_verification_code_not_provided");
   }
 
-  const verificationCodeRoot = await resolveUniqueVerificationCodeFormRoot(page);
+  const waitClock = postSubmitWaitClock ?? defaultPostSubmitWaitClock(page);
+  const verificationCodeRoot = await waitForUniqueVerificationCodeFormRoot(page, waitClock);
   if (!verificationCodeRoot) {
     throw new Error("heb_verification_code_input_missing");
   }
@@ -512,12 +570,9 @@ async function handleVerificationCodeSubmission({
   }
 
   await checkpoint?.("heb-verification-code-submitted");
-  const postSubmitSurface = await waitForPostSubmitAuthSurface(
-    page,
-    postSubmitWaitClock ?? defaultPostSubmitWaitClock(page),
-    checkpoint,
-    { ignoreVerificationCode: true }
-  );
+  const postSubmitSurface = await waitForPostSubmitAuthSurface(page, waitClock, checkpoint, {
+    ignoreVerificationCode: true,
+  });
   if (postSubmitSurface.kind === "live") {
     await checkpoint?.("heb-post-submit-live");
     await checkpoint?.("heb-verification-code-reprobe");
@@ -553,6 +608,7 @@ export async function probeHebSession(page: Page): Promise<boolean> {
 export async function ensureHebSession({
   capture,
   checkpoint,
+  onCredentialSubmit,
   page,
   postSubmitWaitClock,
   sendInteraction,
@@ -573,6 +629,7 @@ export async function ensureHebSession({
       capture,
       checkpoint,
       loginFormRoot,
+      onCredentialSubmit,
       page,
       postSubmitWaitClock,
       password,
@@ -610,4 +667,21 @@ export async function ensureHebSession({
   }
 
   throw new Error("heb_login_unexpected_ui");
+}
+
+async function waitForUniqueVerificationCodeFormRoot(page: Page, clock: PostSubmitWaitClock): Promise<Locator | null> {
+  const deadline = clock.now() + FIELD_TIMEOUT_MS;
+  while (clock.now() <= deadline) {
+    const resolved = await resolveUniqueVerificationCodeFormRoot(page);
+    if (resolved) {
+      return resolved;
+    }
+
+    const remainingMs = deadline - clock.now();
+    if (remainingMs <= 0) {
+      return null;
+    }
+    await clock.wait(Math.min(POST_SUBMIT_POLL_INTERVAL_MS, remainingMs));
+  }
+  return null;
 }

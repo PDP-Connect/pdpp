@@ -166,7 +166,7 @@ function buildLiveOnlyNavigationCommands(basePath: string): DashboardCommand[] {
     },
     {
       description:
-        "Give apps and local agents grant-scoped read access to data already in this instance. To add data sources, use Sources.",
+        "Give apps and local clients grant-scoped read access to data already in this instance. To add data sources, use Sources.",
       href: `${basePath}/connect`,
       id: "nav-connect",
       keywords: ["connect", "ai apps", "read access", "mcp", "claude", "codex", "chatgpt", "agent", "client", "setup"],

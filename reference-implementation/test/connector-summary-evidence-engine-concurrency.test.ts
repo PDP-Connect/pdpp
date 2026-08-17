@@ -17,7 +17,10 @@
  *     versa.
  *   - `known_zero` for a declared stream is independent of collection
  *     coverage (a completely different, unmeasured axis) — a stream can be
- *     an exact zero while coverage for the connection remains unmeasured.
+ *     a PROVEN exact zero while coverage for the connection remains
+ *     unmeasured. (Proving that zero requires a canonical observation, not
+ *     merely an absent canonical row — see
+ *     `connector-summary-count-state-proof.test.ts`.)
  */
 
 import assert from "node:assert/strict";
@@ -27,7 +30,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-evidence-engine.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
-import { ingestRecord } from "../server/records.ts";
+import { deleteRecord, ingestRecord } from "../server/records.ts";
 import { listConnectorSummaries } from "../server/ref-control.ts";
 
 const OWNER = "owner_local";
@@ -47,7 +50,7 @@ async function withTempDb<T>(fn: () => Promise<T>): Promise<T> {
 function seedManifestConnector(connectorId: string, streams: string[]) {
   const manifest = {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: connectorId,
     display_name: connectorId,
@@ -237,9 +240,21 @@ test("a declared stream reads known_zero independent of collection coverage rema
     const connectorId = "https://test.pdpp.dev/connectors/known-zero-unknown-coverage";
     seedManifestConnector(connectorId, ["messages"]);
     seedInstance("cin_no_coverage", connectorId);
-    // No records, no runs, no terminal spine events at all — collection
-    // coverage for this connection has never been measured (no
-    // classifying run exists to derive a coverage axis from).
+    // The stream is canonically observed (ingest allocates a version) and
+    // then emptied, so its zero is PROVEN rather than merely unobserved —
+    // `known_zero` needs that positive proof, see
+    // `connector-summary-count-state-proof.test.ts`. What this test isolates
+    // is that the proof is a purely canonical/record-side fact: no runs and
+    // no terminal spine events are ever recorded, so collection coverage for
+    // this connection has never been measured (no classifying run exists to
+    // derive a coverage axis from) while the count stays exact.
+    await ingestRecord(storageTargetFor(connectorId, "cin_no_coverage"), {
+      data: { id: "msg_1" },
+      emitted_at: NOW,
+      key: "msg_1",
+      stream: "messages",
+    });
+    await deleteRecord(storageTargetFor(connectorId, "cin_no_coverage"), "messages", "msg_1");
 
     // Terminal-gate revision (2026-07-29): `connector_summary_evidence` rows
     // are materialized ONLY by the maintenance sweep (startup + periodic —
@@ -258,7 +273,11 @@ test("a declared stream reads known_zero independent of collection coverage rema
 
     const streamEntry = summary.stream_records.find((entry) => entry.stream === "messages");
     assert.ok(streamEntry, "the declared stream is visible");
-    assert.equal(streamEntry.count_state, "known_zero", "the canonical snapshot proves an exact zero record count");
+    assert.equal(
+      streamEntry.count_state,
+      "known_zero",
+      "the canonical snapshot proves an exact zero record count (observed, then emptied)"
+    );
     assert.equal(streamEntry.declaration_state, "declared");
 
     // Coverage is a wholly separate axis (collection_report /

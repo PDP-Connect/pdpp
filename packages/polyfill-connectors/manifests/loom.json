@@ -27,8 +27,7 @@
       "rationale": "Loom video metadata is browser-scraped; refresh manually to avoid bot-detection."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [
@@ -145,5 +144,8 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "loom_apollo_wiring_pending": "Loom support isn't wired up yet"
+  }
 }

@@ -4,10 +4,9 @@
 /**
  * Source-regex guard for the operator-console deployment page.
  *
- * The deployment page resolves the running instance's public origin and feeds
- * it into `ConnectAgentCard`. If the page drops the `providerUrl` prop, the
- * card falls back to a placeholder MCP URL, which trains operators to invent
- * the URL by hand.
+ * The page is a retrieval-diagnostics surface. Agent connection setup lives on
+ * /connect, which already renders the MCP URL alongside the per-client
+ * commands; the deployment page deliberately does NOT repeat that card.
  *
  * Spec: openspec/specs/reference-implementation-architecture/spec.md
  *       (Operator deployment diagnostics surface)
@@ -21,28 +20,15 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
 
-const RESOLVE_PUBLIC_ORIGIN_CALL_RE = /await\s+getReferencePublicOrigin\(\)/;
-const CARD_PASSES_PROVIDER_URL_RE = /<ConnectAgentCard[^>]*providerUrl=\{providerUrl\}/;
-const CARD_LINKS_CONNECT_PAGE_RE = /<ConnectAgentCard[^>]*connectHref="\/connect"/;
+const CONNECT_AGENT_CARD_RE = /ConnectAgentCard/;
 const TOKENS_LINK_RE = /href="\/deployment\/tokens"/;
 
-test("deployment page resolves the running instance's public origin", async () => {
+test("deployment page does not repeat the connect-an-AI-app card", async () => {
+  // The card is just an MCP URL with a copy button, and /connect already
+  // renders that URL plus the per-client setup commands. Two copies of the
+  // same endpoint on two surfaces is one more place to drift.
   const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, RESOLVE_PUBLIC_ORIGIN_CALL_RE);
-});
-
-test("deployment page passes providerUrl into ConnectAgentCard", async () => {
-  // ConnectAgentCard falls back to `<provider-url>/mcp` when providerUrl is
-  // missing. The deployment page knows the running origin, so it MUST pass it
-  // through — otherwise operators copy a placeholder and have to substitute the
-  // URL by hand.
-  const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, CARD_PASSES_PROVIDER_URL_RE);
-});
-
-test("deployment page links ConnectAgentCard to the setup page", async () => {
-  const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, CARD_LINKS_CONNECT_PAGE_RE);
+  assert.doesNotMatch(src, CONNECT_AGENT_CARD_RE);
 });
 
 test("deployment page links to the tokens issuance surface", async () => {

@@ -13,7 +13,32 @@
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ─── Frame ───────────────────────────────────────────────────────── */
+/* `.rr-app` sizes itself to the viewport and clips, but that alone does NOT
+   stop the DOCUMENT from scrolling. `overflow: hidden` clips PAINT; it does
+   not remove the clipped content from the root scroller's scrollable extent,
+   and html/body keep the UA default `overflow: visible`. So on a phone the
+   owner scrolls `.rr-content` (the intended scroller) AND can then drag the
+   whole document down into dead space — measured on /sources at 375×667:
+   a real wheel over the page background moved window.scrollY to 436px of
+   empty space below the frame. Two competing scroll contexts, one of them
+   scrolling into nothing.
+
+   Locking the root scroller off the shell's own PRESENCE (rather than
+   unconditionally on html) keeps the rule scoped to pages that actually
+   render this fixed-viewport frame — routes without it, and the print
+   stylesheet, still scroll the document normally. Same selector grammar as
+   the stream dialog's `html:has(.pdpp-stream-dialog)` lock in
+   syncs/[runId]/stream/stream.css, which fixed this same defect class for
+   one route; the shell owns the general case. */
+html:has(.rr-app) {
+  overflow: hidden;
+}
 .rr-app {
+  /* The sidebar brand block and the main header both draw a bottom rule, and
+     they meet at the sidebar's right border. They only read as ONE line when
+     they are the same height, so both derive from this single token rather
+     than from independently-tuned padding. */
+  --rr-masthead-height: 52px;
   display: grid;
   grid-template-columns: var(--spacing-sidebar) 1fr;
   height: 100vh;
@@ -39,15 +64,19 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 18px 0 14px;
+  /* No top padding: the brand block owns the masthead band so its rule lands
+     at exactly --rr-masthead-height, level with .rr-head's rule. */
+  padding: 0 0 14px;
   background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
   border-right: 1px solid var(--border);
 }
 .rr-side__brand {
+  box-sizing: border-box;
   display: flex;
   gap: 12px;
   align-items: center;
-  padding: 2px 18px 16px;
+  height: var(--rr-masthead-height);
+  padding: 0 18px;
   border-bottom: 1px solid var(--border);
 }
 /* the mark is the PDPP split-P: warm human/holder half + cool protocol/issuer
@@ -104,6 +133,10 @@
   grid-template-columns: 1fr auto;
   gap: 10px;
   align-items: center;
+  /* The primary navigation, present on every route — a real touch target,
+     not a decorative chrome control. min-height (not more padding) hits the
+     44px bar without changing the row's visual density. */
+  min-height: 44px;
   /* Left padding leaves room for the 2px active accent bar so text never
      shifts between resting/hover/active states (the bar paints in the gutter). */
   padding: 9px 10px 9px 12px;
@@ -174,12 +207,16 @@
   min-height: 0;
 }
 .rr-head {
+  box-sizing: border-box;
   display: flex;
   flex-shrink: 0;
   gap: 16px;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 32px;
+  /* Height is shared with .rr-side__brand so the two bottom rules form one
+     continuous line across the sidebar seam. */
+  height: var(--rr-masthead-height);
+  padding: 0 32px;
   background: var(--background);
   border-bottom: 1px solid var(--border);
 }

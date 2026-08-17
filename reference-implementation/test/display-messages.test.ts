@@ -1,13 +1,21 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * Coverage for RI's own generic-only reason-display contract
+ * (`runtime/display-messages.ts`). Scoped to RI's slice ONLY — this file
+ * must never import `@pdpp/polyfill-connectors` or assert anything about
+ * connector-emitted reason codes; that completeness authority lives in
+ * `packages/polyfill-connectors/src/reason-display-messages.test.ts`, which
+ * imports `RUNTIME_GENERIC_REASON_CODES` from here (by relative path) to
+ * check the boundary from the other side.
+ */
+
 import assert from "node:assert/strict";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { DISPLAY_MESSAGES, displayMessageFor } from "../runtime/display-messages.ts";
+import { RUNTIME_GENERIC_REASON_CODES } from "../runtime/recovery-reason-codes.ts";
 
 // ─── Module-shape sanity ───────────────────────────────────────────────────
 
@@ -16,12 +24,20 @@ test("displayMessageFor returns null for null/empty input", () => {
   assert.equal(displayMessageFor(""), null);
 });
 
-test("displayMessageFor returns the registry entry for a known code", () => {
-  assert.equal(displayMessageFor("cloudflare_challenge"), DISPLAY_MESSAGES.cloudflare_challenge);
+test("displayMessageFor returns the registry entry for a known RI-generic code", () => {
+  assert.equal(displayMessageFor("temporary_unavailable"), DISPLAY_MESSAGES.temporary_unavailable);
 });
 
-test("displayMessageFor returns null for an unregistered code (UI handles fallback)", () => {
+test("displayMessageFor returns null for an unregistered code (caller handles fallback)", () => {
   assert.equal(displayMessageFor("definitely_not_a_real_reason_code"), null);
+});
+
+test("displayMessageFor returns null for a connector-specific code (out of this file's scope)", () => {
+  // cloudflare_challenge is a real chase-emitted reason code, but RI's
+  // generic-only registry must not know that — it isn't in
+  // RUNTIME_GENERIC_REASON_CODES, so this must resolve null here even
+  // though the connector package's merged map does cover it.
+  assert.equal(displayMessageFor("cloudflare_challenge"), null);
 });
 
 // ─── Registry-quality invariants ───────────────────────────────────────────
@@ -43,108 +59,18 @@ test("no bare reason-code-as-value entries (registry must translate, not parrot)
   }
 });
 
-// ─── Registry completeness: every connector-emitted reason has a vetted message ─
+test("every RUNTIME_GENERIC_REASON_CODES member has a registered display message", () => {
+  const missing = [...RUNTIME_GENERIC_REASON_CODES].filter((code) => !(code in DISPLAY_MESSAGES));
+  assert.deepEqual(missing, [], `RUNTIME_GENERIC_REASON_CODES entries missing display copy: ${missing.join(", ")}`);
+});
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const CONNECTORS_DIR = resolve(HERE, "../../packages/polyfill-connectors/connectors");
-
-async function listConnectorDirs(): Promise<string[]> {
-  const entries = await readdir(CONNECTORS_DIR);
-  const dirs: string[] = [];
-  for (const name of entries) {
-    const full = join(CONNECTORS_DIR, name);
-    let s: Awaited<ReturnType<typeof stat>> | undefined;
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential because each iteration advances shared test state.
-      s = await stat(full);
-    } catch {
-      continue;
-    }
-    if (s.isDirectory()) {
-      dirs.push(full);
-    }
-  }
-  return dirs;
-}
-
-/**
- * Scan a single connector's `index.ts` (if present) for the reason codes it
- * emits. This catches the emission shapes the brief calls out:
- *   - SKIP_RESULT entries:   { type: "SKIP_RESULT", reason: "..." }
- *   - connector_error reasons embedded inline in run records.
- *   - terminal/decision objects: { kind: "terminal", reason: "..." }
- *
- * The scan reads the *value expression* of every `reason:` property and
- * collects every string literal in it. A direct literal (`reason: "x"`) and a
- * ternary (`reason: cond ? "a" : "b"`) both surface their codes — the ternary
- * form previously slipped past a literal-only regex, so codes like
- * `missing_mapping` were emitted live with no vetted display message and the
- * dashboard would have shown `null`. Reading the whole value expression closes
- * that blind spot without an allowlist.
- */
-async function reasonsEmittedBy(connectorDir: string): Promise<string[]> {
-  const indexPath = join(connectorDir, "index.ts");
-  let source: string;
-  try {
-    source = await readFile(indexPath, "utf8");
-  } catch {
-    return [];
-  }
-  const reasons = new Set<string>();
-  // Capture the value expression of each `reason:` property: everything from
-  // the colon up to the end of that line (connector emissions keep the reason
-  // value on one line). Then pull every snake_case string literal out of it,
-  // so both `reason: "x"` and `reason: cond ? "a" : "b"` are covered.
-  const reasonValue = /\breason\s*:\s*([^\n]*)/g;
-  const literal = /"([a-z][a-z0-9_]*)"/g;
-  let match: RegExpExecArray | null;
-  // biome-ignore lint/suspicious/noAssignInExpressions: the assignment is the intentional state transition under test.
-  while ((match = reasonValue.exec(source)) !== null) {
-    // biome-ignore lint/style/useDestructuring: the property access names the fixture value at its point of use.
-    const valueExpression = match[1];
-    assert.ok(valueExpression !== undefined, "the reason: regex always captures group 1");
-    let lit: RegExpExecArray | null;
-    literal.lastIndex = 0;
-    // biome-ignore lint/suspicious/noAssignInExpressions: the assignment is the intentional state transition under test.
-    while ((lit = literal.exec(valueExpression)) !== null) {
-      // biome-ignore lint/style/useDestructuring: the property access names the fixture value at its point of use.
-      const literalValue = lit[1];
-      assert.ok(literalValue !== undefined, "the literal regex always captures group 1");
-      // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-      if (literalValue === "reason" && /\[\s*["']reason["']\s*\]/.test(valueExpression)) {
-        continue;
-      }
-      reasons.add(literalValue);
-    }
-  }
-  return [...reasons];
-}
-
-test("every connector-emitted reason code has a registered display message", async () => {
-  const dirs = await listConnectorDirs();
-  assert.ok(dirs.length > 0, "expected at least one connector directory");
-
-  // biome-ignore lint/suspicious/noEvolvingTypes: the accumulator intentionally represents heterogeneous fixture observations.
-  const missing = [];
-  for (const dir of dirs) {
-    // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential because each iteration advances shared test state.
-    const reasons = await reasonsEmittedBy(dir);
-    for (const reason of reasons) {
-      if (!(reason in DISPLAY_MESSAGES)) {
-        missing.push({ connector: dir.split("/").pop(), reason });
-      }
-    }
-  }
-
-  // If this assertion fires the right fix is to ADD the missing
-  // reason code(s) to `runtime/display-messages.ts` with vetted
-  // end-user copy — NOT to weaken this test. The whole point of the
-  // registry is that the UI never sees a raw reason code.
-  if (missing.length > 0) {
-    const lines = missing.map(({ connector, reason }) => `  ${connector}: ${reason}`).join("\n");
-    assert.fail(
-      `Reason codes emitted by connectors but missing from DISPLAY_MESSAGES registry:\n${lines}\n\n` +
-        "Add an entry to reference-implementation/runtime/display-messages.ts."
-    );
-  }
+test("DISPLAY_MESSAGES contains exactly RUNTIME_GENERIC_REASON_CODES, nothing else (falsifiability: this file cannot silently accrue connector-specific entries)", () => {
+  const registryKeys = new Set(Object.keys(DISPLAY_MESSAGES));
+  const genericKeys = new Set(RUNTIME_GENERIC_REASON_CODES);
+  assert.deepEqual(
+    [...registryKeys].sort(),
+    [...genericKeys].sort(),
+    "DISPLAY_MESSAGES must contain exactly the RI-owned generic recovery vocabulary — " +
+      "a connector-specific reason code appearing here would be a regression back into hardcoded connector knowledge."
+  );
 });

@@ -20,7 +20,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { checkCleanShellFreshness } from "./owner-journey-acceptance/clean-shell.ts";
 import { derivePublishedCommandSurface, runLocalAcceptance } from "./owner-journey-acceptance/harness.ts";
-import { resolveOwnerAuthFromEnv, runLiveAcceptance } from "./owner-journey-acceptance/live.ts";
+import {
+  evaluateDashboardSourceTrust,
+  inspectResolvedOwnerSurface,
+  resolveOwnerAuthFromEnv,
+  runLiveAcceptance,
+} from "./owner-journey-acceptance/live.ts";
+import {
+  createDisposableMutationAuthority,
+  resolveDisposableMutationAuthority,
+  runBoundedMutationProbes,
+} from "./owner-journey-acceptance/mutations.ts";
 import { renderReport } from "./owner-journey-acceptance/report.ts";
 import {
   checkCommandFreshness,
@@ -57,14 +67,45 @@ function classes(findings: readonly Finding[]): Set<string> {
 }
 
 function defaultLiveOwnerPageHtml(url: string | URL): string {
-  const href = String(url);
-  if (href.endsWith("/schedules")) {
-    return "<main><h1>Schedules</h1><p>0 scheduled · 3 unscheduled</p><section>Scheduled connections (0)</section><section>No scheduled connections yet</section></main>";
+  const path = new URL(String(url)).pathname;
+  if (path === "/sources") {
+    return '<main><h1>Sources</h1><aside aria-label="Sources"><p>No sources yet.</p></aside></main>';
   }
-  if (href.endsWith("/explore")) {
+  if (path === "/sources/add") {
+    return "<main><h1>Add source</h1><p>Choose a source setup.</p></main>";
+  }
+  if (path === "/connect") {
+    return "<main><h1>Connect apps</h1><p>Connect apps to this instance.</p></main>";
+  }
+  if (path === "/explore") {
     return "<main><h1>Explore</h1><label>Search names, fields, and values — or type an operator</label><details><summary>Filters</summary></details><button>newest</button><button>oldest</button></main>";
   }
-  return "<main>clean owner page</main>";
+  if (path === "/grants") {
+    return "<main><h1>Grants</h1><p>Grant access history.</p></main>";
+  }
+  if (path === "/audit") {
+    return "<main><h1>Audit</h1><p>Recent reads.</p></main>";
+  }
+  if (path === "/syncs") {
+    return "<main><h1>Syncs</h1><h2>Streams by source</h2></main>";
+  }
+  if (path === "/search") {
+    return "<main><h1>Search</h1><p>Search trace, grant, or run ids.</p></main>";
+  }
+  if (path === "/device-exporters") {
+    return "<main><h1>Local device exporters</h1><h2>Enrolled devices</h2></main>";
+  }
+  if (path === "/schedules") {
+    return "<main><h1>Schedules</h1><p>0 scheduled · 3 unscheduled</p><section>Scheduled connections (0)</section><section>No scheduled connections yet</section></main>";
+  }
+  if (path.startsWith("/connect/browser-session/") || path.startsWith("/connect/manual-upload/")) {
+    return "<main><h1>Source setup</h1><p>Connect this source.</p></main>";
+  }
+  return "<main><h1>Where you stand</h1><h2>Source attention</h2><h2>Notifications</h2></main>";
+}
+
+function resolvedDashboardHtml(content: string): string {
+  return `<main><h1>Where you stand</h1><h2>Source attention</h2>${content}<h2>Notifications</h2></main>`;
 }
 
 // ── 1. Failure-class units: forbidden strings ────────────────────────────────
@@ -412,6 +453,33 @@ test("owner auth resolves from env by mode without exposing the value", () => {
   assert.equal(bearer.header.authorization, "Bearer tok");
 });
 
+test("bounded mutation probes use disposable local state and reject live authorities", async () => {
+  const authority = createDisposableMutationAuthority();
+  const result = await runBoundedMutationProbes(authority);
+  assert.equal(result.status, "pass");
+  assert.deepEqual(result.probes, [
+    "reset starts empty",
+    "create disposable source",
+    "read durable source state after create",
+    "refresh disposable source",
+    "delete disposable source",
+    "negative refresh after delete",
+    "read durable source state after delete",
+    "reset restores empty state",
+  ]);
+  assert.equal(
+    resolveDisposableMutationAuthority({ PDPP_UAT_MUTATION_ORIGIN: "https://owner.example" }).kind,
+    "rejected"
+  );
+  assert.equal(
+    resolveDisposableMutationAuthority({
+      PDPP_UAT_MUTATION_DISPOSABLE: "1",
+      PDPP_UAT_MUTATION_ORIGIN: "http://127.0.0.1:4311",
+    }).kind,
+    "configured"
+  );
+});
+
 test("live probe scans served HTML and fails closed on login redirects", async () => {
   // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
   const fetchImpl = async (url: string | URL) => {
@@ -428,11 +496,12 @@ test("live probe scans served HTML and fails closed on login redirects", async (
   const result = await runLiveAcceptance({ origin: "https://example.com/", env: {}, fetchImpl });
   assert.equal(result.authMode, "none");
   assert.equal(result.ok, false, "redirected live surfaces are not a passing live gate");
-  // The 200 surface with a monorepo path is a finding; the 302s are failed inconclusive probes.
-  assert.ok(result.findings.some((f) => f.class === "developer-only-path"));
+  // Anonymous 200 HTML is not evidence of an owner surface; the 302s and the
+  // missing-auth gate are failed inconclusive probes.
+  assert.ok(result.findings.some((f) => f.ruleId === "live-owner-auth-required"));
   assert.ok(result.findings.some((f) => f.ruleId === "live-owner-surface-not-reached"));
   const connect = result.surfaces.find((s) => s.path === "/connect");
-  assert.equal(connect?.reachedOwnerSurface, true);
+  assert.equal(connect?.reachedOwnerSurface, false);
   const records = result.surfaces.find((s) => s.path === "/sources");
   assert.equal(records?.reachedOwnerSurface, false);
 });
@@ -505,6 +574,236 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
   );
 });
 
+test("resolved-surface oracle distinguishes resolved content, a shell, and a visible Suspense skeleton", () => {
+  const resolved = inspectResolvedOwnerSurface({
+    html: defaultLiveOwnerPageHtml("https://example.com/schedules"),
+    path: "/schedules",
+    status: 200,
+  });
+  assert.equal(resolved.ok, true);
+
+  const shell = inspectResolvedOwnerSurface({
+    html: "<main><h1>Owner shell</h1></main>",
+    path: "/schedules",
+    status: 200,
+  });
+  assert.equal(shell.ok, false);
+  assert.ok(shell.missing.includes("Schedules title"));
+
+  const detailShell = inspectResolvedOwnerSurface({
+    html: "<main><h1>Owner shell</h1></main>",
+    path: "/sources/cin_shell",
+    status: 200,
+  });
+  assert.equal(detailShell.ok, false);
+  assert.ok(detailShell.missing.includes("source detail content"));
+
+  const skeleton = inspectResolvedOwnerSurface({
+    html: '<main><h1>Schedules</h1><div class="animate-pulse">Loading…</div></main>',
+    path: "/schedules",
+    status: 200,
+  });
+  assert.equal(skeleton.ok, false);
+  assert.ok(skeleton.skeletonMarkers.length > 0);
+});
+
+test("dashboard source-trust oracle covers zero, multiple, stale-projection, and healthy-advisory cases", () => {
+  const zero = evaluateDashboardSourceTrust([], "All assessed sources are healthy.");
+  assert.deepEqual(zero.materialIssues, []);
+  assert.deepEqual(zero.rawIssues, []);
+  assert.equal(zero.unsupportedAllClearClaim, null);
+
+  const multiple = evaluateDashboardSourceTrust(
+    [
+      {
+        connection_id: "cin_one",
+        display_name: "First source",
+        source_work: "system_issue",
+        rendered_verdict: {
+          channel: "advisory",
+          forward_statement: "First source needs attention.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [],
+        },
+      },
+      {
+        connection_id: "cin_two",
+        display_name: "Second source",
+        source_work: "system_issue",
+        rendered_verdict: {
+          channel: "advisory",
+          forward_statement: "Second source cannot collect.",
+          pill: { label: "Can't collect", tone: "red" },
+          required_actions: [],
+        },
+      },
+      {
+        connection_id: "cin_healthy",
+        display_name: "Healthy source",
+        source_work: "review",
+        connection_health: { axes: { freshness: "stale" }, state: "healthy" },
+        rendered_verdict: {
+          channel: "advisory",
+          forward_statement: "Run a refresh when you want the latest data.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [
+            { audience: "owner", cta: "Refresh now", satisfied_when: { kind: "confirming_run_succeeded" } },
+          ],
+        },
+      },
+    ],
+    '<div class="rr-attn__row"><a href="/sources/cin_one">First source: review it.</a><span>First source needs attention.</span></div>'
+  );
+  assert.deepEqual(
+    multiple.materialIssues.map((issue) => issue.label),
+    ["First source", "Second source"]
+  );
+  assert.deepEqual(
+    multiple.unrepresentedMaterialIssues.map((issue) => issue.label),
+    ["Second source"]
+  );
+  assert.deepEqual(multiple.overstatedHealthyAdvisories, []);
+
+  const staleProjection = evaluateDashboardSourceTrust(
+    [
+      {
+        connection_id: "cin_stale",
+        source_work: "none",
+        display_name: "Stale source",
+        connection_health: { axes: { coverage: "terminal_gap" }, state: "degraded" },
+        rendered_verdict: {
+          channel: "calm",
+          forward_statement: "Collection is current.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [],
+        },
+      },
+    ],
+    '<div class="rr-attn__row"><a href="/sources/cin_stale">Stale source needs attention.</a></div>'
+  );
+  assert.deepEqual(staleProjection.unrepresentedRawIssues, []);
+  assert.deepEqual(
+    staleProjection.projectionDisagreements.map((issue) => issue.label),
+    ["Stale source"]
+  );
+
+  const healthyMutation = evaluateDashboardSourceTrust(
+    [
+      {
+        connection_id: "cin_healthy",
+        display_name: "Healthy source",
+        source_work: "review",
+        rendered_verdict: {
+          channel: "advisory",
+          forward_statement: "Run a refresh when you want the latest data.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [
+            { audience: "owner", cta: "Refresh now", satisfied_when: { kind: "confirming_run_succeeded" } },
+          ],
+        },
+      },
+    ],
+    '<div class="rr-attn__row"><a href="/sources/cin_healthy">Healthy source is degraded.</a></div>'
+  );
+  assert.deepEqual(
+    healthyMutation.overstatedHealthyAdvisories.map((issue) => issue.label),
+    ["Healthy source"]
+  );
+});
+
+test("dashboard source-trust oracle binds unavailable source work to exact encoded routes", () => {
+  const unavailableConnectors = [
+    { connection_id: "cin_absent", display_name: "Absent source" },
+    { connection_id: "cin_null", display_name: "Null source", source_work: null },
+    { connection_id: "cin_unknown", display_name: "Unknown source", source_work: "bogus" },
+    ...(["constructor", "toString", "__proto__"] as const).map((source_work, index) => ({
+      connection_id: `cin_collision_${index}`,
+      display_name: `${source_work} source`,
+      source_work,
+    })),
+  ];
+  const renderedRows = unavailableConnectors
+    .map(
+      (connector) =>
+        `<div class="rr-attn__row"><a href="/sources/${encodeURIComponent(connector.connection_id)}">${connector.display_name}</a></div>`
+    )
+    .join("");
+  const result = evaluateDashboardSourceTrust(unavailableConnectors, renderedRows);
+  assert.deepEqual(
+    result.sourceWorkUnavailable.map(({ label, href }) => ({ label, href })),
+    unavailableConnectors.map((connector) => ({
+      label: connector.display_name,
+      href: `/sources/${encodeURIComponent(connector.connection_id)}`,
+    }))
+  );
+  assert.deepEqual(result.unrepresentedSourceWorkUnavailable, []);
+
+  const wrongRoute = evaluateDashboardSourceTrust(
+    unavailableConnectors,
+    renderedRows.replace("cin_absent", "wrong-route")
+  );
+  assert.deepEqual(
+    wrongRoute.unrepresentedSourceWorkUnavailable.map((issue) => issue.label),
+    ["Absent source"]
+  );
+
+  const duplicateLabel = evaluateDashboardSourceTrust(
+    [{ connection_id: "cin_duplicate", display_name: "Absent source" }, ...unavailableConnectors],
+    `${renderedRows}<div class="rr-attn__row"><a href="/sources/cin_duplicate">Absent source</a></div>`.replace(
+      "/sources/cin_absent",
+      "/sources/wrong-route"
+    )
+  );
+  assert.deepEqual(
+    duplicateLabel.unrepresentedSourceWorkUnavailable.map((issue) => issue.label),
+    ["Absent source"]
+  );
+  assert.deepEqual(
+    result.materialIssues.map((issue) => issue.label),
+    unavailableConnectors.map((connector) => connector.display_name)
+  );
+  assert.deepEqual(
+    result.unrepresentedMaterialIssues.map((issue) => issue.label),
+    []
+  );
+  assert.deepEqual(result.healthyRefreshAdvisories, []);
+});
+
+test("live Explore render fails when only one sort direction is present", async () => {
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    headers: { get: () => null },
+    status,
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl models the async fetch contract for the live harness.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ data: [], has_more: false, object: "list" }));
+    }
+    if (href.endsWith("/explore")) {
+      return response(
+        200,
+        "<main><h1>Explore</h1><label>Search names, fields, and values</label><details><summary>Filters</summary></details><button>newest</button></main>"
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+    origin: "https://example.com/",
+  });
+
+  assert.equal(result.ok, false, "a one-sided sort control must fail the rendered acceptance gate");
+  assert.ok(result.findings.some((finding) => finding.ruleId === "explore-content-rendered"));
+  assert.equal(result.semanticChecks.find((check) => check.id === "explore-content-rendered")?.status, "fail");
+});
+
 test("live semantic probe requests connectors at limit=100 (the reference's own page-size ceiling), never the invalid limit=200", async () => {
   const urlsSeen: string[] = [];
   const response = (status: number, body: string, setCookie: string | null = null) => ({
@@ -543,6 +842,118 @@ test("live semantic probe requests connectors at limit=100 (the reference's own 
   assert.doesNotMatch(connectorsUrl ?? "", CONNECTORS_LIMIT_200_RE);
 });
 
+test("live semantic probe follows pagination before comparing multiple source issues and exact actions", async () => {
+  const urlsSeen: string[] = [];
+  const response = (status: number, body: string) => ({
+    headers: { get: () => null },
+    status,
+    text: async () => body,
+  });
+  const firstPage = {
+    connection_id: "cin_first",
+    display_name: "First source",
+    streams: ["records"],
+    source_work: "none",
+    total_records: 1,
+    rendered_verdict: {
+      channel: "calm",
+      forward_statement: "Collection is current.",
+      pill: { label: "Healthy", tone: "green" },
+      required_actions: [],
+    },
+  };
+  const secondPageIssue = {
+    connection_id: "cin_second_issue",
+    display_name: "Second source",
+    streams: ["records"],
+    source_work: "system_issue",
+    total_records: 2,
+    rendered_verdict: {
+      channel: "advisory",
+      forward_statement: "Second source needs a connector fix.",
+      pill: { label: "Can't collect", tone: "red" },
+      required_actions: [],
+    },
+  };
+  const secondPageOwnerAction = {
+    connection_id: "cin_second_action",
+    display_name: "Second action source",
+    streams: ["records"],
+    source_work: "needs_owner",
+    total_records: 3,
+    rendered_verdict: {
+      channel: "attention",
+      forward_statement: "Reconnect this account and collection resumes.",
+      pill: { label: "Can't collect", tone: "red" },
+      required_actions: [
+        {
+          audience: "owner",
+          cta: "Reconnect this account",
+          kind: "reauth",
+          satisfied_when: { kind: "credential_present_and_unrejected" },
+          surface: { kind: "browser_session" },
+        },
+      ],
+    },
+  };
+  // biome-ignore lint/suspicious/useAwait: fetchImpl models the async fetch contract for the live harness.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    urlsSeen.push(href);
+    if (href.includes("/_ref/connectors")) {
+      const body = href.includes("cursor=page-2")
+        ? { data: [secondPageIssue, secondPageOwnerAction], has_more: false, object: "list" }
+        : { data: [firstPage], has_more: true, next_cursor: "page-2", object: "list" };
+      return response(200, JSON.stringify(body));
+    }
+    if (href.includes("/sources?page_cursor=rendered-2")) {
+      return response(
+        200,
+        '<main><h1>Sources</h1><div class="rr-s-item" data-source-id="cin_second_issue" data-source-label="Second source">Second source 2 records · 1 stream</div><div class="rr-s-item" data-source-id="cin_second_action" data-source-label="Second action source">Second action source 3 records · 1 stream</div></main>'
+      );
+    }
+    if (href.endsWith("/sources")) {
+      return response(
+        200,
+        '<main><h1>Sources</h1><div class="rr-s-item" data-source-id="cin_first" data-source-label="First source">First source 1 record · 1 stream</div><a href="/sources?page_cursor=rendered-2">Next page →</a></main>'
+      );
+    }
+    if (href.includes("/?page_cursor=rendered-2")) {
+      return response(
+        200,
+        '<main><h1>Where you stand</h1><h2>Source attention</h2><div class="rr-attn__row"><a href="/sources/cin_second_issue">Second source is degraded.</a><span>Second source needs a connector fix.</span></div><div class="rr-attn__row"><a href="/sources/cin_second_action">Second action source: Reconnect this account</a><span>Reconnect this account and collection resumes.</span></div><h2>Notifications</h2></main>'
+      );
+    }
+    if (href.endsWith("/")) {
+      return response(
+        200,
+        '<main><h1>Where you stand</h1><h2>Source attention</h2><h2>Notifications</h2><a href="/?page_cursor=rendered-2">Next page →</a></main>'
+      );
+    }
+    if (href.endsWith("/sources/cin_second_action")) {
+      return response(
+        200,
+        '<main><h1>Second action source</h1><a href="/connect/browser-session/declared?connectionId=cin_second_action">Reconnect this account</a></main>'
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+    origin: "https://example.com",
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(
+    urlsSeen.some((url) => url.includes("cursor=page-2")),
+    "the second connector page must be fetched"
+  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "dashboard-source-issue-all-clear")?.status, "pass");
+  assert.equal(result.semanticChecks.find((check) => check.id === "whats-next-actionable")?.status, "pass");
+});
+
 test("live semantic probe rejects dashboard all-clear when connector summaries contain source issues", async () => {
   const response = (
     status: number,
@@ -566,6 +977,7 @@ test("live semantic probe rejects dashboard all-clear when connector summaries c
               connection_id: "cin_chase",
               connector_id: "chase",
               display_name: "Chase - Personal",
+              source_work: "system_issue",
               rendered_verdict: {
                 channel: "advisory",
                 pill: { tone: "red", label: "Can't collect" },
@@ -622,6 +1034,7 @@ test("live semantic probe passes when material source issues are represented on 
               connection_id: "cin_chase",
               connector_id: "chase",
               display_name: "Chase - Personal",
+              source_work: "system_issue",
               rendered_verdict: {
                 channel: "advisory",
                 pill: { tone: "red", label: "Can't collect" },
@@ -638,7 +1051,9 @@ test("live semantic probe passes when material source issues are represented on 
     if (href.endsWith("/")) {
       return response(
         200,
-        "<main><h2>Anything wrong</h2><a>Chase - Personal can't collect This connector needs a code fix before it can collect again.</a></main>"
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_chase">Chase - Personal: This connector needs a code fix before it can collect again.</a><span>This connector needs a code fix before it can collect again.</span></div>'
+        )
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -682,6 +1097,7 @@ test("live semantic probe does not treat healthy refresh advisories as source is
               connection_id: "cin_reddit",
               connector_id: "reddit",
               display_name: "Reddit - dondochaka",
+              source_work: "review",
               rendered_verdict: {
                 channel: "advisory",
                 forward_statement: "Run a refresh to bring this up to date.",
@@ -702,14 +1118,11 @@ test("live semantic probe does not treat healthy refresh advisories as source is
     if (href.endsWith("/sources/cin_reddit")) {
       return response(
         200,
-        "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>"
+        '<main><h1>Source detail: Reddit - dondochaka</h1><section>Run a refresh to bring this up to date.</section><a href="/sources/cin_reddit">Refresh now</a></main>'
       );
     }
     if (href.endsWith("/")) {
-      return response(
-        200,
-        "<main><h2>Anything wrong</h2><div>No source issues to review here. Source health checks completed for this overview.</div></main>"
-      );
+      return response(200, resolvedDashboardHtml("<p>All assessed sources are healthy.</p>"));
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -787,6 +1200,7 @@ test("live semantic probe rejects healthy refresh advisories rendered as degrade
               connection_id: "cin_reddit",
               connector_id: "reddit",
               display_name: "Reddit - dondochaka",
+              source_work: "review",
               rendered_verdict: {
                 channel: "advisory",
                 forward_statement: "Run a refresh to bring this up to date.",
@@ -807,13 +1221,15 @@ test("live semantic probe rejects healthy refresh advisories rendered as degrade
     if (href.endsWith("/sources/cin_reddit")) {
       return response(
         200,
-        "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>"
+        "<main><h1>Source detail</h1><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>"
       );
     }
     if (href.endsWith("/")) {
       return response(
         200,
-        "<main><h2>Anything wrong</h2><a>Reddit - dondochaka is degraded Run a refresh to bring this up to date.</a></main>"
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_reddit">Reddit - dondochaka is degraded</a><span>Run a refresh to bring this up to date.</span></div>'
+        )
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -858,10 +1274,11 @@ test("live semantic probe rejects raw broken source facts hidden by a calm verdi
               connection_id: "cin_chase",
               connector_id: "chase",
               display_name: "Chase - Personal",
+              source_work: "system_issue",
               rendered_verdict: {
-                channel: "calm",
-                forward_statement: "Current and collecting normally.",
-                pill: { label: "Healthy", tone: "green" },
+                channel: "advisory",
+                forward_statement: "This source needs a connector fix before it can collect again.",
+                pill: { label: "Can't collect", tone: "red" },
                 required_actions: [],
               },
             },
@@ -917,10 +1334,11 @@ test("live semantic probe accepts raw broken source facts represented on the das
               connection_id: "cin_chase",
               connector_id: "chase",
               display_name: "Chase - Personal",
+              source_work: "system_issue",
               rendered_verdict: {
-                channel: "calm",
-                forward_statement: "Current and collecting normally.",
-                pill: { label: "Healthy", tone: "green" },
+                channel: "advisory",
+                forward_statement: "This source needs a connector fix before it can collect again.",
+                pill: { label: "Can't collect", tone: "red" },
                 required_actions: [],
               },
             },
@@ -929,7 +1347,12 @@ test("live semantic probe accepts raw broken source facts represented on the das
       );
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><h2>Anything wrong</h2><a>Chase - Personal needs a connector fix.</a></main>");
+      return response(
+        200,
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_chase">Chase - Personal: This source needs a connector fix before it can collect again.</a><span>This source needs a connector fix before it can collect again.</span></div>'
+        )
+      );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -962,7 +1385,7 @@ test("live semantic probe rejects dashboard monograms that pollute client labels
     if (href.endsWith("/")) {
       return response(
         200,
-        '<main><span class="pdpp-monogram">CL</span><span>Claude</span> reads only your data</main>'
+        resolvedDashboardHtml('<span class="pdpp-monogram">CL</span><span>Claude</span> reads only your data')
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -997,7 +1420,9 @@ test("live semantic probe accepts decorative dashboard monograms", async () => {
     if (href.endsWith("/")) {
       return response(
         200,
-        '<main><span aria-hidden="true" class="pdpp-monogram">CL</span><span>Claude</span> reads only your data</main>'
+        resolvedDashboardHtml(
+          '<span aria-hidden="true" class="pdpp-monogram">CL</span><span>Claude</span> reads only your data'
+        )
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -1036,6 +1461,7 @@ test("live semantic probe rejects visible source count claims that diverge from 
               connection_id: "cin_amazon",
               connector_id: "amazon",
               display_name: "Amazon - Personal",
+              source_work: "none",
               stream_count: 2,
               streams: ["orders", "order_items"],
               total_records: 2868,
@@ -1050,7 +1476,10 @@ test("live semantic probe rejects visible source count claims that diverge from 
       );
     }
     if (href.endsWith("/sources")) {
-      return response(200, "<main><h1>Sources</h1><a>Amazon - Personal 2,800 records · 2 streams</a></main>");
+      return response(
+        200,
+        '<main><h1>Sources</h1><div class="rr-s-item" data-source-id="cin_amazon" data-source-label="Amazon - Personal">Amazon - Personal 2,800 records · 2 streams</div></main>'
+      );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -1089,6 +1518,7 @@ test("live semantic probe accepts visible source count claims that match connect
               connection_id: "cin_amazon",
               connector_id: "amazon",
               display_name: "Amazon - Personal",
+              source_work: "none",
               stream_count: 2,
               streams: ["orders", "order_items"],
               total_records: 2868,
@@ -1103,7 +1533,62 @@ test("live semantic probe accepts visible source count claims that match connect
       );
     }
     if (href.endsWith("/sources")) {
-      return response(200, "<main><h1>Sources</h1><a>Amazon - Personal 2,868 records · 2 streams</a></main>");
+      return response(
+        200,
+        '<main><h1>Sources</h1><div class="rr-s-item" data-source-id="cin_amazon" data-source-label="Amazon - Personal">Amazon - Personal 2,868 records · 2 streams</div></main>'
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.semanticChecks.find((check) => check.id === "records-counts-match-reality")?.status, "pass");
+});
+
+test("live semantic probe compares the configured stream roster for a fresh draft", async () => {
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          has_more: false,
+          data: [
+            {
+              connection_id: "cin_chatgpt_draft",
+              connector_id: "chatgpt",
+              display_name: "ChatGPT",
+              source_work: "none",
+              status: "draft",
+              stream_count: 0,
+              streams: ["conversations", "messages", "attachments"],
+              total_records: 0,
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/sources")) {
+      return response(
+        200,
+        '<main><h1>Sources</h1><div class="rr-s-item" data-source-id="cin_chatgpt_draft" data-source-label="ChatGPT">ChatGPT 0 records · 3 streams</div></main>'
+      );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -1140,10 +1625,16 @@ test("live semantic probe rejects direct browser-session new-source controls", a
         })
       );
     }
-    if (href.endsWith("/connect/browser-session/amazon")) {
+    if (href.endsWith("/sources/add")) {
       return response(
         200,
-        '<main><h1>Connect Amazon</h1><form action="/connect/browser-session/amazon/start" method="post"><button>Start session</button></form></main>'
+        '<main><h1>Add source</h1><a href="/connect/browser-session/declared-source">Set up a source</a></main>'
+      );
+    }
+    if (href.endsWith("/connect/browser-session/declared-source")) {
+      return response(
+        200,
+        '<main><h1>Source setup</h1><form action="/connect/browser-session/declared-source/start" method="post"><button>Start session</button></form></main>'
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -1182,10 +1673,16 @@ test("live semantic probe accepts repair-only browser-session guidance", async (
         })
       );
     }
-    if (href.endsWith("/connect/browser-session/amazon")) {
+    if (href.endsWith("/sources/add")) {
       return response(
         200,
-        "<main><h1>Connect Amazon</h1><p>Adding a new Amazon source is not packaged here yet.</p><a>Open sources</a></main>"
+        '<main><h1>Add source</h1><a href="/connect/browser-session/declared-source">Set up a source</a></main>'
+      );
+    }
+    if (href.endsWith("/connect/browser-session/declared-source")) {
+      return response(
+        200,
+        "<main><h1>Source setup</h1><p>Repair guidance is available for this declared source.</p><a>Open sources</a></main>"
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -1258,6 +1755,7 @@ test("live semantic probe rejects owner actions that are absent from the exact s
               connection_id: "cin_local",
               connector_id: "claude-code",
               display_name: "laptop Claude Code",
+              source_work: "needs_owner",
               rendered_verdict: {
                 channel: "attention",
                 forward_statement: "The local collector has failed uploads.",
@@ -1281,10 +1779,18 @@ test("live semantic probe rejects owner actions that are absent from the exact s
       );
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><section>laptop Claude Code needs you. See what to do.</section></main>");
+      return response(
+        200,
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_local">laptop Claude Code: Recover local collector uploads</a><span>The local collector has failed uploads.</span></div>'
+        )
+      );
     }
     if (href.endsWith("/sources/cin_local")) {
-      return response(200, "<main><section>Diagnostics are loading.</section></main>");
+      return response(
+        200,
+        "<main><h1>Source detail: laptop Claude Code</h1><section>Diagnostics are ready.</section></main>"
+      );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -1323,6 +1829,7 @@ test("live semantic probe accepts owner actions visible on dashboard and exact s
               connection_id: "cin_local",
               connector_id: "claude-code",
               display_name: "laptop Claude Code",
+              source_work: "needs_owner",
               rendered_verdict: {
                 channel: "attention",
                 forward_statement: "The local collector has failed uploads.",
@@ -1352,12 +1859,17 @@ test("live semantic probe accepts owner actions visible on dashboard and exact s
       );
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><section>laptop Claude Code needs you. See what to do.</section></main>");
+      return response(
+        200,
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_local">laptop Claude Code: Recover local collector uploads</a><span>The local collector has failed uploads.</span></div>'
+        )
+      );
     }
     if (href.endsWith("/sources/cin_local")) {
       return response(
         200,
-        "<main><h1>laptop Claude Code</h1><section>Recover local collector uploads</section><section>Preview recovery</section></main>"
+        "<main><h1>Source detail: laptop Claude Code</h1><section>Recover local collector uploads</section><section>Preview recovery</section></main>"
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -1373,7 +1885,7 @@ test("live semantic probe accepts owner actions visible on dashboard and exact s
   assert.equal(result.semanticChecks.find((check) => check.id === "whats-next-actionable")?.status, "pass");
 });
 
-test("live semantic probe rejects raw stale manual sources without a visible next action", async () => {
+test("live semantic probe rejects server-declared stale sources without a visible next action", async () => {
   const response = (
     status: number,
     body: string
@@ -1400,11 +1912,18 @@ test("live semantic probe rejects raw stale manual sources without a visible nex
               connection_id: "cin_reddit",
               connector_id: "reddit",
               display_name: "Reddit - dondochaka",
+              source_work: "needs_owner",
               rendered_verdict: {
-                channel: "calm",
-                forward_statement: "Current and collecting normally.",
-                pill: { label: "Healthy", tone: "green" },
-                required_actions: [],
+                channel: "attention",
+                forward_statement: "Run a refresh to bring this up to date.",
+                pill: { label: "Needs attention", tone: "amber" },
+                required_actions: [
+                  {
+                    audience: "owner",
+                    cta: "Refresh now",
+                    satisfied_when: { kind: "confirming_run_succeeded" },
+                  },
+                ],
               },
             },
           ],
@@ -1412,7 +1931,18 @@ test("live semantic probe rejects raw stale manual sources without a visible nex
       );
     }
     if (href.endsWith("/sources/cin_reddit")) {
-      return response(200, "<main><section>Current and collecting normally.</section></main>");
+      return response(
+        200,
+        "<main><h1>Source detail: Reddit - dondochaka</h1><section>Refresh guidance is available.</section></main>"
+      );
+    }
+    if (href.endsWith("/")) {
+      return response(
+        200,
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_reddit">Reddit - dondochaka: Refresh now</a><span>Run a refresh to bring this up to date.</span></div>'
+        )
+      );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -1424,11 +1954,11 @@ test("live semantic probe rejects raw stale manual sources without a visible nex
   });
 
   assert.equal(result.ok, false);
-  assert.ok(result.findings.some((f) => f.ruleId === "raw-next-action-affordance-missing"));
+  assert.ok(result.findings.some((f) => f.ruleId === "source-next-action-copy-missing"));
   assert.equal(result.semanticChecks.find((check) => check.id === "whats-next-actionable")?.status, "fail");
 });
 
-test("live semantic probe accepts raw stale manual sources with a visible refresh action", async () => {
+test("live semantic probe accepts a server-declared stale source with a visible refresh action", async () => {
   const response = (
     status: number,
     body: string
@@ -1455,10 +1985,11 @@ test("live semantic probe accepts raw stale manual sources with a visible refres
               connection_id: "cin_usaa",
               connector_id: "usaa",
               display_name: "USAA - Personal",
+              source_work: "needs_owner",
               rendered_verdict: {
-                channel: "advisory",
+                channel: "attention",
                 forward_statement: "Run a refresh to bring this up to date.",
-                pill: { label: "Healthy", tone: "green" },
+                pill: { label: "Needs attention", tone: "amber" },
                 required_actions: [
                   {
                     audience: "owner",
@@ -1475,11 +2006,16 @@ test("live semantic probe accepts raw stale manual sources with a visible refres
     if (href.endsWith("/sources/cin_usaa")) {
       return response(
         200,
-        "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>"
+        '<main><h1>Source detail: USAA - Personal</h1><section>Run a refresh to bring this up to date.</section><a href="/sources/cin_usaa">Refresh now</a></main>'
       );
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><section>USAA - Personal refresh available.</section></main>");
+      return response(
+        200,
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_usaa">USAA - Personal: Refresh now</a><span>Run a refresh to bring this up to date.</span></div>'
+        )
+      );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -1510,7 +2046,10 @@ test("live semantic probe rejects raw denial reason codes on dashboard", async (
       return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><section>slack tried to read — turned away, orphaned_started_run.</section></main>");
+      return response(
+        200,
+        resolvedDashboardHtml("<section>Recent reads were turned away, orphaned_started_run.</section>")
+      );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -1545,7 +2084,7 @@ test("live semantic probe rejects single-token raw denial codes on dashboard", a
       return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><section>slack tried to read — turned away, forbidden.</section></main>");
+      return response(200, resolvedDashboardHtml("<section>Recent reads were turned away, forbidden.</section>"));
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -1582,7 +2121,7 @@ test("live semantic probe accepts humanized dashboard denial reasons", async () 
     if (href.endsWith("/")) {
       return response(
         200,
-        "<main><section>slack tried to read — turned away, it was not tied to an active run.</section></main>"
+        resolvedDashboardHtml("<section>Recent reads were turned away because the run was not active.</section>")
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -1623,6 +2162,7 @@ test("live semantic probe rejects dead-letter jargon on source recovery detail p
             {
               connection_id: "cin_local",
               display_name: "Claude Code",
+              source_work: "needs_owner",
               rendered_verdict: {
                 channel: "attention",
                 forward_statement: "The local collector has failed uploads.",
@@ -1635,10 +2175,18 @@ test("live semantic probe rejects dead-letter jargon on source recovery detail p
       );
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><section>Claude Code can't collect</section></main>");
+      return response(
+        200,
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_local">Claude Code: Collection needs review</a><span>The local collector has failed uploads.</span></div>'
+        )
+      );
     }
     if (href.endsWith("/sources/cin_local")) {
-      return response(200, "<main><section>Stuck on the device: 3 dead-letter.</section></main>");
+      return response(
+        200,
+        "<main><h1>Source detail</h1><section>Source recovery is stuck on the device: 3 dead-letter.</section></main>"
+      );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };
@@ -1679,6 +2227,7 @@ test("live semantic probe accepts failed-upload owner copy on source recovery de
             {
               connection_id: "cin_local",
               display_name: "Claude Code",
+              source_work: "needs_owner",
               rendered_verdict: {
                 channel: "attention",
                 forward_statement: "The local collector has failed uploads.",
@@ -1691,12 +2240,17 @@ test("live semantic probe accepts failed-upload owner copy on source recovery de
       );
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><section>Claude Code can't collect</section></main>");
+      return response(
+        200,
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_local">Claude Code: Collection needs review</a><span>The local collector has failed uploads.</span></div>'
+        )
+      );
     }
     if (href.endsWith("/sources/cin_local")) {
       return response(
         200,
-        "<main><section>Stuck on the device: 3 failed uploads.</section><code>pdpp local-collector retry-dead-letters --connection-id cin_local</code></main>"
+        "<main><h1>Source detail</h1><section>Source recovery is stuck on the device: 3 failed uploads.</section><code>pdpp local-collector retry-dead-letters --connection-id cin_local</code></main>"
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -1737,6 +2291,7 @@ test("live semantic probe rejects clean-success source detail copy when collecti
             {
               connection_id: "cin_chase",
               display_name: "Chase - Personal",
+              source_work: "review",
               last_run: { run_id: "run_1", status: "succeeded" },
               collection_report: [
                 {
@@ -1758,7 +2313,12 @@ test("live semantic probe rejects clean-success source detail copy when collecti
       );
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><section>Chase - Personal can't collect</section></main>");
+      return response(
+        200,
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_chase">Chase - Personal: This connector needs a code fix before it can collect again.</a><span>This connector needs a code fix before it can collect again.</span></div>'
+        )
+      );
     }
     if (href.endsWith("/sources/cin_chase")) {
       return response(
@@ -1802,6 +2362,7 @@ test("live semantic probe accepts partial source detail copy when collection gap
             {
               connection_id: "cin_chase",
               display_name: "Chase - Personal",
+              source_work: "review",
               last_run: { run_id: "run_1", status: "succeeded" },
               collection_report: [
                 {
@@ -1823,7 +2384,12 @@ test("live semantic probe accepts partial source detail copy when collection gap
       );
     }
     if (href.endsWith("/")) {
-      return response(200, "<main><section>Chase - Personal degraded</section></main>");
+      return response(
+        200,
+        resolvedDashboardHtml(
+          '<div class="rr-attn__row"><a href="/sources/cin_chase">Chase - Personal: The next run is expected to fill the remaining data.</a><span>The next run is expected to fill the remaining data.</span></div>'
+        )
+      );
     }
     if (href.endsWith("/sources/cin_chase")) {
       return response(

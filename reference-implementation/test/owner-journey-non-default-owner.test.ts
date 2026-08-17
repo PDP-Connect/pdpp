@@ -42,6 +42,7 @@ import {
   createMemoryWebPushSubscriptionStore,
   fanoutPendingInteractionWebPush as fanoutPendingInteractionWebPushUntyped,
 } from "../server/web-push-notifications.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -81,7 +82,10 @@ interface ClosableServer {
 }
 
 async function startServer(opts: Record<string, unknown>): Promise<ClosableServer> {
-  return (await startServerUntyped(opts)) as unknown as ClosableServer;
+  return (await startServerUntyped({
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
+    ...opts,
+  })) as unknown as ClosableServer;
 }
 
 async function closeServer(server: ClosableServer): Promise<void> {

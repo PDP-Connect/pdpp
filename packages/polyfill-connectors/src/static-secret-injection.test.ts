@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { runCollectorConnector } from "./collector-runner.ts";
 import {
   buildConnectionScopedSecretEnv,
+  isStaticSecretCaptureOptional,
   isStaticSecretConnector,
   type RecoveredStaticSecret,
   STATIC_SECRET_CONNECTOR_REGISTRY,
@@ -33,7 +34,154 @@ test("static-secret registry knows static-secret connectors and rejects non-stat
   assert.equal(isStaticSecretConnector("slack"), true);
   assert.equal(isStaticSecretConnector("reddit"), true);
   assert.equal(isStaticSecretConnector("usaa"), true);
+  assert.equal(isStaticSecretConnector("steam"), true);
+  assert.equal(isStaticSecretConnector("jellyfin"), true);
+  assert.equal(isStaticSecretConnector("apple_contacts"), true);
+  assert.equal(isStaticSecretConnector("groupme"), true);
   assert.equal(isStaticSecretConnector("claude-code"), false);
+});
+
+// isStaticSecretCaptureOptional is the run-orchestration-facing predicate a
+// seam with no manifest access (resolveStaticSecretRunEnv) uses to ask "does
+// a missing credential here mean the owner chose manual sign-in" — see its
+// doc for why this exists instead of threading the manifest itself through
+// that seam.
+test("isStaticSecretCaptureOptional reads captureRequired: false for venmo only, true/absent for every other connector", () => {
+  assert.equal(isStaticSecretCaptureOptional("venmo"), true);
+  assert.equal(isStaticSecretCaptureOptional("jellyfin"), false, "jellyfin has no block-level required:false fact");
+  assert.equal(isStaticSecretCaptureOptional("usaa"), false);
+  assert.equal(isStaticSecretCaptureOptional("gmail"), false);
+  assert.equal(
+    isStaticSecretCaptureOptional("claude-code"),
+    false,
+    "a connector absent from the registry must not be misread as optional"
+  );
+});
+
+test("steam injection sets the API key secret and Steam ID setup field", () => {
+  const env = buildConnectionScopedSecretEnv(
+    "steam",
+    { secret: "synthetic-steam-api-key", credentialKind: "api_key" },
+    { kind: "static_secret_draft", setup_fields: { steamid: "76500000000000000" } }
+  );
+  assert.deepEqual(env, {
+    STEAM_API_KEY: "synthetic-steam-api-key",
+    STEAM_USER_ID: "76500000000000000",
+  });
+});
+
+test("jellyfin injection sets the username+password secrets and base URL setup field (primary path)", () => {
+  const env = buildConnectionScopedSecretEnv(
+    "jellyfin",
+    {
+      secret: JSON.stringify({ username: "alice", password: "synthetic-password" }),
+      credentialKind: "username_password",
+    },
+    { kind: "static_secret_draft", setup_fields: { base_url: "https://jellyfin.example.com" } }
+  );
+  assert.deepEqual(env, {
+    JELLYFIN_USERNAME: "alice",
+    JELLYFIN_PASSWORD: "synthetic-password",
+    JELLYFIN_BASE_URL: "https://jellyfin.example.com",
+  });
+});
+
+test("jellyfin injection sets only the api_key secret when username/password are absent (secondary path)", () => {
+  const env = buildConnectionScopedSecretEnv(
+    "jellyfin",
+    { secret: JSON.stringify({ secret: "synthetic-jellyfin-api-key" }), credentialKind: "username_password" },
+    {
+      kind: "static_secret_draft",
+      setup_fields: { base_url: "https://jellyfin.example.com", jellyfin_user_id: "alice" },
+    }
+  );
+  assert.deepEqual(env, {
+    JELLYFIN_API_KEY: "synthetic-jellyfin-api-key",
+    JELLYFIN_BASE_URL: "https://jellyfin.example.com",
+    JELLYFIN_USER_ID: "alice",
+  });
+});
+
+test("apple_contacts injection sets the app-specific password and both Apple ID aliases", () => {
+  const env = buildConnectionScopedSecretEnv(
+    "apple_contacts",
+    { secret: "synthetic-app-specific-password", credentialKind: "app_password" },
+    { kind: "static_secret_draft", setup_fields: { account_email: "owner@icloud.com" } }
+  );
+  assert.deepEqual(env, {
+    APPLE_APP_SPECIFIC_PASSWORD: "synthetic-app-specific-password",
+    APPLE_ID: "owner@icloud.com",
+    APPLE_ID_EMAIL: "owner@icloud.com",
+  });
+});
+
+test("groupme injection sets the access token secret", () => {
+  const env = buildConnectionScopedSecretEnv("groupme", {
+    secret: "synthetic-groupme-token",
+    credentialKind: "access_token",
+  });
+  assert.deepEqual(env, { GROUPME_ACCESS_TOKEN: "synthetic-groupme-token" });
+});
+
+test("steam/apple_contacts/groupme registry env vars match their connector manifests", () => {
+  const cases = [
+    { connectorId: "steam", secretField: "secret", setupFields: ["steamid"] },
+    { connectorId: "apple_contacts", secretField: "secret", setupFields: ["account_email"] },
+    { connectorId: "groupme", secretField: "secret", setupFields: [] },
+  ];
+  for (const { connectorId, secretField, setupFields } of cases) {
+    const manifest = JSON.parse(readFileSync(new URL(`../manifests/${connectorId}.json`, import.meta.url), "utf8"));
+    const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[] }>;
+    const secretDescriptorField = fields.find((field) => field.name === secretField);
+    const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY[connectorId];
+    assert.ok(descriptor, `registry must include ${connectorId}`);
+    assert.deepEqual(descriptor.secretEnvVars, secretDescriptorField?.env, `${connectorId} secret env mismatch`);
+    for (const setupField of setupFields) {
+      const setupDescriptorField = fields.find((field) => field.name === setupField);
+      assert.deepEqual(
+        descriptor.setupFieldEnvVars?.[setupField],
+        setupDescriptorField?.env,
+        `${connectorId} setup field env mismatch (${setupField})`
+      );
+    }
+  }
+});
+
+test("jellyfin registry secret-bundle and setup-field env vars match its connector manifest", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../manifests/jellyfin.json", import.meta.url), "utf8"));
+  const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[] }>;
+  const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY.jellyfin;
+  assert.ok(descriptor, "registry must include jellyfin");
+  assert.equal(
+    manifest.setup.credential_capture.required,
+    undefined,
+    "jellyfin's manifest omits the block-level fact entirely (this test would need updating if that changes)"
+  );
+  assert.equal(
+    descriptor.captureRequired,
+    true,
+    "omitting credential_capture.required must default to true (capture-required) at the registry/injection layer too"
+  );
+  for (const bundleField of ["username", "password", "secret"]) {
+    const manifestField = fields.find((field) => field.name === bundleField);
+    assert.deepEqual(
+      descriptor.secretFieldEnvVars?.[bundleField],
+      manifestField?.env,
+      `jellyfin secret bundle env mismatch (${bundleField})`
+    );
+    assert.ok(
+      descriptor.optionalSecretBundleFields?.has(bundleField),
+      `jellyfin secret bundle field '${bundleField}' must be optional so either credential path can be sealed alone`
+    );
+  }
+  for (const setupField of ["base_url", "jellyfin_user_id"]) {
+    const manifestField = fields.find((field) => field.name === setupField);
+    assert.deepEqual(
+      descriptor.setupFieldEnvVars?.[setupField],
+      manifestField?.env,
+      `jellyfin setup field env mismatch (${setupField})`
+    );
+  }
 });
 
 test("browser username/password connectors inject their stored credential bundles", () => {
@@ -188,6 +336,88 @@ test("reddit injection still accepts the legacy sealed OAuth credential bundle",
     REDDIT_PASSWORD: "synthetic-password",
     REDDIT_USERNAME: "dondochaka",
   });
+});
+
+test("venmo injection sets both username+password secrets when the bundle is fully saved", () => {
+  const env = buildConnectionScopedSecretEnv("venmo", {
+    credentialKind: "username_password",
+    secret: JSON.stringify({
+      password: "synthetic-password",
+      username: "owner@example.com",
+    }),
+  });
+  assert.deepEqual(env, {
+    VENMO_PASSWORD: "synthetic-password",
+    VENMO_USERNAME: "owner@example.com",
+  });
+});
+
+// Venmo's manifest marks the whole CAPTURE optional (block-level
+// credential_capture.required: false) because ensureVenmoSession falls back
+// to a manual browser sign-in with zero saved credentials — but both fields
+// stay required:true at the FIELD level (BOTH-OR-NONE): the capture-time
+// guards (console/RI) already enforce that a stored bundle is either fully
+// empty or fully complete, so injection's own job is narrower — an entirely
+// EMPTY bundle must inject nothing without throwing (the valid "sign in by
+// hand" choice), while a genuinely PARTIAL bundle (something upstream let
+// through broken) must still fail closed exactly like a required capture
+// would, rather than silently starting a login attempt with half a
+// credential.
+test("venmo injection throws on a partial username/password bundle — BOTH-OR-NONE is fail-closed, not silently half-injected", () => {
+  assert.throws(
+    () =>
+      buildConnectionScopedSecretEnv("venmo", {
+        credentialKind: "username_password",
+        secret: JSON.stringify({ username: "owner@example.com" }),
+      }),
+    (err: unknown) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_field_missing"
+  );
+  assert.throws(
+    () =>
+      buildConnectionScopedSecretEnv("venmo", {
+        credentialKind: "username_password",
+        secret: JSON.stringify({ password: "synthetic-password" }),
+      }),
+    (err: unknown) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_field_missing"
+  );
+});
+
+test("venmo injection sets nothing for a fully empty bundle, never throwing (browser sign-in is always valid)", () => {
+  const env = buildConnectionScopedSecretEnv("venmo", {
+    credentialKind: "username_password",
+    secret: "{}",
+  });
+  assert.deepEqual(env, {});
+});
+
+test("venmo registry secret-bundle env vars match its connector manifest — fields stay required, only the block-level capture is optional", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../manifests/venmo.json", import.meta.url), "utf8"));
+  const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[]; required: boolean }>;
+  const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY.venmo;
+  assert.ok(descriptor, "registry must include venmo");
+  assert.equal(
+    manifest.setup.credential_capture.required,
+    false,
+    "venmo's BLOCK-level credential_capture.required must be false"
+  );
+  assert.equal(descriptor.captureRequired, false, "the registry must carry the block-level fact through");
+  for (const bundleField of ["username", "password"]) {
+    const manifestField = fields.find((field) => field.name === bundleField);
+    assert.equal(
+      manifestField?.required,
+      true,
+      `venmo manifest field '${bundleField}' must stay required:true (BOTH-OR-NONE)`
+    );
+    assert.deepEqual(
+      descriptor.secretFieldEnvVars?.[bundleField],
+      manifestField?.env,
+      `venmo secret bundle env mismatch (${bundleField})`
+    );
+    assert.ok(
+      !descriptor.optionalSecretBundleFields?.has(bundleField),
+      `venmo secret bundle field '${bundleField}' must NOT be individually optional — the capture as a whole is, via captureRequired`
+    );
+  }
 });
 
 test("sealed bundle injection refuses invalid and incomplete recovered bundles", () => {

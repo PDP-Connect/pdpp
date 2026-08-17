@@ -47,7 +47,7 @@ import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.
 const NOW = "2026-07-17T00:00:00.000Z";
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: "route-n-slope-target",
   display_name: "Route N-Slope Target",
   protocol_version: "0.1.0",
@@ -56,7 +56,7 @@ const MANIFEST = {
 };
 
 const UNRELATED_MANIFEST_BASE = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   display_name: "Route N-Slope Unrelated",
   protocol_version: "0.1.0",
   streams: [{ name: "messages", primary_key: ["id"] }],

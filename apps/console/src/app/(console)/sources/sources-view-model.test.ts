@@ -516,6 +516,34 @@ test("toSourceInstanceView uses the same stream count for config and stream tabl
   assert.equal(view.streams.length, 6);
 });
 
+test("toSourceInstanceView uses the declared roster for the list count while retaining extra evidence rows", () => {
+  const view = toSourceInstanceView(
+    summary({
+      collection_report: [
+        {
+          checkpoint: "advanced",
+          collected: 0,
+          considered: 0,
+          coverage_condition: "complete",
+          forward_disposition: "resumable",
+          pending_detail_gaps: 0,
+          skipped: null,
+          stream: "collection_only",
+        },
+      ],
+      stream_records: [{ last_updated: "2026-07-01T17:58:46.531Z", record_count: 3, stream: "retained_only" }],
+      streams: ["messages", "threads"],
+    })
+  );
+
+  assert.equal(view.accountLine, "Gmail source · 100 records · 2 streams");
+  assert.equal(passportField(view, "config"), "4 streams");
+  assert.deepEqual(
+    view.streams.map((stream) => stream.name),
+    ["messages", "threads", "collection_only", "retained_only"]
+  );
+});
+
 test("buildSourcesRuntimeAdvisory renders one global runtime fault and ignores healthy runtime", () => {
   assert.equal(
     buildSourcesRuntimeAdvisory({
@@ -573,6 +601,8 @@ test("formatSchedule is honest about no schedule, paused, and policy-ineligible"
   assert.equal(formatSchedule({ ...base, enabled: false }), "paused");
   assert.equal(formatSchedule({ ...base, effective_mode: "paused" }), "paused");
   assert.equal(formatSchedule({ ...base, ineligibility_reason: "manifest_policy" }), "every 1d · paused by policy");
+  assert.equal(formatSchedule({ ...base, enabled: undefined as never }), "schedule details unavailable");
+  assert.equal(formatSchedule({ ...base, interval_seconds: undefined as never }), "schedule details unavailable");
 });
 
 test("exploreHrefFor encodes connection + stream into the Explore deep link", () => {
@@ -823,7 +853,7 @@ test("toSourcesView disambiguates duplicate unnamed connections without exposing
 
   assert.equal(views[0]?.displayName, "Amazon · account 1");
   assert.equal(views[1]?.displayName, "Amazon · account 2");
-  assert.equal(views[0]?.accountLine, "Unnamed source · 100 records · 2 streams");
+  assert.equal(views[0]?.accountLine, "Amazon source · 100 records · 2 streams");
   assert.equal(views[2]?.displayName, "Amazon - Personal");
   assert.equal(views[2]?.accountLine, "100 records · 2 streams");
   assert.equal(views[2]?.listKind, null);
@@ -900,6 +930,12 @@ test("duplicate source review ignores revoked fallback sources", () => {
   ]);
 
   assert.equal(buildDuplicateSourceReview(views).length, 0);
+});
+
+test("existing source visibility is independent of public catalog tier", () => {
+  const view = toSourceInstanceView(summary({ connector_id: "spotify", status: "active", revoked_at: null }));
+  assert.equal(view.connectorId, "spotify");
+  assert.equal(view.revoked, false);
 });
 
 test("duplicate fallback collapse keeps named sources visible and groups 3+ unnamed active sources", () => {
@@ -1140,4 +1176,69 @@ test("toSourceInstanceView: the passport 'records' row never fabricates a number
 test("toSourceInstanceView: the passport 'records' row preserves the exact prior always-numeric rendering when total_records_state is omitted", () => {
   const view = toSourceInstanceView(summary({ total_records: 42, total_records_state: undefined }));
   assert.equal(passportField(view, "records"), "42");
+});
+
+test("toSourceInstanceView: accountLine uses connector-derived fallback when display_name is a fallback", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_display_name: "Gmail",
+      connector_id: "gmail",
+      display_name: "Gmail",
+    })
+  );
+  assert.equal(view.accountLine, "Gmail source · 100 records · 2 streams");
+});
+
+test("toSourceInstanceView: accountLine uses Amazon fallback correctly", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
+      display_name: "Amazon",
+    })
+  );
+  assert.equal(view.accountLine, "Amazon source · 100 records · 2 streams");
+});
+
+test("toSourceInstanceView: accountLine preserves owned name (no fallback)", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_display_name: "Gmail",
+      connector_id: "gmail",
+      display_name: "Work Gmail",
+    })
+  );
+  assert.equal(view.accountLine, "100 records · 2 streams");
+});
+
+test("toSourceInstanceView: Google Maps timeline_points displays human label, not protocol identifier", () => {
+  const manifest = {
+    connector_id: "google-maps",
+    streams: [
+      {
+        name: "timeline_points",
+        display: { label: "Your Google Maps location points" },
+      },
+    ],
+  };
+  const sum = summary({ connector_id: "google-maps", streams: ["timeline_points"] });
+  const view = toSourceInstanceView(sum, { manifests: [manifest] });
+  assert.equal(view.streams[0]?.displayLabel, "Your Google Maps location points");
+  assert.notEqual(view.streams[0]?.displayLabel, "timeline_points");
+});
+
+test("toSourceInstanceView: stream without manifest display.label falls back to name", () => {
+  const manifest = {
+    connector_id: "gmail",
+    streams: [{ name: "messages" }],
+  };
+  const sum = summary({ connector_id: "gmail", streams: ["messages"] });
+  const view = toSourceInstanceView(sum, { manifests: [manifest] });
+  assert.equal(view.streams[0]?.displayLabel, "messages");
+});
+
+test("toSourceInstanceView: stream with no manifest available falls back to name", () => {
+  const sum = summary({ streams: ["messages"] });
+  const view = toSourceInstanceView(sum, { manifests: undefined });
+  assert.equal(view.streams[0]?.displayLabel, "messages");
 });

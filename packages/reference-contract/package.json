@@ -12,6 +12,7 @@
     "./public/source": "./src/public/source.ts",
     "./reference": "./src/reference/index.ts",
     "./builders": "./src/builders/index.ts",
+    "./evidence": "./src/evidence/index.ts",
     "./openapi": "./src/openapi/index.ts",
     "./validate": "./src/validate.ts"
   },

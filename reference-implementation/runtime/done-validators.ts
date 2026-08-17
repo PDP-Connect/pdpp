@@ -14,11 +14,14 @@
 // Extracted from runtime/index.js: pure shape/consistency checks with no
 // runtime state, secret handling, or grant/scope enforcement.
 
+import { isValidRecoveryHintShape } from "./connector-gap-bounding.ts";
+
 type DoneStatus = "succeeded" | "failed" | "cancelled";
 
 interface DoneErrorInput {
   code?: string | null;
   message?: string;
+  recovery_hint?: unknown;
   retryable?: boolean | null;
   [key: string]: unknown;
 }
@@ -26,6 +29,7 @@ interface DoneErrorInput {
 interface DoneError {
   code?: string;
   message: string;
+  recovery_hint?: string | { action: string; retryable?: boolean };
   retryable: boolean | null;
 }
 
@@ -91,7 +95,7 @@ export function validateDoneError(
     return new Error("Connector emitted invalid DONE.error: expected object");
   }
   const unsupportedFields = Object.keys(error).filter(
-    (field) => field !== "message" && field !== "retryable" && field !== "code"
+    (field) => field !== "message" && field !== "retryable" && field !== "code" && field !== "recovery_hint"
   );
   if (unsupportedFields.length) {
     return new Error(`Connector emitted invalid DONE.error: unsupported fields ${unsupportedFields.join(", ")}`);
@@ -107,9 +111,16 @@ export function validateDoneError(
   if (error.retryable != null && typeof error.retryable !== "boolean") {
     return new Error("Connector emitted invalid DONE.error.retryable: expected boolean");
   }
+  if (!isValidRecoveryHintShape(error.recovery_hint)) {
+    return new Error("Connector emitted invalid DONE.error.recovery_hint");
+  }
   return {
     ...(error.code ? { code: error.code } : {}),
     message: error.message.trim(),
+    // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
+    ...(error.recovery_hint == null
+      ? {}
+      : { recovery_hint: error.recovery_hint as NonNullable<DoneError["recovery_hint"]> }),
     retryable: error.retryable ?? null,
   };
 }

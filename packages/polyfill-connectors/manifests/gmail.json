@@ -47,6 +47,14 @@
   },
   "capabilities": {
     "human_interaction": ["credentials"],
+    "proven": {
+      "static_secret_live": {
+        "proven": true,
+        "run_id": "run_1781131328336",
+        "date": "2026-06-10",
+        "note": "completed/succeeded, env-free container"
+      }
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 900,
@@ -59,8 +67,7 @@
       "rationale": "Gmail uses durable IMAP credentials and tolerates frequent background polling."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "tier": "supported"
     }
   },
   "streams": [
@@ -278,7 +285,11 @@
     },
     {
       "name": "threads",
+      "required": true,
       "description": "Email threads, keyed by Gmail's X-GM-THRID. Derived from messages.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your conversations",
         "detail": "One row per email thread: participants, message counts, first/last dates, labels, unread/flagged counts."
@@ -354,7 +365,11 @@
     },
     {
       "name": "labels",
+      "required": true,
       "description": "Gmail system + user labels.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your labels",
         "detail": "Standard Gmail labels (INBOX, Sent, Starred, etc.) and user-created labels."
@@ -413,6 +428,10 @@
           "message_id": {
             "type": "string"
           },
+          "message_received_at": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
           "body_text": {
             "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
@@ -440,6 +459,8 @@
         "required": ["id", "message_id", "body_source"]
       },
       "primary_key": ["id"],
+      "consent_time_field": "message_received_at",
+      "required": false,
       "selection": {
         "fields": true,
         "resources": true
@@ -459,8 +480,13 @@
           "semantic_fields": ["body_text"]
         },
         "range_filters": {
+          "message_received_at": ["gte", "gt", "lte", "lt"],
           "body_text_bytes": ["gte", "gt", "lte", "lt"],
           "body_html_bytes": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["message_received_at"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -620,5 +646,10 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "historical_backfill_pending": "This bounded sync page completed; more historical Gmail data remains and will be collected automatically",
+    "historical_message_unaccounted": "A historical message could not be represented; its UID was recorded as a permanent coverage gap",
+    "schema_validation_failed": "Some data didn't match the expected format and was skipped"
+  }
 }

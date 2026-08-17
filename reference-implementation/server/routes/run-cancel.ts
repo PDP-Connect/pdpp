@@ -55,34 +55,63 @@ export interface MountRefRunCancelContext {
   requireOwnerSession: MiddlewareHandler;
 }
 
+// Maps a controller cancel-run outcome onto the route's HTTP response.
+function respondToCancelOutcome(
+  res: RouteResponse,
+  ctx: Pick<MountRefRunCancelContext, "pdppError">,
+  runId: string,
+  result: RunCancelResult
+): unknown {
+  if (result.status === "no_active_run") {
+    return ctx.pdppError(res, 404, "no_active_run", `No active run with id: ${runId}`, "run_id");
+  }
+  if (result.status === "already_terminal") {
+    return ctx.pdppError(
+      res,
+      409,
+      "run_already_terminal",
+      `Run ${runId} has already reached a terminal state`,
+      "run_id"
+    );
+  }
+  return res.status(202).json({
+    object: "run_cancel_ack",
+    run_id: runId,
+    status: result.status,
+  });
+}
+
+// Requests cancellation for one run, preferring the route-level `cancelRun`
+// override (used by callers that need to reach a scheduler-owned run the
+// controller itself does not track) over the controller's own cancelRun.
+function requestRunCancellation(
+  ctx: Pick<MountRefRunCancelContext, "cancelRun" | "controller">,
+  runId: string,
+  requestingOwnerSubjectId: string
+): Promise<RunCancelResult> | RunCancelResult {
+  if (ctx.cancelRun) {
+    return ctx.cancelRun(runId, requestingOwnerSubjectId);
+  }
+  // Guarded by the caller: ctx.controller.cancelRun is confirmed callable
+  // before requestRunCancellation is invoked.
+  return (ctx.controller as RunCancelController).cancelRun(runId, requestingOwnerSubjectId);
+}
+
+// True when a controller is wired up and exposes a callable cancelRun.
+function hasCallableCancelRunController(ctx: Pick<MountRefRunCancelContext, "controller">): boolean {
+  return Boolean(ctx.controller) && typeof ctx.controller?.cancelRun === "function";
+}
+
 export function mountRefRunCancel(app: AppLike, ctx: MountRefRunCancelContext): void {
   app.post("/_ref/runs/:runId/cancel", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
     try {
-      if (!ctx.controller || typeof ctx.controller.cancelRun !== "function") {
+      if (!hasCallableCancelRunController(ctx)) {
         return ctx.pdppError(res, 404, "not_found", "Controller is not configured on this server");
       }
       const runId = decodeURIComponent(req.params.runId as string);
       const requestingOwnerSubjectId = req.ownerSession?.sub ?? ctx.ownerSubjectId;
-      const result = await (ctx.cancelRun
-        ? ctx.cancelRun(runId, requestingOwnerSubjectId)
-        : ctx.controller.cancelRun(runId, requestingOwnerSubjectId));
-      if (result.status === "no_active_run") {
-        return ctx.pdppError(res, 404, "no_active_run", `No active run with id: ${runId}`, "run_id");
-      }
-      if (result.status === "already_terminal") {
-        return ctx.pdppError(
-          res,
-          409,
-          "run_already_terminal",
-          `Run ${runId} has already reached a terminal state`,
-          "run_id"
-        );
-      }
-      return res.status(202).json({
-        object: "run_cancel_ack",
-        run_id: runId,
-        status: result.status,
-      });
+      const result = await requestRunCancellation(ctx, runId, requestingOwnerSubjectId);
+      return respondToCancelOutcome(res, ctx, runId, result);
     } catch (err) {
       return ctx.handleError(res, err);
     }

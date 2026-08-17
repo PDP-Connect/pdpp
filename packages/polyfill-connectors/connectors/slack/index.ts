@@ -56,13 +56,14 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { describeConnectorArtifactRoot, resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import { readOptions } from "../../src/connector-options.ts";
 import {
   buildDetailCoverageMessage,
   buildDetailGap,
+  buildFullScanCoverageMessage,
   type CollectContext,
   type DetailGapMessage,
   type DetailGapStartEntry,
@@ -104,6 +105,7 @@ import {
   fetchAllUserGroups,
   fetchDmReadStates,
   SLACK_API_RETRYABLE_FAILURE_RE,
+  SlackApiAuthError,
 } from "./slack-api.ts";
 import type {
   CanvasRow,
@@ -145,6 +147,8 @@ function safeAll<T>(db: DatabaseSync, sql: string): T[] {
 const SOURCE_PARTITION_MISSING_REASON = "source_partition_missing";
 const OPTIONAL_STREAM_FAILED_REASON = "optional_stream_failed";
 const MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC = 100;
+const SLACK_TS_PATTERN = /^(\d+)\.(\d{6})$/;
+const ISO_FRACTION_PATTERN = /\.(\d{1,6})/;
 
 function normalizeStringRecord(value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -262,9 +266,7 @@ async function emitMessageRecordScopedByChannel(deps: {
 
 interface SlackdumpProgressSnapshot {
   archiveBytes: number;
-  channels: number | null;
-  maxChunkId: number | null;
-  messages: number | null;
+  archiveMtimeMs: number;
 }
 
 function existingFileSize(path: string): number {
@@ -275,57 +277,43 @@ function existingFileSize(path: string): number {
   }
 }
 
-function countSqliteRows(db: DatabaseSync, sql: string): number | null {
-  const [row] = safeAll<{ value: number }>(db, sql);
-  const value = row?.value;
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+function existingFileMtimeMs(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
+// Filesystem-only: this is read on every poll tick WHILE slackdump is still
+// running and writing the SAME file, so it must never open a SQLite
+// connection against the archive. A prior version did — even a single
+// read-only SELECT — and that reader's SHARED lock can collide with
+// slackdump's own COMMIT and force ITS write to fail with "database is
+// locked" (confirmed directly: a batched-insert writer against a
+// rollback-journal-mode archive hit SQLITE_BUSY on COMMIT in ~50% of trials
+// with a concurrent read-only poller, no matter how minimal the read). We
+// don't control slackdump's journal mode, so no read-side tuning
+// (busy_timeout, single-statement reads) can make a real SQL read provably
+// non-blocking. `immutable=1`/`nolock=1` URI modes skip locking but can then
+// return stale or torn state — false progress data — which is worse than no
+// data. Stat-ing the file is the only observation that can never contend
+// with the writer.
 export function readSlackdumpProgressSnapshot(sqlitePath: string): SlackdumpProgressSnapshot | null {
-  const archiveBytes =
-    existingFileSize(sqlitePath) + existingFileSize(`${sqlitePath}-wal`) + existingFileSize(`${sqlitePath}-shm`);
+  const paths = [sqlitePath, `${sqlitePath}-wal`, `${sqlitePath}-shm`];
+  const archiveBytes = paths.reduce((sum, path) => sum + existingFileSize(path), 0);
   if (archiveBytes === 0) {
     return null;
   }
-
-  let messages: number | null = null;
-  let channels: number | null = null;
-  let maxChunkId: number | null = null;
-  try {
-    const db = new DatabaseSync(sqlitePath, { readOnly: true });
-    try {
-      messages = countSqliteRows(db, "SELECT COUNT(*) AS value FROM MESSAGE");
-      channels = countSqliteRows(db, "SELECT COUNT(*) AS value FROM CHANNEL");
-      maxChunkId = countSqliteRows(
-        db,
-        `
-        SELECT MAX(value) AS value
-        FROM (
-          SELECT MAX(CHUNK_ID) AS value FROM MESSAGE
-          UNION ALL
-          SELECT MAX(CHUNK_ID) AS value FROM CHANNEL
-        )
-        `
-      );
-    } finally {
-      db.close();
-    }
-  } catch {
-    // The archive may be temporarily locked or mid-creation while slackdump is
-    // writing. File growth is still a valid no-progress signal.
-  }
-
-  return { archiveBytes, channels, maxChunkId, messages };
-}
-
-// True only when both reads succeeded (non-null) and disagree — a genuine
-// observed change. A transition into or out of null is a FAILED read
-// (readSlackdumpProgressSnapshot's try/catch falls back to null when the
-// archive is locked/mid-write — see its comment), not evidence of anything;
-// counting it as "changed" would report progress from a read failure alone,
-// with nothing on disk having actually happened.
-function countAdvanced(previous: number | null, current: number | null): boolean {
-  return previous !== null && current !== null && previous !== current;
+  // mtime, not just size, because SQLite WAL mode can checkpoint (fold the
+  // WAL back into the main file and reuse its allocation) on every commit,
+  // keeping combined main+WAL+SHM byte size flat across real, committed
+  // writes (confirmed directly: two committed inserts, combined size
+  // unchanged both times, mtime advanced both times). Byte size alone would
+  // silently miss that progress and let the stall watchdog time out a
+  // healthy long-running dump.
+  const archiveMtimeMs = Math.max(...paths.map(existingFileMtimeMs));
+  return { archiveBytes, archiveMtimeMs };
 }
 
 export function slackdumpProgressChanged(
@@ -338,49 +326,49 @@ export function slackdumpProgressChanged(
   if (!previous) {
     return true;
   }
-  // Reverted an archiveBytes-only simplification: in SQLite WAL mode, a
-  // checkpoint can fold the WAL back into the main file and reuse its
-  // allocation, so combined main+WAL+SHM byte size can stay flat across real,
-  // committed writes (confirmed directly: two committed inserts, combined
-  // size unchanged both times). archiveBytes alone can therefore silently
-  // miss real progress and let the scheduler's progress-driven watchdog time
-  // out a healthy long-running dump. Row/chunk counts, read from a fresh
-  // read-only connection, correctly observe checkpointed writes that byte
-  // size misses — checking all four signals is the safe behavior, not a
-  // race-prone one.
-  //
-  // archiveBytes is a plain file stat, never null, so it's compared directly.
-  // The three SQLite-read counts use countAdvanced instead of !==, because a
-  // failed read (locked/mid-write archive) falls back to null and must not
-  // be conflated with a real change — only two successful, differing reads
-  // count as progress.
-  return (
-    current.archiveBytes !== previous.archiveBytes ||
-    countAdvanced(previous.channels, current.channels) ||
-    countAdvanced(previous.maxChunkId, current.maxChunkId) ||
-    countAdvanced(previous.messages, current.messages)
-  );
+  return current.archiveBytes !== previous.archiveBytes || current.archiveMtimeMs !== previous.archiveMtimeMs;
 }
 
 function formatSlackdumpProgress(label: string, snapshot: SlackdumpProgressSnapshot): string {
-  const facts = [
-    `archive_bytes=${snapshot.archiveBytes}`,
-    snapshot.messages === null ? null : `messages=${snapshot.messages}`,
-    snapshot.channels === null ? null : `channels=${snapshot.channels}`,
-    snapshot.maxChunkId === null ? null : `max_chunk=${snapshot.maxChunkId}`,
-  ].filter(Boolean);
-  return `Slack slackdump ${label} progress: ${facts.join(" ")}`;
+  return `Slack slackdump ${label} progress: archive_bytes=${snapshot.archiveBytes}`;
 }
 
-// Default timeout accommodates long-lived workspaces (10+ years) where a
-// first-run archive of DMs + history can run 6-20h depending on file count
-// and Slack rate-limit bursts. The cost of a too-high default is only "late
-// failure signal" — slackdump will normally finish or error out well before
-// this. Override via `SLACKDUMP_TIMEOUT_MS` env var.
+function redactSlackdumpOutput(output: string, env: NodeJS.ProcessEnv): string {
+  let redacted = output;
+  for (const secret of [env.SLACK_TOKEN, env.SLACK_COOKIE]) {
+    if (secret) {
+      redacted = redacted.replaceAll(secret, "[REDACTED]");
+    }
+  }
+  // Keep diagnostics safe even if a child prints only a token-shaped value or
+  // wraps the known credential before the exact replacement above can match.
+  return redacted.replace(/xox[a-z]-[^\s"'`]+/giu, "[REDACTED]");
+}
+
+// `SLACKDUMP_TIMEOUT_MS` is a STALL budget, not a total-runtime cap: it bounds
+// how long slackdump may go without any observable progress, and every observed
+// advance rearms it. A first archive of a long-lived workspace legitimately runs
+// for many hours (10+ years of DMs and history, paced by Slack rate limits), so
+// a total-runtime cap kills healthy syncs — which is exactly what happened in
+// UAT, where a 90-minute cap terminated runs that were steadily downloading
+// (13k-17k records emitted, 80k+ messages banked in the archive) and left every
+// stream uncommitted. Mirrors the gmail attachment stall guard: bound silence,
+// never bound useful work.
+//
+// Progress is observed from the archive itself (`readSlackdumpProgressSnapshot`
+// over the same `sqlitePath` the progress reporter uses), so detection needs no
+// cooperation from the child's stdout. Absent a `sqlitePath` there is nothing to
+// observe, so the budget degrades to a plain total-runtime deadline — the prior
+// behavior, and the only safe reading when progress is unobservable.
+//
+// `SLACKDUMP_MAX_RUNTIME_MS` remains available as a separate absolute ceiling
+// for operators who want one; it is unset (unbounded) by default so a
+// progressing dump is never killed for merely taking a long time.
 export function runSlackdump(
   args: string[],
   {
     env,
+    maxRuntimeMs = Number(process.env.SLACKDUMP_MAX_RUNTIME_MS) || Number.POSITIVE_INFINITY,
     progress,
     progressIntervalMs = Number(process.env.SLACKDUMP_PROGRESS_INTERVAL_MS) || 60_000,
     progressLabel = args[0] ?? "run",
@@ -388,6 +376,7 @@ export function runSlackdump(
     timeoutMs = Number(process.env.SLACKDUMP_TIMEOUT_MS) || 24 * 60 * 60 * 1000,
   }: {
     env: NodeJS.ProcessEnv;
+    maxRuntimeMs?: number;
     progress?: CollectContext["progress"];
     progressIntervalMs?: number;
     progressLabel?: string;
@@ -409,47 +398,94 @@ export function runSlackdump(
     child.stderr?.on("data", (d: Buffer) => {
       stderr += d.toString();
     });
+    // Stall detection polls the archive on its own cadence, independent of the
+    // `progress` callback: a slow or absent reporter must never decide whether
+    // the run is still alive. The poll must be quick enough to rearm the budget
+    // several times over before it expires, so a short budget tightens the poll
+    // — but it never runs SLOWER than the configured reporting interval, or
+    // reports would be throttled by a mechanism that exists to watch for
+    // silence.
+    const stallPollMs = Number.isFinite(timeoutMs)
+      ? Math.max(1, Math.min(progressIntervalMs, timeoutMs / 4))
+      : progressIntervalMs;
+    let lastAdvanceAt = Date.now();
+    // Snapshot dedicated to stall detection. Kept separate from
+    // `lastProgressSnapshot` so that suppressing a *report* (no `progress`
+    // callback, or a report that throws) can never suppress a stall rearm.
+    let lastStallSnapshot = lastProgressSnapshot;
+
+    const observeProgress = (): void => {
+      if (!sqlitePath) {
+        return;
+      }
+      const snapshot = readSlackdumpProgressSnapshot(sqlitePath);
+      if (slackdumpProgressChanged(lastStallSnapshot, snapshot)) {
+        lastStallSnapshot = snapshot;
+        lastAdvanceAt = Date.now();
+      }
+      if (!(progress && slackdumpProgressChanged(lastProgressSnapshot, snapshot))) {
+        return;
+      }
+      lastProgressSnapshot = snapshot;
+      if (!snapshot) {
+        return;
+      }
+      progress(formatSlackdumpProgress(progressLabel, snapshot), {
+        stream: "messages",
+      }).catch(() => undefined);
+    };
+
     const progressTimer =
-      progress && sqlitePath && Number.isFinite(progressIntervalMs) && progressIntervalMs > 0
-        ? setInterval(() => {
-            const snapshot = readSlackdumpProgressSnapshot(sqlitePath);
-            if (!slackdumpProgressChanged(lastProgressSnapshot, snapshot)) {
-              return;
-            }
-            lastProgressSnapshot = snapshot;
-            if (!snapshot) {
-              return;
-            }
-            progress(formatSlackdumpProgress(progressLabel, snapshot), {
-              ...(snapshot.messages === null ? {} : { count: snapshot.messages }),
-              stream: "messages",
-            }).catch(() => undefined);
-          }, progressIntervalMs)
-        : null;
+      sqlitePath && Number.isFinite(stallPollMs) && stallPollMs > 0 ? setInterval(observeProgress, stallPollMs) : null;
     progressTimer?.unref?.();
-    const t = setTimeout(() => {
+
+    const startedAt = Date.now();
+    // Without an observable archive there is no progress signal, so the budget
+    // can only be a total-runtime deadline (prior behavior).
+    const stallDetectable = progressTimer !== null;
+    const deadlineTimer = setInterval(
+      () => {
+        const now = Date.now();
+        if (now - startedAt >= maxRuntimeMs) {
+          finishTimedOut("slackdump_max_runtime");
+          return;
+        }
+        const idleSince = stallDetectable ? lastAdvanceAt : startedAt;
+        if (now - idleSince >= timeoutMs) {
+          finishTimedOut("slackdump_timeout");
+        }
+      },
+      Math.max(1, Math.min(stallPollMs, Number.isFinite(timeoutMs) ? timeoutMs : stallPollMs))
+    );
+    deadlineTimer.unref?.();
+
+    const clearTimers = (): void => {
+      clearInterval(deadlineTimer);
       if (progressTimer) {
         clearInterval(progressTimer);
       }
+    };
+
+    function finishTimedOut(reason: string): void {
+      clearTimers();
       child.kill();
-      reject(new Error("slackdump_timeout"));
-    }, timeoutMs);
+      // Keep "timeout" in the message so SLACK_RETRYABLE_FAILURE_RE classifies
+      // both shapes retryable — a stalled or over-long dump resumes against the
+      // durable archive rather than restarting from zero.
+      reject(new Error(reason));
+    }
+
     child.on("exit", (code) => {
-      clearTimeout(t);
-      if (progressTimer) {
-        clearInterval(progressTimer);
-      }
+      clearTimers();
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        reject(new Error(`slackdump_exit_${code}: ${stderr.slice(0, 400) || stdout.slice(0, 400)}`));
+        const detail = redactSlackdumpOutput(`${stderr}\n${stdout}`, env).slice(0, 400);
+        reject(new Error(`slackdump_exit_${code}${detail ? `: ${detail}` : ""}`));
       }
     });
     child.on("error", (e) => {
-      clearTimeout(t);
-      if (progressTimer) {
-        clearInterval(progressTimer);
-      }
+      clearTimers();
       if (isErrnoException(e) && e.code === "ENOENT") {
         reject(new Error(formatSlackdumpMissingError(bin)));
         return;
@@ -507,16 +543,82 @@ interface SlackOpts {
   SKIP_FILES: boolean;
 }
 
-export const SLACK_RETRYABLE_FAILURE_RE = /ECONN|ETIMEDOUT|timeout|slackdump_exit_6|slack_rate_limited/i;
+// `slackdump_max_runtime` is listed explicitly because it is the one timeout
+// shape whose name contains no "timeout" substring. It is retryable for the
+// same reason a stall is: the archive is durable, so the next attempt resumes
+// against banked work instead of restarting a multi-hour dump from zero.
+export const SLACK_RETRYABLE_FAILURE_RE =
+  /ECONN|ETIMEDOUT|timeout|slackdump_max_runtime|slackdump_exit_6|slack_rate_limited/i;
 
-function extractCredentials(credentials: Record<string, string>): SlackCredentials {
-  const workspace = credentials.SLACK_WORKSPACE;
-  const token = credentials.SLACK_TOKEN;
-  const cookie = credentials.SLACK_COOKIE;
-  if (!(workspace && token && cookie)) {
+const SLACKDUMP_CLIENT_TOKEN_PREFIX = "xoxc-";
+const SLACKDUMP_D_COOKIE_PREFIX = "xoxd-";
+const SLACK_WORKSPACE_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+// Slackdump's value path preserves URL-safe percent escapes and QueryEscapes
+// raw unsafe cookie characters. Keep provider values opaque here: only enforce
+// the documented xoxc/xoxd prefixes, transport-safe control characters, and a
+// bounded input size.
+const SLACKDUMP_CREDENTIAL_MAX_LENGTH = 4096;
+const INVALID_PERCENT_ESCAPE_RE = /%(?![0-9a-f]{2})/iu;
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeSlackOpaqueValue(raw: string, prefix: string | null, invalidCode: string): string {
+  const value = raw.trim();
+  if (
+    !value ||
+    (prefix !== null && !value.startsWith(prefix)) ||
+    value.length > SLACKDUMP_CREDENTIAL_MAX_LENGTH ||
+    hasControlCharacter(value)
+  ) {
+    throw new Error(invalidCode);
+  }
+  return value;
+}
+
+export function normalizeSlackWorkspace(raw: string): string {
+  const workspace = raw.trim().toLowerCase();
+  if (!SLACK_WORKSPACE_RE.test(workspace)) {
+    throw new Error("slack_workspace_invalid");
+  }
+  return workspace;
+}
+
+export function normalizeSlackToken(raw: string): string {
+  return normalizeSlackOpaqueValue(raw, SLACKDUMP_CLIENT_TOKEN_PREFIX, "slack_token_invalid");
+}
+
+export function normalizeSlackCookie(raw: string): string {
+  let cookie = raw.trim();
+  if (cookie.startsWith("d=")) {
+    cookie = cookie.slice(2).trim();
+  }
+  const normalized = normalizeSlackOpaqueValue(cookie, SLACKDUMP_D_COOKIE_PREFIX, "slack_cookie_invalid");
+  if (INVALID_PERCENT_ESCAPE_RE.test(normalized)) {
+    throw new Error("slack_cookie_invalid");
+  }
+  return normalized;
+}
+
+export function extractSlackCredentials(credentials: Record<string, string>): SlackCredentials {
+  const rawWorkspace = typeof credentials.SLACK_WORKSPACE === "string" ? credentials.SLACK_WORKSPACE : "";
+  const rawToken = typeof credentials.SLACK_TOKEN === "string" ? credentials.SLACK_TOKEN : "";
+  const rawCookie = typeof credentials.SLACK_COOKIE === "string" ? credentials.SLACK_COOKIE : "";
+  if (!(rawWorkspace.trim() && rawToken.trim() && rawCookie.trim())) {
     throw new Error("slack_credentials_missing");
   }
-  return { workspace, token, cookie };
+  return {
+    workspace: normalizeSlackWorkspace(rawWorkspace),
+    token: normalizeSlackToken(rawToken),
+    cookie: normalizeSlackCookie(rawCookie),
+  };
 }
 
 function readSlackOptions(): SlackOpts {
@@ -576,15 +678,28 @@ function buildChildEnv(token: string, cookie: string): NodeJS.ProcessEnv {
 interface ArchivePaths {
   archivePath: string;
   dumpDir: string;
+  /** One-line disclosure of where the archive root came from; logged once per run. */
+  rootDisclosure: string;
   sqlitePath: string;
 }
 
+// The archive is the connector's most expensive durable artifact: slackdump
+// resumes against it, so losing it forces a full multi-GB re-dump. It used to
+// live at `homedir()/.pdpp/slackdump`, which the documented single-volume
+// deployment does NOT persist — every container replacement restarted the sync
+// from zero. It now sits under the shared deployment-owned artifact root
+// (src/connector-artifact-root.ts), which lands inside /var/lib/pdpp on Core.
 function resolveArchivePaths(workspace: string): ArchivePaths {
-  const dumpDir = join(homedir(), ".pdpp/slackdump", workspace);
-  const archivePath = join(dumpDir, "archive");
+  const resolved = resolveConnectorArtifactDir("slack", [workspace]);
+  const archivePath = join(resolved.root, "archive");
   // default DB name under the archive dir
   const sqlitePath = join(archivePath, "slackdump.sqlite");
-  return { dumpDir, archivePath, sqlitePath };
+  return {
+    dumpDir: resolved.root,
+    archivePath,
+    sqlitePath,
+    rootDisclosure: describeConnectorArtifactRoot(resolved),
+  };
 }
 
 // slackdump downloads file-attachment bytes into `<archive>/__uploads/` (only
@@ -654,6 +769,7 @@ function resolveScopedArchivePaths(base: ArchivePaths, positionalChannels: reado
     dumpDir: base.dumpDir,
     archivePath,
     sqlitePath: join(archivePath, "slackdump.sqlite"),
+    rootDisclosure: base.rootDisclosure,
   };
 }
 
@@ -675,6 +791,7 @@ function listExistingScopedArchivePaths(base: ArchivePaths): ArchivePaths[] {
         archivePath,
         dumpDir: base.dumpDir,
         sqlitePath: join(archivePath, "slackdump.sqlite"),
+        rootDisclosure: base.rootDisclosure,
       };
     })
     .filter((paths) => existsSync(paths.sqlitePath))
@@ -733,6 +850,7 @@ function mergeMessagesPassResults(left: MessagesPassResult, right: MessagesPassR
   return {
     channelMaxTs: selectCommittedChannelLastTs(left.channelMaxTs, right.channelMaxTs),
     maxMessageTs: selectMaxSlackTs(left.maxMessageTs, right.maxMessageTs),
+    considered: left.considered + right.considered,
   };
 }
 
@@ -1230,6 +1348,7 @@ async function mergeScopedMessageArchivePasses(deps: {
   credentials: SlackCredentials;
   emit: CollectContext["emit"];
   messageResult: MessagesPassResult;
+  requested: CollectContext["requested"];
   scopedArchives: readonly SelectedScopedArchive[];
   state: CollectContext["state"];
   streamDeps: StreamDeps;
@@ -1241,6 +1360,7 @@ async function mergeScopedMessageArchivePasses(deps: {
   // `deps.credentials`/`deps.emit` are threaded for type consistency but
   // unused here.
   const requested = messageFamilyRequestedOnly(deps.streamDeps.requested);
+  const sinceTs = parseSinceTs(deps.requested, "messages");
   for (const archive of deps.scopedArchives) {
     if (!existsSync(archive.paths.sqlitePath)) {
       continue;
@@ -1257,6 +1377,7 @@ async function mergeScopedMessageArchivePasses(deps: {
           {
             allowLegacyMessageCursorFallback: false,
             ignoreMessageChannelCursors: false,
+            sinceTs: sinceTs ?? null,
           }
         )
       );
@@ -1400,6 +1521,7 @@ export interface MessagesPassDeps {
 
 export interface MessagesPassResult {
   channelMaxTs: Record<string, string>;
+  considered: number;
   maxMessageTs: string | null;
 }
 
@@ -1448,6 +1570,8 @@ function recordChannelMaxTs(channelMaxTs: Record<string, string>, channelId: str
  *     nowIso() only as a fallback when the row's TS is unparseable,
  *     which threads into the record's `sent_at` (distinct from
  *     `emitted_at`, which the runtime stamps on the RECORD envelope).
+ *   - Rows are already filtered by collection_scope.since at the SQL layer
+ *     (buildMessageRowsQuery), so this function only emits in-scope rows.
  */
 export async function emitMessagesPass(
   deps: MessagesPassDeps,
@@ -1471,7 +1595,9 @@ export async function emitMessagesPass(
 
   const channelMaxTs: Record<string, string> = {};
   let maxMessageTs: string | null = null;
+  let considered = 0;
   for (const r of rows) {
+    considered += 1;
     const parsed = parseMessageRow(r, nowIso());
     const { ts } = parsed;
     // Track the max ts seen in this run for the post-loop STATE emit.
@@ -1493,7 +1619,7 @@ export async function emitMessagesPass(
       }
     }
   }
-  return { channelMaxTs, maxMessageTs };
+  return { channelMaxTs, maxMessageTs, considered };
 }
 
 // ─── Per-stream helpers ────────────────────────────────────────────────
@@ -1577,6 +1703,23 @@ async function declareListConsidered(
       ...(typeof covered === "number" && Number.isInteger(covered) && covered >= 0 ? { covered } : {}),
     })
   );
+}
+
+async function declareMessageFamilyCoverage(deps: StreamDeps, considered: number): Promise<void> {
+  for (const stream of ["reactions", "message_attachments"] as const) {
+    if (deps.requested.has(stream)) {
+      await deps.emit(
+        buildDetailCoverageMessage({
+          stream,
+          stateStream: "messages",
+          requiredKeys: [],
+          hydratedKeys: [],
+          considered,
+          covered: considered,
+        })
+      );
+    }
+  }
 }
 
 /**
@@ -1703,19 +1846,46 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
 
 export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   // Dedupe across chunks; keep the latest (max CHUNK_ID) snapshot per ID.
-  const rows = safeAll<ChannelRow>(
-    deps.db,
-    `
+  let rowIterator: Iterator<Record<string, unknown>>;
+  try {
+    const rawRows = deps.db
+      .prepare(
+        `
     SELECT c.ID AS id, c.NAME AS name, c.DATA AS data
     FROM CHANNEL c
     JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM CHANNEL GROUP BY ID) m
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
-  );
+      )
+      .iterate() as IterableIterator<Record<string, unknown>>;
+    rowIterator = rawRows[Symbol.iterator]();
+  } catch {
+    // A failed archive enumeration is not an empty archive. Leave coverage
+    // unmeasured so the shared projection exposes the exact run failure.
+    return;
+  }
   const observedOn = deps.emittedAt.slice(0, 10);
   const wantsChannels = deps.requested.has("channels");
+  let channelsConsidered = 0;
   let channelsCovered = 0;
-  for (const r of rows) {
+  while (true) {
+    let nextRow: IteratorResult<Record<string, unknown>>;
+    try {
+      nextRow = rowIterator.next();
+    } catch {
+      // A mid-scan read failure cannot prove that the inventory was complete.
+      return;
+    }
+    if (nextRow.done) {
+      break;
+    }
+    channelsConsidered += 1;
+    const raw = nextRow.value;
+    const r: ChannelRow = {
+      id: raw.id as string,
+      name: (raw.name as string | null) ?? null,
+      data: (raw.data as Uint8Array | string | null) ?? null,
+    };
     if (wantsChannels) {
       // Entity record: fingerprinted so unchanged structural fields don't re-emit.
       // Every enumerated channel row is accounted for (emitted or
@@ -1731,13 +1901,16 @@ export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   }
   // `channels` is a fingerprint-suppressed full-sync stream: it re-enumerates the
   // whole channel inventory every run and suppresses unchanged rows. Declaring
-  // `considered = rows.length` with `covered = channelsCovered` lets a
+  // the enumerated row count with `covered = channelsCovered` lets a
   // steady-state run read `complete` instead of a false `partial`. `channel_stats`
   // is append-keyed (one observation per channel per day), not an inventory, so it
   // declares no denominator. The denominators are measured at the query site,
   // never aliased to the emitted count.
   if (wantsChannels) {
-    await declareListConsidered(deps, "channels", rows.length, channelsCovered);
+    await declareListConsidered(deps, "channels", channelsConsidered, channelsCovered);
+  }
+  if (deps.requested.has("channel_stats")) {
+    await deps.emit(buildFullScanCoverageMessage("channel_stats", channelsConsidered));
   }
 }
 
@@ -1783,6 +1956,25 @@ export async function runUsersStream(deps: StreamDeps): Promise<void> {
 interface MessageCursorThresholds {
   channelLastTs: Record<string, string>;
   legacyLastTs: string | null;
+  sinceTs: string | null;
+}
+
+/**
+ * Parses Slack ts format ("seconds.microseconds") into numeric components.
+ * Returns [epochSeconds, microseconds] as integers, or throws if format invalid.
+ * Handles variable-width epochs (pre-2001: 9 digits, current: 10 digits).
+ */
+function parseSlackTs(ts: string): [number, number] {
+  const match = ts.match(SLACK_TS_PATTERN);
+  if (!(match?.[1] && match[2])) {
+    throw new Error(`Invalid Slack ts format: ${ts} (expected "seconds.microseconds")`);
+  }
+  const epochSeconds = Number.parseInt(match[1], 10);
+  const microseconds = Number.parseInt(match[2], 10);
+  if (!(Number.isFinite(epochSeconds) && Number.isFinite(microseconds))) {
+    throw new Error(`Invalid Slack ts components: ${ts}`);
+  }
+  return [epochSeconds, microseconds];
 }
 
 export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { params: string[]; sql: string } {
@@ -1814,6 +2006,19 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   // also has TS > threshold and survives the filter — the MAX(CHUNK_ID) pick is
   // unchanged. Pairs at/below the threshold are dropped by both shapes. The
   // no-cursor first run has no predicate and keeps the full aggregation.
+  //
+  // collection_scope.since is a declared boundary (ISO 8601 instant, converted
+  // to Slack ts format via parseIsoInstantToSlackTs). Unlike cursor predicates
+  // (which are monotonically advancing commitments), a since boundary is a
+  // declarative claim "only collect from this point onward." If supplied, it is
+  // composed with cursor predicates via AND: a row must pass both to be included.
+  //
+  // Slack's ts format is "seconds.microseconds" where seconds is Unix epoch
+  // (variable-width: 9 digits pre-2001, 10 digits 2001-2286, 11+ digits later).
+  // To compare timestamps correctly across variable-width epochs, we use numeric
+  // comparison: extract CAST(SUBSTR(m.TS, 1, INSTR(m.TS, '.') - 1) AS INTEGER)
+  // for seconds, then compare numerically. If seconds match, compare microseconds
+  // (the 6-digit suffix). This is exact and handles all epoch widths correctly.
   const dedupJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
   let dedupWhere = "";
   if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
@@ -1824,6 +2029,26 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   } else if (thresholds.legacyLastTs) {
     dedupWhere = "WHERE m.TS > ?";
     params.push(thresholds.legacyLastTs);
+  }
+  // Compose since boundary (if supplied) with cursor predicates via AND.
+  // sinceTs is the production output of parseIsoInstantToSlackTs, which
+  // guarantees "seconds.microseconds" format with 6-digit fractional seconds.
+  // Parse it into numeric components for exact comparison.
+  if (thresholds.sinceTs !== null) {
+    const [sinceSecs, sinceMicros] = parseSlackTs(thresholds.sinceTs);
+    // Numeric comparison: m.TS >= sinceTs means either:
+    //   (epochSecs > sinceSecs) OR (epochSecs == sinceSecs AND microsecs >= sinceMicros)
+    const sincePredicate = `(
+        CAST(SUBSTR(m.TS, 1, INSTR(m.TS, '.') - 1) AS INTEGER) > ? OR
+        (CAST(SUBSTR(m.TS, 1, INSTR(m.TS, '.') - 1) AS INTEGER) = ? AND
+         CAST(SUBSTR(m.TS, INSTR(m.TS, '.') + 1) AS INTEGER) >= ?)
+      )`;
+    params.push(String(sinceSecs), String(sinceSecs), String(sinceMicros));
+    if (dedupWhere) {
+      dedupWhere = `${dedupWhere} AND ${sincePredicate}`;
+    } else {
+      dedupWhere = `WHERE ${sincePredicate}`;
+    }
   }
 
   return {
@@ -1887,8 +2112,82 @@ function runMessagesUnifiedPass(deps: StreamDeps, thresholds: MessageCursorThres
   // chronologically (fixed-width integer-dot-decimal), so string > works.
   // iterateMessageRows is a lazy generator: emitMessagesPass pulls one row
   // at a time, so the unbounded MESSAGE table never lands in heap at once.
+  // The since boundary (if supplied) is baked into the SQL WHERE clause by
+  // buildMessageRowsQuery, so rows are already filtered to the declared
+  // collection_scope.since boundary.
   const rows = iterateMessageRows(deps.db, thresholds);
   return emitMessagesPass(deps, rows, thresholds.legacyLastTs);
+}
+
+/**
+ * Parses an ISO 8601 instant to Slack ts format ("seconds.microseconds").
+ * Exported for testing.
+ *
+ * Slack ts is stored as "seconds.microseconds" where seconds is Unix epoch
+ * and microseconds are 6 decimal digits (from archive records). ISO instants
+ * can have milliseconds (3 places), microseconds (6 places), or no fraction —
+ * all are normalized to 6 digits: "2026-08-09T22:26:25.500Z" → epoch.500000,
+ * or "2026-08-09T22:26:25Z" → epoch.000000.
+ *
+ * Throws Error if the instant is malformed (invalid date syntax, non-finite
+ * epoch, or negative timestamp). Absent input (empty/null) is NOT an error;
+ * return null to signal no bound, allowing the caller to distinguish between
+ * "no since declared" (null → unbounded collection) and "since declared but
+ * broken" (throws → configuration error).
+ *
+ * Comparison: Slack ts comparison is lexical on the formatted string. Numeric
+ * comparison of (epochSeconds, fractionalPart as a string) is equivalent, since
+ * both preserve chronological order for timestamps in the same second. We use
+ * numeric logic to avoid assuming the archive format is fixed-width (though we
+ * produce fixed-width output consistently).
+ */
+export function parseIsoInstantToSlackTs(instant: string): string {
+  const epochMs = Date.parse(instant);
+  if (Number.isNaN(epochMs)) {
+    throw new Error(`Invalid ISO 8601 instant: ${instant}`);
+  }
+  const epochSeconds = Math.floor(epochMs / 1000);
+  if (!Number.isFinite(epochSeconds)) {
+    throw new Error(`Invalid epoch seconds (non-finite): ${epochSeconds}`);
+  }
+  if (epochSeconds < 0) {
+    throw new Error(`Timestamp is before Unix epoch (negative): ${epochSeconds}`);
+  }
+  // Extract fractional seconds (milliseconds or microseconds) from the ISO instant.
+  // ISO format examples:
+  //   "2026-08-09T22:26:25.500Z" (3 decimal places, milliseconds)
+  //   "2026-08-09T22:26:25.123456Z" (6 decimal places, microseconds)
+  //   "2026-08-09T22:26:25Z" (no decimal, no fraction)
+  // Regex captures up to 6 fractional digits; pad with trailing zeros to 6.
+  const fracMatch = instant.match(ISO_FRACTION_PATTERN);
+  const fractionalPart = fracMatch?.[1] ? fracMatch[1].padEnd(6, "0") : "000000";
+  return `${epochSeconds}.${fractionalPart}`;
+}
+
+/**
+ * Converts an ISO 8601 instant from collection_scope.since to Slack ts format.
+ * Returns null if since is absent (undefined/null); throws a typed error if
+ * since is present but malformed (configuration error).
+ *
+ * Absent is ONLY: null, undefined, or field not present. Present whitespace-only
+ * or any other non-ISO string is a configuration error and throws.
+ *
+ * This enforces the distinction: absent → unbounded collection (null), present
+ * invalid → fail closed (throw), preventing silent scope widening.
+ *
+ * Used by mergeScopedMessageArchivePasses to enforce the declared collection
+ * scope boundary when reading from persistent archive.
+ */
+function parseSinceTs(requested: CollectContext["requested"], stream: string): string | null {
+  const since = requested.get(stream)?.time_range?.since;
+  if (since === null || since === undefined) {
+    return null; // Absent bound: unbounded collection.
+  }
+  if (typeof since !== "string") {
+    throw new Error(`Expected string for collection_scope.since, got ${typeof since}: ${String(since)}`);
+  }
+  // Present since: throw on any validation error (not silent null).
+  return parseIsoInstantToSlackTs(since);
 }
 
 function messageProgressLabel(channelCursorCount: number, priorTs: string | null): string {
@@ -1901,7 +2200,7 @@ function messageProgressLabel(channelCursorCount: number, priorTs: string | null
   return "Slack: emitting all messages (full pass)";
 }
 
-async function runFilesStream(deps: StreamDeps): Promise<void> {
+export async function runFilesStream(deps: StreamDeps): Promise<void> {
   // Exclude quip/canvas files from the generic `files` stream — they are
   // first-class records in the `canvases` stream (v0.3). Other file modes
   // (hosted, snippet, external, tombstone) still flow here.
@@ -1965,7 +2264,7 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
   // emitted, and an honest `partial` if a canvas was weighed but dropped (e.g.
   // by record-shape validation). The denominator is measured here, never
   // aliased to the emitted count.
-  await declareListConsidered(deps, "canvases", canvasRows.length);
+  await deps.emit(buildFullScanCoverageMessage("canvases", canvasRows.length));
 }
 
 /**
@@ -1979,7 +2278,7 @@ export async function runStarsStream(deps: StreamDeps, token: string, cookie: st
   for (const item of items) {
     await deps.emitRecord("stars", buildStarRecord(item));
   }
-  await declareListConsidered(deps, "stars", items.length);
+  await deps.emit(buildFullScanCoverageMessage("stars", items.length));
 }
 
 export async function runUserGroupsStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
@@ -1987,7 +2286,7 @@ export async function runUserGroupsStream(deps: StreamDeps, token: string, cooki
   for (const g of groups) {
     await deps.emitRecord("user_groups", buildUserGroupRecord(g));
   }
-  await declareListConsidered(deps, "user_groups", groups.length);
+  await deps.emit(buildFullScanCoverageMessage("user_groups", groups.length));
 }
 
 export async function runRemindersStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
@@ -1995,7 +2294,7 @@ export async function runRemindersStream(deps: StreamDeps, token: string, cookie
   for (const r of reminders) {
     await deps.emitRecord("reminders", buildReminderRecord(r));
   }
-  await declareListConsidered(deps, "reminders", reminders.length);
+  await deps.emit(buildFullScanCoverageMessage("reminders", reminders.length));
 }
 
 /**
@@ -2036,7 +2335,7 @@ export async function runDmReadStatesStream(deps: StreamDeps, token: string, coo
   for (const state of states) {
     await deps.emitRecord("dm_read_states", buildDmReadStateRecord(state, deps.emittedAt));
   }
-  await declareListConsidered(deps, "dm_read_states", states.length);
+  await deps.emit(buildFullScanCoverageMessage("dm_read_states", states.length));
 }
 
 interface StateEmitDeps {
@@ -2237,12 +2536,27 @@ export async function runOptionalStream(
     await run();
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    // `action: "retry_by_runtime"` is a claim that retrying can help: true for
+    // a transient failure, false for a durable auth rejection (retrying the
+    // same call with the same rejected session repeats the same outcome
+    // forever). `mapSkipCoverageCondition` (reference-implementation/server/
+    // connector-coverage-policy.ts) checks `action` before any reason text,
+    // so an unconditional "retry_by_runtime" here would misclassify a
+    // persistent slack_auth_failed as a self-healing retryable_gap.
+    //
+    // Classified by `instanceof SlackApiAuthError`, not by matching `message`
+    // text — a typed marker can't silently drift out of sync with the throw
+    // site the way a regex copy-pasted across files can.
+    const isAuthFailure = e instanceof SlackApiAuthError;
     await emit({
       type: "SKIP_RESULT",
       stream,
       reason: OPTIONAL_STREAM_FAILED_REASON,
       message: `Slack: ${stream} failed and was skipped (optional stream): ${message}`,
-      recovery_hint: { action: "retry_by_runtime", retryable: SLACK_API_RETRYABLE_FAILURE_RE.test(message) },
+      recovery_hint: isAuthFailure
+        ? { action: "refresh_credentials", retryable: false }
+        : { action: "retry_by_runtime", retryable: SLACK_API_RETRYABLE_FAILURE_RE.test(message) },
+      ...(isAuthFailure && e.slackApiErrorCode ? { diagnostics: { slack_api_error_code: e.slackApiErrorCode } } : {}),
     });
   }
 }
@@ -2251,12 +2565,16 @@ export async function runOptionalStream(
  * Run every requested record stream against the open sqlite DB in emit
  * order. Returns the max message TS for the post-loop STATE checkpoint.
  */
-async function runRequestedStreams(
+export async function runRequestedStreams(
   deps: StreamDeps,
   state: CollectContext["state"],
   credentials: SlackCredentials,
   emit: CollectContext["emit"],
-  options: { allowLegacyMessageCursorFallback?: boolean; ignoreMessageChannelCursors?: boolean } = {}
+  options: {
+    allowLegacyMessageCursorFallback?: boolean;
+    ignoreMessageChannelCursors?: boolean;
+    sinceTs?: string | null;
+  } = {}
 ): Promise<MessagesPassResult> {
   if (deps.requested.has("workspace")) {
     deps.progress("Slack: emitting workspace record", { stream: "workspace" });
@@ -2275,7 +2593,7 @@ async function runRequestedStreams(
     await runUsersStream(deps);
   }
   // Messages, reactions, message_attachments share one pass for efficiency.
-  let result: MessagesPassResult = { channelMaxTs: {}, maxMessageTs: null };
+  let result: MessagesPassResult = { channelMaxTs: {}, maxMessageTs: null, considered: 0 };
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
     const priorTs = options.allowLegacyMessageCursorFallback === false ? null : (messagesState?.last_ts ?? null);
@@ -2283,7 +2601,29 @@ async function runRequestedStreams(
       ? {}
       : normalizeStringRecord(messagesState?.channel_last_ts);
     deps.progress(messageProgressLabel(Object.keys(channelLastTs).length, priorTs), { stream: "messages" });
-    result = await runMessagesUnifiedPass(deps, { channelLastTs, legacyLastTs: priorTs });
+    result = await runMessagesUnifiedPass(deps, {
+      channelLastTs,
+      legacyLastTs: priorTs,
+      sinceTs: options.sinceTs ?? null,
+    });
+    // One archive traversal supplies the parent denominator. Reactions and
+    // attachments ride this checkpoint window via manifest state_stream and
+    // must not receive a fabricated child-row denominator.
+    await deps.emit(
+      buildDetailCoverageMessage({
+        stream: "messages",
+        stateStream: "messages",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: result.considered,
+        covered: result.considered,
+      })
+    );
+    // Reactions and message attachments are derived from the same retained
+    // MESSAGE rows. Declare that archive enumeration as their measured
+    // checkpoint boundary too; never use the child-record counts, which are
+    // not the boundary this pass enumerates.
+    await declareMessageFamilyCoverage(deps, result.considered);
   }
   if (deps.requested.has("files")) {
     deps.progress("Slack: emitting files", { stream: "files" });
@@ -2393,7 +2733,7 @@ if (isMainModule(import.meta.url)) {
     async collect(ctx: CollectContext): Promise<void> {
       const { state, requested, credentials, emit, progress } = ctx;
 
-      const { workspace, token, cookie } = extractCredentials(credentials);
+      const { workspace, token, cookie } = extractSlackCredentials(credentials);
       const opts = readSlackOptions();
 
       // Resource filters (pre-fetch: pass as positional args; post-fetch: enforce too)
@@ -2411,6 +2751,10 @@ if (isMainModule(import.meta.url)) {
       const messagesScope = requested.get("messages");
       const baseArchivePaths = resolveArchivePaths(workspace);
       const { dumpDir } = baseArchivePaths;
+      // State the archive root before any work: on the local-development
+      // fallback this is the run log's only warning that the archive is not
+      // on a deployment-managed volume.
+      progress(baseArchivePaths.rootDisclosure);
       const { archivePath, sqlitePath } = resolveScopedArchivePaths(baseArchivePaths, positionalChannels);
       await mkdir(dumpDir, { recursive: true });
 
@@ -2571,6 +2915,7 @@ if (isMainModule(import.meta.url)) {
         runRequestedStreams(deps, state, { workspace, token, cookie }, emit, {
           allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
           ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
+          sinceTs: parseSinceTs(requested, "messages"),
         })
       );
       if (messageFamilyRequested && isUnscopedMessageBoundary && reconciledSourceCache.scopedArchives.length > 0) {
@@ -2578,6 +2923,7 @@ if (isMainModule(import.meta.url)) {
           credentials: { workspace, token, cookie },
           emit,
           messageResult,
+          requested,
           scopedArchives: reconciledSourceCache.scopedArchives,
           state,
           streamDeps: deps,

@@ -272,6 +272,14 @@ export interface MountRsReadContext {
   }) => unknown;
   canonicalConnectorKey: (connectorId: string) => string | null;
 
+  /**
+   * Cheap, honest count of currently-dirty search-index scopes
+   * (process-wide, not scoped to any one query). Used to attach an
+   * additive `meta.index_maintenance` disclosure when nonzero. Optional so
+   * hosts/tests that do not wire it simply omit the disclosure.
+   */
+  countSearchIndexDirtyScopes?: () => Promise<number>;
+
   // blob read
   createBlobStore: () => BlobStoreLike;
   decorateRecordBlobRefs: (record: unknown) => unknown;
@@ -372,11 +380,20 @@ export interface MountRsReadContext {
   }) => Promise<ReadRequestBindingsResult>;
   resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ManifestLike>;
   runHybridSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
-
   // search surfaces
   runLexicalSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
   runSemanticSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
   setReferenceTraceId: (res: unknown, traceId: string | null) => void;
+  /**
+   * Read-time self-heal (I3) trigger. MUST be non-blocking (fire-and-forget)
+   * and internally deduplicated/cooldown-gated -- a single dirty scope's
+   * backfill has no wall-clock bound, so awaiting this could hang an
+   * ordinary search request. Returns void, not a Promise, specifically so a
+   * caller cannot accidentally await it. Optional so tests/hosts that do not
+   * wire it simply skip the self-heal (search still works, relying solely on
+   * the periodic sweep for convergence).
+   */
+  triggerSearchIndexDirtySelfHeal?: () => void;
   validateRequestedQueryFieldParams: (
     requestParams: Record<string, unknown>,
     manifestStream: ManifestStreamLike | undefined
@@ -2274,6 +2291,15 @@ async function runSearchRouteHandler(
     rejectUnsupportedClientQuery(tokenInfo.pdpp_token_kind, req.query);
     await ctx.emitQueryReceived(queryContext, req);
 
+    // I3 read-time self-heal: fire-and-forget, cooldown- and in-flight-
+    // deduplicated. MUST NOT be awaited -- a single dirty scope's backfill
+    // has no internal wall-clock bound (only the reconcile ROUND checks a
+    // deadline BETWEEN scopes, not within one), so awaiting this here could
+    // block an ordinary search request for an unbounded duration. The
+    // periodic maintenance sweep is still the authoritative convergence
+    // path; this only accelerates it opportunistically.
+    ctx.triggerSearchIndexDirtySelfHeal?.();
+
     const { envelope, disclosureData } = await opts.runSearch({
       opts: ctx.opts,
       req,
@@ -2292,6 +2318,29 @@ async function runSearchRouteHandler(
       tokenInfo,
       traceId,
     });
+
+    // Honest global-backlog disclosure: a nonzero search_index_dirty
+    // backlog means SOME scope somewhere may be under-indexed right now.
+    // This is deliberately coarse (process-wide, not scoped to this
+    // query's specific connector instances/streams -- doing that
+    // precisely would require the search execution path itself to report
+    // which scopes it actually touched, which it does not today) but it
+    // is never wrong in the direction that matters: it only ever ADDS a
+    // "results may be incomplete" signal, never removes one, and it never
+    // fires when the backlog is actually empty. Silence is not a claim of
+    // completeness on its own (see the existing count_accuracy/recall
+    // disclosure for the query-scoped signal); this augments that with
+    // the one honest thing this layer can cheaply prove.
+    const envelopeWithMeta = envelope as { meta?: Record<string, unknown> };
+    if (envelopeWithMeta.meta) {
+      const dirtyCount = await ctx.countSearchIndexDirtyScopes?.().catch(() => 0);
+      if (dirtyCount) {
+        envelopeWithMeta.meta.index_maintenance = {
+          note: "a background index-maintenance backlog exists somewhere on this server; some results elsewhere may be temporarily under-indexed. This is not scoped to this specific query.",
+          pending_scopes: dirtyCount,
+        };
+      }
+    }
 
     return res.json(ctx.finalizeCanonicalEnvelope(envelope, req));
   } catch (err) {
@@ -2560,6 +2609,18 @@ function buildAmbiguousConnectionError(
 // warning header (P3 — the raw-bytes response has no JSON envelope to carry
 // `meta.warnings[]`), and the bytes. Behaviour-identical to the previous inline
 // tail.
+const INLINE_BLOB_MEDIA_TYPES = new Set([
+  "application/pdf",
+  "image/avif",
+  "image/bmp",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/tiff",
+  "image/webp",
+  "image/x-icon",
+]);
+
 async function serveResolvedBlob(
   res: RouteResponse,
   args: {
@@ -2596,6 +2657,11 @@ async function serveResolvedBlob(
   res.setHeader("Content-Type", blob.mime_type);
   res.setHeader("Content-Length", String(blob.size_bytes));
   res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  const mediaType = blob.mime_type.split(";", 1)[0]?.trim().toLowerCase();
+  if (!INLINE_BLOB_MEDIA_TYPES.has(mediaType ?? "")) {
+    res.setHeader("Content-Disposition", "attachment");
+  }
   // P3: when the resolver observed deprecated alias use, surface it as a
   // structured response header so callers see migration signal.
   if (Array.isArray(resolverWarnings) && resolverWarnings.some((w) => w?.code === "deprecated_alias_used")) {

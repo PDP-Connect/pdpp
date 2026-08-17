@@ -163,6 +163,7 @@ type SourceUnavailableRecoveryFixture =
 function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFixture): {
   actionClicks: number;
   filledSelectors: string[];
+  filledValues: Array<{ selector: string; value: string }>;
   otpResponseAuthenticated: boolean;
   page: Page;
   roleQueries: Array<{ name: unknown; role: string }>;
@@ -175,6 +176,7 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
   let passwordFieldReady = false;
   let currentUrl = LOGIN_URL;
   const filledSelectors: string[] = [];
+  const filledValues: Array<{ selector: string; value: string }> = [];
   const roleQueries: Array<{ name: unknown; role: string }> = [];
   const actionCount = fixture === "ambiguous" ? 2 : 1;
   const memberIdLocator: Pick<Locator, "press"> = {
@@ -238,8 +240,9 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
   }) as Page["click"];
   fake.evaluate = ((): Promise<Array<{ name: string; placeholder: string; type: string }>> =>
     Promise.resolve([{ name: "memberId", placeholder: "", type: "text" }])) as Page["evaluate"];
-  fake.fill = ((selector: string): Promise<void> => {
+  fake.fill = ((selector: string, value: string): Promise<void> => {
     filledSelectors.push(selector);
+    filledValues.push({ selector, value });
     if (fixture === "resume_error" && actionClicked && selector === 'input[name="memberId"]') {
       return Promise.reject(new Error("resumed member-id fill failed"));
     }
@@ -288,6 +291,7 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
       return actionClicks;
     },
     filledSelectors,
+    filledValues,
     get otpResponseAuthenticated(): boolean {
       return otpResponseAuthenticated;
     },
@@ -295,6 +299,46 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
     roleQueries,
   };
 }
+
+test("ensureUsaaSession uses the resolved USAA_USERNAME, never connector identity or ambient env", async () => {
+  const priorUsername = process.env.USAA_USERNAME;
+  const priorPassword = process.env.USAA_PASSWORD;
+  process.env.USAA_USERNAME = "usaa";
+  process.env.USAA_PASSWORD = "ambient-password";
+  try {
+    const fixturePage = makeSourceUnavailableRecoveryPage("selected");
+    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+    const interactions = makeInteractionHarness("success", { code: "123456" });
+
+    const ok = await ensureUsaaSession({
+      context,
+      credentials: { USAA_PASSWORD: "saved-password", USAA_USERNAME: "saved-online-id" },
+      page: fixturePage.page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(
+      fixturePage.filledValues.find(({ selector }) => selector === 'input[name="memberId"]')?.value,
+      "saved-online-id"
+    );
+    assert.notEqual(
+      fixturePage.filledValues.find(({ selector }) => selector === 'input[name="memberId"]')?.value,
+      "usaa"
+    );
+  } finally {
+    if (priorUsername === undefined) {
+      delete process.env.USAA_USERNAME;
+    } else {
+      process.env.USAA_USERNAME = priorUsername;
+    }
+    if (priorPassword === undefined) {
+      delete process.env.USAA_PASSWORD;
+    } else {
+      process.env.USAA_PASSWORD = priorPassword;
+    }
+  }
+});
 
 function makePostPasswordSourceUnavailablePage(bodyText: string): Page {
   const nextButtonLocator: Pick<Locator, "waitFor"> = {
@@ -794,5 +838,95 @@ test("ensureUsaaSession classifies USAA source-unavailable page rendered after p
     // This path never had a manual_action interaction before #294 either —
     // preserved, not newly added.
     assert.equal(interactions.requests.length, 0);
+  });
+});
+
+// ─── post-submit retry-safety marker (systemic credential-submit fix) ──────
+//
+// USAA_RETRYABLE_PATTERN deliberately includes `source_unavailable` (a real
+// pre-submit legitimate case) alongside a bare `timeout` term — the exact
+// naming collision the audit found. The fix does not touch the pattern; it
+// marks the credential-submit boundary so the runtime forces
+// retryable:false for anything AFTER that point regardless of the pattern.
+test("ensureUsaaSession calls onCredentialSubmit exactly once, immediately after the password click and before any post-submit read/capture", async () => {
+  await withUsaaCredentials(async () => {
+    const context = makeContext([[], []]);
+    const page = makePostPasswordSourceUnavailablePage(
+      "We are unable to complete your request. Our system is currently unavailable. Please try again later."
+    );
+    const interactions = makeInteractionHarness();
+    const calls: string[] = [];
+    const originalClick = page.click;
+    page.click = ((...args: Parameters<Page["click"]>): ReturnType<Page["click"]> => {
+      calls.push("click");
+      return (originalClick as Page["click"]).apply(page, args);
+    }) as Page["click"];
+    // Instrument the SAME body locator ensureUsaaSession reads post-submit
+    // (final-diagnostic innerText) so a marker moved past that read — still
+    // technically "before the throw" — is caught, not just a marker moved
+    // past the raw click.
+    const originalLocator = page.locator;
+    page.locator = ((selector: string, options?: Parameters<Page["locator"]>[1]): Locator => {
+      const real = (originalLocator as Page["locator"]).call(page, selector, options);
+      if (selector !== "body") {
+        return real;
+      }
+      const wrapped: Pick<Locator, "innerText"> = {
+        innerText: (): ReturnType<Locator["innerText"]> => {
+          calls.push("body.innerText");
+          return real.innerText();
+        },
+      };
+      return wrapped as Locator;
+    }) as Page["locator"];
+    let credentialSubmitCount = 0;
+
+    await assert.rejects(
+      ensureUsaaSession({
+        context,
+        onCredentialSubmit: () => {
+          credentialSubmitCount += 1;
+          calls.push("onCredentialSubmit");
+        },
+        page,
+        sendInteraction: interactions.sendInteraction,
+      })
+    );
+
+    assert.equal(credentialSubmitCount, 1, "onCredentialSubmit must fire exactly once for one login attempt");
+    // click fires for BOTH the memberId-Next step and the password-Next step
+    // (the fixture's #next-button locator resolves both); onCredentialSubmit
+    // must immediately follow a click — not an earlier click, and not any of
+    // the post-submit body reads that happen before the eventual throw.
+    const markerIndex = calls.indexOf("onCredentialSubmit");
+    assert.ok(markerIndex > 0, "onCredentialSubmit must fire after at least one click");
+    assert.equal(calls[markerIndex - 1], "click", "onCredentialSubmit must immediately follow a click call");
+    assert.ok(
+      !calls.slice(0, markerIndex).includes("body.innerText"),
+      "onCredentialSubmit must fire before any post-submit body read, not just before the final throw"
+    );
+  });
+});
+
+test("mutation-kill: onCredentialSubmit omitted from ensureUsaaSession's call still succeeds (no crash), proving the hook is additive, not load-bearing for USAA's own control flow", async () => {
+  // ensureUsaaSession must not require onCredentialSubmit — connectors call
+  // it optionally; the runtime (not the connector) decides what happens with
+  // the resulting terminal error. This test guards against a future change
+  // accidentally making onCredentialSubmit a REQUIRED param that breaks
+  // ensureUsaaSession's own signature contract with callers that omit it.
+  await withUsaaCredentials(async () => {
+    const context = makeContext([[], []]);
+    const page = makePostPasswordSourceUnavailablePage(
+      "We are unable to complete your request. Our system is currently unavailable. Please try again later."
+    );
+    const interactions = makeInteractionHarness();
+
+    await assert.rejects(
+      ensureUsaaSession({
+        context,
+        page,
+        sendInteraction: interactions.sendInteraction,
+      })
+    );
   });
 });

@@ -43,7 +43,7 @@ type StreamFactsByStream = Record<string, StoredStreamFactEntry>;
 // "Per-stream coverage SHALL derive from durable latest-attempt evidence").
 // SQLite-host tests: the fold SQL is dialect-split but the orchestration is
 // shared, so the semantics proven here (newest attempt wins, connection
-// isolation, refusal of unattributable events, checkpointed delta folding,
+// isolation, exclusion of unattributable events, checkpointed delta folding,
 // failure leaves rows visibly non-fresh) hold for both backends.
 
 const OWNER = "owner_local";
@@ -214,7 +214,7 @@ test("fold: an unresolved newer attempt does not regress an already-durably-prov
   });
 });
 
-test("fold: evidence never crosses connections; unattributable legacy events are refused", async () => {
+test("fold: evidence never crosses connections; instance-scoped reads exclude unattributable legacy events", async () => {
   await withTempDb(async () => {
     seedInstance("cin_one", "amazon");
     seedInstance("cin_two", "amazon");
@@ -225,7 +225,8 @@ test("fold: evidence never crosses connections; unattributable legacy events are
       runId: "run_a",
       streams: [{ checkpoint: "committed", collected: 5, stream: "orders" }],
     });
-    // Legacy connector-wide event: no connection identity -> refused.
+    // Legacy connector-wide event: no connection identity, so the
+    // instance-scoped maintenance fold must not read or attribute it.
     seedTerminalEvent({
       connectorInstanceId: null,
       occurredAt: "2026-06-17T10:30:00.000Z",
@@ -233,7 +234,8 @@ test("fold: evidence never crosses connections; unattributable legacy events are
       streams: [{ checkpoint: "committed", collected: 99, stream: "orders" }],
     });
     const summary = await foldConnectorSummaryStreamFacts();
-    assert.equal(summary.refused, 1, "the unattributable event is counted as refused");
+    assert.equal(summary.eventsRead, 1, "only the attributable connection event is read");
+    assert.equal(summary.refused, 0, "an event excluded by scope is not falsely reported as processed and refused");
     const one = factsFor(await getConnectorSummaryEvidence("cin_one"));
     const two = factsFor(await getConnectorSummaryEvidence("cin_two"));
     assert.ok(one, "cin_one has folded evidence");

@@ -70,6 +70,8 @@ export interface RefConnectorsListItem {
   readonly refresh_policy: unknown;
   readonly revoked_at?: string | null;
   readonly schedule: unknown;
+  /** Server-owned work bucket; clients format this and do not classify health. */
+  readonly source_work?: "needs_owner" | "not_measured" | "review" | "system_issue" | "working" | "none";
   readonly status?: string | null;
   readonly stream_count?: number;
   readonly stream_records?: readonly RefConnectorsListStreamRecord[];

@@ -146,7 +146,18 @@ test("manualUploadSetupFromManifest: validation emitted only with a kind; finite
     },
   });
   assertSetup(withValidation);
-  assert.deepEqual(withValidation.validation, { kind: "json_schema", maxFileBytes: 1_048_576 });
+  assert.deepEqual(withValidation.validation, { fileBacked: false, kind: "json_schema", maxFileBytes: 1_048_576 });
+
+  const withFileBacked = manualUploadSetupFromManifest({
+    setup: {
+      manual_or_upload: {
+        validation: { file_backed: true, kind: "whatsapp_chat_export", max_file_bytes: 1_048_576 },
+      },
+      modality: "manual_or_upload",
+    },
+  });
+  assertSetup(withFileBacked);
+  assert.equal(withFileBacked.validation?.fileBacked, true, "file_backed: true survives the manifest projection");
 
   const noKind = manualUploadSetupFromManifest({
     setup: { manual_or_upload: { validation: { max_file_bytes: 100 } }, modality: "manual_or_upload" },
@@ -164,7 +175,11 @@ test("manualUploadSetupFromManifest: validation emitted only with a kind; finite
     },
   });
   assertSetup(nonNumericBytes);
-  assert.deepEqual(nonNumericBytes.validation, { kind: "size", maxFileBytes: null }, "non-numeric bytes => null");
+  assert.deepEqual(
+    nonNumericBytes.validation,
+    { fileBacked: false, kind: "size", maxFileBytes: null },
+    "non-numeric bytes => null"
+  );
 });
 
 test("manualUploadSetupFromManifest: validation_expectations keeps only non-blank strings", () => {

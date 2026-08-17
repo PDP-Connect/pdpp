@@ -10,7 +10,13 @@
  * logic.
  */
 
+import {
+  normalizeStaticSecretCredentialCapture,
+  StaticSecretCredentialCaptureError,
+  type StaticSecretCredentialCaptureLike,
+} from "../../packages/polyfill-connectors/src/static-secret-credential-capture.ts";
 import { canonicalConnectorKey, isConnectorKey } from "./connector-key.ts";
+import { publicListingTierError } from "./public-listing-tier.ts";
 
 // Inline copy — isNonEmptyString is used 30+ times in auth.js so moving it
 // would create a back-edge import; a verbatim 1-liner copy is the cleanest
@@ -174,6 +180,26 @@ export function invalidConnectorManifest(message: string, code = "invalid_reques
   return err;
 }
 
+/**
+ * Registration-time gate for `setup.credential_capture`: a secret field
+ * missing `label` or `env` aliases is a manifest contract violation (see
+ * static-secret-credential-capture.ts's module doc), so it must fail here —
+ * where every manifest is normalized before any request can observe it —
+ * rather than surface later as a runtime 500 when setup or injection reads it.
+ */
+export function validateStaticSecretCredentialCapture(manifest: Record<string, unknown>, code: string): void {
+  const connectorKey = String(manifest.connector_key ?? manifest.connector_id ?? "unknown");
+  const setup = manifest.setup as { credential_capture?: StaticSecretCredentialCaptureLike | null } | null | undefined;
+  try {
+    normalizeStaticSecretCredentialCapture(connectorKey, setup?.credential_capture);
+  } catch (err) {
+    if (!(err instanceof StaticSecretCredentialCaptureError)) {
+      throw err;
+    }
+    throw invalidConnectorManifest(err.message, code);
+  }
+}
+
 export function isPositiveInteger(value: unknown): boolean {
   return Number.isInteger(value) && (value as number) > 0;
 }
@@ -193,6 +219,20 @@ export const REFRESH_POLICY_INTERACTION_POSTURES = new Set([
   "manual_action_likely",
 ]);
 export const REFRESH_POLICY_SENSITIVITY_LEVELS = new Set(["low", "medium", "high"]);
+export function validatePublicListingTier(manifest: Record<string, unknown>, code: string): void {
+  const { capabilities } = manifest;
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    return;
+  }
+  const { public_listing: listing } = capabilities as Record<string, unknown>;
+  if (listing === undefined || listing === null) {
+    return;
+  }
+  const error = publicListingTierError(listing);
+  if (error) {
+    throw invalidConnectorManifest(error, code);
+  }
+}
 export const REFRESH_POLICY_ALLOWED_KEYS = new Set([
   "recommended_mode",
   "recommended_interval_seconds",
@@ -204,8 +244,25 @@ export const REFRESH_POLICY_ALLOWED_KEYS = new Set([
   "rate_limit_sensitivity",
   "bot_detection_sensitivity",
   "background_safe",
+  "max_cooldown_cycles",
+  "max_recovery_attempts",
   "rationale",
 ]);
+
+// Bounds for the two self-attested recovery/retry-budget fields
+// (`max_cooldown_cycles`, `max_recovery_attempts`). These gate WHEN a stuck
+// connection surfaces as `needs_attention` (§10-B) or a gap goes `terminal`
+// (§10-A) — never WHETHER it eventually does (a connector can never opt out
+// of escalation/terminalization by declaring an absurd budget). The range is
+// centered on the RI-owned generic defaults (DEFAULT_COOLDOWN_PROFILE=12,
+// DEFAULT_TERMINAL_GAP_PROFILE=5 in the respective runtime modules) with
+// headroom for a legitimately slower-recovering provider, capped well short
+// of "effectively never". This is the manifest-validation gate; the
+// consuming modules additionally clamp to their own RI hard ceiling at the
+// read site as defense in depth — a rejected-here value should never reach
+// production code, but the read-site clamp holds even if it does.
+export const REFRESH_POLICY_MAX_COOLDOWN_CYCLES_RANGE = { max: 24, min: 1 } as const;
+export const REFRESH_POLICY_MAX_RECOVERY_ATTEMPTS_RANGE = { max: 20, min: 1 } as const;
 export const RUNTIME_REQUIREMENT_BINDINGS = new Set(["browser", "filesystem", "interactive", "network"]);
 export const STREAM_AVAILABILITY_STATES = new Set(["supported", "unsupported_in_mode", "experimental", "deprecated"]);
 export const STREAM_AVAILABILITY_ALLOWED_KEYS = new Set(["future_modes", "mode", "reason", "state"]);
@@ -241,7 +298,7 @@ const SUPPORTED_RANGE_OPERATORS = new Set(["gte", "gt", "lte", "lt"]);
 // ---------------------------------------------------------------------------
 
 const EXTERNAL_TOOL_ALLOWED_KEYS = new Set(["detect", "install_hint", "license", "min_version", "name", "purpose"]);
-const EXTERNAL_TOOL_DETECT_ALLOWED_KEYS = new Set(["args", "executable", "exit_code"]);
+const EXTERNAL_TOOL_DETECT_ALLOWED_KEYS = new Set(["args", "executable", "executable_env_override", "exit_code"]);
 
 // Validates `runtime_requirements.bindings` (order-preserving). Returns `false`
 // when `bindings` is absent — the original validator returns from the whole
@@ -327,6 +384,12 @@ function validateStrictExternalToolDetect(detect: Record<string, unknown>, index
   if (!isNonEmptyString(detect.executable)) {
     throw invalidConnectorManifest(
       `runtime_requirements.external_tools[${index}].detect.executable must be a non-empty string`,
+      code
+    );
+  }
+  if (detect.executable_env_override !== undefined && !isNonEmptyString(detect.executable_env_override)) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.external_tools[${index}].detect.executable_env_override must be a non-empty string`,
       code
     );
   }
@@ -427,6 +490,91 @@ function validateExternalTools(
   }
 }
 
+const LOCAL_PATH_ENTRY_ALLOWED_KEYS = new Set([
+  "default_relative_to_home",
+  "env_override",
+  "label",
+  "required_for_readiness",
+]);
+
+// Validates one `local_paths.paths[index]` entry (order-preserving).
+function validateLocalPathEntry(entry: unknown, index: number, code: string): void {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    throw invalidConnectorManifest(`runtime_requirements.local_paths.paths[${index}] must be an object`, code);
+  }
+  const obj = entry as Record<string, unknown>;
+  const unknownKeys = Object.keys(obj).filter((key) => !LOCAL_PATH_ENTRY_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}] has unsupported keys: ${unknownKeys.join(", ")}`,
+      code
+    );
+  }
+  if (!isNonEmptyString(obj.default_relative_to_home)) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}].default_relative_to_home must be a non-empty string`,
+      code
+    );
+  }
+  if (!isNonEmptyString(obj.label)) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}].label must be a non-empty string`,
+      code
+    );
+  }
+  if (obj.env_override !== undefined && !isNonEmptyString(obj.env_override)) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}].env_override must be a non-empty string`,
+      code
+    );
+  }
+  if (obj.required_for_readiness !== undefined && typeof obj.required_for_readiness !== "boolean") {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}].required_for_readiness must be a boolean`,
+      code
+    );
+  }
+}
+
+const LOCAL_PATHS_ALLOWED_KEYS = new Set(["home_default_relative_to_user_home", "home_env_override", "paths"]);
+
+// Validates `runtime_requirements.local_paths` (order-preserving).
+function validateLocalPaths(req: Record<string, unknown>, code: string): void {
+  const localPaths = req.local_paths;
+  if (localPaths === undefined || localPaths === null) {
+    return;
+  }
+  if (typeof localPaths !== "object" || Array.isArray(localPaths)) {
+    throw invalidConnectorManifest("runtime_requirements.local_paths must be an object when declared", code);
+  }
+  const obj = localPaths as Record<string, unknown>;
+  const unknownKeys = Object.keys(obj).filter((key) => !LOCAL_PATHS_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths has unsupported keys: ${unknownKeys.join(", ")}`,
+      code
+    );
+  }
+  if (!isNonEmptyString(obj.home_default_relative_to_user_home)) {
+    throw invalidConnectorManifest(
+      "runtime_requirements.local_paths.home_default_relative_to_user_home must be a non-empty string",
+      code
+    );
+  }
+  if (obj.home_env_override !== undefined && !isNonEmptyString(obj.home_env_override)) {
+    throw invalidConnectorManifest(
+      "runtime_requirements.local_paths.home_env_override must be a non-empty string",
+      code
+    );
+  }
+  if (!Array.isArray(obj.paths)) {
+    throw invalidConnectorManifest("runtime_requirements.local_paths.paths must be an array", code);
+  }
+  for (const [index, entry] of obj.paths.entries()) {
+    validateLocalPathEntry(entry, index, code);
+  }
+}
+
 // Decomposed into per-section validators (bindings, external_tools, tool detect).
 // Full manifest validation keeps main's hardened `detect.executable` contract;
 // runtime-requirements-only calls keep the branch's direct-helper compatibility
@@ -444,6 +592,7 @@ export function validateRuntimeRequirements(manifest: Record<string, unknown>, c
     return;
   }
   validateExternalTools(req, code, { allowLegacyCommand: !Array.isArray(manifest.streams) });
+  validateLocalPaths(req, code);
 }
 
 // Validates the interval fields of a refresh_policy (positive-integer shape +
@@ -472,6 +621,42 @@ function validateRefreshPolicyIntervals(pol: Record<string, unknown>, code: stri
       "capabilities.refresh_policy.recommended_interval_seconds must be >= minimum_interval_seconds",
       code
     );
+  }
+}
+
+// Validates the two self-attested recovery/retry-budget fields
+// (`max_cooldown_cycles`, `max_recovery_attempts`) against a bounded range —
+// a connector MAY declare its own observed budget, but MUST NOT be able to
+// self-attest an unbounded/extreme value that would let a stuck connection
+// escape escalation (§10-B) or a dead resource escape terminalization
+// (§10-A). Order-preserving; split out of validateRefreshPolicyFields to
+// keep each helper's complexity within bounds.
+function validateRefreshPolicyRecoveryBudgets(pol: Record<string, unknown>, code: string): void {
+  if (pol.max_cooldown_cycles !== undefined) {
+    const { max, min } = REFRESH_POLICY_MAX_COOLDOWN_CYCLES_RANGE;
+    if (
+      !isPositiveInteger(pol.max_cooldown_cycles) ||
+      (pol.max_cooldown_cycles as number) < min ||
+      (pol.max_cooldown_cycles as number) > max
+    ) {
+      throw invalidConnectorManifest(
+        `capabilities.refresh_policy.max_cooldown_cycles must be an integer between ${min} and ${max} when declared`,
+        code
+      );
+    }
+  }
+  if (pol.max_recovery_attempts !== undefined) {
+    const { max, min } = REFRESH_POLICY_MAX_RECOVERY_ATTEMPTS_RANGE;
+    if (
+      !isPositiveInteger(pol.max_recovery_attempts) ||
+      (pol.max_recovery_attempts as number) < min ||
+      (pol.max_recovery_attempts as number) > max
+    ) {
+      throw invalidConnectorManifest(
+        `capabilities.refresh_policy.max_recovery_attempts must be an integer between ${min} and ${max} when declared`,
+        code
+      );
+    }
   }
 }
 
@@ -532,9 +717,11 @@ function validateRefreshPolicyFields(pol: Record<string, unknown>, code: string)
   }
   validateRefreshPolicyIntervals(pol, code);
   validateRefreshPolicyEnumsAndFlags(pol, code);
+  validateRefreshPolicyRecoveryBudgets(pol, code);
 }
 
 export function validateRefreshPolicyCapability(manifest: Record<string, unknown>, code: string): void {
+  validatePublicListingTier(manifest, code);
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const capabilities = manifest.capabilities;
   if (capabilities === undefined || capabilities === null) {
@@ -554,6 +741,137 @@ export function validateRefreshPolicyCapability(manifest: Record<string, unknown
   validateRefreshPolicyFields(policy as Record<string, unknown>, code);
 }
 
+const PROVEN_ALLOWED_KEYS = new Set(["local_collector", "provider_auth_lifecycle", "static_secret_live"]);
+const PROVEN_STATIC_SECRET_LIVE_ALLOWED_KEYS = new Set(["proven", "run_id", "date", "note"]);
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Validates a present `capabilities.proven.static_secret_live` object.
+function validateProvenStaticSecretLive(value: Record<string, unknown>, code: string): void {
+  const unknownKeys = Object.keys(value).filter((key) => !PROVEN_STATIC_SECRET_LIVE_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(
+      `capabilities.proven.static_secret_live has unsupported keys: ${unknownKeys.join(", ")}`,
+      code
+    );
+  }
+  if (typeof value.proven !== "boolean") {
+    throw invalidConnectorManifest("capabilities.proven.static_secret_live.proven must be a boolean", code);
+  }
+  if (value.run_id !== undefined && value.run_id !== null && !isNonEmptyString(value.run_id)) {
+    throw invalidConnectorManifest(
+      "capabilities.proven.static_secret_live.run_id must be a non-empty string or null when declared",
+      code
+    );
+  }
+  if (value.date !== undefined && !(isNonEmptyString(value.date) && ISO_DATE_RE.test(value.date))) {
+    throw invalidConnectorManifest(
+      "capabilities.proven.static_secret_live.date must be an ISO yyyy-mm-dd string when declared",
+      code
+    );
+  }
+  if (value.note !== undefined && !isNonEmptyString(value.note)) {
+    throw invalidConnectorManifest(
+      "capabilities.proven.static_secret_live.note must be a non-empty string when declared",
+      code
+    );
+  }
+}
+
+// Validates the field shapes of a present `capabilities.proven` object
+// (order-preserving). Split out of validateProvenCapability so the latter
+// only handles the capabilities/proven presence-and-type gate plus the
+// cross-field proof-vs-modality consistency checks.
+function validateProvenFields(provenObj: Record<string, unknown>, code: string): void {
+  const unknownKeys = Object.keys(provenObj).filter((key) => !PROVEN_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(`capabilities.proven has unsupported keys: ${unknownKeys.join(", ")}`, code);
+  }
+  if (provenObj.local_collector !== undefined && typeof provenObj.local_collector !== "boolean") {
+    throw invalidConnectorManifest("capabilities.proven.local_collector must be a boolean when declared", code);
+  }
+  if (provenObj.provider_auth_lifecycle !== undefined && typeof provenObj.provider_auth_lifecycle !== "boolean") {
+    throw invalidConnectorManifest("capabilities.proven.provider_auth_lifecycle must be a boolean when declared", code);
+  }
+  if (provenObj.static_secret_live === undefined) {
+    return;
+  }
+  if (
+    !provenObj.static_secret_live ||
+    typeof provenObj.static_secret_live !== "object" ||
+    Array.isArray(provenObj.static_secret_live)
+  ) {
+    throw invalidConnectorManifest("capabilities.proven.static_secret_live must be an object when declared", code);
+  }
+  validateProvenStaticSecretLive(provenObj.static_secret_live as Record<string, unknown>, code);
+}
+
+// Validates that a manifest claiming a proof also declares the setup
+// modality / runtime binding that proof requires — a malformed manifest must
+// not be able to claim a proof its own declared shape cannot support.
+function validateProvenModalityConsistency(
+  provenObj: Record<string, unknown>,
+  manifest: Record<string, unknown>,
+  code: string
+): void {
+  const setupModality = (manifest.setup as Record<string, unknown> | undefined)?.modality;
+  if (
+    provenObj.static_secret_live &&
+    (provenObj.static_secret_live as Record<string, unknown>).proven === true &&
+    setupModality !== "static_secret"
+  ) {
+    throw invalidConnectorManifest(
+      'capabilities.proven.static_secret_live.proven=true requires setup.modality "static_secret"',
+      code
+    );
+  }
+  if (provenObj.provider_auth_lifecycle === true && setupModality !== "provider_authorization") {
+    throw invalidConnectorManifest(
+      'capabilities.proven.provider_auth_lifecycle=true requires setup.modality "provider_authorization"',
+      code
+    );
+  }
+  if (provenObj.local_collector !== true) {
+    return;
+  }
+  const bindings = (manifest.runtime_requirements as Record<string, unknown> | undefined)?.bindings;
+  const hasFilesystemBinding = Boolean(
+    bindings && typeof bindings === "object" && Object.hasOwn(bindings, "filesystem")
+  );
+  if (!hasFilesystemBinding) {
+    throw invalidConnectorManifest(
+      "capabilities.proven.local_collector=true requires runtime_requirements.bindings.filesystem",
+      code
+    );
+  }
+}
+
+/**
+ * Validates a present `capabilities.proven` declaration — the schema for the
+ * proof-gate traits `connection-setup-plan.ts` reads instead of hardcoding a
+ * connector-id allowlist (`capabilities.proven.local_collector`,
+ * `capabilities.proven.provider_auth_lifecycle`,
+ * `capabilities.proven.static_secret_live.proven`). A manifest claiming a
+ * proof its own `setup.modality` cannot support is rejected here rather than
+ * only being caught by a test, so the invariant holds for any manifest
+ * submitted through this validator, not just the shipped set.
+ */
+export function validateProvenCapability(manifest: Record<string, unknown>, code: string): void {
+  const { capabilities } = manifest;
+  if (capabilities === undefined || capabilities === null || typeof capabilities !== "object") {
+    return;
+  }
+  const { proven } = capabilities as Record<string, unknown>;
+  if (proven === undefined) {
+    return;
+  }
+  if (!proven || typeof proven !== "object" || Array.isArray(proven)) {
+    throw invalidConnectorManifest("capabilities.proven must be an object when declared", code);
+  }
+  const provenObj = proven as Record<string, unknown>;
+  validateProvenFields(provenObj, code);
+  validateProvenModalityConsistency(provenObj, manifest, code);
+}
+
 export function validateManifestSensitivity(manifest: Record<string, unknown>, code: string): void {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const sensitivity = manifest.sensitivity;
@@ -562,6 +880,230 @@ export function validateManifestSensitivity(manifest: Record<string, unknown>, c
   }
   if (!(isNonEmptyString(sensitivity) && MANIFEST_SENSITIVITY_LEVELS.has(sensitivity))) {
     throw invalidConnectorManifest('sensitivity must be "standard" or "sensitive" when declared', code);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Manifest icon (optional brand glyph — see packages/pdpp-brand-react/src/connector-icon.tsx)
+// ---------------------------------------------------------------------------
+
+const MANIFEST_ICON_ALLOWED_KEYS = new Set(["kind", "svg", "color"]);
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+// A brand glyph is shapes, not behavior: this is the complete element and
+// attribute vocabulary an icon needs. Everything else — script, foreignObject,
+// iframe, use, image, animate/animateTransform/set, style, a, and every
+// href/xlink:href variant — is deliberately absent. There is no fetch, no
+// script execution, and no navigation surface reachable from an SVG built
+// only from this vocabulary.
+const SVG_ALLOWED_ELEMENTS = new Set([
+  "svg",
+  "g",
+  "path",
+  "circle",
+  "rect",
+  "ellipse",
+  "line",
+  "polyline",
+  "polygon",
+  "title",
+  "defs",
+]);
+const SVG_ALLOWED_ATTRIBUTES = new Set([
+  "viewbox",
+  "xmlns",
+  "width",
+  "height",
+  "fill",
+  "stroke",
+  "stroke-width",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "d",
+  "cx",
+  "cy",
+  "r",
+  "rx",
+  "ry",
+  "x",
+  "y",
+  "x1",
+  "y1",
+  "x2",
+  "y2",
+  "points",
+  "opacity",
+  "fill-rule",
+  "clip-rule",
+  "transform",
+]);
+// Any of these substrings inside an attribute value is grounds for outright
+// rejection regardless of which attribute carries it — a shape-only icon has
+// no legitimate use for a URL scheme or a CSS url() reference.
+const SVG_ATTRIBUTE_VALUE_DENY_RE = /javascript:|data:|url\(/i;
+const SVG_MAX_LENGTH = 10_000;
+
+// Tokenizes top-level XML/SVG markup into tags and the text between them.
+// Deliberately dumb: this only needs to walk `<tag ...>`, `<tag ... />`, and
+// `</tag>` shapes far enough to hand each one to the allowlist checks below —
+// it is not a general XML parser and does not need to be, since anything it
+// cannot make sense of is rejected rather than passed through.
+const SVG_TAG_RE = /<([^>]*)>/g;
+// A single `name="value"` or `name='value'` pair inside a tag's attribute list.
+const SVG_ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+// The element/tag name at the start of a tag body (after any leading `/`).
+const SVG_TAG_NAME_RE = /^([a-zA-Z_:][-a-zA-Z0-9_:.]*)/;
+
+interface ParsedSvgTag {
+  attrs: Map<string, string>;
+  attrsExhaustive: boolean;
+  closing: boolean;
+  name: string;
+  selfClosing: boolean;
+}
+
+function parseSvgTag(raw: string): ParsedSvgTag | null {
+  let body = raw.trim();
+  const closing = body.startsWith("/");
+  if (closing) {
+    body = body.slice(1).trim();
+  }
+  const selfClosing = body.endsWith("/");
+  if (selfClosing) {
+    body = body.slice(0, -1).trim();
+  }
+  const nameMatch = SVG_TAG_NAME_RE.exec(body);
+  const rawName = nameMatch?.[1];
+  if (!rawName) {
+    return null;
+  }
+  const name = rawName.toLowerCase();
+  const attrSource = body.slice(rawName.length);
+  const attrs = new Map<string, string>();
+  SVG_ATTR_RE.lastIndex = 0;
+  let match = SVG_ATTR_RE.exec(attrSource);
+  while (match) {
+    const [, rawAttrName, doubleQuoted, singleQuoted] = match;
+    if (rawAttrName) {
+      attrs.set(rawAttrName.toLowerCase(), doubleQuoted ?? singleQuoted ?? "");
+    }
+    match = SVG_ATTR_RE.exec(attrSource);
+  }
+  // Anything left over after stripping every recognized `name="value"` pair
+  // means the attribute list contains something the tokenizer could not
+  // classify (an unmatched `<`/`>`, a stray quote, an unquoted value) — that
+  // markup is rejected rather than silently dropped.
+  const attrsExhaustive = attrSource.replace(SVG_ATTR_RE, "").trim().length === 0;
+  return { attrs, attrsExhaustive, closing, name, selfClosing };
+}
+
+// Validates one already-tokenized tag against the element/attribute
+// allowlist (order-preserving). Split out of assertSvgIsAllowlisted so the
+// latter only handles tokenizing the markup and tracking the bare-<svg>-root
+// invariant; this handles the per-tag allowlist gate.
+function assertTagIsAllowlisted(parsed: ParsedSvgTag, code: string): void {
+  if (!parsed.attrsExhaustive) {
+    throw invalidConnectorManifest("icon.svg contains malformed markup", code);
+  }
+  if (!SVG_ALLOWED_ELEMENTS.has(parsed.name)) {
+    throw invalidConnectorManifest(`icon.svg contains a disallowed element: ${parsed.name}`, code);
+  }
+  for (const [attrName, attrValue] of parsed.attrs) {
+    if (!SVG_ALLOWED_ATTRIBUTES.has(attrName)) {
+      throw invalidConnectorManifest(`icon.svg contains a disallowed attribute: ${attrName}`, code);
+    }
+    if (SVG_ATTRIBUTE_VALUE_DENY_RE.test(attrValue)) {
+      throw invalidConnectorManifest(`icon.svg attribute ${attrName} contains a disallowed value`, code);
+    }
+  }
+}
+
+/**
+ * Validates that `svg` uses only the shape-only element/attribute vocabulary
+ * declared above. This is the SOLE XSS defense for manifest-declared icons —
+ * `icon.svg` reaches the DOM via dangerouslySetInnerHTML in
+ * packages/pdpp-brand-react/src/connector-icon.tsx, and this function is the
+ * single choke point that markup must pass through first. It is a strict
+ * ALLOWLIST (reject anything not explicitly permitted), not a denylist —
+ * nothing here enumerates attack vectors, because there is no elements/
+ * attributes vocabulary through which script execution, external fetches, or
+ * navigation are reachable in the first place.
+ */
+function assertSvgIsAllowlisted(svg: string, code: string): void {
+  if (svg.length > SVG_MAX_LENGTH) {
+    throw invalidConnectorManifest(`icon.svg must not exceed ${SVG_MAX_LENGTH} characters`, code);
+  }
+  SVG_TAG_RE.lastIndex = 0;
+  const tags: ParsedSvgTag[] = [];
+  let sawSvgRoot = false;
+  let cursor = 0;
+  let match = SVG_TAG_RE.exec(svg);
+  while (match) {
+    // Text strictly between tags is inert (SVG has no text-execution sink in
+    // this vocabulary — <title> content is the only text ever rendered, and
+    // it is not markup), but a bare `<` or `>` outside a well-formed tag is
+    // grounds for rejection rather than silent tolerance.
+    if (match.index !== cursor && svg.slice(cursor, match.index).includes("<")) {
+      throw invalidConnectorManifest("icon.svg contains malformed markup", code);
+    }
+    cursor = SVG_TAG_RE.lastIndex;
+    const parsed = parseSvgTag(match[1] ?? "");
+    if (!parsed) {
+      throw invalidConnectorManifest("icon.svg contains malformed markup", code);
+    }
+    assertTagIsAllowlisted(parsed, code);
+    if (parsed.name === "svg" && !parsed.closing) {
+      sawSvgRoot = true;
+    }
+    tags.push(parsed);
+    match = SVG_TAG_RE.exec(svg);
+  }
+  if (cursor < svg.length && svg.slice(cursor).includes("<")) {
+    throw invalidConnectorManifest("icon.svg contains malformed markup", code);
+  }
+  if (!sawSvgRoot) {
+    throw invalidConnectorManifest("icon.svg must be a bare <svg> element", code);
+  }
+  const [rootTag] = tags;
+  if (rootTag?.name !== "svg" || rootTag.closing) {
+    throw invalidConnectorManifest("icon.svg must be a bare <svg> element", code);
+  }
+}
+
+/**
+ * Validates an optional manifest `icon` declaration. v1 supports exactly one
+ * kind, `inline_svg`: the manifest carries the SVG markup itself, so no
+ * runtime fetch and no connector-id -> icon map exists anywhere in the
+ * console or reference implementation (the console renders whatever `icon`
+ * value it is handed, unconditionally).
+ *
+ * `icon.svg` is untrusted manifest data — see assertSvgIsAllowlisted for the
+ * XSS defense this delegates to.
+ */
+export function validateManifestIcon(manifest: Record<string, unknown>, code: string): void {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+  const icon = manifest.icon;
+  if (icon === undefined) {
+    return;
+  }
+  if (!icon || typeof icon !== "object" || Array.isArray(icon)) {
+    throw invalidConnectorManifest("icon must be an object when declared", code);
+  }
+  const iconObj = icon as Record<string, unknown>;
+  const unknownKeys = Object.keys(iconObj).filter((key) => !MANIFEST_ICON_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(`icon has unsupported keys: ${unknownKeys.join(", ")}`, code);
+  }
+  if (iconObj.kind !== "inline_svg") {
+    throw invalidConnectorManifest('icon.kind must be "inline_svg"', code);
+  }
+  if (!isNonEmptyString(iconObj.svg)) {
+    throw invalidConnectorManifest("icon.svg must be a non-empty string when icon.kind is inline_svg", code);
+  }
+  const svg = iconObj.svg.trim();
+  assertSvgIsAllowlisted(svg, code);
+  if (iconObj.color !== undefined && !(isNonEmptyString(iconObj.color) && HEX_COLOR_RE.test(iconObj.color))) {
+    throw invalidConnectorManifest("icon.color must be a hex color (e.g. #1ED760) when declared", code);
   }
 }
 
@@ -835,6 +1377,44 @@ function validateStreamStateStreamDeclaration(
   }
 }
 
+function validateStreamParentStreamsDeclaration(
+  stream: Record<string, unknown>,
+  code: string,
+  declaredStreamNames?: Set<string>
+): void {
+  if (stream.parent_streams === undefined) {
+    return;
+  }
+  const streamName = stream.name as string;
+  if (
+    !Array.isArray(stream.parent_streams) ||
+    stream.parent_streams.length === 0 ||
+    stream.parent_streams.some((parent) => !isNonEmptyString(parent))
+  ) {
+    throw invalidConnectorManifest(`Stream '${streamName}' parent_streams must be a non-empty string array`, code);
+  }
+  const parents = stream.parent_streams as string[];
+  if (new Set(parents).size !== parents.length) {
+    throw invalidConnectorManifest(`Stream '${streamName}' parent_streams must not contain duplicates`, code);
+  }
+  if (parents.includes(streamName)) {
+    throw invalidConnectorManifest(`Stream '${streamName}' parent_streams must not name the stream itself`, code);
+  }
+  const unknownParent = declaredStreamNames && parents.find((parent) => !declaredStreamNames.has(parent));
+  if (unknownParent) {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' parent_streams entry '${unknownParent}' must name another declared stream`,
+      code
+    );
+  }
+  if (stream.coverage_strategy !== "parent_detail_accounting") {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' declares parent_streams, which is only valid with coverage_strategy "parent_detail_accounting" (got "${stream.coverage_strategy as string}")`,
+      code
+    );
+  }
+}
+
 // Coverage policies that declare the manifest author's accepted-absence claim
 // for a stream (anything other than the `collect` default). Mirrors
 // packages/polyfill-connectors/src/coverage-policy-manifest-honesty.test.ts's
@@ -896,7 +1476,22 @@ export function validateStreamEvidenceDeclarations(
       code
     );
   }
+  // Direct, explicit rejection of both checkpoint-dependency declaration
+  // shapes on one stream. `state_stream` and `parent_streams` are gated to
+  // different, mutually exclusive `coverage_strategy` values today, which
+  // makes this combination unrepresentable as an incidental side effect —
+  // but the profile's Validation rule 4 is normative regardless of that
+  // side channel, so this check must fail closed on its own even if
+  // `coverage_strategy`'s constraints ever change. See
+  // spec-collection-profile.md, Checkpoint dependency > Validation, rule 4.
+  if (stream.state_stream !== undefined && stream.parent_streams !== undefined) {
+    throw invalidConnectorManifest(
+      `Stream '${stream.name as string}' must not declare both state_stream and parent_streams`,
+      code
+    );
+  }
   validateStreamStateStreamDeclaration(stream, code, declaredStreamNames);
+  validateStreamParentStreamsDeclaration(stream, code, declaredStreamNames);
 }
 
 // ---------------------------------------------------------------------------
@@ -1319,6 +1914,83 @@ function validateStreamAggregations({
   }
 }
 
+// Provider-neutral cycle detection over the manifest's declared checkpoint-
+// dependency graph (state_stream / parent_streams edges). Rules 1-5 above
+// only reject a stream naming itself directly; two or more direct edges can
+// still form a longer cycle (A.state_stream=B, B.state_stream=A, or
+// A -> B -> C -> A), which those per-stream checks cannot see because each
+// only inspects one stream's own declared edges in isolation. This performs
+// a DFS with a visiting/visited coloring over the whole graph, purely from
+// the declared edges — no connector-specific knowledge. See
+// spec-collection-profile.md, Checkpoint dependency > Validation, rule 6.
+function buildCheckpointDependencyGraph(
+  manifestStreamsByName: Map<string, Record<string, unknown>>
+): Map<string, string[]> {
+  const graph = new Map<string, string[]>();
+  for (const [name, stream] of manifestStreamsByName) {
+    const edges: string[] = [];
+    if (isNonEmptyString(stream.state_stream)) {
+      edges.push(stream.state_stream as string);
+    }
+    if (Array.isArray(stream.parent_streams)) {
+      for (const parent of stream.parent_streams as unknown[]) {
+        if (isNonEmptyString(parent)) {
+          edges.push(parent as string);
+        }
+      }
+    }
+    graph.set(name, edges);
+  }
+  return graph;
+}
+
+function findCheckpointDependencyCycle(graph: Map<string, string[]>): string[] | null {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const path: string[] = [];
+
+  function visit(node: string): string[] | null {
+    if (visited.has(node)) {
+      return null;
+    }
+    if (visiting.has(node)) {
+      const cycleStart = path.indexOf(node);
+      return [...path.slice(cycleStart), node];
+    }
+    visiting.add(node);
+    path.push(node);
+    for (const neighbor of graph.get(node) || []) {
+      const cycle = visit(neighbor);
+      if (cycle) {
+        return cycle;
+      }
+    }
+    path.pop();
+    visiting.delete(node);
+    visited.add(node);
+    return null;
+  }
+
+  for (const node of graph.keys()) {
+    const cycle = visit(node);
+    if (cycle) {
+      return cycle;
+    }
+  }
+  return null;
+}
+
+function validateCheckpointDependencyAcyclic(
+  manifestStreamsByName: Map<string, Record<string, unknown>>,
+  code: string
+): void {
+  const graph = buildCheckpointDependencyGraph(manifestStreamsByName);
+  const cycle = findCheckpointDependencyCycle(graph);
+  if (cycle) {
+    throw invalidConnectorManifest(`Checkpoint-dependency cycle detected among streams: ${cycle.join(" -> ")}`, code);
+  }
+}
+
 function validateManifestStream({
   code,
   manifestStreamsByName,
@@ -1412,7 +2084,10 @@ export function validateConnectorManifest(
 
   validateRuntimeRequirements(manifest, code);
   validateRefreshPolicyCapability(manifest, code);
+  validateProvenCapability(manifest, code);
   validateManifestSensitivity(manifest, code);
+  validateManifestIcon(manifest, code);
+  validateStaticSecretCredentialCapture(manifest, code);
 
   const streams = manifest.streams as unknown[];
   const manifestStreamsByName = new Map<string, Record<string, unknown>>(
@@ -1427,4 +2102,5 @@ export function validateConnectorManifest(
   for (const stream of streams) {
     validateManifestStream({ code, manifestStreamsByName, opts, seenStreamNames, stream });
   }
+  validateCheckpointDependencyAcyclic(manifestStreamsByName, code);
 }

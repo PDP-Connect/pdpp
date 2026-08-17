@@ -32,6 +32,9 @@ export interface LocalCoverageStoreDescriptor {
 export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
   claude_code: [
     { store: "projects", stream: "sessions" },
+    { store: "derived_messages", stream: "messages" },
+    { store: "derived_attachments", stream: "attachments" },
+    { store: "derived_memory_notes", stream: "memory_notes" },
     { store: "skills", stream: "skills" },
     { store: "commands", stream: "slash_commands" },
     { store: "file_history", stream: "file_history" },
@@ -39,13 +42,13 @@ export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
     { store: "cache", stream: "cache_inventory" },
     { store: "backups", stream: "backup_inventory" },
     { store: "config", stream: "config_inventory" },
-    { store: "debug", stream: "debug_artifacts" },
-    { store: "downloads", stream: "downloads" },
     { store: "auth", stream: null },
   ],
   codex: [
     { store: "sessions", stream: "sessions" },
     { store: "state_db", stream: "sessions" },
+    { store: "derived_messages", stream: "messages" },
+    { store: "derived_function_calls", stream: "function_calls" },
     { store: "rules", stream: "rules" },
     { store: "prompts", stream: "prompts" },
     { store: "skills", stream: "skills" },
@@ -54,11 +57,18 @@ export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
     { store: "shell_snapshots", stream: "shell_snapshots" },
     { store: "memories", stream: null },
     { store: "context_mode", stream: null },
-    { store: "logs", stream: "logs" },
     { store: "config", stream: "config_inventory" },
     { store: "cache", stream: "cache_inventory" },
     { store: "auth", stream: null },
   ],
+  google_takeout: [
+    { store: "location_history", stream: "location_history" },
+    { store: "youtube_watch_history", stream: "youtube_watch_history" },
+    { store: "search_history", stream: "search_history" },
+    { store: "photos", stream: "photos" },
+  ],
+  apple_photos: [{ store: "export_dir", stream: "photos" }],
+  google_messages: [{ store: "gmcli_archive", stream: "messages" }],
 } as const;
 
 type LocalCoverageStoreNamesByConnector = {
@@ -101,21 +111,44 @@ export function expectedLocalCoverageStoreDescriptors(
     : null;
 }
 
+/**
+ * Every manifest stream the server proof reader (`deriveLocalCoverageAxis`,
+ * via `parseCoverageDiagnosticsStateSnapshot`) must be able to prove complete
+ * needs at least one descriptor mapped to it, or that stream is structurally
+ * uncappable regardless of what the connector's emitter actually collects —
+ * exactly the drift this authority table exists to make detectable instead of
+ * silent (see the table's own doc comment above). A required stream missing a
+ * descriptor is reported so a connector-package-owned conformance test can
+ * fail on it without either package reaching into the other's internals.
+ */
+export function localCoverageStreamsMissingDescriptors(
+  connectorId: string,
+  requiredStreams: readonly string[]
+): readonly string[] {
+  const descriptors = expectedLocalCoverageStoreDescriptors(connectorId);
+  const declaredStreams = new Set((descriptors ?? []).map((descriptor) => descriptor.stream).filter(Boolean));
+  return requiredStreams.filter((stream) => !declaredStreams.has(stream)).sort();
+}
+
+/**
+ * Every filesystem-scanned {@link KnownLocalStore} the connector declares must
+ * be a member of the authoritative descriptor set, with no duplicates. This is
+ * intentionally a SUBSET check, not exact-equality: the descriptor authority
+ * also carries additive derived-store entries (e.g. `derived_messages`) for
+ * streams parsed out of another store's already-scanned source rather than
+ * their own top-level `KnownLocalStore` -- see `buildDerivedCoverageRecord`.
+ * Those have no filesystem-scanned counterpart to compare against here; the
+ * descriptor authority's coverage of every manifest-required stream (derived
+ * or not) is instead pinned by each connector's manifest-conformance test.
+ */
 function assertExpectedLocalCoverageStores(tool: string, stores: readonly KnownLocalStore[]): void {
-  const expected = expectedLocalCoverageStores(tool);
-  if (!expected) {
+  const expectedDescriptors = expectedLocalCoverageStoreDescriptors(tool);
+  if (!expectedDescriptors) {
     return;
   }
   const actual = stores.map((store) => `${store.store}\u0000${store.stream ?? ""}`).sort();
-  const expectedDescriptors = expectedLocalCoverageStoreDescriptors(tool);
-  const expectedSorted = expectedDescriptors
-    ? expectedDescriptors.map((store) => `${store.store}\u0000${store.stream ?? ""}`).sort()
-    : [];
-  if (
-    actual.length !== expectedSorted.length ||
-    actual.some((store, index) => store !== expectedSorted[index]) ||
-    new Set(actual).size !== actual.length
-  ) {
+  const expectedSet = new Set(expectedDescriptors.map((store) => `${store.store}\u0000${store.stream ?? ""}`));
+  if (new Set(actual).size !== actual.length || actual.some((store) => !expectedSet.has(store))) {
     throw new Error(`${tool} local coverage declaration diverges from its authoritative expected-store set`);
   }
 }
@@ -135,12 +168,27 @@ export interface InventoryRecord extends RecordData {
 export interface CoverageRecord extends RecordData {
   id: string;
   reason: string;
-  status: CoverageStatus;
+  /**
+   * `"unaccounted"` alongside the closed {@link CoverageStatus} set: reserved
+   * (see `COLLECTOR_COVERAGE_STATUSES` in collector-runner.ts) for a
+   * connector-derived coverage record that could not classify a discovered
+   * store — e.g. a rollout scan that failed before it could examine
+   * anything. Never returned by `coverageStatus()`'s static classification.
+   */
+  status: CoverageStatus | "unaccounted";
   store: string;
   stream: string | null;
 }
 
 export interface SafeCoverageDiagnosticStore {
+  /**
+   * Boundary this store's coverage was measured under, carried through the
+   * durable snapshot so the read side can tell coverage-of-a-declared-region
+   * from coverage-of-everything. Absent for a snapshot written before the scope
+   * contract, which is a different claim from `unscoped` and must stay
+   * distinguishable.
+   */
+  readonly collection_scope?: string;
   readonly status: CoverageStatus | "unaccounted";
   readonly store: string;
   readonly stream: string | null;
@@ -153,7 +201,128 @@ export interface SafeCoverageDiagnosticStore {
 export function buildCoverageDiagnosticsStateSnapshot(
   coverage: readonly CoverageRecord[]
 ): readonly SafeCoverageDiagnosticStore[] {
-  return coverage.map(({ status, store, stream }) => ({ status, store, stream }));
+  return coverage.map((record) => {
+    const { status, store, stream } = record;
+    // Preserve the measured boundary alongside the store triple. It is a
+    // declared bound, never payload, so it does not widen the safe surface this
+    // builder exists to enforce -- and dropping it here is precisely what left
+    // the read side blind to the fingerprint the records already carried.
+    const scope = (record as { collection_scope?: unknown }).collection_scope;
+    return typeof scope === "string" && scope.trim()
+      ? { collection_scope: scope.trim(), status, store, stream }
+      : { status, store, stream };
+  });
+}
+
+/**
+ * Human-readable `reason` for a derived coverage_diagnostics record — one
+ * whose stream has no dedicated top-level `KnownLocalStore` entry because it
+ * is parsed out of the same on-disk source as another, already-scanned
+ * stream (e.g. Claude Code's `messages`/`attachments`/`memory_notes` and
+ * Codex's `messages`/`function_calls`, both derived from the same session
+ * transcripts their connector also scans for `sessions`).
+ *
+ * `incompleteReason` lets a connector supply its own scan-outcome detail
+ * (e.g. "rollout enumeration failed: unreadable" vs "...: parse_error") for
+ * the `!scanComplete` case; the generic fallback is used when omitted.
+ */
+export function describeDerivedCoverageReason(input: {
+  emitted: number;
+  examined: number;
+  incompleteReason?: string | undefined;
+  label: string;
+  scanComplete: boolean;
+}): string {
+  if (!input.scanComplete) {
+    return input.incompleteReason ?? "enumeration did not complete";
+  }
+  if (input.examined === 0) {
+    return "enumeration complete, 0 examined";
+  }
+  if (input.emitted > 0) {
+    return `${input.emitted} ${input.label} records emitted`;
+  }
+  return `enumeration complete, ${input.examined} examined (${input.emitted} emitted)`;
+}
+
+/**
+ * A derived `coverage_diagnostics` {@link CoverageRecord} for one stream that
+ * is parsed out of another stream's already-scanned source rather than its
+ * own `KnownLocalStore` entry, so it would otherwise never earn a coverage
+ * row and would silently vanish from `collection_facts`/`fullyAccounted`
+ * despite emitting real records (see collector-runner.ts's
+ * `buildTerminalCollectionFacts`/`summarizeCollectorCompleteness`, which only
+ * ever see streams with at least one coverage row).
+ *
+ * On the canonical coverage-status vocabulary ({@link CoverageStatus} |
+ * `"unaccounted"`): a scan that completed — even examining zero records — is
+ * `collected` (the `reason` carries the zero/positive detail); a scan that
+ * never ran to completion is `unaccounted`, since the connector cannot
+ * classify what it never got to examine.
+ *
+ * This is pure mechanical policy shared across connectors. Enumeration,
+ * `label` wording, counting, and mapping a connector's own scan-outcome type
+ * onto `scanComplete`/`incompleteReason` all stay connector-specific. The
+ * store id and record id are NOT connector-specific inputs -- see
+ * {@link selectLocalCoverageDerivedDescriptor}: the authority table selects
+ * them, so an emitter cannot report a derived stream under a store id the
+ * table doesn't declare.
+ */
+export function buildDerivedCoverageRecord(input: {
+  connectorId: string;
+  emitted: number;
+  examined: number;
+  incompleteReason?: string | undefined;
+  label: string;
+  scanComplete: boolean;
+  scopeFingerprint?: string;
+  stream: string;
+}): CoverageRecord {
+  const descriptor = selectLocalCoverageDerivedDescriptor(input.connectorId, input.stream);
+  const status: CoverageStatus | "unaccounted" = input.scanComplete ? "collected" : "unaccounted";
+  return {
+    id: `coverage:${descriptor.store}`,
+    store: descriptor.store,
+    stream: input.stream,
+    status,
+    reason: describeDerivedCoverageReason({
+      emitted: input.emitted,
+      examined: input.examined,
+      incompleteReason: input.incompleteReason,
+      label: input.label,
+      scanComplete: input.scanComplete,
+    }),
+    ...(input.scopeFingerprint ? { collection_scope: input.scopeFingerprint } : {}),
+  };
+}
+
+/**
+ * Resolve the ONE descriptor the authority table declares for a derived
+ * stream -- the structural link that makes it impossible for a connector's
+ * `emitDerivedCoverage` to report a store id the table doesn't know about.
+ * Throws (fails loud, at the point the drift would happen) when the
+ * connector has no authoritative inventory, when no descriptor maps to this
+ * stream, or when more than one does (ambiguous -- e.g. `codex`'s `sessions`
+ * stream is deliberately mapped by two static stores, `sessions` and
+ * `state_db`, so a derived-stream caller for `sessions` would be an error,
+ * not a silent pick).
+ */
+export function selectLocalCoverageDerivedDescriptor(
+  connectorId: string,
+  stream: string
+): LocalCoverageStoreDescriptor {
+  const descriptors = expectedLocalCoverageStoreDescriptors(connectorId);
+  if (!descriptors) {
+    throw new Error(`${connectorId} has no authoritative local coverage inventory`);
+  }
+  const matches = descriptors.filter((descriptor) => descriptor.stream === stream);
+  const [match] = matches;
+  if (matches.length !== 1 || !match) {
+    throw new Error(
+      `${connectorId}: expected exactly one descriptor for derived stream '${stream}', found ${matches.length}`
+    );
+  }
+  return match;
 }
 
 export interface ParsedCoverageDiagnosticsStateSnapshot {
@@ -178,6 +347,13 @@ const SAFE_COVERAGE_DIAGNOSTIC_STATUSES = new Set<CoverageStatus | "unaccounted"
 
 const COVERAGE_DIAGNOSTICS_STATE_KEYS = ["fetched_at", "stores"] as const;
 const COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS = ["status", "store", "stream"] as const;
+/**
+ * The same triple plus the optional measured boundary. Both shapes are accepted
+ * so a snapshot written before the scope contract still parses as proof rather
+ * than failing closed as malformed -- an old snapshot is honestly
+ * boundary-unknown, not corrupt.
+ */
+const COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS_WITH_SCOPE = ["collection_scope", "status", "store", "stream"] as const;
 
 function hasExactKeys(value: Record<string, unknown>, expectedKeys: readonly string[]): boolean {
   const keys = Object.keys(value).sort();
@@ -189,6 +365,7 @@ function isValidCoverageDiagnosticsFetchedAt(value: unknown): value is string {
 }
 
 function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
+  readonly collection_scope?: string;
   readonly status: CoverageStatus | "unaccounted";
   readonly store: string;
   readonly stream: unknown;
@@ -197,7 +374,12 @@ function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
     return null;
   }
   const entry = rawEntry as Record<string, unknown>;
-  if (!hasExactKeys(entry, COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS)) {
+  if (
+    !(
+      hasExactKeys(entry, COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS) ||
+      hasExactKeys(entry, COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS_WITH_SCOPE)
+    )
+  ) {
     return null;
   }
   const store = typeof entry.store === "string" && entry.store ? entry.store : null;
@@ -210,7 +392,17 @@ function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
   ) {
     return null;
   }
-  return { store, stream: entry.stream, status: status as CoverageStatus | "unaccounted" };
+  // Only a non-empty string survives: a malformed or blank boundary reads as
+  // NO recorded boundary rather than as an empty one, so it cannot be mistaken
+  // for a measured full pass.
+  const scope = entry.collection_scope;
+  const collectionScope = typeof scope === "string" && scope.trim() ? scope.trim() : null;
+  return {
+    ...(collectionScope ? { collection_scope: collectionScope } : {}),
+    store,
+    stream: entry.stream,
+    status: status as CoverageStatus | "unaccounted",
+  };
 }
 
 /**
@@ -277,7 +469,12 @@ export function parseCoverageDiagnosticsStateSnapshot(
       malformed = true;
       continue;
     }
-    rows.push({ store, stream: expectedEntry.stream, status });
+    rows.push({
+      ...(entry.collection_scope ? { collection_scope: entry.collection_scope } : {}),
+      store,
+      stream: expectedEntry.stream,
+      status,
+    });
   }
 
   const missingStores = expected
@@ -367,7 +564,19 @@ async function statKind(path: string): Promise<{
 export async function buildLocalSourceInventory(
   tool: string,
   sourceHome: string,
-  stores: readonly KnownLocalStore[]
+  stores: readonly KnownLocalStore[],
+  /**
+   * Fingerprint of the boundary this run enumerated under, stamped onto every
+   * coverage record.
+   *
+   * It rides on the RECORDS rather than a side channel because the records are
+   * the coverage evidence: they commit together in the same ingest batch, so a
+   * crash between steps can never pair one run's coverage rows with another
+   * run's boundary, and there is no second store to fall out of sync. A reader
+   * takes the fingerprint from the same rows it is already reading -- one read,
+   * no extra query, identical on both backends.
+   */
+  collectionScope?: string | null
 ): Promise<InventoryPlan> {
   assertExpectedLocalCoverageStores(tool, stores);
   const recordsByStream = new Map<string, InventoryRecord[]>();
@@ -392,6 +601,8 @@ export async function buildLocalSourceInventory(
       stream: store.stream,
       status,
       reason: store.reason,
+      // The boundary this row was measured under, committed WITH the row.
+      ...(collectionScope ? { collection_scope: collectionScope } : {}),
     });
 
     if (

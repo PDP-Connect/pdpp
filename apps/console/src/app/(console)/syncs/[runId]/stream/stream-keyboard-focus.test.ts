@@ -271,3 +271,62 @@ test("geometry extraction is fail-closed when the SSE element has no complete re
   assert.equal(readRemoteEditableRect({ width: 3, x: 1, y: 2 }), null);
   assert.equal(readRemoteEditableRect(null), null);
 });
+
+test("remote-focus at mount then first tap after realistic delay focuses directly (warm cache covers mount→tap)", () => {
+  let state = createMobileKeyboardFocusState();
+  // Remote page sends focus event at mount (t=0)
+  ({ state } = transition(state, { atMs: 0, rect: editableRect, type: "remote-focus" }));
+  assert.equal(state.editableRectCache?.confirmedAtMs, 0);
+
+  // User taps ~2.5s later (realistic delay: page render + user reaction time)
+  const atRealisticTap = 2500;
+  ({ state } = transition(state, {
+    atMs: atRealisticTap,
+    pointerId: 1,
+    remotePoint: editablePoint,
+    type: "pointerdown",
+  }));
+  const released = transition(state, {
+    atMs: atRealisticTap + 50,
+    pointerId: 1,
+    remotePoint: editablePoint,
+    type: "pointerup",
+  });
+
+  // Should focus directly without needing a second remote-focus (warm cache).
+  assert.equal(released.effect, "focus-text-input", "one-tap path should fire with extended TTL");
+  assert.equal(released.state.gesture, null);
+});
+
+test("negative case: tap at expired stale geometry still requires re-confirmation", () => {
+  let state = createMobileKeyboardFocusState();
+  // Cache confirmed at t=0
+  ({ state } = transition(state, { atMs: 0, rect: editableRect, type: "remote-focus" }));
+
+  // Tap arrives after cache has expired (beyond 3.5s)
+  const atExpiredCache = MOBILE_KEYBOARD_EDITABLE_RECT_CACHE_TTL_MS + 100;
+  ({ state } = transition(state, {
+    atMs: atExpiredCache,
+    pointerId: 2,
+    remotePoint: editablePoint,
+    type: "pointerdown",
+  }));
+  const released = transition(state, {
+    atMs: atExpiredCache + 50,
+    pointerId: 2,
+    remotePoint: editablePoint,
+    type: "pointerup",
+  });
+
+  // Expired cache falls back to awaiting-confirmation pattern, requiring a second remote-focus
+  assert.equal(released.effect, "none");
+  assert.equal(
+    released.state.gesture?.phase,
+    "awaiting-confirmation",
+    "expired cache must re-confirm via second remote-focus"
+  );
+
+  // Re-confirmation arrives and shows affordance
+  const confirmed = transition(released.state, { atMs: atExpiredCache + 51, rect: editableRect, type: "remote-focus" });
+  assert.equal(confirmed.effect, "show-affordance");
+});

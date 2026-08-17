@@ -9,6 +9,8 @@ import {
   writeTransaction,
 } from "../../lib/db.ts";
 import {
+  assertCanonicalReceiptReplay,
+  assertCanonicalTransitionIdentity,
   type ReplacementReceipt,
   ReplacementReplayConflictError,
   selectCurrentReplacementReceipt,
@@ -21,6 +23,7 @@ import {
   withPostgresReadOnlyTransaction,
   withPostgresTransaction,
 } from "../postgres-storage.ts";
+import type { BrowserSurfacePersistenceTransaction } from "./browser-surface-persistence-unit-of-work.ts";
 
 export interface BrowserSurfaceReplacementReceiptStore {
   append: (receipt: ReplacementReceipt) => Promise<ReplacementReceipt>;
@@ -28,6 +31,7 @@ export interface BrowserSurfaceReplacementReceiptStore {
   applySelectionOverrideBatch: (
     input: ReplacementReceiptSelectionOverrideBatchInput
   ) => Promise<ReplacementReceiptSelectionOverrideBatchVerification>;
+  bindToTransaction: (transaction: BrowserSurfacePersistenceTransaction) => BrowserSurfaceReplacementReceiptStore;
   dryRunSelectionOverrideBatch: (
     input: ReplacementReceiptSelectionOverrideBatchInput
   ) => Promise<ReplacementReceiptSelectionOverrideBatchVerification>;
@@ -347,36 +351,7 @@ function mapRow(row: ReplacementReceiptRow): ReplacementReceipt {
 }
 
 function assertSameEvent(existing: ReplacementReceipt, incoming: ReplacementReceipt): void {
-  const immutableFields: readonly (keyof ReplacementReceipt)[] = [
-    "replacement_id",
-    "idempotency_key",
-    "scope",
-    "connection_id",
-    "connector_id",
-    "profile_key",
-    "surface_subject_id",
-    "run_id",
-    "lease_id",
-    "surface_id",
-    "previous_generation_hash",
-    "next_generation_hash",
-    "cause",
-    "phase",
-    "terminal_outcome",
-  ];
-  for (const field of immutableFields) {
-    assertSameEventField(existing, incoming, field);
-  }
-}
-
-function assertSameEventField(
-  existing: ReplacementReceipt,
-  incoming: ReplacementReceipt,
-  field: keyof ReplacementReceipt
-): void {
-  if (existing[field] !== incoming[field]) {
-    throw new ReplacementReplayConflictError(`replacement replay changed immutable field ${field}`);
-  }
+  assertCanonicalReceiptReplay(existing, incoming);
 }
 
 function params(receipt: ReplacementReceipt): readonly (string | number | null)[] {
@@ -1144,6 +1119,13 @@ function setOptionalRowValue(
 }
 
 class SqliteBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceReplacementReceiptStore {
+  bindToTransaction(tx: BrowserSurfacePersistenceTransaction): BrowserSurfaceReplacementReceiptStore {
+    if (tx.backend !== "sqlite") {
+      throw new Error("SQLite replacement receipt store cannot bind to a PostgreSQL transaction");
+    }
+    return this;
+  }
+
   async applySelectionOverrideBatch(
     input: ReplacementReceiptSelectionOverrideBatchInput
   ): Promise<ReplacementReceiptSelectionOverrideBatchVerification> {
@@ -1540,6 +1522,16 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
       query ??
       ((sql, values = []) =>
         postgresQuery<ReplacementReceiptRow>(sql, [...values]) as Promise<{ rows: ReplacementReceiptRow[] }>);
+  }
+
+  bindToTransaction(tx: BrowserSurfacePersistenceTransaction): BrowserSurfaceReplacementReceiptStore {
+    if (tx.backend !== "postgres" || !tx.query) {
+      throw new Error("PostgreSQL replacement receipt store requires a PostgreSQL transaction query");
+    }
+    const { query } = tx;
+    return new PostgresBrowserSurfaceReplacementReceiptStore(
+      (sql, values = []) => query(sql, values) as Promise<{ rows: ReplacementReceiptRow[] }>
+    );
   }
 
   applySelectionOverrideBatch(
@@ -1971,26 +1963,7 @@ function selectSystemActionableForScope(
 }
 
 function assertSameEventIdentity(previous: ReplacementReceipt, incoming: ReplacementReceipt): void {
-  const fields: readonly (keyof ReplacementReceipt)[] = [
-    "replacement_id",
-    "scope",
-    "connection_id",
-    "connector_id",
-    "profile_key",
-    "surface_subject_id",
-    "run_id",
-    "lease_id",
-    "surface_id",
-    "previous_generation_hash",
-    "cause",
-  ];
-  for (const field of fields) {
-    if (previous[field] !== incoming[field]) {
-      throw new ReplacementReplayConflictError(
-        `replacement ${previous.replacement_id} immutable field ${field} changed`
-      );
-    }
-  }
+  assertCanonicalTransitionIdentity(previous, incoming);
 }
 
 function assertNoOppositeResolution(previous: ReplacementReceipt, incoming: ReplacementReceipt): void {

@@ -44,7 +44,7 @@ function deterministicRecoveryBackend() {
 }
 
 function failStopBackend() {
-  return makeLocalTransformerBackend(
+  const backend = makeLocalTransformerBackend(
     {
       cacheDir: "/not-read-by-fake-child",
       dimensions: 3,
@@ -66,6 +66,11 @@ function failStopBackend() {
       },
     }
   );
+  // This fixture tests an unconfirmed transformer exit during device ingest.
+  // Automatic startup warmup would consume the deliberately nonresponsive
+  // child before the fixture can publish its ready receipt, testing a
+  // different lifecycle phase and making the intended request unreachable.
+  return { ...backend, prepare: undefined };
 }
 
 const mode = process.env.PDPP_FAILSTOP_FIXTURE_MODE;

@@ -14,6 +14,7 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
+import type { RuntimeContinuationFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import { allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { isNullish } from "../lib/nullish.ts";
 import type { SpineSummary } from "../lib/spine.ts";
@@ -75,7 +76,9 @@ import {
   type OwnerState,
   type OwnerStateEvidence,
   ownerStateCausalEvidenceFrom,
+  type SourceWorkGroup,
   scheduleModeFrom,
+  sourceWorkGroupFromOwnerState,
 } from "../runtime/owner-state.ts";
 import {
   deriveRecoveryStall,
@@ -87,6 +90,10 @@ import {
 } from "../runtime/recovery-decision.ts";
 import type { RenderedVerdict, ScheduleEvidence } from "../runtime/rendered-verdict.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import {
+  classifyTerminalSetupDisposition,
+  type SetupTerminalDisposition,
+} from "../runtime/static-secret-setup-status.ts";
 import { pickMostUrgentAttention } from "./attention-urgency.ts";
 import {
   getConnectorManifest,
@@ -111,12 +118,15 @@ import {
   deriveStreamCoverageCondition,
   type FreshnessEvidenceStrategy,
   isRequiredStream,
+  persistedZeroRetainsCoverageProof,
   pickAcceptedCoverage,
   pickRequiredAcceptedCoverage,
+  readAcceptedCoveragePolicy,
   readCoverageEvidenceStrategy,
   readFreshnessEvidenceStrategy,
 } from "./connector-coverage-policy.ts";
 import {
+  filterRunCoverageEvidence,
   firstDegradingKnownGapReason,
   firstPendingDetailGapReason,
   hasDegradingKnownGap,
@@ -129,8 +139,10 @@ import {
   projectLocalDeviceProgress,
 } from "./connector-outbox-axis.ts";
 import { listConnectorSummaryEvidence } from "./connector-summary-read-model.ts";
+import { filterRunGapsProvenCompleteByReport } from "./continuation-proof.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
+import { readStoredCollectionScope } from "./local-collection-scope.ts";
 import { mapPendingPressureGaps } from "./pending-pressure-gap-map.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 import {
@@ -332,6 +344,13 @@ interface StreamProjection {
   readonly record_count: number;
 }
 
+/**
+ * The count-state vocabulary as stored on an evidence row, where the state is
+ * always populated. `StreamRecordSummary.count_state` is optional instead,
+ * because a non-evidence-backed caller may make no count claim at all.
+ */
+type CountStateValue = "known" | "known_zero" | "unobserved" | "stale" | "unknown";
+
 export interface StreamRecordSummary {
   readonly count_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
   /**
@@ -437,6 +456,7 @@ interface StreamSummary {
  * — never free-text diagnostics.
  */
 export interface RuntimeCollectionFactSkip {
+  readonly continuation?: RuntimeContinuationFact;
   readonly reason: string;
   readonly recovery_action?: string;
 }
@@ -452,6 +472,8 @@ export interface RuntimeCollectionFactSkip {
 export interface RuntimeCollectionFact {
   readonly checkpoint: string | null;
   readonly collected: number;
+  /** Declared boundary fingerprint measured by this stream. */
+  readonly collection_scope?: string;
   readonly considered: number | null;
   /** Raw local-collector coverage statuses; policy is derived on read. */
   readonly coverage_statuses?: readonly string[];
@@ -466,12 +488,25 @@ export interface RuntimeCollectionFact {
    */
   readonly covered: number | null;
   readonly pending_detail_gaps: number;
+  /**
+   * Whether the run's declared collection boundary was actually enforceable on
+   * this stream. `false` marks a stream collected WHOLE under a bounded run —
+   * it holds real data but proves nothing about the declared region, so it must
+   * not be read as covering it. Absent when the run declared no boundary.
+   */
+  readonly scoped?: boolean;
   readonly skipped: RuntimeCollectionFactSkip | null;
   readonly stream: string;
 }
 
 /** The runtime `collection_facts` terminal-event block, parsed defensively. */
 export interface RuntimeCollectionFacts {
+  /**
+   * Fingerprint of the boundary this evidence was measured against (`unscoped`
+   * for a full pass). Compared against the connection's currently-declared
+   * scope: evidence measured under a different region is not proof of this one.
+   */
+  readonly collection_scope?: string;
   readonly streams: readonly RuntimeCollectionFact[];
 }
 
@@ -489,6 +524,7 @@ export interface ConnectorRunSummary {
   readonly first_at: string;
   readonly known_gaps: unknown[];
   readonly last_at: string;
+  readonly records_emitted?: number | null;
   /**
    * Whether this run was dispatched `recovery_only` (drains pending detail
    * gaps only; performs no forward/list-pass inventory scan). Read directly
@@ -503,10 +539,12 @@ export interface ConnectorRunSummary {
    * verdict that wipes prior proven coverage.
    */
   readonly recovery_only: boolean;
+  readonly reported_records_emitted?: number | null;
   readonly run_id: string | undefined;
   readonly started_at: string;
   readonly status: string;
   readonly terminal_reason: string | null;
+  readonly yield_counts_present?: boolean;
 }
 
 export interface PendingDetailGapSummary {
@@ -590,7 +628,7 @@ interface ScheduleLike {
   getSchedule: (connectorId: string, options?: { readonly connectorInstanceId?: string }) => Promise<unknown>;
 }
 
-interface ControllerLike {
+export interface ControllerLike {
   getBrowserSurfaceRuntimeAllocatorScopeId?: () => string | null;
   getBrowserSurfaceRuntimeManagement?: (connectorId: string) => BrowserSurfaceRuntimeManagement;
   getSchedule?: (connectorId: string) => Promise<unknown>;
@@ -787,6 +825,8 @@ export interface ConnectorSummary {
    * supports a static secret. Connection-scoped fact, not a connector capability.
    */
   readonly source_kind: string;
+  /** Total server-owned work classification derived from `owner_state.resolver`. */
+  readonly source_work: SourceWorkGroup;
   readonly status: string | null;
   readonly stream_count?: number;
   /**
@@ -812,6 +852,8 @@ export interface ConnectorSummary {
     readonly as_of: string | null;
     readonly reason_code: string | null;
   };
+  /** Shared terminal setup disposition for a draft, or null otherwise. */
+  readonly terminal_setup_disposition: SetupTerminalDisposition | null;
   readonly total_records: number;
   /**
    * Orthogonal state for `total_records`, the same `count_state` contract
@@ -1156,6 +1198,27 @@ function isActiveRunSummaryStatus(status: string): boolean {
   return status === "pending" || status === "started" || status === "in_progress";
 }
 
+function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function productRunYieldCounts(history: ProductRunHistoryRecord): {
+  readonly present: boolean;
+  readonly recordsEmitted: number | null;
+  readonly reportedRecordsEmitted: number | null;
+} {
+  const facts = history.factsJson;
+  const present =
+    facts === null || facts === undefined
+      ? true
+      : Object.hasOwn(facts, "records_emitted") || Object.hasOwn(facts, "reported_records_emitted");
+  return {
+    present,
+    recordsEmitted: present ? finiteNumberOrNull(history.recordsEmitted) : null,
+    reportedRecordsEmitted: present ? finiteNumberOrNull(history.reportedRecordsEmitted) : null,
+  };
+}
+
 /**
  * Product LIST/detail composition (terminal-read-architecture-fable-0730.md
  * §9/R9.2): a `run_history` row for ANY run kind, composed with the
@@ -1180,6 +1243,7 @@ function productRunHistoryToConnectorRunSummary(
     return null;
   }
   const facts = history.factsJson ?? null;
+  const yieldCounts = productRunYieldCounts(history);
   const isLive = Boolean(activeRun && history.runId && activeRun.run_id === history.runId);
   let status: string = history.status;
   if (status === "running") {
@@ -1201,11 +1265,14 @@ function productRunHistoryToConnectorRunSummary(
     first_at: history.startedAt,
     known_gaps: terminalKnownGaps.length > 0 ? terminalKnownGaps : [...history.knownGaps],
     last_at: isActiveRunSummaryStatus(status) ? history.startedAt : history.completedAt,
+    records_emitted: yieldCounts.recordsEmitted,
     recovery_only: facts?.recovery_only === true,
+    reported_records_emitted: yieldCounts.reportedRecordsEmitted,
     run_id: history.runId || undefined,
     started_at: history.startedAt,
     status,
     terminal_reason: history.terminalReason ?? null,
+    yield_counts_present: yieldCounts.present,
   };
 }
 
@@ -1346,7 +1413,13 @@ function projectStreamRecordSummariesWithDeclaredZeros(
   const synthesized = manifestStreams
     .map((stream) => stream.name)
     .filter((name): name is string => typeof name === "string" && name.length > 0 && !present.has(name))
-    .map((name) => ({ last_updated: null, record_count: 0, stream: name }));
+    // `retainedSizeReliable` vouches that the connection's retained-size
+    // projection is fresh and clean, but a sparse projection still cannot
+    // tell "measured zero" from "never measured" for a stream it has no row
+    // for. The synthesized entry stays (callers rely on declared streams
+    // being present) while `count_state` states plainly that the zero is
+    // unobserved, so no consumer reads it as an exact-zero claim.
+    .map((name) => ({ count_state: "unobserved" as const, last_updated: null, record_count: 0, stream: name }));
   if (synthesized.length === 0) {
     return summaries;
   }
@@ -1798,7 +1871,13 @@ export async function listOwnerVisibleConnectorInstances(
   // elapsed.
   const store = getConnectorInstanceStore();
   const rows: ConnectorInstanceRow[] = [];
+  const visitedBoundaries = new Set<string>();
   const readNextPage = async (after: ConnectorIdentityPageBoundary | null): Promise<void> => {
+    const boundaryKey = after ? JSON.stringify(after) : "<start>";
+    if (visitedBoundaries.has(boundaryKey)) {
+      throw new Error("Owner-visible connector identity pagination repeated a boundary.");
+    }
+    visitedBoundaries.add(boundaryKey);
     const page: { readonly hasMore: boolean; readonly rows: readonly ConnectorInstanceRow[] } =
       await store.listOwnerVisibleIdentityPage(ownerSubjectId, { after, limit: 100 });
     rows.push(...page.rows);
@@ -1891,13 +1970,8 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
 
   const publicListing = manifest.capabilities?.public_listing;
   if (publicListing && typeof publicListing === "object" && !Array.isArray(publicListing)) {
-    const listing = publicListing as { listed?: unknown; status?: unknown };
-    if (listing.listed === true) {
-      return true;
-    }
-    if (listing.listed === false || listing.status === "unproven") {
-      return false;
-    }
+    const { tier } = publicListing as { tier?: unknown };
+    return tier === "supported" || tier === "preview";
   }
 
   const localDeviceBinding = manifest.runtime_requirements?.bindings?.local_device;
@@ -1910,8 +1984,8 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
     return false;
   }
 
-  // Catalog visibility is explicit opt-in only. A connector without
-  // capabilities.public_listing.listed === true is hidden by default.
+  // Catalog visibility is explicit opt-in only. A connector without a valid
+  // owner-visible lifecycle tier is hidden by default.
   return false;
 }
 
@@ -2046,8 +2120,74 @@ function isOwnerCancelledRun(run: ConnectorRunSummary | null): boolean {
   return run?.status === "cancelled" && OWNER_CANCEL_TERMINAL_REASONS.has(reason);
 }
 
-function healthClassifyingRun(run: ConnectorRunSummary | null): ConnectorRunSummary | null {
-  return isOwnerCancelledRun(run) ? null : run;
+/**
+ * A `status: "skipped"` row (`runtime/scheduler/pre-run-gate.ts`'s
+ * `buildUnresolvedAttentionSkip`/`buildNotReadySkip`/etc.) is scheduler
+ * bookkeeping, not a connector execution result — the run never dispatched,
+ * never contacted the provider, and its `error`/`failure_reason` text (e.g.
+ * `"attention_unresolved: credential_rejected (...)"`) is a restatement of
+ * whatever ALREADY blocked the run, not new evidence about the credential.
+ * Without this exclusion, that text becomes `reasonCode`
+ * (`projectConnectorSummaryConnectionHealth`), text-matches
+ * `isDefinitiveStoredCredentialRejectionReason`, and re-derives the exact
+ * same blocking condition that produced the skip — a self-perpetuating loop
+ * that persists even after the live credential is captured, present, and
+ * unrejected, because every tick re-poisons `run_history` with the same
+ * skip text (owner-reported: a working 48k-record Gmail connection stuck
+ * skipping forever on a stale `credential_rejected` derived from its own
+ * prior skip, with zero rows in `connector_attention_records`).
+ */
+function isSchedulerSkippedRun(run: ConnectorRunSummary | null): boolean {
+  return run?.status === "skipped";
+}
+
+/**
+ * Compatibility fallback for callers that have not yet supplied the store's
+ * newest-terminal run. An active `lastRun` is progress, not settled health;
+ * before the explicit settled-run read existed, the only honest fallback was
+ * the last successful terminal run. Callers with the new store field bypass
+ * this approximation and retain the intervening failure.
+ */
+function fallbackLatestSettledRun(
+  lastRun: ConnectorRunSummary | null,
+  lastSuccessfulRun: ConnectorRunSummary | null
+): ConnectorRunSummary | null {
+  return lastRun && isActiveRunSummaryStatus(lastRun.status) ? lastSuccessfulRun : lastRun;
+}
+
+/**
+ * Health/failure classification authority (P1-1 fix). Reads `latestSettledRun`
+ * — the newest TERMINAL run regardless of what is active right now — never
+ * `lastRun` (which may be a still-running/pending retry that has not settled
+ * and therefore cannot represent "the current failure/success state").
+ *
+ * Before this fix, this function took the caller's literal newest run-history
+ * row (`lastRun`) and fell back to `lastSuccessfulRun` whenever that row was
+ * active. That silently skipped over a genuine settled FAILURE sitting
+ * strictly between the last success and an in-flight retry: success -> real
+ * failure -> retry begins -> `lastRun` is the retry (active) ->
+ * `lastSuccessfulRun` is the old success -> the failure vanishes from health
+ * entirely, and the connection reads healthy with a syncing badge until the
+ * retry itself terminates. `latestSettledRun` is a genuine third fact, read
+ * from the store's own newest-terminal-row query
+ * (`getLatestSettledRunHistoryForProductByConnectionId` /
+ * `listLatestSettledRunHistoryForProductByConnectionIds`,
+ * scheduler-store.ts), so it already reflects that intervening failure with
+ * no client-side reconstruction.
+ *
+ * Owner cancellation controls work; it is not provider or coverage evidence,
+ * so a cancelled `latestSettledRun` still defers to `lastSuccessfulRun`.
+ * Scheduler skips never contacted the provider, so they classify as no
+ * evidence (`null`), never a fabricated failure.
+ */
+function healthClassifyingRun(
+  latestSettledRun: ConnectorRunSummary | null,
+  lastSuccessfulRun: ConnectorRunSummary | null = null
+): ConnectorRunSummary | null {
+  if (isOwnerCancelledRun(latestSettledRun)) {
+    return lastSuccessfulRun;
+  }
+  return isSchedulerSkippedRun(latestSettledRun) ? null : latestSettledRun;
 }
 
 /**
@@ -2082,19 +2222,42 @@ function healthClassifyingRun(run: ConnectorRunSummary | null): ConnectorRunSumm
  * case: a FAILED recovery-only run still carries a genuine failure signal
  * and is never substituted (the `latest` case below), exactly like an
  * ordinary terminal failure.
+ *
+ * P1-1 cross-surface fix: the active-run fallback used to key off `lastRun`
+ * alone (the literal newest row, including in-progress) and return
+ * `lastSuccessfulRun` outright — "is something running right now with no
+ * coverage evidence of its own." That question is honest for an active run
+ * with NO settled evidence between it and the last success, but it is wrong
+ * whenever a real settled failure/gap sits strictly between them: `lastRun`
+ * being active says nothing about whether `latestSettledRun` is that same
+ * old success or a genuine intervening failure, so blindly returning
+ * `lastSuccessfulRun` let the Collection Report (and any other coverage
+ * reader) show stale "complete" coverage for a stream a settled failure had
+ * already invalidated — disagreeing with the connection-health headline,
+ * which already reads `latestSettledRun` directly via `healthClassifyingRun`.
+ * The active-run fallback now applies ONLY when `latestSettledRun` itself
+ * carries no coverage evidence to lose (unset, or itself the same run as
+ * `lastSuccessfulRun`) — never when it is a distinct terminal failure/gap.
+ * `activeRun`/progress evidence remains a SEPARATE overlay either way, never
+ * folded into this function's coverage answer.
  */
 function coverageClassifyingRun(
   lastRun: ConnectorRunSummary | null,
-  lastSuccessfulRun: ConnectorRunSummary | null
+  lastSuccessfulRun: ConnectorRunSummary | null,
+  latestSettledRun: ConnectorRunSummary | null = lastRun
 ): ConnectorRunSummary | null {
-  if (lastRun && isActiveRunSummaryStatus(lastRun.status)) {
+  const settledIsIntervening =
+    latestSettledRun !== null &&
+    latestSettledRun !== lastSuccessfulRun &&
+    !isActiveRunSummaryStatus(latestSettledRun.status) &&
+    !isOwnerCancelledRun(latestSettledRun);
+  if (lastRun && isActiveRunSummaryStatus(lastRun.status) && !settledIsIntervening) {
     return lastSuccessfulRun ?? null;
   }
-  if (lastRun && lastRun.status === "succeeded" && lastRun.recovery_only) {
-    return lastSuccessfulRun ?? lastRun;
+  if (latestSettledRun && latestSettledRun.status === "succeeded" && latestSettledRun.recovery_only) {
+    return lastSuccessfulRun ?? latestSettledRun;
   }
-  const latest = healthClassifyingRun(lastRun);
-  return latest ?? (isOwnerCancelledRun(lastRun) ? lastSuccessfulRun : null);
+  return healthClassifyingRun(latestSettledRun, lastSuccessfulRun);
 }
 
 /**
@@ -2112,9 +2275,10 @@ function coverageClassifyingRun(
  */
 function classifiedRunForOwnerState(
   lastRun: ConnectorRunSummary | null,
-  lastSuccessfulRun: ConnectorRunSummary | null
+  lastSuccessfulRun: ConnectorRunSummary | null,
+  latestSettledRun: ConnectorRunSummary | null = lastRun
 ): ClassifiedRunForOwnerState | null {
-  const classifyingRun = coverageClassifyingRun(lastRun, lastSuccessfulRun);
+  const classifyingRun = coverageClassifyingRun(lastRun, lastSuccessfulRun, latestSettledRun);
   if (isNullish(classifyingRun)) {
     return null;
   }
@@ -2353,9 +2517,20 @@ function mapCoverageAxis(
   pendingDetailGaps: readonly PendingDetailGapSummary[] = [],
   manifestStreams: readonly ManifestStream[] = []
 ): CoverageAxis {
-  const hasDetailGap = hasPendingDetailGap(pendingDetailGaps);
-  const hasTerminal = hasTerminalKnownGap(lastRun, pendingDetailGaps);
-  const hasRetryable = lastRun ? lastRun.known_gaps.some((gap) => isRetryableKnownGap(gap)) : false;
+  const manifestByStream = firstManifestStreamsByName(manifestStreams);
+  const requiredStreamEvidence = (stream: unknown): boolean => {
+    if (typeof stream !== "string") {
+      return true;
+    }
+    const manifestStream = manifestByStream.get(stream);
+    return manifestStream ? isRequiredStream(manifestStream) : true;
+  };
+  const relevantEvidence = filterRunCoverageEvidence(lastRun, pendingDetailGaps, requiredStreamEvidence);
+  const relevantPendingDetailGaps = relevantEvidence.pendingDetailGaps;
+  const relevantRun = relevantEvidence.run;
+  const hasDetailGap = hasPendingDetailGap(relevantPendingDetailGaps);
+  const hasTerminal = hasTerminalKnownGap(relevantRun, relevantPendingDetailGaps);
+  const hasRetryable = relevantRun ? relevantRun.known_gaps.some((gap) => isRetryableKnownGap(gap)) : false;
   // Contradictory manifest (required AND accepted-absent) takes precedence
   // over the success path so a misconfigured manifest can never paint
   // green. The label still names the declared accepted-coverage policy
@@ -2421,13 +2596,19 @@ const DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER = ["terminal_gap", "retryable_gap",
 
 export function rollupCollectionReportCoverageOverride(
   currentAxis: CoverageAxis,
-  report: readonly CollectionReportEntry[]
+  report: readonly CollectionReportEntry[],
+  manifestStreams: readonly ManifestStream[] = []
 ): CoverageAxis | null {
+  const manifestByStream = firstManifestStreamsByName(manifestStreams);
+  const requiredReport = report.filter((entry) => {
+    const manifestStream = manifestByStream.get(entry.stream);
+    return manifestStream ? isRequiredStream(manifestStream) : entry.required;
+  });
   const currentIndex = DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.indexOf(
     currentAxis as (typeof DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER)[number]
   );
   const currentRank = currentIndex === -1 ? DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.length : currentIndex;
-  const conditions = new Set(report.map((entry) => entry.coverage_condition));
+  const conditions = new Set(requiredReport.map((entry) => entry.coverage_condition));
   const degrading =
     DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.slice(0, currentRank).find((axis) => conditions.has(axis)) ?? null;
   if (degrading) {
@@ -2444,7 +2625,7 @@ export function rollupCollectionReportCoverageOverride(
   if (
     currentIndex === -1 &&
     currentAxis !== "unknown" &&
-    report.some((entry) => entry.required && entry.coverage_condition === "unknown")
+    requiredReport.some((entry) => entry.coverage_condition === "unknown")
   ) {
     return "unknown";
   }
@@ -2506,9 +2687,15 @@ function proofAgeFreshnessOverride(
     return null;
   }
   const current = healthInput.freshness;
+  const classifyingRun = coverageClassifyingRun(
+    healthInput.lastRun ?? null,
+    healthInput.lastSuccessfulRun ?? null,
+    healthInput.latestSettledRun ??
+      fallbackLatestSettledRun(healthInput.lastRun ?? null, healthInput.lastSuccessfulRun ?? null)
+  );
   const recomputed = deriveReferenceFreshness({
-    lastAttemptedAt: healthInput.lastRun?.last_at ?? null,
-    lastAttemptStatus: healthInput.lastRun?.status ?? null,
+    lastAttemptedAt: classifyingRun ? classifyingRun.last_at : null,
+    lastAttemptStatus: classifyingRun ? classifyingRun.status : null,
     lastSuccessfulRunAt: capIsoAnchor(healthInput.lastSuccessfulRun?.last_at ?? null, proofAnchor),
     maximumStalenessSeconds,
     now: healthInput.nowIso ?? new Date().toISOString(),
@@ -2525,16 +2712,36 @@ export function refineConnectionHealthWithCollectionReport(
   initialConnectionHealth: ConnectionHealthSnapshot,
   collectionReport: readonly CollectionReportEntry[]
 ): ConnectionHealthSnapshot {
-  const coverageOverride = rollupCollectionReportCoverageOverride(
-    initialConnectionHealth.axes.coverage,
+  const lastRun = filterRunGapsProvenCompleteByReport(healthInput.lastRun ?? null, collectionReport);
+  const lastSuccessfulRun = filterRunGapsProvenCompleteByReport(
+    healthInput.lastSuccessfulRun ?? null,
     collectionReport
   );
-  const freshnessOverride = proofAgeFreshnessOverride(healthInput, collectionReport);
+  const latestSettledRunInput =
+    healthInput.latestSettledRun ??
+    fallbackLatestSettledRun(healthInput.lastRun ?? null, healthInput.lastSuccessfulRun ?? null);
+  const latestSettledRun = filterRunGapsProvenCompleteByReport(latestSettledRunInput, collectionReport);
+  const runEvidenceRefined =
+    lastRun !== healthInput.lastRun ||
+    lastSuccessfulRun !== healthInput.lastSuccessfulRun ||
+    latestSettledRun !== latestSettledRunInput;
+  const refinedHealthInput = runEvidenceRefined
+    ? { ...healthInput, lastRun, lastSuccessfulRun, latestSettledRun }
+    : healthInput;
+  const reportAlignedHealth = runEvidenceRefined
+    ? projectConnectorSummaryConnectionHealth(refinedHealthInput)
+    : initialConnectionHealth;
+  const coverageOverride = rollupCollectionReportCoverageOverride(
+    reportAlignedHealth.axes.coverage,
+    collectionReport,
+    healthInput.manifestStreams
+  );
+  const freshnessOverride = proofAgeFreshnessOverride(refinedHealthInput, collectionReport);
   if (coverageOverride === null && freshnessOverride === null) {
-    return initialConnectionHealth;
+    return reportAlignedHealth;
   }
   return projectConnectorSummaryConnectionHealth({
-    ...healthInput,
+    ...refinedHealthInput,
     ...(freshnessOverride ? { freshness: freshnessOverride } : {}),
     ...(coverageOverride ? { coverageOverride: { axis: coverageOverride } } : {}),
   });
@@ -2735,6 +2942,41 @@ function resolveEffectiveStreamFacts(input: {
  *   - a malformed `considered`                             -> `unknown` (re-validated
  *     defensively on read).
  */
+/**
+ * Whether committed evidence was measured under a boundary the connection no
+ * longer declares.
+ *
+ * Pure string comparison of two fingerprints; the caller reads the declared one
+ * once per connection. `undefined` declared means the caller holds no scope
+ * (server-side connector, or a test), so no comparison is made and prior
+ * behavior is preserved.
+ *
+ * Evidence carrying NO fingerprint came from a collector predating the scope
+ * contract, which by definition ran a full pass — it satisfies only an
+ * `unscoped` declaration. Crediting it for a narrowed boundary would claim an
+ * enforcement that never happened.
+ */
+function collectionEvidenceScopeIsStale(
+  evidenceScope: string | null | undefined,
+  declaredScope: string | null | undefined
+): boolean {
+  if (declaredScope === undefined || declaredScope === null) {
+    return false;
+  }
+  const declared = declaredScope.trim();
+  const measured = typeof evidenceScope === "string" && evidenceScope.trim() ? evidenceScope.trim() : null;
+  if (measured === null) {
+    // The evidence records no boundary. That is a pre-scope collector, which by
+    // definition ran a full pass, so it satisfies an `unscoped` declaration and
+    // nothing narrower. Defaulting it to "unscoped" and comparing equal would
+    // credit a bound it never enforced; defaulting it to stale would strand
+    // every legacy connection. Neither -- the claim is exactly as strong as the
+    // evidence.
+    return declared !== "unscoped";
+  }
+  return measured !== declared;
+}
+
 export function buildCollectionReport(input: {
   readonly collectionFacts: RuntimeCollectionFacts | null;
   /** Terminal time of the classifying run (stamps evidence_as_of on its facts). */
@@ -2768,14 +3010,38 @@ export function buildCollectionReport(input: {
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
   readonly schedule?: { readonly enabled: boolean } | null;
+  /**
+   * Fingerprint of the boundary this connection CURRENTLY declares, read once
+   * per connection by the caller (never per stream — this must not become an
+   * N+1). When the classifying run's evidence was measured under a different
+   * boundary, that evidence describes a region the owner is no longer asking
+   * about, so it is declassified here rather than reinterpreted: coverage falls
+   * back to the honest `unknown` until a fresh run recomputes it.
+   *
+   * Omitted by callers that hold no scope (server-side connectors, tests), in
+   * which case no staleness comparison is performed and behavior is unchanged.
+   */
+  readonly declaredCollectionScope?: string | null;
+  /**
+   * Boundary the evidence was measured under, when it does not ride on
+   * `collectionFacts` (the local-device path, whose evidence is the
+   * coverage-diagnostic axis). Falls back to the run fact block's own value.
+   */
+  readonly evidenceCollectionScope?: string | null;
 }): CollectionReportEntry[] {
   const { inScope, ...entryIndexes } = indexCollectionReportInputs(input);
+  // One comparison for the whole report, not one per stream.
+  const evidenceScopeIsStale = collectionEvidenceScopeIsStale(
+    input.evidenceCollectionScope ?? input.collectionFacts?.collection_scope,
+    input.declaredCollectionScope
+  );
   return [...inScope]
     .map((stream) =>
       buildCollectionReportEntry({
         stream,
         ...entryIndexes,
         attentionOpen: input.attentionOpen,
+        evidenceScopeIsStale,
         freshness: input.freshness,
         localCoverage: input.localCoverage ?? null,
         refresh: input.refresh,
@@ -2868,8 +3134,21 @@ function buildCollectionReportEntry(input: {
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
   readonly schedule?: { readonly enabled: boolean } | null;
+  /** Whether this run's evidence was measured under a boundary no longer declared. */
+  readonly evidenceScopeIsStale?: boolean;
 }): CollectionReportEntry {
-  const { effective, effectiveFact, manifestStream, coverageCondition } = deriveCollectionReportEntryCoverage(input);
+  const derived = deriveCollectionReportEntryCoverage(input);
+  const { effective, effectiveFact, manifestStream } = derived;
+  // Evidence measured under a boundary the owner has since changed describes a
+  // region they are no longer asking about. It is not proof of the current one,
+  // so it is declassified to the honest `unknown` rather than reinterpreted --
+  // the same treatment `scoped: false` already gets, one level up. An accepted
+  // -absence axis is a manifest statement about the stream itself, not a
+  // measurement, so it survives a scope change untouched.
+  const coverageCondition =
+    input.evidenceScopeIsStale === true && !readAcceptedCoveragePolicy(manifestStream)
+      ? "unknown"
+      : derived.coverageCondition;
   const forwardDisposition = deriveForwardDisposition({
     attentionOpen: input.attentionOpen,
     coverage: coverageCondition,
@@ -3002,6 +3281,22 @@ function checkpointProvesStreamCoverage(checkpoint: string | null): boolean {
   return checkpoint === "committed" || checkpoint === "disabled";
 }
 
+function collectionReportClassifyingRun(input: {
+  readonly lastRun: ConnectorRunSummary | null;
+  readonly lastSuccessfulRun: ConnectorRunSummary | null;
+  readonly latestSettledRun?: ConnectorRunSummary | null;
+  readonly localDeviceBacked?: boolean;
+}): ConnectorRunSummary | null {
+  if (input.localDeviceBacked) {
+    return null;
+  }
+  return coverageClassifyingRun(
+    input.lastRun,
+    input.lastSuccessfulRun,
+    input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun)
+  );
+}
+
 /**
  * Project the per-stream Collection Report from the assembly inputs both the list
  * and detail surfaces already hold. The disposition's freshness and
@@ -3014,6 +3309,17 @@ function checkpointProvesStreamCoverage(checkpoint: string | null): boolean {
 export function projectCollectionReport(input: {
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun?: ConnectorRunSummary | null;
+  /**
+   * The newest TERMINAL run (`status <> 'running'`), independent of whatever
+   * is currently active. P1-1: without this, a settled failure strictly
+   * between `lastSuccessfulRun` and an active retry is invisible to
+   * `coverageClassifyingRun` here, and the per-stream Collection Report can
+   * disagree with the (already-fixed) connection-health headline — showing
+   * the old success's coverage/gaps instead of the real intervening
+   * failure's. Defaults to `lastRun`, preserving prior behavior for callers
+   * that have not been wired to the settled-run read.
+   */
+  readonly latestSettledRun?: ConnectorRunSummary | null;
   readonly connectionHealth: ConnectionHealthSnapshot;
   readonly latestStreamFacts?: ReadonlyMap<string, LatestStreamFactRecord> | null;
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
@@ -3030,15 +3336,52 @@ export function projectCollectionReport(input: {
   readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
   readonly refreshPolicy: unknown;
   readonly schedule?: { readonly enabled: boolean } | null;
+  /**
+   * Fingerprint of the boundary this connection currently declares, read ONCE
+   * per connection by the caller. Threaded straight through to
+   * `buildCollectionReport`, which declassifies evidence measured under a
+   * different boundary. Omitted where no scope applies, preserving behavior.
+   */
+  readonly declaredCollectionScope?: string | null;
+  /**
+   * Fingerprint the local-device coverage evidence was measured under. Local
+   * runs carry their evidence in `localCoverage` rather than a run's
+   * `collection_facts`, so the boundary arrives alongside it.
+   */
+  readonly localCoverageCollectionScope?: string | null;
 }): CollectionReportEntry[] {
   // Select source authority before run precedence: local-device scheduler facts
   // are audit history, never coverage evidence.
-  const classifyingRun = input.localDeviceBacked
-    ? null
-    : coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
+  const classifyingRun = collectionReportClassifyingRun({
+    lastRun: input.lastRun,
+    lastSuccessfulRun: input.lastSuccessfulRun ?? null,
+    latestSettledRun: input.latestSettledRun ?? null,
+    localDeviceBacked: input.localDeviceBacked === true,
+  });
+  const { declaredCollectionScope: explicitCollectionScope, localCoverage } = input;
+  let declaredCollectionScope = explicitCollectionScope;
+  if (declaredCollectionScope === undefined && input.localDeviceBacked === true) {
+    declaredCollectionScope = localCoverage?.declaredCollectionScope;
+  }
   return buildCollectionReport({
     attentionOpen: input.connectionHealth.axes.attention !== "none",
     collectionFacts: classifyingRun?.collection_facts ?? null,
+    // Declared boundary: explicit caller value wins; otherwise it rides on the
+    // local-coverage axis, which already read it from the connector-state
+    // projection (no extra query, no per-stream read).
+    ...(declaredCollectionScope === undefined ? {} : { declaredCollectionScope }),
+    // A local-device connection's evidence is the coverage-diagnostic axis, not
+    // a run fact block, so its measured boundary comes off that axis -- which
+    // derived it from the coverage rows themselves. Deriving beats accepting: a
+    // caller-supplied argument is an agreement, and a production call that
+    // omitted it would silently compare a real scoped run against `unscoped`
+    // and read `unknown` forever. An explicit override is honored for tests.
+    ...(input.localDeviceBacked === true
+      ? {
+          evidenceCollectionScope:
+            input.localCoverageCollectionScope ?? input.localCoverage?.measuredCollectionScope ?? null,
+        }
+      : {}),
     collectionFactsAsOf: classifyingRun ? classifyingRun.last_at : null,
     collectionFactsRunId: classifyingRun?.run_id ?? null,
     freshness: input.connectionHealth.axes.freshness,
@@ -3190,8 +3533,52 @@ function localCoverageParentStream(stream: ManifestStream | undefined): string |
   return typeof parent === "string" && parent ? parent : null;
 }
 
+/**
+ * The measured boundary carried on one coverage row, in either producer's
+ * spelling. Only a non-empty string counts: a blank or malformed value reads as
+ * NO recorded boundary rather than as an empty one, so it can never be mistaken
+ * for a measured full pass.
+ */
+/**
+ * The boundary a connection currently declares, for the coverage axis.
+ *
+ * The reader resolves it from the reserved `$collection_scope` state row and
+ * passes it in directly (one projection per connection, so this stays O(1)).
+ * The `state` lookup is the fallback for callers that still hand over a whole
+ * multi-stream projection; it cannot serve the reader's own payload, which is
+ * the `coverage_diagnostics` snapshot and structurally cannot hold a boundary.
+ */
+function resolveDeclaredCoverageScope(declared: string | null | undefined, state: unknown): string {
+  if (typeof declared === "string" && declared.trim()) {
+    return declared.trim();
+  }
+  const projection = state && typeof state === "object" && !Array.isArray(state) ? state : null;
+  return readStoredCollectionScope(projection as Record<string, unknown> | null).fingerprint;
+}
+
+function readRowCollectionScope(row: LocalCoverageDiagnosticRow): string | null {
+  for (const candidate of [row.collection_scope, row.collectionScope]) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
 /** Safe per-store coverage triple read from `coverage_diagnostics` records. */
 interface LocalCoverageDiagnosticRow {
+  /**
+   * Boundary this row was measured under, committed with the row itself.
+   *
+   * Two producers feed this type and they name the field differently: the
+   * durable state snapshot uses the wire form `collection_scope` (what
+   * `buildCoverageDiagnosticsStateSnapshot` writes and
+   * `parseCoverageDiagnosticsStateSnapshot` returns), while the records-table
+   * projection uses the camelCase `collectionScope`. Both are read, so the
+   * fingerprint survives whichever path the caller took.
+   */
+  readonly collection_scope?: unknown;
+  readonly collectionScope?: unknown;
   readonly status?: unknown;
   readonly store?: unknown;
   readonly stream?: unknown;
@@ -3199,7 +3586,22 @@ interface LocalCoverageDiagnosticRow {
 
 interface LocalCoverageDiagnosticAxis {
   readonly axis: CoverageAxis;
+  /**
+   * Boundary this connection CURRENTLY declares, read off the same
+   * connector-state projection this axis is already derived from — so binding
+   * coverage to the declared scope costs no additional query and cannot become
+   * an N+1 across a page of connections.
+   */
+  readonly declaredCollectionScope?: string;
   readonly evidenceAsOf: string | null;
+  /**
+   * Boundary the connection's stored terminal evidence was MEASURED under, read
+   * off the same state projection as the declared one. Derived here rather than
+   * accepted from a caller: an argument is an agreement, and a caller that omits
+   * it silently compares a real scoped run against `unscoped` forever.
+   * `null` when no local run has committed terminal evidence under the contract.
+   */
+  readonly measuredCollectionScope?: string | null;
   readonly reliable: boolean;
   /** Safe per-store triples from `coverage_diagnostics`, used to project stream rows. */
   readonly rows?: readonly LocalCoverageDiagnosticRow[];
@@ -3247,8 +3649,36 @@ export function deriveLocalCoverageAxis(input: {
   readonly manifestGeneration?: number | null;
   readonly stateManifestGeneration?: number | null;
   readonly nowIso?: string;
+  /**
+   * Fingerprint of the boundary this connection CURRENTLY declares, resolved by
+   * the coverage reader from the reserved `$collection_scope` state row.
+   *
+   * It arrives as its own field because it cannot live in `state`: that is the
+   * `coverage_diagnostics` payload, validated against an exact `fetched_at`/
+   * `stores` key set. Reading the boundary out of `state` therefore always
+   * resolved `unscoped`, which made the staleness comparison trivially agree and
+   * let a whole-corpus pass prove a narrowed horizon it never enforced. Callers
+   * that hold no boundary omit it and keep the honest `unscoped` default.
+   */
+  readonly declaredCollectionScope?: string | null;
 }): LocalCoverageDiagnosticAxis {
+  const declaredScope = resolveDeclaredCoverageScope(input.declaredCollectionScope, input.state);
   const { rows } = input;
+  // The MEASURED boundary is derived from the coverage rows themselves -- the
+  // same rows this axis is already reading, written in the same ingest batch as
+  // the evidence they qualify. No second store, so no crash window can pair one
+  // run's coverage with another run's boundary, and no caller can hand over a
+  // value the evidence does not support.
+  //
+  // A run whose rows disagree (a partially-replaced set spanning two runs, which
+  // the stable `coverage:<store>` keys make possible under interleaved upserts)
+  // is deliberately treated as having NO measured boundary rather than picking
+  // one: an ambiguous pairing must not be able to read as proof.
+  const measuredScopes = new Set(
+    rows.map((row) => readRowCollectionScope(row)).filter((value): value is string => value !== null)
+  );
+  const measuredScope: string | null = measuredScopes.size === 1 ? ([...measuredScopes][0] ?? null) : null;
+  const scopeField = { declaredCollectionScope: declaredScope, measuredCollectionScope: measuredScope };
   const stateCursor =
     input.state && typeof input.state === "object" && !Array.isArray(input.state)
       ? (input.state as Record<string, unknown>).fetched_at
@@ -3267,10 +3697,17 @@ export function deriveLocalCoverageAxis(input: {
     input.missingStores.length === 0 &&
     input.unexpectedStores.length === 0;
   if (!reliable) {
-    return { axis: "unknown", evidenceAsOf: null, reliable: false, rows, unaccountedStores: [] };
+    return { ...scopeField, axis: "unknown", evidenceAsOf: null, reliable: false, rows, unaccountedStores: [] };
   }
   if (rows.length === 0) {
-    return { axis: "unknown", evidenceAsOf: input.updatedAt, reliable: true, rows, unaccountedStores: [] };
+    return {
+      ...scopeField,
+      axis: "unknown",
+      evidenceAsOf: input.updatedAt,
+      reliable: true,
+      rows,
+      unaccountedStores: [],
+    };
   }
   const unaccountedStores: string[] = [];
   for (const row of rows) {
@@ -3283,6 +3720,7 @@ export function deriveLocalCoverageAxis(input: {
   }
   if (unaccountedStores.length > 0) {
     return {
+      ...scopeField,
       axis: "gaps",
       evidenceAsOf: input.updatedAt,
       reliable: true,
@@ -3290,7 +3728,14 @@ export function deriveLocalCoverageAxis(input: {
       unaccountedStores: unaccountedStores.sort((left, right) => left.localeCompare(right)),
     };
   }
-  return { axis: "complete", evidenceAsOf: input.updatedAt, reliable: true, rows, unaccountedStores: [] };
+  return {
+    ...scopeField,
+    axis: "complete",
+    evidenceAsOf: input.updatedAt,
+    reliable: true,
+    rows,
+    unaccountedStores: [],
+  };
 }
 
 /**
@@ -3572,6 +4017,8 @@ function evidenceUnreliableSources(
 function requiredCoverageEvidenceIsAuthoritative(evidence: ConnectorSummaryEvidenceRow | null): boolean {
   return (
     evidence !== null &&
+    evidence.dirty === false &&
+    evidence.state === "fresh" &&
     evidence.record_snapshot.state === "current" &&
     evidence.terminal_facts.state === "current" &&
     evidence.manifest_declaration.state === "current"
@@ -4086,6 +4533,18 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
   /**
+   * Health/failure classification authority (P1-1): the newest TERMINAL run
+   * regardless of whether something newer is currently active — distinct
+   * from {@link lastRun}, which may be an in-progress/pending retry that has
+   * not settled. `healthClassifyingRun` reads this, never `lastRun`, so an
+   * active retry can never silently erase an intervening settled failure.
+   * Optional and defaults to `lastRun` so callers that have not been wired
+   * to the new settled-run read (e.g. older test fixtures) keep exactly
+   * their prior behavior — `lastRun` was always used for this purpose
+   * before this fix.
+   */
+  readonly latestSettledRun?: ConnectorRunSummary | null;
+  /**
    * Coverage axis derived from durable local-collector `coverage_diagnostics`
    * records, used only as a fallback when no spine run exists to anchor
    * run-derived coverage (local-device collectors push from a device outbox and
@@ -4183,19 +4642,26 @@ export function projectConnectorSummaryConnectionHealth(input: {
   const localDeviceBacked = input.localDeviceBacked === true;
   const authoritativeLastRun = localDeviceBacked ? null : input.lastRun;
   const authoritativeLastSuccessfulRun = localDeviceBacked ? null : input.lastSuccessfulRun;
+  const authoritativeLatestSettledRun = localDeviceBacked
+    ? null
+    : (input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun));
   const authoritativeActiveRun = localDeviceBacked ? null : input.activeRun;
   const authoritativeCollectionRate = localDeviceBacked ? null : input.collectionRate;
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : input.ephemeralBrowserRuntime;
   const authoritativeRemoteSurface = localDeviceBacked ? null : input.remoteSurface;
   const schedule = localDeviceBacked ? null : asScheduleRecord(input.schedule);
+  const latestRunForHealth = healthClassifyingRun(authoritativeLatestSettledRun, authoritativeLastSuccessfulRun);
   const scheduleEvidence = projectConnectionHealthScheduleEvidence(
     schedule,
     authoritativeLastRun,
     authoritativeActiveRun ? authoritativeActiveRun.run_id : null
   );
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
-  const latestRunForHealth = healthClassifyingRun(authoritativeLastRun);
-  const coverageRunForHealth = coverageClassifyingRun(authoritativeLastRun, authoritativeLastSuccessfulRun);
+  const coverageRunForHealth = coverageClassifyingRun(
+    authoritativeLastRun,
+    authoritativeLastSuccessfulRun,
+    authoritativeLatestSettledRun
+  );
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
@@ -4319,12 +4785,19 @@ function projectSchedulerBackoffEvidence(input: {
 export function buildConnectorFreshness({
   lastRun,
   lastSuccessfulRun,
+  latestSettledRun,
   live,
   refreshPolicy,
   lastHeartbeatAt,
 }: {
   lastRun: ConnectorRunSummary | null;
   lastSuccessfulRun: ConnectorRunSummary | null;
+  /**
+   * Health/failure classification authority (P1-1). Defaults to `lastRun`
+   * when omitted, preserving prior behavior for callers not yet wired to
+   * the settled-run read.
+   */
+  latestSettledRun?: ConnectorRunSummary | null;
   live: RecordProjection;
   refreshPolicy: unknown;
   /**
@@ -4335,10 +4808,14 @@ export function buildConnectorFreshness({
   lastHeartbeatAt?: string | null;
 }): Freshness {
   const localProgressAt = lastHeartbeatAt ?? null;
+  const latestRun = healthClassifyingRun(
+    latestSettledRun ?? fallbackLatestSettledRun(lastRun, lastSuccessfulRun),
+    lastSuccessfulRun
+  );
   const maximumStalenessSeconds = getMaximumStalenessSeconds(refreshPolicy);
   const freshness = deriveReferenceFreshness({
-    lastAttemptedAt: lastRun ? lastRun.last_at : null,
-    lastAttemptStatus: lastRun ? lastRun.status : null,
+    lastAttemptedAt: latestRun ? latestRun.last_at : null,
+    lastAttemptStatus: latestRun ? latestRun.status : null,
     lastSuccessfulRunAt: localProgressAt ?? (lastSuccessfulRun ? lastSuccessfulRun.last_at : null),
     maximumStalenessSeconds,
     recordLastUpdatedAt: localProgressAt ?? live.freshness.captured_at ?? null,
@@ -4554,6 +5031,15 @@ interface ConnectorSummaryProjectionDeps {
    * transitional `getLatestRunHistoryForConnection` +
    * `listRunSummariesForConnector` spine-first composition.
    */
+  /**
+   * `status: "settled"` (a resolver-level sentinel, not a stored run status)
+   * routes to the health/failure classification authority — the newest
+   * TERMINAL run for this connection — via
+   * `getLatestSettledRunHistoryForProductByConnectionId`/
+   * `listLatestSettledRunHistoryForProductByConnectionIds` (P1-1). Every
+   * other `status` value (including `null`/omitted and `"succeeded"`)
+   * behaves exactly as before.
+   */
   readonly getLatestRunSummaryForConnectionId: (
     connectorInstanceId: string,
     status?: string | null
@@ -4640,8 +5126,10 @@ function shouldHydrateRunSummariesForInstance(
   // still refuses connector-wide fallback unless the connector has exactly one
   // active visible source, but skipping hydration here would also drop exact
   // `connector_instance_id` / browser-profile matches for multi-account
-  // connectors and render them as indefinitely "checking".
-  return instance.status === "active";
+  // connectors and render them as indefinitely "checking". Drafts are also
+  // hydrated so owner surfaces can reuse the same terminal setup disposition
+  // without making a second lifecycle projection.
+  return instance.status === "active" || instance.status === "draft";
 }
 
 function groupRetainedSizeRowsByInstance(
@@ -4821,6 +5309,15 @@ interface ConnectorSummarySynthesisInput {
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
   /**
+   * Health/failure classification authority (P1-1): the newest TERMINAL run
+   * for this connection, read via
+   * `getLatestSettledRunHistoryForProductByConnectionId`/
+   * `listLatestSettledRunHistoryForProductByConnectionIds`
+   * (scheduler-store.ts) — distinct from {@link lastRun}, which may be a
+   * still-active retry that has not settled.
+   */
+  readonly latestSettledRun: ConnectorRunSummary | null;
+  /**
    * Durable per-stream latest-attempt evidence for THIS connection from the
    * connector-summary read model, or `null` when none exists. Connection-
    * scoped by construction (keyed by connector_instance_id upstream).
@@ -4862,6 +5359,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     instance,
     lastRun,
     lastSuccessfulRun,
+    latestSettledRun,
     latestStreamFacts,
     live,
     localCoverage,
@@ -4880,7 +5378,24 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : ephemeralBrowserRuntime;
   const authoritativeLastRun = localDeviceBacked ? null : lastRun;
   const authoritativeLastSuccessfulRun = localDeviceBacked ? null : lastSuccessfulRun;
+  const authoritativeLatestSettledRun = localDeviceBacked
+    ? null
+    : (latestSettledRun ?? fallbackLatestSettledRun(lastRun, lastSuccessfulRun));
   const authoritativeLatestStreamFacts = localDeviceBacked ? null : latestStreamFacts;
+  const terminalSetupDisposition =
+    instance.status === "draft" && authoritativeLastRun
+      ? classifyTerminalSetupDisposition({
+          collectionFacts: authoritativeLastRun.collection_facts,
+          manifestStreams: (manifest.streams ?? []).map((stream) => ({
+            name: stream.name,
+            ...(stream.required === undefined ? {} : { required: stream.required }),
+          })),
+          recordsEmitted: authoritativeLastRun.records_emitted,
+          reportedRecordsEmitted: authoritativeLastRun.reported_records_emitted,
+          status: authoritativeLastRun.status,
+          yieldCountsPresent: authoritativeLastRun.yield_counts_present,
+        })
+      : null;
   const healthRemoteSurface = connectionHealthRemoteSurface({
     remoteSurface,
     runtime: authoritativeEphemeralBrowserRuntime,
@@ -4900,6 +5415,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     lastHeartbeatAt: freshnessHeartbeatAt,
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
+    latestSettledRun: authoritativeLatestSettledRun,
     live,
     refreshPolicy,
   });
@@ -4913,6 +5429,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     freshness,
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
+    latestSettledRun: authoritativeLatestSettledRun,
     localCoverage,
     localDeviceBacked,
     manifestStreams: manifest.streams ?? [],
@@ -4940,6 +5457,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     connectionHealth: initialConnectionHealth,
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
+    latestSettledRun: authoritativeLatestSettledRun,
     latestStreamFacts: authoritativeLatestStreamFacts,
     localCoverage,
     localDeviceBacked,
@@ -4986,7 +5504,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // `as_of` is `null` — never fabricated from projection read time (design
   // gate #4).
   const causalEvidence = ownerStateCausalEvidenceFrom(
-    classifiedRunForOwnerState(authoritativeLastRun, authoritativeLastSuccessfulRun),
+    classifiedRunForOwnerState(authoritativeLastRun, authoritativeLastSuccessfulRun, authoritativeLatestSettledRun),
     freshness.captured_at ?? null
   );
   const ownerStateEvidence: OwnerStateEvidence = activeRun
@@ -5027,13 +5545,52 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // already `unobserved`/`stale`/`unknown` (never had a trustworthy count
   // to begin with) is left as-is — this only downgrades a component that
   // WAS trustworthy (`known`/`known_zero`) and no longer is.
+  // A `known_zero` that survives the staleness downgrade still owes a SECOND,
+  // independent test. `count_state` is computed once at write time and then
+  // served verbatim from `stream_records_json`, and a row whose checkpoint and
+  // total have not moved is never reclassified for repair — so a `known_zero`
+  // written before positive proof was required stays on the wire indefinitely,
+  // on a row that reads perfectly `current`. Ruling R2: checkpoint commitment
+  // alone never proves coverage, and the converse prohibition is the one at
+  // stake here — a stream with no evidence at all must present as
+  // `unobserved`, never as a proven exact zero.
+  //
+  // TWO independent proof channels are honoured, and either suffices:
+  //
+  //   1. RECORD-SIDE: a record-source checkpoint entry, which exists only once
+  //      ingest allocated a version for the stream. This is the write path's
+  //      own proof, and it is a canonical fact about the records rather than a
+  //      cursor bookmark — an observed-then-emptied stream is a real zero even
+  //      on a connection that never measured collection coverage.
+  //   2. RUN-SIDE: positive coverage evidence in the run's own facts, judged by
+  //      the shared contract invariant.
+  //
+  // Requiring BOTH would withdraw genuinely proven zeros; requiring neither is
+  // the defect. A stream that satisfies neither has nothing behind its claim.
+  //
+  // Only `known_zero` is re-tested. A `known` count is a positive measurement
+  // that stands on its own (records were counted); coverage evidence bounds
+  // whether a stream was fully seen, which is a claim only an exact-ZERO
+  // assertion depends on. Re-testing `known` here would downgrade real counts
+  // for want of a denominator they never needed.
   const recordSnapshotCurrent = evidence ? evidence.record_snapshot.state === "current" : false;
+  const manifestStreamsByName = new Map((manifest.streams ?? []).map((stream) => [stream.name, stream]));
+  const observedCheckpointStreams = parseObservedCheckpointStreams(evidence?.record_checkpoint);
+  const retainsZeroProof = (stream: string): boolean =>
+    observedCheckpointStreams.has(stream) ||
+    persistedZeroRetainsCoverageProof(
+      authoritativeLatestStreamFacts?.get(stream)?.fact ?? null,
+      manifestStreamsByName.get(stream)
+    );
   const streamRecords: readonly StreamRecordSummary[] = evidence
     ? evidence.stream_records.map((entry) => ({
-        count_state:
-          !recordSnapshotCurrent && (entry.count_state === "known" || entry.count_state === "known_zero")
-            ? "stale"
-            : entry.count_state,
+        count_state: downgradePersistedCountState({
+          countState: entry.count_state,
+          recordCount: entry.record_count,
+          recordSnapshotCurrent,
+          retainsZeroProof,
+          stream: entry.stream,
+        }),
         declaration_state: entry.declaration_state,
         last_updated: null,
         record_count: entry.record_count,
@@ -5048,14 +5605,16 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // exact count alongside it. `unobserved` (no evidence row at all) is
   // distinct from `stale` (an evidence row exists but its snapshot is not
   // current) — both are non-authoritative, but `stale` additionally implies
-  // "we once knew a real value, unverified since."
+  // "we once knew a real value, unverified since." A zero total on a current
+  // snapshot additionally needs positive per-stream proof before it can claim
+  // `known_zero` — see `aggregateCountState`. It reads the READ-CORRECTED
+  // `streamRecords` rather than the raw `evidence.stream_records`, so a
+  // per-stream `known_zero` withdrawn for want of coverage proof cannot be
+  // re-asserted at the connection level by the aggregate.
   const totalRecordsState: ConnectorSummary["total_records_state"] = evidence
     ? // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
       recordSnapshotCurrent
-      ? // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
-        totalRecords > 0
-        ? "known"
-        : "known_zero"
+      ? aggregateCountState(streamRecords, totalRecords)
       : "stale"
     : "unobserved";
   const retainedBytes = evidence ? evidence.retained_bytes : live.retainedBytes;
@@ -5109,6 +5668,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     schedule: localDeviceBacked ? null : schedule,
     source_binding_kind: connectionBindingKind(instance),
     source_kind: instance.sourceKind,
+    source_work: sourceWorkGroupFromOwnerState(ownerState.resolver),
     status: instance.status,
     stream_count: evidence ? evidence.stream_count : streamRecords.length,
     stream_records: streamRecords,
@@ -5116,6 +5676,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     terminal_facts: evidence
       ? evidence.terminal_facts
       : { as_of: null, event_seq: null, reason_code: "summary_evidence_unavailable", state: "unobserved" },
+    terminal_setup_disposition: terminalSetupDisposition,
     total_records: totalRecords,
     total_records_state: totalRecordsState,
     total_retained_bytes: totalRetainedBytes,
@@ -5257,18 +5818,7 @@ async function projectConnectorSummaryForInstance(
   deps: ConnectorSummaryProjectionDeps,
   options: {
     readonly activeVisibleConnectionCount?: number;
-    /**
-     * Catalog-visibility gating (`isPublicReferenceConnector`) answers "should
-     * this connector appear when browsing/listing configured connections?" —
-     * correct for `listConnectorSummaries`/`getConnectorSummaryForRoute`
-     * (both list surfaces, scoped or not). It is the wrong question for
-     * `getConnectorDetail`: a connector reached by its own connector_id
-     * (not discovered via catalog browsing) with a real, already-resolved
-     * connection must still surface that connection's genuine data — an
-     * owner-addressed connector_id is not catalog browsing. Defaults to
-     * `true` (the pre-existing list/route behavior, unchanged).
-     */
-    readonly requireCatalogVisibility?: boolean;
+    readonly onRuntimeProjected?: (runtime: EphemeralBrowserRuntimeProjection | null) => void;
   } = {}
 ): Promise<ConnectorSummary | null> {
   const {
@@ -5292,25 +5842,13 @@ async function projectConnectorSummaryForInstance(
     reasonCode: null,
     state: "current" as const,
   };
-  // A malformed/unparseable manifest is real, honest evidence about this
-  // connection — never a reason to silently drop it from the owner's
-  // summary list (design.md "Orthogonal projection evidence":
-  // manifest_declaration is independent of every other axis, including
-  // basic listability). `isPublicReferenceConnector`'s "is this connector
-  // publicly listed" gate reads `manifest.capabilities.public_listing`,
-  // which cannot be evaluated meaningfully when the manifest itself failed
-  // to parse — an unparseable manifest is skipped past that gate rather
-  // than treated as "not listed", and every capability-dependent field
-  // below already reads through `manifest.streams ?? []` /
-  // `manifest.capabilities?.x` on the safe empty placeholder, so nothing
-  // fabricates a capability the real manifest never declared.
-  if (
-    (options.requireCatalogVisibility ?? true) &&
-    manifestDeclaration.state === "current" &&
-    !isPublicReferenceConnector({ connector_id: connectorId, manifest: JSON.stringify(manifest) }, manifest)
-  ) {
-    return null;
-  }
+  // No catalog-visibility gate here, by design. `capabilities.public_listing`
+  // governs OFFER/DISCOVERY (the Add Source catalog) and auto-enrollment only —
+  // it answers "may the owner add this connector?", never "may the owner see a
+  // connection they already created?". Gating this projection on it hid real,
+  // record-bearing connections from the owner's own inventory while the
+  // `retained_count_summary` profile (ungated) kept showing them, so /sources
+  // and /sources/add disagreed about the same data.
   const browserSurfaceProfileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
   const activeVisibleConnectionCount = options.activeVisibleConnectionCount ?? 0;
   // Persisted source kind is the authority boundary, not a hint applied after
@@ -5380,6 +5918,7 @@ async function projectConnectorSummaryForInstance(
     schedule,
     lastRun,
     lastSuccessfulRun,
+    latestSettledRun,
     detailGaps,
     outbox,
     attention,
@@ -5391,6 +5930,10 @@ async function projectConnectorSummaryForInstance(
     schedulePromise,
     hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId) : Promise.resolve(null),
     hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId, "succeeded") : Promise.resolve(null),
+    // P1-1: the health/failure classification authority — the newest
+    // TERMINAL run, independent of whether `lastRun` above is a still-
+    // active/pending retry.
+    hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId, "settled") : Promise.resolve(null),
     pageProductEvidence
       ? Promise.resolve(
           pageProductEvidence.detailGapsByInstanceId?.get(connectorInstanceId) ?? {
@@ -5461,6 +6004,7 @@ async function projectConnectorSummaryForInstance(
         reader: sharedBrowserSurfaceReader,
         remoteSurface: remoteSurface.evidence,
       });
+  options.onRuntimeProjected?.(ephemeralBrowserRuntime);
   const refreshPolicy = extractRefreshPolicy(manifest);
   // Adaptive rate controller snapshot: read from the latest run's
   // already-loaded `run_history.facts_json` — no spine read, R9.2/G1.
@@ -5487,6 +6031,7 @@ async function projectConnectorSummaryForInstance(
     instance,
     lastRun,
     lastSuccessfulRun,
+    latestSettledRun,
     latestStreamFacts: deps.latestStreamFactsByInstanceId.get(connectorInstanceId) ?? null,
     live,
     localCoverage,
@@ -5526,6 +6071,54 @@ async function readSummaryEvidenceRowsOrFailure(connectorInstanceIds: readonly s
   }
 }
 
+type SchedulerStore = ReturnType<typeof getDefaultSchedulerStore>;
+
+function readLatestRunHistoryBatch(
+  schedulerStore: SchedulerStore,
+  connectorInstanceIds: readonly string[] | null,
+  status: string | null
+): Promise<readonly ProductRunHistoryRecord[] | null> {
+  if (
+    connectorInstanceIds === null ||
+    typeof schedulerStore.listLatestRunHistoryForProductByConnectionIds !== "function"
+  ) {
+    return Promise.resolve(null);
+  }
+  return Promise.resolve(
+    schedulerStore.listLatestRunHistoryForProductByConnectionIds(connectorInstanceIds, status)
+  ).catch(() => null);
+}
+
+function readLatestSettledRunHistoryBatch(
+  schedulerStore: SchedulerStore,
+  connectorInstanceIds: readonly string[] | null
+): Promise<readonly ProductRunHistoryRecord[] | null> {
+  if (
+    connectorInstanceIds === null ||
+    typeof schedulerStore.listLatestSettledRunHistoryForProductByConnectionIds !== "function"
+  ) {
+    return Promise.resolve(null);
+  }
+  return Promise.resolve(
+    schedulerStore.listLatestSettledRunHistoryForProductByConnectionIds(connectorInstanceIds)
+  ).catch(() => null);
+}
+
+function selectBatchedRunHistory(
+  status: string | null,
+  latestRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null,
+  latestSuccessfulRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null,
+  latestSettledRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null
+): ReadonlyMap<string, ProductRunHistoryRecord> | null {
+  if (status === "settled") {
+    return latestSettledRunHistoryByInstanceId;
+  }
+  if (status === "succeeded") {
+    return latestSuccessfulRunHistoryByInstanceId;
+  }
+  return latestRunHistoryByInstanceId;
+}
+
 // R9.2 composition, extracted out of loadConnectorSummaryProjectionDeps's
 // returned closure to keep that function's cognitive complexity bounded.
 // Page-batch hit is the common case; the per-connection fallback (used
@@ -5538,6 +6131,7 @@ function resolveLatestRunSummaryForConnectionId({
   connectorInstanceId,
   latestRunFactsJsonByRunId,
   latestRunHistoryByInstanceId,
+  latestSettledRunHistoryByInstanceId,
   latestSuccessfulRunHistoryByInstanceId,
   schedulerStore,
   status,
@@ -5546,17 +6140,42 @@ function resolveLatestRunSummaryForConnectionId({
   readonly connectorInstanceId: string;
   readonly latestRunFactsJsonByRunId: Map<string, Record<string, unknown> | null>;
   readonly latestRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
+  /**
+   * Batched newest-TERMINAL-row-per-connection map, keyed the same as
+   * {@link latestRunHistoryByInstanceId} / {@link latestSuccessfulRunHistoryByInstanceId}.
+   * `status: "settled"` reads this map (P1-1) — the health/failure
+   * classification authority.
+   */
+  readonly latestSettledRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
   readonly latestSuccessfulRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
-  readonly schedulerStore: ReturnType<typeof getDefaultSchedulerStore>;
+  readonly schedulerStore: SchedulerStore;
   readonly status: string | null;
 }): Promise<ConnectorRunSummary | null> {
-  const batched = status === "succeeded" ? latestSuccessfulRunHistoryByInstanceId : latestRunHistoryByInstanceId;
+  const isSettledRead = status === "settled";
+  const batched = selectBatchedRunHistory(
+    status,
+    latestRunHistoryByInstanceId,
+    latestSuccessfulRunHistoryByInstanceId,
+    latestSettledRunHistoryByInstanceId
+  );
   const activeRun = activeRunsByInstanceId.get(connectorInstanceId) ?? null;
   if (batched !== null) {
     // The batch already covers exactly this render's connection scope —
     // a miss here is a genuine "no run history for this connection", not
     // a reason to fall back to a live per-connection read.
     return Promise.resolve(productRunHistoryToConnectorRunSummary(batched.get(connectorInstanceId) ?? null, activeRun));
+  }
+  if (isSettledRead) {
+    return Promise.resolve(
+      schedulerStore.getLatestSettledRunHistoryForProductByConnectionId?.(connectorInstanceId) ?? null
+    )
+      .then((history) => {
+        if (history?.runId) {
+          latestRunFactsJsonByRunId.set(history.runId, history.factsJson ?? null);
+        }
+        return productRunHistoryToConnectorRunSummary(history ?? null, activeRun);
+      })
+      .catch(() => null);
   }
   return Promise.resolve(schedulerStore.getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId, status))
     .then((history) => {
@@ -5647,6 +6266,7 @@ async function loadConnectorSummaryProjectionDeps(
     summaryEvidenceRead,
     latestRunHistoryRows,
     latestSuccessfulRunHistoryRows,
+    latestSettledRunHistoryRows,
     scheduleRows,
   ] = await Promise.all([
     listRegisteredConnectorRows(),
@@ -5660,27 +6280,29 @@ async function loadConnectorSummaryProjectionDeps(
     // closed downstream via `evidenceReadFailed`), never to a projection
     // error.
     readSummaryEvidenceRowsOrFailure(options.connectorInstanceIds ?? null),
-    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryForProductByConnectionIds === "function"
-      ? Promise.resolve(schedulerStore.listLatestRunHistoryForProductByConnectionIds(runHistoryScopeIds, null)).catch(
-          () => null
-        )
-      : Promise.resolve(null),
-    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryForProductByConnectionIds === "function"
-      ? Promise.resolve(
-          schedulerStore.listLatestRunHistoryForProductByConnectionIds(runHistoryScopeIds, "succeeded")
-        ).catch(() => null)
-      : Promise.resolve(null),
+    readLatestRunHistoryBatch(schedulerStore, runHistoryScopeIds, null),
+    readLatestRunHistoryBatch(schedulerStore, runHistoryScopeIds, "succeeded"),
+    // P1-1: the health/failure classification authority batch — newest
+    // TERMINAL row per connection, regardless of whether something newer is
+    // currently active. Distinct from the unfiltered `latestRunHistoryRows`
+    // batch above, which may hold a still-active/pending row.
+    readLatestSettledRunHistoryBatch(schedulerStore, runHistoryScopeIds),
     runHistoryScopeIds && typeof controller?.listSchedulesForConnections === "function"
       ? Promise.resolve(controller.listSchedulesForConnections(runHistoryScopeIds)).catch(() => null)
       : Promise.resolve(null),
   ]);
   const latestRunHistoryByInstanceId = indexProductRunHistoryByInstanceId(latestRunHistoryRows);
   const latestSuccessfulRunHistoryByInstanceId = indexProductRunHistoryByInstanceId(latestSuccessfulRunHistoryRows);
+  const latestSettledRunHistoryByInstanceId = indexProductRunHistoryByInstanceId(latestSettledRunHistoryRows);
   // Populated from the SAME batched rows above (zero new reads); a
   // singular-fallback lookup (unscoped list census) adds its own entry as
   // it resolves, below.
   const latestRunFactsJsonByRunId = new Map<string, Record<string, unknown> | null>();
-  for (const row of [...(latestRunHistoryRows ?? []), ...(latestSuccessfulRunHistoryRows ?? [])]) {
+  for (const row of [
+    ...(latestRunHistoryRows ?? []),
+    ...(latestSuccessfulRunHistoryRows ?? []),
+    ...(latestSettledRunHistoryRows ?? []),
+  ]) {
     if (row.runId) {
       latestRunFactsJsonByRunId.set(row.runId, row.factsJson ?? null);
     }
@@ -5739,6 +6361,7 @@ async function loadConnectorSummaryProjectionDeps(
         connectorInstanceId,
         latestRunFactsJsonByRunId,
         latestRunHistoryByInstanceId,
+        latestSettledRunHistoryByInstanceId,
         latestSuccessfulRunHistoryByInstanceId,
         schedulerStore,
         status,
@@ -5767,6 +6390,7 @@ type Row = Record<string, unknown>;
  * never re-derived from a live source here.
  */
 export interface ConnectorSummaryEvidenceRow {
+  readonly canonical_evidence_revision: string;
   readonly dirty: boolean;
   readonly last_error: string | null;
   readonly manifest_declaration: {
@@ -5775,6 +6399,12 @@ export interface ConnectorSummaryEvidenceRow {
     readonly reason_code: string | null;
   };
   readonly manifest_generation?: number;
+  /**
+   * Raw stored record-source checkpoint (`version_counter` as of the repair).
+   * Typed `unknown` for the same reason as `stream_latest_facts`: consumers go
+   * through `parseObservedCheckpointStreams` rather than trusting the shape.
+   */
+  readonly record_checkpoint: unknown;
   readonly record_snapshot: {
     readonly state: "current" | "unobserved" | "stale" | "failed";
     readonly as_of: string | null;
@@ -5796,6 +6426,13 @@ export interface ConnectorSummaryEvidenceRow {
   readonly state: string;
   /** Count of streams with at least one live canonical record — NOT the exhaustive declared+observed stream_records set size. */
   readonly stream_count: number;
+  /**
+   * Raw stored per-stream latest-attempt fact map, parsed defensively by
+   * `parseLatestStreamFactsMap`. Typed `unknown` because the read model stores
+   * it verbatim: every consumer must go through that validating parse rather
+   * than trusting the stored shape.
+   */
+  readonly stream_latest_facts: unknown;
   readonly stream_records: readonly {
     readonly stream: string;
     readonly declaration_state: "declared" | "dormant" | "unexpected" | "unavailable";
@@ -5810,14 +6447,18 @@ export interface ConnectorSummaryEvidenceRow {
     readonly reason_code: string | null;
   };
   readonly total_records: number;
-  readonly total_retained_bytes: number;
+  readonly total_retained_bytes: number | null;
 }
 
 /**
- * Index the maintained evidence rows by connector_instance_id. Read AFTER
- * the observation barrier (`reconcileDirtyConnectorSummaryEvidence`) has
- * run, so every row reflects canonical state as of this render — not a
- * pre-repair snapshot. Spec: openspec/changes/reconcile-active-summary-evidence.
+ * Index the read model's evidence rows by connector_instance_id. Terminal-
+ * gate revision (2026-07-29): this is no longer read after an inline
+ * observation barrier — ordinary GET never calls
+ * `reconcileDirtyConnectorSummaryEvidence` (see
+ * `loadConnectorSummaryProjectionDeps`'s comment above). Each row reflects
+ * canonical state as of the periodic maintenance sweep's last pass, honestly
+ * labeled `stale`/`dirty` when that pass has not yet caught up — never a
+ * fabricated freshness claim. Spec: openspec/changes/reconcile-active-summary-evidence.
  */
 function buildEvidenceIndex(rows: readonly Row[]): Map<string, ConnectorSummaryEvidenceRow> {
   const index = new Map<string, ConnectorSummaryEvidenceRow>();
@@ -5925,6 +6566,7 @@ async function listAllConnectorSummariesByPaging(
   }
   const summaries: ConnectorSummary[] = [];
   let after: ConnectorIdentityPageBoundary | null = null;
+  const visitedCursors = new Set<string>();
   for (;;) {
     // biome-ignore lint/performance/noAwaitInLoops: each page's continuation depends on the previous page's cursor.
     const page = await listConnectorSummaryPage(controller, {
@@ -5937,6 +6579,10 @@ async function listAllConnectorSummariesByPaging(
     if (!(page.has_more && page.next_cursor)) {
       break;
     }
+    if (visitedCursors.has(page.next_cursor)) {
+      throw new Error("Connector summary pagination repeated a cursor.");
+    }
+    visitedCursors.add(page.next_cursor);
     after = decodeConnectorSummaryPageCursor(page.next_cursor, ownerSubjectId);
   }
   return summaries;
@@ -6054,6 +6700,14 @@ async function projectConnectorIdentityInventoryPage(
 // derivation (ref-control.ts lines ~5142-5158) exactly, extracted so
 // `projectConnectorRetainedCountSummaryPage`'s per-row closure stays under the
 // cognitive-complexity budget.
+// The `known_zero` coverage-proof re-test applies here for the same reason it
+// applies in the full profile: this aggregate is built from persisted
+// per-stream states that were derived once at write time. The runtime facts it
+// needs (`stream_latest_facts`) live on the SAME evidence row this profile
+// already loads, so the correction costs no additional read and the profile's
+// flat-read-matrix guarantee is preserved. The manifest is deliberately not
+// loaded here, so streams are judged on their runtime facts alone — a stricter
+// test than the full profile's, never a laxer one.
 function deriveRetainedCountState(
   evidence: ConnectorSummaryEvidenceRow | null,
   totalRecords: number
@@ -6064,7 +6718,129 @@ function deriveRetainedCountState(
   if (evidence.record_snapshot.state !== "current") {
     return "stale";
   }
-  return totalRecords > 0 ? "known" : "known_zero";
+  const facts = parseLatestStreamFactsMap(evidence.stream_latest_facts);
+  const observedCheckpointStreams = parseObservedCheckpointStreams(evidence.record_checkpoint);
+  const corrected = evidence.stream_records.map((entry) => ({
+    count_state: downgradePersistedCountState({
+      countState: entry.count_state,
+      recordCount: entry.record_count,
+      recordSnapshotCurrent: true,
+      retainsZeroProof: (stream) =>
+        observedCheckpointStreams.has(stream) ||
+        persistedZeroRetainsCoverageProof(facts.get(stream)?.fact ?? null, undefined),
+      stream: entry.stream,
+    }),
+  }));
+  return aggregateCountState(corrected, totalRecords);
+}
+
+/**
+ * The set of streams the stored record-source checkpoint proves were
+ * canonically observed. An entry exists only once ingest allocated a version
+ * for that stream, so it is a record-side observation fact — the SAME proof
+ * `buildRepairedRow` derives `known_zero` from at the write path.
+ *
+ * Defensive at every field: a malformed column yields an empty set (no
+ * observation), never a fabricated one.
+ */
+function parseObservedCheckpointStreams(raw: unknown): ReadonlySet<string> {
+  const observed = new Set<string>();
+  if (!(raw && typeof raw === "object" && !Array.isArray(raw))) {
+    return observed;
+  }
+  const { streams } = raw as Row;
+  if (!Array.isArray(streams)) {
+    return observed;
+  }
+  for (const entry of streams) {
+    const stream = entry && typeof entry === "object" ? (entry as Row).stream : null;
+    if (typeof stream === "string" && stream.length > 0) {
+      observed.add(stream);
+    }
+  }
+  return observed;
+}
+
+/**
+ * Correct one PERSISTED per-stream `count_state` at the read boundary, where
+ * a value derived once at write time and served verbatim ever since can
+ * drift from what the run's own facts now prove, in EITHER direction.
+ *
+ *   1. The record snapshot is no longer `current`: any exact-count claim
+ *      (`known`/`known_zero`) predates the failure, so it reads `stale` while
+ *      the original count is kept as a non-authoritative hint.
+ *   2. The claim is `known_zero` but its runtime facts no longer carry
+ *      positive coverage evidence: an exact-zero assertion with no proof —
+ *      and, for a stream with no runtime fact at all, no observation
+ *      whatsoever — is `unobserved`, the honest "no count claim".
+ *   3. The claim is `unobserved` with a persisted zero record_count, but the
+ *      run's own facts DO carry positive coverage evidence the write path
+ *      never consulted (`buildRepairedRow` derives `observed` solely from
+ *      the record-source checkpoint, which a stream that legitimately
+ *      enumerated to zero never populates — see
+ *      connector-summary-evidence-engine.ts's `deriveStreamCountState`).
+ *      `retainsZeroProof` is the SAME predicate rule 2 uses to withdraw an
+ *      unproven `known_zero`; used here to grant one a completed,
+ *      zero-result requested enumeration already earned. A genuinely
+ *      unrequested/never-run stream has no runtime fact at all, so
+ *      `retainsZeroProof` returns false and it correctly stays `unobserved`.
+ *
+ * Rule 2 never touches `known`: a counted record is its own measurement.
+ * Rule 3 never touches `known`/`stale`/`unknown`: it only ever upgrades the
+ * specific "zero record_count, no count claim" combination `unobserved`
+ * represents.
+ */
+function downgradePersistedCountState({
+  countState,
+  recordCount,
+  recordSnapshotCurrent,
+  retainsZeroProof,
+  stream,
+}: {
+  readonly countState: CountStateValue;
+  readonly recordCount: number | null;
+  readonly recordSnapshotCurrent: boolean;
+  readonly retainsZeroProof: (stream: string) => boolean;
+  readonly stream: string;
+}): CountStateValue {
+  if (!recordSnapshotCurrent && (countState === "known" || countState === "known_zero")) {
+    return "stale";
+  }
+  if (countState === "known_zero" && !retainsZeroProof(stream)) {
+    return "unobserved";
+  }
+  if (countState === "unobserved" && recordCount === 0 && recordSnapshotCurrent && retainsZeroProof(stream)) {
+    return "known_zero";
+  }
+  return countState;
+}
+
+/**
+ * Aggregate `total_records_state` over a current snapshot's per-stream
+ * evidence. A zero total is only an authoritative `known_zero` when every
+ * stream contributing to it carries its own positive proof of zero; if any
+ * counted stream was never canonically observed, the total is an absence of
+ * evidence rather than a measured zero, so it reads `unobserved`. A nonzero
+ * total is a real measurement and stays `known` regardless.
+ *
+ * Callers pass the READ-CORRECTED per-stream states
+ * (`downgradePersistedCountState`), never the raw persisted row: an aggregate
+ * built from unproven `known_zero` entries would re-assert at the connection
+ * level exactly the claim the per-stream correction just withdrew.
+ */
+function aggregateCountState(
+  streamRecords: readonly { readonly count_state?: string }[] | undefined,
+  totalRecords: number
+): "known" | "known_zero" | "unobserved" {
+  if (totalRecords > 0) {
+    return "known";
+  }
+  if (!streamRecords || streamRecords.length === 0) {
+    return "unobserved";
+  }
+  return streamRecords.every((entry) => entry.count_state === "known_zero" || entry.count_state === "known")
+    ? "known_zero"
+    : "unobserved";
 }
 
 async function projectConnectorRetainedCountSummaryPage(
@@ -6120,10 +6896,16 @@ async function projectConnectorSummaryIdentityPage(
   controller: ControllerLike | null | undefined,
   {
     includeRunSummaries,
+    onProjectedSummary,
     ownerSubjectId,
     rows,
   }: {
     readonly includeRunSummaries: ConnectorRunSummaryInclusion;
+    readonly onProjectedSummary?: (input: {
+      readonly canonicalEvidenceRevision: string;
+      readonly runtime: EphemeralBrowserRuntimeProjection | null;
+      readonly summary: ConnectorSummary;
+    }) => Promise<void>;
     readonly ownerSubjectId: string;
     readonly rows: readonly ConnectorInstanceRow[];
   }
@@ -6151,24 +6933,53 @@ async function projectConnectorSummaryIdentityPage(
     pageProductEvidence: pageEvidence.product,
     retainedSizeSnapshot: pageEvidence.retainedSizeSnapshot,
   };
-  const activeVisibleConnectionCounts = new Map(
-    [...activeConnectionCounts].filter(([activeConnectorId]) => {
-      const manifest = pageDeps.manifestsByConnectorId.get(activeConnectorId);
-      return (
-        manifest !== undefined &&
-        isPublicReferenceConnector({ connector_id: activeConnectorId, manifest: JSON.stringify(manifest) }, manifest)
-      );
-    })
-  );
+  // `public_listing` governs OFFER/DISCOVERY and auto-enrollment only; it has no
+  // say over connections the owner has already created. This page is exactly
+  // that owner inventory, so the sibling-cardinality count is the plain active
+  // count — filtering it by catalog listability made an unlisted connector's
+  // singleton count 0 and silently denied it the legacy connector-wide run
+  // evidence `canUseConnectorWideRunSummaryFallback` grants every other
+  // single-connection connector.
+  //
+  // The page is built from owner-visible identities the keyset query already
+  // returned, so every row here is a row that will be returned: no post-LIMIT
+  // visibility filter, and therefore no page that silently shrinks while
+  // reporting a pre-filter `has_more`. The `.filter` below removes only rows
+  // whose manifest is entirely absent — a projection that cannot be built at
+  // all, not a visibility policy.
   return (
-    await runWithConcurrency(rows, LIST_CONNECTOR_SUMMARIES_CONCURRENCY, (instance) =>
-      projectConnectorSummaryForInstance(instance, pageDeps, {
-        activeVisibleConnectionCount: activeVisibleConnectionCounts.get(instance.connectorId) ?? 0,
-      })
-    )
+    await runWithConcurrency(rows, LIST_CONNECTOR_SUMMARIES_CONCURRENCY, async (instance) => {
+      let runtime: EphemeralBrowserRuntimeProjection | null = null;
+      const summary = await projectConnectorSummaryForInstance(instance, pageDeps, {
+        activeVisibleConnectionCount: activeConnectionCounts.get(instance.connectorId) ?? 0,
+        onRuntimeProjected: (projectedRuntime) => {
+          runtime = projectedRuntime;
+        },
+      });
+      if (summary && onProjectedSummary) {
+        const evidence = pageDeps.evidenceByInstanceId.get(instance.connectorInstanceId);
+        if (!evidence) {
+          throw new Error(
+            `Cannot publish connector list summary without canonical evidence: ${instance.connectorInstanceId}`
+          );
+        }
+        await onProjectedSummary({
+          canonicalEvidenceRevision: evidence.canonical_evidence_revision,
+          runtime,
+          summary,
+        });
+      }
+      return summary;
+    })
   ).filter((summary): summary is ConnectorSummary => summary !== null);
 }
 
+/**
+ * Rebuild and publish the complete owner-list item for one bounded set of
+ * canonical connection ids. The existing summary synthesizer is the only
+ * health/verdict calculation; this helper only supplies its result to the
+ * revision-fenced terminal projection writer.
+ */
 /**
  * Page summary synthesis starts from immutable owner-visible identities. It
  * deliberately does not use the all-list synthesizer: every durable product
@@ -6407,13 +7218,12 @@ export async function getConnectorSummaryForRoute(
   const activeConnectionCounts = await Promise.resolve(
     getConnectorInstanceStore().countActiveByOwnerConnectorIds(REFERENCE_OWNER_SUBJECT_ID, [match.connectorId])
   );
-  const manifest = deps.manifestsByConnectorId.get(match.connectorId);
-  const activeVisibleConnectionCount =
-    manifest &&
-    isPublicReferenceConnector({ connector_id: match.connectorId, manifest: JSON.stringify(manifest) }, manifest)
-      ? (activeConnectionCounts.get(match.connectorId) ?? 0)
-      : 0;
-  return projectConnectorSummaryForInstance(match, deps, { activeVisibleConnectionCount });
+  // Plain active sibling cardinality, ungated: `match` is a connection the owner
+  // already created and this route addressed it directly, so catalog listability
+  // is not a factor in either including the row or counting its siblings.
+  return projectConnectorSummaryForInstance(match, deps, {
+    activeVisibleConnectionCount: activeConnectionCounts.get(match.connectorId) ?? 0,
+  });
 }
 
 /**
@@ -6504,25 +7314,14 @@ export async function getConnectorDetail(
     connectorInstanceIds: [match.connectorInstanceId],
     includeRunSummaries: true,
   });
-  // Bounded aggregate scoped to exactly this one connector_id. This route's
-  // "active visible" has catalog gating off (see `requireCatalogVisibility:
-  // false` below), which reduces to plain `status === "active"` for a
-  // connector_id with a resolved manifest — exactly what this store
+  // Bounded aggregate scoped to exactly this one connector_id: plain
+  // `status === "active"` sibling cardinality, which is exactly what this store
   // aggregate counts. Never a fleet-wide in-memory count.
   const activeVisibleConnectionCounts = await Promise.resolve(
     getConnectorInstanceStore().countActiveByOwnerConnectorIds(REFERENCE_OWNER_SUBJECT_ID, [match.connectorId])
   );
   const summary = await projectConnectorSummaryForInstance(match, deps, {
     activeVisibleConnectionCount: activeVisibleConnectionCounts.get(match.connectorId) ?? 0,
-    // This route is reached by an owner-addressed connector_id, not by
-    // catalog browsing — catalog-visibility gating (`isPublicReferenceConnector`)
-    // answers "should this show up in the addable/listed catalog?", a
-    // different question from "does this specific, already-resolved
-    // connection have real data?" A private/unlisted connector's genuine
-    // connection must still be viewable through its own detail route (the
-    // exact regression closed here: this path used to read connector-wide
-    // data with no catalog gate at all).
-    requireCatalogVisibility: false,
   });
   if (isNullish(summary)) {
     // The connection resolved unambiguously, but the barrier-backed

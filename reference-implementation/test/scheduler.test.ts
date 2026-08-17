@@ -8,7 +8,7 @@ const TOP_LEVEL_REGEX_7 = /Connector emitted RECORD for undeclared stream/;
 const TOP_LEVEL_REGEX_8 = /Ingest failed for items: 401/;
 const TOP_LEVEL_REGEX_9 = /Ingest failed for items: 400/;
 const TOP_LEVEL_REGEX_10 = /^not_ready: required external tool definitely-missing-tool is not available\./;
-const TOP_LEVEL_REGEX_11 = /^not_ready: Codex local source path\(s\) are missing or unreadable:/;
+const TOP_LEVEL_REGEX_11 = /^not_ready: required local source path\(s\) are missing or unreadable:/;
 const TOP_LEVEL_REGEX_12 = /1970/;
 const TOP_LEVEL_REGEX_13 = /next attempt at (.+)$/;
 const TOP_LEVEL_REGEX_14 = /^\d{4}-/;
@@ -37,11 +37,46 @@ import {
   admitOwnerRunConnection,
   createSqliteConnectorInstanceStore,
 } from "../server/stores/connector-instance-store.ts";
+import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/connector-instance-credential-store.ts";
 import type { ActiveRunRecord, SchedulerRunHistoryRecord } from "../server/stores/scheduler-store.ts";
 import { getDefaultSchedulerStore } from "../server/stores/scheduler-store.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+
+function readServerSchedulerFixtureManifest(): Record<string, unknown> & {
+  connector_id: string;
+  connector_key: string;
+  display_name: string;
+  manifest_uri: string;
+} {
+  const base = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")) as Record<
+    string,
+    unknown
+  > & { capabilities?: Record<string, unknown> };
+  return {
+    ...base,
+    capabilities: {
+      ...base.capabilities,
+      refresh_policy: {
+        background_safe: true,
+        bot_detection_sensitivity: "low",
+        interaction_posture: "none",
+        maximum_staleness_seconds: 3600,
+        minimum_interval_seconds: 1,
+        rate_limit_sensitivity: "low",
+        rationale: "Deterministic scheduler integration fixture.",
+        recommended_interval_seconds: 60,
+        recommended_mode: "automatic",
+      },
+    },
+    connector_id: "scheduler-fixture",
+    connector_key: "scheduler-fixture",
+    display_name: "Scheduler fixture",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-fixture",
+  };
+}
 
 interface ClosableHttpServer {
   close: (cb: () => void) => void;
@@ -188,7 +223,7 @@ rl.on('line', (line) => {
       stream: 'items',
       count
     }) + '\\n');
-    if (count >= 4) {
+    if (count >= 10) {
       clearInterval(timer);
       setTimeout(() => {
         process.stdout.write(JSON.stringify({
@@ -198,7 +233,7 @@ rl.on('line', (line) => {
         }) + '\\n', () => process.exit(0));
       }, 40);
     }
-  }, 40);
+  }, 250);
 });
 `,
     "utf8"
@@ -375,8 +410,42 @@ async function materializeRunConnection(connectorId: string, ownerSubjectId: str
   return namespace.connectorInstanceId;
 }
 
+// Registers the connector-instance row a scheduler fixture's admission must
+// resolve to. Production's admitRunConnection wiring (server/index.ts) always
+// resolves an existing, owner-authorized row and returns its true id; the
+// RS ingest route independently re-resolves connector_instance_id per
+// request the same way (resolveOwnerConnectorNamespace). Without a real row
+// here, ingest falls through to a different (deterministic default-account)
+// id than the one admission/run.started used, and the run-admission fence
+// (assertSqliteRunStillAdmitted) then finds no matching running row. Every
+// scheduler fixture in this file that admits a run must call this first so
+// admission and ingest agree on the same identity. See "requires an existing
+// connector-instance row" at the first call site below for the original
+// discovery of this requirement.
+async function registerSchedulerFixtureConnectorInstance(options: {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName: string | undefined;
+  ownerSubjectId: string;
+  sourceBindingKey: string;
+  timestamp?: string;
+}): Promise<void> {
+  const timestamp = options.timestamp ?? "2026-04-29T00:00:00.000Z";
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId: options.connectorId,
+    connectorInstanceId: options.connectorInstanceId,
+    createdAt: timestamp,
+    displayName: options.displayName ?? options.connectorId,
+    ownerSubjectId: options.ownerSubjectId,
+    sourceBinding: { kind: "test_scheduler_fixture" },
+    sourceBindingKey: options.sourceBindingKey,
+    sourceKind: "account",
+    updatedAt: timestamp,
+  });
+}
+
 test("server-owned scheduler starts persisted enabled schedules after startup", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = readServerSchedulerFixtureManifest();
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-server-scheduler-enabled-"));
   const dbPath = join(tmpDir, "pdpp.sqlite");
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
@@ -391,7 +460,7 @@ test("server-owned scheduler starts persisted enabled schedules after startup", 
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
-    assert.equal(registerResp.status, 201);
+    assert.equal(registerResp.status, 201, JSON.stringify(registerResp.body));
     // Admission requires an existing connector-instance row for this owner +
     // connector (require-new-run-connection-id): the production
     // admitRunConnection wiring in server/index.ts refuses to materialize one
@@ -403,16 +472,12 @@ test("server-owned scheduler starts persisted enabled schedules after startup", 
     // URL-shaped connector_id — the connector-instance row must be keyed the
     // same way so buildConnectors' admission lookup finds it.
     const serverOwnedCanonicalKey = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
-    await createSqliteConnectorInstanceStore().upsert({
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: serverOwnedCanonicalKey,
       connectorInstanceId: serverOwnedCanonicalKey,
-      createdAt: "2026-04-29T00:00:00.000Z",
-      displayName: spotifyManifest.display_name || spotifyManifest.connector_id,
+      displayName: spotifyManifest.display_name,
       ownerSubjectId: "owner_local",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_server_owned_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T00:00:00.000Z",
     });
     await server.controller.upsertSchedule(spotifyManifest.connector_id, {
       enabled: true,
@@ -425,6 +490,7 @@ test("server-owned scheduler starts persisted enabled schedules after startup", 
 
     server = await startServer({
       asPort: 0,
+      connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
       connectorPathResolver: () => connectorPath,
       dbPath,
       quiet: true,
@@ -457,6 +523,7 @@ test("scheduler enforces automation policy before starting an unsafe automatic r
             refresh_policy: { background_safe: false },
           },
         },
+        ownerSubjectId: "owner_local",
         ownerToken: "owner-token",
       },
     ],
@@ -481,11 +548,12 @@ test("scheduler enforces automation policy before starting an unsafe automatic r
 });
 
 test("server-owned scheduler refreshes after schedule route mutations", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = readServerSchedulerFixtureManifest();
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-server-scheduler-route-refresh-"));
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   const server = await startServer({
     asPort: 0,
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
     connectorPathResolver: () => connectorPath,
     dbPath: ":memory:",
     quiet: true,
@@ -499,7 +567,7 @@ test("server-owned scheduler refreshes after schedule route mutations", async ()
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
-    assert.equal(registerResp.status, 201);
+    assert.equal(registerResp.status, 201, JSON.stringify(registerResp.body));
 
     const putResp = await fetch(
       `${asUrl}/_ref/connectors/${encodeURIComponent(spotifyManifest.connector_id)}/schedule`,
@@ -600,12 +668,15 @@ test("autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_
   // under the non-canonical key — mismatching the canonical key the read and
   // admission paths key on. This test seeds the legacy row directly, ticks the
   // scheduler once, and asserts every persisted identity is the canonical key.
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
-  const canonicalKey = spotifyManifest.connector_key; // 'spotify'
-  const legacyConnectorId = spotifyManifest.connector_id; // URL-shaped, non-canonical
+  const schedulerManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "../packages/polyfill-connectors/manifests/ynab.json"), "utf8")
+  );
+  const canonicalKey = schedulerManifest.connector_key;
+  const legacyConnectorId = schedulerManifest.manifest_uri;
   assert.notEqual(legacyConnectorId, canonicalKey, "fixture precondition: ids differ");
 
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-legacy-canonical-"));
+  const dbPath = join(tmpDir, "pdpp.sqlite");
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   // biome-ignore lint/suspicious/noEvolvingTypes: test fixture inference is intentionally widened
   let server = null;
@@ -613,56 +684,74 @@ test("autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_
   try {
     server = await startServer({
       asPort: 0,
-      connectorPathResolver: () => connectorPath,
-      dbPath: ":memory:",
+      dbPath,
       quiet: true,
       rsPort: 0,
     });
     const asUrl = `http://localhost:${server.asPort}`;
 
     const registerResp = await fetchJson(`${asUrl}/connectors`, {
-      body: JSON.stringify(spotifyManifest),
+      body: JSON.stringify(schedulerManifest),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
 
-    // Admission requires an existing connector-instance row (require-new-run-
-    // connection-id): buildConnectors canonicalizes connectorId to canonicalKey
-    // but forwards the legacy (non-canonical) connector_instance_id verbatim,
-    // so the store row must be keyed by the legacy id while pointing at the
-    // canonical connector.
-    await createSqliteConnectorInstanceStore().upsert({
+    // Admission requires an existing connector-instance row. The connection
+    // identity is already canonical; only the legacy schedule connector_id is
+    // under test here.
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: canonicalKey,
-      connectorInstanceId: legacyConnectorId,
-      createdAt: "2026-04-29T00:00:00.000Z",
-      displayName: spotifyManifest.display_name || canonicalKey,
+      connectorInstanceId: canonicalKey,
+      displayName: schedulerManifest.display_name,
       ownerSubjectId: "owner_local",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_legacy_canonical_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T00:00:00.000Z",
+    });
+    await createSqliteConnectorInstanceCredentialStore({
+      env: { PDPP_CREDENTIAL_ENCRYPTION_KEY: "11".repeat(32) },
+    }).capture({
+      connectorInstanceId: canonicalKey,
+      credentialKind: "personal_access_token",
+      now: new Date().toISOString(),
+      ownerSubjectId: "owner_local",
+      secret: "scheduler-fixture-token",
     });
 
     // Seed the schedule row directly — NOT via controller.upsertSchedule, which
     // would canonicalize — to faithfully model a legacy row written before the
     // canonicalization slice landed.
-    const store = getDefaultSchedulerStore();
-    const now = new Date().toISOString();
-    await store.createSchedule({
+    const seedStore = getDefaultSchedulerStore();
+    const now = new Date(Date.now() - 120_000).toISOString();
+    await seedStore.createSchedule({
       connector_id: legacyConnectorId,
-      connector_instance_id: legacyConnectorId,
+      connector_instance_id: canonicalKey,
       created_at: now,
       enabled: true,
-      interval_seconds: 60,
+      interval_seconds: 1,
       jitter_seconds: 0,
       updated_at: now,
     });
 
-    // Re-run buildConnectors over the freshly-seeded legacy row.
-    await server.schedulerManager.refresh();
+    await closeServer(server);
+    closeDb();
+    server = await startServer({
+      asPort: 0,
+      connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
+      connectorPathResolver: () => connectorPath,
+      dbPath,
+      quiet: true,
+      rsPort: 0,
+    });
+    const store = getDefaultSchedulerStore();
 
-    await waitFor(() => readAttempts(attemptsPath).length >= 1, 8000);
+    await waitForAsync(async () => {
+      const history = await store.listRunHistory(50);
+      return readAttempts(attemptsPath).length >= 1 || history.length >= 1;
+    }, 8000);
+    assert.ok(
+      readAttempts(attemptsPath).length >= 1,
+      `expected scheduled connector attempt; history=${JSON.stringify(await store.listRunHistory(50))}`
+    );
     // The run record is appended to history asynchronously after the run
     // completes; poll the durable store (SQLite listRunHistory is synchronous)
     // until the row lands so the assertion sees the persisted identity.
@@ -733,6 +822,7 @@ test("scheduler history records checkpoint summaries from runConnector results",
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 60_000,
           manifest: spotifyManifest,
+          ownerSubjectId: "scheduler_user",
           ownerToken,
         },
       ],
@@ -849,6 +939,7 @@ test("scheduler hydrates persisted history without bypassing a fresh persisted l
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 60_000,
           manifest: spotifyManifest,
+          ownerSubjectId: "scheduler_persistence_user",
           ownerToken,
         },
       ],
@@ -927,6 +1018,7 @@ test("scheduler direct runs timeout, terminal, and clear durable active-run rows
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_timeout_user",
           ownerToken,
         },
       ],
@@ -1017,6 +1109,7 @@ test("scheduler timeout beats connector DONE emitted during shutdown", async () 
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_timeout_done_user",
           ownerToken,
         },
       ],
@@ -1065,10 +1158,11 @@ test("scheduler progress watchdog allows long direct runs that keep reporting pr
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
+  let scheduler: ReturnType<typeof createScheduler> | null = null;
 
   try {
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_progress_watchdog_user");
-    const scheduler = createScheduler({
+    const activeScheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
@@ -1078,28 +1172,30 @@ test("scheduler progress watchdog allows long direct runs that keep reporting pr
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_progress_watchdog_user",
           ownerToken,
         },
       ],
       getState: async () => null,
-      maxRunWallClockMs: 100,
+      maxRunWallClockMs: 2000,
       onInteraction: async (interaction: unknown) => cancelledInteractionResponse(interaction),
       rsUrl,
       // biome-ignore lint/suspicious/noEmptyBlockStatements: skipped test callback is intentionally empty
       setState: async () => {},
     });
+    scheduler = activeScheduler;
 
-    scheduler.start();
+    activeScheduler.start();
     // biome-ignore lint/suspicious/noShadow: fixture terminology mirrors the protocol field name
-    await waitFor(() => scheduler.getHistory().some((record) => record.status === "succeeded"), 5000);
-    scheduler.stop();
+    await waitFor(() => activeScheduler.getHistory().some((record) => record.status === "succeeded"), 5000);
+    activeScheduler.stop();
 
-    const [record] = scheduler.getHistory().filter((entry) => entry.connectorId === manifest.connector_id);
+    const [record] = activeScheduler.getHistory().filter((entry) => entry.connectorId === manifest.connector_id);
     assert.ok(record, "expected a completed run record for this connector");
     assert.equal(record.status, "succeeded");
     assert.equal(record.terminalReason, null);
     assert.equal(
-      scheduler.getHistory().some((entry) => entry.terminalReason === "run_timed_out"),
+      activeScheduler.getHistory().some((entry) => entry.terminalReason === "run_timed_out"),
       false,
       "valid connector progress must reset the scheduler watchdog"
     );
@@ -1107,13 +1203,14 @@ test("scheduler progress watchdog allows long direct runs that keep reporting pr
     assert.ok(record.runId, "expected run to have a run_id");
     const timeline = await waitForRunTerminalEvent(asUrl, record.runId);
     assert.equal(
-      timeline.data.filter((event) => event.event_type === "run.progress_reported").length >= 4,
+      timeline.data.filter((event) => event.event_type === "run.progress_reported").length >= 10,
       true,
       "runtime should persist connector progress events"
     );
     const completed = timeline.data.find((event) => event.event_type === "run.completed");
     assert.ok(completed, "expected a completed terminal event");
   } finally {
+    scheduler?.stop();
     await closeServer(server);
     rmSync(tmpDir, { force: true, recursive: true });
   }
@@ -1190,6 +1287,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_failure_user",
           ownerToken,
         },
       ],
@@ -1393,6 +1491,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_partial_checkpoint_user",
           ownerToken,
         },
       ],
@@ -1542,6 +1641,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_terminal_counter_mismatch_user",
           ownerToken,
         },
       ],
@@ -1681,6 +1781,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_terminal_error_user",
           ownerToken,
         },
       ],
@@ -1810,6 +1911,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_known_gap_user",
           ownerToken,
         },
       ],
@@ -1925,6 +2027,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_cancelled_terminal_error_user",
           ownerToken,
         },
       ],
@@ -2055,6 +2158,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 2,
+          ownerSubjectId: "scheduler_no_retry_protocol_user",
           ownerToken,
         },
       ],
@@ -2185,6 +2289,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 2,
+          ownerSubjectId: "scheduler_retryable_terminal_error_user",
           ownerToken,
         },
       ],
@@ -2293,6 +2398,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 2,
+          ownerSubjectId: "scheduler_nonretryable_terminal_error_user",
           ownerToken,
         },
       ],
@@ -2417,6 +2523,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 2,
+          ownerSubjectId: "owner_local",
           ownerToken: "invalid_owner_token",
         },
       ],
@@ -2576,6 +2683,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 2,
+          ownerSubjectId: "owner_local",
           ownerToken: "client_token_instead_of_owner",
         },
       ],
@@ -2726,6 +2834,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 2,
+          ownerSubjectId: "owner_local",
           ownerToken: "owner_token",
         },
       ],
@@ -2886,6 +2995,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 2,
+          ownerSubjectId: "owner_local",
           ownerToken: "owner_token",
         },
       ],
@@ -3025,6 +3135,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest,
           maxRetries: 2,
+          ownerSubjectId: "owner_local",
           ownerToken: "owner_token",
         },
       ],
@@ -3088,16 +3199,13 @@ test("scheduler treats single_use grants as one successful run followed by exhau
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_single_use_user");
     const singleUseCanonicalKey = canonicalConnectorKey(spotifyManifest.connector_id);
     assert.ok(singleUseCanonicalKey, "expected the spotify fixture connector_id to canonicalize");
-    await createSqliteConnectorInstanceStore().upsert({
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: singleUseCanonicalKey,
       connectorInstanceId: spotifyManifest.connector_id,
-      createdAt: "2026-04-29T02:00:00.000Z",
-      displayName: spotifyManifest.display_name || spotifyManifest.connector_id,
+      displayName: spotifyManifest.display_name,
       ownerSubjectId: "scheduler_single_use_user",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_single_use_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T02:00:00.000Z",
+      timestamp: "2026-04-29T02:00:00.000Z",
     });
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
@@ -3110,6 +3218,7 @@ test("scheduler treats single_use grants as one successful run followed by exhau
           intervalMs: 25,
           manifest: spotifyManifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_single_use_user",
           ownerToken,
         },
       ],
@@ -3235,6 +3344,7 @@ rl.on('line', (line) => {
           intervalMs: 50,
           manifest: spotifyManifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_active_run_user",
           ownerToken,
         },
       ],
@@ -3337,6 +3447,7 @@ rl.on('line', (line) => {
           intervalMs: 50,
           manifest: spotifyManifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_single_use_retry_user",
           ownerToken,
         },
       ],
@@ -3458,6 +3569,7 @@ rl.on('line', (line) => {
           intervalMs: 60_000,
           manifest: spotifyManifest,
           maxRetries: 2,
+          ownerSubjectId: "scheduler_stop_retry_user",
           ownerToken,
         },
       ],
@@ -3533,6 +3645,7 @@ test("scheduler start is idempotent and does not launch a second immediate run",
           intervalMs: 10_000,
           manifest: spotifyManifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_idempotent_start_user",
           ownerToken,
         },
       ],
@@ -3658,6 +3771,7 @@ rl.on('line', (line) => {
             intervalMs: 50,
             manifest,
             maxRetries: 2,
+            ownerSubjectId: "owner_local",
             ownerToken: "grant_token",
           },
         ],
@@ -3733,6 +3847,7 @@ test("scheduler skips automatic run with needs_human_attention when isNeedsHuman
           intervalMs: 25,
           manifest: spotifyManifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_nhuman_skip_user",
           ownerToken,
         },
       ],
@@ -3802,6 +3917,7 @@ test("scheduler records one not-ready skip for automatic runs when runtime prere
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_not_ready_skip_user",
           ownerToken,
         },
       ],
@@ -3867,6 +3983,7 @@ test("scheduler emits a fresh not-ready skip when readiness reason changes", asy
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_not_ready_changing_user",
           ownerToken,
         },
       ],
@@ -3944,6 +4061,7 @@ test("scheduler default readiness checker skips missing manifest-declared extern
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_missing_tool_user",
           ownerToken,
         },
       ],
@@ -3971,7 +4089,7 @@ test("scheduler default readiness checker skips missing manifest-declared extern
   }
 });
 
-test("scheduler default readiness checker probes SLACKDUMP_BIN with version when set", async () => {
+test("scheduler default readiness checker probes a manifest-declared executable_env_override with version when set", async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
@@ -3981,7 +4099,12 @@ test("scheduler default readiness checker probes SLACKDUMP_BIN with version when
       bindings: { network: { required: true } },
       external_tools: [
         {
-          detect: { args: ["stale-detect-args"], executable: "unused-slackdump", exit_code: 0 },
+          detect: {
+            args: ["version"],
+            executable: "unused-slackdump",
+            executable_env_override: "SLACKDUMP_BIN",
+            exit_code: 0,
+          },
           install_hint: "mount slackdump and set SLACKDUMP_BIN",
           license: "AGPL-3.0",
           name: "slackdump",
@@ -4020,6 +4143,7 @@ test("scheduler default readiness checker probes SLACKDUMP_BIN with version when
           intervalMs: 60_000,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_slackdump_bin_user",
           ownerToken,
         },
       ],
@@ -4044,7 +4168,7 @@ test("scheduler default readiness checker probes SLACKDUMP_BIN with version when
   }
 });
 
-test("scheduler default readiness checker applies local-source checks to canonical connector keys", async () => {
+test("scheduler default readiness checker applies local-source checks declared by the schedule's own manifest", async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-canonical-local-source-"));
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   const previousSessionsDir = process.env.CODEX_SESSIONS_DIR;
@@ -4064,9 +4188,28 @@ test("scheduler default readiness checker applies local-source checks to canonic
           },
           runtime_requirements: {
             bindings: { filesystem: { required: true }, network: { required: true } },
+            local_paths: {
+              home_default_relative_to_user_home: ".codex",
+              home_env_override: "CODEX_HOME",
+              paths: [
+                {
+                  default_relative_to_home: "sessions",
+                  env_override: "CODEX_SESSIONS_DIR",
+                  label: "sessions directory",
+                  required_for_readiness: true,
+                },
+                {
+                  default_relative_to_home: "state_5.sqlite",
+                  env_override: "CODEX_STATE_DB",
+                  label: "state database",
+                  required_for_readiness: true,
+                },
+              ],
+            },
           },
         },
         maxRetries: 0,
+        ownerSubjectId: "owner_local",
         ownerToken: "owner-token",
       },
     ],
@@ -4122,6 +4265,8 @@ test("scheduler default readiness checker does not treat browser bindings as rea
   const previousUnmanagedOptIn = process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
   const previousNekoCdpUrl = process.env.PDPP_NEKO_CDP_HTTP_URL;
   const previousNekoManaged = process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+  const previousRuntimeBrowser = process.env.PDPP_RUNTIME_BROWSER;
+  const previousDisplay = process.env.DISPLAY;
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -4132,6 +4277,11 @@ test("scheduler default readiness checker does not treat browser bindings as rea
     delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
     delete process.env.PDPP_NEKO_CDP_HTTP_URL;
     delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    // A genuinely-unconfigured deployment has neither signal set — clear
+    // both so this test's intent (not-ready) holds even when run on a
+    // host with an ambient DISPLAY (e.g. a developer desktop).
+    delete process.env.PDPP_RUNTIME_BROWSER;
+    delete process.env.DISPLAY;
     const registerResp = await fetchJson(`${asUrl}/connectors`, {
       body: JSON.stringify(manifest),
       headers: { "Content-Type": "application/json" },
@@ -4150,6 +4300,7 @@ test("scheduler default readiness checker does not treat browser bindings as rea
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_browser_not_ready_user",
           ownerToken,
         },
       ],
@@ -4190,6 +4341,16 @@ test("scheduler default readiness checker does not treat browser bindings as rea
       delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
     } else {
       process.env.PDPP_NEKO_MANAGED_CONNECTORS = previousNekoManaged;
+    }
+    if (previousRuntimeBrowser === undefined) {
+      delete process.env.PDPP_RUNTIME_BROWSER;
+    } else {
+      process.env.PDPP_RUNTIME_BROWSER = previousRuntimeBrowser;
+    }
+    if (previousDisplay === undefined) {
+      delete process.env.DISPLAY;
+    } else {
+      process.env.DISPLAY = previousDisplay;
     }
     await closeServer(server);
     rmSync(tmpDir, { force: true, recursive: true });
@@ -4242,6 +4403,7 @@ test("scheduler default readiness checker treats PDPP_NEKO_CDP_HTTP_URL as manag
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_browser_neko_cdp_user",
           ownerToken,
         },
       ],
@@ -4337,6 +4499,7 @@ test("scheduler default readiness checker treats PDPP_NEKO_MANAGED_CONNECTORS as
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_browser_neko_managed_user",
           ownerToken,
         },
       ],
@@ -4456,6 +4619,7 @@ rl.on('line', (line) => {
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_interaction_user",
           ownerToken,
         },
       ],
@@ -4561,6 +4725,7 @@ test("scheduler backoff skip derives next_attempt_at from history when last_run_
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_backoff_1970_user",
           ownerToken,
         },
       ],
@@ -4681,6 +4846,7 @@ test("scheduler backoff skip uses gave_up phrasing once health-state crosses blo
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_backoff_blocked_msg_user",
           ownerToken,
         },
       ],
@@ -4809,6 +4975,7 @@ test("scheduler does not re-emit persisted backoff transition markers on restart
           intervalMs: 25,
           manifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_backoff_restart_noise_user",
           ownerToken,
         },
       ],

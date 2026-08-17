@@ -34,7 +34,7 @@ import test from "node:test";
 import type { ConnectionHealthCondition } from "../runtime/connection-health.ts";
 import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-evidence-engine.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
-import { ingestRecord } from "../server/records.ts";
+import { deleteRecord, ingestRecord } from "../server/records.ts";
 import {
   type ConnectorSummary,
   invalidateConnectorSummariesCache,
@@ -49,7 +49,7 @@ const STREAM = "messages";
 
 const MANIFEST = {
   capabilities: {
-    public_listing: { listed: true, status: "test" },
+    public_listing: { tier: "supported" },
   },
   connector_id: CONNECTOR_ID,
   display_name: "Stale Count After Failure Probe",
@@ -121,7 +121,17 @@ test("a repair-candidate upsert failure with a checkpoint that already moved for
 
     // First pass: create a genuinely current, correct zero-record evidence
     // row — `stream_records_json` legitimately reads `known_zero` here,
-    // because it IS zero and IS verified.
+    // because it IS zero and IS verified. Verifying it requires a real
+    // canonical observation of the stream (an absent canonical row alone
+    // proves nothing — see `connector-summary-count-state-proof.test.ts`),
+    // so the stream is ingested and then emptied to establish the proof.
+    await ingestRecord(storageTarget(), {
+      data: { id: "msg_seed" },
+      emitted_at: NOW,
+      key: "msg_seed",
+      stream: STREAM,
+    });
+    await deleteRecord(storageTarget(), STREAM, "msg_seed");
     const first = await reconcileConnectorSummaryEvidence(null);
     assert.equal(first.failed, 0);
     const beforeSummary = summaryFor(await listBypassCache());

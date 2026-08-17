@@ -66,6 +66,7 @@ import {
 } from "./connection-identity.ts";
 import { withConnectorInstanceWrite } from "./connector-instance-write-coordinator.ts";
 import { getDb } from "./db.ts";
+import { intraOpNumThreadsForWorkLimit, resolveEmbeddingConcurrency } from "./embedding-concurrency.ts";
 import { LocalTransformerExecutor } from "./local-transformer-executor.ts";
 import { assertGrantedManifestReadAuthority, assertOwnerSearchFilterAuthority } from "./manifest-read-authority.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
@@ -85,13 +86,17 @@ import {
   postgresListSemanticStreamsForConnector,
   postgresSemanticIndexDelete,
   postgresSemanticIndexDeleteByConnectorStream,
-  postgresSemanticIndexInsertMany,
+  postgresSemanticIndexDeleteWithClient,
+  postgresSemanticIndexInsertManyGuarded,
+  postgresSemanticIndexPublishWithClient,
   postgresSemanticIndexUpsertMany,
   postgresSemanticRecordsPage,
   postgresSemanticSearch,
   postgresUpsertSemanticMeta,
+  postgresUpsertSemanticMetaWithClient,
   postgresUpsertSemanticProgress,
 } from "./postgres-search.ts";
+import type { PostgresTransactionClient } from "./postgres-storage.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 import type { CompiledFilter } from "./record-filters.ts";
 import { compileRequestFilters, passesGrantRecordConstraints, passesRequestFilters } from "./record-filters.ts";
@@ -306,6 +311,17 @@ interface SemanticIndexEntry {
   recordKey: string;
   scopeKey: string;
   vector: SemanticVector;
+  /**
+   * The `records.version` this entry's source text was read at — set only
+   * by the backfill path (`rebuildSemanticIndexForStream`), which re-checks
+   * it immediately before writing so a row a concurrent delete/newer-write
+   * has since superseded is skipped rather than resurrected/overwritten.
+   * Unset (undefined) for the live per-record ingest CAS path, which is
+   * already atomically gated elsewhere (records.ts's
+   * maintainRecordIndexesWithinPermit) and does not need this check
+   * repeated here. See harden-connector-instance-write-fence-transaction-native.
+   */
+  version?: number;
 }
 
 interface SemanticIndex {
@@ -508,9 +524,10 @@ const LOCAL_EMBEDDING_PROFILES: Record<string, SemanticEmbeddingProfile> = {
 const DISTANCE_METRICS = new Set<SemanticDistanceMetric>(["cosine", "dot", "l2"]);
 const EMBEDDING_BACKEND_ENV = "PDPP_SEMANTIC_EMBEDDING_BACKEND";
 export const DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS = 2048;
-// The child-executor receipt found no work limit that was materially faster
-// than one across two warmed rounds, so reliability wins by default.
-const DEFAULT_SEMANTIC_WORK_LIMIT = 1;
+// Allowed values, both for an explicit PDPP_SEMANTIC_WORK_LIMIT and for the
+// CPU-derived default below. Eight is a hard ceiling so request fan-out
+// cannot overrun the local model host.
+const SEMANTIC_WORK_LIMIT_STEPS = [1, 2, 4, 8] as const;
 const DEFAULT_SEMANTIC_WORK_QUEUE_LIMIT = 16;
 const DEFAULT_SEMANTIC_WORK_ACQUIRE_DEADLINE_MS = 30_000;
 const TRANSIENT_LOCAL_EXECUTOR_CODES = new Set([
@@ -551,15 +568,87 @@ export class SemanticWorkAdmissionError extends Error {
 let activeSemanticWork = 0;
 const semanticWorkWaiters: SemanticWorkWaiter[] = [];
 
+/**
+ * Admission limit derived from `resolveEmbeddingConcurrency()`
+ * (embedding-concurrency.ts) — the SAME joint CPU+memory+ONNX-thread
+ * derivation the transformer executor's own `workLimit` default uses (see
+ * `local-transformer-executor.ts`'s `defaultWorkLimit`), so the two layers
+ * cannot disagree. Snapped to the explicit `[1, 2, 4, 8]` step set to match
+ * the concurrency levels this project's own benchmark grid actually
+ * measured (scripts/benchmark-local-transformer.ts), never an interpolated
+ * value nobody tested.
+ *
+ * The naive version of this function — CPU count alone, no memory or
+ * ONNX-thread awareness — was replaced after a controlled benchmark
+ * isolating those variables showed it was actively counterproductive: on
+ * this box, `workLimit=8` with ONNX Runtime's default (unset)
+ * `intraOpNumThreads` was CONSISTENTLY THE WORST measured configuration
+ * (630-836ms median for 100 embeds across 3 runs), because ONNX Runtime
+ * already spins up one native thread per core for a single session by
+ * default (confirmed against https://onnxruntime.ai/docs/performance/tune-performance/threading.html
+ * and the installed onnxruntime-common@1.24.3 SessionOptions type) — eight
+ * concurrent JS-level calls meant eight sessions all fighting over the same
+ * physical cores. `resolveEmbeddingConcurrency` fixes this by deriving
+ * `workLimit` and `intraOpNumThreads` together so their product never
+ * exceeds the CPU budget.
+ */
+export function semanticWorkLimitStepForCpuCount(cpuCount: number): number {
+  let selected: number = SEMANTIC_WORK_LIMIT_STEPS[0];
+  for (const step of SEMANTIC_WORK_LIMIT_STEPS) {
+    if (step <= cpuCount) {
+      selected = step;
+    }
+  }
+  return selected;
+}
+
+function defaultSemanticWorkLimit(): number {
+  return semanticWorkLimitStepForCpuCount(resolveEmbeddingConcurrency().workLimit);
+}
+
 function configuredSemanticWorkLimit() {
-  const requested = parsePositiveInteger(
-    process.env.PDPP_SEMANTIC_WORK_LIMIT,
-    DEFAULT_SEMANTIC_WORK_LIMIT,
-    "PDPP_SEMANTIC_WORK_LIMIT"
+  const fallback = defaultSemanticWorkLimit();
+  const requested = parsePositiveInteger(process.env.PDPP_SEMANTIC_WORK_LIMIT, fallback, "PDPP_SEMANTIC_WORK_LIMIT");
+  return (SEMANTIC_WORK_LIMIT_STEPS as readonly number[]).includes(requested) ? requested : fallback;
+}
+
+let loggedEmbeddingConcurrencyMismatch = false;
+
+/**
+ * Warns once (not per-embed) when an operator has explicitly set BOTH
+ * PDPP_SEMANTIC_WORK_LIMIT and PDPP_LOCAL_TRANSFORMER_WORK_LIMIT to
+ * different values. This is not unsafe by itself (the semaphore is always
+ * the outer admission gate, so a higher executor workLimit than semaphore
+ * limit just goes unused) — it is a signal the operator's two overrides
+ * disagree about intended concurrency, which is worth surfacing since
+ * `intraOpNumThreads` is sized to the semaphore's limit, not the
+ * executor's: if the executor's explicit workLimit is actually LOWER than
+ * the semaphore's, embed calls will queue there instead of running with
+ * the thread count this function chose for them, which is safe but not
+ * the operator's evident intent.
+ */
+function warnOnEmbeddingConcurrencyMismatch(semanticWorkLimit: number): void {
+  if (loggedEmbeddingConcurrencyMismatch) {
+    return;
+  }
+  const explicitSemantic = process.env.PDPP_SEMANTIC_WORK_LIMIT;
+  const explicitExecutor = process.env.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT;
+  if (explicitSemantic === undefined || explicitExecutor === undefined) {
+    return;
+  }
+  const executorWorkLimit = parsePositiveInteger(
+    explicitExecutor,
+    semanticWorkLimit,
+    "PDPP_LOCAL_TRANSFORMER_WORK_LIMIT"
   );
-  // The operational benchmark selects a value from this explicit set. Eight
-  // is a hard ceiling so request fan-out cannot overrun the local model host.
-  return [1, 2, 4, 8].includes(requested) ? requested : DEFAULT_SEMANTIC_WORK_LIMIT;
+  if (executorWorkLimit === semanticWorkLimit) {
+    return;
+  }
+  loggedEmbeddingConcurrencyMismatch = true;
+  console.warn(
+    `[search-semantic] PDPP_SEMANTIC_WORK_LIMIT=${explicitSemantic} and PDPP_LOCAL_TRANSFORMER_WORK_LIMIT=${explicitExecutor} disagree; ` +
+      `embedding threads are sized to the semantic-work limit (${semanticWorkLimit}), so a lower executor workLimit will queue jobs instead of running them concurrently, and a higher one leaves unused admission capacity.`
+  );
 }
 
 function configuredSemanticWorkQueueLimit() {
@@ -830,6 +919,14 @@ export function makeLocalTransformerBackend(
 ): SemanticEmbeddingBackend {
   let lastLoadError: unknown = null;
   const executor = new LocalTransformerExecutor(executorOptions);
+  // Threads are sized to the ACTUAL effective semantic-work admission
+  // limit (configuredSemanticWorkLimit(), which honors an explicit
+  // PDPP_SEMANTIC_WORK_LIMIT override), not just this module's own
+  // unconfigured default — an operator who raises the semaphore without
+  // touching PDPP_LOCAL_TRANSFORMER_WORK_LIMIT still gets threads divided
+  // across the concurrency that will actually run.
+  const intraOpNumThreads = intraOpNumThreadsForWorkLimit(configuredSemanticWorkLimit());
+  warnOnEmbeddingConcurrencyMismatch(configuredSemanticWorkLimit());
   const initialCacheStats = modelCacheStats(config);
   const initialCachePresent = modelCachePresent(config);
   let preparation: SemanticEmbeddingWarmStatus = {
@@ -873,7 +970,7 @@ export function makeLocalTransformerBackend(
         await executor.embed(
           String(text || ""),
           `${config.profileId}:${config.modelId}:${config.dtype}:${config.dimensions}:${config.distanceMetric}`,
-          config
+          { ...config, intraOpNumThreads }
         ),
         config.dimensions
       );
@@ -2013,6 +2110,199 @@ export async function semanticIndexUpsert({
   }
 }
 
+export interface ComputedSemanticEntries {
+  declared: string[];
+  entries: SemanticIndexEntry[];
+}
+
+/**
+ * Computes (embeds) the semantic entries a record's declared fields require
+ * — the expensive, unlocked step. Returns `null` when there is nothing to
+ * publish (no backend, or the stream declares no semantic fields), which the
+ * caller should treat as "nothing to gate/write," not as a failure.
+ *
+ * Deliberately does NOT write anything: callers combine this with
+ * `computeLexicalFields` (search.ts) and pass both to a SINGLE version-gated
+ * transaction (see `records.ts`'s `maintainRecordIndexesWithinPermit`) so
+ * lexical and semantic publish/delete land atomically together, gated on
+ * ONE re-read of `records.version` — never as two independently-gated CAS
+ * transactions, which would let a newer write's own publish interleave
+ * between this record's lexical and semantic halves and leave the two index
+ * families pointing at different versions. See
+ * harden-connector-instance-write-fence-transaction-native.
+ */
+export async function computeSemanticEntries({
+  connectorId,
+  connectorInstanceId,
+  stream,
+  recordKey,
+  data,
+  declaredFields,
+}: {
+  connectorId: string;
+  connectorInstanceId: string;
+  stream: string;
+  recordKey: string;
+  data?: SemanticRecordData | null;
+  declaredFields?: string[];
+}): Promise<ComputedSemanticEntries | null> {
+  if (!backend) {
+    return null;
+  }
+  const declared = declaredFields === undefined ? await getStreamSemanticFields(connectorId, stream) : declaredFields;
+  if (!declared) {
+    return null;
+  }
+  const entries = (
+    await Promise.all(
+      declared.map(async (field) => {
+        const text = normalizeSemanticEmbeddingInput(data?.[field]);
+        if (!text) {
+          return null;
+        }
+        return {
+          connectorId,
+          connectorInstanceId,
+          recordKey,
+          scopeKey: encodeScopeKey(stream, field),
+          vector: await embedDocumentWithAdmission(text),
+        } satisfies SemanticIndexEntry;
+      })
+    )
+  ).filter((entry): entry is SemanticIndexEntry => entry !== null);
+  return { declared, entries };
+}
+
+/**
+ * Applies already-computed semantic entries for a Postgres backend, using
+ * the CALLER's existing transaction client — no version check, no
+ * transaction of its own. The caller (`records.ts`) owns the single
+ * version-gated transaction both this and the lexical equivalent write into.
+ */
+export async function applySemanticEntriesWithClient(
+  client: PostgresTransactionClient,
+  {
+    connectorId,
+    connectorInstanceId,
+    stream,
+    recordKey,
+    computed,
+  }: {
+    connectorId: string;
+    connectorInstanceId: string;
+    stream: string;
+    recordKey: string;
+    computed: ComputedSemanticEntries;
+  }
+): Promise<void> {
+  if (!backend) {
+    return;
+  }
+  await postgresSemanticIndexPublishWithClient(client, {
+    connectorId,
+    connectorInstanceId,
+    entries: computed.entries,
+    recordKey,
+    stream,
+  });
+  if (computed.entries.length > 0) {
+    await postgresUpsertSemanticMetaWithClient(client, {
+      connectorId,
+      connectorInstanceId,
+      dimensions: backend.dimensions(),
+      distanceMetric: backend.distanceMetric(),
+      fieldsFingerprint: fingerprintSemanticFields(computed.declared),
+      modelId: backendStorageIdentity(backend),
+      stream,
+    });
+  }
+}
+
+/** Postgres client-scoped semantic delete — see `applySemanticEntriesWithClient`'s header. */
+export async function applySemanticDeleteWithClient(
+  client: PostgresTransactionClient,
+  { connectorInstanceId, stream, recordKey }: { connectorInstanceId: string; stream: string; recordKey: string }
+): Promise<void> {
+  if (!backend) {
+    return;
+  }
+  await postgresSemanticIndexDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
+}
+
+/**
+ * Applies already-computed semantic entries synchronously for the SQLite
+ * backend, from INSIDE the caller's own `writeTransaction` callback (must be
+ * fully synchronous — better-sqlite3 transactions cannot contain `await`).
+ * See `applySemanticEntriesWithClient`'s header for why this is not
+ * independently version-gated.
+ */
+export function applySemanticEntriesSync({
+  connectorId,
+  connectorInstanceId,
+  stream,
+  recordKey,
+  computed,
+}: {
+  connectorId: string;
+  connectorInstanceId: string;
+  stream: string;
+  recordKey: string;
+  computed: ComputedSemanticEntries;
+}): void {
+  if (!backend) {
+    return;
+  }
+  const index = ensureVectorIndex();
+  if (!index) {
+    return;
+  }
+  const activeBackend = backend;
+  // Delete only this logical record's stale vectors after embeddings
+  // succeed. Deleting by scope here would wipe every row for the field.
+  index.deleteRecord({ connectorId, connectorInstanceId, recordKey, stream });
+  if (computed.entries.length > 0 && typeof index.upsertMany === "function") {
+    index.upsertMany(computed.entries);
+  } else {
+    for (const entry of computed.entries) {
+      index.upsert(entry);
+    }
+  }
+  if (computed.entries.length > 0) {
+    exec(referenceQueries.searchSemanticMetaUpsert, [
+      connectorInstanceId,
+      connectorId,
+      stream,
+      fingerprintSemanticFields(computed.declared),
+      backendStorageIdentity(activeBackend),
+      activeBackend.dimensions(),
+      activeBackend.distanceMetric(),
+      new Date().toISOString(),
+    ]);
+  }
+}
+
+/** SQLite synchronous semantic delete — see `applySemanticEntriesSync`'s header. */
+export function applySemanticDeleteSync({
+  connectorId,
+  connectorInstanceId,
+  stream,
+  recordKey,
+}: {
+  connectorId: string;
+  connectorInstanceId: string;
+  stream: string;
+  recordKey: string;
+}): void {
+  if (!backend) {
+    return;
+  }
+  const index = ensureVectorIndex();
+  if (!index) {
+    return;
+  }
+  index.deleteRecord({ connectorId, connectorInstanceId, recordKey, stream });
+}
+
 export async function semanticIndexDelete({
   connectorId,
   connectorInstanceId,
@@ -2163,6 +2453,7 @@ async function buildSemanticIndexEntries(
     } catch {
       continue;
     }
+    const version = Number(row.version);
     for (const field of declaredFields) {
       const text = normalizeSemanticEmbeddingInput(data?.[field]);
       if (!text) {
@@ -2179,12 +2470,55 @@ async function buildSemanticIndexEntries(
           recordKey: row.record_key,
           scopeKey,
           vector: await embedDocumentWithAdmission(text),
+          version,
         });
       });
     }
   }
   await embeddingChain;
   return entries;
+}
+
+/**
+ * SQLite backfill guard: re-checks each entry's captured `version` against
+ * the CURRENT `records` row, immediately before the upsert call, and drops
+ * any entry a concurrent delete/newer-write has since superseded. Mirrors
+ * `postgresSemanticIndexInsertManyGuarded`'s JOIN check — SQLite has no
+ * single-statement equivalent (no cross-table JOIN inside an INSERT INTO a
+ * vec0 virtual table), so the check runs as an explicit read immediately
+ * before the write instead, both inside the same synchronous call stack
+ * (single-writer SQLite has no concurrent-transaction window here).
+ */
+function liveEntriesOnly(
+  entries: readonly SemanticIndexEntry[],
+  connectorInstanceId: string,
+  stream: string
+): SemanticIndexEntry[] {
+  return entries.filter((entry) => {
+    if (typeof entry.version !== "number") {
+      return true;
+    }
+    const current = dbGetOne<{ deleted: boolean | number; version: number }>(
+      referenceQueries.recordsIngestGetCurrentRecordState,
+      [connectorInstanceId, stream, entry.recordKey]
+    );
+    return current !== null && !current.deleted && current.version === entry.version;
+  });
+}
+
+async function upsertLiveSqliteEntries(
+  vectorIndex: SemanticIndex,
+  entries: readonly SemanticIndexEntry[],
+  connectorInstanceId: string,
+  stream: string
+): Promise<void> {
+  if (entries.length === 0) {
+    return;
+  }
+  const current = liveEntriesOnly(entries, connectorInstanceId, stream);
+  if (current.length > 0) {
+    await vectorIndex.upsertMany(current);
+  }
 }
 
 async function rebuildSemanticIndexForStream({
@@ -2222,6 +2556,12 @@ async function rebuildSemanticIndexForStream({
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error("semantic backfill aborted");
     }
+    // UNFENCED scan + embed: no connector-instance writer-admission slot
+    // held across the page read or buildSemanticIndexEntries' embedding
+    // calls (embedDocumentWithAdmission, gated by their OWN separate
+    // activeSemanticWork pool). This is the unbounded-duration part of a
+    // rebuild; holding the shared ingest admission slot across it is what
+    // starved unrelated live ingest in the UAT startup-backfill incident.
     const rows: readonly SemanticDbRow[] = usePostgres
       ? ((await postgresSemanticRecordsPage({
           connectorInstanceId,
@@ -2247,11 +2587,19 @@ async function rebuildSemanticIndexForStream({
       existingKeys
     );
     const nextIndexed = indexed + entries.length;
-    if (usePostgres) {
-      await postgresSemanticIndexInsertMany({ connectorId, connectorInstanceId, entries });
-    } else if (entries.length > 0) {
-      await vectorIndex.upsertMany(entries);
-    }
+    // Fenced ONLY for this page's bounded, already version-CAS'd write
+    // (postgresSemanticIndexInsertManyGuarded / upsertLiveSqliteEntries's
+    // liveEntriesOnly both re-check records.version immediately before
+    // writing — a row a concurrent delete/newer-write has since superseded
+    // is skipped, not resurrected). Held for O(one page's write), never
+    // O(the whole rebuild).
+    await withConnectorInstanceWrite(connectorInstanceId, async () => {
+      if (usePostgres) {
+        await postgresSemanticIndexInsertManyGuarded({ connectorId, connectorInstanceId, entries, stream });
+      } else {
+        await upsertLiveSqliteEntries(vectorIndex, entries, connectorInstanceId, stream);
+      }
+    });
     if (currentProgressJob) {
       currentProgressJob = updateBackfillJob(currentProgressJob, {
         indexedVectors: nextIndexed,
@@ -2394,9 +2742,6 @@ async function semanticBackfillIndexIsInSync({
   usePostgres: boolean;
   vectorIndex: SemanticIndex;
 }): Promise<boolean> {
-  const recordCount = usePostgres
-    ? await postgresCountSemanticRecords({ connectorInstanceId, stream })
-    : Number(getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream])?.n || 0);
   const indexCounts = await Promise.all(
     declaredFields.map((field) =>
       usePostgres
@@ -2409,14 +2754,18 @@ async function semanticBackfillIndexIsInSync({
     )
   );
   const indexCount = indexCounts.reduce((total, count) => total + count, 0);
-  const maxIndexRows = recordCount * declaredFields.length;
-  let expectedIndexRows: number | null = null;
-  if (indexCount === 0 || indexCount > maxIndexRows) {
-    expectedIndexRows = usePostgres
-      ? await postgresCountIndexableSemanticValues({ connectorInstanceId, declaredFields, stream })
-      : countIndexableSemanticValues({ connectorInstanceId, declaredFields, stream });
-  }
-  return indexCount > 0 ? indexCount <= maxIndexRows : expectedIndexRows === 0;
+  // Exact comparison, not the prior upper-bound-only `indexCount <=
+  // maxIndexRows`: that check could never detect a record whose index rows
+  // were never written (a crash between durable commit and background index
+  // maintenance) because a short-but-nonzero indexCount still satisfies
+  // `<= maxIndexRows`. expectedIndexRows (the actual number of indexable
+  // text values in the CURRENT record set) is now always computed and
+  // compared exactly, so any per-record shortfall is caught. See
+  // semantic-startup-backfill-catches-crash-abandoned-record.test.ts.
+  const expectedIndexRows = usePostgres
+    ? await postgresCountIndexableSemanticValues({ connectorInstanceId, declaredFields, stream })
+    : countIndexableSemanticValues({ connectorInstanceId, declaredFields, stream });
+  return indexCount === expectedIndexRows;
 }
 
 function logSemanticBackfillDecision({
@@ -2651,20 +3000,24 @@ async function deleteSemanticNonParticipatingStream({
   stream: string;
 }): Promise<void> {
   const { connectorId, usePostgres, vectorIndex } = context;
-  await runSequential(connectorInstanceIds, async (connectorInstanceId) => {
-    if (usePostgres) {
-      await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-      await postgresDeleteSemanticMeta({ connectorInstanceId, stream });
-      await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
-    } else {
-      await vectorIndex.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-      execDynamicSqlAcknowledged("DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?", [
-        connectorInstanceId,
-        stream,
-      ]);
-      deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
-    }
-  });
+  // Fenced ONLY for this bounded per-stream cleanup delete — matches the
+  // orphan-stream cleanup in backfillSemanticIndexForConnectorInstance.
+  await runSequential(connectorInstanceIds, (connectorInstanceId) =>
+    withConnectorInstanceWrite(connectorInstanceId, async () => {
+      if (usePostgres) {
+        await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+        await postgresDeleteSemanticMeta({ connectorInstanceId, stream });
+        await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
+      } else {
+        await vectorIndex.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+        execDynamicSqlAcknowledged("DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?", [
+          connectorInstanceId,
+          stream,
+        ]);
+        deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+      }
+    })
+  );
 }
 
 async function backfillSemanticManifestStream({
@@ -2774,14 +3127,19 @@ export async function semanticIndexBackfillForManifest({
   const connectorId = manifest.connector_id;
   const connectorInstanceIds = await resolveSemanticBackfillConnectorInstanceIds({ connectorId, manifest });
   await runSequential(connectorInstanceIds, async (connectorInstanceId) => {
-    await withConnectorInstanceWrite(connectorInstanceId, () =>
-      backfillSemanticIndexForConnectorInstance({
-        fencedConnectorInstanceId: connectorInstanceId,
-        log,
-        manifest,
-        signal,
-      })
-    );
+    // No connector-instance writer-admission fence around the whole
+    // per-instance backfill: see rebuildSemanticIndexForStream below for
+    // where the fence now lives (one bounded page write at a time, never
+    // O(the whole rebuild's scan+embed duration)). Embedding calls
+    // (embedDocumentWithAdmission) are already bounded by their OWN
+    // separate admission pool (activeSemanticWork), independent of the
+    // ingest writer-admission gate this used to also hold hostage.
+    await backfillSemanticIndexForConnectorInstance({
+      fencedConnectorInstanceId: connectorInstanceId,
+      log,
+      manifest,
+      signal,
+    });
   });
 }
 
@@ -2912,28 +3270,31 @@ async function backfillSemanticIndexForConnectorInstance({
         : listSemanticConnectorInstanceIds({ connectorId, stream: orphanStream });
       await runSequential(
         connectorInstanceIds.filter((id) => id === fencedConnectorInstanceId),
-        async (connectorInstanceId) => {
-          if (usePostgres) {
-            await postgresSemanticIndexDeleteByConnectorStream({
-              connectorId,
-              connectorInstanceId,
-              stream: orphanStream,
-            });
-            await postgresDeleteSemanticMeta({ connectorInstanceId, stream: orphanStream });
-            await postgresDeleteSemanticProgress({ connectorInstanceId, stream: orphanStream });
-          } else {
-            await vectorIndex.deleteByConnectorStream({
-              connectorId,
-              connectorInstanceId,
-              stream: orphanStream,
-            });
-            execDynamicSqlAcknowledged(
-              "DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?",
-              [connectorInstanceId, orphanStream]
-            );
-            deleteBackfillProgress({ connectorId, connectorInstanceId, stream: orphanStream });
-          }
-        }
+        // Fenced ONLY for this bounded per-stream cleanup delete, not for
+        // the orphan-discovery reads above.
+        (connectorInstanceId) =>
+          withConnectorInstanceWrite(connectorInstanceId, async () => {
+            if (usePostgres) {
+              await postgresSemanticIndexDeleteByConnectorStream({
+                connectorId,
+                connectorInstanceId,
+                stream: orphanStream,
+              });
+              await postgresDeleteSemanticMeta({ connectorInstanceId, stream: orphanStream });
+              await postgresDeleteSemanticProgress({ connectorInstanceId, stream: orphanStream });
+            } else {
+              await vectorIndex.deleteByConnectorStream({
+                connectorId,
+                connectorInstanceId,
+                stream: orphanStream,
+              });
+              execDynamicSqlAcknowledged(
+                "DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?",
+                [connectorInstanceId, orphanStream]
+              );
+              deleteBackfillProgress({ connectorId, connectorInstanceId, stream: orphanStream });
+            }
+          })
       );
     });
   } finally {

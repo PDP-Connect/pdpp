@@ -3,6 +3,7 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { manualUploadMaxBytesAsNextBodySizeString } from "pdpp-reference-implementation/manual-upload-limits";
 import { collectAllowedDevOrigins } from "./scripts/dev-origins.ts";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
@@ -18,7 +19,10 @@ function parseBuildWorkers(value) {
 }
 
 const buildWorkers = parseBuildWorkers(process.env.PDPP_WEB_BUILD_WORKERS);
-const manualUploadBodyLimit = "1024mb";
+// Shared with the RI route's own bodyLimit (server/manual-upload-limits.ts) —
+// both read the SAME module so this ceiling cannot silently diverge into two
+// independently-maintained literals.
+const manualUploadBodyLimit = manualUploadMaxBytesAsNextBodySizeString();
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {

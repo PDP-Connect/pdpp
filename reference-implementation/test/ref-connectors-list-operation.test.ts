@@ -345,15 +345,14 @@ test("ref.connectors.list carries optional complete-page fleet health without in
   assert.equal("fleet_health" in incomplete, false, "incomplete pages must omit rather than infer fleet health");
 });
 
-test("reference connector catalog hides manifest opt-outs", () => {
+test("reference connector catalog hides Development connectors", () => {
   assert.equal(
     isPublicReferenceConnector(
       { connector_id: "https://registry.pdpp.dev/connectors/spotify", manifest: "{}" },
       {
         capabilities: {
           public_listing: {
-            listed: false,
-            status: "unproven",
+            tier: "development",
           },
         },
         connector_id: "https://registry.pdpp.dev/connectors/spotify",
@@ -363,14 +362,14 @@ test("reference connector catalog hides manifest opt-outs", () => {
   );
 });
 
-test("reference connector catalog hides unproven connectors by default", () => {
+test("reference connector catalog hides connectors without an owner-visible tier", () => {
   assert.equal(
     isPublicReferenceConnector(
       { connector_id: "https://registry.pdpp.dev/connectors/unproven-source", manifest: "{}" },
       {
         capabilities: {
           public_listing: {
-            status: "unproven",
+            tier: "development",
           },
         },
         connector_id: "https://registry.pdpp.dev/connectors/unproven-source",
@@ -380,7 +379,7 @@ test("reference connector catalog hides unproven connectors by default", () => {
   );
 });
 
-test("reference connector catalog hides local-device connectors unless explicitly listed", () => {
+test("reference connector catalog uses lifecycle tier rather than runtime placement", () => {
   const imessageManifest = {
     connector_id: "https://registry.pdpp.dev/connectors/imessage",
     runtime_requirements: {
@@ -411,14 +410,13 @@ test("reference connector catalog hides local-device connectors unless explicitl
         ...imessageManifest,
         capabilities: {
           public_listing: {
-            listed: true,
-            status: "operator_enabled",
+            tier: "preview",
           },
         },
       }
     ),
     true,
-    "local-device connectors can be surfaced only after an explicit manifest opt-in"
+    "a Preview local-device connector is owner-visible despite its placement requirements"
   );
 });
 
@@ -628,11 +626,17 @@ test("connector summary connection health treats owner-cancelled runs as neutral
     freshness: { captured_at: "2026-05-19T11:55:00.000Z", status: "current" },
     lastRun: cancelledRun,
     lastSuccessfulRun: successfulRun,
-    schedule: null,
+    schedule: {
+      enabled: true,
+      last_error_code: "scheduler_error",
+      last_finished_at: cancelledRun.last_at,
+      last_successful_at: successfulRun.last_at,
+    },
   });
   const collection = snapshot.conditions.find((condition) => condition.type === "CollectionSucceeded");
 
-  assert.equal(collection?.status, "unknown");
+  assert.equal(collection?.status, "true");
+  assert.equal(snapshot.state, "healthy");
   assert.equal(snapshot.axes.coverage, "complete");
   assert.notEqual(snapshot.forward_disposition, "terminal");
   assert.equal(snapshot.reason_code, null);
@@ -831,7 +835,43 @@ test("buildConnectorFreshness does not let manual no-policy hide a latest failed
   assert.equal(freshness.status, "stale");
 });
 
-test("connector summary connection health projects durable scheduler backoff as cooling off", () => {
+test("buildConnectorFreshness keeps prior success authoritative after owner cancellation", () => {
+  const successfulRun = connectorRunSummary({
+    event_count: 1,
+    finished_at: "2026-05-19T12:00:00.000Z",
+    first_at: "2026-05-19T11:59:00.000Z",
+    known_gaps: [],
+    last_at: "2026-05-19T12:00:00.000Z",
+    run_id: "run_manual_success",
+    started_at: "2026-05-19T11:59:00.000Z",
+    status: "succeeded",
+  });
+  const cancelledRun = connectorRunSummary({
+    event_count: 1,
+    finished_at: "2026-05-19T12:30:00.000Z",
+    first_at: "2026-05-19T12:29:00.000Z",
+    known_gaps: [],
+    last_at: "2026-05-19T12:30:00.000Z",
+    run_id: "run_owner_cancelled",
+    started_at: "2026-05-19T12:29:00.000Z",
+    status: "cancelled",
+    terminal_reason: "owner_cancelled",
+  });
+  const freshness = buildConnectorFreshness({
+    lastRun: cancelledRun,
+    lastSuccessfulRun: successfulRun,
+    live: liveRecordProjection(),
+    refreshPolicy: { background_safe: false, recommended_mode: "manual" },
+  });
+
+  assert.deepEqual(freshness, {
+    captured_at: successfulRun.last_at,
+    last_attempted_at: successfulRun.last_at,
+    status: "current",
+  });
+});
+
+test("connector summary connection health keeps failed collection degraded during durable scheduler backoff", () => {
   const run = connectorRunSummary({
     event_count: 1,
     failure_reason: "rate_limited",
@@ -859,9 +899,10 @@ test("connector summary connection health projects durable scheduler backoff as 
       },
     },
   });
-  assert.equal(snapshot.state, "cooling_off");
+  assert.equal(snapshot.state, "degraded");
   assert.equal(snapshot.next_attempt_at, "2026-05-19T13:00:00.000Z");
   assert.equal(snapshot.reason_code, "rate_limited");
+  assert.equal(snapshot.conditions.find((condition) => condition.type === "CollectionSucceeded")?.status, "false");
 });
 
 test("connector summary connection health does not treat normal next_due_at as retry backoff", () => {
@@ -895,7 +936,7 @@ test("connector summary connection health does not treat normal next_due_at as r
   );
 });
 
-test("connector summary connection health uses scheduler backoff even when run spine summary is absent", () => {
+test("connector summary connection health keeps scheduler failure evidence degraded when run spine summary is absent", () => {
   const snapshot = projectConnectorSummaryConnectionHealth({
     freshness: { captured_at: "2026-05-19T12:00:00.000Z", status: "unknown" },
     lastRun: null,
@@ -913,8 +954,9 @@ test("connector summary connection health uses scheduler backoff even when run s
       },
     },
   });
-  assert.equal(snapshot.state, "cooling_off");
+  assert.equal(snapshot.state, "degraded");
   assert.equal(snapshot.next_attempt_at, "2026-05-19T13:00:00.000Z");
+  assert.equal(snapshot.reason_code, "rate_limited");
 });
 
 test("connector summary connection health promotes durable scheduler backoff streak to blocked", () => {

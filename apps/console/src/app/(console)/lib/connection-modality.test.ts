@@ -18,6 +18,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   BROWSER_BOUND_CONNECTORS,
+  enrollmentKeyForCanonicalKey,
   isBrowserBoundConnector,
   isBrowserSessionBoundConnection,
   isSupportedBrowserCollectorConnector,
@@ -29,8 +30,11 @@ import {
 const COLLECTOR_RUN_CONNECTORS_LITERAL_RE = /COLLECTOR_RUN_CONNECTORS\s*=\s*\[([^\]]*)\]/;
 const SURROUNDING_QUOTES_RE = /^["']|["']$/g;
 
-test("supported local-collector set is exactly claude_code and codex", () => {
-  assert.deepEqual([...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS], ["claude_code", "codex"]);
+test("supported local-collector set is exactly claude_code, codex, google_takeout, imessage, apple_photos, and google_messages", () => {
+  assert.deepEqual(
+    [...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS],
+    ["claude_code", "codex", "google_takeout", "imessage", "apple_photos", "google_messages"]
+  );
 });
 
 test("supported browser-collector set is derived from browser-bound production runtimes", () => {
@@ -49,6 +53,13 @@ test("supported set matches the enrollment form's pinned COLLECTOR_RUN_CONNECTOR
   // The enrollment form keeps a literal `COLLECTOR_RUN_CONNECTORS` array that
   // `enrollment-form.consistency.test.ts` pins. This module must stay in sync so
   // the records-list picker never offers a connector the enroll surface doesn't.
+  //
+  // The form's literal uses each connector's ENROLLMENT key (what actually
+  // gets passed to `--connector`, matching LOCAL_COLLECTOR_DEFINITIONS'
+  // underscore-form `connector_id`), while SUPPORTED_LOCAL_COLLECTOR_CONNECTORS
+  // holds each connector's CANONICAL key (manifest-derived, hyphenated for
+  // claude-code/google-takeout) — so compare through enrollmentKeyForCanonicalKey
+  // rather than raw string equality.
   const formSrc = await readFile(
     fileURLToPath(new URL("../device-exporters/enrollment-form.tsx", import.meta.url)),
     "utf8"
@@ -59,12 +70,20 @@ test("supported set matches the enrollment form's pinned COLLECTOR_RUN_CONNECTOR
     .split(",")
     .map((entry) => entry.trim().replace(SURROUNDING_QUOTES_RE, ""))
     .filter(Boolean);
-  assert.deepEqual(formConnectors, [...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS]);
+  const expectedEnrollmentKeys = [...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS].map((key) =>
+    enrollmentKeyForCanonicalKey(key)
+  );
+  assert.deepEqual(formConnectors, expectedEnrollmentKeys);
 });
 
 test("isSupportedLocalCollectorConnector narrows only the supported keys", () => {
   assert.equal(isSupportedLocalCollectorConnector("claude_code"), true);
   assert.equal(isSupportedLocalCollectorConnector("codex"), true);
+  assert.equal(isSupportedLocalCollectorConnector("google-takeout"), true);
+  assert.equal(isSupportedLocalCollectorConnector("google_takeout"), true);
+  assert.equal(isSupportedLocalCollectorConnector("imessage"), true);
+  assert.equal(isSupportedLocalCollectorConnector("apple_photos"), true);
+  assert.equal(isSupportedLocalCollectorConnector("google_messages"), true);
   assert.equal(isSupportedLocalCollectorConnector("amazon"), false);
   assert.equal(isSupportedLocalCollectorConnector("gmail"), false);
   assert.equal(isSupportedLocalCollectorConnector(""), false);

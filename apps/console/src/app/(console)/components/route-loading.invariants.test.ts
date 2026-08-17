@@ -67,7 +67,7 @@ test("each loading.tsx renders inside the shared Recordroom shell for stable chr
   const sources = await Promise.all(LOADING_FILES.map((rel) => readFile(`${DASHBOARD}${rel}`, "utf8")));
   for (const [index, rel] of LOADING_FILES.entries()) {
     const src = sources[index] as string;
-    assert.match(src, DASHBOARD_SHELL_RE, `${rel} must reuse DashboardShell`);
+    assert.match(src, DASHBOARD_SHELL_RE, `${rel} must reuse RecordroomShellWithPalette`);
     assert.match(src, SHARED_SKELETON_IMPORT_RE, `${rel} must use the shared skeleton`);
   }
 });

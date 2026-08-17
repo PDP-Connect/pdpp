@@ -244,18 +244,19 @@ const DISPOSITION_TONE: Record<ForwardDisposition, VerdictTone> = {
 
 // Mirrors rendered-verdict.ts amberLabel: "Needs refresh" only when every
 // reason the tone reached amber-or-worse is a not-actually-broken shape
-// (idle-with-prior-success state, stale freshness, owner_refresh_due
-// disposition); any coverage/attention/outbox axis, a broken state, or a
-// broken disposition keeps "Degraded". An active run then further softens a
-// "Needs refresh" (never a "Degraded") verdict to "Syncing" (active-run
-// visibility fix) — active work dominates a routine nudge, never a genuine
-// defect.
+// (idle-with-prior-success or passive cooling-off state, stale freshness,
+// owner_refresh_due disposition); any coverage/attention/outbox axis, a
+// broken state, or a broken disposition keeps "Degraded". An active run then
+// further softens a "Needs refresh" (never a "Degraded") verdict to "Syncing"
+// (active-run visibility fix) — active work dominates a routine nudge, never
+// a genuine defect.
 function expectedAmberLabel(
   snap: ConnectionHealthSnapshot,
   disposition: ForwardDisposition,
   toneInputs: readonly { readonly axis: string; readonly tone: VerdictTone }[]
 ): string {
-  const stateIsBroken = snap.state !== "idle" && TONE_RANK[BASE_STATE_TONE[snap.state]] >= TONE_RANK.amber;
+  const stateIsBroken =
+    snap.state !== "idle" && snap.state !== "cooling_off" && TONE_RANK[BASE_STATE_TONE[snap.state]] >= TONE_RANK.amber;
   const dispositionIsBroken =
     disposition !== "owner_refresh_due" && TONE_RANK[DISPOSITION_TONE[disposition]] >= TONE_RANK.amber;
   const hasDegradingAxis = toneInputs.some(
@@ -629,7 +630,7 @@ test("coverage: optional stale stream annotates but does not downgrade the pill"
   assert.equal(v.pill.tone, "green", "optional partial must not amber the pill");
 });
 
-test("coverage: a terminal optional stream is still red (a lost stream is lost)", () => {
+test("coverage: a terminal optional stream stays visible without downgrading required coverage", () => {
   const snap = snapshot({ forward_disposition: "complete", state: "healthy" });
   const v = synthesizeRenderedVerdict(
     snap,
@@ -637,7 +638,10 @@ test("coverage: a terminal optional stream is still red (a lost stream is lost)"
     null,
     true
   );
-  assert.equal(v.pill.tone, "red");
+  assert.equal(v.pill.tone, "green");
+  assert.equal(v.pill.label, "Healthy");
+  assert.equal(v.streams[0]?.stream_id, "opt");
+  assert.equal(v.streams[0]?.coverage, "terminal_gap");
 });
 
 // ─── 3.3 collected clamp ──────────────────────────────────────────────────────

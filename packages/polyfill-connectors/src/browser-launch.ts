@@ -745,6 +745,11 @@ export async function acquireIsolatedBrowser({
   // we flag it once so the next operator who hits this isn't debugging blind.
   // Core's managed Xvfb display uses `-ac`, so it does not need XAUTHORITY and
   // skips this host/tmux diagnostic. Other X displays still get the warning.
+  // Keep this predicate identical to browserSurfaceConfigured() in
+  // reference-implementation/runtime/scheduler-readiness.ts — that module
+  // can't import this one across the package boundary, so the two checks
+  // are kept in sync by hand. Diverging here silently breaks scheduler
+  // readiness for every browser-capable Core image.
   const managedDisplayAvailable = process.env.PDPP_RUNTIME_BROWSER === "1" && Boolean(process.env.DISPLAY);
   if (
     !(displayAuthWarningEmitted || managedDisplayAvailable) &&

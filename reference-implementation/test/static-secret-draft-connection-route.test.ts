@@ -259,10 +259,14 @@ async function createDraft(
   asUrl: string,
   cookie: string,
   connectorId: string,
-  setupFields: Record<string, unknown> = { account_email: "owner@example.com" }
+  setupFields: Record<string, unknown> = { account_email: "owner@example.com" },
+  displayName?: string
 ): Promise<JsonResult> {
   return fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/draft-connection`, {
-    body: JSON.stringify({ setup_fields: setupFields }),
+    body: JSON.stringify({
+      setup_fields: setupFields,
+      ...(displayName === undefined ? {} : { display_name: displayName }),
+    }),
     headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: cookie },
     method: "POST",
   });
@@ -459,6 +463,29 @@ test("static-secret setup descriptor is manifest-authored and readiness-gated", 
   });
 });
 
+test("owner-selected display name is stored on the static-secret draft", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const created = await createDraft(
+        asUrl,
+        cookie,
+        "gmail",
+        { account_email: "owner@example.com" },
+        "Primary account"
+      );
+      assert.equal(created.status, 201, created.text);
+      assert.equal(created.body.display_name, "Primary account");
+
+      const row = getDb()
+        .prepare("SELECT display_name FROM connector_instances WHERE connector_instance_id = ?")
+        .get(created.body.connection_id) as { display_name?: string } | undefined;
+      assert.equal(row?.display_name, "Primary account");
+    });
+  });
+});
+
 test("draft create blocks before row creation when credential key provider is missing", async () => {
   await withCredentialKey(null, async () => {
     await withServer(async ({ asUrl }) => {
@@ -499,6 +526,17 @@ test("draft create validates manifest-declared non-secret setup fields", async (
       assert.equal(unknown.status, 400);
       assert.equal(errorOf(unknown.body).code, "unknown_setup_field");
 
+      const overlongName = await createDraft(
+        asUrl,
+        cookie,
+        "gmail",
+        { account_email: "owner@example.com" },
+        "x".repeat(201)
+      );
+      assert.equal(overlongName.status, 400);
+      assert.equal(errorOf(overlongName.body).code, "invalid_request");
+      assert.equal(errorOf(overlongName.body).param, "display_name");
+
       const list = await listConnections(asUrl, cookie);
       assert.equal(dataArrayOf(list.body).length, 0, "invalid setup fields must not create a draft");
     });
@@ -510,8 +548,8 @@ test("two drafts for one connector are two distinct connection_ids", async () =>
     await withServer(async ({ asUrl }) => {
       await registerConnector(asUrl, "gmail");
       const cookie = await login(asUrl);
-      const a = await createDraft(asUrl, cookie, "gmail");
-      const b = await createDraft(asUrl, cookie, "gmail");
+      const a = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const b = await createDraft(asUrl, cookie, "gmail", { account_email: "work@example.com" });
       assert.equal(a.status, 201);
       assert.equal(b.status, 201);
       assert.notEqual(a.body.connection_id, b.body.connection_id);
@@ -562,6 +600,11 @@ test("first ingest with records flips the draft to active and makes it visible",
       assert.equal(created.status, 201, `draft create: ${created.text}`);
       const connectionId = requireString(created.body.connection_id, "created.body.connection_id");
 
+      const preIngestRow = getDb()
+        .prepare("SELECT source_binding_json FROM connector_instances WHERE connector_instance_id = ?")
+        .get(connectionId) as { source_binding_json: string };
+      assert.equal(JSON.parse(preIngestRow.source_binding_json).kind, "static_secret_draft");
+
       const ownerToken = await issueOwnerToken(asUrl);
       const ingested = await ingest(rsUrl, ownerToken, "gmail", connectionId, "messages", [
         { emitted_at: "2026-06-02T12:00:00.000Z", id: "m1", subject: "hello" },
@@ -576,6 +619,40 @@ test("first ingest with records flips the draft to active and makes it visible",
       );
       assert.ok(visible, "connection is visible after first ingest");
       assert.equal(visible.status, "active");
+
+      // Regression coverage for the setup-shell promotion gap: first
+      // successful ingest must promote the binding off `static_secret_draft`
+      // to the durable `static_secret` kind, preserving `setup_fields` —
+      // not just flip status. Otherwise a LATER revoke of this real,
+      // fully-collected connection would wrongly hide it from Sources
+      // (RETIRED_SETUP_SHELL_BINDING_KINDS), exactly like the browser
+      // enrollment shell bug this mirrors.
+      const postIngestRow = getDb()
+        .prepare("SELECT source_binding_json FROM connector_instances WHERE connector_instance_id = ?")
+        .get(connectionId) as { source_binding_json: string };
+      const postIngestBinding = JSON.parse(postIngestRow.source_binding_json);
+      assert.equal(postIngestBinding.kind, "static_secret", "binding kind moved off static_secret_draft");
+      assert.deepEqual(
+        postIngestBinding.setup_fields,
+        { account_email: "owner@example.com" },
+        "setup_fields survive promotion — read on every credential probe/run, not just at setup"
+      );
+
+      // Revoking this now-real, fully-collected connection must NOT hide it
+      // from Sources — it is an ordinary revoked connection, not retired
+      // setup residue.
+      const revoked = await fetch(`${rsUrl}/v1/owner/connections/${encodeURIComponent(connectionId)}/revoke`, {
+        headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(revoked.status, 200, `revoke should succeed: ${await revoked.text()}`);
+
+      const listAfterRevoke = await listConnections(asUrl, cookie);
+      const visibleAfterRevoke = dataArrayOf(listAfterRevoke.body).find(
+        (c) => c.connection_id === connectionId || c.connector_instance_id === connectionId
+      );
+      assert.ok(visibleAfterRevoke, "revoked-after-promotion connection stays visible on /_ref/connections");
+      assert.equal(visibleAfterRevoke.status, "revoked");
     });
   });
 });
@@ -706,7 +783,7 @@ test("setup-status resolves a draft by its exact connection_id, not by connector
   });
 });
 
-test("waiting owner action: credential captured but no ingest yet stays setup_in_progress on /_ref/connectors, not healthy or degraded", async () => {
+test("credential captured with first sync active reads collecting on /_ref/connectors, not healthy or degraded", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
       await registerConnector(asUrl, "gmail");
@@ -731,7 +808,7 @@ test("waiting owner action: credential captured but no ingest yet stays setup_in
       );
       assert.ok(row, "draft with a captured credential but no run yet must still be discoverable");
       assert.equal(row.status, "draft");
-      assert.equal(ownerStateOf(row)?.resolver, "setup_in_progress");
+      assert.equal(ownerStateOf(row)?.resolver, "collecting");
       assert.notEqual(ownerStateOf(row)?.resolver, "healthy");
       assert.notEqual(ownerStateOf(row)?.resolver, "system_degraded");
     });

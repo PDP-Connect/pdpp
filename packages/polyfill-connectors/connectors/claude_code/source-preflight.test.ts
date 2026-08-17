@@ -12,7 +12,9 @@ import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 test("claude_code connector fails instead of succeeding when requested local sources are missing", async () => {
   const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-missing-"));
   const result = await runConnectorProcess({
-    env: { CLAUDE_CODE_HOME: claudeHome },
+    // Set every requested source explicitly so a sibling test that mutates
+    // the parent process environment cannot make this preflight non-hermetic.
+    env: { CLAUDE_CODE_HOME: claudeHome, CLAUDE_CODE_PROJECTS_DIR: join(claudeHome, "projects") },
     start: {
       scope: { streams: [{ name: "sessions" }, { name: "skills" }, { name: "slash_commands" }] },
       type: "START",
@@ -25,7 +27,21 @@ test("claude_code connector fails instead of succeeding when requested local sou
   assert.match(done?.error?.message ?? "", /requested Claude Code local source path\(s\) are missing or unreadable/);
   assert.match(done?.error?.message ?? "", /CLAUDE_CODE_PROJECTS_DIR=/);
   assert.match(done?.error?.message ?? "", /skills directory=/);
-  assert.match(done?.error?.message ?? "", /commands directory=/);
+});
+
+test("claude_code names a missing slash-command source", async () => {
+  const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-missing-commands-"));
+  const result = await runConnectorProcess({
+    env: { CLAUDE_CODE_HOME: claudeHome },
+    start: {
+      scope: { streams: [{ name: "slash_commands" }] },
+      type: "START",
+    },
+  });
+
+  const done = result.messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE");
+  assert.equal(done?.status, "failed");
+  assert.match(done?.error?.message ?? "", /CLAUDE_CODE_HOME commands directory=/);
 });
 
 test("claude_code emits coverage diagnostics for a missing source home before failing", async () => {
@@ -108,18 +124,27 @@ test("claude_code inventory streams emit safe metadata, one STATE per stream, an
   assert.equal(typeof (coverageState?.cursor as { fetched_at?: unknown } | undefined)?.fetched_at, "string");
   const stores = (coverageState?.cursor as { stores?: unknown } | undefined)?.stores;
   assert(Array.isArray(stores), "successful collection must emit the committed coverage snapshot");
-  assert.equal(stores.length, 11);
+  assert.equal(stores.length, 9);
   assert(!JSON.stringify(coverageState).includes("secret-token"));
   assert(!JSON.stringify(coverageState).includes("reason"));
 
   const states = result.messages.filter(
     (msg): msg is Extract<EmittedMessage, { type: "STATE" }> => msg.type === "STATE"
   );
+  // Every inventory stream writes at most one STATE per collection pass,
+  // EXCEPT coverage_diagnostics: it commits an early static-only snapshot
+  // right after the inventory pass (so a later failure can't discard already-
+  // classified store evidence), then a full successful run supersedes it
+  // with a second, current-`fetched_at` write. See coverage-state-survives-
+  // failure semantics in connectors/codex — claude_code shares the pattern.
+  const nonCoverageStates = states.filter((entry) => entry.stream !== "coverage_diagnostics");
   assert.equal(
-    new Set(states.map((entry) => entry.stream)).size,
-    states.length,
-    "each inventory stream writes at most one STATE per collection pass"
+    new Set(nonCoverageStates.map((entry) => entry.stream)).size,
+    nonCoverageStates.length,
+    "each non-coverage inventory stream writes at most one STATE per collection pass"
   );
+  const coverageStateCount = states.filter((entry) => entry.stream === "coverage_diagnostics").length;
+  assert.equal(coverageStateCount, 2, "coverage_diagnostics writes an early static snapshot, then a final one");
   const firstFileHistoryState = states.find((entry) => entry.stream === "file_history");
   assert.equal(firstFileHistoryState !== undefined, true);
   const fileHistoryCursor = (firstFileHistoryState as Extract<EmittedMessage, { type: "STATE" }>).cursor as {

@@ -592,6 +592,31 @@ test("keeps every candidate-added PostgreSQL skip title in the exact receipt map
     ]
   );
 });
+test("keeps the unscoped fold deadline PostgreSQL skip title in the exact receipt mapping", () => {
+  const name = "real PostgreSQL: an unscoped fold carries one absolute duration deadline across instance folds";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
+test("keeps the source-revision projection-fault PostgreSQL skip title in the exact receipt mapping", () => {
+  const name =
+    "PostgreSQL projection faults preserve canonical record, schedule, and lifecycle writes, then repair passes after recovery";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
+test("keeps the manifest-receipt PostgreSQL skip title in the exact receipt mapping", () => {
+  const name = "PostgreSQL manifest receipt changes once and BIGINT exhaustion remains canonical";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
+test("keeps the checkpoint-dependency parity PostgreSQL skip title in the exact receipt mapping", () => {
+  const name = "SQLite/Postgres parity scenario (Postgres side, skipped: PDPP_TEST_POSTGRES_URL unset)";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
+test("keeps the source-revision stale-publication PostgreSQL skip title in the exact receipt mapping", () => {
+  const name = "PostgreSQL stale failure publication cannot overwrite newer evidence";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
+test("keeps the source-revision trigger-omission PostgreSQL skip title in the exact receipt mapping", () => {
+  const name = "PostgreSQL trigger omission fails before migration and a live writer waits for the atomic reinstall";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
 // Aggregate gate regression (2026-07-30, run-history-backfill-cutover REVISE):
 // test/active-run-summary-zero-spine.test.ts (reference-implementation) added
 // three PostgreSQL tests using the bare-boolean `skip: !POSTGRES_URL` shape
@@ -628,9 +653,8 @@ test("keeps every browser-surface PostgreSQL skip title in the exact receipt map
   );
 });
 // Aggregate gate regression (2026-07-30, terminal-read-integration closure, receipt 70bfe0b9):
-// Four additional PostgreSQL tests were not in the POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS
-// mapping: fleet-migration repair, scheduler_run_history legacy database migration,
-// and terminal LIST projection tests. All emitted 135 skips now mapped.
+// Three additional PostgreSQL tests were not in the POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS
+// mapping: fleet-migration repair and scheduler_run_history legacy database migration.
 test("keeps every fleet-migration and scheduler-upgrade PostgreSQL skip title in the exact receipt mapping", () => {
   assert.deepEqual(
     [
@@ -645,12 +669,24 @@ test("keeps every fleet-migration and scheduler-upgrade PostgreSQL skip title in
     ]
   );
 });
-test("keeps every terminal-LIST PostgreSQL skip title in the exact receipt mapping", () => {
+test("keeps the setup-binding promotion PostgreSQL skip title in the exact receipt mapping", () => {
   assert.deepEqual(
-    ["Postgres terminal LIST projection rejects late canonical snapshots"].filter((name) =>
-      POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)
-    ),
-    ["Postgres terminal LIST projection rejects late canonical snapshots"]
+    [
+      "Postgres: every setup-binding kind promotes on success, stays hidden on abandon, survives its revoke path",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    ["Postgres: every setup-binding kind promotes on success, stays hidden on abandon, survives its revoke path"]
+  );
+});
+test("keeps the Explore upcoming PostgreSQL skip titles in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "postgresFetchUpcoming: live Postgres in-flight partition workers never exceed the configured limit",
+      "sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and deterministic",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "postgresFetchUpcoming: live Postgres in-flight partition workers never exceed the configured limit",
+      "sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and deterministic",
+    ]
   );
 });
 // SECOND LIVE CANARY REVISE (2026-07-30): the interrupted-migration
@@ -994,16 +1030,17 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
   });
 });
 // FIFTH-PASS GATE FIX (2026-07-30): this hardcoded literal must track
-// test-accounting.manifest.json's memory-default skip map exactly. The current
-// branch carries the current PostgreSQL-gated coverage, including durable
-// record-rejection receipt and retained-size parity rows.
+// test-accounting.manifest.json's memory-default skip map exactly. Keep this
+// literal complete so a changed PostgreSQL-gated test fails visibly rather
+// than being silently absorbed by a generic skip bucket.
 test("the memory-default profile declares the exact current skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 153,
+    "PDPP_TEST_POSTGRES_URL unset": 176,
+    "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 8,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
     "dedicated disposable URL not selected": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
@@ -1012,8 +1049,25 @@ test("the memory-default profile declares the exact current skip baseline", asyn
     "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
     "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
     "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
-    "Skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
-    "Postgres parity check skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
+    "requires --experimental-test-module-mocks (npm run test:whatsapp-no-whole-file-read)": 4,
+    "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)": 3,
+    "requires --experimental-test-module-mocks (spawns test/fixtures/manual-upload-write-error-server.ts directly)": 1,
+    "no dedicated PDPP_TEST_POSTGRES_URL": 1,
+    "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)": 1,
+  });
+});
+test("the polyfill-connectors default profile declares the exact current skip baseline", async () => {
+  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+  const suite = manifestValue.suites.find((entry) => entry.id === "polyfill-connectors");
+  const defaultProfile = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "default");
+  assert.deepEqual(typeof defaultProfile === "string" ? undefined : defaultProfile?.skip_reasons, {
+    "GROUPME_ACCESS_TOKEN unset": 2,
+    "local Amazon raw-DOM fixture directory not present": 2,
+    "local Chase raw-DOM fixture directory not present": 3,
+    "local USAA raw fixture directory not present": 1,
+    "requires --experimental-test-module-mocks": 1,
+    "run with --expose-gc for a reliable memory-growth comparison": 1,
   });
 });
 test("the optional PostgreSQL profile is not selected by the required default and rejects implicit execution", async () => {

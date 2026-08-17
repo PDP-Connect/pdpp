@@ -5,11 +5,13 @@ import assert from "node:assert/strict";
 import { afterEach, before, test } from "node:test";
 import {
   buildSlackSessionCookieHeader,
+  encodeSlackCookieValue,
   fetchAllReminders,
   fetchAllStars,
   fetchAllUserGroups,
   fetchDmReadStates,
   resetSlackApiGovernor,
+  SlackApiAuthError,
 } from "./slack-api.ts";
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -247,6 +249,60 @@ test("fetchDmReadStates uses Authorization: Bearer for the GET call", async () =
   }
 });
 
+// ─── Cookie wire-format encoding ────────────────────────────────────────
+//
+// `encodeSlackCookieValue` must byte-match Go's `net/url.QueryEscape`
+// (encodeQueryComponent mode), which slackdump's own client uses — NOT
+// `encodeURIComponent`, which disagrees on space (`%20` vs Go's `+`) and on
+// `!'()*` (unescaped in JS, escaped by Go in this mode). The counterexample
+// tests below exist specifically so a future edit reintroducing
+// `encodeURIComponent` (or any other non-Go-exact escaper) fails loudly.
+
+const UNSAFE_COOKIE = "xoxd-abc+123/def==ghi";
+
+test("encodeSlackCookieValue: +, /, = are percent-encoded to their exact Go url.QueryEscape hex form", () => {
+  assert.equal(encodeSlackCookieValue(UNSAFE_COOKIE), "xoxd-abc%2B123%2Fdef%3D%3Dghi");
+});
+
+test("encodeSlackCookieValue: counterexample — a literal space becomes '+', not '%20' (encodeURIComponent would produce %20)", () => {
+  assert.equal(encodeSlackCookieValue("a b"), "a+b");
+  assert.notEqual(encodeSlackCookieValue("a b"), encodeURIComponent("a b"));
+});
+
+test("encodeSlackCookieValue: counterexample — !'()* are percent-encoded (encodeURIComponent leaves all four unescaped)", () => {
+  const chars = "!'()*";
+  assert.equal(encodeSlackCookieValue(chars), "%21%27%28%29%2A");
+  assert.notEqual(encodeSlackCookieValue(chars), encodeURIComponent(chars));
+});
+
+test("encodeSlackCookieValue: an already-URL-safe value, or one already containing a valid %XX escape, is returned unchanged", () => {
+  assert.equal(encodeSlackCookieValue("xoxd-abc123-def_ghi.jkl~mno"), "xoxd-abc123-def_ghi.jkl~mno");
+  assert.equal(encodeSlackCookieValue("xoxd-abc%2Fdef"), "xoxd-abc%2Fdef");
+});
+
+test("buildSlackSessionCookieHeader: percent-encodes an unsafe cookie value in the wire header", () => {
+  const header = buildSlackSessionCookieHeader(UNSAFE_COOKIE, 1_714_032_910);
+  assert.equal(header, "d=xoxd-abc%2B123%2Fdef%3D%3Dghi; d-s=1714032900");
+  assert.equal(header.includes(UNSAFE_COOKIE), false);
+});
+
+test("fetchAllStars sends the wire-encoded (not raw) cookie value when the cookie contains unsafe characters", async () => {
+  const seen: { cookie: string | null } = { cookie: null };
+  const originalNow = Date.now;
+  Date.now = () => 1_714_032_910_000;
+  globalThis.fetch = (_url, init) => {
+    const headers = new Headers(init?.headers);
+    seen.cookie = headers.get("Cookie");
+    return Promise.resolve(jsonResponse({ ok: true, items: [] }));
+  };
+  try {
+    await fetchAllStars(TOKEN, UNSAFE_COOKIE);
+    assert.equal(seen.cookie, "d=xoxd-abc%2B123%2Fdef%3D%3Dghi; d-s=1714032900");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 // ─── Error classification ────────────────────────────────────────────────
 
 test("a 401 status throws slack_auth_failed", async () => {
@@ -254,14 +310,46 @@ test("a 401 status throws slack_auth_failed", async () => {
   await assert.rejects(fetchAllStars(TOKEN, COOKIE), /slack_auth_failed/);
 });
 
+test("a 401 status throws SlackApiAuthError with slackApiErrorCode=null (no parsed body)", async () => {
+  globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "not_authed" }, 401));
+  await assert.rejects(fetchAllStars(TOKEN, COOKIE), (e: unknown) => {
+    assert.ok(e instanceof SlackApiAuthError);
+    assert.equal(e.slackApiErrorCode, null);
+    return true;
+  });
+});
+
 test("ok:false with error invalid_auth throws slack_auth_failed even on HTTP 200", async () => {
   globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "invalid_auth" }, 200));
   await assert.rejects(fetchAllStars(TOKEN, COOKIE), /slack_auth_failed/);
 });
 
-test("ok:false with an unrelated error throws a scoped slack_api_error", async () => {
+test("ok:false with error invalid_auth throws SlackApiAuthError carrying the Slack-reported code", async () => {
+  globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "invalid_auth" }, 200));
+  await assert.rejects(fetchAllStars(TOKEN, COOKIE), (e: unknown) => {
+    assert.ok(e instanceof SlackApiAuthError);
+    assert.equal(e.slackApiErrorCode, "invalid_auth");
+    return true;
+  });
+});
+
+test("ok:false with error token_revoked throws SlackApiAuthError carrying token_revoked", async () => {
+  globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "token_revoked" }, 200));
+  await assert.rejects(fetchAllUserGroups(TOKEN, COOKIE), (e: unknown) => {
+    assert.ok(e instanceof SlackApiAuthError);
+    assert.equal(e.slackApiErrorCode, "token_revoked");
+    return true;
+  });
+});
+
+test("ok:false with an unrelated error throws a scoped slack_api_error, NOT a SlackApiAuthError", async () => {
   globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "missing_scope" }, 200));
   await assert.rejects(fetchAllReminders(TOKEN, COOKIE), /slack_api_error_missing_scope/);
+  globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "missing_scope" }, 200));
+  await assert.rejects(fetchAllReminders(TOKEN, COOKIE), (e: unknown) => {
+    assert.equal(e instanceof SlackApiAuthError, false);
+    return true;
+  });
 });
 
 test("sustained 429s exhaust the governor's retry budget as slack_rate_limited", async () => {

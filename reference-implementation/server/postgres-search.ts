@@ -12,6 +12,7 @@
  */
 
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
+import type { PostgresTransactionClient } from "./postgres-storage.ts";
 import {
   isPostgresSemanticIterativeScanSupported,
   isPostgresSemanticVectorEmbedding,
@@ -50,6 +51,8 @@ interface SemanticIndexEntry {
   recordKey: string;
   scopeKey: string;
   vector?: Iterable<number>;
+  /** See search-semantic.ts's `SemanticIndexEntry.version` header — backfill-only. */
+  version?: number;
 }
 
 interface NormalizedSemanticIndexEntry {
@@ -58,6 +61,7 @@ interface NormalizedSemanticIndexEntry {
   recordKey: string;
   scopeKey: string;
   values: number[];
+  version?: number;
 }
 
 interface SemanticHit {
@@ -88,20 +92,21 @@ function defaultConnectorInstanceId(connectorId: string): string {
 async function upsertLexicalEntries(
   entries: readonly LexicalTextEntry[],
   index: number,
-  scope: Required<RecordScope>
+  scope: Required<RecordScope>,
+  client: PostgresTransactionClient
 ): Promise<void> {
   const entry = entries[index];
   if (!entry) {
     return;
   }
-  await postgresQuery(
+  await client.query(
     `INSERT INTO lexical_search_index (connector_id, connector_instance_id, stream, record_key, field, value)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (connector_instance_id, stream, record_key, field) DO UPDATE
          SET value = EXCLUDED.value`,
     [scope.connectorId, scope.connectorInstanceId, scope.stream, scope.recordKey, entry.field, entry.value]
   );
-  await upsertLexicalEntries(entries, index + 1, scope);
+  await upsertLexicalEntries(entries, index + 1, scope, client);
 }
 
 export function postgresLexicalCandidateLimit({ env = process.env }: EnvironmentOptions = {}): number {
@@ -112,6 +117,12 @@ export function postgresLexicalCandidateLimit({ env = process.env }: Environment
   return 200;
 }
 
+/**
+ * Bulk/backfill lexical upsert. Not version-gated: callers are the manifest
+ * rebuild/backfill paths, which recompute from the current authoritative
+ * `records` row and are not racing a per-record deferred publish. Per-record
+ * ingest maintenance must use `postgresLexicalIndexPublishIfCurrent` instead.
+ */
 export async function postgresLexicalIndexUpsert({
   connectorId,
   connectorInstanceId = defaultConnectorInstanceId(connectorId),
@@ -119,12 +130,14 @@ export async function postgresLexicalIndexUpsert({
   recordKey,
   fields,
 }: RecordScope & { fields: Record<string, unknown> }) {
-  await postgresQuery(
-    "DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3",
-    [connectorInstanceId, stream, recordKey]
-  );
   const entries = lexicalTextEntries(fields);
-  await upsertLexicalEntries(entries, 0, { connectorId, connectorInstanceId, recordKey, stream });
+  await withPostgresTransaction(async (client) => {
+    await client.query(
+      "DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3",
+      [connectorInstanceId, stream, recordKey]
+    );
+    await upsertLexicalEntries(entries, 0, { connectorId, connectorInstanceId, recordKey, stream }, client);
+  });
 }
 
 export async function postgresLexicalIndexDelete({
@@ -133,7 +146,40 @@ export async function postgresLexicalIndexDelete({
   stream,
   recordKey,
 }: RecordScope) {
-  await postgresQuery(
+  await withPostgresTransaction((client) =>
+    postgresLexicalIndexDeleteWithClient(client, { connectorInstanceId, recordKey, stream })
+  );
+}
+
+/**
+ * Applies already-computed lexical field values using the CALLER's existing
+ * transaction client — no version check, no transaction of its own. The
+ * caller (`records.ts`) owns the single version-gated transaction both this
+ * and the semantic equivalent write into, so lexical and semantic publish
+ * land atomically together against ONE re-read of `records.version`. See
+ * harden-connector-instance-write-fence-transaction-native.
+ */
+export async function postgresLexicalIndexPublishWithClient(
+  client: PostgresTransactionClient,
+  {
+    connectorId,
+    connectorInstanceId = defaultConnectorInstanceId(connectorId),
+    stream,
+    recordKey,
+    fields,
+  }: RecordScope & { fields: Record<string, unknown> }
+): Promise<void> {
+  await postgresLexicalIndexDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
+  const entries = lexicalTextEntries(fields);
+  await upsertLexicalEntries(entries, 0, { connectorId, connectorInstanceId, recordKey, stream }, client);
+}
+
+/** Postgres client-scoped lexical delete — see `postgresLexicalIndexPublishWithClient`'s header. */
+export async function postgresLexicalIndexDeleteWithClient(
+  client: PostgresTransactionClient,
+  { connectorInstanceId, stream, recordKey }: { connectorInstanceId: string; stream: string; recordKey: string }
+): Promise<void> {
+  await client.query(
     "DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3",
     [connectorInstanceId, stream, recordKey]
   );
@@ -163,10 +209,23 @@ export async function postgresLexicalIndexInsertMany({
   if (!Array.isArray(entries) || entries.length === 0) {
     return 0;
   }
+  // Version-guarded: `entries[].version` is the `records.version` each
+  // row's text was read at (a backfill page read, taken before this insert
+  // runs — see rebuildLexicalIndexForStream). The JOIN re-checks that
+  // version is STILL current and the row is still live at insert time; a
+  // row a concurrent delete/newer-write has since superseded is silently
+  // skipped rather than resurrected/overwritten. See
+  // harden-connector-instance-write-fence-transaction-native.
   await postgresQuery(
     `INSERT INTO lexical_search_index (connector_id, connector_instance_id, stream, record_key, field, value)
      SELECT $1, $2, $3, rows.record_key, rows.field, rows.value
-     FROM unnest($4::text[], $5::text[], $6::text[]) AS rows(record_key, field, value)
+     FROM unnest($4::text[], $5::text[], $6::text[], $7::bigint[]) AS rows(record_key, field, value, version)
+     JOIN records r
+       ON r.connector_instance_id = $2
+      AND r.stream = $3
+      AND r.record_key = rows.record_key
+      AND r.version = rows.version
+      AND r.deleted = FALSE
      ON CONFLICT (connector_instance_id, stream, record_key, field) DO UPDATE
        SET connector_id = EXCLUDED.connector_id,
            value = EXCLUDED.value`,
@@ -177,6 +236,7 @@ export async function postgresLexicalIndexInsertMany({
       entries.map((entry) => entry.recordKey),
       entries.map((entry) => entry.field),
       entries.map((entry) => entry.text),
+      entries.map((entry) => entry.version),
     ]
   );
   return entries.length;
@@ -200,7 +260,29 @@ export async function postgresLexicalMetaUpsertFingerprint({
   fieldsFingerprint,
   updatedAt,
 }: ConnectorStreamScope & { fieldsFingerprint: string; updatedAt: string }) {
-  await postgresQuery(
+  await withPostgresTransaction((client) =>
+    postgresLexicalMetaUpsertFingerprintWithClient(client, {
+      connectorId,
+      connectorInstanceId,
+      fieldsFingerprint,
+      stream,
+      updatedAt,
+    })
+  );
+}
+
+/** Client-scoped variant — see `postgresLexicalIndexPublishWithClient`'s header. */
+export async function postgresLexicalMetaUpsertFingerprintWithClient(
+  client: PostgresTransactionClient,
+  {
+    connectorId,
+    connectorInstanceId = defaultConnectorInstanceId(connectorId),
+    stream,
+    fieldsFingerprint,
+    updatedAt,
+  }: ConnectorStreamScope & { fieldsFingerprint: string; updatedAt: string }
+): Promise<void> {
+  await client.query(
     `INSERT INTO lexical_search_meta(connector_id, connector_instance_id, stream, fields_fingerprint, updated_at)
      VALUES($1, $2, $3, $4, $5)
      ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
@@ -273,7 +355,7 @@ export async function postgresLexicalRecordsPageNonDeleted({
   limit,
 }: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">> & { afterId: number; limit: number }) {
   const result = await postgresQuery(
-    `SELECT id, record_key, record_json::text AS record_json
+    `SELECT id, record_key, record_json::text AS record_json, version
      FROM records
      WHERE connector_instance_id = $1
        AND stream = $2
@@ -503,6 +585,24 @@ export async function postgresListExistingSemanticKeys({
   );
 }
 
+function normalizedSemanticRow(
+  entry: SemanticIndexEntry,
+  connectorId: string,
+  resolvedConnectorInstanceId: string
+): NormalizedSemanticIndexEntry {
+  const row: NormalizedSemanticIndexEntry = {
+    connectorId: entry.connectorId ?? connectorId,
+    connectorInstanceId: resolvedConnectorInstanceId,
+    recordKey: entry.recordKey,
+    scopeKey: entry.scopeKey,
+    values: Array.from(entry.vector || []),
+  };
+  if (typeof entry.version === "number") {
+    row.version = entry.version;
+  }
+  return row;
+}
+
 function dedupeSemanticEntries({
   connectorId,
   connectorInstanceId,
@@ -514,34 +614,34 @@ function dedupeSemanticEntries({
   for (const entry of entries ?? []) {
     const resolvedConnectorInstanceId = entry.connectorInstanceId ?? connectorInstanceId;
     const key = JSON.stringify([resolvedConnectorInstanceId, entry.scopeKey, entry.recordKey]);
-    deduped.set(key, {
-      connectorId: entry.connectorId ?? connectorId,
-      connectorInstanceId: resolvedConnectorInstanceId,
-      recordKey: entry.recordKey,
-      scopeKey: entry.scopeKey,
-      values: Array.from(entry.vector || []),
-    });
+    deduped.set(key, normalizedSemanticRow(entry, connectorId, resolvedConnectorInstanceId));
   }
   return Array.from(deduped.values());
 }
 
-export async function postgresSemanticIndexInsertMany({
-  connectorId,
-  connectorInstanceId = defaultConnectorInstanceId(connectorId),
-  entries,
-}: Required<Pick<ConnectorStreamScope, "connectorId">> & {
-  connectorInstanceId?: string;
-  entries: readonly SemanticIndexEntry[];
-}) {
+function semanticInsertManyRows(
+  connectorId: string,
+  connectorInstanceId: string,
+  entries: readonly SemanticIndexEntry[]
+): NormalizedSemanticIndexEntry[] {
   const vectorMode = isPostgresSemanticVectorEmbedding();
-  const rows = dedupeSemanticEntries({ connectorId, connectorInstanceId, entries })
-    // pgvector rejects empty vectors; an empty embedding could never match a
-    // query anyway (the JSONB path scored it at infinite distance).
-    .filter((entry) => !vectorMode || entry.values.length > 0);
+  return (
+    dedupeSemanticEntries({ connectorId, connectorInstanceId, entries })
+      // pgvector rejects empty vectors; an empty embedding could never match a
+      // query anyway (the JSONB path scored it at infinite distance).
+      .filter((entry) => !vectorMode || entry.values.length > 0)
+  );
+}
+
+async function insertSemanticRows(
+  rows: readonly NormalizedSemanticIndexEntry[],
+  query: (sql: string, params: unknown[]) => Promise<unknown>
+): Promise<number> {
   if (rows.length === 0) {
     return 0;
   }
-  await postgresQuery(
+  const vectorMode = isPostgresSemanticVectorEmbedding();
+  await query(
     // The embedding parameter is text: pg accepts a JSON array literal as both
     // valid JSON and valid pgvector input, but the target type differs between
     // the two storage modes.
@@ -562,6 +662,81 @@ export async function postgresSemanticIndexInsertMany({
   return rows.length;
 }
 
+/**
+ * Bulk semantic insert for the LIVE per-record ingest CAS path only
+ * (`applySemanticEntriesWithClient`/`applySemanticEntriesSync` in
+ * search-semantic.ts) — that caller already owns a version-gated
+ * transaction around this call, so no per-row check happens here. Backfill
+ * (`rebuildSemanticIndexForStream`) MUST use `postgresSemanticIndexInsertManyGuarded`
+ * instead, since it has no such enclosing transaction of its own and reads
+ * each row on its own schedule, well before this insert runs.
+ */
+export function postgresSemanticIndexInsertMany({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  entries,
+}: Required<Pick<ConnectorStreamScope, "connectorId">> & {
+  connectorInstanceId?: string;
+  entries: readonly SemanticIndexEntry[];
+}) {
+  const rows = semanticInsertManyRows(connectorId, connectorInstanceId, entries);
+  return insertSemanticRows(rows, (sql, params) => postgresQuery(sql, params as unknown[]));
+}
+
+/**
+ * Version-guarded semantic insert for the BACKFILL path
+ * (`rebuildSemanticIndexForStream`). Every `entries[]` row MUST carry the
+ * `records.version` its source text was read at (a backfill page read,
+ * taken well before this insert runs, with embedding computed in between —
+ * unlocked). Re-checks that version is STILL current and the row still
+ * live, atomically within this one INSERT statement's own snapshot,
+ * immediately before writing — a row a concurrent delete/newer-write has
+ * since superseded is silently skipped, never resurrected/overwritten.
+ * See harden-connector-instance-write-fence-transaction-native.
+ */
+export async function postgresSemanticIndexInsertManyGuarded({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  entries,
+}: Required<Pick<ConnectorStreamScope, "connectorId" | "stream">> & {
+  connectorInstanceId?: string;
+  entries: readonly SemanticIndexEntry[];
+}): Promise<number> {
+  const rows = semanticInsertManyRows(connectorId, connectorInstanceId, entries).filter(
+    (row): row is NormalizedSemanticIndexEntry & { version: number } => typeof row.version === "number"
+  );
+  if (rows.length === 0) {
+    return 0;
+  }
+  const vectorMode = isPostgresSemanticVectorEmbedding();
+  await postgresQuery(
+    `INSERT INTO semantic_search_blob (connector_id, connector_instance_id, scope_key, record_key, embedding)
+     SELECT rows.connector_id, rows.connector_instance_id, rows.scope_key, rows.record_key, rows.embedding::${vectorMode ? "vector" : "jsonb"}
+     FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::bigint[])
+       AS rows(connector_id, connector_instance_id, scope_key, record_key, embedding, version)
+     JOIN records r
+       ON r.connector_instance_id = $7
+      AND r.stream = $8
+      AND r.record_key = rows.record_key
+      AND r.version = rows.version
+      AND r.deleted = FALSE
+     ON CONFLICT (connector_instance_id, scope_key, record_key) DO UPDATE
+       SET embedding = EXCLUDED.embedding`,
+    [
+      rows.map((entry) => entry.connectorId),
+      rows.map((entry) => entry.connectorInstanceId),
+      rows.map((entry) => entry.scopeKey),
+      rows.map((entry) => entry.recordKey),
+      rows.map((entry) => JSON.stringify(entry.values)),
+      rows.map((entry) => entry.version),
+      connectorInstanceId,
+      stream,
+    ]
+  );
+  return rows.length;
+}
+
 export async function postgresSemanticIndexUpsertMany({
   connectorId,
   connectorInstanceId = defaultConnectorInstanceId(connectorId),
@@ -573,6 +748,44 @@ export async function postgresSemanticIndexUpsertMany({
   return await postgresSemanticIndexInsertMany({ connectorId, connectorInstanceId, entries });
 }
 
+/**
+ * Applies already-computed semantic entries using the CALLER's existing
+ * transaction client — no version check, no transaction of its own. See
+ * `postgresLexicalIndexPublishWithClient`'s header: the caller owns the
+ * single version-gated transaction both this and the lexical equivalent
+ * write into, so the two index families publish atomically together.
+ */
+export async function postgresSemanticIndexPublishWithClient(
+  client: PostgresTransactionClient,
+  {
+    connectorId,
+    connectorInstanceId = defaultConnectorInstanceId(connectorId),
+    stream,
+    recordKey,
+    entries,
+  }: RecordScope & { entries: readonly SemanticIndexEntry[] }
+): Promise<void> {
+  const rows = semanticInsertManyRows(connectorId, connectorInstanceId, entries);
+  const scopePrefix = `[${JSON.stringify(stream)},`;
+  await client.query(
+    "DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $2 AND record_key = $3",
+    [connectorInstanceId, `${scopePrefix}%`, recordKey]
+  );
+  await insertSemanticRows(rows, (sql, params) => client.query(sql, params as unknown[]));
+}
+
+/** Postgres client-scoped semantic delete — see `postgresSemanticIndexPublishWithClient`'s header. */
+export async function postgresSemanticIndexDeleteWithClient(
+  client: PostgresTransactionClient,
+  { connectorInstanceId, stream, recordKey }: { connectorInstanceId: string; stream: string; recordKey: string }
+): Promise<void> {
+  const scopePrefix = `[${JSON.stringify(stream)},`;
+  await client.query(
+    "DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $2 AND record_key = $3",
+    [connectorInstanceId, `${scopePrefix}%`, recordKey]
+  );
+}
+
 export async function postgresSemanticRecordsPage({
   connectorInstanceId,
   stream,
@@ -580,7 +793,7 @@ export async function postgresSemanticRecordsPage({
   limit,
 }: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">> & { lastId: number; limit: number }) {
   const result = await postgresQuery(
-    `SELECT id, record_key, record_json
+    `SELECT id, record_key, record_json, version
      FROM records
      WHERE connector_instance_id = $1
        AND stream = $2
@@ -616,6 +829,42 @@ export async function postgresUpsertSemanticMeta({
   distanceMetric,
 }: ConnectorStreamScope & { dimensions: number; distanceMetric: string; fieldsFingerprint: string; modelId: string }) {
   await postgresQuery(
+    `INSERT INTO semantic_search_meta(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (connector_instance_id, stream) DO UPDATE
+       SET connector_id = EXCLUDED.connector_id,
+           fields_fingerprint = EXCLUDED.fields_fingerprint,
+           model_id = EXCLUDED.model_id,
+           dimensions = EXCLUDED.dimensions,
+           distance_metric = EXCLUDED.distance_metric,
+           updated_at = EXCLUDED.updated_at`,
+    [
+      connectorInstanceId,
+      connectorId,
+      stream,
+      fieldsFingerprint,
+      modelId,
+      dimensions,
+      distanceMetric,
+      new Date().toISOString(),
+    ]
+  );
+}
+
+/** Client-scoped variant — see `postgresLexicalIndexPublishWithClient`'s header. */
+export async function postgresUpsertSemanticMetaWithClient(
+  client: PostgresTransactionClient,
+  {
+    connectorId,
+    connectorInstanceId = defaultConnectorInstanceId(connectorId),
+    stream,
+    fieldsFingerprint,
+    modelId,
+    dimensions,
+    distanceMetric,
+  }: ConnectorStreamScope & { dimensions: number; distanceMetric: string; fieldsFingerprint: string; modelId: string }
+): Promise<void> {
+  await client.query(
     `INSERT INTO semantic_search_meta(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (connector_instance_id, stream) DO UPDATE

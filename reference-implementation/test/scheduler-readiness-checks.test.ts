@@ -9,11 +9,15 @@
  *
  *   - external tool detect-command fails      -> missing-tool reason (+ hint)
  *   - external tool detect-command passes / no detect command -> ready
- *   - slackdump binary probe (SLACKDUMP_BIN) fails -> missing-tool reason
+ *   - manifest-declared detect.executable_env_override binary probe fails -> missing-tool reason
+ *   - a tool name alone (with no declared executable_env_override) never triggers an override -> generic-by-declaration, not by name
  *   - browser binding required but no surface configured -> not ready
  *   - browser opt-in env (PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES=1) -> ready
- *   - first-party local-source (codex / claude-code) path missing -> not ready
- *   - filesystem binding not required -> local-source check is skipped
+ *   - managed in-image browser (PDPP_RUNTIME_BROWSER=1 + DISPLAY set) -> ready
+ *   - manifest-declared local_paths with a missing required path -> not ready
+ *     (proven both with real codex/claude-code shapes and a synthetic
+ *     made-up connector id + env var, so the check is generic-by-declaration)
+ *   - filesystem binding not required, or no local_paths declared -> local-source check is skipped
  *
  * The tool-detect branches use portable `exit N` shell commands; every test
  * saves and restores the exact env vars it manipulates so the checks stay
@@ -31,16 +35,19 @@ import { defaultReadinessChecker } from "../runtime/scheduler-readiness.ts";
 const TOP_LEVEL_REGEX_1 = /required browser runtime is not configured/;
 const TOP_LEVEL_REGEX_2 = /required external tool faketool is not available\./;
 const TOP_LEVEL_REGEX_3 = /brew install faketool/;
-const TOP_LEVEL_REGEX_4 = /Claude Code local source path is missing or unreadable/;
+const TOP_LEVEL_REGEX_4 = /projects directory=.*projects-xyz/;
 const TOP_LEVEL_REGEX_5 = /slackdump is not available/;
 const TOP_LEVEL_REGEX_6 = /sessions-xyz/;
-const TOP_LEVEL_REGEX_7 = /Codex local source path\(s\) are missing or unreadable/;
+const TOP_LEVEL_REGEX_7 = /required local source path\(s\) are missing or unreadable/;
+const TOP_LEVEL_REGEX_8 = /data directory=\/nonexistent\/pdpp-test\/acme-data-xyz/;
 
 const BROWSER_ENV_KEYS = [
   "PDPP_BROWSER_SURFACE_REMOTE_CDP_URL",
   "PDPP_NEKO_CDP_HTTP_URL",
   "PDPP_NEKO_MANAGED_CONNECTORS",
   "PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES",
+  "PDPP_RUNTIME_BROWSER",
+  "DISPLAY",
 ];
 
 const LOCAL_SOURCE_ENV_KEYS = [
@@ -50,6 +57,7 @@ const LOCAL_SOURCE_ENV_KEYS = [
   "CLAUDE_CODE_HOME",
   "CLAUDE_CODE_PROJECTS_DIR",
   "SLACKDUMP_BIN",
+  "ACME_CONNECTOR_DATA_DIR",
 ];
 
 function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T | Promise<T>): Promise<T> {
@@ -81,6 +89,7 @@ function schedule(connectorId: string, runtimeRequirements: Record<string, unkno
     connectorPath: `/tmp/${connectorId}`,
     intervalMs: 60_000,
     manifest: { runtime_requirements: runtimeRequirements },
+    ownerSubjectId: "owner-readiness",
     ownerToken: `owner-token-${connectorId}`,
   };
 }
@@ -135,17 +144,56 @@ test("defaultReadinessChecker treats a tool with no detect command as available"
     assert.deepEqual(result, { ready: true });
   }));
 
-test("defaultReadinessChecker probes SLACKDUMP_BIN and reports it missing when the binary is absent", () =>
+test("defaultReadinessChecker probes a manifest-declared executable_env_override and reports it missing when the binary is absent", () =>
   withEnv({ SLACKDUMP_BIN: "/nonexistent/pdpp-test/slackdump-xyz" }, async () => {
     const result = await defaultReadinessChecker(
       schedule("slack", {
         external_tools: [
-          { detect: { command: "exit 0", exit_code: 0 }, install_hint: "install slackdump", name: "slackdump" },
+          {
+            detect: { executable_env_override: "SLACKDUMP_BIN", exit_code: 0 },
+            install_hint: "install slackdump",
+            name: "slackdump",
+          },
         ],
       })
     );
     assert.equal(result.ready, false);
     assertReasonMatches(result.reason, TOP_LEVEL_REGEX_5);
+  }));
+
+test("defaultReadinessChecker ignores an unset env var name even when the tool is otherwise named like a known override", () =>
+  withEnv({}, async () => {
+    const result = await defaultReadinessChecker(
+      schedule("slack", {
+        external_tools: [
+          {
+            detect: {
+              args: ["-e", "process.exit(0)"],
+              executable: process.execPath,
+              executable_env_override: "SLACKDUMP_BIN",
+              exit_code: 0,
+            },
+            name: "slackdump",
+          },
+        ],
+      })
+    );
+    assert.deepEqual(result, { ready: true });
+  }));
+
+test("defaultReadinessChecker never applies an override for a tool whose manifest does not declare executable_env_override", () =>
+  withEnv({ SLACKDUMP_BIN: "/nonexistent/pdpp-test/slackdump-xyz" }, async () => {
+    const result = await defaultReadinessChecker(
+      schedule("gmail", {
+        external_tools: [
+          {
+            detect: { args: ["-e", "process.exit(0)"], executable: process.execPath, exit_code: 0 },
+            name: "slackdump",
+          },
+        ],
+      })
+    );
+    assert.deepEqual(result, { ready: true });
   }));
 
 // ─── browser surface ─────────────────────────────────────────────────────
@@ -169,38 +217,123 @@ test("defaultReadinessChecker accepts a required browser binding when a remote C
     assert.deepEqual(result, { ready: true });
   }));
 
+test("defaultReadinessChecker accepts a required browser binding on a browser-capable Core image (PDPP_RUNTIME_BROWSER=1 + DISPLAY)", () =>
+  withEnv({ DISPLAY: ":99", PDPP_RUNTIME_BROWSER: "1" }, async () => {
+    const result = await defaultReadinessChecker(schedule("gmail", { bindings: { browser: { required: true } } }));
+    assert.deepEqual(result, { ready: true });
+  }));
+
+test("defaultReadinessChecker fails closed when PDPP_RUNTIME_BROWSER=1 but no DISPLAY is set", () =>
+  withEnv({ PDPP_RUNTIME_BROWSER: "1" }, async () => {
+    const result = await defaultReadinessChecker(schedule("gmail", { bindings: { browser: { required: true } } }));
+    assert.equal(result.ready, false);
+    assertReasonMatches(result.reason, TOP_LEVEL_REGEX_1);
+  }));
+
+test('defaultReadinessChecker fails closed when DISPLAY is set but PDPP_RUNTIME_BROWSER is not "1"', () =>
+  withEnv({ DISPLAY: ":99" }, async () => {
+    const result = await defaultReadinessChecker(schedule("gmail", { bindings: { browser: { required: true } } }));
+    assert.equal(result.ready, false);
+    assertReasonMatches(result.reason, TOP_LEVEL_REGEX_1);
+  }));
+
 test("defaultReadinessChecker ignores a browser binding that is not required", () =>
   withEnv({}, async () => {
     const result = await defaultReadinessChecker(schedule("gmail", { bindings: { browser: { required: false } } }));
     assert.deepEqual(result, { ready: true });
   }));
 
-// ─── first-party local-source readiness ──────────────────────────────────
+// ─── local-source readiness (manifest-declared local_paths) ──────────────
+//
+// The RI reads whatever `runtime_requirements.local_paths` the schedule's
+// OWN manifest declares — it never branches on the connector id. Fixtures
+// below use both real first-party shapes (codex/claude-code, matching their
+// actual manifests) and a synthetic made-up connector id, to prove the
+// checker is generic-by-declaration rather than generic-by-coincidence for
+// exactly the two ids that happen to exist today.
 
-test("defaultReadinessChecker reports missing Codex local source paths when filesystem is required", () =>
+test("defaultReadinessChecker reports missing declared local source paths when filesystem is required", () =>
   withEnv(
     {
       CODEX_SESSIONS_DIR: "/nonexistent/pdpp-test/sessions-xyz",
       CODEX_STATE_DB: "/nonexistent/pdpp-test/state-xyz.sqlite",
     },
     async () => {
-      const result = await defaultReadinessChecker(schedule("codex", { bindings: { filesystem: { required: true } } }));
+      const result = await defaultReadinessChecker(
+        schedule("codex", {
+          bindings: { filesystem: { required: true } },
+          local_paths: {
+            home_default_relative_to_user_home: ".codex",
+            home_env_override: "CODEX_HOME",
+            paths: [
+              {
+                default_relative_to_home: "sessions",
+                env_override: "CODEX_SESSIONS_DIR",
+                label: "sessions directory",
+                required_for_readiness: true,
+              },
+              {
+                default_relative_to_home: "state_5.sqlite",
+                env_override: "CODEX_STATE_DB",
+                label: "state database",
+                required_for_readiness: true,
+              },
+            ],
+          },
+        })
+      );
       assert.equal(result.ready, false);
       assertReasonMatches(result.reason, TOP_LEVEL_REGEX_7);
       assertReasonMatches(result.reason, TOP_LEVEL_REGEX_6);
     }
   ));
 
-test("defaultReadinessChecker is ready for Codex when its local source paths exist", () =>
+test("defaultReadinessChecker is ready when the declared local source paths exist", () =>
   withEnv({ CODEX_SESSIONS_DIR: "/tmp", CODEX_STATE_DB: "/tmp" }, async () => {
-    const result = await defaultReadinessChecker(schedule("codex", { bindings: { filesystem: { required: true } } }));
+    const result = await defaultReadinessChecker(
+      schedule("codex", {
+        bindings: { filesystem: { required: true } },
+        local_paths: {
+          home_default_relative_to_user_home: ".codex",
+          home_env_override: "CODEX_HOME",
+          paths: [
+            {
+              default_relative_to_home: "sessions",
+              env_override: "CODEX_SESSIONS_DIR",
+              label: "sessions directory",
+              required_for_readiness: true,
+            },
+            {
+              default_relative_to_home: "state_5.sqlite",
+              env_override: "CODEX_STATE_DB",
+              label: "state database",
+              required_for_readiness: true,
+            },
+          ],
+        },
+      })
+    );
     assert.deepEqual(result, { ready: true });
   }));
 
-test("defaultReadinessChecker reports a missing Claude Code projects dir when filesystem is required", () =>
+test("defaultReadinessChecker reports a missing declared single-path source when filesystem is required", () =>
   withEnv({ CLAUDE_CODE_PROJECTS_DIR: "/nonexistent/pdpp-test/projects-xyz" }, async () => {
     const result = await defaultReadinessChecker(
-      schedule("claude-code", { bindings: { filesystem: { required: true } } })
+      schedule("claude-code", {
+        bindings: { filesystem: { required: true } },
+        local_paths: {
+          home_default_relative_to_user_home: ".claude",
+          home_env_override: "CLAUDE_CODE_HOME",
+          paths: [
+            {
+              default_relative_to_home: "projects",
+              env_override: "CLAUDE_CODE_PROJECTS_DIR",
+              label: "projects directory",
+              required_for_readiness: true,
+            },
+          ],
+        },
+      })
     );
     assert.equal(result.ready, false);
     assertReasonMatches(result.reason, TOP_LEVEL_REGEX_4);
@@ -213,9 +346,34 @@ test("defaultReadinessChecker skips the local-source check when filesystem is no
     assert.deepEqual(result, { ready: true });
   }));
 
-test("defaultReadinessChecker returns ready for a non-first-party connector even with filesystem required", () =>
+test("defaultReadinessChecker returns ready when the manifest declares no local_paths even with filesystem required", () =>
   withEnv({}, async () => {
-    // gmail is not codex/claude-code, so the local-source branch returns null.
+    // No local_paths declared -> checkFirstPartyLocalSourceReadiness returns null regardless of connector id.
     const result = await defaultReadinessChecker(schedule("gmail", { bindings: { filesystem: { required: true } } }));
     assert.deepEqual(result, { ready: true });
+  }));
+
+test("defaultReadinessChecker enforces a synthetic non-first-party connector's declared local_paths identically to codex/claude-code", () =>
+  withEnv({ ACME_CONNECTOR_DATA_DIR: "/nonexistent/pdpp-test/acme-data-xyz" }, async () => {
+    // A made-up connector id with its own made-up env var name — proves the
+    // checker is driven purely by the manifest, not by a hardcoded id/env-var
+    // allowlist that happens to include codex/claude-code.
+    const result = await defaultReadinessChecker(
+      schedule("acme-widget-connector", {
+        bindings: { filesystem: { required: true } },
+        local_paths: {
+          home_default_relative_to_user_home: ".acme-widget",
+          paths: [
+            {
+              default_relative_to_home: "data",
+              env_override: "ACME_CONNECTOR_DATA_DIR",
+              label: "data directory",
+              required_for_readiness: true,
+            },
+          ],
+        },
+      })
+    );
+    assert.equal(result.ready, false);
+    assertReasonMatches(result.reason, TOP_LEVEL_REGEX_8);
   }));

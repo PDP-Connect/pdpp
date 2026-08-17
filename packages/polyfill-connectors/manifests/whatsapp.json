@@ -3,7 +3,7 @@
   "connector_id": "https://registry.pdpp.dev/connectors/whatsapp",
   "connector_key": "whatsapp",
   "manifest_uri": "https://registry.pdpp.dev/connectors/whatsapp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "WhatsApp (chat export)",
   "runtime_requirements": {
     "bindings": {
@@ -46,10 +46,11 @@
       "import_dir_env_var": "WHATSAPP_EXPORT_DIR",
       "help_url": "https://faq.whatsapp.com/1180414079177245",
       "help_text": "WhatsApp does not expose personal messages through an account API or OAuth grant. This source imports owner-provided chat export files.",
-      "large_file_fallback": "Large exports upload in the browser as staged artifacts. If an export exceeds the deployment limit, use the server import-folder handoff for the .txt or .zip file.",
+      "large_file_fallback": "This connector accepts uploads up to the deployment limit shown above. There is currently no alternate upload path for larger files — ask your PDPP operator to raise the deployment limit if your export exceeds it.",
       "validation": {
         "kind": "whatsapp_chat_export",
-        "max_file_bytes": 1073741824
+        "file_backed": true,
+        "max_file_bytes": 21474836480
       },
       "validation_expectations": [
         "Detected WhatsApp chat export",
@@ -71,8 +72,10 @@
       "rationale": "WhatsApp data comes from a manual chat export; refresh requires a new export."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
+    },
+    "record_identity": {
+      "generation": 1
     }
   },
   "streams": [
@@ -297,5 +300,12 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "empty_export": "That WhatsApp export did not contain any messages to import",
+    "import_exceeds_bounded_read_policy": "That export was too large to safely read in one run",
+    "media_exceeds_bounded_read_policy": "Some media files in that WhatsApp export were too large to safely import",
+    "no_exports_found": "We couldn't find any exports yet",
+    "unsupported_export": "We could not read that WhatsApp export format yet"
+  }
 }

@@ -101,7 +101,7 @@ function iso(index: number): string {
 
 async function seedConnector(connectorId: string): Promise<void> {
   const manifestBody = {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: `Route retained-count ${connectorId}`,
     protocol_version: "0.1.0",

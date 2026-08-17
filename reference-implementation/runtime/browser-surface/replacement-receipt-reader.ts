@@ -65,10 +65,25 @@ function isScopedCurrentReceipt(
 }
 
 /**
- * Read one already-selected ledger receipt. A failure stays distinguished from
- * an honest empty selection so the health projection can fail closed only for
- * the process-bound continuity axis.
+ * Run a ledger selector and scope its result to the requested connection. A
+ * failure stays distinguished from an honest empty selection so the health
+ * projection can fail closed only for the process-bound continuity axis.
  */
+async function readScopedReceipt(
+  select: () => Promise<CurrentReplacementReceipt | null> | CurrentReplacementReceipt | null,
+  connectionId: string,
+  surfaceSubjectId: string | undefined
+): Promise<CurrentReplacementReceiptRead> {
+  try {
+    const receipt = await select();
+    return isScopedCurrentReceipt(receipt, connectionId, surfaceSubjectId)
+      ? { receipt, state: "available" }
+      : { receipt: null, state: "available" };
+  } catch {
+    return { receipt: null, state: "unavailable" };
+  }
+}
+
 export async function readCurrentReplacementReceipt(input: {
   readonly connection_id: string;
   readonly current_generation_hash?: string;
@@ -78,18 +93,16 @@ export async function readCurrentReplacementReceipt(input: {
   if (!input.reader) {
     return { receipt: null, state: "unavailable" };
   }
-  try {
-    const receipt = await input.reader.selectCurrent({
-      connection_id: input.connection_id,
-      ...(input.surface_subject_id ? { surface_subject_id: input.surface_subject_id } : {}),
-      ...(input.current_generation_hash ? { current_generation_hash: input.current_generation_hash } : {}),
-    });
-    return isScopedCurrentReceipt(receipt, input.connection_id, input.surface_subject_id)
-      ? { receipt, state: "available" }
-      : { receipt: null, state: "available" };
-  } catch {
-    return { receipt: null, state: "unavailable" };
-  }
+  return await readScopedReceipt(
+    () =>
+      input.reader?.selectCurrent({
+        connection_id: input.connection_id,
+        ...(input.surface_subject_id ? { surface_subject_id: input.surface_subject_id } : {}),
+        ...(input.current_generation_hash ? { current_generation_hash: input.current_generation_hash } : {}),
+      }) ?? null,
+    input.connection_id,
+    input.surface_subject_id
+  );
 }
 
 export async function readSystemActionableReplacementReceipt(input: {
@@ -102,16 +115,14 @@ export async function readSystemActionableReplacementReceipt(input: {
   if (!reader?.selectSystemActionable) {
     return { receipt: null, state: reader ? "available" : "unavailable" };
   }
-  try {
-    const receipt = await reader.selectSystemActionable({
-      connection_id: input.connection_id,
-      profile_key: input.profile_key,
-      ...(input.surface_subject_id ? { surface_subject_id: input.surface_subject_id } : {}),
-    });
-    return isScopedCurrentReceipt(receipt, input.connection_id, input.surface_subject_id)
-      ? { receipt, state: "available" }
-      : { receipt: null, state: "available" };
-  } catch {
-    return { receipt: null, state: "unavailable" };
-  }
+  return await readScopedReceipt(
+    () =>
+      reader.selectSystemActionable?.({
+        connection_id: input.connection_id,
+        profile_key: input.profile_key,
+        ...(input.surface_subject_id ? { surface_subject_id: input.surface_subject_id } : {}),
+      }) ?? null,
+    input.connection_id,
+    input.surface_subject_id
+  );
 }

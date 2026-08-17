@@ -17,7 +17,11 @@
 // classification that the pickers feed. It reads the runtime fact shapes
 // type-only (erased at runtime, so no module cycle with ref-control.ts).
 
+import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
+
 import type { CoverageAxis } from "../runtime/connection-health.ts";
+export type { CoverageAxis } from "../runtime/connection-health.ts";
+import { classifyContinuationCoverage, resolveSkippedCoverage } from "./continuation-proof.ts";
 import type { RuntimeCollectionFact, RuntimeCollectionFactSkip } from "./ref-control.ts";
 
 /** Accepted-coverage policy a manifest stream may declare for an absence. */
@@ -160,19 +164,6 @@ export function isRequiredStream(stream: AcceptedCoverageStream | undefined): bo
   return stream.required !== false;
 }
 
-function checkpointProvesCoverage(checkpoint: string | null): boolean {
-  return checkpoint === "committed" || checkpoint === "disabled";
-}
-
-function strategyCanProveCoverageWithoutDenominator(strategy: CoverageEvidenceStrategy | null): boolean {
-  return (
-    strategy === "checkpoint_window" ||
-    strategy === "full_inventory" ||
-    strategy === "snapshot_import_receipt" ||
-    strategy === "singleton_presence"
-  );
-}
-
 const RETRYABLE_SKIP_REASON_PATTERN = /(429|rate|temporar|retry|upstream_pressure|pressure)/;
 const DEFERRED_SKIP_REASON_PATTERN = /(out_of_scope|user_disabled|deferred|paused|postpon)/;
 const UNAVAILABLE_SKIP_REASON_PATTERN = /(unavailable|not_available|blocked|locked|upstream)/;
@@ -210,67 +201,121 @@ export function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): Cover
 
 /**
  * Classify a stream once no contradictory manifest, explicit skip, or pending
- * recoverable detail gap takes precedence. At this point, coverage rests only
- * on the considered denominator or a checkpoint-backed strategy boundary.
+ * recoverable detail gap takes precedence. At this point coverage rests entirely
+ * on whether the evidence envelope carries POSITIVE coverage evidence, which is
+ * the shared contract invariant — delegated to
+ * `@pdpp/reference-contract/evidence` so conformance tooling reaches the same
+ * verdict on the same facts.
+ *
+ * The contract's `proven` verdict maps onto this axis as follows:
+ *   - proven via `enumeration_boundary` / `accepted_absence` -> accepted axis
+ *     else `complete` (a measured `considered: 0` is how a zero-result run
+ *     legitimately proves verified emptiness);
+ *   - `boundary_shortfall` -> `partial` (the numerator missed a known
+ *     denominator);
+ *   - `checkpoint_only` / `no_proof_strategy` -> the accepted axis when the
+ *     manifest declares one, else `unknown`. A committed checkpoint alone is
+ *     NOT coverage evidence, so it can no longer reach `complete`.
  */
 function deriveGapFreeStreamCoverageCondition(
   fact: RuntimeCollectionFact,
   accepted: AcceptedCoveragePolicy | null,
   strategy: CoverageEvidenceStrategy | null
 ): CoverageAxis {
-  // Defensive normalization: the type contract is `number | null`, but a
-  // caller that bypasses `readRuntimeCollectionFact`'s re-validation could
-  // hand this an `undefined` denominator. `undefined !== null` would
-  // otherwise read as a KNOWN denominator below (and `0 < undefined` is
-  // `false`), painting a zero-collected fact `complete` instead of
-  // `unknown`. Normalizing here keeps "no denominator" a single value.
-  const considered = fact.considered ?? null;
-  // Some stream strategies establish coverage by committing a bounded source
-  // window/inventory/snapshot/singleton boundary. For those streams,
-  // `collected` remains only the number of records emitted this run
-  // (typically changed records), not a coverage numerator. A committed
-  // checkpoint with no skip/gaps proves the stream boundary was covered even
-  // when unchanged records were suppressed and `collected < considered`.
-  if (
-    considered !== null &&
-    strategyCanProveCoverageWithoutDenominator(strategy) &&
-    checkpointProvesCoverage(fact.checkpoint)
-  ) {
+  const verdict = evaluateStreamCoherence(
+    {
+      checkpoint: fact.checkpoint,
+      collected: fact.collected,
+      // Defensive normalization: the type contract is `number | null`, but a
+      // caller that bypasses `readRuntimeCollectionFact`'s re-validation could
+      // hand this an `undefined` denominator, which must read as "no
+      // denominator" rather than as a known one.
+      considered: fact.considered ?? null,
+      covered: fact.covered ?? null,
+      // A local collector that reported per-stream statuses reaches this branch
+      // only when every status was `collected` (the caller returns earlier
+      // otherwise), so that is an affirmative observation of collection.
+      //
+      // `scoped: false` withdraws it. Under a declared boundary that stream was
+      // collected whole because the bound could not be enforced on it, so its
+      // observation is not evidence about the declared region. Crediting it
+      // would let a bounded run present whole-corpus coverage as
+      // coverage-of-the-boundary — the fabricated watermark this contract
+      // exists to prevent.
+      observed_collected:
+        fact.scoped !== false && fact.coverage_statuses !== undefined && fact.coverage_statuses.length > 0,
+      // Skips and pending gaps are handled by the caller's earlier precedence
+      // rules; this branch is reached only when neither is present.
+      pending_detail_gaps: 0,
+      skipped: null,
+    },
+    { accepted_absence: accepted, coverage_strategy: strategy }
+  );
+
+  if (verdict.proven) {
+    // A declared accepted-coverage policy (e.g. `inventory_only`, `deferred`)
+    // is the more precise honest claim than a bare `complete`.
     return accepted ?? "complete";
   }
+  if (verdict.reason === "boundary_shortfall") {
+    return "partial";
+  }
+  // Not proven: absence of evidence, NOT proof of completeness. A declared
+  // accepted-coverage policy is still precise (the manifest owes no further
+  // data); otherwise the honest answer is `unknown`.
+  return accepted ?? "unknown";
+}
 
-  // A known considered denominator distinguishes `partial` from covered. The
-  // satisfying numerator is the connector-declared `covered` count when present
-  // (the in-boundary items the run accounted for: emitted +
-  // suppressed-because-unchanged), otherwise the raw `collected` count. The
-  // `covered` path is what lets a steady-state full-sync run — which
-  // re-enumerated its whole boundary and emitted nothing because every record
-  // was unchanged — read `complete` instead of a false `partial`. It cannot
-  // mask a dropped record: a weighed-but-dropped item is counted in neither
-  // `collected` nor `covered`, so a real shortfall still reads `partial`.
-  if (considered !== null) {
-    const satisfied = fact.covered ?? fact.collected;
-    if (satisfied < considered) {
-      return "partial";
+/**
+ * Whether a PERSISTED `known_zero` count claim is still backed by positive
+ * coverage evidence at read time.
+ *
+ * `count_state` is derived once at write time and serialized; a row that is
+ * never reclassified for repair keeps serving whatever it was written with.
+ * The write path proves `known_zero` from a record-source checkpoint entry,
+ * but Ruling R2 is explicit that checkpoint commitment ALONE never proves
+ * coverage — so a row written before that proof was required, or written
+ * against a checkpoint that no longer implies coverage, keeps asserting an
+ * exact zero the evidence does not support. The read boundary re-asks the
+ * question against the run's own facts.
+ *
+ * The judgement is NOT reimplemented here: it delegates to the same
+ * `evaluateStreamCoherence` contract module `deriveGapFreeStreamCoverageCondition`
+ * uses, so the RI cannot drift from conformance tooling on the same facts.
+ * Skips and pending recoverable gaps are passed through rather than assumed
+ * away — unlike that helper, this predicate is not reached behind precedence
+ * rules that already excluded them, so an unresolved attempt must be able to
+ * reach the contract's `unresolved_attempt` rule directly.
+ *
+ * A stream with NO runtime fact at all returns `false`: absence of evidence is
+ * the honest `unobserved`, never a proven zero.
+ */
+export function persistedZeroRetainsCoverageProof(
+  fact: RuntimeCollectionFact | null,
+  manifestStream: AcceptedCoverageStream | undefined
+): boolean {
+  if (!fact) {
+    return false;
+  }
+  return evaluateStreamCoherence(
+    {
+      checkpoint: fact.checkpoint,
+      collected: fact.collected,
+      considered: fact.considered ?? null,
+      covered: fact.covered ?? null,
+      observed_collected:
+        fact.scoped !== false &&
+        fact.coverage_statuses !== undefined &&
+        fact.coverage_statuses.length > 0 &&
+        fact.coverage_statuses.every((status) => status === "collected"),
+      pending_detail_gaps: fact.pending_detail_gaps,
+      skipped: fact.skipped,
+    },
+    {
+      accepted_absence: readAcceptedCoveragePolicy(manifestStream),
+      coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
     }
-    // The numerator satisfies the considered denominator: covered. A declared
-    // accepted-coverage policy (e.g. `inventory_only`, `deferred`) is the more
-    // precise honest claim than a bare `complete`.
-    return accepted ?? "complete";
-  }
-
-  // No considered denominator: absence of evidence, NOT proof of completeness.
-  // A declared accepted-coverage policy is still precise (the manifest owes no
-  // further data). A declared coverage evidence strategy can also prove a
-  // bounded stream complete when the runtime committed that stream's boundary:
-  // the proof is the strategy + checkpoint, not `collected === considered`.
-  if (accepted !== null) {
-    return accepted;
-  }
-  if (strategyCanProveCoverageWithoutDenominator(strategy) && checkpointProvesCoverage(fact.checkpoint)) {
-    return "complete";
-  }
-  return "unknown";
+  ).proven;
 }
 
 /**
@@ -312,11 +357,14 @@ export function deriveStreamCoverageCondition(
   //    terminal-looking diagnostic skip; unsupported/unavailable/deferred skip
   //    reasons stay precise and non-green.
   if (fact.skipped) {
-    const skipCoverage = accepted ?? mapSkipCoverageCondition(fact.skipped);
-    if (fact.pending_detail_gaps > 0 && skipCoverage === "terminal_gap") {
-      return "retryable_gap";
-    }
-    return skipCoverage;
+    return resolveSkippedCoverage(
+      classifyContinuationCoverage(
+        fact,
+        deriveGapFreeStreamCoverageCondition(fact, null, readCoverageEvidenceStrategy(manifestStream)) === "complete"
+      ),
+      accepted ?? mapSkipCoverageCondition(fact.skipped),
+      fact.pending_detail_gaps
+    );
   }
   // 3. A pending recoverable detail gap is a retryable boundary.
   if (fact.pending_detail_gaps > 0) {

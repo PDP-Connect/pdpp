@@ -2,9 +2,32 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import test from "node:test";
-import { issueOwnerToken } from "./orchestrator.ts";
+import { getConnectorPaths, issueOwnerToken, MANIFEST_DIR } from "./orchestrator.ts";
+
+test("every manifest-declared connector is reachable via getConnectorPaths (registered in KNOWN_CONNECTORS)", () => {
+  const manifestKeys = readdirSync(MANIFEST_DIR)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => f.replace(/\.json$/, ""))
+    .sort();
+
+  const unreachable = manifestKeys.filter((key) => {
+    try {
+      getConnectorPaths(key);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+
+  assert.deepEqual(
+    unreachable,
+    [],
+    `connector(s) have a manifest but are not registered in orchestrator.ts KNOWN_CONNECTORS, so the scheduler/orchestrator path can never dispatch them: ${unreachable.join(", ")}`
+  );
+});
 
 test("issueOwnerToken approves device flow without owner login when owner password is unset", async () => {
   const previousPassword = process.env.PDPP_OWNER_PASSWORD;
