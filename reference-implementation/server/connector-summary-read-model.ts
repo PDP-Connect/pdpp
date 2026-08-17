@@ -1801,7 +1801,33 @@ function seedFoldState(participants: readonly Row[]): {
       row.terminal_facts_reason_code !== REASON_CODES.TERMINAL_FACTS_HISTORICAL &&
         row.terminal_facts_reason_code !== "manifest_generation_changed"
     );
-    sinceSeq = Math.min(sinceSeq, checkpoint ?? 0);
+    // A participant with NO checkpoint has never had a terminal event folded
+    // into it, so it holds no position in the event log to resume from.
+    // Seeding it as 0 makes it the floor for EVERY participant, because
+    // `sinceSeq` is the minimum across the pass -- one such row rewinds the
+    // whole fold to the beginning of the log.
+    //
+    // Observed in production 2026-08-17: three sources whose records arrived
+    // outside a collection run (a stale device collector, a Google Maps
+    // timeline import, a WhatsApp export) each sat at checkpoint 0. The fold
+    // floor was therefore 0 against a 1,438,556-event log, while the oldest
+    // checkpoint among the 22 sources that HAD collected was 1,350,342 --
+    // about 88k events of real work. Every bounded 2s pass restarted at 0,
+    // exhausted its budget having read ZERO qualifying events, wrote nothing,
+    // reported `incomplete`, and repeated. All 25 rows stayed
+    // `terminal_facts_historical` indefinitely and no source could go healthy.
+    //
+    // A checkpoint-less participant still takes part in the pass and is still
+    // written by it; it simply must not drag the shared read cursor backward,
+    // having no evidence positioned there to recover. When EVERY participant
+    // lacks a checkpoint the floor stays 0, so a genuinely fresh install still
+    // reads from the beginning.
+    if (checkpoint !== null) {
+      sinceSeq = Math.min(sinceSeq, checkpoint);
+    }
+  }
+  if (!Number.isFinite(sinceSeq)) {
+    sinceSeq = 0;
   }
   return {
     casBaselineByInstance,
