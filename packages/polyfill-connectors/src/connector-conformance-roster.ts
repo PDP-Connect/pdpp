@@ -88,6 +88,7 @@ export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {
   ical: { testFile: "connectors/ical/parsers.test.ts" },
   imessage: { testFile: "connectors/imessage/integration.test.ts" },
   pocket: { testFile: "connectors/pocket/schemas.test.ts" },
+  signal: { testFile: "connectors/signal/integration.test.ts" },
   spotify: { testFile: "connectors/spotify/schemas.test.ts" },
   strava: { testFile: "connectors/strava/schemas.test.ts" },
   twitter_archive: { testFile: "connectors/twitter_archive/parsers.test.ts" },

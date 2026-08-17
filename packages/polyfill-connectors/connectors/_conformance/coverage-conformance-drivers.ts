@@ -1041,10 +1041,11 @@ export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([
   "pocket.items",
   "heb.orders",
   "heb.order_items",
-  // iCal / iMessage (REAL_UNLISTED_CONNECTORS): file-based import receipts, no
-  // driver yet.
+  // iCal / iMessage / Signal (REAL_UNLISTED_CONNECTORS): file/subprocess-based
+  // import receipts, no driver yet.
   "ical.events",
   "imessage.messages",
+  "signal.messages",
   "notion.pages",
   "notion.databases",
   "oura.sleep",

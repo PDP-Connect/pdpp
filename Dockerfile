@@ -112,7 +112,7 @@ CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_U
 # sigtop publishes only a Windows binary on its releases, so Linux is built
 # from the pinned source tag in a throwaway Go stage. Only the resulting
 # binary and its license are copied into the final image -- Go itself is not.
-FROM golang:latest AS sigtop-builder
+FROM golang:bookworm AS sigtop-builder
 
 ARG SIGTOP_VERSION=v0.24.0
 
@@ -335,7 +335,12 @@ COPY --from=slackdump-builder /build/SOURCE_URL /usr/local/share/slackdump/SOURC
 COPY --from=sigtop-builder /build/sigtop /usr/local/bin/sigtop
 COPY --from=sigtop-builder /build/LICENSE /usr/local/share/sigtop/LICENSE.isc.txt
 COPY --from=sigtop-builder /build/SOURCE_URL /usr/local/share/sigtop/SOURCE_URL
-RUN chmod +x /usr/local/bin/sigtop && /usr/local/bin/sigtop -v 2>&1 | head -1 || true
+# sigtop links against libsecret at runtime (Signal Desktop keyring access),
+# so the shared library must exist in the final image, not just the builder.
+RUN apt-get update && apt-get install -y --no-install-recommends libsecret-1-0 && \
+    rm -rf /var/lib/apt/lists/* && \
+    chmod +x /usr/local/bin/sigtop && \
+    /usr/local/bin/sigtop -v
 
 # Verify slackdump is executable and functional
 RUN chmod +x /usr/local/bin/slackdump && /usr/local/bin/slackdump version
