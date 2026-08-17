@@ -3007,6 +3007,49 @@ function bootstrapLockDelay(attempt: number): number {
   );
 }
 
+/**
+ * Names who is holding the bootstrap lock, for the timeout error only.
+ *
+ * A bare "timed out" tells an operator nothing actionable: the server exits,
+ * the supervisor restarts it, and the next attempt times out on the same
+ * unnamed holder. Observed cost, 2026-08-17: a wedged `DELETE FROM records`
+ * left over from a killed process held a conflicting lock on
+ * `connector_instances`, so every boot queued behind it and the reference
+ * listener never bound. Rolling the image back did not help, because the
+ * blocker lived in Postgres rather than in the container. Diagnosing it by
+ * hand took ~20 minutes of downtime; Postgres could have answered in one
+ * query.
+ *
+ * Best-effort and deliberately non-fatal: this runs on a path that is
+ * already failing, so a diagnostic that throws would replace a useful error
+ * with a worse one. Truncated, and reports only pid/state/wait event and how
+ * long the statement has run -- never query text, which can carry record
+ * values.
+ */
+async function describeBootstrapLockHolders(client: PoolClient): Promise<string> {
+  try {
+    const result = await client.query(
+      `SELECT a.pid, a.state, a.wait_event_type, round(extract(epoch FROM now() - a.query_start)) AS seconds
+       FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+       WHERE l.locktype = 'advisory' AND l.objid = $2 AND l.granted AND a.pid <> pg_backend_pid()
+       LIMIT 5`,
+      POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK
+    );
+    if (result.rows.length === 0) {
+      return " No advisory-lock holder was visible; the contention may be a table-level lock from another session.";
+    }
+    const held = result.rows
+      .map(
+        (row) =>
+          `pid ${row.pid} (${row.state ?? "unknown"}${row.wait_event_type ? `, waiting on ${row.wait_event_type}` : ""}, ${row.seconds ?? "?"}s)`
+      )
+      .join(", ");
+    return ` Held by: ${held}. Terminate the blocking session, or wait for it to finish, before restarting.`;
+  } catch {
+    return "";
+  }
+}
+
 async function acquirePostgresBootstrapLock(client: PoolClient): Promise<void> {
   const tryAcquire = async (attempt: number): Promise<void> => {
     const result = await client.query(
@@ -3021,7 +3064,9 @@ async function acquirePostgresBootstrapLock(client: PoolClient): Promise<void> {
     // CREATE/DROP INDEX CONCURRENTLY in the lock holder.
     await new Promise((resolve) => setTimeout(resolve, bootstrapLockDelay(attempt)));
     if (attempt + 1 >= POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS) {
-      throw new Error("Timed out waiting for PostgreSQL bootstrap serialization lock.");
+      throw new Error(
+        `Timed out waiting for PostgreSQL bootstrap serialization lock.${await describeBootstrapLockHolders(client)}`
+      );
     }
     await tryAcquire(attempt + 1);
   };
