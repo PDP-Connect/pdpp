@@ -1,0 +1,293 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.dev/connectors/signal",
+  "connector_key": "signal",
+  "manifest_uri": "https://registry.pdpp.dev/connectors/signal",
+  "version": "0.1.0",
+  "display_name": "Signal Desktop",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    },
+    "environment_variables": [
+      "SIGTOP_BIN",
+      "SIGNAL_ATTACHMENTS_EXPORT_DIR",
+      "PDPP_SIGNAL_MAX_ATTACHMENT_BYTES"
+    ],
+    "external_tools": [
+      {
+        "name": "sigtop",
+        "license": "ISC",
+        "purpose": "Decrypts and reads Signal Desktop's local encrypted db.sqlite (SQLCipher key unwrap via the OS keychain) and exports attachments",
+        "install_hint": "go install github.com/tbvdm/sigtop@latest. Linux builds additionally require libsecret-1-dev and pkg-config at build time."
+      }
+    ]
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "proven": {
+      "local_collector": true
+    },
+    "public_listing": {
+      "tier": "development",
+      "rationale": "Real collection logic exists (query/parse/emit against a live Signal Desktop database via the sigtop sidecar), verified by unit tests and a mocked-subprocess integration test only — unverified against a real sigtop binary, a real Signal account, or any platform other than Linux. Hidden from the reference dashboard catalog until an operator proves a real run and explicitly opts it into listing."
+    },
+    "reachability": {
+      "applicable": false,
+      "rationale": "This connector has no network surface at all: it shells out to a local subprocess (sigtop) that reads a local encrypted file. There is no fixed public API base or unauthenticated-probeable endpoint to reach. Reachability and mock-mutation checks report UNKNOWN by design, the same as imessage/claude_code/whatsapp — see CONNECTOR-CHECKLIST.md's exemption rule."
+    },
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 300,
+      "maximum_staleness_seconds": 21600,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Signal history is read from the operator's local Signal Desktop database via the sigtop subprocess. Docker/provider scheduled runs must use a local collector or an explicitly mounted Signal Desktop data directory + SIGTOP_BIN."
+    }
+  },
+  "streams": [
+    {
+      "name": "messages",
+      "required": true,
+      "description": "Signal Desktop messages, read via sigtop's decrypted export-database SQLite copy.",
+      "display": {
+        "label": "Your Signal messages",
+        "detail": "Sender, conversation, text content, timestamp, message type, has_attachments/is_edited flags derived from Signal Desktop's own per-message JSON envelope."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "sender": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "actor"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "body": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "type": {
+            "type": ["string", "null"]
+          },
+          "has_attachments": {
+            "type": "boolean"
+          },
+          "is_edited": {
+            "type": "boolean"
+          }
+        },
+        "required": ["id", "conversation_id", "sent_at"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "sent_at",
+      "consent_time_field": "sent_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": ["body", "sender"],
+          "semantic_fields": ["body"]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "conversations",
+      "required": false,
+      "description": "Signal Desktop conversations (direct and group), read via sigtop's decrypted export-database SQLite copy.",
+      "display": {
+        "label": "Your Signal conversations",
+        "detail": "Conversation type (private/group), title. member_count is always null: Signal Desktop's schema exposes no flat member-count field this connector can honestly derive without fabrication (see connectors/signal/parsers.ts's buildConversationRecord)."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": ["string", "null"],
+            "enum": ["private", "group", null]
+          },
+          "title": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "member_count": {
+            "type": ["integer", "null"]
+          }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": ["title"],
+          "semantic_fields": ["title"]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "reactions",
+      "required": false,
+      "description": "Emoji reactions to Signal Desktop messages, derived from each message row's own JSON envelope (Signal Desktop has no standalone reactions table).",
+      "display": {
+        "label": "Your Signal message reactions",
+        "detail": "Emoji, reacting participant, and the message reacted to."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "emoji": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "sender": {
+            "type": "string",
+            "x_pdpp_role": "actor"
+          }
+        },
+        "required": ["id", "message_id", "emoji", "sender"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": ["sender"]
+        }
+      },
+      "relationships": [
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "attachments",
+      "required": false,
+      "description": "Attachment metadata and bytes exported via `sigtop export-attachments`, joined against Signal Desktop's message_attachments table when available (schema version >= 1360 only).",
+      "display": {
+        "label": "Your Signal attachments",
+        "detail": "Filename, MIME type, size, linked message when the join succeeds, and a blob reference when the local file was hydrated. Bytes are read only from inside sigtop's own decrypted export directory (a connector-controlled trusted root — canonicalized and verified before any read, rejecting `../` traversal and a symlink that escapes the root) since Signal Desktop encrypts attachment blobs at rest and only sigtop knows how to decrypt them. Optional: on a Signal Desktop schema older than version 1360 (no message_attachments table), attachment bytes still hydrate but message_id/content_type degrade to null/best-effort rather than the stream failing."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": ["string", "null"]
+          },
+          "conversation_id": {
+            "type": ["string", "null"]
+          },
+          "filename": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": ["integer", "null"]
+          },
+          "content_sha256": {
+            "type": ["string", "null"]
+          },
+          "hydration_status": {
+            "type": "string",
+            "enum": ["deferred", "hydrated", "failed", "too_large", "missing"]
+          },
+          "hydration_error": {
+            "type": ["string", "null"]
+          },
+          "blob_ref": {
+            "type": ["object", "null"],
+            "properties": {
+              "blob_id": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": ["blob_id", "mime_type", "sha256", "size_bytes"]
+          }
+        },
+        "required": ["id", "filename", "content_type", "hydration_status"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "relationships": [
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
+    }
+  ],
+  "reason_display_messages": {
+    "message_date_unusable": "We skipped a message with a date we couldn't read",
+    "no_attachments_exported": "sigtop found no attachments to export for this account"
+  }
+}
