@@ -113,19 +113,19 @@ function manifestWithoutSemantic() {
 function fixtureProviderAuthManifest(overrides: { readonly redirectUriAlias?: string } = {}) {
   return {
     manifest: {
-      connector_id: "https://test.pdpp.org/connectors/fixture-oauth-provider",
-      display_name: "Fixture OAuth Provider",
       capabilities: {
         auth: {
           deployment_config: [
-            { logical_key: "client_id", secret: false, env_alias: "FIXTURE_PROVIDER_CLIENT_ID" },
-            { logical_key: "client_secret", secret: true, env_alias: "FIXTURE_PROVIDER_CLIENT_SECRET" },
+            { env_alias: "FIXTURE_PROVIDER_CLIENT_ID", logical_key: "client_id", secret: false },
+            { env_alias: "FIXTURE_PROVIDER_CLIENT_SECRET", logical_key: "client_secret", secret: true },
             ...(overrides.redirectUriAlias
-              ? [{ logical_key: "redirect_uri", secret: false, env_alias: overrides.redirectUriAlias }]
+              ? [{ env_alias: overrides.redirectUriAlias, logical_key: "redirect_uri", secret: false }]
               : []),
           ],
         },
       },
+      connector_id: "https://test.pdpp.org/connectors/fixture-oauth-provider",
+      display_name: "Fixture OAuth Provider",
     },
     provenance: "polyfill-registered" as const,
   };
@@ -201,24 +201,21 @@ test("buildEnvironmentReport applies the name-pattern redaction heuristic to a m
   // looks secret-shaped; SECRET_NAME_RE is the closed, generic backstop —
   // it must still fire regardless of which list (static or manifest-derived)
   // the candidate name came from.
-  const report = buildEnvironmentReport(
-    { FIXTURE_PROVIDER_REDIRECT_TOKEN: "should-be-redacted-by-name-pattern" },
-    [
-      {
-        manifest: {
-          connector_id: "https://test.pdpp.org/connectors/fixture-oauth-provider-2",
-          capabilities: {
-            auth: {
-              deployment_config: [
-                { logical_key: "redirect_token", secret: false, env_alias: "FIXTURE_PROVIDER_REDIRECT_TOKEN" },
-              ],
-            },
+  const report = buildEnvironmentReport({ FIXTURE_PROVIDER_REDIRECT_TOKEN: "should-be-redacted-by-name-pattern" }, [
+    {
+      manifest: {
+        capabilities: {
+          auth: {
+            deployment_config: [
+              { env_alias: "FIXTURE_PROVIDER_REDIRECT_TOKEN", logical_key: "redirect_token", secret: false },
+            ],
           },
         },
-        provenance: "polyfill-registered" as const,
+        connector_id: "https://test.pdpp.org/connectors/fixture-oauth-provider-2",
       },
-    ]
-  );
+      provenance: "polyfill-registered" as const,
+    },
+  ]);
   const entry = report.find((e) => e.name === "FIXTURE_PROVIDER_REDIRECT_TOKEN");
   assert.ok(entry);
   assert.equal(entry.provenance, "redacted");
@@ -227,21 +224,20 @@ test("buildEnvironmentReport applies the name-pattern redaction heuristic to a m
 });
 
 test("buildEnvironmentReport deduplicates the same env_alias declared by two manifests", () => {
-  const report = buildEnvironmentReport(
-    { FIXTURE_PROVIDER_CLIENT_ID: "shared-client-id" },
-    [
-      fixtureProviderAuthManifest(),
-      {
-        manifest: {
-          connector_id: "https://test.pdpp.org/connectors/fixture-oauth-sibling",
-          capabilities: {
-            auth: { deployment_config: [{ logical_key: "client_id", secret: false, env_alias: "FIXTURE_PROVIDER_CLIENT_ID" }] },
+  const report = buildEnvironmentReport({ FIXTURE_PROVIDER_CLIENT_ID: "shared-client-id" }, [
+    fixtureProviderAuthManifest(),
+    {
+      manifest: {
+        capabilities: {
+          auth: {
+            deployment_config: [{ env_alias: "FIXTURE_PROVIDER_CLIENT_ID", logical_key: "client_id", secret: false }],
           },
         },
-        provenance: "polyfill-registered" as const,
+        connector_id: "https://test.pdpp.org/connectors/fixture-oauth-sibling",
       },
-    ]
-  );
+      provenance: "polyfill-registered" as const,
+    },
+  ]);
   const matches = report.filter((e) => e.name === "FIXTURE_PROVIDER_CLIENT_ID");
   assert.equal(matches.length, 1, "a shared env_alias must appear exactly once in the report");
 });
@@ -892,7 +888,7 @@ test("database backend comes from the reference env in a split web/reference dep
     backend: null,
     db: null,
     dbPath: "/var/lib/postgresql/data",
-    env: { PDPP_STORAGE_BACKEND: "postgres", PDPP_DATABASE_URL: "redacted-test-url" },
+    env: { PDPP_DATABASE_URL: "redacted-test-url", PDPP_STORAGE_BACKEND: "postgres" },
     indexState: null,
     manifests: [],
     physicalFootprint: { physical_bytes: null, top_relations: null },

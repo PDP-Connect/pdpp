@@ -293,12 +293,12 @@ test("runConnector withholds an unrelated DETAIL_COVERAGE shortfall during a cer
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const manifest = completeManifest("runtime-stream-isolation-failure-and-coverage-shortfall-test", [
-      ...testManifest("unused").streams,
-      {
-        name: "shortfall_sibling",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      },
+    ...testManifest("unused").streams,
+    {
+      name: "shortfall_sibling",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    },
   ]);
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-runtime-stream-isolation-shortfall-"));
   const connectorPath = writeConnectorStub(
@@ -410,29 +410,29 @@ test("runConnector withholds a manifest-declared PARENT state_stream shared with
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const manifest = completeManifest("runtime-stream-isolation-parent-state-stream-test", [
-      {
-        coverage_strategy: "checkpoint_window",
-        name: "child_a",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-        state_stream: "parent",
-      },
-      {
-        coverage_strategy: "checkpoint_window",
-        name: "child_b",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-        state_stream: "parent",
-      },
-      // state_stream must name another declared manifest stream (server-side
-      // registration validation) — 'parent' is itself a declared stream that
-      // the connector never emits RECORD/SKIP_RESULT for directly; it only
-      // exists as the shared checkpoint key child_a/child_b both declare.
-      {
-        name: "parent",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      },
+    {
+      coverage_strategy: "checkpoint_window",
+      name: "child_a",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      state_stream: "parent",
+    },
+    {
+      coverage_strategy: "checkpoint_window",
+      name: "child_b",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      state_stream: "parent",
+    },
+    // state_stream must name another declared manifest stream (server-side
+    // registration validation) — 'parent' is itself a declared stream that
+    // the connector never emits RECORD/SKIP_RESULT for directly; it only
+    // exists as the shared checkpoint key child_a/child_b both declare.
+    {
+      name: "parent",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    },
   ]);
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-runtime-stream-isolation-parent-state-stream-"));
   // child_a finishes and the connector advances the SHARED parent cursor;
@@ -495,28 +495,28 @@ test("runConnector rejects a state_stream-declared child that emits its own DETA
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const manifest = completeManifest("runtime-stream-isolation-detail-coverage-state-stream-test", [
-      {
-        name: "child_a",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      },
-      {
-        coverage_strategy: "checkpoint_window",
-        name: "child_b",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-        state_stream: "manifest_parent",
-      },
-      {
-        name: "manifest_parent",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      },
-      {
-        name: "runtime_parent",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      },
+    {
+      name: "child_a",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    },
+    {
+      coverage_strategy: "checkpoint_window",
+      name: "child_b",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      state_stream: "manifest_parent",
+    },
+    {
+      name: "manifest_parent",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    },
+    {
+      name: "runtime_parent",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    },
   ]);
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-runtime-stream-isolation-detail-coverage-"));
   const connectorPath = writeConnectorStub(
@@ -571,37 +571,37 @@ test("runConnector withholds every declared parent of a failed shared detail str
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const manifest = completeManifest("runtime-stream-isolation-conflicting-detail-coverage-test", [
-      {
-        name: "sibling_a",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      },
-      {
-        name: "parent_a",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      },
-      {
-        name: "parent_b",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      },
-      // sibling_b is a manifest-declared parent_detail_accounting stream with
-      // BOTH parent_a and parent_b as its declared parents. Under the
-      // manifest-authoritative model, its failure must withhold every
-      // DECLARED parent — including parent_b, which committed its own STATE
-      // this run but never got a live DETAIL_COVERAGE report for this failed
-      // run at all (see spec "Precedence between manifest and run-time
-      // evidence"). This is distinct from the old defect where an
-      // undeclared, ad-hoc live parent pair could be introduced with no
-      // manifest declaration at all.
-      {
-        coverage_strategy: "parent_detail_accounting",
-        name: "sibling_b",
-        parent_streams: ["parent_a", "parent_b"],
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      },
+    {
+      name: "sibling_a",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    },
+    {
+      name: "parent_a",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    },
+    {
+      name: "parent_b",
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    },
+    // sibling_b is a manifest-declared parent_detail_accounting stream with
+    // BOTH parent_a and parent_b as its declared parents. Under the
+    // manifest-authoritative model, its failure must withhold every
+    // DECLARED parent — including parent_b, which committed its own STATE
+    // this run but never got a live DETAIL_COVERAGE report for this failed
+    // run at all (see spec "Precedence between manifest and run-time
+    // evidence"). This is distinct from the old defect where an
+    // undeclared, ad-hoc live parent pair could be introduced with no
+    // manifest declaration at all.
+    {
+      coverage_strategy: "parent_detail_accounting",
+      name: "sibling_b",
+      parent_streams: ["parent_a", "parent_b"],
+      primary_key: ["id"],
+      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    },
   ]);
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-runtime-stream-isolation-conflict-"));
   const connectorPath = writeConnectorStub(

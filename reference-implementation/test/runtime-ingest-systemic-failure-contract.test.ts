@@ -103,8 +103,8 @@ function streamSchema() {
 
 function manifest(connectorId: string) {
   return {
-    connector_key: connectorId,
     connector_id: connectorId,
+    connector_key: connectorId,
     display_name: "Runtime Systemic Failure Contract Test Connector",
     manifest_uri: `https://registry.pdpp.dev/connectors/${connectorId}`,
     protocol_version: "0.1.0",

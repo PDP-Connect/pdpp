@@ -224,7 +224,7 @@ function readEvidence(connectorInstanceId: string): {
   streamLatestFactsJson: string | null;
 } | null {
   const row = getDb()
-    .prepare(`SELECT dirty, stream_latest_facts_json FROM connector_summary_evidence WHERE connector_instance_id = ?`)
+    .prepare("SELECT dirty, stream_latest_facts_json FROM connector_summary_evidence WHERE connector_instance_id = ?")
     .get<{ dirty: number; stream_latest_facts_json: string | null }>(connectorInstanceId);
   if (!row) {
     return null;
@@ -463,6 +463,10 @@ test(
     assert.equal(zeroBudgetAccelerationFirst.discovered, 0, "a zero budget starts no work in either tranche order");
     assert.equal(zeroBudgetAccelerationFirst.repaired, 0);
     assert.equal(zeroBudgetAccelerationFirst.incomplete, true, "a round that covered nothing is honestly incomplete");
-    assert.equal(zeroBudgetAccelerationFirst.prunedComplete, false, "a round that walked no pages never complete-prunes");
+    assert.equal(
+      zeroBudgetAccelerationFirst.prunedComplete,
+      false,
+      "a round that walked no pages never complete-prunes"
+    );
   })
 );

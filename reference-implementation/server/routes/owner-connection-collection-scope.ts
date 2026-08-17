@@ -58,10 +58,7 @@ export interface MountOwnerConnectionCollectionScopeContext {
    * boundary it was measured against. Optional: a host without the read model
    * warmed simply has nothing to declassify.
    */
-  declassifyCollectionProof?: (input: {
-    connectorInstanceId: string;
-    reason: string;
-  }) => Promise<void> | void;
+  declassifyCollectionProof?: (input: { connectorInstanceId: string; reason: string }) => Promise<void> | void;
   getOwnerTokenSubjectId: (req: unknown) => string;
   getSyncState: (
     target: unknown,

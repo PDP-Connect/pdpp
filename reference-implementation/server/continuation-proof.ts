@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import type { RuntimeContinuationFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
+import type { RuntimeContinuationFact } from "@pdpp/collector-runtime/connector-runtime-protocol";
 import type { CoverageAxis } from "./connector-coverage-policy.ts";
 import type { CollectionReportEntry, ConnectorRunSummary, RuntimeCollectionFact } from "./ref-control.ts";
 

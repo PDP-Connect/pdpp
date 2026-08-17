@@ -31,12 +31,12 @@ const baseManifest = {
       name: "items",
       primary_key: ["id"],
       query: { search: { lexical_fields: ["subject"] } },
-      selection: { fields: true, resources: true },
       schema: {
         properties: { id: { type: "string" }, subject: { type: "string" } },
         required: ["id", "subject"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
       semantics: "append_only",
     },
   ],

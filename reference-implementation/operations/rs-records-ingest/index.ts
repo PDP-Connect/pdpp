@@ -114,12 +114,6 @@ export interface RecordsIngestDependencies {
     connectorInstanceId: string | null,
     record: Record<string, unknown>
   ) => unknown | Promise<unknown>;
-  insertOrReplayRejection?: (input: InsertOrReplayRejectionInput) => RejectionReceipt | Promise<RejectionReceipt>;
-  markAcceptedRecordRejectionsStale?: (input: MarkAcceptedRecordRejectionStaleInput) => unknown | Promise<unknown>;
-  resolveAdmittedConnectorInstance?: (
-    connectorId: string,
-    requestedConnectorInstanceId: string | null
-  ) => string | null | Promise<string | null>;
   /**
    * Optional host optimization for a single NDJSON request. The input is in
    * line order and contains only successfully parsed records. Each result is
@@ -132,6 +126,12 @@ export interface RecordsIngestDependencies {
     connectorInstanceId: string | null,
     records: readonly Record<string, unknown>[]
   ) => readonly (string | IngestLineFailure | null)[] | Promise<readonly (string | IngestLineFailure | null)[]>;
+  insertOrReplayRejection?: (input: InsertOrReplayRejectionInput) => RejectionReceipt | Promise<RejectionReceipt>;
+  markAcceptedRecordRejectionsStale?: (input: MarkAcceptedRecordRejectionStaleInput) => unknown | Promise<unknown>;
+  resolveAdmittedConnectorInstance?: (
+    connectorId: string,
+    requestedConnectorInstanceId: string | null
+  ) => string | null | Promise<string | null>;
 }
 
 export interface RecordsIngestEnvelope {
@@ -235,12 +235,7 @@ export class RecordsIngestSystemicFailureError extends Error {
   readonly code: "ingest_batch_storage_error";
   readonly retryableFailureCount: number;
 
-  constructor(
-    streamName: string,
-    retryableFailureCount: number,
-    submittedCount: number,
-    options?: ErrorOptions
-  ) {
+  constructor(streamName: string, retryableFailureCount: number, submittedCount: number, options?: ErrorOptions) {
     super(
       `Ingest for stream '${streamName}' had ${retryableFailureCount} systemic/retryable record failure(s) out of ${submittedCount} submitted; retry the batch`,
       options

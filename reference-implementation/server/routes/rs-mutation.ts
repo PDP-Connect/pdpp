@@ -433,6 +433,13 @@ export interface MountRsMutationContext {
     record: unknown,
     options?: { requireConnectionAdmission?: boolean; runId?: string | null }
   ) => Promise<unknown>;
+  /** Optional common-path batch capability; hosts without it use the ordered fallback. */
+  readonly ingestRecords?: (
+    target: StorageTargetLike,
+    records: readonly unknown[],
+    afterRecord?: (record: unknown, outcome: unknown) => Promise<void>,
+    options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+  ) => Promise<readonly unknown[]>;
   readonly insertOrReplayRecordRejection?: (input: {
     auditActorId: string;
     auditActorType: string;
@@ -446,13 +453,6 @@ export interface MountRsMutationContext {
     runId?: string | null;
     stream: string;
   }) => Promise<RejectionReceipt> | RejectionReceipt;
-  /** Optional common-path batch capability; hosts without it use the ordered fallback. */
-  readonly ingestRecords?: (
-    target: StorageTargetLike,
-    records: readonly unknown[],
-    afterRecord?: (record: unknown, outcome: unknown) => Promise<void>,
-    options?: { requireConnectionAdmission?: boolean; runId?: string | null }
-  ) => Promise<readonly unknown[]>;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
   // ref-connectors.ts) invalidates the dashboard/Sources/Syncs summary cache
@@ -1242,14 +1242,12 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         },
         ...(ingestRecords
           ? {
-              ingestRecords: async function ingestRecordsForRoute(
+              async ingestRecords(
                 cid: string,
                 cin: string | null,
                 records: readonly Record<string, unknown>[]
               ): Promise<readonly (IngestLineFailure | null)[]> {
-                const namespace =
-                  storageNamespace ??
-                  (await resolveAdmittedNamespace(cid, cin));
+                const namespace = storageNamespace ?? (await resolveAdmittedNamespace(cid, cin));
                 // biome-ignore lint/suspicious/noUnnecessaryConditions: Express route params are nullable at runtime even though the local adapter type narrows them.
                 const streamName = req.params.stream ?? "";
                 const getLatestAcquisitionBatch = ctx.getLatestAcquisitionBatchForConnection;

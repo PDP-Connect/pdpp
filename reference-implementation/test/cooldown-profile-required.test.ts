@@ -38,9 +38,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-
-import { registerConnector } from "../server/auth.ts";
-import { closeDb, initDb } from "../server/db.ts";
 import {
   assertCooldownProfile,
   computeConnectionSourcePressureCooldown,
@@ -48,6 +45,8 @@ import {
   DEFAULT_COOLDOWN_PROFILE,
   RI_MAX_COOLDOWN_CYCLES_CEILING,
 } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import { registerConnector } from "../server/auth.ts";
+import { closeDb, initDb } from "../server/db.ts";
 
 const TOP_LEVEL_REGEX_1 = /requires a per-provider profile\.maxCooldownCycles/;
 const TOP_LEVEL_REGEX_2 = /\bcomputeSourcePressureCooldown\b/;
@@ -259,13 +258,9 @@ test(
     // consecutiveCooldownCycles at the ceiling STILL escalates — the maxed-out
     // budget delays escalation, it does not disable it.
     const deadGaps = [{ attemptCount: RI_MAX_COOLDOWN_CYCLES_CEILING + 10, reason: "upstream_pressure" }];
-    const decision = await computeConnectionSourcePressureCooldown(
-      "chatgpt",
-      deadGaps,
-      1000,
-      Date.now() - 1_000_000,
-      { consecutiveCooldownCycles: RI_MAX_COOLDOWN_CYCLES_CEILING }
-    );
+    const decision = await computeConnectionSourcePressureCooldown("chatgpt", deadGaps, 1000, Date.now() - 1_000_000, {
+      consecutiveCooldownCycles: RI_MAX_COOLDOWN_CYCLES_CEILING,
+    });
     assert.equal(
       decision.recommendedHealthState,
       "needs_attention",

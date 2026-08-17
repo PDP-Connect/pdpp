@@ -33,13 +33,13 @@ import {
   referenceQueries,
   writeTransaction,
 } from "../../lib/db.ts";
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../owner-auth.ts";
 import {
   getStorageBackendKind,
   isPostgresStorageBackend,
   postgresQuery,
   withPostgresTransaction,
 } from "../postgres-storage.ts";
-import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../owner-auth.ts";
 import { makeDefaultAccountConnectorInstanceId } from "./connector-instance-store.ts";
 
 // ─── Domain records (public, semantic) ──────────────────────────────────────

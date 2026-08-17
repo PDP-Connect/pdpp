@@ -2055,7 +2055,10 @@ rl.on('line', (line) => {
         display: { name: "Event Spine Multi-Stream Checkpoint Test" },
         protocol_version: "0.1.0",
         publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
-        source: { id: "https://registry.pdpp.dev/connectors/event-spine-multi-stream-checkpoint-test", kind: "connector" },
+        source: {
+          id: "https://registry.pdpp.dev/connectors/event-spine-multi-stream-checkpoint-test",
+          kind: "connector",
+        },
         streams: manifest.streams,
       },
     });

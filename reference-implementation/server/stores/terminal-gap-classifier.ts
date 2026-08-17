@@ -244,7 +244,7 @@ export async function terminalGapProfileForConnector(connectorId: string): Promi
     (manifest as { capabilities?: { refresh_policy?: { max_recovery_attempts?: unknown } } } | null)?.capabilities
       ?.refresh_policy?.max_recovery_attempts
   );
-  return declared !== null ? { maxRecoveryAttempts: declared } : null;
+  return declared === null ? null : { maxRecoveryAttempts: declared };
 }
 
 /**

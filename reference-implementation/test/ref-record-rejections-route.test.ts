@@ -12,8 +12,8 @@ type MountApp = Parameters<typeof mountRefRecordRejections>[0];
 
 interface FakeResponse {
   body: unknown;
-  headers: Record<string, string>;
   header: (name: string, value: string) => FakeResponse;
+  headers: Record<string, string>;
   json: (body: unknown) => unknown;
   status: (code: number) => FakeResponse;
   statusCode: number | null;
@@ -60,11 +60,11 @@ function makeApp(): { app: MountApp; routes: Record<string, MountedRoute> } {
 function makeResponse(): FakeResponse {
   const response: FakeResponse = {
     body: undefined,
-    headers: {},
     header(name, value) {
       response.headers[name.toLowerCase()] = value;
       return response;
     },
+    headers: {},
     json(body) {
       response.body = body;
       return body;

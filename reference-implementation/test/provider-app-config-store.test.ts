@@ -82,7 +82,10 @@ test(
     assert.ok(row, "row exists after set");
     assert.ok(row.sealed_value.startsWith("v1:"), "non-secret value is sealed, not stored as plaintext");
     assert.ok(!row.sealed_value.includes(CLIENT_ID_VALUE), "at-rest column must not contain the plaintext value");
-    assert.equal(await store.get({ identityGroup: "shared-google-oauth-app", logicalKey: "client_id" }), CLIENT_ID_VALUE);
+    assert.equal(
+      await store.get({ identityGroup: "shared-google-oauth-app", logicalKey: "client_id" }),
+      CLIENT_ID_VALUE
+    );
   })
 );
 
