@@ -12,7 +12,7 @@ import { getMDXComponents } from "@/components/mdx.tsx";
 import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
 import { Text } from "@/components/pdpp-concept/text.tsx";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
-import { REFERENCE_MATERIALS_SLUGS } from "@/lib/spec-nav-slugs.ts";
+import { MAINTAINER_DOC_SLUGS } from "@/lib/spec-nav-slugs.ts";
 
 interface DocsPageProps {
   params: Promise<{
@@ -135,27 +135,25 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   // on (SEO/GEO standard MUST #1.5: robots directives must match the approved
   // access policy; this page was never meant to be a public spec page).
   //
-  // reference-materials.md is a reference index for implementation notes and
-  // design rationale — useful for maintainers but not part of the normative spec.
-  // It is noindex'd so it remains accessible by URL but is not crawled or ranked.
+  // The maintainer documents — guides, design rationale, architectural context,
+  // deferred concerns, open questions and the superseded Data Query API — are
+  // noindex'd so they stay reachable by URL but never rank against the
+  // specification. They are listed only on /maintainers, which is itself
+  // unlinked and noindex.
   //
-  // The documents that index LINKS TO get the same treatment. Noindexing only
-  // the index while leaving implementation notes, change tracking, auth design
-  // and reference topology fully indexable meant the four pages this move was
-  // meant to take out of the public surface were still crawlable and ranked —
-  // reachable directly from search even though nothing in the rail pointed at
-  // them. They stay live at their URLs; they just stop competing with the spec.
+  // Noindexing an index page while leaving the documents it links fully
+  // indexable is the defect this avoids: the pages meant to be off the public
+  // surface stayed crawlable and ranked, reachable from search even though
+  // nothing in the rail pointed at them.
   const isInternalNotesPage = page.path === "README.md";
-  const isReferenceMaterialsPage =
-    page.path === "reference-materials.md" ||
-    REFERENCE_MATERIALS_SLUGS.some((materialSlug) => page.path === `${materialSlug}.md`);
+  const isMaintainerDoc = MAINTAINER_DOC_SLUGS.some((slug) => page.path === `${slug}.md`);
   const canonicalUrl = isRootSlug ? "/specification" : page.url;
 
   return {
     alternates: { canonical: canonicalUrl },
     description: page.data.description,
     openGraph: { url: canonicalUrl },
-    robots: isInternalNotesPage || isReferenceMaterialsPage ? { follow: false, index: false } : undefined,
+    robots: isInternalNotesPage || isMaintainerDoc ? { follow: false, index: false } : undefined,
     title: page.data.title,
   };
 }

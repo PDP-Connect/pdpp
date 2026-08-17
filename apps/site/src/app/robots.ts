@@ -3,7 +3,7 @@
 
 import type { MetadataRoute } from "next";
 import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
-import { REFERENCE_MATERIALS_SLUGS } from "@/lib/spec-nav-slugs.ts";
+import { MAINTAINER_DOC_SLUGS, maintainersRoute } from "@/lib/spec-nav-slugs.ts";
 
 // SEO/GEO standard MUST #1.5: robots.txt, page-level robots directives, and
 // application responses must agree with the approved access policy.
@@ -18,24 +18,24 @@ import { REFERENCE_MATERIALS_SLUGS } from "@/lib/spec-nav-slugs.ts";
 // already `noindex, nofollow` in their own layouts), /sandbox (mock demo
 // data, already `noindex, nofollow` in its layout), /specification/README
 // (contributor-facing authoring notes, already `noindex, nofollow` in its own
-// generateMetadata), and /specification/reference-materials (reference index
-// not part of the normative spec, already `noindex, nofollow` in its own
-// generateMetadata) are disallowed here too, so the crawl policy holds even
-// for a crawler that ignores meta robots.
+// generateMetadata), and /maintainers with every document it lists (unlisted
+// non-normative material, already `noindex, nofollow` in their own metadata)
+// are disallowed here too, so the crawl policy holds even for a crawler that
+// ignores meta robots.
 export default function robots(): MetadataRoute.Robots {
   return {
     rules: {
       allow: "/",
-      // The four reference materials are disallowed alongside their index: the
-      // index alone was disallowed while the documents it links stayed open,
-      // so a crawler that never saw the index still indexed all four.
+      // Each maintainer document is disallowed alongside the index that lists
+      // them: disallowing the index alone left the documents open, so a crawler
+      // that never saw the index still indexed every one of them.
       disallow: [
         "/design",
         "/palette",
         "/sandbox",
         "/specification/README",
-        "/specification/reference-materials",
-        ...REFERENCE_MATERIALS_SLUGS.map((slug) => `/specification/${slug}`),
+        maintainersRoute,
+        ...MAINTAINER_DOC_SLUGS.map((slug) => `/specification/${slug}`),
       ],
       userAgent: "*",
     },
