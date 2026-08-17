@@ -14,7 +14,7 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
-import type { RuntimeContinuationFact } from "@pdpp/collector-runtime/connector-runtime-protocol";
+import type { RuntimeContinuationFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { isNullish } from "../lib/nullish.ts";
 import type { SpineSummary } from "../lib/spine.ts";

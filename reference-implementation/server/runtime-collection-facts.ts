@@ -10,7 +10,7 @@
 // DB-bound reader that *fetches* the payloads stays in `ref-control.ts` and calls
 // `parseCollectionRatePayload` from here.
 
-import { optionalRuntimeScopeFields, readRuntimeSkipFact } from "@pdpp/collector-runtime/connector-runtime-protocol";
+import { optionalRuntimeScopeFields, readRuntimeSkipFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import type { CollectionRateSnapshot } from "../runtime/connection-health.ts";
 import type { RuntimeCollectionFact, RuntimeCollectionFacts } from "./ref-control.ts";
 

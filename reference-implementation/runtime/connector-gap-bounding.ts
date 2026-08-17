@@ -39,7 +39,7 @@ import {
   projectRuntimeSkip,
   type RuntimeContinuationFact,
   selectAuthoritativeSkip,
-} from "@pdpp/collector-runtime/connector-runtime-protocol";
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { isNullish } from "../lib/nullish.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 
