@@ -375,7 +375,17 @@ async function applyShippedManifest(
     log(`[manifest-reconcile] updated ${connectorId} from ${entryName}`);
     return { ok: true };
   } catch (err) {
-    log(`[manifest-reconcile] update failed for ${connectorId}: ${errorMessage(err)}`);
+    // Include the validation detail, not just the error code. A bare
+    // "invalid_request" names the class of failure and nothing about which
+    // field caused it, so a manifest that the registry rejects gives an
+    // operator no way to fix it -- diagnosing one such rejection on
+    // 2026-08-17 took several build-and-deploy cycles of guessing.
+    const detail = (err as { param?: unknown })?.param;
+    log(
+      `[manifest-reconcile] update failed for ${connectorId}: ${errorMessage(err)}` +
+        (detail ? ` (param: ${String(detail)})` : "") +
+        (err instanceof Error && err.message ? ` -- ${err.message}` : "")
+    );
     return { ok: false };
   }
 }

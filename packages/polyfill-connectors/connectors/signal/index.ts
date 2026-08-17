@@ -632,7 +632,7 @@ function uploadAttachmentBlob(args: {
     rsUrl,
   });
   return uploader({
-    connectorId: "https://registry.pdpp.dev/connectors/signal",
+    connectorId: "https://registry.pdpp.org/connectors/signal",
     content: [args.bytes],
     mimeType: args.mimeType,
     recordKey: args.recordKey,
