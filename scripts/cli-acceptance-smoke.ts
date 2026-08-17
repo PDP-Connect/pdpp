@@ -113,7 +113,9 @@ async function runLocalConnectSmoke(): Promise<void> {
       import(referenceServerEntry) as Promise<{
         startServer: (options: Record<string, unknown>) => Promise<ReferenceServerHandle>;
       }>,
-      readFile(join(repoRoot, "reference-implementation/manifests/northstar-hr.json"), "utf8").then(JSON.parse),
+      readFile(join(repoRoot, "reference-implementation/fixtures/seed-manifests/northstar-hr.json"), "utf8").then(
+        JSON.parse
+      ),
     ]);
     server = await startServer({
       asPort: 0,

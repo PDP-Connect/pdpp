@@ -104,7 +104,7 @@ export interface DataLoadViolation {
   snippet: string;
 }
 
-const MANIFEST_ROOTS = ["reference-implementation/manifests", "packages/polyfill-connectors/manifests"];
+const MANIFEST_ROOTS = ["reference-implementation/fixtures/seed-manifests", "packages/polyfill-connectors/manifests"];
 
 /**
  * The complete, hand-maintained allowlist of RI-owned policy resources a

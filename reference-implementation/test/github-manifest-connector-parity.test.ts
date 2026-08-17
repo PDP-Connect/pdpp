@@ -6,7 +6,7 @@
  *
  * Two real failure modes this guards against:
  *
- *   1. Reference fixture manifest at `reference-implementation/manifests/github.json`
+ *   1. Reference fixture manifest at `reference-implementation/fixtures/seed-manifests/github.json`
  *      advertises streams that no GitHub connector (real or seed) actually emits.
  *      That is the bug from `ri-github-stream-contract-v1`: the fixture declared
  *      `commits` and the seed connector emitted 8 fake `gh:commit:abc*` records.
@@ -70,7 +70,7 @@ function manifestStreamNames(manifestPath: string): string[] {
 }
 
 test("reference fixture manifest only advertises streams the seed connector emits", () => {
-  const fixtureManifestPath = join(REPO_ROOT, "reference-implementation", "manifests", "github.json");
+  const fixtureManifestPath = join(REPO_ROOT, "reference-implementation", "fixtures", "seed-manifests", "github.json");
   const seedPath = join(REPO_ROOT, "reference-implementation", "connectors", "seed", "index.ts");
   const fixtureStreams = manifestStreamNames(fixtureManifestPath);
 
@@ -146,7 +146,7 @@ test("polyfill manifest only advertises streams the GitHub connector has schemas
 });
 
 test("reference fixture and shipped polyfill manifests share the same connector identity", () => {
-  const fixturePath = join(REPO_ROOT, "reference-implementation", "manifests", "github.json");
+  const fixturePath = join(REPO_ROOT, "reference-implementation", "fixtures", "seed-manifests", "github.json");
   const polyfillPath = join(REPO_ROOT, "packages", "polyfill-connectors", "manifests", "github.json");
   const fixture = readJson(fixturePath);
   const polyfill = readJson(polyfillPath);
@@ -170,7 +170,7 @@ const RETIRED_GITHUB_STREAM_NAMES = ["commits", "starred_repos"];
 
 test("no shipped GitHub manifest re-declares a retired phantom stream", () => {
   const manifestPaths = [
-    join(REPO_ROOT, "reference-implementation", "manifests", "github.json"),
+    join(REPO_ROOT, "reference-implementation", "fixtures", "seed-manifests", "github.json"),
     join(REPO_ROOT, "packages", "polyfill-connectors", "manifests", "github.json"),
   ];
   for (const manifestPath of manifestPaths) {

@@ -136,7 +136,7 @@ function escapeHtml(value: unknown): string {
 
 // Default draft values shipped with the example app. These match the
 // reference Spotify connector manifest
-// (`reference-implementation/manifests/spotify.json`) so a developer can run
+// (`reference-implementation/fixtures/seed-manifests/spotify.json`) so a developer can run
 // the example against a local reference stack (after registering that
 // manifest) and stage a PAR request, approve it, and query records without
 // having to edit the form. Exported so tests can prove the defaults remain

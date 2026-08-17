@@ -116,7 +116,7 @@ function loadSpotifyManifest(): ConnectorManifest {
 }
 
 function loadNorthstarManifest(): NorthstarManifest {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests", "northstar-hr.json"), "utf8"));
+  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests", "northstar-hr.json"), "utf8"));
 }
 
 async function registerConnector(asUrl: string, manifest: ConnectorManifest): Promise<void> {

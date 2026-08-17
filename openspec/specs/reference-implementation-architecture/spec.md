@@ -4070,7 +4070,7 @@ When reconciliation observes a structural manifest diff that is NOT this referen
 - **AND** SHALL NOT delete any records for that `connector_id`
 
 #### Scenario: A polyfill-only connector with no reference-fixture collision is reconciled
-- **WHEN** a connector's `connector_id` has no corresponding manifest under `reference-implementation/manifests/`, and the shipped polyfill manifest differs from the persisted manifest
+- **WHEN** a connector's `connector_id` has no corresponding manifest under `reference-implementation/fixtures/seed-manifests/`, and the shipped polyfill manifest differs from the persisted manifest
 - **THEN** reconciliation SHALL re-register the new manifest
 - **AND** SHALL NOT delete any records for that `connector_id`
 

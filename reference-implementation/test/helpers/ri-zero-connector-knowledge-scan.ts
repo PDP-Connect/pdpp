@@ -49,7 +49,7 @@ export interface Violation {
 
 const PRODUCTION_SCAN_ROOTS = ["cli", "lib", "operations", "runtime", "scripts", "server"];
 
-const MANIFEST_ROOTS = ["reference-implementation/manifests", "packages/polyfill-connectors/manifests"];
+const MANIFEST_ROOTS = ["reference-implementation/fixtures/seed-manifests", "packages/polyfill-connectors/manifests"];
 
 /**
  * `packages/polyfill-connectors/src/` is the connector-agnostic SHARED
