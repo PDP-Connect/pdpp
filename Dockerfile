@@ -340,7 +340,13 @@ COPY --from=sigtop-builder /build/SOURCE_URL /usr/local/share/sigtop/SOURCE_URL
 RUN apt-get update && apt-get install -y --no-install-recommends libsecret-1-0 && \
     rm -rf /var/lib/apt/lists/* && \
     chmod +x /usr/local/bin/sigtop && \
-    /usr/local/bin/sigtop -v
+    # sigtop has no version/-v subcommand; invoking it bare prints usage and
+    # exits non-zero. That still proves the binary loads its shared libraries
+    # and parses arguments, which is exactly what this check is for -- a
+    # GLIBC or libsecret mismatch fails here instead of on the owner's first
+    # Signal sync. Grep for the usage banner so a genuine load failure (which
+    # prints a linker error, not usage) is still fatal.
+    /usr/local/bin/sigtop 2>&1 | grep -q 'usage' || (echo 'sigtop failed to execute' >&2; exit 1)
 
 # Verify slackdump is executable and functional
 RUN chmod +x /usr/local/bin/slackdump && /usr/local/bin/slackdump version
