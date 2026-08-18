@@ -7764,6 +7764,12 @@ export async function startServer(opts: ServerOpts = {}) {
   const connectorMaintenanceSweep = createResumableConnectorMaintenanceSweep({
     evidenceSweepMaxDurationMs: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS,
     evidenceSweepPageSize: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
+    onNoProgressAlert: ({ consecutiveNoProgressPasses, eligibleBacklog }) => {
+      logger.warn?.(
+        { consecutiveNoProgressPasses, eligibleBacklog },
+        "connector-maintenance sweep: dirty backlog is not shrinking across consecutive rounds"
+      );
+    },
     onPhaseError: (phase, err) => {
       logger.warn?.(
         { err: err instanceof Error ? err.message : String(err), phase },
