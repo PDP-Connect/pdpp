@@ -522,3 +522,66 @@ Related: `connector-sidecar-packaging-2026-08-17.md` (incident 5 is the same
 "verified where it was built, not where it runs" shape) and
 `summary-evidence-projection-controller-2026-08-18.md`, whose subject is the
 sweep that produced incident 2.
+
+---
+
+## Addendum: the wider class is failures nothing reports
+
+Added 2026-08-18 after the note was applied to code outside this repo.
+
+An engineer migrating this instance's Postgres read the draft and found the
+same defect in their own verification gate within five minutes:
+
+```bash
+tgt_rows=$(psql -Atqc "SELECT count(*) FROM ${tbl};" 2>/dev/null || echo "ERROR")
+```
+
+That is `[object Object]` in bash. The gate fails correctly and exits non-zero
+while collapsing permission denied, a missing table, a dropped connection, and
+genuine data loss into one string. On migration night that is the difference
+between a five-minute fix and a torn-down restore. It appeared twice, and the
+fix was the same: capture stderr and log it before failing.
+
+Worth recording because it says the rule is not TypeScript-specific and not
+about error objects. It is about any transform on the way out of a failure
+path that keeps the fact of failure and discards which failure.
+
+### The count that reframes it
+
+That engineer's session produced four significant findings, and only one was a
+thing breaking loudly:
+
+- Postgres crash-recovering behind `RestartCount: 0` and green healthchecks
+- meilisearch crash-looping behind a healthcheck that only probed its own port
+- promtail dying on a full disk without telling anyone
+- `pg_dump` exiting 0 while producing an unrestorable dump
+
+Four of five were *nothing reported it*, not *it broke*. Our five incidents
+were the narrower shape — something reported a failure and destroyed its cause.
+Both belong to one family, and the wider one is the more dangerous half,
+because the narrow shape at least leaves a row to investigate.
+
+So the invariant needs a second clause. The first is already stated above: a
+failure that crosses a durability boundary must carry a code, a human cause,
+and a PII-safe detail. The second: **a component whose failure is survivable
+must still be observable — a supervisor that restarts, a probe that recovers,
+or a process that degrades silently is not thereby healthy, and something must
+say so.** `RestartCount: 0` is the canonical false negative: the container
+never died, so every container-level signal stays green while the process
+inside it crashed and recovered.
+
+This is why the missing logger matters more than its size suggests. Nineteen
+`console.*` calls in the server and none carrying `run_id` is not merely
+inconvenient; it means the only detection layer for an in-process crash is the
+database's own log, which on this host was reaching no aggregator at all —
+promtail scrapes the systemd journal and has neither docker discovery nor
+socket permission. The blind spot was total, not partial, and nothing reported
+that either.
+
+### What this does not change
+
+The remediation scope stays three sites. The measurement in this note stands:
+439 catches, 97% benign, the `[object Object]` archetype with no surviving
+siblings. Adding a second clause to the invariant does not widen the migration
+— it widens what counts as evidence when deciding whether a component is
+healthy, which is a monitoring question, not a refactor.
