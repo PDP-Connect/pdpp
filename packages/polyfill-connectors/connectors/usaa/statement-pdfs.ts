@@ -26,7 +26,7 @@
 
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Locator, Page } from "playwright";
+import type { BrowserContext, Locator, Page } from "playwright";
 import {
   attachBodyResponseQueue,
   type BodyResponseDiagnostics,
@@ -36,6 +36,7 @@ import {
 } from "../../src/browser-artifact-response.ts";
 import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
+import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { readPlaywrightDownloadBuffer } from "../../src/playwright-download.ts";
 import {
   extractStatementContentFingerprint,
@@ -161,6 +162,45 @@ function attachPdfResponseQueue(page: Page): BodyResponseQueue {
 }
 
 // ─── Download orchestration ──────────────────────────────────────────────
+
+/**
+ * Diagnostic-only instrumentation for the `pdf_download_timeout` hypothesis:
+ * the Download menuitem may open a NEW page/tab that `attachDownloadQueue`
+ * (page-scoped, see download-queue.ts:14-24) and `attachPdfResponseQueue`
+ * cannot see. `context.on('page', ...)` fires for every new page/popup
+ * created anywhere in the context, regardless of which page's click
+ * triggered it — this is the direct, minimal way to confirm or rule out the
+ * hypothesis from a single captured run, without guessing from a trace's
+ * screenshot timeline. Best-effort and capture-gated: throws never reach the
+ * caller, and with no CaptureSession this records nothing and costs nothing.
+ */
+function attachNewPageWatcher(
+  context: BrowserContext | undefined,
+  capture: CaptureSession | null | undefined,
+  labelPrefix: string
+): { detach: () => void } {
+  if (!(context && capture)) {
+    return { detach: (): void => undefined };
+  }
+  let seq = 0;
+  const onPage = (newPage: Page): void => {
+    seq += 1;
+    const label = `${labelPrefix}-new-page-${seq}`;
+    // Fire-and-forget: a popup page can be short-lived (e.g. a PDF viewer
+    // tab that immediately triggers its own download and closes), so this
+    // must not block the click/consume race in the caller.
+    capture.captureDom(newPage, label).catch((): undefined => undefined);
+    process.stderr.write(
+      `[usaa-statements] new page/popup observed during ${labelPrefix}: url=${newPage.url()} label=${label}\n`
+    );
+  };
+  context.on("page", onPage);
+  return {
+    detach(): void {
+      context.off("page", onPage);
+    },
+  };
+}
 
 /**
  * Locate the per-row "Options" trigger. USAA's documents table renders as a
@@ -351,10 +391,22 @@ async function noDownloadMenuitemFailure(page: Page): Promise<DownloadFail> {
 }
 
 /** Click the Download menuitem and consume the resulting download. */
-async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<DownloadResult> {
+async function clickDownloadAndConsume(
+  page: Page,
+  dlItem: Locator,
+  diagCapture?: { capture: CaptureSession | null | undefined; label: string }
+): Promise<DownloadResult> {
   const downloadQueue = attachDownloadQueue(page);
   const responseQueue = attachPdfResponseQueue(page);
   await responseQueue.ready;
+  // Diagnostic-only: DOM snapshot immediately before the click that is
+  // hypothesized to open a page the page-scoped download/response queues
+  // above cannot observe. Paired with attachNewPageWatcher (armed by the
+  // caller for the whole batch) this is the direct evidence for whether
+  // the Download menuitem opens a new page/tab. No-op without capture.
+  if (diagCapture?.capture) {
+    await diagCapture.capture.captureDom(page, `${diagCapture.label}-pre-click`).catch((): undefined => undefined);
+  }
   try {
     await dlItem.click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
@@ -401,7 +453,17 @@ async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<Dow
  *   { ok: true, buffer, suggestedFilename } on success
  *   { ok: false, reason, diag }            on failure
  */
-async function downloadStatementFromRow({ page, rowIndex }: { page: Page; rowIndex: number }): Promise<DownloadResult> {
+async function downloadStatementFromRow({
+  page,
+  rowIndex,
+  capture,
+  captureLabel,
+}: {
+  page: Page;
+  rowIndex: number;
+  capture?: CaptureSession | null | undefined;
+  captureLabel?: string | undefined;
+}): Promise<DownloadResult> {
   const row = page.locator("tbody tr").nth(rowIndex);
   if (!(await row.count().catch(() => 0))) {
     return { ok: false, reason: "row_missing" };
@@ -424,7 +486,7 @@ async function downloadStatementFromRow({ page, rowIndex }: { page: Page; rowInd
     return await noDownloadMenuitemFailure(page);
   }
 
-  return await clickDownloadAndConsume(page, dlItem);
+  return await clickDownloadAndConsume(page, dlItem, captureLabel ? { capture, label: captureLabel } : undefined);
 }
 
 /**
@@ -516,7 +578,8 @@ async function hydrateOneStatement(
   statement: StatementRow,
   total: number,
   hydrated: HydratedStatement[],
-  { onProgress, onSkip }: HydrateCallbacks
+  { onProgress, onSkip }: HydrateCallbacks,
+  capture?: CaptureSession | null
 ): Promise<void> {
   if (onProgress) {
     onProgress({
@@ -528,6 +591,8 @@ async function hydrateOneStatement(
   const result = await downloadStatementFromRow({
     page,
     rowIndex: statement.rowIndex,
+    capture,
+    captureLabel: capture ? `statement-download-row-${statement.rowIndex}` : undefined,
   });
   if (!result.ok) {
     if (onSkip) {
@@ -557,6 +622,8 @@ export async function hydrateStatementPdfs({
   statements,
   onProgress,
   onSkip,
+  context,
+  capture,
 }: {
   page: Page;
   statements: StatementRow[];
@@ -566,6 +633,16 @@ export async function hydrateStatementPdfs({
     reason: DownloadFailReason;
     diag: StatementDownloadDiagnostic | null;
   }) => void;
+  /**
+   * Optional. When supplied together with `capture`, arms a context-level
+   * `page` event watcher for the whole hydration batch — the direct test of
+   * the pdf_download_timeout hypothesis (does the Download menuitem open a
+   * new page the page-scoped download/response queues can't see). Neither
+   * changes collection behavior; both are diagnostic-only and no-op unless
+   * PDPP_CAPTURE_FIXTURES=1 / PDPP_CAPTURE_ON_FAILURE=1 armed `capture`.
+   */
+  context?: BrowserContext | undefined;
+  capture?: CaptureSession | null | undefined;
 }): Promise<HydratedStatement[]> {
   const hydrated: HydratedStatement[] = [];
   if (!statements.length) {
@@ -573,13 +650,25 @@ export async function hydrateStatementPdfs({
   }
   await ensureOnDocumentsPage(page);
 
-  for (const s of statements) {
-    await hydrateOneStatement(page, s, statements.length, hydrated, {
-      onProgress,
-      onSkip,
-    });
-    // Small jitter between rows so we don't visibly hammer USAA's SPA.
-    await sleep(ROW_JITTER_MS);
+  const newPageWatcher = attachNewPageWatcher(context, capture, "statement-hydration");
+  try {
+    for (const s of statements) {
+      await hydrateOneStatement(
+        page,
+        s,
+        statements.length,
+        hydrated,
+        {
+          onProgress,
+          onSkip,
+        },
+        capture
+      );
+      // Small jitter between rows so we don't visibly hammer USAA's SPA.
+      await sleep(ROW_JITTER_MS);
+    }
+  } finally {
+    newPageWatcher.detach();
   }
   return hydrated;
 }
