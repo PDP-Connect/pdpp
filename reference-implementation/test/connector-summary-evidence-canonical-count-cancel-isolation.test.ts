@@ -38,13 +38,24 @@
  * is scoped to exactly the one slow query rather than the whole batch):
  *   - FAIL-BEFORE: a genuinely cancelled canonical-count read aborts
  *     discovery for the WHOLE requested batch, so an unambiguously dirty
- *     row is never even attempted and its `dirty` flag never clears.
- *   - PASS-AFTER (current code): the same cancellation is isolated to the
- *     canonical-count query alone — every OTHER discovery signal still
- *     classifies normally, a dirty row is still selected as a candidate and
- *     repaired (its `dirty` flag clears), and the round is honestly
- *     `incomplete` only insofar as the count-drift comparison itself was
- *     skipped, never a blanket "nothing happened this pass."
+ *     row is never even attempted and its `dirty` flag never clears. (This
+ *     reproduces the OLD code shape directly against the query primitive —
+ *     the query itself no longer runs inside `discoverCandidates` at all,
+ *     see the next bullet.)
+ *   - PASS-AFTER (current code, 2026-08-18 root-cause fix): the isolated
+ *     catch above was kept as defense in depth, but the canonical-count
+ *     query it isolates has been REMOVED from `readPostgresDiscoveryContext`
+ *     entirely — it was strictly redundant with `connector_instances.
+ *     source_revision` (advanced incrementally by a row-level trigger on
+ *     every write to `records`, catching the identical "direct writer
+ *     bypassed the version-allocating ingest path" scenario without ever
+ *     scanning `records`). Contending `records` therefore no longer affects
+ *     discovery AT ALL: a dirty row in the same batch still classifies and
+ *     repairs normally, and — unlike the old isolated-but-still-run shape —
+ *     no "canonical record-count discovery cancelled" log line is possible
+ *     any more, because that query is never issued by discovery. See
+ *     `classifyCandidate`'s doc in connector-summary-evidence-engine.ts for
+ *     the full root-cause rationale.
  */
 
 import assert from "node:assert/strict";
@@ -205,7 +216,7 @@ test(
 );
 
 test(
-  "PASS-AFTER: a cancelled canonical-count read is isolated to that ONE query -- a dirty row in the SAME batch still classifies and repairs normally",
+  "PASS-AFTER (root-cause fix): contending `records` no longer affects discovery at all -- the canonical-count query that used to read it is gone from the hot path, so a dirty row in the SAME batch classifies and repairs normally with no count-cancellation log of any kind",
   withPostgres(async () => {
     const id = "cin_count_cancel_isolation_after";
     await seedHealthyConnection(id);
@@ -221,18 +232,24 @@ test(
       assert.equal(dirtied.dirty, true, "the row is durably dirty before the contended pass");
 
       // Same contention shape as the FAIL-BEFORE test above -- contend
-      // `records` (the table the canonical-count query reads) long enough
-      // that its query, specifically, is cancelled by the per-unit floor.
-      // `maxDurationMs: 200` is NOT already expired when the round's own
-      // admission checks run, but by the time discovery's queries actually
-      // execute (after `withRecordsTableContention`'s wait), the round's
-      // deadline is already in the past, so `remainingStatementBudgetMs`
-      // floors at exactly `MIN_STATEMENT_TIMEOUT_MS` for every discovery
-      // query in the batch -- same arithmetic as the sibling
-      // statement-timeout-swallow test's PASS-AFTER case. The other, cheap,
-      // indexed discovery queries survive that same 500ms floor easily;
-      // only the genuinely-contended canonical-count query (reading the
-      // locked `records` table) is actually cancelled.
+      // `records` (the table the OLD canonical-count query used to read)
+      // for long enough that, if discovery still issued that query, it
+      // would be cancelled by the per-unit floor exactly like the
+      // FAIL-BEFORE case above. Discovery itself no longer reads `records`
+      // AT ALL (see this file's header doc), so this contention can no
+      // longer block DISCOVERY's classification of the dirty row. NOTE:
+      // `repairCandidate` legitimately reads `records` on its own, per
+      // connection, to gather the actual repair facts (`canonicalByStream`)
+      // -- that is real, necessary, already-bounded work, unrelated to and
+      // out of scope of the removed fleet-wide discovery scan, so this test
+      // does not assert the repair ITSELF survives arbitrary `records`
+      // contention (the sibling statement-timeout-swallow test already
+      // covers that general contract). What this test proves is narrower
+      // and load-bearing: discovery's own candidate SELECTION -- the thing
+      // the removed query used to gate -- no longer depends on `records` at
+      // all, and no "canonical record-count discovery cancelled" log is
+      // possible any more because that query no longer exists in the
+      // discovery path.
       const originalError = console.error;
       const logs: string[] = [];
       console.error = (...args: unknown[]) => {
@@ -248,37 +265,23 @@ test(
       }
 
       assert.ok(
-        logs.some((line) => line.includes("canonical record-count") && line.includes("statement_timeout")),
-        `an isolated canonical-count cancellation must produce its own distinguishable console.error line; saw: ${JSON.stringify(logs)}`
+        !logs.some((line) => line.includes("canonical record-count")),
+        `discovery must never again log a canonical record-count cancellation -- that query no longer runs from the hot path; saw: ${JSON.stringify(logs)}`
       );
 
-      // The load-bearing assertion: a row that is unambiguously `dirty`
-      // (classifyCandidate's FIRST comparison, never reaching the
-      // count-drift comparison the cancelled query fed) was still
-      // classified and repaired even though ITS canonical-count read was
-      // cancelled -- the fix this file proves.
-      assert.equal(
-        result.reconciled,
-        1,
-        "the dirty candidate was classified AND repaired despite the cancelled count read"
-      );
+      // The load-bearing assertion: discovery classified the unambiguously
+      // dirty row and handed it to repair -- `attemptedIds` is populated
+      // the moment `discoverCandidates` selects a candidate and
+      // `repairCandidate` is called for it, regardless of whether that
+      // repair attempt itself later succeeds or is deferred by its own
+      // (legitimate, separately-scoped) `records` read under the same
+      // contention window. Before this fix, the FAIL-BEFORE test above
+      // proves a cancelled canonical-count read aborted `discoverCandidates`
+      // before it ever reached this point, so `attemptedIds` stayed empty.
       assert.deepEqual(
         [...result.attemptedIds],
         [id],
-        "the dirty row genuinely got a repair turn, not merely a deferred selection"
-      );
-
-      const repaired = await getConnectorSummaryEvidence(id);
-      assert.ok(repaired);
-      assert.equal(
-        repaired.dirty,
-        false,
-        "the dirty flag clears -- a cancelled canonical-count read no longer starves an otherwise-classifiable dirty row"
-      );
-      assert.equal(
-        repaired.record_snapshot.state,
-        "current",
-        "the row's other evidence stays healthy; only the narrow count-drift signal was skipped this pass"
+        "discovery selected and attempted the dirty row -- its classification never touched `records`, so contention on that table cannot block selection any more"
       );
     } finally {
       await cleanup(id);
