@@ -668,7 +668,8 @@ function makeDialogNotOpenPage(callOrder: string[]): Page {
         };
       }
       // Every other locator (the dialog select, the unexpected-shape
-      // dialog probe) reports not found.
+      // dialog probe) reports not found — the select never renders, so the
+      // bounded wait times out exactly like a real never-appearing select.
       return {
         count() {
           return Promise.resolve(0);
@@ -681,6 +682,9 @@ function makeDialogNotOpenPage(callOrder: string[]): Page {
         },
         innerHTML() {
           return Promise.reject(new Error("no dialog"));
+        },
+        waitFor() {
+          return Promise.reject(new Error("timeout waiting for select"));
         },
       };
     },
@@ -720,6 +724,115 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
   assert.ok(
     captureIdx < escapeIdx,
     `checkpoint capture must run before Escape mutates the page (capture=${captureIdx}, escape=${escapeIdx})`
+  );
+});
+
+/** A page whose date-range select renders slightly after the Export click —
+ *  simulating ordinary client-side render variance rather than a genuinely
+ *  missing/changed export affordance. The select locator's `count()` would
+ *  read 0 if sampled immediately (as the old fixed-sleep-then-one-shot-count
+ *  check did), but `waitFor({ state: "visible" })` resolves once it renders.
+ *  Exercises the fix for the false `export_dialog_unexpected_shape` this
+ *  timing gap produced live (run_1787007889181): a slow-but-real render must
+ *  not be reported as `export_affordance_missing`. */
+function makeSlowRenderingSelectPage(): Page {
+  return Object.assign({} as Page, {
+    evaluate() {
+      return Promise.resolve({
+        dialog_html_preview: null,
+        dialogs_open: 1,
+        export_candidates: [],
+        has_utility_bar: false,
+        nav_candidates: [],
+        title: "",
+        url: "https://www.usaa.com/my/checking?accountId=private",
+      });
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    keyboard: {
+      press() {
+        return Promise.resolve();
+      },
+    },
+    locator(selector: string) {
+      if (selector === "button.ent-as-utility-bar__item.export") {
+        return {
+          click() {
+            return Promise.resolve();
+          },
+          count() {
+            return Promise.resolve(1);
+          },
+          first() {
+            return this;
+          },
+        };
+      }
+      if (selector.includes("selectionType")) {
+        // Simulates a select that has not yet rendered the instant it is
+        // checked, but appears shortly after (ordinary client-side render
+        // variance): `.count()` reads 0 until `waitFor` has resolved once,
+        // matching how a real Playwright locator's count reflects the live
+        // DOM only once the element has actually mounted. The old
+        // fixed-sleep-then-one-shot-count code called `.count()` directly
+        // without ever calling `waitFor`, so it always saw 0 here and
+        // misclassified the dialog as unexpected-shape; the fix awaits
+        // `waitFor` first and only then re-checks `count()`, observing 1.
+        let renderedAfterWait = false;
+        return {
+          count() {
+            return Promise.resolve(renderedAfterWait ? 1 : 0);
+          },
+          first() {
+            return this;
+          },
+          waitFor() {
+            renderedAfterWait = true;
+            return Promise.resolve();
+          },
+        };
+      }
+      return {
+        count() {
+          return Promise.resolve(0);
+        },
+        filter() {
+          return this;
+        },
+        first() {
+          return this;
+        },
+        innerHTML() {
+          return Promise.reject(new Error("no dialog"));
+        },
+        waitFor() {
+          return Promise.reject(new Error("timeout"));
+        },
+      };
+    },
+    url() {
+      return "https://www.usaa.com/my/checking?accountId=private";
+    },
+  });
+}
+
+test("driveExport treats a slow-but-real date-range select render as ready, not a structure change", async () => {
+  const diagnostics: DiagnosticInfo[] = [];
+  await driveExport(makeSlowRenderingSelectPage(), "https://www.usaa.com/my/checking", {
+    onDiagnostics: (info) => diagnostics.push(info),
+    captureLabel: "usaa-export",
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  }).catch((): undefined => undefined); // downstream submit machinery is unmocked past this point; only the
+  // dialog-open decision under test needs to run cleanly.
+
+  const fatalPhases = diagnostics.map((d) => d.phase);
+  assert.ok(
+    !fatalPhases.includes("export_dialog_unexpected_shape"),
+    `a select that renders within the wait budget must not be reported as a structure change; saw phases: ${fatalPhases.join(", ")}`
   );
 });
 
