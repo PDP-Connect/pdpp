@@ -58,8 +58,18 @@ function makeLocator({ count = 1, visible = true }: { count?: number; visible?: 
     isVisible(): Promise<boolean> {
       return Promise.resolve(visible);
     },
-    waitFor(): Promise<void> {
-      return count > 0 ? Promise.resolve() : Promise.reject(new Error("Timeout waiting for locator"));
+    // Mirrors real Playwright: `state: "visible"` (the default state's closest
+    // fake analog) must actually consult `visible`, not just `count > 0` — a
+    // hidden-but-attached element (count > 0, visible: false) genuinely times
+    // out waiting for visibility. Only `state: "attached"` is satisfied by
+    // DOM presence alone. Without this distinction a fixture claiming
+    // "hidden OTP field" would silently pass a `waitFor({state:"visible"})`
+    // check it should fail, masking exactly the kind of race this file's OTP
+    // tests exist to catch.
+    waitFor(options?: Parameters<Locator["waitFor"]>[0]): Promise<void> {
+      const attached = count > 0;
+      const satisfied = options?.state === "attached" ? attached : attached && visible;
+      return satisfied ? Promise.resolve() : Promise.reject(new Error("Timeout waiting for locator"));
     },
   };
   return fake as Locator;
@@ -510,6 +520,81 @@ test("ensureRedditSession accepts browser-completed OTP when the session is live
     });
 
     assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.kind, "otp");
+  });
+});
+
+/**
+ * REGRESSION (production root cause, 2026-08): a real Reddit login is a
+ * two-stage client-side render — the username/password page loads, then a
+ * SEPARATE render pass mounts the OTP field only after the credentialed
+ * form actually submits. `waitForLoadState("domcontentloaded")` fires once
+ * the POST-SUBMIT page's initial HTML parses, which can be well before that
+ * second render pass paints the OTP input. The pre-fix code checked the OTP
+ * field with a flat `locatorIsVisible` (hardcoded 1s), so any account whose
+ * OTP step took longer than 1s to render had its 2FA prompt silently missed:
+ * zero interaction ever reached the owner, and the connector spun through a
+ * dead 90s cookie poll before failing `reddit_login_post_submit_failed` —
+ * exactly the shape observed in production run `run_1786998888128` (no
+ * interaction_required event, no manual_action, just a post-submit failure).
+ */
+test("ensureRedditSession detects an OTP field that renders 1.2s after submit instead of silently missing it (REGRESSION)", async () => {
+  await withRedditCredentials(async () => {
+    const requests: InteractionRequest[] = [];
+    const username = makeLocator();
+    const password = makeLocator();
+    const submit = makeLocator();
+    const empty = makeLocator({ count: 0, visible: false });
+    const { locator: delayedOtp } = makeDelayedAttachLocator({ attachesAfterMs: 1200 });
+    const page: Pick<Page, "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+      getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
+        return submit;
+      },
+      goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+        return Promise.resolve(null);
+      },
+      locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+        if (selector.includes("username")) {
+          return username;
+        }
+        if (selector.includes("password")) {
+          return password;
+        }
+        if (selector.includes("otp") || selector.includes("verification_code") || selector.includes("one-time-code")) {
+          return delayedOtp;
+        }
+        return empty;
+      },
+      waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+        return Promise.resolve();
+      },
+      waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+        return Promise.resolve();
+      },
+    };
+
+    // The fixture has no cookie machinery wired up, so the flow still can't
+    // reach a live session after the (correctly-detected) OTP prompt — the
+    // assertion under test is that the owner gets ASKED, not the ultimate
+    // outcome. Pre-fix, `requests` would be empty and the rejection message
+    // would be `reddit_login_post_submit_failed` with no interaction ever sent.
+    await assert.rejects(
+      ensureRedditSession({
+        context: makeContext(),
+        page: page as Page,
+        sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
+          requests.push(req);
+          return Promise.resolve({
+            request_id: req.request_id ?? "test_interaction",
+            status: "success",
+            type: "INTERACTION_RESPONSE",
+          });
+        },
+      }),
+      /reddit_2fa_cancelled/u
+    );
+
+    assert.equal(requests.length, 1, "a slow-rendering OTP field must still reach the owner as an interaction");
     assert.equal(requests[0]?.kind, "otp");
   });
 });

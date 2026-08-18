@@ -272,8 +272,19 @@ export async function ensureRedditSession({
   await captureLoginState(capture, page, "reddit-login-after-submit");
 
   // 2FA: Reddit shows a separate OTP step when 2FA is enabled on the account.
+  // Give it the same bounded render tolerance as the pre-submit username
+  // field (waitFor, not a flat 1s isVisible): the post-submit transition is a
+  // second client-side render pass, and a `locatorIsVisible`-only check
+  // (hardcoded 1s) can read "not present" before the field paints, silently
+  // skipping the owner's OTP interaction and falling through to the dead
+  // 90s cookie poll — the exact shape of `reddit_login_post_submit_failed`
+  // with zero interaction requests ever sent.
   const otpIn = page.locator(OTP_SELECTOR).first();
-  if (await locatorIsVisible(otpIn)) {
+  const otpAppeared = await otpIn
+    .waitFor({ state: "visible", timeout: 5000 })
+    .then((): true => true)
+    .catch((): false => false);
+  if (otpAppeared) {
     await captureLoginState(capture, page, "reddit-otp-detected");
     const resp = await sendInteraction({
       kind: "otp",
