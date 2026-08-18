@@ -142,10 +142,13 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
 
         <div className="pdpp-cmd__config">
           <fieldset aria-describedby={accessDescriptionId} className="pdpp-cmd__choice">
-            <legend className="pdpp-cmd__choice-label">Where will you use PDPP?</legend>
-            <p className="pdpp-cmd__choice-help" id={accessDescriptionId}>
-              Keeping it on this computer is private by default; sharing it requires a public address.
-            </p>
+            <legend className="pdpp-visually-hidden">Where will you use PDPP?</legend>
+            <div className="pdpp-cmd__choice-heading">
+              <span className="pdpp-cmd__choice-label">Where will you use PDPP?</span>
+              <span className="pdpp-cmd__choice-help" id={accessDescriptionId}>
+                Keeping it on this computer is private by default; sharing it requires a public address.
+              </span>
+            </div>
             <div className="pdpp-cmd__seg">
               <button
                 aria-pressed={choices.access === "local"}
@@ -183,11 +186,14 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
           </div>
 
           <fieldset aria-describedby={searchDescriptionId} className="pdpp-cmd__choice">
-            <legend className="pdpp-cmd__choice-label">Choose a search mode</legend>
-            <p className="pdpp-cmd__choice-help" id={searchDescriptionId}>
-              Meaning-based search downloads extra search data; exact-word search uses less storage but only matches the
-              words you type.
-            </p>
+            <legend className="pdpp-visually-hidden">Choose a search mode</legend>
+            <div className="pdpp-cmd__choice-heading">
+              <span className="pdpp-cmd__choice-label">Choose a search mode</span>
+              <span className="pdpp-cmd__choice-help" id={searchDescriptionId}>
+                Meaning-based search downloads extra search data; exact-word search uses less storage but only matches
+                the words you type.
+              </span>
+            </div>
             <div className="pdpp-cmd__seg">
               <button
                 aria-pressed={choices.semanticSearch}
@@ -212,6 +218,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
         <button
           aria-label={`Copy ${method === "docker" ? "Docker" : "Docker Compose"} command to the clipboard`}
           className="pdpp-cmd__panel pdpp-cmd__panel--copyable"
+          data-selection-ground="teal-deep"
           id={commandPanelId}
           onClick={copy}
           type="button"

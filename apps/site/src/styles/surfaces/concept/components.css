@@ -728,11 +728,13 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   width: 100%;
   min-width: 0;
   padding: 64px 20px 20px;
-  color: var(--on-primary-emphasis);
+  color: var(--pdpp-concept-onteal-deep);
   text-align: left;
-  background: var(--primary-emphasis);
-  border: 1px solid var(--primary-emphasis);
+  background: var(--pdpp-concept-teal-deep);
+  border: 1px solid var(--pdpp-concept-teal-deep);
   border-radius: 3px;
+  box-shadow: 1px 1px 0
+    color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
 }
 /* The whole panel is the copy target, per opencode: a 16px icon is a poor hit
    area for the single most important action on the page. The ghost label is
@@ -777,7 +779,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-family: var(--font-mono);
   font-size: 13.5px;
   line-height: 1.75;
-  color: var(--on-primary-emphasis);
+  color: var(--pdpp-concept-onteal-deep-soft);
   word-break: normal;
   overflow-wrap: normal;
   white-space: pre;
@@ -792,7 +794,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 /* Subtle color shift for image name; weight matches surrounding text. */
 .pdpp-cmd__em {
   font-weight: 400;
-  color: var(--on-primary-emphasis-wash);
+  color: var(--pdpp-concept-onteal-deep);
 }
 .pdpp-cmd__copy {
   position: absolute;
@@ -828,20 +830,23 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 .pdpp-cmd__reveal + .pdpp-cmd__choice {
   margin-top: 24px;
 }
+.pdpp-cmd__choice-heading {
+  line-height: 1.45;
+}
 .pdpp-cmd__choice-label {
-  width: 100%;
   padding: 0;
+  margin-inline-end: 8px;
   font-family: var(--font-sans);
   font-size: 12px;
-  line-height: 1.35;
-  color: var(--pdpp-concept-ink-soft);
+  font-weight: 600;
+  line-height: inherit;
+  color: var(--pdpp-concept-ink);
 }
 .pdpp-cmd__choice-help {
   max-width: 64ch;
-  margin: 0;
   font-family: var(--font-sans);
   font-size: 12.5px;
-  line-height: 1.45;
+  line-height: inherit;
   color: var(--pdpp-concept-ink-faint);
 }
 /* Both choices are binary and share one shape, so "off" is always a named
@@ -878,10 +883,12 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 }
 .pdpp-cmd__reveal {
   display: none;
-  margin-top: 8px;
+  margin-top: 16px;
 }
 .pdpp-cmd__reveal.is-shown {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 /* The hint is the only part allowed to change the block's height. The input row
    above it is what must not move, because it sits between the two segmented
@@ -889,24 +896,23 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
    reader is currently looking at. */
 .pdpp-cmd__url {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  align-items: center;
+  flex-direction: column;
+  gap: 6px;
 }
 .pdpp-cmd__url > span {
-  width: 100%;
   font-family: var(--font-sans);
   font-size: 12px;
-  color: var(--pdpp-concept-ink-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--pdpp-concept-ink);
 }
 .pdpp-cmd__url input {
-  flex: 1 1 260px;
+  width: 100%;
   min-width: 0;
-  padding: 5px 9px;
+  min-height: 44px;
+  padding: 9px 12px;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 14px;
   color: var(--pdpp-concept-ink);
   background: none;
   border: 1px solid var(--border);
@@ -917,9 +923,10 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   outline-offset: 1px;
 }
 .pdpp-cmd__hint {
-  margin: 6px 0 0;
+  margin: 0;
   font-family: var(--font-sans);
-  font-size: 12.5px;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--pdpp-concept-ink-faint);
 }
 .pdpp-cmd__providers {
@@ -973,6 +980,9 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   }
   .pdpp-cmd__seg-btn {
     width: 100%;
+  }
+  .pdpp-cmd__url input {
+    font-size: 16px;
   }
   /* The label column collapses on narrow screens, so the hint loses the
      indent that tethered it to the input above. */
