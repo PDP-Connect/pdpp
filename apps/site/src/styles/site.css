@@ -6,6 +6,18 @@
  * Route and component surfaces import their own stylesheets.
  */
 
+/* CSS layer priority is fixed by the order layer NAMES are first declared,
+   document-wide, across every stylesheet — not per file, and not by @import
+   position within a file. This file loads first (via app/layout.tsx, which
+   every route renders through), so this statement is what actually fixes
+   the order; without it the order was only an accident of Tailwind's own
+   internal @import sequence inside brand/styles.css. `properties` and
+   `theme`/`base`/`components`/`utilities` are Tailwind v4's own layer names
+   (see @pdpp/brand/styles.css -> @import "tailwindcss"); declaring them
+   again here is a no-op for Tailwind's own layers and exists only to make
+   the order a stated fact instead of an implicit side effect. */
+@layer properties, theme, base, components, utilities;
+
 @import "@pdpp/brand/styles.css";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";

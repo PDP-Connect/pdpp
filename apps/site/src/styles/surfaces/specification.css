@@ -87,15 +87,38 @@
      docs-only widening would move the masthead between pages again. */
 }
 
-/* Fumadocs ships `#nd-toc` with its own `max-xl:hidden` utility, but the
-   concept surface compiles Tailwind in a SEPARATE build from fumadocs' own
-   preset (see concept/index.css), and that build's own unconditional
-   `.flex{display:flex}` chunk loads AFTER fumadocs' — same specificity, later
-   in the cascade, so it silently wins over the media-scoped `max-xl:hidden`
-   at every width, and `#nd-toc` never actually collapses below 1280px (it
-   renders `display:flex` at zero width instead). Force it here instead: this
-   file is unlayered plain CSS, which always outranks a `@layer utilities`
-   rule regardless of source order, so this is not itself racing the same bug. */
+/* Fumadocs ships `#nd-toc` with both `flex` and its own `max-xl:hidden`
+   utility on the same element (fumadocs-ui/layouts/docs/page/slots/toc.js).
+   The concept surface runs a SECOND, independent Tailwind compilation for
+   its own @theme additions (concept/tokens/semantic.css declares
+   --container-page, --spacing-rail, etc. that site.css's build never sees —
+   confirmed by reading concept/index.css and its ownership test,
+   scripts/site-surface-ownership.test.ts, which pins both builds and their
+   load order as deliberate). CSS layer priority is fixed by the order layer
+   NAMES are first declared document-wide, not per file, so both builds'
+   `@layer utilities` share one priority slot; only <link> order breaks the
+   tie for rules of equal specificity, and this surface's concept/index.css
+   always loads after site.css. Its own unconditional `.flex{display:flex}`
+   (regenerated because concept components use `flex` too) therefore always
+   outranked fumadocs' conditional `max-xl:hidden{display:none}`, and
+   `#nd-toc` never collapsed below 1280px — it rendered `display:flex` at
+   zero width instead.
+   Two fixes were tried and both broke something real, not hypothetically:
+   folding concept's @theme into site.css's one build (so only one utilities
+   layer would ever exist) deleted `max-w-page` and every concept spacing
+   utility site-wide, because primitive.css's runtime palette is bare :root,
+   not scoped, and pulling the rest of tokens/index.css in to get
+   --container-page along with it changed what several shared utility classes
+   resolved to elsewhere on the page. Giving concept's utilities import its
+   own layer name, ranked below the shared one, fixed this exact collision
+   but broke `.container`'s own breakpoint-margin math on every route,
+   because concept's build also legitimately needs SOME of its later-loaded
+   rules to keep beating `utilities` (that is what most of this file's
+   `!important`-free overrides already lean on). Force the display here
+   instead: this file is unlayered plain CSS, which always outranks a
+   `@layer utilities` rule regardless of source or <link> order by the CSS
+   layers spec itself — so this override is not itself racing the same bug,
+   and does not touch the two-build architecture the ownership test pins. */
 @media (max-width: 1279.98px) {
   [data-pdpp-doc-theme] #nd-toc {
     display: none;
