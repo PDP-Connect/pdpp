@@ -298,7 +298,9 @@ test(
           GROUP BY connector_instance_id`,
         [[id]]
       );
-      const plan = JSON.stringify(explainRows.rows[0]["QUERY PLAN"]);
+      const explainRow = explainRows.rows[0];
+      assert.ok(explainRow, "EXPLAIN must return a plan row");
+      const plan = JSON.stringify(explainRow["QUERY PLAN"]);
       assert.ok(
         !plan.includes("Seq Scan"),
         `lifecycle-seq query must not plan a full Seq Scan once the general index exists: ${plan}`
@@ -443,7 +445,9 @@ test(
         "EXPLAIN (FORMAT JSON) SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE connector_instance_id = $1",
         [id]
       );
-      const plan = JSON.stringify(explainRows.rows[0]["QUERY PLAN"]);
+      const explainRow = explainRows.rows[0];
+      assert.ok(explainRow, "EXPLAIN must return a plan row");
+      const plan = JSON.stringify(explainRow["QUERY PLAN"]);
       assert.ok(
         !plan.includes("Seq Scan"),
         `repairCandidatePostgres's zero-match lifecycle read must not plan a full Seq Scan once the general index exists: ${plan}`

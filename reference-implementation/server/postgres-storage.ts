@@ -615,6 +615,82 @@ async function migratePostgresRecordRejectionBytePayload(client: PoolClient): Pr
   }
 }
 
+// Postgres SQLSTATE raised when a statement is cancelled by `statement_timeout`.
+const POSTGRES_STATEMENT_TIMEOUT_SQLSTATE = "57014";
+
+/**
+ * Thrown by `postgresQueryBounded` when Postgres itself cancelled the
+ * statement because it exceeded the per-unit `SET LOCAL statement_timeout`.
+ * Distinct from an ordinary query error: this is the per-unit HARD bound
+ * (design review P1-2's second contract) actually firing, not a query
+ * defect. Callers in a bounded reconciliation loop should treat it like any
+ * other repair/discovery failure for this unit (fail this candidate/pass
+ * closed; the row stays dirty and is retried on a later round), never let
+ * it propagate as an unhandled rejection.
+ */
+export class PostgresStatementTimeoutError extends Error {
+  constructor(options?: ErrorOptions) {
+    super(
+      "Postgres statement exceeded its per-unit admission allowance and was cancelled by statement_timeout.",
+      options
+    );
+    this.name = "PostgresStatementTimeoutError";
+  }
+}
+
+/**
+ * Runs exactly one statement under a Postgres-ENFORCED, connection-scoped
+ * `SET LOCAL statement_timeout` — the per-unit HARD bound design review
+ * P1-2 requires. `postgresQuery`/`pool.query()` above run bare, with no
+ * explicit transaction: `SET LOCAL` requires an open transaction to scope
+ * to, and a bare (non-`LOCAL`) `SET statement_timeout` on a pooled
+ * connection would leak onto whatever OTHER caller the pool hands that same
+ * physical connection to next once this call returns it. This function
+ * therefore opens its own short-lived `BEGIN`/`COMMIT` around exactly one
+ * statement — same connection-acquisition/release shape as
+ * `withPostgresTransaction` above, so the timeout is provably confined to
+ * this one statement on this one connection and the connection is always
+ * released back to the pool (`finally`) regardless of outcome.
+ *
+ * `timeoutMs` must be derived by the CALLER from its own remaining
+ * cooperative admission allowance (`deadline - Date.now()`), never a fixed
+ * constant — a unit starting with 40ms left on the round's soft deadline
+ * must not get the same server-side ceiling as one starting with 1900ms
+ * left. Passing `timeoutMs <= 0` still issues `SET LOCAL statement_timeout`
+ * with that value, which Postgres treats as invalid/disabled rather than
+ * "expire immediately" — callers must check their own remaining budget
+ * before calling this at all, exactly like every other admission point in
+ * the bounded sweep; this function does not itself decide whether a unit is
+ * still admissible.
+ */
+export async function postgresQueryBounded<Row extends QueryResultRow = QueryResultRow>(
+  sql: string,
+  params: unknown[],
+  timeoutMs: number
+): Promise<{ rowCount: number | null; rows: Row[] }> {
+  const client = await getPostgresPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`);
+    const result = await client.query<Row>(sql, params);
+    await client.query("COMMIT");
+    return { rowCount: result.rowCount, rows: result.rows };
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Rollback failure must not hide the original statement/timeout error.
+    }
+    if ((err as { code?: string } | null)?.code === POSTGRES_STATEMENT_TIMEOUT_SQLSTATE) {
+      // biome-ignore lint/style/useErrorCause: cause is threaded through PostgresStatementTimeoutError's own constructor (matches NekoSurfaceAllocatorServiceError's identical established pattern) — biome cannot trace it through a custom Error subclass.
+      throw new PostgresStatementTimeoutError({ cause: err });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // ─── Physical storage footprint (read-only operator diagnostics) ─────────────
 //
 // Surfaces the database's on-disk size so an operator can reconcile the

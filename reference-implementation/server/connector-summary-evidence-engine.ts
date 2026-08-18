@@ -50,7 +50,12 @@ import {
   runScopedConnectorReconciliation,
 } from "./connector-summary-evidence-bounded-reconciliation.ts";
 import { getDb } from "./db.ts";
-import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
+import {
+  isPostgresStorageBackend,
+  postgresQuery,
+  postgresQueryBounded,
+  withPostgresTransaction,
+} from "./postgres-storage.ts";
 import {
   normalizeRecordSourceCheckpoint,
   type RecordSourceCheckpoint,
@@ -64,6 +69,38 @@ const DECIMAL_TEXT_RE = /^\d+$/;
 const LEADING_ZEROES_RE = /^0+(?=\d)/;
 const MAX_SOURCE_REVISION = "9223372036854775807";
 const RECONCILE_PAGE_SIZE = 25;
+
+/**
+ * Per-unit Postgres statement-timeout floor (design review P1-2): the
+ * cooperative `deadline` this module threads through `discoverCandidates`/
+ * `repairCandidate` is a PASS ADMISSION deadline, checked only BETWEEN
+ * units — it never bounds a single query's own server-side execution (see
+ * `reconcileConnectorSummaryEvidence`'s doc for the reviewer's two-contract
+ * framing). `remainingStatementBudgetMs` derives a `statement_timeout` for
+ * `postgresQueryBounded` from the caller's remaining admission allowance so
+ * a discovery/repair unit's own queries cannot, on their own, silently
+ * consume more than what was left when the unit started (production,
+ * 2026-08-18: `repair_duration_ms: 5322` against a 2000ms pass budget).
+ *
+ * Floored at `MIN_STATEMENT_TIMEOUT_MS` even when only a sliver of budget
+ * remains: every query this floor applies to is index-bounded and normally
+ * fast (see the P1-2 file:line audit), so a near-zero remaining allowance
+ * still deserves a short, real chance to complete rather than a
+ * technicality timeout; a query that is genuinely slow under contention is
+ * still caught, just up to `MIN_STATEMENT_TIMEOUT_MS` later than a literal
+ * zero-margin cutoff would catch it. A disclosed tradeoff, not an
+ * oversight. `deadline === null` (every caller except the maintenance
+ * sweep) is unaffected — those callers keep the exact prior unbounded
+ * `postgresQuery` behavior.
+ */
+const MIN_STATEMENT_TIMEOUT_MS = 50;
+
+function remainingStatementBudgetMs(deadline: number | null): number | null {
+  if (deadline === null) {
+    return null;
+  }
+  return Math.max(MIN_STATEMENT_TIMEOUT_MS, deadline - Date.now());
+}
 
 function decimalText(value: unknown): string | null {
   if (value === null || value === undefined) {
@@ -747,7 +784,30 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   };
 }
 
-async function readPostgresDiscoveryContext(connectorInstanceIds: readonly string[] | null) {
+/**
+ * Issues one discovery-context statement bounded by the caller's remaining
+ * cooperative admission allowance (design review P1-2, per-unit hard
+ * bound). `deadline === null` reproduces the exact prior unbounded-
+ * `postgresQuery` behavior for every caller that does not pass one (every
+ * consumer of `discoverCandidates` today except the maintenance sweep —
+ * see `reconcileConnectorSummaryEvidence`'s doc).
+ */
+function postgresDiscoveryQuery<R extends Row = Row>(
+  sql: string,
+  params: unknown[],
+  deadline: number | null
+): Promise<{ rowCount: number | null; rows: R[] }> {
+  if (deadline === null) {
+    return postgresQuery<R>(sql, params);
+  }
+  const budget = remainingStatementBudgetMs(deadline);
+  if (budget === null) {
+    return postgresQuery<R>(sql, params);
+  }
+  return postgresQueryBounded<R>(sql, params, budget);
+}
+
+async function readPostgresDiscoveryContext(connectorInstanceIds: readonly string[] | null, deadline: number | null) {
   // `null` = complete census (unscoped). A non-null, EMPTY array is a
   // genuine "scoped to nothing" request; short-circuit rather than issue
   // `= ANY($1::text[])` with an empty bind array (which IS valid Postgres
@@ -773,12 +833,15 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // an owner_subject_id filter here would let a distinct subject's
   // genuinely-live connection be pruned as orphaned.
   const instanceResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         "SELECT *, source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = ANY($1::text[])",
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery(
-        "SELECT *, source_revision::text AS source_revision_text FROM connector_instances ORDER BY connector_instance_id ASC"
+    : await postgresDiscoveryQuery(
+        "SELECT *, source_revision::text AS source_revision_text FROM connector_instances ORDER BY connector_instance_id ASC",
+        [],
+        deadline
       );
   // Evidence/retained-bytes/version-counter/canonical-count reads are scoped
   // to the SAME requested id set (one batched `ANY($1::text[])` query each,
@@ -786,11 +849,16 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // matches the SQLite `IN (...)` batching above; a scoped consumer must
   // not pay for, or even read, every other connection's rows.
   const evidenceResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         "SELECT *, source_revision::text AS source_revision_text FROM connector_summary_evidence WHERE connector_instance_id = ANY($1::text[])",
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery("SELECT *, source_revision::text AS source_revision_text FROM connector_summary_evidence");
+    : await postgresDiscoveryQuery(
+        "SELECT *, source_revision::text AS source_revision_text FROM connector_summary_evidence",
+        [],
+        deadline
+      );
   const evidenceByInstance = new Map(
     (evidenceResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row])
   );
@@ -798,20 +866,25 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   const connectorRows = await readPostgresConnectorManifests(connectorIds);
   const manifestByConnector = new Map(connectorRows.map((row) => [String(row.connector_id), String(row.manifest)]));
   const retainedByteResult = scoped
-    ? await postgresQuery("SELECT * FROM retained_size_connection WHERE connector_instance_id = ANY($1::text[])", [
-        connectorInstanceIds,
-      ])
-    : await postgresQuery("SELECT * FROM retained_size_connection");
+    ? await postgresDiscoveryQuery(
+        "SELECT * FROM retained_size_connection WHERE connector_instance_id = ANY($1::text[])",
+        [connectorInstanceIds],
+        deadline
+      )
+    : await postgresDiscoveryQuery("SELECT * FROM retained_size_connection", [], deadline);
   const retainedByteByInstance = new Map(
     (retainedByteResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row])
   );
   const versionCounterResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         "SELECT connector_instance_id, stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = ANY($1::text[])",
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery(
-        "SELECT connector_instance_id, stream, max_version::text AS max_version FROM version_counter"
+    : await postgresDiscoveryQuery(
+        "SELECT connector_instance_id, stream, max_version::text AS max_version FROM version_counter",
+        [],
+        deadline
       );
   const versionCountersByInstance = new Map<string, Row[]>();
   for (const row of versionCounterResult.rows as Row[]) {
@@ -823,16 +896,21 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // Cheap canonical-count supplement to the composite checkpoint: a direct
   // writer that mutates `records` without allocating a version still
   // changes the live count, and this catches it. One fixed aggregate query
-  // regardless of N (or of K, when scoped).
+  // regardless of N (or of K, when scoped). (Production, 2026-08-18: THIS
+  // query, unbounded, contended with unrelated heavy I/O and alone consumed
+  // the round's entire deadline — the incident design review P1-2 fixes.)
   const canonicalCountResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         `SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records
           WHERE deleted = FALSE AND connector_instance_id = ANY($1::text[])
           GROUP BY connector_instance_id`,
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery(
-        "SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records WHERE deleted = FALSE GROUP BY connector_instance_id"
+    : await postgresDiscoveryQuery(
+        "SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records WHERE deleted = FALSE GROUP BY connector_instance_id",
+        [],
+        deadline
       );
   const canonicalTotalRecordsByInstance = new Map(
     (canonicalCountResult.rows as Row[]).map((row) => [
@@ -847,11 +925,12 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // exactly the requested (or complete) scope, same shape as the canonical
   // record-count read above.
   const scheduleResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         "SELECT connector_instance_id, updated_at FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])",
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery("SELECT connector_instance_id, updated_at FROM connector_schedules");
+    : await postgresDiscoveryQuery("SELECT connector_instance_id, updated_at FROM connector_schedules", [], deadline);
   const scheduleUpdatedAtByInstance = new Map(
     (scheduleResult.rows as Row[]).map((row) => [String(row.connector_instance_id), String(row.updated_at)])
   );
@@ -862,16 +941,19 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // Reuses the spine's own already-durable, atomically-assigned `event_seq`
   // as the repair receipt, scoped per connection.
   const maxLifecycleSeqResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
           WHERE connector_instance_id = ANY($1::text[])
           GROUP BY connector_instance_id`,
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery(
+    : await postgresDiscoveryQuery(
         `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
           WHERE connector_instance_id IS NOT NULL
-          GROUP BY connector_instance_id`
+          GROUP BY connector_instance_id`,
+        [],
+        deadline
       );
   const maxLifecycleEventSeqByInstance = new Map(
     (maxLifecycleSeqResult.rows as Row[]).map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
@@ -893,12 +975,22 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
  * FIXED number of queries regardless of N connections, and classifies each
  * row. Never acquires a per-connection lock. Discovery-only — no repair, no
  * write.
+ *
+ * `deadline`, when provided (only the maintenance sweep provides one — see
+ * `reconcileConnectorSummaryEvidence`), bounds each Postgres statement in
+ * this batch with a `SET LOCAL statement_timeout` derived from the caller's
+ * remaining allowance (`postgresDiscoveryQuery`/`postgresQueryBounded`,
+ * design review P1-2). SQLite's `better-sqlite3` driver is synchronous and
+ * exposes no interrupt/progress-handler hook on its public API, so
+ * `deadline` has no effect on the SQLite branch — an honest, disclosed gap,
+ * not a silent no-op pretending to be a fix.
  */
 async function discoverCandidates(
-  connectorInstanceIds: readonly string[] | null
+  connectorInstanceIds: readonly string[] | null,
+  deadline: number | null = null
 ): Promise<{ instanceRows: readonly Row[]; candidates: ReadonlyMap<string, RepairCandidateReason> }> {
   const ctx = isPostgresStorageBackend()
-    ? await readPostgresDiscoveryContext(connectorInstanceIds)
+    ? await readPostgresDiscoveryContext(connectorInstanceIds, deadline)
     : readSqliteDiscoveryContext(connectorInstanceIds);
 
   const candidates = new Map<string, RepairCandidateReason>();
@@ -971,11 +1063,20 @@ function missingInstanceRepairResult(connectorInstanceId: string, deleted: boole
  * pre-lock discovery snapshot) and upsert. On lock/read/write failure,
  * returns row-shaped `stale`/`failed` evidence with a closed sanitized
  * reason code — never a fabricated clean row.
+ *
+ * `deadline`, when provided, bounds every Postgres read this unit issues
+ * BEFORE its writer-fenced transaction (design review P1-2: same per-unit
+ * `statement_timeout` contract as `discoverCandidates`). The writer-fenced
+ * transaction itself (`withPostgresTransaction`/`withConnectorInstanceWrite`)
+ * is deliberately left unbounded here: it is already fenced to exactly one
+ * connector instance's rows and is the durable commit point, so timing it
+ * out mid-write would risk leaving `dirty = 1` set without ever clearing
+ * it — trading a bounded pre-read for an unbounded correctness question.
  */
-async function repairCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
+async function repairCandidate(connectorInstanceId: string, deadline: number | null = null): Promise<RepairedEvidence> {
   try {
     if (isPostgresStorageBackend()) {
-      return await repairCandidatePostgres(connectorInstanceId);
+      return await repairCandidatePostgres(connectorInstanceId, deadline);
     }
     return await repairCandidateSqlite(connectorInstanceId);
   } catch (err) {
@@ -1503,12 +1604,41 @@ async function repairCandidateSqlite(connectorInstanceId: string): Promise<Repai
   }
 }
 
-async function repairCandidatePostgres(connectorInstanceId: string): Promise<RepairedEvidence> {
+/**
+ * Repair's own pre-transaction reads are always scoped to exactly ONE
+ * `connector_instance_id` (unlike discovery's optionally-unscoped batch), so
+ * these were never full-table scans — but they still carried no
+ * statement-level bound (design review P1-2): a slow one (e.g. lock
+ * contention on `records`) could still consume the round's remaining
+ * allowance on its own. Bounded the same way as `postgresDiscoveryQuery`;
+ * `deadline === null` (every caller except the maintenance sweep)
+ * reproduces the exact prior behavior.
+ */
+function postgresRepairReadQuery<R extends Row = Row>(
+  sql: string,
+  params: unknown[],
+  deadline: number | null
+): Promise<{ rowCount: number | null; rows: R[] }> {
+  if (deadline === null) {
+    return postgresQuery<R>(sql, params);
+  }
+  const budget = remainingStatementBudgetMs(deadline);
+  if (budget === null) {
+    return postgresQuery<R>(sql, params);
+  }
+  return postgresQueryBounded<R>(sql, params, budget);
+}
+
+async function repairCandidatePostgres(
+  connectorInstanceId: string,
+  deadline: number | null = null
+): Promise<RepairedEvidence> {
   let sourceRevisionAtRead: string | null | undefined;
   try {
-    const instanceResult = await postgresQuery(
+    const instanceResult = await postgresRepairReadQuery(
       "SELECT *, source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = $1",
-      [connectorInstanceId]
+      [connectorInstanceId],
+      deadline
     );
     const instance = instanceResult.rows[0] as Row | undefined;
     if (!instance) {
@@ -1517,9 +1647,10 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
     }
     const sourceRevision = decimalText(instance.source_revision_text);
     sourceRevisionAtRead = sourceRevision;
-    const activeRunResult = await postgresQuery(
+    const activeRunResult = await postgresRepairReadQuery(
       "SELECT 1 AS present FROM controller_active_runs WHERE connector_instance_id = $1 LIMIT 1",
-      [connectorInstanceId]
+      [connectorInstanceId],
+      deadline
     );
     let built: Row;
     const deferred =
@@ -1527,18 +1658,21 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
     if (deferred) {
       built = { connector_instance_id: connectorInstanceId, dirty: 1, state: "stale" };
     } else {
-      const manifestResult = await postgresQuery(
+      const manifestResult = await postgresRepairReadQuery(
         "SELECT manifest::text AS manifest FROM connectors WHERE connector_id = $1",
-        [instance.connector_id]
+        [instance.connector_id],
+        deadline
       );
       const manifest = parseManifestDeclaration((manifestResult.rows[0] as Row | undefined)?.manifest);
-      const generationResult = await postgresQuery(
+      const generationResult = await postgresRepairReadQuery(
         "SELECT record_reset_generation::text AS reset_generation FROM connector_instances WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
-      const streamsResult = await postgresQuery(
+      const streamsResult = await postgresRepairReadQuery(
         "SELECT stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const checkpoint = normalizeRecordSourceCheckpoint({
         resetGeneration: String((generationResult.rows[0] as Row | undefined)?.reset_generation ?? "0"),
@@ -1547,51 +1681,58 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
           stream: String(row.stream),
         })),
       });
-      const canonicalResult = await postgresQuery(
+      const canonicalResult = await postgresRepairReadQuery(
         `SELECT stream, COUNT(*)::int AS record_count, MAX(emitted_at) AS last_updated
            FROM records WHERE connector_instance_id = $1 AND deleted = FALSE
           GROUP BY stream`,
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const canonicalByStream = new Map((canonicalResult.rows as Row[]).map((row) => [String(row.stream), row]));
-      const retainedByteResult = await postgresQuery(
+      const retainedByteResult = await postgresRepairReadQuery(
         "SELECT * FROM retained_size_connection WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const retainedByteRow = retainedByteResult.rows[0] as Row | undefined;
-      const retainedStreamResult = await postgresQuery(
+      const retainedStreamResult = await postgresRepairReadQuery(
         "SELECT stream, record_count FROM retained_size_stream WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const retainedByStream = new Map(
         (retainedStreamResult.rows as Row[]).map((row) => [String(row.stream), Number(row.record_count || 0)])
       );
       const unexpectedResult = manifest.ok
-        ? await postgresQuery(
+        ? await postgresRepairReadQuery(
             "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = $1 AND manifest_generation = $2",
-            [connectorInstanceId, Number(instance.manifest_generation ?? 0)]
+            [connectorInstanceId, Number(instance.manifest_generation ?? 0)],
+            deadline
           )
         : { rows: [] as Row[] };
       const unexpectedStreams = new Set((unexpectedResult.rows as Row[]).map((row) => String(row.stream)));
-      const terminalHighWaterResult = await postgresQuery(
+      const terminalHighWaterResult = await postgresRepairReadQuery(
         `SELECT MAX(event_seq) AS max_seq FROM spine_events
           WHERE connector_instance_id = $1
             AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const terminalHighWater = (terminalHighWaterResult.rows[0] as Row | undefined)?.max_seq;
       // Terminal-gate revision (2026-07-29): repair also refreshes the
       // schedule/lifecycle repair-receipt checkpoints so a repaired row
       // records the current values it was JUST verified against, not the
       // stale ones that triggered the repair.
-      const scheduleResult = await postgresQuery(
+      const scheduleResult = await postgresRepairReadQuery(
         "SELECT updated_at FROM connector_schedules WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const scheduleCheckpoint = (scheduleResult.rows[0] as Row | undefined)?.updated_at;
-      const lifecycleHighWaterResult = await postgresQuery(
+      const lifecycleHighWaterResult = await postgresRepairReadQuery(
         "SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const lifecycleHighWater = (lifecycleHighWaterResult.rows[0] as Row | undefined)?.max_seq;
 
@@ -2172,30 +2313,63 @@ function pruneReconciledEvidence(
  * the deadline. `options.maxDurationMs` remains the standalone relative
  * form for callers that do not already own an absolute deadline.
  *
- * `options.maxDurationMs`, when provided, ALSO bounds the repair loop's
- * total WALL-CLOCK time — checked between candidates (never mid-repair, so
- * a candidate already under its writer fence always finishes cleanly). A
- * small candidate COUNT does not bound total TIME when individual repairs
- * are slow (e.g. a connection with a very large canonical record set), so
- * `maxCandidates` alone is not a genuine work bound; `maxDurationMs`
- * closes that gap (Sol P2.2). The remaining unrepaired candidates are
- * reported in `skipped`, exactly like a count-bound cutoff — genuinely
- * deferred to the next observation, never lost. Discovery and orphan
- * pruning below are NOT deadline-CHECKED (there is no seam to check a
- * deadline partway through either one — each is a fixed, small, batched
- * query count REGARDLESS of N/K, Sol P1.2, but that only bounds query
- * COUNT, never a single query's own latency). A discovery query slow
- * enough under contention to exceed the caller's ENTIRE deadline on its own
- * (production, 2026-08-18: a canonical-count aggregate contending with
- * unrelated heavy I/O) silently consumes the whole round before the repair
- * loop ever runs — closed not here but in `repairCandidates`
- * (connector-summary-evidence-bounded-reconciliation.ts), which always
- * attempts its first selected candidate regardless of the deadline so a
- * slow discovery cannot reduce a round to zero repairs. Orphan pruning
- * additionally requires the COMPLETE canonical instance set to correctly
- * distinguish "orphaned" from "merely not yet discovered" — a partial
- * discovery pass could not safely prune at all without risking deleting a
- * live connection's evidence.
+ * `options.maxDurationMs`, when provided, is NOT a wall-clock duration
+ * bound on this call's total running time — despite its name, it is a
+ * cooperative PASS ADMISSION DEADLINE, checked only BETWEEN candidates
+ * (never mid-repair, so a candidate already under its writer fence always
+ * finishes cleanly): no NEW repair unit begins once it has passed, but a
+ * unit already admitted always runs to completion (design review P1-2
+ * naming correction, 2026-08-18 — see the reviewer's exact framing: "The
+ * 2-second budget is not a wall-clock bound... It is a soft hint checked
+ * between some operations." Renaming the option was considered and
+ * rejected in favor of documenting it precisely everywhere it is described,
+ * to avoid a disruptive rename across every existing caller for a
+ * still-true admission-deadline contract). A small candidate COUNT does not
+ * bound total TIME when individual repairs are slow (e.g. a connection with
+ * a very large canonical record set), so `maxCandidates` alone is not a
+ * genuine work bound; the admission deadline closes that gap for NEW units
+ * (Sol P2.2). The remaining unrepaired candidates are reported in
+ * `skipped`, exactly like a count-bound cutoff — genuinely deferred to the
+ * next observation, never lost.
+ *
+ * Discovery and orphan pruning below are admission-deadline-CHECKED only
+ * BETWEEN phases, never mid-phase (each is a fixed, small, batched query
+ * count REGARDLESS of N/K, Sol P1.2, but that only bounds query COUNT,
+ * never a single query's own server-side latency — the PASS SOFT DEADLINE
+ * contract above, not a duration bound). A discovery query slow enough
+ * under contention to exceed the caller's ENTIRE admission deadline on its
+ * own (production, 2026-08-18: `repair_duration_ms: 5322` against a 2000ms
+ * pass budget — a canonical-count aggregate contending with unrelated heavy
+ * I/O) could previously consume the whole round before the repair loop ever
+ * ran. Two independent things now close that gap:
+ *
+ *   1. PER-UNIT HARD BOUND (design review P1-2's second, distinct
+ *      contract): on Postgres, every discovery/repair pre-transaction read
+ *      (`discoverCandidates`/`repairCandidate` below) now runs under a
+ *      transaction-local `SET LOCAL statement_timeout`
+ *      (`postgresDiscoveryQuery`/`postgresRepairReadQuery` in this file,
+ *      `postgresQueryBounded` in postgres-storage.ts) derived from the
+ *      caller's own remaining admission allowance, so a single slow query
+ *      can no longer silently consume more than that unit had left when it
+ *      started. SQLite has NO equivalent — `better-sqlite3` is synchronous
+ *      and exposes no interrupt/progress-handler hook on its public API, so
+ *      a slow SQLite discovery/repair query cannot be cancelled once
+ *      started. This is a disclosed, unclosed gap on SQLite, not a silent
+ *      omission: every hot-path SQLite query in this file is index-bounded
+ *      (`WHERE connector_instance_id IN (...)`/`= ?`, or an indexed
+ *      `MAX`/`GROUP BY` aggregate), so it is expected to be fast in
+ *      practice, but nothing here can force-cancel one that isn't.
+ *   2. FORWARD PROGRESS UNDER STARVATION: even when a discovery unit
+ *      legitimately uses its whole per-unit allowance, `repairCandidates`
+ *      (connector-summary-evidence-bounded-reconciliation.ts) always
+ *      attempts its first selected candidate regardless of the admission
+ *      deadline, so a slow-but-not-runaway discovery cannot reduce a round
+ *      to zero repairs.
+ *
+ * Orphan pruning additionally requires the COMPLETE canonical instance set
+ * to correctly distinguish "orphaned" from "merely not yet discovered" — a
+ * partial discovery pass could not safely prune at all without risking
+ * deleting a live connection's evidence.
  */
 export function reconcileConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
@@ -2211,14 +2385,14 @@ export function reconcileConnectorSummaryEvidence(
     return runBoundedConnectorReconciliation<Row, RepairCandidateReason, Row>({
       candidateReasons: options.candidateReasons,
       deadline,
-      discover: discoverCandidates,
+      discover: (ids) => discoverCandidates(ids, deadline),
       maxCandidates:
         typeof options.maxCandidates === "number" && options.maxCandidates >= 0 ? options.maxCandidates : undefined,
       pageSize: RECONCILE_PAGE_SIZE,
       prune: pruneReconciledEvidence,
       pruneComplete: pruneOrphanedEvidenceCompleteByKeyset,
       readPage: readConnectorInstanceIdPage,
-      repair: repairCandidate,
+      repair: (id) => repairCandidate(id, deadline),
     });
   }
 
@@ -2232,11 +2406,11 @@ export function reconcileConnectorSummaryEvidence(
     candidateReasons: options.candidateReasons,
     connectorInstanceIds,
     deadline,
-    discover: discoverCandidates,
+    discover: (ids) => discoverCandidates(ids, deadline),
     maxCandidates:
       typeof options.maxCandidates === "number" && options.maxCandidates >= 0 ? options.maxCandidates : undefined,
     prune: pruneReconciledEvidence,
-    repair: repairCandidate,
+    repair: (id) => repairCandidate(id, deadline),
   });
 }
 
