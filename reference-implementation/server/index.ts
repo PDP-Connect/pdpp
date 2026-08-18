@@ -8744,6 +8744,7 @@ function createReferenceSchedulerManager({
       ...(connectorEnvironmentPolicy?.approvedProxyConnectorIds.length
         ? { approvedProxyConnectorIds: connectorEnvironmentPolicy.approvedProxyConnectorIds }
         : {}),
+      logger,
       ...(runtimeContext.rsUrl === null ? {} : { rsUrl: runtimeContext.rsUrl }),
       ...(runtimeContext.referenceBaseUrl === null ? {} : { referenceBaseUrl: runtimeContext.referenceBaseUrl }),
       admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: admittedOwnerSubjectId }) => {
