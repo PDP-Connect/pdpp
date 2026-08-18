@@ -182,7 +182,7 @@ test("all 18 cookie and owner-agent local-device control selectors fail closed w
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
-    const manifest = JSON.parse(readFileSync(new URL("../manifests/spotify.json", import.meta.url), "utf8"));
+    const manifest = JSON.parse(readFileSync(new URL("../fixtures/seed-manifests/spotify.json", import.meta.url), "utf8"));
     const registered = await fetchJson(`${asUrl}/connectors`, {
       body: JSON.stringify(manifest),
       headers: { "Content-Type": "application/json" },

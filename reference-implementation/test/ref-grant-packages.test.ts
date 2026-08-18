@@ -268,7 +268,7 @@ function pkceChallenge(verifier: string): string {
 // picker emits and the AS validates.
 async function registerConnector(asUrl: string, name: string): Promise<ConnectorManifestFixture> {
   const raw = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${name}.json`), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, `fixtures/seed-manifests/${name}.json`), "utf8")
   ) as ConnectorManifestFixture;
   const canonical = canonicalConnectorKeyFromManifest(raw);
   const manifest: ConnectorManifestFixture =

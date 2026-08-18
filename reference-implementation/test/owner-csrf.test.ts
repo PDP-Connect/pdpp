@@ -72,7 +72,7 @@ const getOwnerDeviceAuthorizationByUserCode = getOwnerDeviceAuthorizationByUserC
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const SPOTIFY_MANIFEST: { connector_id: string; [key: string]: unknown } = JSON.parse(
-  readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+  readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
 );
 
 const TEST_PASSWORD = "csrf-regression-test-password";

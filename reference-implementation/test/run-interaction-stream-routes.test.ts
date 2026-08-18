@@ -871,7 +871,7 @@ async function withHarness(options: HarnessOptions | null, fn: (ctx: HarnessCont
   const asUrl = `http://localhost:${server.asPort}`;
   const manifestName = harnessOptions.manifestName || "spotify";
   const spotifyManifest: SpotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${manifestName}.json`), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, `fixtures/seed-manifests/${manifestName}.json`), "utf8")
   );
   try {
     await registerConnector(asUrl, spotifyManifest);
@@ -3076,7 +3076,7 @@ test("SSE delivers multiple frames and acks each, even when ack rejects", async 
     try {
       const asUrl = `http://localhost:${server.asPort}`;
       const spotifyManifest: SpotifyManifest = JSON.parse(
-        readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+        readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
       );
       await registerConnector(asUrl, spotifyManifest);
       const started = await startRun(asUrl, spotifyManifest.connector_id);
@@ -3183,7 +3183,7 @@ test("mint fails closed with 503 streaming_companion_unavailable when no compani
     });
     try {
       const asUrl = `http://localhost:${server.asPort}`;
-      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
       await registerConnector(asUrl, spotifyManifest);
       const started = await startRun(asUrl, spotifyManifest.connector_id);
       const pending = await waitForPendingInteraction(asUrl, started.run_id);
