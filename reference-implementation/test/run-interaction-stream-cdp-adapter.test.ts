@@ -21,6 +21,7 @@ import test from "node:test";
 import {
   createCdpCompanion as createCdpCompanionUntyped,
   createDefaultStreamingCompanionFactory as createDefaultStreamingCompanionFactoryUntyped,
+  normalizeTouchPointerInputForCdp,
 } from "../server/streaming/cdp-adapter.ts";
 
 interface CdpEvent {
@@ -469,6 +470,112 @@ test("cdp adapter maps wire input events through mapInputEventToCdp", async () =
   assert.ok(restart.params, "restarted screencast carries params");
   assert.equal(restart.params.maxWidth, undefined);
   assert.equal(restart.params.maxHeight, undefined);
+
+  await stopAndDrain(companion, sock.peer);
+});
+
+test("normalizeTouchPointerInputForCdp remaps touch/pen press-or-release to mouse with clickCount", () => {
+  const touchDown = { action: "pointerdown", pointerType: "touch", type: "pointer", x: 10, y: 20 };
+  assert.deepEqual(normalizeTouchPointerInputForCdp(touchDown), {
+    action: "pointerdown",
+    clickCount: 1,
+    pointerType: "mouse",
+    type: "pointer",
+    x: 10,
+    y: 20,
+  });
+
+  const penUp = { action: "pointerup", pointerType: "pen", type: "pointer", x: 5, y: 6 };
+  assert.deepEqual(normalizeTouchPointerInputForCdp(penUp), {
+    action: "pointerup",
+    clickCount: 1,
+    pointerType: "mouse",
+    type: "pointer",
+    x: 5,
+    y: 6,
+  });
+
+  const touchCancel = { action: "pointercancel", pointerType: "touch", type: "pointer", x: 1, y: 2 };
+  assert.equal(normalizeTouchPointerInputForCdp(touchCancel).pointerType, "mouse");
+
+  // A caller-supplied clickCount (e.g. a double-tap) is preserved, not
+  // clobbered to 1.
+  const doubleTouchDown = {
+    action: "pointerdown",
+    clickCount: 2,
+    pointerType: "touch",
+    type: "pointer",
+    x: 10,
+    y: 20,
+  };
+  assert.equal(normalizeTouchPointerInputForCdp(doubleTouchDown).clickCount, 2);
+
+  // Left alone: mouse pointer events (already the working path), touch
+  // pointermove (drag/scroll already works per the reported symptom), and
+  // non-pointer wire events.
+  const mouseDown = { action: "pointerdown", pointerType: "mouse", type: "pointer", x: 1, y: 1 };
+  assert.equal(normalizeTouchPointerInputForCdp(mouseDown), mouseDown);
+  const touchMove = { action: "pointermove", pointerType: "touch", type: "pointer", x: 1, y: 1 };
+  assert.equal(normalizeTouchPointerInputForCdp(touchMove), touchMove);
+  const keyboardEvent = { action: "keydown", key: "a", type: "keyboard" };
+  assert.equal(normalizeTouchPointerInputForCdp(keyboardEvent), keyboardEvent);
+});
+
+test("cdp adapter dispatch() routes a touch tap through Input.dispatchMouseEvent, not dispatchTouchEvent", async () => {
+  const { FakeSocket, sockets } = makeFakeSocketCtor();
+  const companion = createCdpCompanion({
+    browser_session_id: "bs_touch_tap",
+    WebSocketCtor: FakeSocket,
+    wsUrl: "ws://fake/page",
+  });
+  const startPromise = companion.start();
+  await flush();
+  const sock = findSocket(sockets, "ws://fake/page");
+  assert.ok(sock, "adapter opened a socket");
+  await startAndDrainNoViewport(sock.peer);
+  await startPromise;
+
+  // This is the exact wire shape the console's remote-surface pointer input
+  // controller sends for a real touchscreen tap (verified live: a Reddit
+  // reCAPTCHA checkbox tapped at these coordinates via CDP
+  // Input.dispatchTouchEvent alone stayed unchecked; the equivalent mouse
+  // click at the same coordinates advanced the challenge).
+  const downPromise = companion.dispatch({
+    action: "pointerdown",
+    button: 0,
+    pointerId: 1,
+    pointerType: "touch",
+    type: "pointer",
+    x: 205,
+    y: 468,
+  });
+  const pressed = await waitForMessage(sock.peer, "Input.dispatchMouseEvent");
+  assert.equal(pressed.params?.type, "mousePressed");
+  assert.equal(pressed.params?.clickCount, 1);
+  assert.equal(pressed.params?.x, 205);
+  assert.equal(pressed.params?.y, 468);
+  pressed.__answered = true;
+  sock.peer.deliver({ id: pressed.id, result: {} });
+  await downPromise;
+
+  const upPromise = companion.dispatch({
+    action: "pointerup",
+    button: 0,
+    pointerId: 1,
+    pointerType: "touch",
+    type: "pointer",
+    x: 205,
+    y: 468,
+  });
+  const released = await waitForMessage(sock.peer, "Input.dispatchMouseEvent");
+  assert.equal(released.params?.type, "mouseReleased");
+  assert.equal(released.params?.clickCount, 1);
+  released.__answered = true;
+  sock.peer.deliver({ id: released.id, result: {} });
+  await upPromise;
+
+  const touchMethods = sock.peer.messages.filter((m) => m.method === "Input.dispatchTouchEvent");
+  assert.equal(touchMethods.length, 0, "a stationary touch tap must not use Input.dispatchTouchEvent");
 
   await stopAndDrain(companion, sock.peer);
 });

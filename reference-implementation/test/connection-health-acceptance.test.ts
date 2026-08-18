@@ -1891,3 +1891,134 @@ test("proof-age anchor: accepted-policy and non-required streams never anchor th
   );
   assert.equal(refined.state, "healthy");
 });
+
+// ─── unfillableAccounted (§10-A) — production Gmail evidence shape ────────────
+//
+// cin_12407c1afb78d56848fe0b20 collects 349,023 records cleanly every run.
+// Its `attachments` stream carries 37 terminal `connector_detail_gaps` rows:
+// 32 `too_large` (each with a recorded `observed_size_bytes > configured_
+// limit_bytes` in `last_error_json`) and 5 `temporary_unavailable` (37-117
+// attempts each, but NO `last_error_json` at all — no recorded evidence of
+// impossibility, only exhausted attempts). These tests reproduce BOTH
+// production shapes to prove the all-or-nothing rule is honest: 32-of-32
+// proven resolves; 32-of-37 (the REAL current shape) does not.
+
+test("fail before: a genuinely all-proven terminal_gap stream (hypothetical clean cohort) still blocks Healthy without unfillableAccounted wiring", () => {
+  const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
+  const report = [
+    collectionReportEntry({
+      checkpoint: "not_staged",
+      collected: 349_023,
+      considered: "unknown",
+      coverage_condition: "terminal_gap",
+      coverage_unfillable_accounted: false, // read-model has not populated it — the pre-wiring/fail-before state
+      forward_disposition: "terminal",
+      required: true,
+      stream: "attachments",
+    }),
+  ];
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, report);
+  assert.equal(refined.axes.coverage, "terminal_gap");
+  assert.notEqual(
+    refined.conditions?.find((c) => c.type === "SourceCoverageComplete")?.status,
+    "true",
+    "fail-before: unfillableAccounted absent must keep SourceCoverageComplete non-true"
+  );
+  assert.notEqual(refined.state, "healthy");
+});
+
+test("pass after: a terminal_gap stream where every terminal gap is durably proven unfillable resolves Healthy", () => {
+  const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
+  const report = [
+    collectionReportEntry({
+      checkpoint: "not_staged",
+      collected: 349_023,
+      considered: "unknown",
+      coverage_condition: "terminal_gap",
+      coverage_unfillable_accounted: true, // the read model proved every one of 32/32 too_large rows
+      forward_disposition: "terminal",
+      required: true,
+      stream: "attachments",
+    }),
+  ];
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, report);
+  // The axis LABEL stays terminal_gap by design — this is satisfaction, not
+  // exemption; the connector genuinely has a terminal_gap and names it
+  // honestly. Only the SourceCoverageComplete CONDITION is satisfied,
+  // because the entire terminal_gap shortfall is durably accounted for.
+  assert.equal(refined.axes.coverage, "terminal_gap");
+  assert.equal(refined.conditions?.find((c) => c.type === "SourceCoverageComplete")?.status, "true");
+  assert.equal(
+    refined.conditions?.find((c) => c.type === "SourceCoverageComplete")?.reason,
+    "coverage_complete_unfillable_accounted"
+  );
+  assert.equal(refined.state, "healthy");
+});
+
+test("the REAL production shape: 32 proven + 5 unproven terminal gaps on the SAME stream does NOT qualify — Gmail stays red honestly", () => {
+  const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
+  // The per-stream classifier (isStreamFullyUnfillableAccounted, exercised in
+  // connector-gap-classification.test.ts and collection-report-projection.test.ts)
+  // already resolves a 32-proven/5-unproven MIX on one stream to
+  // coverage_unfillable_accounted: false — this test proves that false value
+  // propagates all the way to a blocked SourceCoverageComplete and a non-healthy
+  // state, matching what production actually reports today.
+  const report = [
+    collectionReportEntry({
+      checkpoint: "not_staged",
+      collected: 349_023,
+      considered: "unknown",
+      coverage_condition: "terminal_gap",
+      coverage_unfillable_accounted: false, // 32/37 proven is not 37/37 proven
+      forward_disposition: "terminal",
+      required: true,
+      stream: "attachments",
+    }),
+  ];
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, report);
+  assert.equal(refined.axes.coverage, "terminal_gap");
+  assert.notEqual(refined.conditions?.find((c) => c.type === "SourceCoverageComplete")?.status, "true");
+  assert.notEqual(refined.state, "healthy", "Gmail must stay blocked while 5 temporary_unavailable rows are unproven");
+});
+
+test("two required streams: one fully proven, one genuinely never-measured (google-maps/whatsapp shape) -> still blocked, no cross-stream leakage", () => {
+  const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
+  const report = [
+    collectionReportEntry({
+      checkpoint: "not_staged",
+      collected: 349_023,
+      considered: "unknown",
+      coverage_condition: "terminal_gap",
+      coverage_unfillable_accounted: true,
+      forward_disposition: "terminal",
+      required: true,
+      stream: "attachments",
+    }),
+    // A second required stream with genuinely no coverage evidence at all —
+    // never measured, not proven-impossible. Must not be rescued by the
+    // unrelated stream's proof.
+    collectionReportEntry({
+      checkpoint: "unknown",
+      collected: 0,
+      considered: "unknown",
+      coverage_condition: "unknown",
+      coverage_unfillable_accounted: false,
+      evidence_as_of: null,
+      forward_disposition: "unmeasured",
+      required: true,
+      stream: "messages",
+    }),
+  ];
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, report);
+  // `terminal_gap` outranks `unknown` in the worst-wins degrading order, so
+  // the resolved axis label stays terminal_gap — the unmeasured `messages`
+  // stream is invisible to a naive terminal-gap-only accounting, which is
+  // exactly the cross-stream leakage this test guards against.
+  assert.equal(refined.axes.coverage, "terminal_gap");
+  assert.notEqual(
+    refined.conditions?.find((c) => c.type === "SourceCoverageComplete")?.status,
+    "true",
+    "an unmeasured required stream must still block SourceCoverageComplete even though a DIFFERENT stream's terminal gap is fully proven"
+  );
+  assert.notEqual(refined.state, "healthy", "must not be rescued by the unrelated attachments stream's proof");
+});
