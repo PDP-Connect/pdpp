@@ -2171,11 +2171,21 @@ function pruneReconciledEvidence(
  * closes that gap (Sol P2.2). The remaining unrepaired candidates are
  * reported in `skipped`, exactly like a count-bound cutoff — genuinely
  * deferred to the next observation, never lost. Discovery and orphan
- * pruning below are NOT time-bounded: discovery is already fixed-cost
- * (batched, not per-candidate — Sol P1.2), and orphan pruning requires the
- * COMPLETE canonical instance set to correctly distinguish "orphaned" from
- * "merely not yet discovered" — a partial discovery pass could not safely
- * prune at all without risking deleting a live connection's evidence.
+ * pruning below are NOT deadline-CHECKED (there is no seam to check a
+ * deadline partway through either one — each is a fixed, small, batched
+ * query count REGARDLESS of N/K, Sol P1.2, but that only bounds query
+ * COUNT, never a single query's own latency). A discovery query slow
+ * enough under contention to exceed the caller's ENTIRE deadline on its own
+ * (production, 2026-08-18: a canonical-count aggregate contending with
+ * unrelated heavy I/O) silently consumes the whole round before the repair
+ * loop ever runs — closed not here but in `repairCandidates`
+ * (connector-summary-evidence-bounded-reconciliation.ts), which always
+ * attempts its first selected candidate regardless of the deadline so a
+ * slow discovery cannot reduce a round to zero repairs. Orphan pruning
+ * additionally requires the COMPLETE canonical instance set to correctly
+ * distinguish "orphaned" from "merely not yet discovered" — a partial
+ * discovery pass could not safely prune at all without risking deleting a
+ * live connection's evidence.
  */
 export function reconcileConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
