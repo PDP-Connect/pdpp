@@ -2652,6 +2652,26 @@ async function foldConnectorSummaryStreamFactsOnce(
     // exactly the event_seq its own slices actually reached, never a
     // shared page-wide value that could falsely claim coverage of events
     // this participant's own read never saw.
+    //
+    // This checkpoint ALWAYS advances to `participantWriteSeq`, regardless of
+    // `sourceGenerationCurrent` — a refused/historical row's own drain still
+    // genuinely searched its attributable history up to this point and found
+    // nothing, exactly like `terminalFactsForRepair`'s
+    // `manifest_generation_changed` write already stamps
+    // `terminal_facts_generation_boundary` (the high-water AT the refusal) as
+    // that reason code's checkpoint (`connector-summary-evidence-engine.ts`).
+    // Freezing the checkpoint at its stale prior value here instead (as this
+    // branch previously did) is what made `rowNeedsFoldParticipation`'s
+    // zero-checkpoint historical carve-out permanent: with the checkpoint
+    // pinned at 0 forever, the row can never re-enter the fold to notice a
+    // genuinely NEW post-refusal event, because nothing besides this write
+    // path ever advances `stream_facts_event_seq`, and this write path was
+    // never reached again. Advancing it here instead makes the checkpoint-lag
+    // predicate meaningful: `checkpoint < maxSeq` is false immediately after
+    // this write (nothing to do, no re-participation), and becomes true again
+    // only once a real new terminal event pushes `maxSeq` past it — the same
+    // "silence costs nothing, a genuine new event still converges it"
+    // contract the historical carve-out was designed to provide.
     const participantWriteSeq = ownReplayConverged ? ownMaxSeq : ownCursor;
     minimumWriteSeq = minimumWriteSeq === null ? participantWriteSeq : Math.min(minimumWriteSeq, participantWriteSeq);
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
@@ -2659,7 +2679,7 @@ async function foldConnectorSummaryStreamFactsOnce(
       foldStore,
       instanceId,
       facts,
-      sourceGenerationCurrent ? participantWriteSeq : (checkpointByInstance.get(instanceId) ?? 0),
+      participantWriteSeq,
       terminalFactsCurrent
         ? null
         : // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
