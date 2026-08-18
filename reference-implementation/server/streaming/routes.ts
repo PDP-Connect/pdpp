@@ -1253,10 +1253,22 @@ export function registerStreamingRoutes({
     const delayMs = Math.max(0, lifecycle.expires_at - now());
     lifecycle.expiryTimer = setTimeoutImpl(async () => {
       try {
-        await invalidateForInteractionResolved({
-          interaction_id: lifecycle.interaction_id,
+        // The viewer's presentation bearer is what expired here, not the
+        // underlying manual_action/otp interaction (that can stay pending
+        // for up to its own timeout_seconds, far longer than a presentation
+        // token's TTL). Same principle as the `stream_session_superseded`
+        // path above: the direct-CDP target is owned by the active
+        // interaction, not by this bearer/session, so it must survive this
+        // teardown. A subsequent mint re-attaches a fresh companion to the
+        // same still-registered target. Force-unregistering here (the
+        // `invalidateForInteractionResolved` default) permanently stranded
+        // interactive-login runs — the owner's next mint attempt got
+        // `streaming_companion_unavailable` with no way to recover short of
+        // re-running the connector.
+        await terminalizePresentation(lifecycle, {
+          cleanupTarget: () => Promise.resolve(),
+          invalidateBearer: true,
           reason: "stream_session_expired",
-          run_id: lifecycle.run_id,
         });
       } catch {
         // A failed restore invokes terminal recovery. The bearer record is
