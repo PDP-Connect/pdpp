@@ -44,7 +44,7 @@ import {
 } from "./connector-summary-evidence-engine.ts";
 import type { ConnectorSummaryReconcileObservation } from "./connector-summary-reconcile-observability.ts";
 import { getDb } from "./db.ts";
-import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
+import { isPostgresStorageBackend, PostgresStatementTimeoutError, postgresQuery } from "./postgres-storage.ts";
 import type { ConnectorMaintenanceCursorLease } from "./stores/connector-maintenance-cursor-store.ts";
 
 /** A raw database row (column-keyed) crossing the untyped storage boundary. */
@@ -3349,13 +3349,59 @@ async function observeConnectorSummaryEvidence(
       } = await runBoundedObservationPhases(connectorInstanceIds, overallDeadline, options));
     }
   } catch (err) {
-    // Discovery itself failed (e.g. a canonical-authority table is
+    // A `PostgresStatementTimeoutError` reaching here (production,
+    // 2026-08-18) means discovery's OWN batched read was cancelled by the
+    // per-unit `statement_timeout` bound (design review P1-2) — the bound
+    // firing as designed under load, not a broken canonical-authority
+    // table. Treating it the same as a genuine discovery failure below
+    // (durably degrading `record_snapshot`/`manifest_declaration` to
+    // `failed` for EVERY row in scope) is exactly the regression this
+    // fixes: 25 of 29 rows flipped from `current` to `failed` within
+    // minutes, with nothing logged anywhere to explain why. A cancelled
+    // statement says nothing about whether those rows' canonical facts
+    // actually changed, so the correct response is to leave existing
+    // evidence completely untouched and let the next observation pass
+    // (this call retries from scratch every time) discover it again —
+    // `incomplete: true` honestly reports that this round made no
+    // discovery progress, without lying about the DATA being bad.
+    if (err instanceof PostgresStatementTimeoutError) {
+      console.error(
+        `[connector-summary-evidence] discovery cancelled by Postgres statement_timeout (per-unit bound, design review P1-2)${
+          connectorInstanceIds ? ` for ${connectorInstanceIds.length} scoped id(s)` : " (complete census)"
+        } — existing evidence left untouched, not marked failed; retrying next pass: ${sanitizeProjectionError(err)}`
+      );
+      return {
+        attemptedIds: [],
+        candidateReasonCounts: {},
+        candidatesInspected: 0,
+        failed: 0,
+        failedRows: new Map(),
+        failureClasses: ["discovery_statement_timeout"],
+        incomplete: true,
+        reconciled: 0,
+        repairDurationMs,
+        resumeAfterSeq: null,
+        skipped: 0,
+        terminalFoldEventsRead: 0,
+        terminalFoldMinimumCheckpointAfter: null,
+        terminalFoldMinimumCheckpointBefore: null,
+        terminalFoldParticipants: 0,
+        terminalFoldZeroProgress: false,
+      };
+    }
+    // Discovery itself failed for a reason OTHER than a mere per-unit
+    // cancellation (e.g. a canonical-authority table is genuinely
     // unreadable) — broader than any one row's repair failure: NOTHING
     // about ANY row's canonical facts could be verified this pass, so
     // record_snapshot and manifest_declaration (the components discovery
     // itself is responsible for classifying) must not keep reading
     // `current`. Durably degrade both, in addition to the generic
     // dirty/stale marking. The next call's discovery retries from scratch.
+    console.error(
+      `[connector-summary-evidence] discovery failed${
+        connectorInstanceIds ? ` for ${connectorInstanceIds.length} scoped id(s)` : " (complete census)"
+      }, degrading affected rows to failed: ${sanitizeProjectionError(err)}`
+    );
     const failedRows = await markAllConnectorSummaryEvidenceDiscoveryFailed(err, connectorInstanceIds);
     return {
       attemptedIds: [],
