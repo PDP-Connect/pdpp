@@ -5999,6 +5999,19 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
       WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
         AND connector_instance_id IS NOT NULL`
   );
+  // Same gap as the Postgres migration's `idx_pg_spine_events_instance_seq`
+  // (postgres-storage.ts): `readSqliteDiscoveryContext`'s lifecycle-checkpoint
+  // read groups by `connector_instance_id` over EVERY event type, not just
+  // the four terminal outcomes the index above covers, so it fell through to
+  // an unindexed scan here too. `better-sqlite3` has no statement-timeout
+  // cancellation, so this backend never produced the loud
+  // `discovery_statement_timeout` symptom Postgres did — just a silent,
+  // ever-slower scan as `spine_events` grows. Add the same general index.
+  raw.exec(
+    `CREATE INDEX IF NOT EXISTS idx_spine_events_instance_seq
+      ON spine_events(connector_instance_id, event_seq)
+      WHERE connector_instance_id IS NOT NULL`
+  );
   // Backfill connector_instance_id for pre-existing TERMINAL rows whose
   // identity already lives in data_json (Sol fourth-verdict P1.1): the
   // scoped fold filters exclusively on the new column, so a legacy
