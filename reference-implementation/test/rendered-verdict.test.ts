@@ -493,7 +493,7 @@ test("connection-level terminal disposition is not erased by a retryable stream 
 
   assert.equal(v.detail.forward_disposition, "terminal");
   assert.equal(v.pill.tone, "red");
-  assert.equal(v.forward_statement, "This connector needs a code fix before it can collect again.");
+  assert.equal(v.forward_statement, "Some data from this source can't be collected.");
   assert.equal(v.required_actions[0]?.kind, "code_fix");
   assert.equal(v.required_actions[0]?.terminal, true);
   assert.notEqual(v.required_actions[0]?.kind, "retry_gap");
@@ -1428,7 +1428,7 @@ test("progress: terminal manual source never says refresh to update", () => {
     true,
     { last_refreshed_at: "2026-06-15T12:00:00.000Z", mode: "manual", retained_records: 1169 }
   );
-  assert.equal(v.progress.headline, "Holding 1,169 records; connector code needs a fix before new collection.");
+  assert.equal(v.progress.headline, "Holding 1,169 records; some of this source's data can't be collected.");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.doesNotMatch(v.progress.headline, /refresh|retry|resum|next run/i);
 });
@@ -2096,10 +2096,10 @@ test("golden: synthetic terminal code_fix — maintainer status, no dead owner b
   const codeFix = v.required_actions.find((a) => a.kind === "code_fix");
   assert.ok(codeFix);
   assert.equal(codeFix.audience, "maintainer");
-  assert.equal(codeFix.cta, "Connector code needs a fix");
+  assert.equal(codeFix.cta, "Some data from this source can't be collected");
   assert.deepEqual(codeFix.satisfied_when, { kind: "none" });
   assert.notEqual(v.channel, "attention"); // maintainer status never raises attention
-  assert.equal(v.forward_statement, "This connector needs a code fix before it can collect again.");
+  assert.equal(v.forward_statement, "Some data from this source can't be collected.");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.ok(!/we|we're|nothing for you/i.test(`${codeFix.cta} ${v.forward_statement}`));
   // No owner-audience action (no dead owner button).
@@ -2128,7 +2128,7 @@ test("golden: succeeded terminal coverage reads as degraded coverage review, not
   assert.equal(action?.cta, "Coverage gap needs review");
   assert.equal(v.forward_statement, "Latest collection completed with known coverage gaps.");
   assert.equal(v.progress.headline, "Holding 369,931 records; source coverage has known gaps.");
-  assert.ok(!JSON.stringify(v).includes("Connector code needs a fix"));
+  assert.ok(!JSON.stringify(v).includes("Some data from this source can't be collected"));
 });
 
 test("golden: synthetic runtime fault — channel capped at calm, pill stays honest", () => {

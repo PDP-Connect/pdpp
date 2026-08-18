@@ -766,7 +766,7 @@ function terminalCoverageCta(snapshot: ConnectionHealthSnapshot, disposition: Fo
   if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
     return "Coverage gap needs review";
   }
-  return "Connector code needs a fix";
+  return "Some data from this source can't be collected";
 }
 
 /** Open structured owner attention (the `needs_attention` driver). */
@@ -1107,7 +1107,7 @@ function buildRequiredActions(
     actions.push({
       affects: unmeasuredRequiredStreamIds(streams),
       audience: "maintainer",
-      cta: "Coverage for this source's streams is not being measured; a connector update is needed",
+      cta: "Some data from this source isn't being measured yet",
       kind: "code_fix",
       satisfied_when: { kind: "none" },
       surface: { kind: "maintainer" },
@@ -1528,7 +1528,7 @@ function terminalForwardStatement(
     if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
       return "Latest collection completed with known coverage gaps.";
     }
-    return "This connector needs a code fix before it can collect again.";
+    return "Some data from this source can't be collected.";
   }
   return "This data can't be recovered by a future run.";
 }
@@ -1627,10 +1627,14 @@ function terminalProgressHeadline(retained: number | null, actions: readonly Req
     return `${held}; reconnect this account before further collection.`;
   }
   if (actions.some((action) => action.kind === "code_fix")) {
-    if (actions.some((action) => action.kind === "code_fix" && action.cta !== "Connector code needs a fix")) {
+    if (
+      actions.some(
+        (action) => action.kind === "code_fix" && action.cta !== "Some data from this source can't be collected"
+      )
+    ) {
       return `${held}; source coverage has known gaps.`;
     }
-    return `${held}; connector code needs a fix before new collection.`;
+    return `${held}; some of this source's data can't be collected.`;
   }
   return `${held}; this source cannot collect more until the terminal issue is fixed.`;
 }
