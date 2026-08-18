@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { MetadataRoute } from "next";
+import { MAINTAINER_DOC_SLUGS } from "./spec-nav-slugs.ts";
 
 // Pure by design: takes plain { path, url } pairs rather than a fumadocs
 // Page, so this can be unit-tested without loading the generated MDX source
@@ -16,11 +17,21 @@ export interface DocPageRef {
   url: string;
 }
 
-// content/docs/README.md is contributor-facing authoring notes (see
-// sync-spec-docs.mjs and the [[...slug]] page's own generateMetadata
-// comment), not a protocol page. It must never appear in a sitemap that is
-// only for canonical indexable URLs (SEO/GEO standard MUST #4.3).
-const NON_CANONICAL_DOC_PATHS = new Set(["README.md"]);
+// Paths that are not canonical/indexable and must not appear in the sitemap
+// (SEO/GEO standard MUST #4.3):
+// - README.md: contributor-facing authoring notes (see sync-spec-docs.mjs)
+// - every maintainer document: guides, rationale, deferred concerns and open
+//   questions, deliberately unlisted so they never compete with the
+//   specification. /maintainers (the index that lists them) is itself absent
+//   from the sitemap because it is not a static entry below. Listing the
+//   documents here would invite crawlers straight to what the rail, robots.txt
+//   and their own noindex all keep out. Derived from MAINTAINER_DOC_SLUGS
+//   rather than repeated, so the rail and the sitemap cannot disagree about
+//   what is unlisted.
+const NON_CANONICAL_DOC_PATHS = new Set([
+  "README.md",
+  ...MAINTAINER_DOC_SLUGS.map((slug) => `${slug}.md`),
+]);
 
 // SEO/GEO standard MUST #4.3: a sitemap must contain only canonical,
 // indexable URLs, and `lastmod` must represent the last substantive change to

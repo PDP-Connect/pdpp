@@ -127,6 +127,8 @@ export function resolveConceptScheme(anchors: ConceptSchemeAnchors): Record<Conc
   contrastChoices.set("paper", ref("values.paper"));
   contrastChoices.set("ink", ref("values.ink"));
 
+  values.set("black", color("oklch(0 0 0)"));
+
   const roles = book.addScope("roles");
   roles.set("paper", ref("values.paper"));
   roles.set("paper-deep", colorMix(ref("values.paper"), ref("values.ink"), { ratio: 0.06 }));
@@ -135,7 +137,12 @@ export function resolveConceptScheme(anchors: ConceptSchemeAnchors): Record<Conc
   roles.set("ink-soft", colorMix(ref("values.ink"), ref("values.paper"), { ratio: 0.28 }));
   roles.set("ink-faint", colorMix(ref("values.ink"), ref("values.paper"), { ratio: 0.4 }));
   roles.set("teal", ref("values.accent"));
-  roles.set("teal-deep", colorMix(ref("values.accent"), ref("values.ink"), { ratio: 0.34 }));
+  // Mixed toward fixed black, not `values.ink` — ink flips light in dark mode,
+  // which previously flipped teal-deep to a pale wash instead of a deep
+  // emphasis surface (the footer/button/popover background broke in dark
+  // mode). teal-deep is an always-dark ground with onteal-deep's light text
+  // on top, in both themes.
+  roles.set("teal-deep", colorMix(ref("values.accent"), ref("values.black"), { ratio: 0.42 }));
   roles.set("teal-wash", colorMix(ref("values.paper"), ref("values.accent"), { ratio: 0.08 }));
   roles.set("teal-on-wash", bestContrastWith(ref("roles.teal-wash"), contrastChoices));
   roles.set("onteal-deep", bestContrastWith(ref("roles.teal-deep"), contrastChoices));

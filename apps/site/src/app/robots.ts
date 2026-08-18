@@ -3,6 +3,7 @@
 
 import type { MetadataRoute } from "next";
 import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
+import { MAINTAINER_DOC_SLUGS, maintainersRoute } from "@/lib/spec-nav-slugs.ts";
 
 // SEO/GEO standard MUST #1.5: robots.txt, page-level robots directives, and
 // application responses must agree with the approved access policy.
@@ -15,15 +16,27 @@ import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
 // governance decision the policy owner has not recorded; this file does not
 // invent one. /design and /palette (contributor-only, feature-flagged,
 // already `noindex, nofollow` in their own layouts), /sandbox (mock demo
-// data, already `noindex, nofollow` in its layout), and
-// /specification/README (contributor-facing authoring notes, already
-// `noindex, nofollow` in its own generateMetadata) are disallowed here too,
-// so the crawl policy holds even for a crawler that ignores meta robots.
+// data, already `noindex, nofollow` in its layout), /specification/README
+// (contributor-facing authoring notes, already `noindex, nofollow` in its own
+// generateMetadata), and /maintainers with every document it lists (unlisted
+// non-normative material, already `noindex, nofollow` in their own metadata)
+// are disallowed here too, so the crawl policy holds even for a crawler that
+// ignores meta robots.
 export default function robots(): MetadataRoute.Robots {
   return {
     rules: {
       allow: "/",
-      disallow: ["/design", "/palette", "/sandbox", "/specification/README"],
+      // Each maintainer document is disallowed alongside the index that lists
+      // them: disallowing the index alone left the documents open, so a crawler
+      // that never saw the index still indexed every one of them.
+      disallow: [
+        "/design",
+        "/palette",
+        "/sandbox",
+        "/specification/README",
+        maintainersRoute,
+        ...MAINTAINER_DOC_SLUGS.map((slug) => `/specification/${slug}`),
+      ],
       userAgent: "*",
     },
     sitemap: `${SITE_ORIGIN}/sitemap.xml`,

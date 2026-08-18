@@ -14,6 +14,21 @@
  */
 
 [data-pdpp-doc-theme] {
+  /* All three width tokens are declared HERE, on the surface root, so the hero
+     and the body cannot drift onto different edges.
+     --container-measure is restated rather than inherited on purpose:
+     PdppConceptShell puts data-surface="concept" and data-pdpp-doc-theme on the
+     SAME element, and both selectors are specificity (0,1,0). Leaving this to
+     the concept surface's 600px meant the spec's measure was decided by the
+     import order in specification/layout.tsx — swap those two lines and it
+     silently changes. The 1600px override below raises this same token. */
+  --container-measure: 600px;
+  /* Widest a figure (table, diagram) may grow. */
+  --container-figure: 860px;
+  /* How far a table may outdent past the prose measure on each side. Zero
+     below the point where the measure is already the full column width —
+     outdenting there would push the table under the rails. */
+  --table-outset: 0px;
   color: var(--pdpp-concept-ink);
   background: var(--pdpp-concept-paper);
 }
@@ -21,20 +36,68 @@
 /* ─── Fumadocs layout grid ───────────────────────────────────────────────── */
 
 [data-pdpp-doc-theme] #nd-docs-layout {
-  --fd-banner-height: 3rem;
-  --fd-docs-height: calc(100dvh - 3rem);
+  /* The real masthead measures ~70px (py-5 + an intrinsic nav row), not the
+     3rem fumadocs assumes. With the wrong value the rail and TOC rendered
+     below the header at rest and then snapped 22px upward on first scroll —
+     both panes lurching together. --pdpp-masthead-height is published by the
+     masthead itself (see masthead.tsx); 3rem stays as the pre-hydration
+     fallback so the first paint is never unstyled. */
+  --fd-banner-height: var(--pdpp-masthead-height, 3rem);
+  --fd-docs-height: calc(100dvh - var(--pdpp-masthead-height, 3rem));
   /* Match the `container max-w-page` wrapper in specification/shell.tsx —
      not --container-page directly: the grid lives inside container padding. */
   --fd-layout-width: 100%;
   --fd-sidebar-width: var(--spacing-rail);
-  /* TOC lives in the left rail; keep the right column closed. */
+  /* Right column (per-page section nav) stays closed below xl: the document
+     rail + a TOC column + a readable measure don't fit in --container-page
+     (1080px) at once. It opens back up at the xl breakpoint below. */
   --fd-toc-width: 0px;
   font-family: var(--font-sans);
   background: transparent;
 }
 
-@media (min-width: 1280px) and (max-width: 1439.98px) {
-  [data-pdpp-doc-theme] #nd-docs-layout aside[class*="[grid-area:toc]"] {
+@media (min-width: 1280px) {
+  [data-pdpp-doc-theme] #nd-docs-layout {
+    --fd-toc-width: 15rem;
+  }
+
+  /* The document track shares the site container rather than going
+     full-bleed, so the rail's links start on the same x as the masthead
+     wordmark and every page on the site opens on one vertical line.
+
+     An earlier revision here removed the container's max-width on the
+     grounds that "Cloudflare Docs pins both rails to the viewport." That
+     was a measurement error: it read Cloudflare's rail CONTAINER, which is
+     indeed full-bleed, not the link text inside it, which sits at x=16
+     against a wordmark at x=24. Re-measured 2026-08-14 across 11 docs sites
+     that have a rail, 9 align the rail's link text to the wordmark within
+     16px (Cloudflare 24/16, Stripe 4/12, Deno 18/18, Astro 24/16, MCP
+     272/256, GitHub 16/24, Terraform 24/16, OpenTelemetry 12/21, Better
+     Stack 405/391) and NONE pins rail text to the viewport edge. Ours sat
+     at 32 while its own wordmark was at 607 — a 575px divergence at 2560,
+     unmatched anywhere in the reference class.
+
+     The rails do now cost the reading column real width — the centre track
+     is container-minus-480px. That is paid for by the shared container
+     width in concept/components.css, NOT by a docs-only override: every
+     reference site that aligns its rail this way keeps ONE container across
+     surfaces and absorbs the rails inside it (Better Stack, Tailscale,
+     OpenTelemetry, MCP and Kubernetes all hold their wordmark at the
+     identical x on docs and non-docs pages, measured 2026-08-14). A
+     docs-only widening would move the masthead between pages again. */
+}
+
+/* Fumadocs ships `#nd-toc` with its own `max-xl:hidden` utility, but the
+   concept surface compiles Tailwind in a SEPARATE build from fumadocs' own
+   preset (see concept/index.css), and that build's own unconditional
+   `.flex{display:flex}` chunk loads AFTER fumadocs' — same specificity, later
+   in the cascade, so it silently wins over the media-scoped `max-xl:hidden`
+   at every width, and `#nd-toc` never actually collapses below 1280px (it
+   renders `display:flex` at zero width instead). Force it here instead: this
+   file is unlayered plain CSS, which always outranks a `@layer utilities`
+   rule regardless of source order, so this is not itself racing the same bug. */
+@media (max-width: 1279.98px) {
+  [data-pdpp-doc-theme] #nd-toc {
     display: none;
   }
 }
@@ -76,6 +139,11 @@
   gap: 0;
   width: 100%;
   max-width: none;
+  /* Fumadocs' px-4/md:px-6/xl:px-8 resolved to 48px on the left and 0 on the
+     right here, which pushed every centred descendant half a gutter right and
+     made the two column gaps differ by exactly that 48px at every viewport.
+     Symmetric inline padding is what lets the measure centre honestly. */
+  padding-inline: var(--pdpp-docs-gutter);
   /* Fumadocs #nd-page ships py-6 / md:pt-8 / xl:pt-14 — zero so hero top
      matches PdppConceptDoc pt (see .pdpp-docs-hero__content below). */
   padding-top: 0 !important;
@@ -86,26 +154,49 @@
    would add a second 1rem inset to the article. */
 @media (max-width: 767.98px) {
   /* The concept masthead is 4rem on mobile. Fumadocs uses this value as the
-     sticky subnav offset; 3rem let that row overlap the masthead on scroll. */
+     sticky subnav offset; the header row is shrunk to its own content's
+     footprint below (see next rule), so that row is the true sticky offset. */
   [data-pdpp-doc-theme] #nd-docs-layout {
     --fd-banner-height: 4rem;
     --fd-docs-height: calc(100dvh - 4rem);
-    /* Fumadocs reserves 3.5rem here by default, but the concept subnav is
-       3rem. Keep the grid row equal to the rendered header. */
-    --fd-header-height: 3rem;
+    /* This row's own grid track is zeroed below (its only content, the drawer
+       trigger, is repositioned onto the popover row instead), so the popover
+       becomes the single sticky control row and this height no longer stacks
+       above it. */
+    --fd-header-height: 0px;
     /* The table scrollport outsets through the article's right inset. The grid
        otherwise clips that extra width before it reaches the outer container. */
     overflow-x: visible;
   }
 
-  /* Keep the sticky navigation row opaque while the TOC popover remains
-     available from its trigger. */
+  /* This row carries only the drawer trigger (title is null, search is hidden
+     above). Giving it its own grid row stacked the trigger above the "On this
+     page" popover as two separate bars — row-reverse only changed which edge
+     the icon sat on, it did not merge the rows (fumadocs renders --fd-header-height
+     and --fd-toc-popover-height as two consecutive grid tracks; no amount of
+     flex-direction on the header's own content changes that it IS a second
+     track). Zero the track instead and let the header overlay the popover
+     row's trailing edge, sized to just the trigger button. */
   [data-pdpp-doc-theme] #nd-subnav {
-    background: var(--pdpp-concept-paper) !important;
-    /* Paint over the table's right-hand bleed without extending the subnav
-       border or changing the position of its controls. */
-    box-shadow: var(--spacing-pad) 0 var(--pdpp-concept-paper);
+    position: absolute;
+    inset-block-start: var(--fd-docs-row-1);
+    inset-inline-end: 0;
+    z-index: 20;
+    width: auto;
+    height: var(--fd-toc-popover-height);
+    padding-inline: 0.5rem;
+    background: none !important;
+    border-bottom: none;
     backdrop-filter: none;
+  }
+
+  /* The popover's own trigger is a single w-full button (fumadocs owns its
+     DOM; there is no slot to add a sibling control into that row), so the
+     drawer trigger above overlays its trailing edge instead of sharing flow.
+     Reserve room on that edge so the "On this page" label/chevron never sit
+     underneath the overlaid button. */
+  [data-pdpp-doc-theme] [data-toc-popover-trigger] {
+    padding-inline-end: calc(2.25rem + 0.5rem);
   }
 
   [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
@@ -116,8 +207,11 @@
 @media (min-width: 768px) {
   [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
     --pdpp-docs-gutter: 1.5rem;
-    padding-inline-start: var(--spacing-gutter);
-    padding-inline-end: 0;
+    /* Symmetric. This was start: 48px / end: 0, which is the whole reason the
+       measure could not centre: every centred descendant inherited a column
+       that was 48px narrower on one side, so the rail-side and TOC-side gaps
+       differed by exactly 48px at 1280, 1440, 1920 and 2560 alike. */
+    padding-inline: var(--spacing-gutter);
   }
 }
 
@@ -133,9 +227,9 @@
   color: var(--pdpp-concept-ink-soft);
 }
 
-/* The TOC's own h3 label is styled further down, after the prose h3 rules:
-   an id outranks them, so declaring it here reads as a descending-specificity
-   override even though the two subtrees never overlap. */
+/* The TOC link rung itself is styled further down, after the prose/action
+   link rules: an id outranks them, so declaring it here reads as a
+   descending-specificity override even though the two subtrees never overlap. */
 
 [data-pdpp-doc-theme] #nd-toc a.data-\[active\=true\],
 [data-pdpp-doc-theme] #nd-toc [data-active="true"] {
@@ -153,11 +247,28 @@
 
 /* ─── Doc hero (front matter) ────────────────────────────────────────────── */
 
+/* The hero is a sibling of .pdpp-docs-body, not a child, so it cannot use the
+   document grid directly — it reproduces the same measure track instead. It
+   used to be pinned left while the body centred, putting the title and the
+   first paragraph beneath it on two different x positions. --container-figure
+   and --container-measure both come from the surface root. */
 [data-pdpp-doc-theme] .pdpp-docs-hero {
-  margin-inline: 0;
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr)
+    [measure-start] min(100%, var(--container-measure)) [measure-end]
+    minmax(0, 1fr);
+  width: 100%;
+  max-width: var(--container-figure);
+  margin-inline: auto;
   margin-bottom: 2.75rem;
   background: none;
   border: none;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-hero > * {
+  grid-column: measure;
+  min-width: 0;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-hero__content {
@@ -217,16 +328,85 @@
 
 /* ─── Prose body ─────────────────────────────────────────────────────────── */
 
-/* Track is full column; measure lives on prose nodes — same split as .pdpp-doc. */
+/* ── The document grid ───────────────────────────────────────────────────────
+ *
+ * One grid owns every horizontal edge in the article. Earlier revisions set
+ * max-width and margin per element — prose here, tables there, hero somewhere
+ * else — and the edges drifted apart: at 1920 the table started at 525, the
+ * prose at 595 and the hero at 703, three ragged edges down one page.
+ *
+ * The grid states the intent once instead: one centred `measure` track with a
+ * flexible bleed either side.
+ *
+ *   ...bleed... [measure-start] ...text... [measure-end] ...bleed...
+ *
+ * Every block sits in `measure`, so the whole stack shares one edge and stays
+ * optically centred between the two rails at every viewport. A table that
+ * needs more room outdents symmetrically from that edge (see --table-outset
+ * below) rather than occupying a second track — one mechanism decides
+ * horizontal placement, and the outset is a stated exception to it.
+ *
+ * This is the pattern Stripe and Cloudflare docs use (a measure column with an
+ * opt-in wide track), and it is why their edges hold steady while scrolling.
+ * The measure grows with the viewport rather than pinning at 600px — a fixed
+ * measure inside a widening column strands the article in the left third of a
+ * 2560 screen — and stays inside the 60-75 character convention at both ends.
+ */
 [data-pdpp-doc-theme] .pdpp-docs-body {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr)
+    [measure-start] min(100%, var(--container-measure)) [measure-end]
+    minmax(0, 1fr);
   width: 100%;
-  max-width: none;
+  max-width: var(--container-figure);
+  margin-inline: auto;
   font-family: var(--font-serif);
 }
 
-[data-pdpp-doc-theme] .pdpp-docs-body :where(h1, h2, h3, h4, p, li, blockquote),
-[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
-  max-width: var(--container-measure);
+/* Everything is prose unless it opts out. */
+[data-pdpp-doc-theme] .pdpp-docs-body > * {
+  grid-column: measure;
+  min-width: 0;
+}
+
+/* Tables get a small outset, not the full figure track. Measured on shipped
+   docs sites 2026-08-14: Stripe holds tables at the prose width exactly
+   (797 against 799 at 1440), GitHub likewise (720/720), and MDN — the only one
+   of four that outsets at all — goes just 77px wider. An earlier revision here
+   gave tables the full 860px figure track against 720px prose, a 140px break
+   that is wider than any of them and made the right edge jump as the reader
+   scrolled. The outset is enough to stop three-column tables wrapping every
+   cell to two words, without reading as a different column. */
+[data-pdpp-doc-theme] .pdpp-docs-body > .pdpp-docs-table-scroll {
+  grid-column: measure;
+  width: calc(100% + 2 * var(--table-outset));
+  margin-inline: calc(-1 * var(--table-outset));
+}
+
+/* Mermaid renders into a bare centring div with no width of its own, so
+   diagrams ran 838px at 1440 and 1958px at 2560 while the prose held 600 — the
+   right edge visibly moved as the reader scrolled past one. The SVG scales
+   inside its track rather than the box growing to fit it. */
+[data-pdpp-doc-theme] .pdpp-docs-body svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Scoped to the whole doc surface, not .pdpp-docs-body: the hero is a sibling
+   of the body and reproduces the same measure track, so a bump that lands on
+   only one of them splits the page onto two edges (h1 at 655 against prose at
+   595, measured at 1920 before this moved up). */
+@media (min-width: 1024px) {
+  [data-pdpp-doc-theme] {
+    --table-outset: 40px;
+  }
+}
+
+@media (min-width: 1600px) {
+  [data-pdpp-doc-theme] {
+    --container-measure: 720px;
+  }
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose {
@@ -240,6 +420,34 @@
   font-family: var(--font-serif);
   color: var(--pdpp-concept-ink);
   letter-spacing: normal;
+}
+
+/* Generated specification headings are fragment targets for Fumadocs' TOC.
+   They share the concept masthead, so compensate for that measured sticky
+   height here rather than letting the target disappear underneath it. */
+[data-pdpp-doc-theme] .pdpp-docs-body :is(h2, h3, h4)[id] {
+  scroll-margin-block-start: calc(var(--pdpp-masthead-height, 72px) + 1rem);
+}
+
+/* On mobile, Fumadocs adds the sticky "On this page" row beneath the concept
+   masthead. Include both pieces of chrome in the fragment offset. */
+@media (max-width: 767.98px) {
+  [data-pdpp-doc-theme] .pdpp-docs-body :is(h2, h3, h4)[id] {
+    scroll-margin-block-start: calc(4rem + var(--fd-toc-popover-height) + 1rem);
+  }
+}
+
+/* Match the concept rail's desktop landing rhythm: the target title sits lower
+   in the viewport instead of pressed against the masthead. */
+@media (min-width: 1024px) {
+  [data-pdpp-doc-theme] .pdpp-docs-body :is(h2, h3, h4)[id] {
+    scroll-margin-block-start: calc(
+      var(--pdpp-masthead-height, 72px) +
+      (var(--spacing-section-gap) / 1.5) +
+      1rem -
+      10px
+    );
+  }
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body h2 {
@@ -428,10 +636,14 @@
   border-radius: 0;
 }
 
-[data-pdpp-doc-theme] .pdpp-docs-table-scroll {
-  width: 100%;
-  max-width: 100%;
-  margin: 24px 0;
+/* Width and placement come from the document grid above; this rule only owns
+   the scrollport behaviour for the case where even that is too narrow
+   (many-column tables on small screens). Scoped to a direct child of the body
+   to match the grid rule's specificity — a bare .pdpp-docs-table-scroll here
+   would be a lower-specificity selector appearing after a higher one, which is
+   both a lint error and a real ordering hazard. */
+[data-pdpp-doc-theme] .pdpp-docs-body > .pdpp-docs-table-scroll {
+  margin-block: 24px;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
 }
@@ -498,7 +710,9 @@
    nowrap is useful at reading widths, but on a narrow screen it can consume
    the table and leave the remaining cells as a thin, clipped strip. */
 @media (max-width: 767.98px) {
-  [data-pdpp-doc-theme] .pdpp-docs-table-scroll {
+  /* Same selector shape as the grid rule above, so this stays an override of
+     it rather than a lower-specificity rule that happens to come later. */
+  [data-pdpp-doc-theme] .pdpp-docs-body > .pdpp-docs-table-scroll {
     width: calc(100% + var(--spacing-pad));
     max-width: none;
     margin-inline-end: calc(-1 * var(--spacing-pad));
@@ -598,6 +812,18 @@
   white-space: normal;
 }
 
+/* The TOC is the SECTION list within one document; the left rail (.pdpp-rail__doc,
+   13px / 1.35 line-height) is the DOCUMENT list it sits opposite. Fumadocs ships
+   TOC links at its own 15px / 1.6 rung with a 4.39:1 muted gray — a size+leading
+   step up from the rail and just under the 4.5:1 gate. Match the rail's rung
+   exactly and use ink-faint (5.1:1) so the TOC reads as clearly subordinate.
+   Deferred from the TOC block above so it follows the prose/action link rules. */
+[data-pdpp-doc-theme] #nd-toc a {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--pdpp-concept-ink-faint);
+}
+
 /* Deferred from the TOC block above so it follows the prose h3 rules. */
 [data-pdpp-doc-theme] #nd-toc h3 {
   margin: 0 0 10px;
@@ -623,6 +849,14 @@
   }
 }
 
+/* No divider on the rail. Surveying shipped docs UIs (Mobbin, 2026-08-14),
+   the two patterns are: a rail on a FILLED panel whose edge a 1px line
+   terminates (Exa, Base44, GitBook, Cloudflare), or a transparent rail
+   separated by whitespace and type weight alone (Mintlify, OpenAI Platform).
+   This rail is transparent, so a border here is a line with nothing behind it
+   — the weaker half of one pattern and the wrong half of the other. It also
+   made /specification inconsistent with /self-host and /participate, which
+   carry the same rail with no line. Whitespace does the separating. */
 [data-pdpp-doc-theme] #nd-sidebar {
   --fd-sidebar-width: var(--spacing-rail);
   font-family: var(--font-sans);

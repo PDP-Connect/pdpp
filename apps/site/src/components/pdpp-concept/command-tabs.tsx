@@ -9,78 +9,66 @@ import {
   commandText,
   defaultChoices,
   METHODS,
-  type MethodId,
   PUBLIC_URL_PLACEHOLDER,
   type SelfHostChoices,
 } from "@/lib/self-host-command.ts";
 
-// THE SELF-HOST COMMAND BUILDER.
-//
-// THREE ROWS, which is the owner's constraint and the whole layout budget:
-//   1. method tabs
-//   2. one dominant command, the whole panel being the copy target
-//   3. the configuration choices
-// Anything that does not earn a place in those three rows goes under Advanced,
-// which sits OUTSIDE the panel so it reads as a fourth-tier affordance rather
-// than a fourth row.
-//
-// A GOAL-BASED BUILDER IS JUSTIFIED because the choices change what the node
-// can do — reachable-from-hosted-clients or not, semantic search or lexical.
-// Only outcomes are exposed. No env var, port, profile, service or image name
-// appears in the UI; those are written by `self-host-command.ts`.
-//
-// WHAT IS DELIBERATELY NOT A CHOICE:
-//   - Persistent storage. Always on. A data server that forgets is not one.
-//   - Browser-based sources. Always on, and streamed so a human can watch and
-//     take over a sign-in. It costs one image tag; making a reader opt into it
-//     only produces nodes that fail at the first ChatGPT login.
-//
-// PRECEDENT, and what was taken from each:
-//   opencode.ai   plain-text tabs with an underline on the active one, and —
-//                 the highest-value detail — the ENTIRE command panel is the
-//                 copy button, not a small icon with a tiny hit target.
-//   PyTorch       the install matrix never hides or moves anything when a
-//                 choice changes; geometry is frozen and the command sits in a
-//                 permanently reserved slot. That is why the URL input's space
-//                 is always reserved here and only its visibility toggles.
-//   GOV.UK        conditional reveals are fine when kept to a single input,
-//                 but must not be tethered ambiguously between two inline
-//                 options — so the input sits below the whole control.
 const STORAGE_KEY = "pdpp-command-tab";
+const SELF_MANAGED_METHODS = METHODS.filter(
+  (entry): entry is (typeof METHODS)[number] & { id: "docker" | "compose" } =>
+    entry.id === "docker" || entry.id === "compose"
+);
 
-function Segments({ method, choices }: { method: MethodId; choices: SelfHostChoices }) {
+type SelfManagedMethod = (typeof SELF_MANAGED_METHODS)[number]["id"];
+
+function Segments({ method, choices }: { method: SelfManagedMethod; choices: SelfHostChoices }) {
   const built = buildCommand(method, choices);
   if (!built.segments) {
     return null;
   }
+
+  return built.segments.map((part, index) =>
+    part.emphasis ? (
+      <b className="pdpp-cmd__em" key={`${index}-${part.text}`}>
+        {part.text}
+      </b>
+    ) : (
+      <span key={`${index}-${part.text}`}>{part.text}</span>
+    )
+  );
+}
+
+function ProviderCard({ method }: { method: "fly" | "railway" }) {
+  const built = buildCommand(method, defaultChoices);
+  const label = METHODS.find((entry) => entry.id === method)?.label ?? method;
+
   return (
-    <>
-      {built.segments.map((part, index) =>
-        part.emphasis ? (
-          <b className="pdpp-cmd__em" key={`${index}-${part.text}`}>
-            {part.text}
-          </b>
-        ) : (
-          <span key={`${index}-${part.text}`}>{part.text}</span>
-        )
-      )}
-    </>
+    <article className="pdpp-cmd__provider">
+      <h3 className="pdpp-cmd__provider-title">{label}</h3>
+      <p className="pdpp-cmd__provider-copy">{built.unavailable}</p>
+      {built.unavailableHref ? (
+        <a className="pdpp-cmd__provider-action" href={built.unavailableHref} rel="noopener noreferrer" target="_blank">
+          {built.unavailableLinkLabel ?? "Learn more"} →
+        </a>
+      ) : null}
+    </article>
   );
 }
 
 export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
-  const [method, setMethod] = useState<MethodId>(METHODS[0]?.id ?? "compose");
+  const [method, setMethod] = useState<SelfManagedMethod>("docker");
   const [choices, setChoices] = useState<SelfHostChoices>(defaultChoices);
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
   const urlInputId = useId();
+  const commandPanelId = useId();
+  const accessDescriptionId = useId();
+  const searchDescriptionId = useId();
 
-  // Restore after mount, not during render: the server has no localStorage, and
-  // reading it during render would desync the first client paint from the HTML.
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved && METHODS.some((entry) => entry.id === saved)) {
-      setMethod(saved as MethodId);
+    if (saved === "docker" || saved === "compose") {
+      setMethod(saved);
     }
   }, []);
 
@@ -97,7 +85,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
 
   const built = buildCommand(method, choices);
 
-  function select(id: MethodId) {
+  function select(id: SelfManagedMethod) {
     setMethod(id);
     window.localStorage.setItem(STORAGE_KEY, id);
   }
@@ -106,105 +94,61 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
     if (!built.segments) {
       return;
     }
+    setCopied(false);
+    setFailed(false);
     try {
       await navigator.clipboard.writeText(commandText(built.segments));
       setCopied(true);
     } catch {
-      // clipboard is undefined on insecure origins and rejects when denied.
-      // Say so rather than showing a false "Copied".
       setFailed(true);
     }
   }
 
   let copyLabel = "Copy";
+  let copyStatus = "";
   if (copied) {
     copyLabel = "Copied";
+    copyStatus = "Command copied to clipboard.";
   } else if (failed) {
     copyLabel = "Copy failed";
+    copyStatus = "Copy failed.";
   }
 
   return (
     <div className={compact ? "pdpp-cmd pdpp-cmd--compact" : "pdpp-cmd"}>
-      <div aria-label="Deployment method" className="pdpp-cmd__tabs" role="tablist">
-        {METHODS.map((entry) => (
-          <button
-            aria-controls="pdpp-cmd-panel"
-            aria-selected={entry.id === method}
-            className="pdpp-cmd__tab"
-            id={`pdpp-cmd-tab-${entry.id}`}
-            key={entry.id}
-            onClick={() => select(entry.id)}
-            role="tab"
-            type="button"
-          >
-            {entry.label}
-          </button>
-        ))}
-      </div>
-
-      {/* The whole panel is the copy target (opencode), so the hit area is the
-          command rather than a 16px icon. It is a plain button when there is a
-          command and a plain div when there is not — a button that copies
-          nothing would be a lie about what clicking does. */}
-      {built.segments ? (
-        <button
-          aria-label="Copy the command to the clipboard"
-          aria-labelledby={`pdpp-cmd-tab-${method}`}
-          className="pdpp-cmd__panel pdpp-cmd__panel--copyable"
-          data-selection-ground="teal-deep"
-          id="pdpp-cmd-panel"
-          onClick={copy}
-          type="button"
-        >
-          <pre className="pdpp-cmd__line">
-            <code>
-              <Segments choices={choices} method={method} />
-            </code>
-          </pre>
-          <span aria-hidden="true" className="pdpp-cmd__copy">
-            {copyLabel}
-          </span>
-        </button>
-      ) : (
-        <div className="pdpp-cmd__panel" data-selection-ground="teal-deep" id="pdpp-cmd-panel">
-          <p className="pdpp-cmd__blocked">
-            {built.unavailable}{" "}
-            {built.unavailableHref ? (
-              <a href={built.unavailableHref} rel="noopener noreferrer" target="_blank">
-                {built.unavailableLinkLabel ?? "Learn more"} →
-              </a>
-            ) : null}
-          </p>
+      <section aria-labelledby="pdpp-cmd-self-managed-title" className="pdpp-cmd__flow">
+        <div className="pdpp-cmd__flow-heading">
+          <h3 id="pdpp-cmd-self-managed-title">Run it yourself</h3>
+          <p>Use Docker on a computer you control.</p>
         </div>
-      )}
 
-      {/* ROW 3. Two binary controls with the same shape, so "off" is always a
-          named alternative rather than an absence.
-          SHOWN ON DOCKER AND COMPOSE, the two methods that emit a real shell
-          command a reader runs directly, so both can thread Access/Search
-          straight into flags (`docker run -e ...`) or `.env` lines.
-          HIDDEN ON RAILWAY AND FLY, deliberately: neither path can carry these
-          values into the single command shown. Railway's template link cannot
-          carry variable values at all; Fly's command always advertises its own
-          `https://<app>.fly.dev` origin (Fly assigns that hostname before the
-          app exists) and has no per-run search-mode flag, so leaving the
-          controls live would let a reader set them and silently get something
-          else. The panel above says where those settings are actually made. */}
-      {built.segments === null || (method !== "compose" && method !== "docker") ? null : (
+        <div aria-label="Self-managed deployment method" className="pdpp-cmd__tabs" role="tablist">
+          {SELF_MANAGED_METHODS.map((entry) => (
+            <button
+              aria-controls={commandPanelId}
+              aria-selected={entry.id === method}
+              className="pdpp-cmd__tab"
+              id={`pdpp-cmd-tab-${entry.id}`}
+              key={entry.id}
+              onClick={() => select(entry.id)}
+              role="tab"
+              type="button"
+            >
+              {entry.label}
+              {entry.id === "docker" ? <span className="pdpp-cmd__recommended">Recommended</span> : null}
+            </button>
+          ))}
+        </div>
+
         <div className="pdpp-cmd__config">
-          {/* OUTCOMES, NOT SETTINGS. "Access: this machine only / web apps and
-              other devices" made the reader decode the question before they
-              could answer it (owner, 2026-08-05: "Access and Search are sort of
-              esoteric; you are making the user really think about what the
-              question is").
-              THE OPTIONS NAME A PLACE, NOT A PRODUCT. An earlier pass labelled
-              these with the assistants themselves, which dated the page to
-              whichever tools shipped this quarter and read as an endorsement.
-              A reader picks where the node has to be reachable FROM; the named
-              examples belong in the sentence below, where they explain the
-              choice rather than define it. */}
-          <fieldset className="pdpp-cmd__choice">
-            <legend className="pdpp-cmd__choice-label">Who can reach it</legend>
+          <fieldset aria-describedby={accessDescriptionId} className="pdpp-cmd__choice">
+            <legend className="pdpp-visually-hidden">Where will you use PDPP?</legend>
+            <div className="pdpp-cmd__choice-heading">
+              <span className="pdpp-cmd__choice-label">Where will you use PDPP?</span>
+              <span className="pdpp-cmd__choice-help" id={accessDescriptionId}>
+                Keeping it on this computer is private by default; sharing it requires a public address.
+              </span>
+            </div>
             <div className="pdpp-cmd__seg">
               <button
                 aria-pressed={choices.access === "local"}
@@ -212,7 +156,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, access: "local" }))}
                 type="button"
               >
-                This computer
+                Only this computer
               </button>
               <button
                 aria-pressed={choices.access === "public"}
@@ -220,13 +164,11 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, access: "public" }))}
                 type="button"
               >
-                Web apps and other devices
+                Other devices or web apps
               </button>
             </div>
           </fieldset>
 
-          {/* The space is ALWAYS reserved and only visibility toggles, so
-            choosing "web apps" cannot make the command below jump. */}
           <div className={choices.access === "public" ? "pdpp-cmd__reveal is-shown" : "pdpp-cmd__reveal"}>
             <label className="pdpp-cmd__url" htmlFor={urlInputId}>
               <span>Public address</span>
@@ -240,18 +182,18 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 value={choices.publicUrl}
               />
             </label>
-            {/* The one sentence that says what choosing this actually creates. */}
-            <p className="pdpp-cmd__hint">
-              Creates an internet-reachable MCP endpoint that still requires your sign-in.
-            </p>
+            <p className="pdpp-cmd__hint">Makes PDPP reachable over the internet and still requires your sign-in.</p>
           </div>
 
-          {/* "Search: by meaning / keywords only" named the retrieval technique
-              and left the reader to work out which one they wanted. The real
-              trade is a capability against a download, so the options say what
-              you get and what it costs. */}
-          <fieldset className="pdpp-cmd__choice">
-            <legend className="pdpp-cmd__choice-label">Finding things</legend>
+          <fieldset aria-describedby={searchDescriptionId} className="pdpp-cmd__choice">
+            <legend className="pdpp-visually-hidden">Choose a search mode</legend>
+            <div className="pdpp-cmd__choice-heading">
+              <span className="pdpp-cmd__choice-label">Choose a search mode</span>
+              <span className="pdpp-cmd__choice-help" id={searchDescriptionId}>
+                Meaning-based search downloads extra search data; exact-word search uses less storage but only matches
+                the words you type.
+              </span>
+            </div>
             <div className="pdpp-cmd__seg">
               <button
                 aria-pressed={choices.semanticSearch}
@@ -259,7 +201,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, semanticSearch: true }))}
                 type="button"
               >
-                Search what you meant
+                Meaning-based search
               </button>
               <button
                 aria-pressed={!choices.semanticSearch}
@@ -267,12 +209,50 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, semanticSearch: false }))}
                 type="button"
               >
-                Exact words, no model download
+                Exact-word search
               </button>
             </div>
           </fieldset>
         </div>
-      )}
+
+        <button
+          aria-label={`Copy ${method === "docker" ? "Docker" : "Docker Compose"} command to the clipboard`}
+          className="pdpp-cmd__panel pdpp-cmd__panel--copyable"
+          data-selection-ground="teal-deep"
+          id={commandPanelId}
+          onClick={copy}
+          type="button"
+        >
+          <span className="pdpp-cmd__command-heading">
+            <span className="pdpp-cmd__command-label">Your command</span>
+            <span className="pdpp-cmd__command-instruction">
+              Copy this command, paste it into Terminal, then press Enter.
+            </span>
+          </span>
+          <pre className="pdpp-cmd__line">
+            <code>
+              <Segments choices={choices} method={method} />
+            </code>
+          </pre>
+          <span aria-hidden="true" className="pdpp-cmd__copy">
+            {copyLabel}
+          </span>
+        </button>
+        <span aria-live="polite" className="pdpp-visually-hidden" role="status">
+          {copyStatus}
+        </span>
+      </section>
+
+      <section aria-labelledby="pdpp-cmd-provider-title" className="pdpp-cmd__flow pdpp-cmd__flow--providers">
+        <div className="pdpp-cmd__flow-heading">
+          <h3 id="pdpp-cmd-provider-title">Or deploy with a provider</h3>
+          <p>Let a hosting platform run it for you.</p>
+        </div>
+        <div className="pdpp-cmd__providers">
+          <ProviderCard method="railway" />
+          <ProviderCard method="fly" />
+        </div>
+      </section>
     </div>
   );
 }

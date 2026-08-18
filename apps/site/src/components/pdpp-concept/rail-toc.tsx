@@ -24,11 +24,18 @@ export function PdppRailToc({ toc }: PdppRailTocProps) {
   useEffect(() => {
     const ids = linksRef.current.map((item) => item.href.slice(1)).filter(Boolean);
     const elements = ids.map((id) => document.getElementById(id)).filter((el): el is HTMLElement => el !== null);
-    if (elements.length === 0) {
+    const firstElement = elements.at(0);
+    if (!firstElement) {
       return;
     }
 
     const visible = new Set<string>();
+    // Native fragment navigation positions a target at its computed
+    // scroll-margin. Start the observer band at that same line: otherwise the
+    // previous long section remains visible above the target and wins the
+    // document-order tie below.
+    const targetOffset = Number.parseFloat(getComputedStyle(firstElement).scrollMarginBlockStart);
+    const rootMargin = Number.isFinite(targetOffset) ? `-${targetOffset}px 0px -70% 0px` : "0px 0px -70% 0px";
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -41,7 +48,7 @@ export function PdppRailToc({ toc }: PdppRailTocProps) {
         const firstVisible = ids.find((id) => visible.has(id));
         setActiveHref(firstVisible ? `#${firstVisible}` : null);
       },
-      { rootMargin: "0px 0px -70% 0px", threshold: 0 }
+      { rootMargin, threshold: 0 }
     );
 
     for (const el of elements) {

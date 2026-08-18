@@ -1,7 +1,7 @@
 # PDPP Source Declaration Discovery and Trust v0.1.0
 
 Status: Companion specification draft
-Date: 2026-08-11
+Date: 2026-08-14
 
 ---
 

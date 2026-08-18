@@ -16,10 +16,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { PdppRailFrontMatter } from "@/components/pdpp-concept/rail-front-matter.tsx";
 import { PdppRailSectionLabel } from "@/components/pdpp-concept/rail-section-label.tsx";
-import { docsRoute, SUPPORTING_SLUGS } from "@/lib/spec-nav-slugs.ts";
 import { useSpecRailData } from "./rail-context.tsx";
-
-const supportingUrls = new Set(SUPPORTING_SLUGS.map((slug) => `${docsRoute}/${slug}`));
 
 // The `slots.sidebar.root` replacement.
 //
@@ -48,7 +45,6 @@ function RailItem({ item }: { item: PageTree.Item }) {
       aria-current={active ? "page" : undefined}
       className="pdpp-rail__doc"
       data-active={active ? "true" : undefined}
-      data-supporting={supportingUrls.has(item.url) ? "true" : undefined}
       href={item.url}
     >
       {item.name}
@@ -56,11 +52,10 @@ function RailItem({ item }: { item: PageTree.Item }) {
   );
 }
 
-// The rail carries exactly one label ("Specification"), and the supporting
-// documents sit under a hairline with NO heading — a second heading would make
-// them a visual peer of the specification and put all fourteen documents back
-// on equal footing, which is the thing this rail exists to undo. The tree's
-// own separators are therefore rendered as the rule, not as titles.
+// The rail carries exactly one label ("Specification"). The tree it renders now
+// holds only the specification set (see getSpecNavTree), so any other separator
+// would be an empty divider — rendered as a bare rule rather than a title, which
+// keeps a stray tree entry from ever reading as a rival section heading.
 function RailSeparator({ item }: { item: PageTree.Separator }) {
   const label = typeof item.name === "string" ? item.name : "";
   if (label === "Specification") {

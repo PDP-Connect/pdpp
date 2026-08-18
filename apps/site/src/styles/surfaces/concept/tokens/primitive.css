@@ -22,6 +22,9 @@
   --pdpp-concept-ink-soft: #4e5052;
   --pdpp-concept-ink-faint: #67696b;
   --pdpp-concept-teal: oklch(0.42 0.07 245);
+  /* Production values. Light mode was never broken, so these are unchanged;
+     an earlier commit on this branch darkened them as a side effect of the
+     dark-mode repair below and said nothing about it. */
   --pdpp-concept-teal-deep: #253d53;
   --pdpp-concept-teal-wash: #e4e7ea;
   --pdpp-concept-teal-on-wash: #181b1d;
@@ -39,6 +42,19 @@
   --pdpp-concept-ink-soft: #aaacae;
   --pdpp-concept-ink-faint: #8f9192;
   --pdpp-concept-teal: oklch(0.7 0.1 245);
+  /* Production ships #98bde1 here — a LIGHT blue with near-black text on it,
+     which only ever looked right because dark mode never actually engaged
+     (the provider set data-theme but not the .dark class fumadocs reads).
+     With dark mode working, that footer renders light-on-light. This is the
+     dark counterpart of the light #253d53. */
+  /* Callum's designed inversion (PR #85): in dark mode the footer is a LIGHT
+     panel with dark text, the reverse of light mode. It never rendered that
+     way because the theme provider set data-theme but not the `.dark` class
+     fumadocs reads, so dark mode never engaged and the panel looked
+     light-on-light. The class is fixed in theme-provider.tsx; these values are
+     his and stay his. Contrast on this ground: body 9.05:1, soft 6.67:1,
+     label 3.78:1 — all passing, and better than the conventional dark panel
+     that briefly replaced them (6.05 / 4.62 / 3.10). */
   --pdpp-concept-teal-deep: #98bde1;
   --pdpp-concept-teal-wash: #1d2227;
   --pdpp-concept-teal-on-wash: #edeff0;

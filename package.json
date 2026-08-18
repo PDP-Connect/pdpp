@@ -57,6 +57,8 @@
     "generated-artifacts:write": "node --import tsx scripts/check-generated-artifacts.ts --write",
     "retained-js-mjs:check": "node --import tsx scripts/check-retained-js-mjs-boundaries.ts",
     "spec:check": "node --import tsx scripts/spec-check.ts",
+    "spec:dates": "node --import tsx scripts/spec-date-check.ts",
+    "spec:dates:write": "node --import tsx scripts/spec-date-check.ts --write",
     "openspec:archive-check": "node --import tsx scripts/openspec-archive-check.ts",
     "openspec:archive-check:test": "pnpm test:scratch -- node --test --import tsx scripts/openspec-archive-check.test.ts",
     "public-tree:hygiene-check": "node --import tsx scripts/check-public-tree-hygiene.ts",

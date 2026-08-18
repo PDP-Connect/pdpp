@@ -6,7 +6,7 @@ description: "How an authorization server discovers, validates, and accepts PDPP
 <Callout type="info" title="Spec status">
   Status: **Companion specification draft**
 
-  Date: 2026-08-11
+  Date: 2026-08-14
 
   Scope: Source onboarding, provider-native discovery, bounded retrieval, authority, and accepted declaration revisions.
 </Callout>
