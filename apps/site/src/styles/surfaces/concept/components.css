@@ -610,6 +610,12 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   gap: 8px;
   padding: 4px 8px 0;
   overflow-x: auto;
+  /* `overflow-x: auto` alone makes the block a scroll container on BOTH axes,
+     so the tab labels' 47px content in a 46px row (the active tab's underline
+     inset) raised a vertical scrollbar over a row that has nothing to scroll
+     vertically. Clip the block axis: horizontal scrolling still works when the
+     tabs outgrow the row, and the stray pixel is simply cut. */
+  overflow-y: clip;
   overscroll-behavior-inline: contain;
   border-bottom: 1px solid var(--border-subtle);
 }
