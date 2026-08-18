@@ -33,7 +33,7 @@ export function PdppConceptSection({ children, className, id, sectionIndex, titl
         "max-[720px]:mt-10",
         className
       )}
-      data-slot="pdpp-concept-section"
+      data-slot="pdpp-editorial-section"
       id={id}
     >
       <Text as="h2" sectionIndex={sectionIndex} size="title">

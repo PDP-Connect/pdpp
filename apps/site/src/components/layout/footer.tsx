@@ -47,7 +47,7 @@ export function PdppConceptFooter() {
         "bg-primary-emphasis"
       )}
       data-selection-ground="teal-deep"
-      data-slot="pdpp-concept-footer"
+      data-slot="pdpp-editorial-footer"
     >
       <div
         className={cn(

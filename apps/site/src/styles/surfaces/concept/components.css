@@ -28,7 +28,7 @@
  *          .pdpp-note (MDX remark asides — spec + concept),
  *          data-selection-ground (teal-deep ::selection override).
  *   INTENTION — shrink this file toward shell hooks + shared MDX primitives; each
- *          widget above becomes a pdpp-concept component with TW before its BEM is removed.
+ *          widget above becomes a pdpp-editorial component with TW before its BEM is removed.
  *
  * SHARED CHROME WITH /specification (why this file loads on the spec route):
  *   specification/layout.tsx imports concept/index.css (tokens + this register)
@@ -93,19 +93,19 @@
      Railed pages only. The front door is a full-bleed two-column hero, not a
      measured document: capping it here squeezed it into the left 720px of its
      container, clipped the data columns mid-word and wrapped the CTA row. */
-  [data-surface="concept"]:has([data-slot="pdpp-concept-rail"]) .pdpp-doc {
+  [data-surface="concept"]:has([data-slot="pdpp-editorial-rail"]) .pdpp-doc {
     max-width: var(--container-concept-figure);
   }
 }
 
 /* Teal fill on light grounds; wash on teal-deep (data-selection-ground="teal-deep"). */
 [data-surface="concept"] ::selection {
-  color: var(--pdpp-concept-paper);
-  background: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-paper);
+  background: var(--pdpp-editorial-teal);
 }
 [data-surface="concept"] [data-selection-ground="teal-deep"] ::selection {
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-teal-wash);
+  color: var(--pdpp-editorial-ink);
+  background: var(--pdpp-editorial-teal-wash);
 }
 
 /* Page-level scrollbar only — not terminal/table overflow-x bars. */
@@ -122,7 +122,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
    sticky masthead, whose measured height is published at runtime by
    PdppConceptMasthead. The fallback also makes a direct fragment navigation
    land correctly before hydration. */
-[data-surface="concept"] [data-slot="pdpp-concept-section"] {
+[data-surface="concept"] [data-slot="pdpp-editorial-section"] {
   scroll-margin-block-start: calc(var(--pdpp-masthead-height, 72px) + 1rem);
 }
 
@@ -130,7 +130,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
    "Contents" label: rail top pad (64px) + TOC inset (16px), less the 10px
    baseline difference between the 12px rail label and the title rung. */
 @media (min-width: 1024px) {
-  [data-surface="concept"] [data-slot="pdpp-concept-section"] {
+  [data-surface="concept"] [data-slot="pdpp-editorial-section"] {
     scroll-margin-block-start: calc(
       var(--pdpp-masthead-height, 72px) +
       (var(--spacing-section-gap) / 1.5) +
@@ -199,18 +199,18 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 }
 /* Prose article rhythm for raw <p> only — not <Text data-slot>. Composed
    stacks own spacing with gap; no mb-0! hammer needed on Text trees. */
-.pdpp-doc p:not([data-slot="pdpp-concept-text"]) {
+.pdpp-doc p:not([data-slot="pdpp-editorial-text"]) {
   margin: 0 0 16px;
 }
-.pdpp-doc p:not([data-slot="pdpp-concept-text"]):last-child {
+.pdpp-doc p:not([data-slot="pdpp-editorial-text"]):last-child {
   margin-bottom: 0;
 }
 .pdpp-note {
   padding: 16px 20px;
   margin: 24px 0;
   font-size: 16px;
-  background: var(--pdpp-concept-teal-wash);
-  border-left: 2px solid var(--pdpp-concept-teal);
+  background: var(--pdpp-editorial-teal-wash);
+  border-left: 2px solid var(--pdpp-editorial-teal);
 }
 .pdpp-note p:last-child {
   margin-bottom: 0;
@@ -267,14 +267,14 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-size: 15px;
   font-style: italic;
   line-height: 1.5;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 .pdpp-eyebrow {
   margin-bottom: 8px;
   font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 500;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -303,7 +303,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 .pdpp-ruled-list__body p {
   margin: 0;
   font-size: 16px;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 
 /* ─── Terminal block ─────────────────────────────────────────────────────── */
@@ -314,20 +314,20 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1.7;
-  /* --pdpp-concept-onteal-deep, not -paper: the terminal keeps its teal-deep
-     ground in both color schemes (see --pdpp-concept-onteal-deep* above). */
-  color: var(--pdpp-concept-onteal-deep);
-  background: var(--pdpp-concept-teal-deep);
-  border: 1px solid var(--pdpp-concept-teal-deep);
+  /* --pdpp-editorial-onteal-deep, not -paper: the terminal keeps its teal-deep
+     ground in both color schemes (see --pdpp-editorial-onteal-deep* above). */
+  color: var(--pdpp-editorial-onteal-deep);
+  background: var(--pdpp-editorial-teal-deep);
+  border: 1px solid var(--pdpp-editorial-teal-deep);
   box-shadow: 1px 1px 0
-    color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
+    color-mix(in srgb, var(--pdpp-editorial-ink) 22%, transparent);
 }
 .pdpp-terminal__label {
   display: block;
   margin-bottom: 12px;
   font-family: var(--font-sans);
   font-size: 11px;
-  color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 70%, white);
+  color: color-mix(in srgb, var(--pdpp-editorial-onteal-deep-wash) 70%, white);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -343,7 +343,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-family: var(--font-mono);
   font-size: 0.86em;
   overflow-wrap: anywhere;
-  background: var(--pdpp-concept-paper-deep);
+  background: var(--pdpp-editorial-paper-deep);
   border-radius: 2px;
 }
 /* The rule above styles INLINE code in prose (a light chip on paper). Inside the
@@ -381,10 +381,10 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 600;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  border-bottom: 1px solid var(--pdpp-concept-ink-faint);
+  border-bottom: 1px solid var(--pdpp-editorial-ink-faint);
 }
 
 .pdpp-impl-table {
@@ -440,7 +440,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-family: var(--font-sans);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
   letter-spacing: 0.04em;
 }
 
@@ -474,7 +474,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   padding: 12px 16px;
   font-family: var(--font-sans);
   font-size: 15px;
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
   text-decoration: none;
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -484,9 +484,9 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 }
 .pdpp-channel:hover,
 .pdpp-channel:focus-visible {
-  color: var(--pdpp-concept-teal);
-  background: var(--pdpp-concept-teal-wash);
-  border-color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
+  background: var(--pdpp-editorial-teal-wash);
+  border-color: var(--pdpp-editorial-teal);
 }
 .pdpp-channel__icon {
   flex: none;
@@ -498,11 +498,11 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 }
 .pdpp-channel__arrow {
   flex: none;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
 }
 .pdpp-channel:hover .pdpp-channel__arrow,
 .pdpp-channel:focus-visible .pdpp-channel__arrow {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
 }
 /* Full-size pills need ~685px combined and wrap to a second row anywhere
    the doc column falls short of that — true in the stacked mobile layout
@@ -547,13 +547,13 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   padding: 3px 10px;
   font-family: var(--font-sans);
   font-size: 11px;
-  color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 70%, white);
+  color: color-mix(in srgb, var(--pdpp-editorial-onteal-deep-wash) 70%, white);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   cursor: pointer;
   background: transparent;
   border: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 35%, transparent);
+    color-mix(in srgb, var(--pdpp-editorial-onteal-deep-wash) 35%, transparent);
   border-radius: 2px;
 }
 .pdpp-copy-btn:hover,
@@ -561,7 +561,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   color: white;
   border-color: color-mix(
     in srgb,
-    var(--pdpp-concept-onteal-deep-wash) 70%,
+    var(--pdpp-editorial-onteal-deep-wash) 70%,
     transparent
   );
 }
@@ -591,7 +591,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
    hierarchy, not the colour. */
 .pdpp-cmd {
   margin: 32px 0 8px;
-  background: var(--pdpp-concept-paper);
+  background: var(--pdpp-editorial-paper);
   border: 1px solid var(--border);
   border-radius: 4px;
 }
@@ -630,7 +630,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   margin-bottom: -1px;
   font-family: var(--font-sans);
   font-size: 14px;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
   cursor: pointer;
   background: none;
   border: 0;
@@ -639,19 +639,19 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 .pdpp-cmd__recommended {
   font-size: 10px;
   font-weight: 600;
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 .pdpp-cmd__tab:hover {
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 .pdpp-cmd__tab[aria-selected="true"] {
-  color: var(--pdpp-concept-ink);
-  border-bottom-color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-ink);
+  border-bottom-color: var(--pdpp-editorial-teal);
 }
 .pdpp-cmd__tab:focus-visible {
-  outline: 2px solid var(--pdpp-concept-teal);
+  outline: 2px solid var(--pdpp-editorial-teal);
   outline-offset: -2px;
   border-radius: 2px;
 }
@@ -678,12 +678,12 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-family: var(--font-serif);
   font-size: 20px;
   line-height: 1.2;
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
 }
 .pdpp-cmd__flow-heading p {
   font-family: var(--font-sans);
   font-size: 13px;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 .pdpp-cmd__panel {
   position: relative;
@@ -694,13 +694,13 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   width: 100%;
   min-width: 0;
   padding: 64px 20px 20px;
-  color: var(--pdpp-concept-onteal-deep);
+  color: var(--pdpp-editorial-onteal-deep);
   text-align: left;
-  background: var(--pdpp-concept-teal-deep);
-  border: 1px solid var(--pdpp-concept-teal-deep);
+  background: var(--pdpp-editorial-teal-deep);
+  border: 1px solid var(--pdpp-editorial-teal-deep);
   border-radius: 3px;
   box-shadow: 1px 1px 0
-    color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
+    color-mix(in srgb, var(--pdpp-editorial-ink) 22%, transparent);
 }
 /* The whole panel is the copy target, per opencode: a 16px icon is a poor hit
    area for the single most important action on the page. The ghost label is
@@ -745,7 +745,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-family: var(--font-mono);
   font-size: 13.5px;
   line-height: 1.75;
-  color: var(--pdpp-concept-onteal-deep-soft);
+  color: var(--pdpp-editorial-onteal-deep-soft);
   word-break: normal;
   overflow-wrap: normal;
   white-space: pre;
@@ -760,7 +760,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 /* Subtle color shift for image name; weight matches surrounding text. */
 .pdpp-cmd__em {
   font-weight: 400;
-  color: var(--pdpp-concept-onteal-deep);
+  color: var(--pdpp-editorial-onteal-deep);
 }
 .pdpp-cmd__copy {
   position: absolute;
@@ -806,14 +806,14 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-size: 12px;
   font-weight: 600;
   line-height: inherit;
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
 }
 .pdpp-cmd__choice-help {
   max-width: 64ch;
   font-family: var(--font-sans);
   font-size: 12.5px;
   line-height: inherit;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
 }
 /* Both choices are binary and share one shape, so "off" is always a named
    alternative rather than an unchecked box whose meaning the reader infers. */
@@ -828,14 +828,14 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   padding: 5px 11px;
   font-family: var(--font-sans);
   font-size: 13px;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
   cursor: pointer;
   background: none;
   border: 1px solid var(--border);
   border-radius: 2px;
 }
 .pdpp-cmd__seg-btn:hover {
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 .pdpp-cmd__seg-btn[aria-pressed="true"] {
   color: var(--primary-on-wash);
@@ -844,7 +844,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   box-shadow: inset 0 0 0 1px var(--primary);
 }
 .pdpp-cmd__seg-btn:focus-visible {
-  outline: 2px solid var(--pdpp-concept-teal);
+  outline: 2px solid var(--pdpp-editorial-teal);
   outline-offset: 1px;
 }
 .pdpp-cmd__reveal {
@@ -871,7 +871,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-size: 12px;
   font-weight: 600;
   line-height: 1.4;
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
 }
 .pdpp-cmd__url input {
   width: 100%;
@@ -880,13 +880,13 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   padding: 9px 12px;
   font-family: var(--font-mono);
   font-size: 14px;
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
   background: none;
   border: 1px solid var(--border);
   border-radius: 2px;
 }
 .pdpp-cmd__url input:focus-visible {
-  outline: 2px solid var(--pdpp-concept-teal);
+  outline: 2px solid var(--pdpp-editorial-teal);
   outline-offset: 1px;
 }
 .pdpp-cmd__hint {
@@ -894,7 +894,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-family: var(--font-sans);
   font-size: 12px;
   line-height: 1.5;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
 }
 .pdpp-cmd__providers {
   display: grid;
@@ -903,7 +903,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 }
 .pdpp-cmd__provider {
   padding: 16px;
-  background: var(--pdpp-concept-paper-deep);
+  background: var(--pdpp-editorial-paper-deep);
   border: 1px solid var(--border-subtle);
   border-radius: 3px;
 }
@@ -915,14 +915,14 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-family: var(--font-serif);
   font-size: 18px;
   line-height: 1.2;
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
 }
 .pdpp-cmd__provider-copy {
   margin: 6px 0 0;
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.45;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 .pdpp-cmd__provider-action {
   display: inline-block;

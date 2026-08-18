@@ -152,7 +152,7 @@ export function PdppConceptMasthead() {
       </Text>
       <header
         className={cn("sticky top-0 z-20 bg-background", pathname !== "/" && "border-b")}
-        data-slot="pdpp-concept-masthead"
+        data-slot="pdpp-editorial-masthead"
         ref={headerRef}
       >
         <div

@@ -31,11 +31,11 @@ export function PdppConceptPage({ children, className }: ConceptPageProps) {
         "container max-w-page shrink-0 grow basis-auto",
         // Default: one track; lg+ with PdppRail: rail | doc
         "grid grid-cols-[minmax(0,1fr)] items-start",
-        "lg:has-[>[data-slot=pdpp-concept-rail]]:grid-cols-[var(--spacing-rail)_minmax(0,1fr)]",
-        "lg:has-[>[data-slot=pdpp-concept-rail]]:gap-x-gutter",
+        "lg:has-[>[data-slot=pdpp-editorial-rail]]:grid-cols-[var(--spacing-rail)_minmax(0,1fr)]",
+        "lg:has-[>[data-slot=pdpp-editorial-rail]]:gap-x-gutter",
         className
       )}
-      data-slot="pdpp-concept-page"
+      data-slot="pdpp-editorial-page"
     >
       {children}
     </main>
@@ -71,10 +71,10 @@ export function PdppConceptFrontPage({ children, className }: ConceptPageProps) 
         // reverted: it stops main growing, which fixes the band but strands the
         // footer 404px above the bottom of a tall window.
         "items-center",
-        "**:data-[slot=pdpp-concept-doc]:pt-7! **:data-[slot=pdpp-concept-doc]:pb-5! max-md:**:data-[slot=pdpp-concept-doc]:pt-0!",
+        "**:data-[slot=pdpp-editorial-doc]:pt-7! **:data-[slot=pdpp-editorial-doc]:pb-5! max-md:**:data-[slot=pdpp-editorial-doc]:pt-0!",
         className
       )}
-      data-slot="pdpp-concept-page"
+      data-slot="pdpp-editorial-page"
     >
       {children}
     </main>
@@ -93,11 +93,11 @@ export function PdppConceptDoc({ children, className }: ConceptDocProps) {
         "min-w-0 max-w-full pt-[calc(var(--spacing-section-gap)/1.5)] pb-[calc(var(--spacing-section-gap)*1.25)]",
         // max-lg
         "max-md:pt-0 max-lg:pt-[calc(var(--spacing-section-gap)/3)] max-lg:pb-[calc(var(--spacing-section-gap)*0.75)]",
-        "[&_[data-slot=pdpp-concept-text]_a]:link-prose",
+        "[&_[data-slot=pdpp-editorial-text]_a]:link-prose",
         "[&_a:not([class])]:link-prose",
         className
       )}
-      data-slot="pdpp-concept-doc"
+      data-slot="pdpp-editorial-doc"
     >
       {children}
     </article>

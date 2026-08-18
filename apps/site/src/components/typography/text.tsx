@@ -74,7 +74,7 @@ export function Text<T extends ElementType = "p">({
 
   return (
     <BrandText<T>
-      data-slot="pdpp-concept-text"
+      data-slot="pdpp-editorial-text"
       smartQuotes
       {...(props as BrandTextProps<T>)}
       className={cn(

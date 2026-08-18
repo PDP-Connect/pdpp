@@ -62,13 +62,13 @@ export function ColorSchemeMenu() {
     const root = document.documentElement;
 
     if (activeScheme === primitiveConceptColorSchemeName) {
-      delete root.dataset.pdppConceptScheme;
+      delete root.dataset.pdppEditorialScheme;
     } else {
-      root.dataset.pdppConceptScheme = activeScheme;
+      root.dataset.pdppEditorialScheme = activeScheme;
     }
 
     return () => {
-      delete root.dataset.pdppConceptScheme;
+      delete root.dataset.pdppEditorialScheme;
     };
   }, [activeScheme]);
 

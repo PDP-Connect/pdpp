@@ -33,7 +33,7 @@ export function PdppRail({ toc }: PdppRailProps) {
         "focus-within:[&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--foreground)_28%,transparent)]",
         "[&::-webkit-scrollbar-thumb:hover]:bg-[color-mix(in_srgb,var(--foreground)_45%,transparent)]"
       )}
-      data-slot="pdpp-concept-rail"
+      data-slot="pdpp-editorial-rail"
     >
       <PdppRailToc toc={toc} />
     </aside>

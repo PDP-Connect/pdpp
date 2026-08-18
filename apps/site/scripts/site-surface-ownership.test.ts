@@ -9,15 +9,15 @@ import { fileURLToPath } from "node:url";
 const SITE_ROOT = fileURLToPath(new URL("../src/", import.meta.url));
 
 /** Token-ownership probes — hoisted so the regexes compile once per module. */
-const BACKGROUND_REBIND_RE = /--background: var\(--pdpp-concept-paper\)/;
+const BACKGROUND_REBIND_RE = /--background: var\(--pdpp-editorial-paper\)/;
 // 1280 is the median landing-page container across 16 measured protocol and
 // infra sites (see the header of concept/tokens/semantic.css); 1080 sat at the
 // 10th percentile. This pin exists to keep the value declared HERE rather than
 // as a runtime primitive, so it moves with the token, not with the number.
 const CONTAINER_PAGE_VALUE_RE = /--container-page: 1280px/;
 const CONTAINER_PAGE_RE = /--container-page/;
-const CONCEPT_MAX_RE = /--pdpp-concept-max/;
-const CONCEPT_SERIF_RE = /--pdpp-concept-serif/;
+const CONCEPT_MAX_RE = /--pdpp-editorial-max/;
+const CONCEPT_SERIF_RE = /--pdpp-editorial-serif/;
 
 function readSiteFile(path: string): Promise<string> {
   return readFile(`${SITE_ROOT}${path}`, "utf8");
@@ -56,7 +56,7 @@ test("site presentation ownership stays explicit at route boundaries", async () 
   assert.equal(conceptShell.includes("<PdppConceptMasthead />"), true);
   assert.equal(conceptShell.includes("<PdppConceptFooter />"), true);
   assert.equal(conceptShell.includes("data-surface={CONCEPT_SURFACE}"), true);
-  assert.equal(conceptShell.includes("pdpp-concept"), false);
+  assert.equal(conceptShell.includes("pdpp-editorial"), false);
   assert.equal(siteCss.includes("surfaces/"), false);
 });
 

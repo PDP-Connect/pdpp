@@ -29,8 +29,8 @@
      below the point where the measure is already the full column width —
      outdenting there would push the table under the rails. */
   --table-outset: 0px;
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-paper);
+  color: var(--pdpp-editorial-ink);
+  background: var(--pdpp-editorial-paper);
 }
 
 /* ─── Fumadocs layout grid ───────────────────────────────────────────────── */
@@ -108,11 +108,11 @@
 
 [data-pdpp-doc-theme] #nd-subnav {
   height: 3rem;
-  background: var(--pdpp-concept-paper);
+  background: var(--pdpp-editorial-paper);
   border-color: color-mix(
     in srgb,
-    var(--pdpp-concept-ink) 18%,
-    var(--pdpp-concept-paper)
+    var(--pdpp-editorial-ink) 18%,
+    var(--pdpp-editorial-paper)
   );
 }
 
@@ -135,7 +135,7 @@
 
 [data-pdpp-doc-theme] #nd-page {
   font-family: var(--font-serif);
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
 }
 
 [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
@@ -228,7 +228,7 @@
 [data-pdpp-doc-theme] #nd-toc {
   padding-top: 6.5rem;
   font-family: var(--font-sans);
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 
 /* The TOC link rung itself is styled further down, after the prose/action
@@ -237,15 +237,15 @@
 
 [data-pdpp-doc-theme] #nd-toc a.data-\[active\=true\],
 [data-pdpp-doc-theme] #nd-toc [data-active="true"] {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
 }
 
 [data-pdpp-doc-theme] [data-toc-popover] header {
-  background: var(--pdpp-concept-paper);
+  background: var(--pdpp-editorial-paper);
   border-bottom-color: color-mix(
     in srgb,
-    var(--pdpp-concept-ink) 18%,
-    var(--pdpp-concept-paper)
+    var(--pdpp-editorial-ink) 18%,
+    var(--pdpp-editorial-paper)
   );
 }
 
@@ -290,7 +290,9 @@
   }
 }
 
-[data-pdpp-doc-theme] .pdpp-docs-hero__content [data-slot="pdpp-concept-text"] {
+[data-pdpp-doc-theme]
+  .pdpp-docs-hero__content
+  [data-slot="pdpp-editorial-text"] {
   margin: 0;
 }
 
@@ -306,7 +308,7 @@
   font-family: var(--font-serif);
   font-size: clamp(0.96rem, 1.8vw, 1.05rem);
   line-height: 1.7;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-actions {
@@ -317,7 +319,11 @@
   padding-top: 1rem;
   margin-top: 1.25rem;
   border-top: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+    color-mix(
+      in srgb,
+      var(--pdpp-editorial-ink) 18%,
+      var(--pdpp-editorial-paper)
+    );
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-actions a,
@@ -413,12 +419,12 @@
    fumadocs `.prose` color-token bridge and the ink color for non-Text prose
    chrome (e.g. Fumadocs-owned nodes this file doesn't wrap in `Text`). */
 [data-pdpp-doc-theme] .pdpp-docs-body.prose {
-  --tw-prose-body: var(--pdpp-concept-ink);
-  color: var(--pdpp-concept-ink);
+  --tw-prose-body: var(--pdpp-editorial-ink);
+  color: var(--pdpp-editorial-ink);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body :where(h2, h3, h4) {
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
 }
 
 /* Generated specification headings are fragment targets for Fumadocs' TOC.
@@ -489,31 +495,31 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body a {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
   text-decoration-thickness: 1px;
   text-underline-offset: 0.18em;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body a:hover,
 [data-pdpp-doc-theme] .pdpp-docs-body a:focus-visible {
-  color: var(--pdpp-concept-teal-deep);
+  color: var(--pdpp-editorial-teal-deep);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body blockquote {
   padding: 1rem 1.1rem;
   margin: 1.75rem 0;
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-teal-wash);
-  border-left: 2px solid var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-ink);
+  background: var(--pdpp-editorial-teal-wash);
+  border-left: 2px solid var(--pdpp-editorial-teal);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
   padding: 12px 16px;
   margin: 20px 0;
   font-size: 15.5px;
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-teal-wash);
-  border-left: 2px solid var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-ink);
+  background: var(--pdpp-editorial-teal-wash);
+  border-left: 2px solid var(--pdpp-editorial-teal);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note strong {
@@ -552,12 +558,12 @@
   font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1.7;
-  color: var(--pdpp-concept-onteal-deep) !important;
-  background: var(--pdpp-concept-teal-deep) !important;
-  border: 1px solid var(--pdpp-concept-teal-deep) !important;
+  color: var(--pdpp-editorial-onteal-deep) !important;
+  background: var(--pdpp-editorial-teal-deep) !important;
+  border: 1px solid var(--pdpp-editorial-teal-deep) !important;
   border-radius: 0 !important;
   box-shadow: 1px 1px 0
-    color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
+    color-mix(in srgb, var(--pdpp-editorial-ink) 22%, transparent);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose :where(figure.shiki) {
@@ -662,7 +668,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose :where(td) {
-  color: var(--pdpp-concept-ink) !important;
+  color: var(--pdpp-editorial-ink) !important;
   border-inline-start: none !important;
 }
 
@@ -673,7 +679,7 @@
 [data-pdpp-doc-theme] .pdpp-docs-body tbody,
 [data-pdpp-doc-theme] .pdpp-docs-body tr,
 [data-pdpp-doc-theme] .pdpp-docs-body td {
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
   background: transparent;
 }
 
@@ -681,7 +687,7 @@
   font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 600;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -696,7 +702,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body thead th {
-  border-bottom: 1px solid var(--pdpp-concept-ink-faint);
+  border-bottom: 1px solid var(--pdpp-editorial-ink-faint);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body th:first-child,
@@ -784,13 +790,13 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"]:hover {
-  background: var(--pdpp-concept-teal-wash);
+  background: var(--pdpp-editorial-teal-wash);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"] h3 {
   font-family: var(--font-sans);
   font-weight: 600;
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body + div a {
@@ -800,7 +806,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body + div a:hover {
-  background: var(--pdpp-concept-teal-wash);
+  background: var(--pdpp-editorial-teal-wash);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body + div a p {
@@ -820,7 +826,7 @@
 [data-pdpp-doc-theme] #nd-toc a {
   font-size: 13px;
   line-height: 1.35;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
 }
 
 /* Deferred from the TOC block above so it follows the prose h3 rules. */
@@ -873,7 +879,7 @@
 }
 
 [data-pdpp-doc-theme] #nd-sidebar [data-active="true"] {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
   background: none;
 }
 
@@ -905,38 +911,38 @@
   margin-bottom: 9px;
   font-size: 13px;
   line-height: 1.35;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
   text-decoration: none;
   background: none;
   border-radius: 0;
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__doc:hover {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
   background: none;
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__doc[data-active="true"] {
   font-weight: 500;
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
   background: none;
-  box-shadow: -9px 0 0 -6px var(--pdpp-concept-teal);
+  box-shadow: -9px 0 0 -6px var(--pdpp-editorial-teal);
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__rule {
   margin: 32px 0 20px;
   border: 0;
   border-top: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 14%, transparent);
+    color-mix(in srgb, var(--pdpp-editorial-ink) 14%, transparent);
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__doc[data-supporting="true"] {
   font-size: 12px;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__doc[data-supporting="true"]:hover,
 [data-pdpp-doc-theme]
   .pdpp-rail__doc[data-supporting="true"][data-active="true"] {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
 }
