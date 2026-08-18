@@ -1066,3 +1066,146 @@ test("fold: a zero-checkpoint historical row recovers when a genuinely new corre
     assert.equal(recoveredFacts.fact.collected, 7);
   });
 });
+
+// Production-shaped regression (2026-08-18): the sibling test above only
+// covers a row that reaches checkpoint 0 THROUGH a live refusal under the
+// CURRENT write path — but the current write path (078b72e3a) always stamps
+// a refused row's checkpoint to that round's own high-water, so a row
+// refused today never actually stays at 0. It only proves the recovery
+// signal (a genuinely new, correctly-attributed event) reaches a row whose
+// checkpoint is already off zero.
+//
+// A row that reached checkpoint 0 BEFORE 078b72e3a shipped (the old write
+// path froze the checkpoint at its stale prior value on refusal instead of
+// advancing it) has no such live path back to a nonzero checkpoint: it is
+// seeded here directly in that durable shape, matching production rows
+// observed 2026-08-17 (cin_316b0e196d55bc14a70804fa, cin_a6aa0550ed70c8ce6bd73170,
+// cin_50f5bf4b7ecbc7acd6f4c254), all sitting at `stream_facts_event_seq = 0`
+// with `terminal_facts_reason_code = 'terminal_facts_historical'` roughly
+// 1.46M events behind the fleet high-water.
+//
+// Confirmed live on production: setting `dirty = 1` directly on those three
+// rows did NOT recover them -- the dirty flag was consumed (cleared) by the
+// unrelated repair/reconcile sweep within ~75s, but `terminal_fold_participants`
+// stayed 0 on every fold pass and `stream_facts_event_seq` never left 0. This
+// test reproduces that exact shape and proves `dirty` now genuinely reopens
+// the carve-out (`rowNeedsFoldParticipation`, connector-summary-read-model.ts),
+// and that the reopened row converges and then goes durably quiet again --
+// not a return to the old "participate every pass forever" starvation this
+// carve-out exists to prevent.
+test("fold: an ALREADY-STRANDED checkpoint-0 historical row (production shape) recovers once dirtied, then goes quiet again", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_stranded_active", "imessage");
+    // A large, unrelated fleet-wide event log has moved far ahead of this
+    // row -- modeled with a sibling connection's own terminal history, the
+    // same shared page-wide `maxSeq` the real sweep computes across the
+    // whole fleet.
+    seedInstance("cin_unrelated_busy", "gmail");
+    await rebuildConnectorSummaryEvidence();
+    for (let i = 0; i < 25; i += 1) {
+      seedTerminalEvent({
+        connectorInstanceId: "cin_unrelated_busy",
+        occurredAt: `2026-06-17T09:${String(i).padStart(2, "0")}:00.000Z`,
+        runId: `run_unrelated_${i}`,
+        streams: [{ checkpoint: "committed", collected: i, stream: "messages" }],
+      });
+    }
+    await foldConnectorSummaryStreamFacts(["cin_unrelated_busy"]);
+    const unrelatedHighWater = getDb()
+      .prepare("SELECT MAX(event_seq) AS max_seq FROM spine_events")
+      .get<{ max_seq: number }>();
+    assert.ok(unrelatedHighWater && unrelatedHighWater.max_seq >= 25, "premise: a large fleet-wide log exists ahead");
+
+    // A `terminal_facts_historical` row always has AT LEAST ONE terminal
+    // event genuinely attributed to it -- the very event that was refused
+    // as generation-mismatched. `readMaxTerminalEventSeq`/
+    // `readMaxTerminalEventSeqByInstance` are scoped strictly to this one
+    // connection's own `connector_instance_id`, so a row with literally
+    // ZERO attributable events of its own (unlike production) would make
+    // this per-instance `maxSeq` resolve to NULL and never converge --
+    // that would be a test-fixture artifact, not the real stranded shape.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_stranded_active",
+      occurredAt: "2026-06-17T08:00:00.000Z",
+      runId: "run_stranded_original_refusal",
+      streams: [{ checkpoint: "committed", collected: 1, stream: "messages" }],
+    });
+
+    // Seed the STRANDED shape directly -- checkpoint 0, historical, dirty
+    // cleared -- the durable state a row reaches after that refused
+    // generation-mismatched event under the OLD (pre-078b72e3a) write path,
+    // or any row that reached this state before that fix deployed.
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET terminal_facts_state = 'stale',
+                terminal_facts_reason_code = 'terminal_facts_historical',
+                stream_facts_event_seq = 0,
+                stream_latest_facts_json = NULL,
+                dirty = 0
+          WHERE connector_instance_id = ?`
+      )
+      .run("cin_stranded_active");
+
+    // Confirm the stranded row is genuinely excluded while clean -- the
+    // documented starvation guard must still hold before any recovery
+    // signal arrives.
+    const beforeDirty = await foldConnectorSummaryStreamFacts(["cin_stranded_active"]);
+    assert.equal(beforeDirty.participants, 0, "a clean stranded row must not participate (starvation guard)");
+    const stillStranded = getDb()
+      .prepare("SELECT stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?")
+      .get<{ stream_facts_event_seq: number | null }>("cin_stranded_active");
+    assert.equal(stillStranded?.stream_facts_event_seq, 0, "premise: still stranded at checkpoint 0 while clean");
+
+    // The exact recovery action from the live incident: mark the row dirty
+    // (an operator/maintenance dirty-mark, or any changed record write for
+    // this connection -- the same signal `markConnectorSummaryEvidenceDirty`
+    // raises).
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET dirty = 1 WHERE connector_instance_id = ?")
+      .run("cin_stranded_active");
+
+    const recoveryPass = await foldConnectorSummaryStreamFacts(["cin_stranded_active"]);
+    assert.equal(recoveryPass.participants, 1, "a DIRTY stranded row must re-enter the fold exactly once");
+
+    const afterRecovery = getDb()
+      .prepare(
+        "SELECT stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      )
+      .get<{
+        stream_facts_event_seq: number | null;
+        terminal_facts_reason_code: string | null;
+        terminal_facts_state: string;
+      }>("cin_stranded_active");
+    assert.ok(afterRecovery, "evidence row exists after the recovery pass");
+    assert.ok(
+      afterRecovery.stream_facts_event_seq !== null && afterRecovery.stream_facts_event_seq > 0,
+      "the checkpoint is stamped to the real high-water, not left at 0"
+    );
+
+    // Now the ordinary lag predicate governs -- with nothing new since the
+    // stamp, the row must go quiet again, exactly like any other converged
+    // row. This is the property that distinguishes the fix from the old
+    // unconditional-participation starvation bug: recovery costs ONE pass,
+    // not every pass forever.
+    const quietPass = await foldConnectorSummaryStreamFacts(["cin_stranded_active"]);
+    assert.equal(
+      quietPass.participants,
+      0,
+      "the recovered row must go quiet again on the next pass with nothing new (starvation guard still holds)"
+    );
+
+    // Being dirtied AGAIN with still nothing new must not re-strand or
+    // re-trigger participation, because the checkpoint is no longer zero --
+    // the exact clause that gated re-entry cannot match a second time.
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET dirty = 1 WHERE connector_instance_id = ?")
+      .run("cin_stranded_active");
+    const secondDirtyPass = await foldConnectorSummaryStreamFacts(["cin_stranded_active"]);
+    assert.equal(
+      secondDirtyPass.participants,
+      0,
+      "a later dirty-mark with a nonzero checkpoint follows the ordinary lag predicate, not the stranded-recovery carve-out"
+    );
+  });
+});

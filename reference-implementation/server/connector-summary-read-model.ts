@@ -2148,10 +2148,25 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
   // at its own generation AND no position in the log. Checkpoint-lag is
   // trivially true for it (0 < maxSeq always), so falling through to that
   // predicate makes it rejoin every pass forever -- exactly the starvation
-  // the historical carve-out above was meant to end. It re-enters only when
-  // something actually changes for it: a new event lands and the generic
-  // dirty/candidate path marks it, or its checkpoint advances past zero.
-  if (Number(checkpoint ?? 0) === 0 && row.terminal_facts_reason_code === "terminal_facts_historical") {
+  // the historical carve-out above was meant to end.
+  //
+  // `dirty` is the re-entry signal, and it has to be checked HERE: this
+  // predicate is the only gate into `participants`, and the fold's write path
+  // is the only thing that advances `stream_facts_event_seq`. Without the
+  // dirty term below, a row already sitting at zero had no way back in --
+  // marking it dirty cleared the flag via the repair path while
+  // `terminal_fold_participants` stayed 0, so the exclusion was permanent.
+  // Three production rows reached that state, one an active connection.
+  //
+  // Admitting a dirty row costs one pass, not a return to the livelock: once
+  // it participates, the write path stamps its checkpoint to at least the
+  // round's own high-water and never re-freezes at zero, so this clause
+  // cannot match that row again.
+  if (
+    Number(checkpoint ?? 0) === 0 &&
+    row.terminal_facts_reason_code === "terminal_facts_historical" &&
+    Number(row.dirty ?? 0) === 0
+  ) {
     return false;
   }
   return checkpoint === null || (maxSeq !== null && Number(checkpoint) < maxSeq);
@@ -3259,11 +3274,14 @@ export async function rebuildConnectorSummaryEvidence() {
  * interactive reads do not call this function.
  *
  * `options.maxCandidates`/`options.maxDurationMs`, when provided, bound the
- * repair loop and the fold this call runs — by candidate count and/or
- * wall-clock time spanning the phase units (design.md "Startup is
+ * repair loop and the fold this call runs — by candidate count and/or an
+ * admission deadline checked BETWEEN phase units, never a preemptive
+ * wall-clock cap on any single unit's own execution (design review P1-2
+ * naming correction, 2026-08-18 — see `runBoundedSummaryEvidenceSweep`'s
+ * doc for the full two-contract framing) (design.md "Startup is
  * acceleration, not authority"; Sol P2.2 closed the gap where a small
- * candidate count did not bound total time when individual repairs are
- * slow; Sol fourth-verdict P1.2 closed the further gap where the fold
+ * candidate count did not bound total elapsed time when individual repairs
+ * are slow; Sol fourth-verdict P1.2 closed the further gap where the fold
  * itself, within one connection, was unconditionally unbounded regardless
  * of this option) — used ONLY by the startup one-shot acceleration pass,
  * never by an interactive read. `options.maxEvents`, when provided,
