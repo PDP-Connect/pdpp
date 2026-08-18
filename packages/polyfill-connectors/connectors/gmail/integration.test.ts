@@ -1763,6 +1763,17 @@ test("runAllMailPasses: scheduled runs advance historical pages while forwarding
       emittedRecords.some((record) => record.stream === "messages" && record.data.id === "msg-1250"),
       "new mail in the forward range is collected while historical backfill is pending"
     );
+    const messagesCoverage = protocolMessages.find(
+      (message) => message.type === "DETAIL_COVERAGE" && message.stream === "messages"
+    );
+    assert.deepEqual(
+      messagesCoverage && { considered: messagesCoverage.considered, covered: messagesCoverage.covered },
+      { considered: 2, covered: 2 },
+      "the messages DETAIL_COVERAGE must sum BOTH the historical page (msg-1001) and the forward page " +
+        "(msg-1250) — reporting only the historical pass's considered/covered undercounts the denominator " +
+        "against the raw collected-record total, the same class of defect message_bodies's coverage " +
+        "(which does sum both passes) avoids"
+    );
 
     const third = await run({ messages: second });
     assert.deepEqual(fetchRanges, ["1001:1200", "1301:*"]);
