@@ -118,6 +118,28 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
    PdppConceptPage. Track pad lives on PdppConceptDoc. Rail: hidden <lg, sticky
    side nav lg+. Hero type: PdppFrontDoor + Text. */
 
+/* Concept rails use native fragment links. Keep their section targets below the
+   sticky masthead, whose measured height is published at runtime by
+   PdppConceptMasthead. The fallback also makes a direct fragment navigation
+   land correctly before hydration. */
+[data-surface="concept"] [data-slot="pdpp-concept-section"] {
+  scroll-margin-block-start: calc(var(--pdpp-masthead-height, 72px) + 1rem);
+}
+
+/* At the rail breakpoint, land the h2's baseline alongside the rail's
+   "Contents" label: rail top pad (64px) + TOC inset (16px), less the 10px
+   baseline difference between the 12px rail label and the title rung. */
+@media (min-width: 1024px) {
+  [data-surface="concept"] [data-slot="pdpp-concept-section"] {
+    scroll-margin-block-start: calc(
+      var(--pdpp-masthead-height, 72px) +
+      (var(--spacing-section-gap) / 1.5) +
+      1rem -
+      10px
+    );
+  }
+}
+
 @media (max-width: 720px) {
   .pdpp-ruled-list__item {
     grid-template-columns: 2em 1fr;

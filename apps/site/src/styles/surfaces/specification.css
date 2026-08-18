@@ -422,6 +422,34 @@
   letter-spacing: normal;
 }
 
+/* Generated specification headings are fragment targets for Fumadocs' TOC.
+   They share the concept masthead, so compensate for that measured sticky
+   height here rather than letting the target disappear underneath it. */
+[data-pdpp-doc-theme] .pdpp-docs-body :is(h2, h3, h4)[id] {
+  scroll-margin-block-start: calc(var(--pdpp-masthead-height, 72px) + 1rem);
+}
+
+/* On mobile, Fumadocs adds the sticky "On this page" row beneath the concept
+   masthead. Include both pieces of chrome in the fragment offset. */
+@media (max-width: 767.98px) {
+  [data-pdpp-doc-theme] .pdpp-docs-body :is(h2, h3, h4)[id] {
+    scroll-margin-block-start: calc(4rem + var(--fd-toc-popover-height) + 1rem);
+  }
+}
+
+/* Match the concept rail's desktop landing rhythm: the target title sits lower
+   in the viewport instead of pressed against the masthead. */
+@media (min-width: 1024px) {
+  [data-pdpp-doc-theme] .pdpp-docs-body :is(h2, h3, h4)[id] {
+    scroll-margin-block-start: calc(
+      var(--pdpp-masthead-height, 72px) +
+      (var(--spacing-section-gap) / 1.5) +
+      1rem -
+      10px
+    );
+  }
+}
+
 [data-pdpp-doc-theme] .pdpp-docs-body h2 {
   margin-top: 3.25rem;
   margin-bottom: 1rem;
