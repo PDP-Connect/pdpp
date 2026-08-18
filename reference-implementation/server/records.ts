@@ -1886,6 +1886,8 @@ async function ingestRecordsWithinCoordinator(
 ): Promise<IngestRecordsWithinCoordinatorResult> {
   const outcomes: Array<RecordIngestBatchOutcome | undefined> = new Array(records.length);
   const changedRecords: DeferredRecordIndex[] = [];
+  const loggingConnectorId = connectorIdForStorageTarget(storageTarget);
+  const loggingConnectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, loggingConnectorId);
   const perRecordOptions: RecordIngestOptions = {
     deferIndexes: true,
     // Re-verified inside EVERY record's own durable write transaction on
@@ -1924,11 +1926,25 @@ async function ingestRecordsWithinCoordinator(
         changedRecords.push({ index, record, version: outcome.version });
       }
     } catch (err) {
+      const classified = classifyIngestFailure(err);
       outcome = {
         accepted: false,
         changed: false,
-        error: classifyIngestFailure(err),
+        error: classified,
       };
+      // Server-log-only: classified.message can carry raw driver detail (SQL
+      // fragments, bound parameters — see classifyIngestFailure's header),
+      // which is why RecordsIngestSystemicFailureError deliberately drops it
+      // from the HTTP response and the persisted mutation.rejected event (see
+      // rs-ingest-systemic-failure-redaction.test.ts). Without this line the
+      // real cause of a systemic/retryable ingest failure was previously
+      // visible NOWHERE — not the client response (redacted by design), not
+      // the server log (no statement existed here at all) — leaving every
+      // 503 ingest_batch_storage_error undiagnosable from stored evidence.
+      console.error(
+        `[records] ingest write failed connector_instance_id=${loggingConnectorInstanceId} run_id=${runId ?? "unknown"} ` +
+          `stream=${record.stream} code=${classified.code} retryable=${classified.retryable}: ${classified.message}`
+      );
     }
     if (afterRecord && outcome.accepted) {
       try {
@@ -1937,11 +1953,17 @@ async function ingestRecordsWithinCoordinator(
         // and similar effects preserve the established store->effect order.
         await afterRecord(record, outcome);
       } catch (err) {
+        const classified = classifyIngestFailure(err);
         outcome = {
           accepted: false,
           changed: false,
-          error: classifyIngestFailure(err),
+          error: classified,
         };
+        // Same server-log-only rationale as the write-failure branch above.
+        console.error(
+          `[records] ingest afterRecord failed connector_instance_id=${loggingConnectorInstanceId} run_id=${runId ?? "unknown"} ` +
+            `stream=${record.stream} code=${classified.code} retryable=${classified.retryable}: ${classified.message}`
+        );
       }
     }
     outcomes[index] = outcome;

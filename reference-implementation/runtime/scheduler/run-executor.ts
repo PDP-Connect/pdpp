@@ -131,7 +131,13 @@ function describeFailedRunResult(result: RunConnectorResult): RunConnectorError 
   return {
     checkpoint_summary: result.checkpoint_summary || null,
     connector_error: result.connector_error || null,
-    failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
+    // Same fix as buildSuccessOrFailureRecord below: prefer the runtime's own
+    // concise failure_message over the coarse terminal_reason bucket (which
+    // this previously only forwarded for one specific reason,
+    // connector_protocol_violation) so a retried-then-exhausted run's
+    // eventual run_history row also gets a real failure_reason instead of
+    // null.
+    failure_reason: result.failure_message || result.terminal_reason || null,
     known_gaps: result.known_gaps || null,
     message: result.message || "unknown",
     records_emitted: result.records_emitted ?? 0,
@@ -408,7 +414,16 @@ function buildSuccessOrFailureRecord({
     connectorError: result.connector_error || null,
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    failureReason: null,
+    // Was hardcoded `null` unconditionally — every scheduled run's
+    // run_history.failure_reason column stayed empty even on failure,
+    // leaving `terminal_reason` (a coarse bucket) as the only classification
+    // on record and `connector_error_json` as the only other evidence. The
+    // runtime always computes a concise, run-specific failure_message (e.g.
+    // "Run exceeded a connector assistance timeout.") and already emits it on
+    // the terminal spine event; this was simply never read here. Falls back
+    // to terminal_reason so a failure with no distinct message still records
+    // something better than null.
+    failureReason: result.failure_message || result.terminal_reason || null,
     knownGaps: result.known_gaps || [],
     recordsEmitted: result.records_emitted || 0,
     reportedRecordsEmitted: result.reported_records_emitted ?? null,
