@@ -585,3 +585,51 @@ The remediation scope stays three sites. The measurement in this note stands:
 siblings. Adding a second clause to the invariant does not widen the migration
 — it widens what counts as evidence when deciding whether a component is
 healthy, which is a monitoring question, not a refactor.
+
+### A third variant: reported correctly, in a field nobody read
+
+The migration engineer, having just added the second variant, produced the
+third by making the mistake himself an hour later. He checked whether the
+maintenance sweep's backlog had drained:
+
+```sql
+SELECT record_snapshot_state, count(*) FROM connector_summary_evidence GROUP BY 1;
+-- current | 29
+```
+
+Twenty-nine of twenty-nine current, so he reported the backlog clean and
+warned that a post-deploy measurement could not distinguish the fix from the
+status quo. The real backlog at that moment was nine rows, and the sweep had
+logged seventy consecutive no-progress passes. `dirty` is a different column.
+
+Nothing was hidden, destroyed, or masked. The failure was fully and correctly
+recorded, in a field he did not read.
+
+This is the same error made earlier the same day from the other direction —
+reading `connector_summary_evidence` columns and reporting "15 of 21 green"
+while the Sources page showed otherwise. Both readers were competent, both
+queried real data, and both were confidently wrong.
+
+The structural cause is that this table carries seven signals — `dirty`,
+`state`, `record_snapshot_state`, `terminal_facts_state`,
+`manifest_declaration_state`, `retained_bytes_state`,
+`list_summary_projection_state` — none of which is the verdict, while the
+actual verdict lives in `isHealthyConditionSet`
+(`reference-implementation/runtime/connection-health.ts:1739`), ten conditions
+evaluated together. Any reader who samples one column gets a plausible answer
+that is not the answer.
+
+**A system with N independent health signals and no single authoritative one
+invites every reader to pick a different signal and be confidently wrong.**
+
+The remedy is not better logging — the logging was perfect. It is that a
+verdict must have exactly one source, and the raw signals must be hard to
+mistake for it. That is a naming and API problem: `record_snapshot_state` reads
+like the state of the record snapshot, which it is, and like the state of the
+row, which it is not.
+
+Worth noting what this shares with the other two variants and what it does
+not. All three end with an operator holding a wrong conclusion. Only the first
+involves anything being destroyed, and only the second involves anything being
+unreported. The third needs neither — it is sufficient to offer several true
+answers to slightly different questions and let the reader choose.
