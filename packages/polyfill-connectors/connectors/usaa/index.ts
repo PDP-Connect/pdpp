@@ -1219,7 +1219,21 @@ async function emitDialogUnexpectedShapeDiagnostic(
   });
 }
 
-/** Click Export, then confirm the date-range selector rendered. */
+/** Click Export, then confirm the date-range selector rendered.
+ *
+ * The readiness check is a bounded WAIT (`waitFor`), not a fixed sleep
+ * followed by a single immediate `.count()`. A one-shot count taken after a
+ * fixed delay cannot tell "the dialog will never render this select" apart
+ * from "the dialog just hasn't finished rendering yet" — on a page that
+ * renders a moment slower than `EXPORT_DIALOG_DELAY_MS` (network jitter,
+ * client-side render variance), the one-shot check reads a false
+ * `export_dialog_unexpected_shape`, which `tryExportLadder` treats as fatal
+ * and reports as `export_affordance_missing` (a "source changed, needs a
+ * code fix" outcome) instead of the transient rendering delay it actually
+ * was. `waitFor` polls up to the same overall budget and resolves the
+ * instant the select appears, so a slow-but-real render still succeeds;
+ * only a select that never appears within the budget reaches the existing
+ * unexpected-shape/Escape path, unchanged. */
 async function openExportDialog(page: Page, located: LocatedExportPage, options: DriveExportOptions): Promise<boolean> {
   const { onDiagnostics } = options;
   try {
@@ -1228,12 +1242,14 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     await emitExportClickFailedDiagnostic(page, onDiagnostics, err);
     return false;
   }
-  await politeDelay(EXPORT_DIALOG_DELAY_MS);
 
-  const selectCount = await page
-    .locator('[role="dialog"] select[name="selectionType"], select[name="selectionType"]')
-    .count()
-    .catch((): number => 0);
+  const selectLocator = page.locator('[role="dialog"] select[name="selectionType"], select[name="selectionType"]');
+  const rendered = await selectLocator
+    .first()
+    .waitFor({ state: "visible", timeout: EXPORT_DIALOG_DELAY_MS })
+    .then((): boolean => true)
+    .catch((): boolean => false);
+  const selectCount = rendered ? await selectLocator.count().catch((): number => 0) : 0;
   if (!selectCount) {
     if (onDiagnostics) {
       await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
