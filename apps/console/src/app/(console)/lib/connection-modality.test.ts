@@ -30,10 +30,10 @@ import {
 const COLLECTOR_RUN_CONNECTORS_LITERAL_RE = /COLLECTOR_RUN_CONNECTORS\s*=\s*\[([^\]]*)\]/;
 const SURROUNDING_QUOTES_RE = /^["']|["']$/g;
 
-test("supported local-collector set is exactly claude_code, codex, google_takeout, imessage, apple_photos, and google_messages", () => {
+test("supported local-collector set is exactly claude_code, codex, google_takeout, imessage, apple_photos, google_messages, and signal", () => {
   assert.deepEqual(
     [...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS],
-    ["claude_code", "codex", "google_takeout", "imessage", "apple_photos", "google_messages"]
+    ["claude_code", "codex", "google_takeout", "imessage", "apple_photos", "google_messages", "signal"]
   );
 });
 
@@ -84,6 +84,7 @@ test("isSupportedLocalCollectorConnector narrows only the supported keys", () =>
   assert.equal(isSupportedLocalCollectorConnector("imessage"), true);
   assert.equal(isSupportedLocalCollectorConnector("apple_photos"), true);
   assert.equal(isSupportedLocalCollectorConnector("google_messages"), true);
+  assert.equal(isSupportedLocalCollectorConnector("signal"), true);
   assert.equal(isSupportedLocalCollectorConnector("amazon"), false);
   assert.equal(isSupportedLocalCollectorConnector("gmail"), false);
   assert.equal(isSupportedLocalCollectorConnector(""), false);
