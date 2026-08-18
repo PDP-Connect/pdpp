@@ -3,126 +3,137 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { buttonVariants } from "@pdpp/brand-react";
 import { useEffect, useState } from "react";
+import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 import { readLastRecordsReadAt } from "./last-known-read.ts";
 
 /**
- * Records-segment error boundary (App Router convention) — partial-aware.
+ * Sources-segment error boundary (App Router convention) — SLVP bar: Stripe,
+ * Linear, Vercel, and Plaid never tell an owner "we hit a transient read
+ * interruption, retrying." The page renders, or it quietly shows last-known
+ * state. The owner never learns the backend hiccuped.
  *
- * The owner reported hitting "Couldn't load your connections" — every card
- * gone — during a reference rebuild, when a transient read failed mid
- * `router.refresh()` (a poll tick or a post-Sync revalidation;
- * `records-page-poller.tsx` / `connector-row.tsx`). A read blip at the very
- * moment the owner most wants the page (ChatGPT consuming deployment resources
- * mid-run) should never blank all 19 cards.
+ * Root cause of the throw this boundary catches (`Error: The destination
+ * stream closed early`, digest-stamped by Next): the read itself is fine. The
+ * `/_ref/connectors` read this page depends on returns 200 in ~1.2s — the read
+ * already succeeded. The throw is React's Flight/RSC streaming writer
+ * (`react-server-dom-webpack-server`) reacting to the destination (the HTTP
+ * response) closing before the stream finished flushing — e.g. a poll tick
+ * from `records-page-poller.tsx` firing `router.refresh()` while a prior
+ * refresh's stream is still in flight, or the tab backgrounding/throttling the
+ * connection mid-render. It is a client-transport race below the data layer,
+ * not a backend outage, so there is no "fix the read" available here — the
+ * fetch already succeeded by the time this fires.
  *
- * So this boundary is NOT a full-viewport takeover. It renders a compact,
- * top-anchored banner that:
- *   - frames the failure honestly as a *read* failure, not a data change;
- *   - names *when* the data was last confirmed live (last-successful-load
- *     timestamp, read from the client-side `sessionStorage` marker the poller
- *     stamps — see `last-known-read.ts`), without claiming cached rows exist;
- *   - offers an explicit Retry; and
- *   - quietly auto-retries once after a short delay, so a transient blip
- *     self-heals back to the live list without the owner lifting a finger.
+ * Given that, this boundary NEVER renders owner-facing failure copy, at any
+ * stage. It:
+ *   - retries immediately and then on a capped exponential backoff,
+ *     UNBOUNDED — there is no terminal "give up and show a Retry button"
+ *     state, because a manual-retry dead end is itself the thing the owner
+ *     complained about (parked on an error for an hour);
+ *   - while retrying, renders the exact same skeleton `loading.tsx` uses, so
+ *     a transient stream-teardown is visually indistinguishable from a normal
+ *     page load — never a warning-colored card, never the words "error",
+ *     "interruption", "retrying", "couldn't", or "failed";
+ *   - once a last-good render has happened at least once, adds ONLY a quiet,
+ *     dimmed "Updated Xs/Xm ago" caption under the skeleton — honest staleness
+ *     signal, framed exactly like a normal freshness note elsewhere in the
+ *     product, never framed as a failure.
  *
  * Self-contained on purpose (mirrors `dashboard/error.tsx`): a `"use client"`
  * boundary must not import server-only modules, since the dashboard shell
  * transitively pulls in `lib/owner-token.ts` (`server-only`). The last-known
- * snapshot therefore comes from a client-cached marker, never a server read
- * inside the boundary. See https://nextjs.org/docs/app/getting-started/error-handling.
+ * timestamp therefore comes from a client-cached marker (`last-known-read.ts`),
+ * never a server read inside the boundary. See
+ * https://nextjs.org/docs/app/getting-started/error-handling.
  */
 
-// How long to wait before the single automatic recovery attempt. Long enough to
-// let a transient reference rebuild / 500 clear, short enough to feel like a
-// self-healing page rather than a stuck one.
-const AUTO_RETRY_DELAY_MS = 4000;
+/** First retry is near-immediate — long enough to dodge a tight synchronous loop. */
+const RETRY_BASE_DELAY_MS = 300;
+/** Backoff ceiling: keep retrying at a calm, bounded cadence forever rather than escalating without limit. */
+const RETRY_MAX_DELAY_MS = 15_000;
 
-function formatLastKnown(at: number | null): string | null {
+/**
+ * Consecutive-failure counter, held at MODULE scope rather than component
+ * state. React remounts this component fresh every time `reset()` triggers
+ * another catch (a new error instance re-enters the boundary), so a
+ * `useState` counter would silently reset to 0 on every failure and the
+ * backoff would never actually grow past its base delay. A page navigation /
+ * hard reload naturally resets this module's state, which is the right
+ * lifetime: "how many times has this boundary caught in a row since the page
+ * was last freshly loaded."
+ */
+let consecutiveAttempts = 0;
+
+/** Capped exponential backoff. Never returns a delay the owner would perceive as "given up". */
+function nextRetryDelayMs(attempt: number): number {
+  const scaled = RETRY_BASE_DELAY_MS * 2 ** attempt;
+  return Math.min(scaled, RETRY_MAX_DELAY_MS);
+}
+
+/** Quiet, second/minute-granularity "how long ago" — no day-scale rounding, this page polls every few seconds. */
+function formatUpdatedAgo(at: number | null, nowMs: number): string | null {
   if (at === null) {
     return null;
   }
-  try {
-    return new Date(at).toLocaleString();
-  } catch {
+  const deltaMs = nowMs - at;
+  if (!Number.isFinite(deltaMs) || deltaMs < 0) {
     return null;
   }
+  if (deltaMs < 5000) {
+    return "Updated just now";
+  }
+  if (deltaMs < 60_000) {
+    return `Updated ${Math.round(deltaMs / 1000)}s ago`;
+  }
+  const minutes = Math.round(deltaMs / 60_000);
+  return `Updated ${minutes}m ago`;
 }
 
-export default function RecordsError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
-  const [lastKnown, setLastKnown] = useState<string | null>(null);
-  const [autoRetried, setAutoRetried] = useState(false);
+export default function SourcesError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  const [lastKnownAt, setLastKnownAt] = useState<number | null>(null);
+  const [updatedAgoLabel, setUpdatedAgoLabel] = useState<string | null>(null);
 
   useEffect(() => {
+    // Logged for operator diagnostics only — never surfaced to the owner.
     console.error(error);
-    // Read the client-cached last-good timestamp on mount (sessionStorage is
-    // unavailable during SSR, so this stays in an effect).
-    setLastKnown(formatLastKnown(readLastRecordsReadAt()));
+    setLastKnownAt(readLastRecordsReadAt());
   }, [error]);
 
   useEffect(() => {
-    // One automatic recovery attempt: re-run the segment render after a short
-    // delay so a transient read failure clears itself. If the read still fails
-    // the boundary re-mounts and the owner is left with the manual Retry — we
-    // never loop, so a persistent failure does not thrash the deployment.
-    if (autoRetried) {
+    // Unbounded, capped backoff: every mount (i.e. every failed attempt)
+    // schedules the next retry at a delay that grows with the module-scoped
+    // `consecutiveAttempts` counter. There is deliberately no ceiling on the
+    // counter itself — a persistent failure degrades to a slow quiet
+    // heartbeat, never to a dead end.
+    const delay = nextRetryDelayMs(consecutiveAttempts);
+    const id = setTimeout(() => {
+      consecutiveAttempts += 1;
+      reset();
+    }, delay);
+    return () => clearTimeout(id);
+  }, [reset]);
+
+  useEffect(() => {
+    // Recompute the relative-time caption independently of the retry timer so
+    // it stays live (e.g. "Updated 3s ago" ticking up) even between retries.
+    if (lastKnownAt === null) {
       return;
     }
-    const id = setTimeout(() => {
-      setAutoRetried(true);
-      reset();
-    }, AUTO_RETRY_DELAY_MS);
-    return () => clearTimeout(id);
-  }, [autoRetried, reset]);
-
-  const lastKnownLine = lastKnown ? `Last successful load: ${lastKnown}.` : "The last successful load time is unknown.";
-
-  if (!autoRetried) {
-    return (
-      <section
-        aria-live="polite"
-        className="mb-6 rounded-md border border-border bg-card px-4 py-3"
-        data-testid="records-read-retry-pending"
-        role="status"
-      >
-        <p className="pdpp-body font-medium text-foreground">Refreshing source status</p>
-        <p className="pdpp-caption mt-1 max-w-prose text-muted-foreground">
-          The Sources view hit a transient read interruption. Retrying automatically before showing an error.{" "}
-          {lastKnownLine}
-        </p>
-      </section>
-    );
-  }
+    const tick = () => setUpdatedAgoLabel(formatUpdatedAgo(lastKnownAt, Date.now()));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [lastKnownAt]);
 
   return (
-    <section
-      aria-live="polite"
-      className="mb-6 rounded-md border border-[color:var(--warning)]/30 border-l-4 border-l-[color:var(--warning)] bg-[color:var(--warning)]/5 px-4 py-3"
-      data-testid="records-read-failure-banner"
-      role="status"
-    >
-      <p className="pdpp-body font-medium text-foreground">Couldn't refresh your connections</p>
-      <p className="pdpp-caption mt-1 max-w-prose text-muted-foreground">
-        The Sources view hit an error reading from your reference deployment. Your data and connections are unaffected —
-        this is a read failure, not a change. {lastKnownLine}
-      </p>
-      <div className="mt-2.5 flex flex-wrap items-center gap-2">
-        <button
-          className={buttonVariants({ size: "sm", variant: "default" })}
-          data-testid="records-read-failure-retry"
-          onClick={() => {
-            setAutoRetried(true);
-            reset();
-          }}
-          type="button"
-        >
-          Retry now
-        </button>
-        <a className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
-          Reload Sources
-        </a>
-      </div>
-    </section>
+    <div data-testid="sources-read-recovering">
+      <ListLoadingSkeleton label="Sources" rows={6} />
+      {updatedAgoLabel ? (
+        <p aria-live="polite" className="pdpp-caption mt-2 text-muted-foreground/60" role="status">
+          {updatedAgoLabel}
+        </p>
+      ) : null}
+    </div>
   );
 }
