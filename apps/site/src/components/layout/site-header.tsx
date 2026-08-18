@@ -9,13 +9,7 @@ import { PdppLogo } from "@/components/elements/pdpp-logo.tsx";
 import { ThemeToggle } from "@/components/elements/theme-toggle.tsx";
 import { publicSiteNav } from "@/lib/public-site-nav.ts";
 
-export function SiteHeader({
-  currentLabel,
-  showThemeToggle = true,
-}: {
-  currentLabel: string;
-  showThemeToggle?: boolean;
-}) {
+export function SiteHeader({ currentLabel }: { currentLabel: string }) {
   const pathname = usePathname();
   const isHome = pathname === "/";
 
@@ -59,7 +53,7 @@ export function SiteHeader({
             </Link>
           );
         })}
-        {showThemeToggle ? <ThemeToggle className="ml-1" /> : null}
+        <ThemeToggle className="ml-1" />
       </nav>
     </div>
   );
