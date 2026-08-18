@@ -269,10 +269,15 @@ test("ChatGPT initial auth probe emits bounded diagnostic before credential logi
     assert.equal(progressMessages.length, 2);
     assert.doesNotMatch(progressMessages[0] ?? "", /private-conversation-id/u);
     const diagnostic = extractAuthProbeDiagnostic(progressMessages[0] ?? "");
+    // The mocked session probe always resolves null, so the retry (see
+    // checkSessionWithRetry) exhausts every attempt before the initial probe
+    // honestly reports "still not active after retrying" — proving a `false`
+    // decision here survived retry rather than being a single unretried blip.
     assert.deepEqual(diagnostic, {
       object: "chatgpt_auth_probe",
       stage: "initial",
       api_session_user: false,
+      api_session_user_attempts: 4,
       dom_logged_in: true,
       has_login_or_signup: false,
       has_sidebar: true,
@@ -331,6 +336,80 @@ test("ChatGPT initial auth probe preserves existing API-session decision", async
   assert.equal(progressMessages.length, 1);
   const diagnostic = extractAuthProbeDiagnostic(progressMessages[0] ?? "");
   assert.equal(diagnostic.api_session_user, true);
+  assert.equal(diagnostic.decision, "accepted_by_api_session");
+});
+
+test("ChatGPT initial auth probe survives ONE transient /api/auth/session blip on an otherwise-valid session", async () => {
+  // Root cause (chatgpt-assistance-false-positive, 2026-08-18): production
+  // evidence showed a run whose cookie DB proved a valid, unexpired
+  // __Secure-next-auth.session-token (good for months) still got
+  // api_session_user: false on the single unretried probe fired 3s after
+  // page.goto — then fell through to the full credential-login path, which
+  // hit the "ChatGPT sent an app approval notification" assistance prompt on
+  // a healthy account and, when nobody was there to approve a phantom push,
+  // ran the owner through a 15-minute assistance_timeout for nothing. This
+  // proves the fix: a single transient failure (session probe #1 = null,
+  // exactly like the production evidence) is absorbed by retry — the run
+  // never opens the login UI and never asks the owner for anything.
+  const progressMessages: string[] = [];
+  let loginOpened = false;
+  let assistanceRequested = false;
+  let sessionProbeCount = 0;
+  const page = {
+    evaluate: (fn: (...args: never[]) => unknown) => {
+      const source = String(fn);
+      if (source.includes("/api/auth/session")) {
+        sessionProbeCount += 1;
+        // First call: transient blip (matches production's api_session_user:
+        // false despite a valid cookie). Second call onward: the session was
+        // never actually dead.
+        return Promise.resolve(sessionProbeCount === 1 ? null : { user: { id: "owner" } });
+      }
+      if (source.includes("querySelectorAll")) {
+        return Promise.resolve({
+          dom_logged_in: false,
+          has_login_or_signup: true,
+          has_sidebar: false,
+          has_user_menu: false,
+        });
+      }
+      return Promise.resolve(false);
+    },
+    getByRole: () => {
+      loginOpened = true;
+      throw new Error("login path should not be reached — the retry should have recovered the session");
+    },
+    goto: (url: string) => {
+      if (url.includes("/auth/login")) {
+        loginOpened = true;
+      }
+      return Promise.resolve(null);
+    },
+    url: () => "https://chatgpt.com/",
+    waitForTimeout: async () => undefined,
+  };
+
+  const ok = await ensureChatGptSession({
+    assist: () => {
+      assistanceRequested = true;
+      return Promise.resolve("assist_1");
+    },
+    context: {} as never,
+    page: page as never,
+    progress: (message) => {
+      progressMessages.push(message);
+      return Promise.resolve();
+    },
+    sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+  });
+
+  assert.equal(ok, true, "a session that recovers within the retry budget must count as active");
+  assert.equal(loginOpened, false, "the credential-login UI must never be opened for a transient blip");
+  assert.equal(assistanceRequested, false, "no owner assistance should ever be requested for a healthy session");
+  assert.equal(sessionProbeCount, 2, "recovery on the second attempt must not keep retrying past success");
+  const diagnostic = extractAuthProbeDiagnostic(progressMessages[0] ?? "");
+  assert.equal(diagnostic.api_session_user, true);
+  assert.equal(diagnostic.api_session_user_attempts, 2);
   assert.equal(diagnostic.decision, "accepted_by_api_session");
 });
 
@@ -427,7 +506,14 @@ test("ChatGPT manual auth repair can use the secure browser without storing a pa
           const source = String(fn);
           if (source.includes("/api/auth/session")) {
             sessionProbeCount += 1;
-            return Promise.resolve(sessionProbeCount >= 2 ? { user: { id: "owner" } } : null);
+            // The INITIAL probe (navigateAndProbeSession) now retries up to
+            // SESSION_PROBE_RETRY_ATTEMPTS (4) times before giving up — stay
+            // null through all of them so this test still exercises the
+            // fallback-to-manual-browser-login path it is named for. Only the
+            // LATER poll (pollSessionReadiness, inside
+            // repairWithManualBrowserLogin) should observe the session
+            // becoming active.
+            return Promise.resolve(sessionProbeCount >= 5 ? { user: { id: "owner" } } : null);
           }
           if (source.includes("querySelectorAll")) {
             return Promise.resolve({

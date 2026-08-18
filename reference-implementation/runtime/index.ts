@@ -893,6 +893,26 @@ function buildConnectorExitFailureMessage({
   return "Connector exited before emitting DONE.";
 }
 
+/**
+ * Single source of truth for the runtime-authored failure_message on a
+ * scheduler-timeout / assistance-timeout close. Previously this exact text
+ * was hand-duplicated ONLY inside `recordRunTimedOutTerminal` (which feeds
+ * the terminal spine event's `failure_message`) — `deriveClosedRunResolution`
+ * (which feeds the RESOLVED `runConnector()` promise's `failure_message`,
+ * i.e. what the scheduler's run_history.failure_reason column actually reads)
+ * had no equivalent and fell through to the generic
+ * `buildConnectorExitFailureMessage` ("Connector exited with code N before
+ * emitting DONE.") — accurate but useless for diagnosing WHY: an owner
+ * reading run_history could not tell an assistance timeout from an ordinary
+ * scheduler wall-clock timeout without a separate spine-event lookup. See
+ * chatgpt-ingest-and-assistance-failure-modes-2026-08-18.
+ */
+function runTimeoutFailureMessage(terminalReason: string): string {
+  return terminalReason === "assistance_timed_out"
+    ? "Run exceeded a connector assistance timeout."
+    : "Run exceeded its scheduler wall-clock budget.";
+}
+
 // Bounds a runtime-thrown Error's own message before it's persisted as
 // `failure_message` on a terminal spine event, mirroring
 // `controller.ts`'s `boundedLaunchFailureMessage` — a pathological error
@@ -4860,10 +4880,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     async function recordRunTimedOutTerminal(code: number | null): Promise<void> {
       const terminalReason = runtimeTimeoutReason || "run_timed_out";
       const assistanceStatus = terminalReason === "assistance_timed_out" ? "timeout" : "cancelled";
-      const failureMessage =
-        terminalReason === "assistance_timed_out"
-          ? "Run exceeded a connector assistance timeout."
-          : "Run exceeded its scheduler wall-clock budget.";
+      const failureMessage = runTimeoutFailureMessage(terminalReason);
       finalStatus = "failed";
       await closeOpenStructuredAssistance(assistanceStatus, { reason: terminalReason });
       await emitRunSpineEvent({
@@ -5213,13 +5230,23 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       }
       const closeTerminalPhase = derivedTerminal.phase;
       const exposeConnectorExitDiagnostic = finalStatus === "failed" && !doneMessage;
-      const resolvedFailureMessage = exposeConnectorExitDiagnostic
-        ? buildConnectorExitFailureMessage({
-            code,
-            phase: closeTerminalPhase,
-            reason: closeTerminalReason,
-          })
-        : null;
+      // A scheduler/assistance timeout gets its OWN specific message (matching
+      // exactly what recordRunTimedOutTerminal already put on the terminal
+      // spine event) rather than falling through to the generic
+      // "Connector exited with code N before emitting DONE." — accurate but
+      // uninformative about WHY, and the whole reason this resolved value
+      // exists is so run_history.failure_reason can name the real cause
+      // without a separate spine lookup.
+      let resolvedFailureMessage: string | null = null;
+      if (runTimedOut) {
+        resolvedFailureMessage = runTimeoutFailureMessage(runtimeTimeoutReason || "run_timed_out");
+      } else if (exposeConnectorExitDiagnostic) {
+        resolvedFailureMessage = buildConnectorExitFailureMessage({
+          code,
+          phase: closeTerminalPhase,
+          reason: closeTerminalReason,
+        });
+      }
       return { failureMessage: resolvedFailureMessage, phase: closeTerminalPhase, reason: closeTerminalReason };
     }
 
@@ -5257,7 +5284,14 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         ...(exposeConnectorExitDiagnostic
           ? {
               failure_message: resolution.failureMessage,
-              failure_origin: "connector",
+              // A runtime-side timeout (scheduler wall-clock or assistance)
+              // is a runtime-authored failure, not a connector-exit failure —
+              // the process is still alive until terminateChild() kills it in
+              // response to the watchdog, not because the connector itself
+              // exited. Mislabeling this "connector" would misdirect an
+              // owner reading run_history toward the connector when the
+              // real cause is the runtime's own timeout policy.
+              failure_origin: runTimedOut ? "runtime" : "connector",
               ...(stderrTailDiagnostic ? { connector_diagnostics: { stderr_tail: stderrTailDiagnostic } } : {}),
             }
           : {}),
