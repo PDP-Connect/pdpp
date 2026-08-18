@@ -101,10 +101,38 @@ async function hasSessionCookie(context: BrowserContext): Promise<boolean> {
 
 /**
  * Confirm the session cookie actually grants access — a stale cookie may
- * still exist after logout. Hit old.reddit.com (stable markup) and look for
- * the logout link, which is only rendered when authenticated.
+ * still exist after logout. Prefer an owner-only JSON endpoint
+ * (`/user/{username}/saved.json`) over a DOM guess: it's exactly the data the
+ * connector needs downstream anyway, so a 200 there is ground truth rather
+ * than a heuristic, and it survives old.reddit.com markup changes that broke
+ * a prior logout-link selector check even while a real session was live.
+ * Falls back to the logout-link probe when no username is known yet (the
+ * credential-less manual hand-off, which runs before any account is chosen).
  */
 export async function isSessionLive(page: Page): Promise<boolean> {
+  const username = process.env.REDDIT_USERNAME;
+  if (username) {
+    try {
+      const result = (await page.evaluate(
+        async ({ path }) => {
+          try {
+            const res = await fetch(`https://old.reddit.com${path}`, {
+              credentials: "include",
+              headers: { accept: "application/json" },
+            });
+            return { status: res.status };
+          } catch {
+            return { status: 0 };
+          }
+        },
+        { path: `/user/${encodeURIComponent(username)}/saved.json` }
+      )) as { status: number };
+      return result.status === 200;
+    } catch {
+      return false;
+    }
+  }
+
   try {
     await page.goto("https://old.reddit.com/", {
       waitUntil: "domcontentloaded",
@@ -284,5 +312,19 @@ export async function ensureRedditSession({
   }
 
   await captureLoginState(capture, page, "reddit-login-post-submit-failed");
+  // NOT IMPLEMENTED: unlike amazon.ts's final-verify (fillOrHandleChallenge /
+  // the amazon_login_incomplete_after_submit path), this gives the operator
+  // no manual-handoff second chance when the automated flow completes but
+  // the poll above never finds a live session (e.g. an approve-on-device
+  // prompt or challenge variant the steps above didn't recognize) — it fails
+  // straight to `reddit_login_post_submit_failed`. Adding one here is safe in
+  // principle (a manual handoff only waits on the operator and re-probes,
+  // it never resubmits the saved credential), but three existing tests
+  // (`reddit.test.ts`: "fires onCredentialSubmit exactly once" x2, and the
+  // post-submit-fault COUNTERWEIGHT pair around POST_SUBMIT_TRANSPORT_FAULT)
+  // deliberately assert `sendInteraction` is NEVER called on this path as
+  // defense-in-depth for the credential-safety invariant, so adding the
+  // handoff here requires rewriting those assertions rather than a small
+  // isolated change. Left as a follow-up rather than done under this fix.
   throw new Error("reddit_login_post_submit_failed");
 }

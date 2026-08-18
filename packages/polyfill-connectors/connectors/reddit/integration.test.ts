@@ -822,41 +822,43 @@ test("collectAllStreams: credential-less env gate stops the FIRST requested stre
 // login count is exactly 1 regardless of how many streams 401.
 
 /** A fake Playwright Page that (a) always reports a live session to
- *  `isSessionLive`'s `goto` + `locator(...).count()` probe — so every reauth
- *  attempt genuinely succeeds, never masked by a scripted-sequence
- *  exhaustion — while counting each `goto` call (the real navigation
- *  `isSessionLive` performs) as one login-repair attempt, and (b) answers
- *  `page.evaluate(fetch, ...)` — the real production shape `makePageFetch`
- *  builds — by routing to a scripted `RedditListingFetch`. One object plays
- *  both roles because production `collectAllStreams` drives both `fetchPath`
- *  (via `makePageFetch(page)`) and `makeReauth(ctx)` (via
- *  `isSessionLive(ctx.page)`) off the SAME `ctx.page`. Counting real `goto`
- *  navigations (rather than a bounded scripted-answer sequence) is what
- *  makes this discriminate a per-stream-budget regression: with a real
- *  budget shared across the run, `goto` fires at most twice total (the two
- *  `isSessionLive` probes inside ONE repair); a regressed per-call budget
- *  would let every one of the 6 streams attempt its own repair, each firing
- *  two more `goto` calls, so the count would climb unboundedly instead of
+ *  `isSessionLive`'s `/saved.json` JSON probe — so every reauth attempt
+ *  genuinely succeeds, never masked by a scripted-sequence exhaustion —
+ *  while counting each such probe call as one login-repair attempt, and
+ *  (b) answers `page.evaluate(fetch, ...)` for listing pages — the real
+ *  production shape `makePageFetch` builds — by routing to a scripted
+ *  `RedditListingFetch`. One object plays both roles because production
+ *  `collectAllStreams` drives both `fetchPath` (via `makePageFetch(page)`)
+ *  and `makeReauth(ctx)` (via `isSessionLive(ctx.page)`) off the SAME
+ *  `ctx.page`, and both go through `page.evaluate`. Counting real
+ *  liveness-probe calls (rather than a bounded scripted-answer sequence) is
+ *  what makes this discriminate a per-stream-budget regression: with a real
+ *  budget shared across the run, the probe fires at most twice total (the
+ *  two `isSessionLive` calls inside ONE repair — `ensureRedditSession`'s own
+ *  fast-path check, then `makeReauth`'s follow-up); a regressed per-call
+ *  budget would let every one of the 6 streams attempt its own repair, each
+ *  firing two more probes, so the count would climb unboundedly instead of
  *  capping at 2 — a scripted-sequence approach would instead just run out
  *  and silently report "not live" for the extra attempts, hiding the defect. */
-function makeReauthCapablePage(fetch: RedditListingFetch): { gotoCalls: number; page: Page } {
-  const state = { gotoCalls: 0 };
+function makeReauthCapablePage(fetch: RedditListingFetch): { probeCalls: number; page: Page } {
+  const state = { probeCalls: 0 };
   const page = {
     evaluate: (_fn: unknown, args: unknown): Promise<unknown> => {
       const { path } = args as { path: string };
+      if (path === `${USER_PATH}/saved.json`) {
+        state.probeCalls += 1;
+        return Promise.resolve({ status: 200 }); // isSessionLive's liveness probe: always live
+      }
       return fetch(path);
     },
-    goto: () => {
-      state.gotoCalls += 1;
-      return Promise.resolve(null);
-    },
+    goto: () => Promise.resolve(null),
     locator: () => ({
-      count: async () => 1, // always reports the logout link present: session reads live
+      count: async () => 1, // credential-less fallback path only; unused once REDDIT_USERNAME is set
     }),
   } as any;
   return {
-    get gotoCalls() {
-      return state.gotoCalls;
+    get probeCalls() {
+      return state.probeCalls;
     },
     page,
   };
@@ -925,15 +927,14 @@ test("collectAllStreams: 6 credentialed streams each 401 on their first page —
     // regression by reading "not live" for extra attempts) — every reauth
     // attempted, whether 1 or 6, would genuinely succeed if attempted. The
     // discriminating signal is therefore how many times a repair is
-    // attempted at all, measured by counting `page.goto` calls: `isSessionLive`
-    // navigates once per probe, and one successful repair costs exactly two
-    // navigations (ensureRedditSession's own fast-path probe, then
-    // makeReauth's follow-up probe). A run-scoped budget spends this ONCE for
-    // the whole run: 2 navigations total, no matter how many of the 6
-    // streams 401. A regressed per-call/per-stream budget would let every
-    // 401'ing stream attempt its own repair, each costing 2 more
-    // navigations — the count would grow with stream count instead of
-    // staying flat at 2.
+    // attempted at all, measured by counting `isSessionLive`'s `/saved.json`
+    // probe calls: one successful repair costs exactly two probes
+    // (ensureRedditSession's own fast-path check, then makeReauth's
+    // follow-up check). A run-scoped budget spends this ONCE for the whole
+    // run: 2 probes total, no matter how many of the 6 streams 401. A
+    // regressed per-call/per-stream budget would let every 401'ing stream
+    // attempt its own repair, each costing 2 more probes — the count would
+    // grow with stream count instead of staying flat at 2.
     const pageHandle = makeReauthCapablePage(fetch);
     const { page } = pageHandle;
     const ctx = createCredentialedMockBrowserContext(
@@ -954,9 +955,9 @@ test("collectAllStreams: 6 credentialed streams each 401 on their first page —
     );
 
     assert.equal(
-      pageHandle.gotoCalls,
+      pageHandle.probeCalls,
       2,
-      "exactly one repair's worth of session-live navigation (2 goto calls) for the WHOLE run, regardless of " +
+      "exactly one repair's worth of session-live probing (2 /saved.json calls) for the WHOLE run, regardless of " +
         "how many of the 6 streams 401 — a per-stream/per-call budget would let every 401'ing stream repair " +
         "independently and this count would climb with stream count instead of staying at 2"
     );
