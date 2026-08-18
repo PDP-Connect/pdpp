@@ -85,8 +85,15 @@ export type MethodId = "docker" | "compose" | "fly" | "railway";
  * The browser-capable image every method names. Since #79 this is `core`:
  * one image that serves the console, the MCP endpoint and the browser-backed
  * connectors, so there is no `-browser` variant to choose between.
+ *
+ * WHY `:latest` AND NOT `:main`. `:main` tracks the default branch, so a
+ * reader pasting this command got whatever last merged — unreleased code, on
+ * the page that is supposed to be the safe way in. `:latest` moves only when
+ * a release succeeds, and the release pipeline promotes it by copying the
+ * manifest already published under that release's immutable version tag, so
+ * `:latest` and that version tag are always the same bytes.
  */
-const BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
+const BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:latest";
 
 /**
  * The neutral public artifact name. Not `railway-core` (a
@@ -95,7 +102,7 @@ const BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
  * or copy exposes a platform-specific artifact name") and not a platform
  * name.
  */
-const CORE_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
+const CORE_IMAGE = "ghcr.io/pdp-connect/pdpp/core:latest";
 
 /**
  * Raw URL rather than a release asset. `releases/latest/download/...` 404s:
