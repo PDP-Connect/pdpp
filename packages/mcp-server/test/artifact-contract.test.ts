@@ -23,7 +23,12 @@ import {
   type SiblingCandidateEvidence,
 } from "../scripts/artifact-receipt.ts";
 import { assertInstalledPackageMatchesTarball, resolveReceiptOutputPath } from "../scripts/pack-install-run.ts";
-import { assertManifestTargets, assertPackedFiles, type PackageManifest } from "../scripts/package-contract.ts";
+import {
+  assertBareSpecifiersResolve,
+  assertManifestTargets,
+  assertPackedFiles,
+  type PackageManifest,
+} from "../scripts/package-contract.ts";
 
 const SYMLINK = /symlink/;
 const STALE_OR_REPLAYED_RECEIPT = /stale or replayed receipt/;
@@ -45,6 +50,9 @@ const SOURCE_TARGET = /must point into \.\/dist\//;
 const SOURCE_FILE = /source file leaked/;
 const SOURCE_FALLBACK = /resolved from source instead of the offline consumer/;
 const REPLAYED_RECEIPT = /stale or replayed receipt/;
+const UNDECLARED_PDPP_IMPORT =
+  /imports private workspace package "@pdpp\/reference-contract".*1\.5\.1-1\.5\.4 unrunnable/s;
+const UNDECLARED_THIRD_PARTY_IMPORT = /imports "left-pad".*not declared in dependencies/s;
 
 function manifest(overrides: Partial<PackageManifest> = {}): PackageManifest {
   return {
@@ -130,6 +138,70 @@ test("artifact contract rejects a source fallback target and packed source files
         "dist/bin/pdpp-mcp-server.js",
       ]),
     SOURCE_FILE
+  );
+});
+
+test("bare-specifier check rejects the exact @pdpp/local-collector 1.5.1-1.5.4 defect shape: an undeclared private-package import", () => {
+  const root = emittedFixture();
+  writeFileSync(
+    join(root, "dist", "src", "index.js"),
+    'import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";\nexport const artifact = true;\n'
+  );
+  assert.throws(
+    () =>
+      assertBareSpecifiersResolve(manifest(), root, [
+        "dist/src/index.js",
+        "dist/src/server.js",
+        "dist/bin/pdpp-mcp-server.js",
+      ]),
+    UNDECLARED_PDPP_IMPORT
+  );
+});
+
+test("bare-specifier check rejects any undeclared bare import, not just @pdpp/* ones", () => {
+  const root = emittedFixture();
+  writeFileSync(
+    join(root, "dist", "src", "index.js"),
+    'import leftPad from "left-pad";\nexport const artifact = true;\n'
+  );
+  assert.throws(
+    () =>
+      assertBareSpecifiersResolve(manifest(), root, [
+        "dist/src/index.js",
+        "dist/src/server.js",
+        "dist/bin/pdpp-mcp-server.js",
+      ]),
+    UNDECLARED_THIRD_PARTY_IMPORT
+  );
+});
+
+test("bare-specifier check accepts declared dependencies and Node builtins", () => {
+  const root = emittedFixture();
+  writeFileSync(
+    join(root, "dist", "src", "index.js"),
+    'import { z } from "zod";\nimport path from "node:path";\nimport { cliThing } from "@pdpp/cli";\nexport const artifact = true;\n'
+  );
+  assert.doesNotThrow(() =>
+    assertBareSpecifiersResolve(manifest({ dependencies: { "@pdpp/cli": ">=0.18.11 <1.0.0", zod: "^4.4.3" } }), root, [
+      "dist/src/index.js",
+      "dist/src/server.js",
+      "dist/bin/pdpp-mcp-server.js",
+    ])
+  );
+});
+
+test("bare-specifier check ignores 'import'/'export' inside string literals and property access", () => {
+  const root = emittedFixture();
+  writeFileSync(
+    join(root, "dist", "src", "index.js"),
+    'const assignment = line.startsWith("export ") ? line.slice("export ".length) : line;\nexport const artifact = true;\n'
+  );
+  assert.doesNotThrow(() =>
+    assertBareSpecifiersResolve(manifest(), root, [
+      "dist/src/index.js",
+      "dist/src/server.js",
+      "dist/bin/pdpp-mcp-server.js",
+    ])
   );
 });
 

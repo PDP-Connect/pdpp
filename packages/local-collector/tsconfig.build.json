@@ -28,6 +28,7 @@
     "../polyfill-connectors/connectors/google_takeout/**/*.ts",
     "../polyfill-connectors/connectors/apple_photos/**/*.ts",
     "../polyfill-connectors/connectors/google_messages/**/*.ts",
+    "../polyfill-connectors/connectors/signal/**/*.ts",
     "../polyfill-connectors/src/collector-definition.ts",
     "../polyfill-connectors/src/collector-registry.ts",
     "../polyfill-connectors/src/auth.ts",
@@ -63,6 +64,11 @@
     // imports better-sqlite3 (a native compiled module this published
     // package must never bundle; see connectors/imessage/index.ts's module
     // doc and validate-package.ts's forbidden-pattern list).
-    "../polyfill-connectors/connectors/imessage/fixtures.ts"
+    "../polyfill-connectors/connectors/imessage/fixtures.ts",
+    // Same reason: signal/fixtures.ts imports better-sqlite3 to build the
+    // mocked-subprocess integration test's fixture database. Not a runtime
+    // dependency of the shipped connector (index.ts talks to the real
+    // sigtop binary + node:sqlite, never better-sqlite3).
+    "../polyfill-connectors/connectors/signal/fixtures.ts"
   ]
 }

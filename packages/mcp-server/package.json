@@ -28,7 +28,7 @@
     "test:read-surface": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx \"test/*.test.ts\" test/smoke-stdio.ts",
     "validate:package": "pnpm build && node --import tsx scripts/package-contract.ts",
     "verify:artifact": "pnpm build && node --import tsx scripts/pack-install-run.ts",
-    "verify": "pnpm test && pnpm validate:package",
+    "verify": "pnpm test && pnpm validate:package && pnpm verify:artifact",
     "pack:dry-run": "pnpm build && npm pack --dry-run --ignore-scripts"
   },
   "dependencies": {

@@ -227,6 +227,7 @@ async function main(): Promise<void> {
       "google_messages",
       "google_takeout",
       "imessage",
+      "signal",
     ]);
     // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(advertised.collector_protocol_version, /^\d+$/);

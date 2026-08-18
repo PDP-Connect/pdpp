@@ -35,7 +35,7 @@
     "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- tsx scripts/run-tests.ts",
     "pack-install-run": "node --import tsx scripts/pack-install-run.ts",
     "validate:package": "tsx scripts/validate-package.ts",
-    "verify": "pnpm test && pnpm validate:package"
+    "verify": "pnpm test && pnpm validate:package && pnpm pack-install-run"
   },
   "dependencies": {
     "zod": "^4.4.3"

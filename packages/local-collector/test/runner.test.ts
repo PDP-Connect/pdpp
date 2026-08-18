@@ -119,6 +119,7 @@ test("bundled connectors registry contains every supported local connector", () 
     "google_messages",
     "google_takeout",
     "imessage",
+    "signal",
   ]);
   assert.ok(BUNDLED_CONNECTORS.claude_code);
   assert.ok(BUNDLED_CONNECTORS.codex);
