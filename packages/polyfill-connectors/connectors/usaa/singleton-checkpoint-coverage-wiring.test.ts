@@ -40,11 +40,18 @@ import type {
   BrowserCollectContext,
   DetailCoverageMessage,
   DetailGapMessage,
+  DetailGapStartEntry,
   EmittedMessage,
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
-import { type EmitDeps, runCreditCardBillingStream, runInboxStream, type UsaaRunState } from "./index.ts";
+import {
+  buildServedCreditCardGapLookups,
+  type EmitDeps,
+  runCreditCardBillingStream,
+  runInboxStream,
+  type UsaaRunState,
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DashboardAccount, InboxRow } from "./types.ts";
 
@@ -84,6 +91,27 @@ function skipsFor(messages: EmittedMessage[], stream: string): Extract<EmittedMe
 
 function gapsFor(messages: EmittedMessage[], stream: string): DetailGapMessage[] {
   return messages.filter((m): m is DetailGapMessage => m.type === "DETAIL_GAP" && m.stream === stream);
+}
+
+function recoveriesFor(
+  messages: EmittedMessage[],
+  stream: string
+): Extract<EmittedMessage, { type: "DETAIL_GAP_RECOVERED" }>[] {
+  return messages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP_RECOVERED" }> =>
+      m.type === "DETAIL_GAP_RECOVERED" && m.stream === stream
+  );
+}
+
+function servedCreditCardGap(stream: string, locatorKind: string, cardId: string, gapId: string): DetailGapStartEntry {
+  return {
+    gap_id: gapId,
+    stream,
+    status: "pending",
+    reference_only: true,
+    record_key: cardId,
+    detail_locator: { kind: locatorKind, card_id: cardId },
+  };
 }
 
 /** Runs `fn` with `node:test`'s fake setTimeout enabled and auto-ticking, so
@@ -197,6 +225,63 @@ test("wiring: runInboxStream on a genuinely empty inbox proves verified-empty vi
   });
 });
 
+test("wiring: runInboxStream emits a diagnostic SKIP_RESULT when every listed row fails to resolve a record (live regression: 0/13 covered, no diagnostic ever emitted)", async () => {
+  await withFastTimers(async () => {
+    const run = makeHarness();
+    // Every row is missing date_short — buildInboxMessageRecord returns null
+    // for all of them (parsers.ts:579-581), the same shape a column-index
+    // drift on the inbox table (an extra leading cell, or a re-ordered
+    // status/date/preview layout) would produce: rows are found (considered
+    // > 0) but none resolve into a record (covered === 0). Before this fix,
+    // the coverage math correctly read partial (0 < 13) but the run emitted
+    // NO SKIP_RESULT and NO diagnostic — the only other USAA streams that can
+    // silently degrade this way (statements' PDF download, transactions'
+    // export ladder) always emit a structural diagnostic on failure; inbox
+    // did not.
+    const rows: InboxRow[] = Array.from({ length: 13 }, (_unused, i) => ({
+      status: "Unread",
+      date_short: "",
+      preview: `message ${i}`,
+    }));
+    const page = makeInboxPage(rows);
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {}, freshRunState());
+
+    assert.equal(run.emitted.filter((e) => e.stream === "inbox_messages").length, 0, "no row resolved into a record");
+    const cov = coverageFor(run.messages, "inbox_messages");
+    assert.ok(cov, "coverage is still declared");
+    assert.equal(cov?.considered, 13);
+    assert.equal(cov?.covered, 0, "an honest partial, not a false complete");
+    const skips = skipsFor(run.messages, "inbox_messages");
+    assert.equal(
+      skips.length,
+      1,
+      "a total resolution failure (0 covered out of a nonzero considered) must emit a diagnostic SKIP_RESULT, mirroring statements/transactions' structural-drift diagnostics"
+    );
+    assert.equal(skips[0]?.reason, "inbox_rows_unresolved");
+  });
+});
+
+test("wiring: runInboxStream does NOT emit a diagnostic SKIP_RESULT when only some rows fail to resolve", async () => {
+  await withFastTimers(async () => {
+    const run = makeHarness();
+    const rows: InboxRow[] = [
+      { status: "Unread", date_short: "6/1", preview: "resolves fine" },
+      { status: "Read", date_short: "", preview: "missing date" },
+    ];
+    const page = makeInboxPage(rows);
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {}, freshRunState());
+
+    const cov = coverageFor(run.messages, "inbox_messages");
+    assert.equal(cov?.considered, 2);
+    assert.equal(cov?.covered, 1);
+    assert.equal(
+      skipsFor(run.messages, "inbox_messages").length,
+      0,
+      "a partial (not total) resolution gap is not a structural-drift signal — no diagnostic noise on ordinary per-row drops"
+    );
+  });
+});
+
 // ─── credit_card_billing / credit_card_billing_stats wiring ────────────
 
 /** Per-card-aware fake Page: `.goto` records which card URL was navigated
@@ -277,6 +362,81 @@ test("wiring: runCreditCardBillingStream emits DETAIL_COVERAGE for both streams 
     assert.ok(statsCov, "credit_card_billing_stats declares coverage after a successful scan");
     assert.equal(statsCov?.considered, 2);
     assert.equal(statsCov?.covered, 2);
+  });
+});
+
+test("wiring: runCreditCardBillingStream emits DETAIL_GAP_RECOVERED for a card the runtime served a pending gap for, once it scrapes successfully (live regression: gaps from a crashed run stayed pending forever)", async () => {
+  await withFastTimers(async () => {
+    const cc1 = makeCard({ account_id_raw: "CC1", account_url: "/my/credit-card?accountId=CC1", last_four: "0001" });
+    const cc1Url = `https://www.usaa.com${cc1.account_url}`;
+    const { page, billingByUrl } = makeCreditCardPage();
+    billingByUrl[cc1Url] = { "Current Balance": "$75.00" };
+
+    const cardId = "CC1"; // creditCardId() falls back to account_id_raw
+    const detailGaps: DetailGapStartEntry[] = [
+      servedCreditCardGap("credit_card_billing", "usaa.credit_card_billing", cardId, "gap_billing_1"),
+      servedCreditCardGap("credit_card_billing_stats", "usaa.credit_card_billing_stats", cardId, "gap_stats_1"),
+    ];
+
+    const run = makeHarness();
+    run.deps.servedCreditCardGaps = buildServedCreditCardGapLookups(detailGaps);
+    const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    await runCreditCardBillingStream(
+      run.deps,
+      FAKE_CONTEXT,
+      page,
+      NEVER_CALLED_SEND_INTERACTION,
+      [cc1],
+      freshRunState(),
+      {
+        emitEntity: true,
+        emitStats: true,
+        fingerprintCursor,
+        observedOn: "2026-06-01",
+      }
+    );
+
+    const billingRecoveries = recoveriesFor(run.messages, "credit_card_billing");
+    const statsRecoveries = recoveriesFor(run.messages, "credit_card_billing_stats");
+    assert.equal(billingRecoveries.length, 1, "the successfully-scraped card recovers its credit_card_billing gap");
+    assert.equal(billingRecoveries[0]?.gap_id, "gap_billing_1");
+    assert.equal(billingRecoveries[0]?.record_key, cardId);
+    assert.equal(
+      statsRecoveries.length,
+      1,
+      "the same card also recovers its independent credit_card_billing_stats gap"
+    );
+    assert.equal(statsRecoveries[0]?.gap_id, "gap_stats_1");
+  });
+});
+
+test("wiring: runCreditCardBillingStream does NOT recover a gap for a card the runtime did not serve one for", async () => {
+  await withFastTimers(async () => {
+    const cc1 = makeCard({ account_id_raw: "CC1", account_url: "/my/credit-card?accountId=CC1", last_four: "0001" });
+    const cc1Url = `https://www.usaa.com${cc1.account_url}`;
+    const { page, billingByUrl } = makeCreditCardPage();
+    billingByUrl[cc1Url] = { "Current Balance": "$75.00" };
+
+    const run = makeHarness();
+    run.deps.servedCreditCardGaps = buildServedCreditCardGapLookups([]);
+    const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    await runCreditCardBillingStream(
+      run.deps,
+      FAKE_CONTEXT,
+      page,
+      NEVER_CALLED_SEND_INTERACTION,
+      [cc1],
+      freshRunState(),
+      {
+        emitEntity: true,
+        emitStats: true,
+        fingerprintCursor,
+        observedOn: "2026-06-01",
+      }
+    );
+
+    assert.equal(recoveriesFor(run.messages, "credit_card_billing").length, 0, "no served gap, no recovery emitted");
+    assert.equal(recoveriesFor(run.messages, "credit_card_billing_stats").length, 0);
   });
 });
 

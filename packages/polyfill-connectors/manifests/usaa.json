@@ -648,6 +648,7 @@
     "export_error": "The export couldn't be downloaded",
     "export_no_download": "The export didn't produce a downloadable file",
     "hydrate_crashed": "Something went wrong while loading the page",
+    "inbox_rows_unresolved": "We found inbox messages but couldn't read them — the site may have changed",
     "pdf_download_click_failed": "We couldn't click the download option for a statement PDF",
     "pdf_download_direct_link_failed": "We couldn't download a statement PDF from its direct link",
     "pdf_download_empty": "A statement PDF download didn't produce any file",

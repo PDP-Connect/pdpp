@@ -214,6 +214,11 @@ export interface EmitDeps {
    * A reached account emits recovery for its supplied gap id; this prevents a
    * successful later export from leaving the durable gap pending forever. */
   servedAccountTransactionGaps?: ReadonlyMap<string, string>;
+  /** Pending USAA credit-card billing/stats gaps served by the runtime this
+   * run, one map per stream (see `buildServedCreditCardGapLookups`). A
+   * successfully-navigated-and-scraped card emits recovery for its supplied
+   * gap id on whichever stream(s) had one — see `recoverServedCreditCardGaps`. */
+  servedCreditCardGaps?: { billing: ReadonlyMap<string, string>; billingStats: ReadonlyMap<string, string> };
 }
 
 /** Aggregate shape from the PDF hydration pass. Exposed so the emit-
@@ -2049,6 +2054,52 @@ export function buildAccountTransactionDetailGap(outcome: {
 }
 
 /**
+ * Keep only the pending USAA detail gaps on `stream` whose `detail_locator`
+ * has the expected `kind` and whose `locatorField` matches `record_key` — the
+ * same closed-world shape check every served-gap lookup in this connector
+ * needs. The connector may recover only gaps the runtime actually served this
+ * run: synthesizing an id, or accepting a foreign/malformed locator, could
+ * close unrelated work. Shared by `buildServedAccountTransactionGapLookup`
+ * (transactions, locator field `account_id`) and the credit-card billing
+ * streams (locator field `card_id`) so the same closed-world proof isn't
+ * hand-rolled per stream.
+ */
+function buildServedGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][],
+  stream: string,
+  locatorKind: string,
+  locatorField: string
+): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const gap of detailGaps) {
+    if (gap.stream !== stream || gap.status !== "pending") {
+      continue;
+    }
+    const locator = gap.detail_locator;
+    if (locator?.kind !== locatorKind) {
+      continue;
+    }
+    const key = locator[locatorField];
+    const recordKey = gap.record_key;
+    if (
+      typeof key !== "string" ||
+      key.length === 0 ||
+      typeof recordKey !== "string" ||
+      recordKey.length === 0 ||
+      recordKey !== key ||
+      typeof gap.gap_id !== "string" ||
+      !gap.gap_id
+    ) {
+      continue;
+    }
+    if (!lookup.has(key)) {
+      lookup.set(key, gap.gap_id);
+    }
+  }
+  return lookup;
+}
+
+/**
  * Keep only USAA account-level transaction gaps the runtime actually served
  * this run. The connector may recover only these supplied ids: synthesizing
  * one, or accepting a foreign/malformed locator, could close unrelated work.
@@ -2056,33 +2107,28 @@ export function buildAccountTransactionDetailGap(outcome: {
 export function buildServedAccountTransactionGapLookup(
   detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
 ): Map<string, string> {
-  const lookup = new Map<string, string>();
-  for (const gap of detailGaps) {
-    if (gap.stream !== "transactions" || gap.status !== "pending") {
-      continue;
-    }
-    const locator = gap.detail_locator;
-    if (locator?.kind !== "usaa.account") {
-      continue;
-    }
-    const accountId = locator.account_id;
-    const recordKey = gap.record_key;
-    if (
-      typeof accountId !== "string" ||
-      accountId.length === 0 ||
-      typeof recordKey !== "string" ||
-      recordKey.length === 0 ||
-      recordKey !== accountId ||
-      typeof gap.gap_id !== "string" ||
-      !gap.gap_id
-    ) {
-      continue;
-    }
-    if (!lookup.has(accountId)) {
-      lookup.set(accountId, gap.gap_id);
-    }
-  }
-  return lookup;
+  return buildServedGapLookup(detailGaps, "transactions", "usaa.account", "account_id");
+}
+
+/**
+ * Keep only USAA credit-card billing/stats gaps the runtime actually served
+ * this run, one lookup per stream (a card's `credit_card_billing` gap and its
+ * `credit_card_billing_stats` gap are independent DETAIL_GAP rows, served and
+ * recovered independently — see `emitCreditCardNavFailureGaps`).
+ */
+export function buildServedCreditCardGapLookups(detailGaps: readonly BrowserCollectContext["detailGaps"][number][]): {
+  billing: Map<string, string>;
+  billingStats: Map<string, string>;
+} {
+  return {
+    billing: buildServedGapLookup(detailGaps, "credit_card_billing", "usaa.credit_card_billing", "card_id"),
+    billingStats: buildServedGapLookup(
+      detailGaps,
+      "credit_card_billing_stats",
+      "usaa.credit_card_billing_stats",
+      "card_id"
+    ),
+  };
 }
 
 /**
@@ -2418,7 +2464,11 @@ function scrapeStatementsIndex(page: Page): Promise<DocRow[]> {
   });
 }
 
-async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly IndexRow[]): Promise<HydrationSummary> {
+async function hydratePdfsForIndex(
+  deps: StatementsSubDeps,
+  indexRows: readonly IndexRow[],
+  context?: BrowserContext
+): Promise<HydrationSummary> {
   const results = new Map<number, HydrationResult>();
   let attempts = 0;
   let successes = 0;
@@ -2427,6 +2477,8 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
     const hydrated = await hydrateStatementPdfs({
       page: deps.page,
       statements: indexRows as IndexRow[],
+      capture: deps.capture ?? null,
+      context,
       onProgress: ({ index, total }) => {
         attempts = index + 1;
         // Fire-and-forget: hydrateStatementPdfs signature is sync callback.
@@ -2622,7 +2674,7 @@ export async function runStatementsStream(
       stream: "statements",
       message: `Found ${indexRows.length} statement index row(s)`,
     });
-    const summary = await hydratePdfsForIndex(deps, indexRows);
+    const summary = await hydratePdfsForIndex(deps, indexRows, context);
 
     if (requested.has("statements")) {
       await emitStatementRecords(
@@ -2723,6 +2775,12 @@ export async function runInboxStream(
       return false;
     }
     await politeDelay(DOCUMENTS_SETTLE_DELAY_MS);
+    // Diagnostic-only DOM/ARIA/screenshot snapshot of the inbox table before
+    // the fixed-position [c0,c1,c2] scrape below. Every buildInboxMessageRecord
+    // failure (empty date_short) traces back to this scrape's column mapping,
+    // and there was previously no captured artifact showing the real table
+    // shape to confirm or correct it against. No-op unless PDPP_CAPTURE_*.
+    await deps.capture?.captureDom(page, "inbox-listing").catch((): undefined => undefined);
     const msgs = await scrapeInboxRows(page);
     await deps.emit({
       type: "PROGRESS",
@@ -2778,6 +2836,30 @@ export async function runInboxStream(
       considered: inboxCoverage.considered,
       covered: inboxCoverage.covered,
     });
+    // Every listed row failing to resolve (covered === 0 with a nonzero
+    // considered) is a structural-drift signal, not ordinary per-row noise:
+    // `buildInboxMessageRecord` only drops a row for a missing/unparseable
+    // `date_short`, and it is very unlikely every row on a real inbox page
+    // shares that defect at once — far more likely the table's column
+    // layout shifted (an inserted leading cell, or status/date/preview
+    // reordered) and `date_short` is silently reading the wrong cell for
+    // every row. Statements (pdf_download_timeout) and transactions
+    // (export_affordance_missing) already surface this class of failure as
+    // a diagnostic SKIP_RESULT; inbox previously reported only a bare
+    // partial DETAIL_COVERAGE with no signal telling anyone why. This is
+    // purely diagnostic — retryable, reference-only, no PII (row count only,
+    // no dates/preview text) — never a hard error, and a partial (some but
+    // not all rows unresolved) intentionally stays silent to avoid noise on
+    // the ordinary case.
+    if (inboxCoverage.considered > 0 && inboxCoverage.covered === 0) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "inbox_messages",
+        reason: "inbox_rows_unresolved",
+        message: `Inbox scrape found ${inboxCoverage.considered} row(s) but none resolved into a record (likely a table structure change); retry by runtime`,
+        diagnostics: { considered: inboxCoverage.considered },
+      });
+    }
     return true;
   } catch (err) {
     await deps.emit({
@@ -2879,6 +2961,51 @@ async function emitCreditCardNavFailureGaps(
       recordKey: cardId,
       reason: "temporary_unavailable",
       locator: { kind: "usaa.credit_card_billing_stats", card_id: cardId },
+    });
+  }
+}
+
+/**
+ * Emit `DETAIL_GAP_RECOVERED` for a successfully-navigated-and-scraped card
+ * on whichever of the two credit-card streams the runtime is holding a
+ * served, pending gap for. Mirrors `recoverServedAccountTransactionGaps`:
+ * before this, a card gapped by a crashed/interrupted run (e.g. the
+ * mid-run `runtime_error` that produced this connection's stuck
+ * `credit_card_billing`/`credit_card_billing_stats` gaps) stayed `pending`
+ * forever on every later successful run, because `emitCreditCardNavFailureGaps`
+ * had a DETAIL_GAP emit path but no matching recovery path — the connector
+ * never told the runtime "this card is fine now." Only called for cards that
+ * actually reached `emitCreditCardBillingForCard` (outcome `"ok"`); a
+ * navigation failure keeps the gap pending via `emitCreditCardNavFailureGaps`
+ * instead.
+ */
+async function recoverServedCreditCardGaps(
+  deps: EmitDeps,
+  cardId: string,
+  served: EmitDeps["servedCreditCardGaps"],
+  { emitEntity, emitStats }: Pick<CreditCardBillingEmitOptions, "emitEntity" | "emitStats">
+): Promise<void> {
+  if (!served) {
+    return;
+  }
+  const billingGapId = emitEntity ? served.billing.get(cardId) : undefined;
+  if (billingGapId) {
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: billingGapId,
+      stream: "credit_card_billing",
+      record_key: cardId,
+    });
+  }
+  const statsGapId = emitStats ? served.billingStats.get(cardId) : undefined;
+  if (statsGapId) {
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: statsGapId,
+      stream: "credit_card_billing_stats",
+      record_key: cardId,
     });
   }
 }
@@ -3020,6 +3147,7 @@ export async function runCreditCardBillingStream(
       });
       if (outcome === "ok") {
         await emitCreditCardBillingForCard(deps, page, a, options);
+        await recoverServedCreditCardGaps(deps, cardId, deps.servedCreditCardGaps, { emitEntity, emitStats });
         continue;
       }
       navFailedIds.add(cardId);
@@ -3221,6 +3349,7 @@ export async function collectUsaa(ctx: BrowserCollectContext): Promise<void> {
     emit,
     emitRecord,
     servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
+    servedCreditCardGaps: buildServedCreditCardGapLookups(ctx.detailGaps),
   };
 
   // Run-scoped state shared across every stream below, constructed
