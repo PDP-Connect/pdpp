@@ -30,7 +30,7 @@ test("site presentation ownership stays explicit at route boundaries", async () 
       readSiteFile("app/(concept)/layout.tsx"),
       readSiteFile("app/specification/layout.tsx"),
       readSiteFile("app/not-found.tsx"),
-      readSiteFile("components/docs/prose-page.tsx"),
+      readSiteFile("components/layout/prose-page.tsx"),
       readSiteFile("components/layout/concept-shell.tsx"),
       readSiteFile("styles/site.css"),
     ]);

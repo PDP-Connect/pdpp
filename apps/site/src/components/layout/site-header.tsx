@@ -5,8 +5,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PdppLogo } from "@/components/pdpp-logo.tsx";
-import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
+import { PdppLogo } from "@/components/elements/pdpp-logo.tsx";
+import { ThemeToggle } from "@/components/elements/theme-toggle.tsx";
 import { publicSiteNav } from "@/lib/public-site-nav.ts";
 
 export function SiteHeader({

@@ -5,15 +5,15 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LongviewWordmark } from "@/components/longview-wordmark.tsx";
-import type { ConnectorCardProps } from "@/components/pdpp/connector-card.tsx";
-import { ConnectorCard } from "@/components/pdpp/connector-card.tsx";
-import { ConsentCard } from "@/components/pdpp/consent-card.tsx";
-import type { GrantInspectorProps } from "@/components/pdpp/grant-inspector.tsx";
-import { GrantInspector } from "@/components/pdpp/grant-inspector.tsx";
-import { StreamInventory } from "@/components/pdpp/stream-inventory.tsx";
-import { ReferenceHeroProof } from "@/components/reference-hero-proof.tsx";
-import { SiteHeader } from "@/components/site-header.tsx";
+import { LongviewWordmark } from "@/components/elements/longview-wordmark.tsx";
+import { SiteHeader } from "@/components/layout/site-header.tsx";
+import type { ConnectorCardProps } from "@/components/sections/connector-card.tsx";
+import { ConnectorCard } from "@/components/sections/connector-card.tsx";
+import { ConsentCard } from "@/components/sections/consent-card.tsx";
+import type { GrantInspectorProps } from "@/components/sections/grant-inspector.tsx";
+import { GrantInspector } from "@/components/sections/grant-inspector.tsx";
+import { ReferenceHeroProof } from "@/components/sections/reference-hero-proof.tsx";
+import { StreamInventory } from "@/components/sections/stream-inventory.tsx";
 import {
   LONGVIEW_CLIENT_ID,
   LONGVIEW_CLIENT_NAME,

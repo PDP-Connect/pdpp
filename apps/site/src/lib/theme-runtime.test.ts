@@ -23,16 +23,16 @@ import { THEME_KEY } from "./theme-state.ts";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 // theme-provider.tsx is a re-export shim; the real implementation lives in
 // packages/operator-ui so that both apps share one source of truth.
-const PROVIDER_FILE = `${HERE}../../../../../packages/operator-ui/src/components/theme/theme-provider.tsx`;
-const LAYOUT_FILE = `${HERE}../../app/layout.tsx`;
-const SITE_PROVIDERS_FILE = `${HERE}../site/site-providers.tsx`;
-const BRAND_PRIMITIVE_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/tokens/primitive.css`;
-const BRAND_SEMANTIC_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/tokens/semantic.css`;
-const BRAND_INDEX_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/index.css`;
-const BRAND_TAILWIND_ALIASES_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/tokens/tailwind-aliases.css`;
-const BRAND_TYPOGRAPHY_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/typography.css`;
-const BRAND_REACT_COMPONENTS_FILE = `${HERE}../../../../../packages/pdpp-brand-react/src/components.css`;
-const STATUS_BADGE_CSS_FILE = `${HERE}../../../../../packages/operator-ui/src/components/status-badge.css`;
+const PROVIDER_FILE = `${HERE}../../../../packages/operator-ui/src/components/theme/theme-provider.tsx`;
+const LAYOUT_FILE = `${HERE}../app/layout.tsx`;
+const SITE_PROVIDERS_FILE = `${HERE}../components/providers/site-providers.tsx`;
+const BRAND_PRIMITIVE_FILE = `${HERE}../../../../packages/pdpp-brand/styles/tokens/primitive.css`;
+const BRAND_SEMANTIC_FILE = `${HERE}../../../../packages/pdpp-brand/styles/tokens/semantic.css`;
+const BRAND_INDEX_FILE = `${HERE}../../../../packages/pdpp-brand/styles/index.css`;
+const BRAND_TAILWIND_ALIASES_FILE = `${HERE}../../../../packages/pdpp-brand/styles/tokens/tailwind-aliases.css`;
+const BRAND_TYPOGRAPHY_FILE = `${HERE}../../../../packages/pdpp-brand/styles/typography.css`;
+const BRAND_REACT_COMPONENTS_FILE = `${HERE}../../../../packages/pdpp-brand-react/src/components.css`;
+const STATUS_BADGE_CSS_FILE = `${HERE}../../../../packages/operator-ui/src/components/status-badge.css`;
 
 const NEXT_THEMES_IMPORT = /from "next-themes"/;
 const NEXT_THEMES_PROVIDER = /ThemeProvider as NextThemesProvider/;
@@ -45,7 +45,7 @@ const STORAGE_KEY = /storageKey="pdpp-theme"/;
 const ROOT_PROVIDER = /<SiteProviders>/;
 const SITE_THEME_PROVIDER = /<ThemeProvider>/;
 const SUPPRESS_HYDRATION = /suppressHydrationWarning/;
-const THEME_COOKIE_IMPORT = /components\/theme\/theme-state/;
+const THEME_COOKIE_IMPORT = /lib\/theme-state/;
 const THEME_FOUC_GUARD = /launchFoucGuardCss|dangerouslySetInnerHTML/;
 const DATA_THEME_DARK_VARIANT = /@custom-variant\s+dark\s*\([\s\S]*\[data-theme="dark"\]/;
 const STATUS_BADGE_FOREGROUND_TOKENS =

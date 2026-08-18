@@ -8,7 +8,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ComponentPropsWithoutRef } from "react";
 import { LLMCopyButton, ViewOptions } from "@/components/ai/page-actions.tsx";
-import { getMDXComponents } from "@/components/mdx.tsx";
+import { getMDXComponents } from "@/components/mdx/mdx.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
 import { repoBlobUrl } from "@/lib/site-facts.ts";

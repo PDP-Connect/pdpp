@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
-import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
+import { ThemeToggle } from "@/components/elements/theme-toggle.tsx";
 import { GITHUB_REPO_URL } from "@/lib/site-facts.ts";
 
 export function baseOptions(): BaseLayoutProps {

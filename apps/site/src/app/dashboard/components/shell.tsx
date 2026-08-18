@@ -11,8 +11,8 @@ import { MobileDrawer, MobileDrawerProvider, MobileDrawerTrigger } from "@pdpp/o
 import { type Routes, sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { PdppLogo } from "@/components/pdpp-logo.tsx";
-import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
+import { PdppLogo } from "@/components/elements/pdpp-logo.tsx";
+import { ThemeToggle } from "@/components/elements/theme-toggle.tsx";
 
 interface NavItem {
   href: string;

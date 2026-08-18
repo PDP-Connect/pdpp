@@ -97,7 +97,7 @@ test("repoBlobUrl derives from GITHUB_REPO_URL, not a second literal", () => {
 test("no site source file hand-types the GitHub repo URL outside site-facts.ts", () => {
   const filesThatMustDeriveIt = [
     "src/lib/docs-shared.tsx",
-    "src/components/docs/source-link.tsx",
+    "src/components/elements/source-link.tsx",
     "src/app/specification/[[...slug]]/page.tsx",
     "src/app/(concept)/self-host/coverage/data.ts",
     "src/components/layout/footer.tsx",
