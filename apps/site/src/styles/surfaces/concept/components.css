@@ -961,12 +961,3 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   color: var(--on-primary-emphasis);
   border-color: var(--on-primary-emphasis);
 }
-/* The landing-page instance: the same component, the default command, and no
-   configuration. A reader on the front door wants to see that one line exists,
-   not to configure it — the Self-Host page is where the choices live. */
-.pdpp-cmd--compact {
-  margin: 24px 0 0;
-}
-.pdpp-cmd--compact .pdpp-cmd__config {
-  display: none;
-}

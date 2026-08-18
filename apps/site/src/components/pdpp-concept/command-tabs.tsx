@@ -56,7 +56,7 @@ function ProviderCard({ method }: { method: "fly" | "railway" }) {
   );
 }
 
-export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
+export function PdppCommandBuilder() {
   const [method, setMethod] = useState<SelfManagedMethod>("docker");
   const [choices, setChoices] = useState<SelfHostChoices>(defaultChoices);
   const { copy: copyToClipboard, status: copyState } = useCopyToClipboard();
@@ -89,7 +89,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
   const { announcement: copyStatus, label: copyLabel } = copyStatusText(copyState);
 
   return (
-    <div className={compact ? "pdpp-cmd pdpp-cmd--compact" : "pdpp-cmd"}>
+    <div className="pdpp-cmd">
       <section aria-labelledby="pdpp-cmd-self-managed-title" className="pdpp-cmd__flow">
         <div className="pdpp-cmd__flow-heading">
           <h3 id="pdpp-cmd-self-managed-title">Run it yourself</h3>
