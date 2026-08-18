@@ -65,6 +65,19 @@ export interface RunSource {
 export interface RunConnectorResult {
   readonly checkpoint_summary?: Record<string, unknown> | null;
   readonly connector_error?: ConnectorError | null;
+  /**
+   * Concise runtime-authored explanation of why the run failed (e.g. "Run
+   * exceeded a connector assistance timeout."). Present on
+   * `RuntimeRunConnectorResult` (runtime/index.ts) since
+   * persist-connector-failure-diagnostics, but omitted from this narrower
+   * scheduler-facing type until 2026-08-18 — the omission meant every
+   * `run_history.failure_reason` DB column stayed permanently null
+   * (buildSuccessOrFailureRecord hardcoded `failureReason: null`, unable to
+   * read a field its own parameter type didn't declare), even though the
+   * runtime always computed and emitted this text on the terminal spine
+   * event. See chatgpt-ingest-and-assistance-failure-modes-2026-08-18.
+   */
+  readonly failure_message?: string | null;
   readonly known_gaps?: readonly Record<string, unknown>[] | null;
   readonly message?: string;
   readonly records_emitted?: number;

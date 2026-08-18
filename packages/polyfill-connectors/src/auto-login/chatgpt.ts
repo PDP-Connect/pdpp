@@ -68,6 +68,8 @@ interface ChatGptDomSessionProbe {
 
 interface ChatGptAuthProbeDiagnostic extends ChatGptDomSessionProbe {
   api_session_user: boolean;
+  /** How many `/api/auth/session` attempts it took before giving up (or succeeding). Honest evidence that a `false` decision survived retry, not a single transient blip. */
+  api_session_user_attempts: number;
   decision: "accepted_by_api_session" | "credential_login_required";
   object: "chatgpt_auth_probe";
   route_class: ChatGptRouteClass;
@@ -98,6 +100,26 @@ export const CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE =
   "chatgpt_stored_credential_rejected: ChatGPT rejected the stored username/password credential.";
 const PUSH_APPROVAL_POLL_INTERVAL_MS = 5000;
 const BROWSER_LOGIN_POLL_INTERVAL_MS = 5000;
+/**
+ * Bounded retry for the INITIAL `/api/auth/session` probe in
+ * `navigateAndProbeSession`. Root cause (chatgpt-assistance-false-positive,
+ * 2026-08-18): production evidence showed a run with a cookie DB proving a
+ * valid, unexpired `__Secure-next-auth.session-token` (good for months)
+ * still got `api_session_user: false` on a single unretried probe fired
+ * exactly 3s after `page.goto` — a transient Cloudflare re-check or
+ * cookie-sync race on that one fetch, not a genuinely dead session. Because
+ * `checkSession` collapses every failure mode (network error, non-2xx,
+ * challenge-page HTML instead of JSON) into the same `false`, that one blip
+ * fell through to the full credential-login path, which immediately hit the
+ * "ChatGPT sent an app approval notification" assistance prompt on an
+ * account that never needed to re-authenticate — and when the push-approval
+ * poll timed out (15 min), the whole run failed for something a few extra
+ * seconds of retry would have avoided entirely. A single owner-attended
+ * account re-auth is expensive (a live login); a handful of cheap in-process
+ * retries on an already-open page is not.
+ */
+const SESSION_PROBE_RETRY_ATTEMPTS = 4;
+const SESSION_PROBE_RETRY_DELAY_MS = 1500;
 /**
  * Default push-approval observation budget. Raised from the original 180s
  * (36 × 5s) to 900s so realistic human app-approval latency auto-resumes via
@@ -253,6 +275,36 @@ async function checkSession(page: Page): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Retry the `/api/auth/session` probe a bounded number of times before
+ * concluding the session is genuinely inactive. See
+ * `SESSION_PROBE_RETRY_ATTEMPTS` for why: `checkSession` collapses network
+ * error, non-2xx, and challenge-page HTML into the same `false`, so a single
+ * unretried call cannot distinguish "the cookie is dead" from "this one
+ * request got a transient hiccup." Returns as soon as any attempt succeeds;
+ * `attempts` in the result is how many calls it actually took, so the
+ * diagnostic honestly shows whether a `false` verdict survived retry.
+ *
+ * Waits via `page.waitForTimeout` (not a bare `setTimeout`) — same wait
+ * primitive every other poll in this module uses, so tests can drive it
+ * through the existing `page.waitForTimeout` mock instead of real wall-clock
+ * delay.
+ */
+async function checkSessionWithRetry(
+  page: Page,
+  attempts = SESSION_PROBE_RETRY_ATTEMPTS
+): Promise<{ active: boolean; attempts: number }> {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (await checkSession(page)) {
+      return { active: true, attempts: attempt };
+    }
+    if (attempt < attempts) {
+      await page.waitForTimeout(SESSION_PROBE_RETRY_DELAY_MS);
+    }
+  }
+  return { active: false, attempts };
 }
 
 async function checkLoggedInViaDOMDetails(page: Page): Promise<ChatGptDomSessionProbe> {
@@ -482,13 +534,14 @@ async function navigateAndProbeSession(page: Page, progress?: EnsureChatGptSessi
     .catch((): undefined => undefined);
   await page.waitForTimeout(3000);
 
-  const apiSessionUser = await checkSession(page);
+  const { active: apiSessionUser, attempts: apiSessionUserAttempts } = await checkSessionWithRetry(page);
   const domProbe = await checkLoggedInViaDOMDetails(page);
   await progress?.(
     chatGptAuthProbeDiagnosticMessage({
       object: "chatgpt_auth_probe",
       stage: "initial",
       api_session_user: apiSessionUser,
+      api_session_user_attempts: apiSessionUserAttempts,
       ...domProbe,
       route_class: classifyChatGptRoute(page),
       decision: apiSessionUser ? "accepted_by_api_session" : "credential_login_required",
