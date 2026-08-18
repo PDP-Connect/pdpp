@@ -4,6 +4,7 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
+import { copyStatusText, useCopyToClipboard } from "@/lib/use-copy-to-clipboard.ts";
 import {
   buildCommand,
   commandText,
@@ -58,8 +59,7 @@ function ProviderCard({ method }: { method: "fly" | "railway" }) {
 export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
   const [method, setMethod] = useState<SelfManagedMethod>("docker");
   const [choices, setChoices] = useState<SelfHostChoices>(defaultChoices);
-  const [copied, setCopied] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const { copy: copyToClipboard, status: copyState } = useCopyToClipboard();
   const urlInputId = useId();
   const commandPanelId = useId();
   const accessDescriptionId = useId();
@@ -72,17 +72,6 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
     }
   }, []);
 
-  useEffect(() => {
-    if (!(copied || failed)) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      setCopied(false);
-      setFailed(false);
-    }, 2000);
-    return () => clearTimeout(timer);
-  }, [copied, failed]);
-
   const built = buildCommand(method, choices);
 
   function select(id: SelfManagedMethod) {
@@ -90,29 +79,14 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
     window.localStorage.setItem(STORAGE_KEY, id);
   }
 
-  async function copy() {
+  function copy() {
     if (!built.segments) {
       return;
     }
-    setCopied(false);
-    setFailed(false);
-    try {
-      await navigator.clipboard.writeText(commandText(built.segments));
-      setCopied(true);
-    } catch {
-      setFailed(true);
-    }
+    copyToClipboard(commandText(built.segments));
   }
 
-  let copyLabel = "Copy";
-  let copyStatus = "";
-  if (copied) {
-    copyLabel = "Copied";
-    copyStatus = "Command copied to clipboard.";
-  } else if (failed) {
-    copyLabel = "Copy failed";
-    copyStatus = "Copy failed.";
-  }
+  const { announcement: copyStatus, label: copyLabel } = copyStatusText(copyState);
 
   return (
     <div className={compact ? "pdpp-cmd pdpp-cmd--compact" : "pdpp-cmd"}>

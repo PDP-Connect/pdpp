@@ -3,7 +3,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { copyStatusText, useCopyToClipboard } from "@/lib/use-copy-to-clipboard.ts";
 
 // A command block with a working Copy button.
 //
@@ -12,36 +12,11 @@ import { useEffect, useState } from "react";
 // the failure mode this component exists to prevent: the handler lives with the
 // markup it drives, so a rename cannot silently unbind them.
 export function PdppTerminal({ command, label }: { command: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const { copy: copyToClipboard, status } = useCopyToClipboard();
+  const { label: buttonLabel } = copyStatusText(status);
 
-  useEffect(() => {
-    if (!(copied || failed)) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      setCopied(false);
-      setFailed(false);
-    }, 2000);
-    return () => clearTimeout(timer);
-  }, [copied, failed]);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-    } catch {
-      // navigator.clipboard is undefined on insecure origins and rejects when
-      // the permission is denied. Say so rather than showing a false "Copied".
-      setFailed(true);
-    }
-  }
-
-  let buttonLabel = "Copy";
-  if (copied) {
-    buttonLabel = "Copied";
-  } else if (failed) {
-    buttonLabel = "Copy failed";
+  function copy() {
+    copyToClipboard(command);
   }
 
   return (
