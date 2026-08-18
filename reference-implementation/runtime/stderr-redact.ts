@@ -47,10 +47,41 @@ export interface RedactedStderr {
   text: string;
 }
 
-export function redactStderrTail(text: unknown): RedactedStderr {
+/**
+ * Reason tokens the CONNECTOR DECLARED, which `LONG_OPAQUE_RE` must not eat.
+ *
+ * `LONG_OPAQUE_RE` is an ENTROPY heuristic, not a PII control: it redacts any
+ * >=24-char alnum run because raw API keys look like that. Categorical reason
+ * tokens look like that too. Production 2026-08-18: HEB connection
+ * `cin_c875ca3ec8b6ce2c283a4288` recorded
+ * `connector_error_json.message = "heb_session_failed: [REDACTED]"` — the
+ * literal string `[REDACTED]` was the entire cause. The eaten token was a
+ * PII-free categorical constant (`login_form_never_appeared`, 25 chars);
+ * `source_unavailable` (18 chars) survived the same pass. Length, not content,
+ * decided which failures stayed diagnosable.
+ *
+ * Shape alone CANNOT fix this, and that is the load-bearing finding. A tighter
+ * "alphabetic snake_case" rule admits `login_form_never_appeared` but also
+ * admits `tim_nunamaker_gmail_com` — a personal name is alphabetic snake_case
+ * too. No regex separates a declared reason from a name, because the
+ * difference is PROVENANCE, not spelling.
+ *
+ * So the safety property here is DECLARATION, not spelling. A token survives
+ * only if the connector declared it ahead of time as part of its reason
+ * vocabulary; the declaration is reviewable in the connector's source, where a
+ * human can see `login_form_never_appeared` is a constant and would see a name
+ * for what it is. Anything undeclared redacts exactly as before, so this can
+ * only ever REDUCE what escapes — never widen it.
+ */
+export interface StderrRedactionOptions {
+  readonly declaredReasonTokens?: ReadonlySet<string>;
+}
+
+export function redactStderrTail(text: unknown, options: StderrRedactionOptions = {}): RedactedStderr {
   if (typeof text !== "string" || text.length === 0) {
     return { redacted: false, text: (text as string | null | undefined) ?? "" };
   }
+  const declared = options.declaredReasonTokens;
   // URL-embedded credentials first (before keyed-secret, so "password" in the
   // URL path doesn't trip a partial match on the userinfo it already redacted).
   let next = text.replace(URL_USERINFO_RE, "$1[REDACTED]@");
@@ -58,6 +89,9 @@ export function redactStderrTail(text: unknown): RedactedStderr {
   next = next.replace(PEM_BLOCK_RE, "[REDACTED_PEM]");
   next = next.replace(KEYED_SECRET_RE, (_match, marker: string) => `${marker}=[REDACTED]`);
   next = next.replace(OTP_RE, "[REDACTED_OTP]");
-  next = next.replace(LONG_OPAQUE_RE, "[REDACTED]");
+  // A declared reason token is preserved verbatim; everything else redacts
+  // exactly as it always has. `declared` is empty for every caller that does
+  // not opt in, so this branch is byte-identical to the previous behaviour.
+  next = next.replace(LONG_OPAQUE_RE, (match) => (declared?.has(match) ? match : "[REDACTED]"));
   return { redacted: next !== text, text: next };
 }
