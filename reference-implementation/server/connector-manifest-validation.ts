@@ -263,7 +263,13 @@ export const REFRESH_POLICY_ALLOWED_KEYS = new Set([
 // production code, but the read-site clamp holds even if it does.
 export const REFRESH_POLICY_MAX_COOLDOWN_CYCLES_RANGE = { max: 24, min: 1 } as const;
 export const REFRESH_POLICY_MAX_RECOVERY_ATTEMPTS_RANGE = { max: 20, min: 1 } as const;
-export const RUNTIME_REQUIREMENT_BINDINGS = new Set(["browser", "filesystem", "interactive", "network"]);
+export const RUNTIME_REQUIREMENT_BINDINGS = new Set([
+  "browser",
+  "desktop_session",
+  "filesystem",
+  "interactive",
+  "network",
+]);
 export const STREAM_AVAILABILITY_STATES = new Set(["supported", "unsupported_in_mode", "experimental", "deprecated"]);
 export const STREAM_AVAILABILITY_ALLOWED_KEYS = new Set(["future_modes", "mode", "reason", "state"]);
 export const STREAM_COVERAGE_POLICIES = new Set([
