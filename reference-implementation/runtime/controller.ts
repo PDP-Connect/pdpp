@@ -1053,6 +1053,15 @@ let polyfillConnectorPaths: Map<string, string> | null = null;
 const ABANDONED_CONTROLLER_RUN_REASON = "controller_restarted";
 const MAX_RECOVERY_CONTINUATION_ENVELOPES = 12;
 const RECOVERY_CONTINUATION_PENDING_READ_LIMIT = 100;
+// Minimum gap between two self-launched recovery continuations for the same
+// connection. The depth cap bounds how MANY envelopes run; this bounds how
+// FAST they run, which is what the owner actually feels when each envelope
+// costs an interactive sign-in.
+const RECOVERY_CONTINUATION_MIN_INTERVAL_MS = 60_000;
+// Last continuation launch per connection id. Process-local on purpose: a
+// restart clears it, and the depth cap plus the eligibility check remain the
+// durable bounds. This only smooths bursts within one process lifetime.
+const recoveryContinuationLastStartedAt = new Map<string, number>();
 
 // Typed terminal reason for a run whose launch path threw before the
 // runtime recorded any terminal event (e.g. env/spawn prep failed before
@@ -3488,6 +3497,20 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!(await hasEligibleNonPressureRecoveryWork(input.connectorId, input.connectorInstanceId))) {
       return;
     }
+    // Space continuations apart. Without this the next envelope starts within
+    // ~200ms of the previous run completing, so a connection with pending gaps
+    // can burn the whole depth budget back-to-back. For a connector whose
+    // sign-in sends the owner a one-time passcode that is one push per
+    // envelope, in seconds. Progress still happens; it is just not a burst.
+    const sinceLast = Date.now() - (recoveryContinuationLastStartedAt.get(input.connectorInstanceId) ?? 0);
+    if (sinceLast < RECOVERY_CONTINUATION_MIN_INTERVAL_MS) {
+      log.warn?.(
+        `[controller] recovery continuation deferred for ${input.connectorId} ` +
+          `(connection=${input.connectorInstanceId}, ${sinceLast}ms since last continuation)`
+      );
+      return;
+    }
+    recoveryContinuationLastStartedAt.set(input.connectorInstanceId, Date.now());
     try {
       const continuationOptions: RunNowOptions = {
         connectorInstanceId: input.connectorInstanceId,
