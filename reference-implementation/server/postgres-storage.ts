@@ -2631,6 +2631,34 @@ export async function bootstrapPostgresSchema({
         ON spine_events(connector_instance_id, event_seq)
         WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
           AND connector_instance_id IS NOT NULL;
+      -- readPostgresDiscoveryContext's per-connection lifecycle-checkpoint
+      -- read (connector-summary-evidence-engine.ts, maxLifecycleSeqResult)
+      -- is MAX(event_seq) ... GROUP BY connector_instance_id over EVERY
+      -- event type, not just the four terminal outcomes the index above
+      -- covers, so that read fell through to a full parallel seq scan on
+      -- every discovery pass. Production, 2026-08-18 (immediately after
+      -- a5505bb59 removed the redundant records count that had been
+      -- masking this): measured 1.5-1.9s / ~117k buffers (~940 MB) via
+      -- EXPLAIN (ANALYZE, BUFFERS) against 1.4M spine_events rows, with
+      -- the scoped = ANY(...) form no faster than the unscoped one (the
+      -- planner cannot prune a scan on an unindexed column). That routinely
+      -- exceeded discovery's remaining per-pass admission allowance
+      -- (MIN_STATEMENT_TIMEOUT_MS), and -- because readPostgresDiscovery
+      -- Context issues its queries with no per-query isolation, unlike
+      -- repairCandidate -- the cancellation propagated out of
+      -- discoverCandidates and aborted the ENTIRE batch before
+      -- classifyCandidate ran for any row (92c9fc83e's existing
+      -- discovery-level catch converts this into a clean candidates_
+      -- inspected: 0, incomplete: true pass rather than a crash, but a
+      -- durably-dirty backlog got zero candidates selected pass after pass
+      -- regardless). A general, unfiltered index on the exact
+      -- (connector_instance_id, event_seq) shape this query groups by lets
+      -- Postgres answer it with a per-group index scan instead of a full
+      -- table scan, the same fix already proven for the terminal-scoped
+      -- case above.
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_instance_seq
+        ON spine_events(connector_instance_id, event_seq)
+        WHERE connector_instance_id IS NOT NULL;
       -- Backfill connector_instance_id for pre-existing TERMINAL rows whose
       -- identity already lives in data_json (Sol fourth-verdict P1.1): the
       -- scoped fold filters exclusively on the new column, so a legacy

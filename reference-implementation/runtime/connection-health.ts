@@ -130,7 +130,6 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_SUCCEEDED: "collection_succeeded",
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
   COVERAGE_UNKNOWN: "coverage_unknown",
-  COVERAGE_UNKNOWN_STALE_COLLECTOR: "coverage_unknown_stale_collector",
   CREDENTIAL_CONTINUITY_NOT_APPLICABLE: "credential_continuity_not_applicable",
   CREDENTIAL_CONTINUITY_PROVEN: "credential_continuity_proven",
   CREDENTIAL_CONTINUITY_UNPROVEN: "credential_continuity_unproven",
@@ -995,21 +994,6 @@ export interface ConnectionCoverageEvidence {
    * only to non-required streams and does not block healthy".
    */
   readonly requiredButAccepted?: boolean;
-  /**
-   * `true` when `axis === "unknown"` specifically because a local-device
-   * collector's committed coverage snapshot is missing a store the current
-   * descriptor authority requires (`deriveLocalCoverageAxis`'s
-   * `unreliableReason === "missing_stores"` in `ref-control.ts`) — the
-   * collector build genuinely predates the server's coverage requirements
-   * and never measured those stores at all. Distinct from every other
-   * `unknown` cause (no evidence yet, a stale generation, a malformed
-   * snapshot): this one names a concrete, owner-actionable fix (update the
-   * collector) instead of leaving the owner to guess why a connection that
-   * is visibly collecting still reads "coverage evidence is missing".
-   * Optional/absent preserves the prior generic `unknown` message for every
-   * other cause.
-   */
-  readonly unknownStaleCollectorBuild?: boolean;
 }
 
 /** Outbox/work rollup from local collector or other durable executor. */
@@ -2713,22 +2697,6 @@ function localExporterAvailableCondition(
 
 function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
   if (axes.coverage === "unknown") {
-    if (input.coverage?.unknownStaleCollectorBuild === true) {
-      return condition({
-        message: "This local collector build predates coverage evidence the server now requires. Update the collector.",
-        origin: "connector",
-        reason: CONDITION_REASON.COVERAGE_UNKNOWN_STALE_COLLECTOR,
-        remediation: {
-          action: "update_connector",
-          label: "Update the local collector",
-          retryable: false,
-          target: "coverage",
-        },
-        severity: "warning",
-        status: "unknown",
-        type: "SourceCoverageComplete",
-      });
-    }
     return condition({
       message: "Source coverage evidence is missing.",
       origin: "connector",

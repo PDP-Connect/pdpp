@@ -1288,6 +1288,37 @@ function buildTerminalScopeFragmentSqlite(scope: readonly string[] | null): { sq
   return { params: [...scope], sql: ` AND connector_instance_id IN (${placeholders})` };
 }
 
+/**
+ * `INDEXED BY idx_spine_events_terminal_instance_seq` for the three terminal
+ * SQLite fold queries below, but ONLY when the query is genuinely scoped to
+ * `connector_instance_id` (mirrors `buildTerminalScopeFragmentSqlite`'s own
+ * null/empty branching exactly) -- forcing this index without that predicate
+ * would still be CORRECT (its own WHERE clause guarantees `event_type IN
+ * (terminal)`, a superset the partial index always satisfies) but pins a
+ * fleet-wide, unscoped read to an index keyed on a column it never filters
+ * by, which can only be worse, never better, for that one caller shape.
+ *
+ * Added alongside `idx_spine_events_instance_seq` (the general,
+ * every-event-type lifecycle-checkpoint index, connector-summary-evidence-
+ * engine.ts): once that general index existed as an alternative, SQLite's
+ * planner -- lacking cardinality stats for a partial index's WHERE clause --
+ * started preferring the general (larger) index for these terminal-only,
+ * `connector_instance_id`-scoped queries even though the terminal partial
+ * index is a strict subset match for the exact same predicate. Measured
+ * directly against a 100k-row single-connection terminal backlog: ~1.4-1.9x
+ * slower per call with the general index, compounding across an entire
+ * bounded fold pass into real wall-clock drift
+ * (connector-summary-sweep-stuck-page-starvation.test.ts's deliberately
+ * tight ROUND_MS=50 budget went from reliably green to reliably red before
+ * this hint existed). This does not undo the general index -- both indexes
+ * are real and independently load-bearing -- it only breaks the tie in
+ * SQLite's planner back toward the smaller, already-correct index for the
+ * queries that were always meant to use it.
+ */
+function terminalScopeIndexHintSqlite(scope: readonly string[] | null): string {
+  return scope === null || scope.length === 0 ? "" : " INDEXED BY idx_spine_events_terminal_instance_seq";
+}
+
 function createStreamFactsFoldStore() {
   if (isPostgresStorageBackend()) {
     return {
@@ -1395,9 +1426,10 @@ function createStreamFactsFoldStore() {
   return {
     readMaxTerminalEventSeq(scope: readonly string[] | null = null): number | null {
       const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentSqlite(scope);
+      const indexHint = terminalScopeIndexHintSqlite(scope);
       const row = getDb()
         .prepare(
-          `SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE event_type IN (${TERMINAL_TYPES_SQL})${scopeSql}`
+          `SELECT MAX(event_seq) AS max_seq FROM spine_events${indexHint} WHERE event_type IN (${TERMINAL_TYPES_SQL})${scopeSql}`
         )
         .get(...scopeParams) as Row | undefined;
       const value = row?.max_seq;
@@ -1405,10 +1437,11 @@ function createStreamFactsFoldStore() {
     },
     readMaxTerminalEventSeqByInstance(scope: readonly string[] | null): ReadonlyMap<string, number> {
       const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentSqlite(scope);
+      const indexHint = terminalScopeIndexHintSqlite(scope);
       const rows = getDb()
         .prepare(
           `SELECT connector_instance_id, MAX(event_seq) AS max_seq
-             FROM spine_events
+             FROM spine_events${indexHint}
             WHERE event_type IN (${TERMINAL_TYPES_SQL})
               AND connector_instance_id IS NOT NULL${scopeSql}
             GROUP BY connector_instance_id`
@@ -1432,10 +1465,19 @@ function createStreamFactsFoldStore() {
       scope?: readonly string[] | null;
     }) {
       const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentSqlite(scope);
+      // See `terminalScopeIndexHintSqlite`'s doc: without this hint, SQLite's
+      // planner started preferring the general `idx_spine_events_instance_seq`
+      // index (added alongside this one) over the smaller, already-correct
+      // terminal partial index for this exact scoped/terminal-filtered shape
+      // -- measured ~1.4-1.9x slower per call, which compounds across an
+      // entire bounded fold pass into enough wall-clock drift to break
+      // connector-summary-sweep-stuck-page-starvation.test.ts's deliberately
+      // tight ROUND_MS=50 budget.
+      const indexHint = terminalScopeIndexHintSqlite(scope);
       return getDb()
         .prepare(
           `SELECT event_seq, occurred_at, run_id, manifest_generation, data_json
-             FROM spine_events
+             FROM spine_events${indexHint}
             WHERE event_type IN (${TERMINAL_TYPES_SQL})
               AND event_seq > ? AND event_seq <= ?${scopeSql}
             ORDER BY event_seq ASC
