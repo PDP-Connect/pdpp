@@ -4337,8 +4337,29 @@ const BROWSER_SURFACE_UNKNOWN_PROJECTION: ConnectorBrowserSurfaceProjection = {
 
 export async function getConnectorBrowserSurfaceProjection(
   connectorId: string,
-  options: { readonly profileKey?: string | null; readonly store?: BrowserSurfaceLeaseStoreReader } = {}
+  options: {
+    readonly profileKey?: string | null;
+    readonly store?: BrowserSurfaceLeaseStoreReader;
+    readonly manifestHasBrowserBinding?: boolean;
+  } = {}
 ): Promise<ConnectorBrowserSurfaceProjection> {
+  // A connector whose CURRENT manifest declares no browser binding at all
+  // (required or optional) never places a managed remote surface under its
+  // present design — e.g. Slack authenticates via a static-secret sidecar
+  // (slackdump), not a leased browser. Rows in `browser_surface_leases` /
+  // `browser_surfaces` can still exist from an earlier connector version that
+  // did use a browser phase; those are permanent history under
+  // `projectConnectorBrowserSurfaceEvidence`'s design (retired evidence must
+  // not silently resolve to "current"), so without this gate such a connector
+  // reports `remote_surface: unknown` forever, degrading its headline to
+  // "Not measured" even on a clean, fully-covered run. Checking the manifest
+  // first — the same "declaration is a stable required-capability fact"
+  // pattern as `manifestRequiresBrowserSessionRepair` — answers "does this
+  // connector kind use a remote surface at all?" before any DB row is
+  // consulted, so legacy rows from a since-migrated setup flow can't leak in.
+  if (options.manifestHasBrowserBinding === false) {
+    return { evidence: null, unreliable: false };
+  }
   const store = options.store ?? (getDefaultBrowserSurfaceLeaseStore() as BrowserSurfaceLeaseStoreReader);
   let leases: readonly BrowserSurfaceLease[];
   let allLeases: readonly BrowserSurfaceLease[];
@@ -5746,6 +5767,18 @@ function manifestRequiresBrowserSessionRepair(manifest: ConnectorManifest): bool
   );
 }
 
+// Whether the connector's CURRENT manifest places a browser binding at all,
+// required or optional. Distinct from `manifestRequiresBrowserSessionRepair`:
+// that answers "must a browser session exist for auth repair", this answers
+// "does this connector kind ever occupy a managed remote surface". A
+// connector with neither key (e.g. Slack's static-secret sidecar) should
+// never have its historical `browser_surface_leases`/`browser_surfaces` rows
+// — left over from an earlier setup flow — treated as live remote-surface
+// evidence.
+function manifestHasBrowserBinding(manifest: ConnectorManifest): boolean {
+  return manifest.runtime_requirements?.bindings?.browser !== undefined;
+}
+
 function connectionHasBrowserSessionRepairCapability(
   instance: ConnectorInstanceRow,
   manifest: ConnectorManifest
@@ -5963,6 +5996,7 @@ async function projectConnectorSummaryForInstance(
         })
       : getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
     getConnectorBrowserSurfaceProjection(connectorId, {
+      manifestHasBrowserBinding: manifestHasBrowserBinding(manifest),
       profileKey: browserSurfaceProfileKey,
       store: sharedBrowserSurfaceReader,
     }),
