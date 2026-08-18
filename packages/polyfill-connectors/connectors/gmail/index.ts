@@ -3364,8 +3364,15 @@ export async function runAllMailPasses(
     const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);
     await emit(
       buildDetailCoverageMessage({
-        considered: historicalMessageCoverage.considered,
-        covered: historicalMessageCoverage.covered,
+        // Sums BOTH passes, like the `message_bodies` DETAIL_COVERAGE above:
+        // the forward pass runs in the same call to `runAllMailPasses` and
+        // emits its own `messages` records via the same shared `emitRecord`,
+        // so the raw collected-record count already includes them. Reporting
+        // only `historicalMessageCoverage` here undercounted the denominator
+        // against that total every scheduled run with new mail waiting
+        // alongside a pending historical backfill.
+        considered: historicalMessageCoverage.considered + forwardMessageCoverage.considered,
+        covered: historicalMessageCoverage.covered + forwardMessageCoverage.covered,
         hydratedKeys: [],
         requiredKeys: [],
         stateStream: "messages",
