@@ -1777,7 +1777,14 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/auto-login/reddit.ts",
-    line: 280,
+    line: 190,
+    column: 9,
+    category: "bounded_retry_polling",
+    note: "isSessionLiveWithRetry(): bounded post-manual-handoff re-probe — don't trust a single isSessionLive check right after the owner's continue click",
+  },
+  {
+    path: "src/auto-login/reddit.ts",
+    line: 400,
     column: 10,
     category: "bounded_retry_polling",
     note: "hasSessionCookie(): retry/backoff/poll loop gated on the prior attempt's outcome",

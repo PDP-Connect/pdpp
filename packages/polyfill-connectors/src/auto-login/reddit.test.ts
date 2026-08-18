@@ -7,7 +7,7 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { REDDIT_RETRYABLE_PATTERN, redditEnsureSession } from "../../connectors/reddit/index.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import { establishSession, type SessionEstablishArgs } from "../session-establish.ts";
-import { ensureRedditSession, isSessionLive } from "./reddit.ts";
+import { ensureRedditSession, isSessionLive, isSessionLiveWithRetry } from "./reddit.ts";
 
 type BrowserCookie = Awaited<ReturnType<BrowserContext["cookies"]>>[number];
 const STREAMING_ENV_KEYS = [
@@ -375,6 +375,10 @@ test("ensureRedditSession hands off when optional credentials are absent", async
     await assert.rejects(
       ensureRedditSession({
         context: makeContext(),
+        // See the identical note on the "blocked login inputs" test below:
+        // keeps this "never becomes live" case from burning the real retry
+        // window or calling the undefined page.waitForTimeout on this fake.
+        manualHandoffProbeRetry: { retryForMs: 0 },
         page: makePageWithoutLoginInputs(),
         sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
           requests.push(req);
@@ -402,6 +406,11 @@ test("ensureRedditSession emits manual_action when login inputs are blocked", as
     await assert.rejects(
       ensureRedditSession({
         context: makeContext(),
+        // retryForMs: 0 keeps this test's "never becomes live" case from
+        // burning the real (production) retry window; a 0-length window
+        // still exercises the give-up-and-throw path without ever calling
+        // page.waitForTimeout, which this fake intentionally doesn't define.
+        manualHandoffProbeRetry: { retryForMs: 0 },
         page: makePageWithoutLoginInputs(),
         sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
           requests.push(req);
@@ -419,6 +428,112 @@ test("ensureRedditSession emits manual_action when login inputs are blocked", as
     assert.equal(requests[0]?.kind, "manual_action");
     assert.ok(requests[0]?.request_id?.startsWith("int_"));
     assert.match(requests[0]?.message ?? "", /Cloudflare challenge/u);
+  });
+});
+
+/**
+ * Models the credential-less `isSessionLive` DOM fallback (goto + `/logout`
+ * link count) becoming live only after `liveAfterProbeCall` probes have run —
+ * i.e. the owner's session settles a beat after they click "continue" on the
+ * manual_action interaction, the same "second render pass" shape as the
+ * post-submit OTP fix. `waitForTimeout` resolves immediately so the test
+ * doesn't actually wait on wall-clock time between polls.
+ */
+function makePageBlockedThenLiveAfterProbes({ liveAfterProbeCall }: { liveAfterProbeCall: number }): {
+  page: Page;
+  probeCallCount: () => number;
+} {
+  const empty = makeLocator({ count: 0, visible: false });
+  let probeCalls = 0;
+  const fake: Pick<Page, "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+    getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
+      return empty;
+    },
+    goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      if (url.includes("old.reddit.com")) {
+        probeCalls += 1;
+      }
+      return Promise.resolve(null);
+    },
+    locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+      if (selector.includes("logout")) {
+        return makeLocator({ count: probeCalls >= liveAfterProbeCall ? 1 : 0 });
+      }
+      return empty;
+    },
+    waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+      return Promise.resolve();
+    },
+    waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+      return Promise.resolve();
+    },
+  };
+  return { page: fake as Page, probeCallCount: () => probeCalls };
+}
+
+// ─── Manual-handoff re-probe: don't trust a single check right after the
+// owner's "continue" click ────────────────────────────────────────────────
+//
+// `run_1787090213822` (2026-08-18): the owner solved the Cloudflare captcha
+// on reddit.com, clicked continue, and ~300ms later the run failed with
+// `reddit_login_unexpected_ui` — the manual-hand-off probe ran exactly once,
+// immediately, with no tolerance for the post-captcha page still settling.
+// The owner's login was NOT destroyed (cookies persisted in the profile),
+// but the connector never looked again to notice it had succeeded.
+
+// These pin the credential-less manual hand-off path (the production
+// condition: REDDIT_USERNAME/PASSWORD are unset on the container that
+// produced run_1787090213822), where isSessionLive falls back to the
+// goto+DOM logout-link probe rather than the JSON-fetch branch.
+
+test("isSessionLive FAILS on a single post-captcha probe that reads live one beat too late (fail-before, pins the pre-fix bug)", async () => {
+  await withoutRedditCredentials(async () => {
+    const { page } = makePageBlockedThenLiveAfterProbes({ liveAfterProbeCall: 2 });
+    // A single, unretried isSessionLive call (the pre-fix shape) reads the
+    // session as dead on the first probe (the session only reads live once
+    // 2 probe calls have happened) — i.e. the exact race the fix closes.
+    assert.equal(await isSessionLive(page), false);
+  });
+});
+
+test("ensureRedditSession re-probes past a session that settles a beat after the owner's continue click (pass-after, proves the fix)", async () => {
+  await withoutRedditCredentials(async () => {
+    const { page, probeCallCount } = makePageBlockedThenLiveAfterProbes({ liveAfterProbeCall: 2 });
+    const requests: InteractionRequest[] = [];
+
+    await ensureRedditSession({
+      context: makeContext(),
+      // Small but real retry window: proves the fix re-probes rather than
+      // trusting a single check, without burning the production 15s window.
+      manualHandoffProbeRetry: { pollIntervalMs: 0, retryForMs: 5000 },
+      page,
+      sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
+        requests.push(req);
+        return Promise.resolve({
+          request_id: req.request_id ?? "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
+      },
+    });
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.kind, "manual_action");
+    assert.ok(probeCallCount() >= 2, `expected at least 2 probe calls, got ${probeCallCount()}`);
+  });
+});
+
+test("isSessionLiveWithRetry gives up and returns false once the retry window elapses without the session ever going live (COUNTERWEIGHT)", async () => {
+  await withoutRedditCredentials(async () => {
+    const { page, probeCallCount } = makePageBlockedThenLiveAfterProbes({
+      liveAfterProbeCall: Number.POSITIVE_INFINITY,
+    });
+    const live = await isSessionLiveWithRetry(page, { pollIntervalMs: 0, retryForMs: 20 });
+    assert.equal(live, false);
+    // Bounded, not infinite: the fake's waitForTimeout resolves instantly, so
+    // an unbounded retry would spin forever. Confirms the deadline actually
+    // stops the loop rather than the fake accidentally terminating it.
+    assert.ok(probeCallCount() >= 1);
   });
 });
 

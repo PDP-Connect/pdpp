@@ -75,9 +75,22 @@ const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
 
 type SendInteraction = (req: InteractionRequest) => Promise<InteractionResponse>;
 
+interface ManualHandoffProbeRetryOptions {
+  pollIntervalMs?: number;
+  retryForMs?: number;
+}
+
 interface EnsureRedditSessionArgs {
   capture?: CaptureSession | null;
   context: BrowserContext;
+  /**
+   * Test seam for the manual-handoff post-interaction re-probe window (see
+   * `isSessionLiveWithRetry`). Defaults to the production window
+   * (`MANUAL_HANDOFF_PROBE_RETRY_MS` / `MANUAL_HANDOFF_PROBE_POLL_INTERVAL_MS`);
+   * tests that deliberately exercise the "never becomes live" throw path
+   * override this so the assertion doesn't burn the real retry window.
+   */
+  manualHandoffProbeRetry?: ManualHandoffProbeRetryOptions;
   /**
    * Runtime marker for the post-submit credential-safety invariant: fired at
    * the exact click that sends the saved password to Reddit's real sign-in
@@ -145,6 +158,45 @@ export async function isSessionLive(page: Page): Promise<boolean> {
   }
 }
 
+const MANUAL_HANDOFF_PROBE_RETRY_MS = 15_000;
+const MANUAL_HANDOFF_PROBE_POLL_INTERVAL_MS = 3000;
+
+/**
+ * Re-probe liveness for a bounded window instead of trusting a single check
+ * right after the owner's `manual_action` response resolves.
+ *
+ * The owner's "success" click only means they finished on their end — it is
+ * not proof the post-captcha/post-login page has settled. Reddit still has
+ * to run its own redirect/render pass after that click (the same class of
+ * "second client-side render pass" the post-submit OTP fix in
+ * `ensureRedditSession` already accounts for with a `waitFor`, not a
+ * one-shot check). `isSessionLive`'s credential-less fallback additionally
+ * does a real navigation (`page.goto("https://old.reddit.com/")`), which
+ * itself takes time and can transiently fail immediately after a challenge
+ * redirect. A single call here read that transient state as "not live" and
+ * threw `reddit_login_unexpected_ui` ~300ms after the owner solved the
+ * captcha, discarding a login that was already succeeding — see the
+ * `run_1787090213822` production evidence this fixes.
+ */
+export async function isSessionLiveWithRetry(
+  page: Page,
+  {
+    pollIntervalMs = MANUAL_HANDOFF_PROBE_POLL_INTERVAL_MS,
+    retryForMs = MANUAL_HANDOFF_PROBE_RETRY_MS,
+  }: { pollIntervalMs?: number; retryForMs?: number } = {}
+): Promise<boolean> {
+  const deadline = Date.now() + retryForMs;
+  for (;;) {
+    if (await isSessionLive(page)) {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await page.waitForTimeout(pollIntervalMs);
+  }
+}
+
 async function captureLoginState(capture: CaptureSession | null | undefined, page: Page, label: string): Promise<void> {
   if (!capture) {
     return;
@@ -180,18 +232,45 @@ function loginBlockedMessage(cfSignals: string[]): string {
   return "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the browser window and re-run.";
 }
 
-async function ensureRedditManualSession({
+/**
+ * Assembles the manual-handoff args shared by `ensureRedditManualSession` and
+ * `recoverRedditBlockedLogin`, keeping the optional-field spreads (needed for
+ * `exactOptionalPropertyTypes`) out of `ensureRedditSession` itself — that
+ * function's cognitive-complexity budget is already spent on the real
+ * session-establishment branching.
+ */
+function manualHandoffArgs({
   capture,
+  manualHandoffProbeRetry,
   page,
   sendInteraction,
-}: Pick<EnsureRedditSessionArgs, "capture" | "page" | "sendInteraction">): Promise<void> {
+}: {
+  capture: CaptureSession | null | undefined;
+  manualHandoffProbeRetry: ManualHandoffProbeRetryOptions | undefined;
+  page: Page;
+  sendInteraction: SendInteraction;
+}): Pick<EnsureRedditSessionArgs, "capture" | "manualHandoffProbeRetry" | "page" | "sendInteraction"> {
+  return {
+    ...(capture === undefined ? {} : { capture }),
+    ...(manualHandoffProbeRetry === undefined ? {} : { manualHandoffProbeRetry }),
+    page,
+    sendInteraction,
+  };
+}
+
+async function ensureRedditManualSession({
+  capture,
+  manualHandoffProbeRetry,
+  page,
+  sendInteraction,
+}: Pick<EnsureRedditSessionArgs, "capture" | "manualHandoffProbeRetry" | "page" | "sendInteraction">): Promise<void> {
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
   if (
     await manualBrowserLogin({
       ...(capture ? { capture } : {}),
       message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
       page,
-      probe: () => isSessionLive(page),
+      probe: () => isSessionLiveWithRetry(page, manualHandoffProbeRetry),
       sendInteraction,
       timeoutSeconds: 1800,
     })
@@ -203,9 +282,10 @@ async function ensureRedditManualSession({
 
 async function recoverRedditBlockedLogin({
   capture,
+  manualHandoffProbeRetry,
   page,
   sendInteraction,
-}: Pick<EnsureRedditSessionArgs, "capture" | "page" | "sendInteraction">): Promise<void> {
+}: Pick<EnsureRedditSessionArgs, "capture" | "manualHandoffProbeRetry" | "page" | "sendInteraction">): Promise<void> {
   const cf = await detectCloudflareChallenge(page);
   const message = loginBlockedMessage(cf.signals);
   if (
@@ -213,7 +293,7 @@ async function recoverRedditBlockedLogin({
       ...(capture ? { capture } : {}),
       message,
       page,
-      probe: () => isSessionLive(page),
+      probe: () => isSessionLiveWithRetry(page, manualHandoffProbeRetry),
       reason: "captcha",
       sendInteraction,
       timeoutSeconds: 1800,
@@ -227,6 +307,7 @@ async function recoverRedditBlockedLogin({
 export async function ensureRedditSession({
   capture,
   context,
+  manualHandoffProbeRetry,
   onCredentialSubmit,
   page,
   sendInteraction,
@@ -238,7 +319,7 @@ export async function ensureRedditSession({
   const username = process.env.REDDIT_USERNAME;
   const password = process.env.REDDIT_PASSWORD;
   if (!(username && password)) {
-    await ensureRedditManualSession({ ...(capture === undefined ? {} : { capture }), page, sendInteraction });
+    await ensureRedditManualSession(manualHandoffArgs({ capture, manualHandoffProbeRetry, page, sendInteraction }));
     return;
   }
 
@@ -257,7 +338,7 @@ export async function ensureRedditSession({
     // Cloudflare challenge, shadow DOM change, or redirect loop — hand off.
     // Earn the diagnosis via the shared detector instead of guessing "possible
     // Cloudflare challenge" from absence of inputs alone.
-    await recoverRedditBlockedLogin({ ...(capture === undefined ? {} : { capture }), page, sendInteraction });
+    await recoverRedditBlockedLogin(manualHandoffArgs({ capture, manualHandoffProbeRetry, page, sendInteraction }));
     return;
   }
 
