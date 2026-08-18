@@ -135,6 +135,7 @@ import {
   isStreamFullyUnfillableAccounted,
   type TerminalGapProofRow,
 } from "./connector-gap-classification.ts";
+import { canonicalConnectorKey } from "./connector-key.ts";
 import {
   type HeartbeatRow,
   projectConnectorOutboxAxisFromHeartbeats,
@@ -4781,6 +4782,7 @@ export async function getConnectorBrowserSurfaceProjection(
     readonly profileKey?: string | null;
     readonly store?: BrowserSurfaceLeaseStoreReader;
     readonly manifestHasBrowserBinding?: boolean;
+    readonly connectorUsesNekoSurface?: boolean;
   } = {}
 ): Promise<ConnectorBrowserSurfaceProjection> {
   // A connector whose CURRENT manifest declares no browser binding at all
@@ -4798,6 +4800,20 @@ export async function getConnectorBrowserSurfaceProjection(
   // connector kind use a remote surface at all?" before any DB row is
   // consulted, so legacy rows from a since-migrated setup flow can't leak in.
   if (options.manifestHasBrowserBinding === false) {
+    return { evidence: null, unreliable: false };
+  }
+  // A manifest can require a browser binding while THIS deployment never
+  // routes that connector through the neko lease store at all -- e.g. a
+  // deployment that dropped the docker-compose.neko.yml overlay and now runs
+  // every browser connector through the in-image managed Chromium/Xvfb
+  // runtime instead. `browser_surface_leases`/`browser_surfaces` rows from an
+  // earlier neko-backed deployment are permanent history, same as Slack's
+  // retired static-secret-migration rows above, so they must not keep
+  // blocking health on a deployment that will never write a new row for this
+  // connector. `connectorUsesNekoSurface === false` is the caller telling us
+  // that fact; `undefined` (caller didn't compute it) preserves prior
+  // behavior and still falls through to history.
+  if (options.connectorUsesNekoSurface === false) {
     return { evidence: null, unreliable: false };
   }
   const store = options.store ?? (getDefaultBrowserSurfaceLeaseStore() as BrowserSurfaceLeaseStoreReader);
@@ -6274,6 +6290,48 @@ function manifestHasBrowserBinding(manifest: ConnectorManifest): boolean {
   return manifest.runtime_requirements?.bindings?.browser !== undefined;
 }
 
+// Whether THIS deployment actually places `connectorId` on a neko-backed
+// remote surface right now. A manifest can require a browser binding while
+// the deployment satisfies it entirely through the in-image managed
+// Chromium/Xvfb runtime (PDPP_RUNTIME_BROWSER=1 + DISPLAY, no
+// docker-compose.neko.yml overlay) -- that mode never writes to
+// `browser_surface_leases`/`browser_surfaces` at all, so a connector's old
+// neko-era rows (from a deployment that previously ran the overlay) are
+// permanent history, not live evidence, exactly like Slack's retired
+// static-secret-migration rows in `manifestHasBrowserBinding`. Without this
+// check, `getConnectorBrowserSurfaceProjection` still consults those stale
+// rows for any connector whose manifest wants a browser -- e.g. chase/usaa on
+// a deployment that dropped neko -- and lands on
+// `BROWSER_SURFACE_UNKNOWN_PROJECTION` forever.
+//
+// `PDPP_NEKO_MANAGED_CONNECTORS` (CSV, canonical-key or raw connector id) is
+// the authoritative source of "which connectors get a leased neko surface"
+// -- reference-implementation/runtime/browser-surface-leases.ts parses the
+// same variable for the allocator/lease-manager side. `PDPP_NEKO_CDP_HTTP_URL`
+// (single shared static-mode surface) and `PDPP_BROWSER_SURFACE_REMOTE_CDP_URL`
+// (operator-forced pin, docker-compose.yml's "point ALL browser connectors at
+// one remote CDP endpoint" escape hatch) both mean every browser-bound
+// connector is neko-backed, with no per-connector list to check. This MUST
+// stay in sync by hand with `browserSurfaceConfigured` in
+// runtime/scheduler-readiness.ts and `managedDisplayAvailable` in
+// packages/polyfill-connectors/src/browser-launch.ts, for the same
+// cross-package-import reason documented at scheduler-readiness.ts:143.
+function connectorUsesNekoSurface(connectorId: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL?.trim() || env.PDPP_NEKO_CDP_HTTP_URL?.trim()) {
+    return true;
+  }
+  const managedConnectorsCsv = env.PDPP_NEKO_MANAGED_CONNECTORS?.trim();
+  if (!managedConnectorsCsv) {
+    return false;
+  }
+  const canonicalTarget = canonicalConnectorKey(connectorId) ?? connectorId;
+  return managedConnectorsCsv
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .some((entry) => entry === connectorId || (canonicalConnectorKey(entry) ?? entry) === canonicalTarget);
+}
+
 function connectionHasBrowserSessionRepairCapability(
   instance: ConnectorInstanceRow,
   manifest: ConnectorManifest
@@ -6492,6 +6550,7 @@ async function projectConnectorSummaryForInstance(
         })
       : getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
     getConnectorBrowserSurfaceProjection(connectorId, {
+      connectorUsesNekoSurface: connectorUsesNekoSurface(connectorId),
       manifestHasBrowserBinding: manifestHasBrowserBinding(manifest),
       profileKey: browserSurfaceProfileKey,
       store: sharedBrowserSurfaceReader,
