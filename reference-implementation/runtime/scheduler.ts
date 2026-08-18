@@ -27,6 +27,7 @@ import {
   projectRunAutomationPolicy,
   type RunTriggerKind,
 } from "./run-automation-policy.ts";
+import { createRunLogger, NOOP_RUN_BASE_LOGGER } from "./run-logger.ts";
 import { createDispatchGovernor } from "./scheduler/dispatch-governor.ts";
 import { createPreRunGate } from "./scheduler/pre-run-gate.ts";
 import { createRunExecutor } from "./scheduler/run-executor.ts";
@@ -397,6 +398,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getForwardEvidenceDebt = async () => false,
     getLastSuccessfulRunAt = async () => null,
     isManagedConnector = () => false,
+    logger: baseLogger = NOOP_RUN_BASE_LOGGER,
     maxRunWallClockMs,
     dispatchLivenessCeilingMs,
     registerRunCancellation,
@@ -416,12 +418,21 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   const runtime = buildRuntime();
   let hydrationStarted = false;
 
+  function logRunHistoryPersistFailure(record: RunRecord, message: string): void {
+    createRunLogger(baseLogger, {
+      connectorId: record.connectorId,
+      connectorInstanceId: record.connectorInstanceId,
+      runId: record.runId,
+    }).error(`failed to persist run history: ${message}`, { phase: "run_history_persist" });
+  }
+
   function recordAndNotify(record: RunRecord): RunRecord {
     runtime.history.push(record);
     if (schedulerStore) {
       Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[scheduler] failed to persist run history for ${record.connectorId}: ${message}`);
+        logRunHistoryPersistFailure(record, message);
       });
     }
     onRunComplete(record);
@@ -434,6 +445,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       await Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[scheduler] failed to persist run history for ${record.connectorId}: ${message}`);
+        logRunHistoryPersistFailure(record, message);
       });
     }
     onRunComplete(record);
@@ -494,6 +506,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
+    logger: baseLogger,
     markNeedsHuman,
     maxRunWallClockMs: schedulerMaxRunWallClockMs,
     onInteraction,

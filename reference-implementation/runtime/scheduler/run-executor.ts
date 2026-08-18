@@ -33,6 +33,7 @@ import {
   type RunAutomationMode,
   type RunTriggerKind,
 } from "../run-automation-policy.ts";
+import { createRunLogger, NOOP_RUN_BASE_LOGGER, type RunBaseLogger } from "../run-logger.ts";
 import type {
   ConnectorSchedule,
   GetStateHandler,
@@ -83,6 +84,13 @@ export interface RunExecutorDeps {
   getState: GetStateHandler;
   handleGrantFailureDisable: (reason: string | null | undefined, connectorInstanceId: string) => void;
   isManagedConnector: IsManagedConnectorHandler;
+  /**
+   * Base structured logger to bind run identity onto (see
+   * `runtime/run-logger.ts`). Optional: defaults to `NOOP_RUN_BASE_LOGGER`,
+   * so existing callers/tests that construct `RunExecutorDeps` directly are
+   * unaffected.
+   */
+  logger?: RunBaseLogger;
   markNeedsHuman: NeedsHumanHandler;
   maxRunWallClockMs: number;
   onInteraction: InteractionHandler;
@@ -621,6 +629,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
+    logger: baseLogger = NOOP_RUN_BASE_LOGGER,
     markNeedsHuman,
     maxRunWallClockMs,
     onInteraction,
@@ -645,6 +654,11 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     await Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
+      createRunLogger(baseLogger, {
+        connectorId,
+        connectorInstanceId: record.connectorInstanceId,
+        runId: record.runId,
+      }).error(`failed to persist run history: ${message}`, { phase: "run_history_persist" });
     });
   }
 
@@ -801,6 +815,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     ).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] failed to reserve active run for ${connectorId}: ${message}`);
+      createRunLogger(baseLogger, { connectorId, connectorInstanceId, runId }).error(
+        `failed to reserve active run: ${message}`,
+        { phase: "active_run_reserve" }
+      );
       return false;
     });
     return upserted !== false;
@@ -898,6 +916,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         await Promise.resolve(activeRunStore.deleteActiveRun(connectorInstanceId, runId)).catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           console.error(`[scheduler] failed to clear active run ${runId} for ${connectorId}: ${message}`);
+          createRunLogger(baseLogger, { connectorId, connectorInstanceId, runId }).error(
+            `failed to clear active run: ${message}`,
+            { phase: "active_run_clear" }
+          );
         });
       }
     };

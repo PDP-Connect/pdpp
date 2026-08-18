@@ -19,6 +19,7 @@
 
 import type { SchedulerStore } from "../server/stores/scheduler-store.ts";
 import type { ConnectorEnvironmentBinding } from "./connector-child-environment.ts";
+import type { RunBaseLogger } from "./run-logger.ts";
 import type { PendingPressureGap } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
@@ -410,6 +411,16 @@ export interface SchedulerOptions {
    */
   isManagedConnector?: IsManagedConnectorHandler;
   isNeedsHuman?: IsNeedsHumanHandler;
+  /**
+   * Base structured logger (a real Pino instance in production; see
+   * `server/transport.ts` `buildLogger`) to bind run identity onto via
+   * `runtime/run-logger.ts` `createRunLogger`. Optional: defaults to a
+   * silent no-op, so every existing caller/test that does not inject one is
+   * unaffected. This is the seam that lets scheduler/run-executor failures —
+   * previously `console.error`-only with no `run_id` — reach the same
+   * structured JSON log stream the rest of the server already writes to.
+   */
+  logger?: RunBaseLogger;
   markNeedsHuman?: NeedsHumanHandler;
   /**
    * Maximum no-progress budget for a direct scheduler connector attempt.
