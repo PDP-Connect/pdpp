@@ -21,7 +21,7 @@ import React, { useEffect, useState } from "react";
 import { ArtifactLink } from "@/components/elements/artifact-link.tsx";
 import { PdppLogo } from "@/components/elements/pdpp-logo.tsx";
 import { SourceLink } from "@/components/elements/source-link.tsx";
-import { ProsePage } from "@/components/layout/prose-page.tsx";
+import { VerbatimProsePage } from "@/components/layout/prose-page.tsx";
 import { SiteHeader } from "@/components/layout/site-header.tsx";
 import type { ConnectorCardProps } from "@/components/sections/connector-card.tsx";
 import { ConnectorCard } from "@/components/sections/connector-card.tsx";
@@ -3605,11 +3605,10 @@ function DocsSection() {
 
           <div>
             <div className="pdpp-eyebrow mb-3 text-muted-foreground">ProsePage — tinted reading surface</div>
-            <ProsePage
+            <VerbatimProsePage
               markdown={
                 "## Why\n\nTwo lifecycle languages were colliding in one primitive: run states (`started → succeeded`) and artifact states (`in-progress → complete`). Mashing them together is a category error.\n\n- **Run lifecycle** — event states of transient operations.\n- **Artifact lifecycle** — maturity states of durable documents.\n\nOne primitive (the chip), many vocabularies."
               }
-              trimDocumentTitle={false}
             />
           </div>
         </div>
