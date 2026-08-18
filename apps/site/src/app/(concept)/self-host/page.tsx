@@ -170,7 +170,7 @@ export default function ReferencePage() {
                 <th scope="col">Name</th>
                 <th scope="col">Type</th>
                 <th scope="col">
-                  <span className="pdpp-visually-hidden">Link</span>
+                  <span className="sr-only">Link</span>
                 </th>
               </tr>
             </thead>

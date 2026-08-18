@@ -4,7 +4,6 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import { copyStatusText, useCopyToClipboard } from "@/lib/use-copy-to-clipboard.ts";
 import {
   buildCommand,
   commandText,
@@ -13,6 +12,7 @@ import {
   PUBLIC_URL_PLACEHOLDER,
   type SelfHostChoices,
 } from "@/lib/self-host-command.ts";
+import { copyStatusText, useCopyToClipboard } from "@/lib/use-copy-to-clipboard.ts";
 
 const STORAGE_KEY = "pdpp-command-tab";
 const SELF_MANAGED_METHODS = METHODS.filter(
@@ -116,7 +116,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
 
         <div className="pdpp-cmd__config">
           <fieldset aria-describedby={accessDescriptionId} className="pdpp-cmd__choice">
-            <legend className="pdpp-visually-hidden">Where will you use PDPP?</legend>
+            <legend className="sr-only">Where will you use PDPP?</legend>
             <div className="pdpp-cmd__choice-heading">
               <span className="pdpp-cmd__choice-label">Where will you use PDPP?</span>
               <span className="pdpp-cmd__choice-help" id={accessDescriptionId}>
@@ -160,7 +160,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
           </div>
 
           <fieldset aria-describedby={searchDescriptionId} className="pdpp-cmd__choice">
-            <legend className="pdpp-visually-hidden">Choose a search mode</legend>
+            <legend className="sr-only">Choose a search mode</legend>
             <div className="pdpp-cmd__choice-heading">
               <span className="pdpp-cmd__choice-label">Choose a search mode</span>
               <span className="pdpp-cmd__choice-help" id={searchDescriptionId}>
@@ -212,7 +212,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
             {copyLabel}
           </span>
         </button>
-        <span aria-live="polite" className="pdpp-visually-hidden" role="status">
+        <span aria-live="polite" className="sr-only" role="status">
           {copyStatus}
         </span>
       </section>

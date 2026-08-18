@@ -575,18 +575,6 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.pdpp-visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  white-space: nowrap;
-  border: 0;
-  clip-path: inset(50%);
-}
-
 /* Both marks get identical treatment so the footer's SOURCE and COMMUNITY
    columns read as siblings at matching optical size. */
 .pdpp-icon-github,
