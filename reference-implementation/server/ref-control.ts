@@ -4603,6 +4603,16 @@ function buildLocalDeviceCollectionEvidence(input: {
 export function projectConnectorSummaryConnectionHealth(input: {
   readonly activeRun?: ActiveRunRecord | null;
   /**
+   * Whether this connection's data acquisition is finished BY DESIGN
+   * (`instance.sourceKind === "manual"`) rather than recurring. A one-time
+   * import ingests an owner-supplied file and never collects again — it has
+   * no future capture to age, so freshness is a category error for it, not a
+   * pending answer. Passed straight through to `computeConnectionHealth` as
+   * `acquisition`; `null`/omitted preserves the prior behavior for every
+   * recurring source kind (freshness stays `unknown` until proven).
+   */
+  readonly acquisitionComplete?: boolean;
+  /**
    * Durable structured attention records the caller has already filtered
    * to this connection. The projection picks the most urgent
    * health-relevant record via `attention.isHealthRelevant`. When
@@ -4814,6 +4824,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     unreadable: input.pendingDetailGapsUnreliable === true,
   };
   return computeConnectionHealth({
+    acquisition: input.acquisitionComplete === true ? { complete: true } : null,
     activity: { active: scheduleEvidence.activeRunId !== null },
     attention,
     backoff: scheduleEvidence.backoffEvidence.backoff,
@@ -5522,6 +5533,12 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     refreshPolicy,
   });
   const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    // `manual` is a CHECK-constrained, immutable source_kind written once at
+    // creation (ref-manual-upload-draft-connection.ts) — a durable fact about
+    // what this connection IS, never an inference from a missing run. A
+    // one-time import has no future capture to age, so freshness does not
+    // apply; see design-notes/source-state-truth-2026-08-18.md.
+    acquisitionComplete: instance.sourceKind === "manual",
     activeRun: authoritativeActiveRun,
     attentionRecords: attention.records,
     browserSessionRepairCapable,

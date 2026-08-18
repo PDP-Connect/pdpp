@@ -77,6 +77,7 @@ export type VerdictLabel =
   | "Checking"
   | "Degraded"
   | "Healthy"
+  | "Import complete"
   | "Needs refresh"
   | "Not measured"
   | "Syncing";
@@ -444,6 +445,13 @@ function labelForPill(
   if (tone === "green" && snapshot.axes.outbox === "active") {
     return "Syncing";
   }
+  // A one-time import that reached green did so BECAUSE freshness is
+  // not_applicable, not because it proved current. "Healthy" implies an
+  // ongoing collection loop this source will never run again; "Import
+  // complete" names the actual, final state honestly.
+  if (tone === "green" && freshnessNotApplicable(snapshot)) {
+    return "Import complete";
+  }
   if (tone === "amber") {
     const label = amberLabel(snapshot, disposition, toneInputs);
     // An active run dominates a routine "needs refresh" nudge (Wave 10a
@@ -502,7 +510,29 @@ function baseStateTone(state: ConnectionHealthSnapshot["state"], lastSuccessAt: 
   }
 }
 
+/**
+ * A completed one-time import (`source_kind = 'manual'`) declares its `Fresh`
+ * condition `not_applicable` — a settled answer, not a pending one (see
+ * `conditionIsSettledSatisfied`, `connection-health.ts`, and
+ * `design-notes/source-state-truth-2026-08-18.md`). `axes.freshness` itself
+ * stays `unknown` (it is derived straight from raw freshness evidence, which
+ * a finished import never produces), so the tone/label/annotation layer must
+ * read the CONDITION, not the axis, to avoid re-encoding the same "we don't
+ * know" doubt the condition model already settled.
+ */
+export function freshnessNotApplicable(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.type === "Fresh" &&
+      condition.status === "not_applicable" &&
+      condition.reason === CONNECTION_CONDITION_REASONS.FRESHNESS_NOT_APPLICABLE_COMPLETE
+  );
+}
+
 function freshnessHealthTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
+  if (freshnessNotApplicable(snapshot)) {
+    return "green";
+  }
   switch (snapshot.axes.freshness) {
     case "fresh":
       return "green";
@@ -1367,6 +1397,9 @@ function freshnessAnnotationText(
   if (snapshot.axes.freshness === "fresh") {
     return freshRecencyText(tone, progress);
   }
+  if (freshnessNotApplicable(snapshot)) {
+    return "This is a one-time import. It finished and will not refresh.";
+  }
   if (snapshot.axes.freshness === "unknown") {
     return "Freshness has not been measured yet.";
   }
@@ -1556,6 +1589,9 @@ function buildForwardStatement(
     default:
       if (snapshot.axes.outbox === "active") {
         return "The local collector is uploading saved records.";
+      }
+      if (freshnessNotApplicable(snapshot)) {
+        return "This one-time import finished. There is nothing left to run.";
       }
       if (snapshot.axes.freshness === "unknown") {
         return "Freshness has not been measured yet.";
