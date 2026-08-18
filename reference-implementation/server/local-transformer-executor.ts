@@ -60,11 +60,13 @@ export interface TransformerChild {
   readonly signalCode?: NodeJS.Signals | null;
   readonly stdin: ChildStdin | null;
   readonly stdout: NodeJS.ReadableStream | null;
+  // Optional so existing injected test doubles stay structurally compatible.
+  readonly stderr?: NodeJS.ReadableStream | null;
 }
 
 export interface LocalTransformerSpawnOptions {
   readonly env: NodeJS.ProcessEnv;
-  readonly stdio: ["pipe", "pipe", "ignore"];
+  readonly stdio: ["pipe", "pipe", "pipe"];
 }
 
 export interface LocalTransformerExecutorOptions {
@@ -359,7 +361,16 @@ export class LocalTransformerExecutor {
         PDPP_LOCAL_TRANSFORMER_QUEUE_LIMIT: String(this.#queueLimit),
         PDPP_LOCAL_TRANSFORMER_WORK_LIMIT: String(this.#workLimit),
       },
-      stdio: ["pipe", "pipe", "ignore"],
+      // stderr is piped, not ignored: a native onnxruntime abort or V8 fatal
+      // error prints there and nowhere else. Discarding it made a wedged child
+      // (spinning, unresponsive to SIGTERM) completely undiagnosable.
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf8").trim();
+      if (text) {
+        console.error(`[local-transformer-child] ${text}`);
+      }
     });
     if (!(child.stdin && child.stdout)) {
       try {

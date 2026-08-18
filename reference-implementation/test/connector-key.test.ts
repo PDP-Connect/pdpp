@@ -92,6 +92,7 @@ test("canonicalConnectorKey maps legacy snake_case local aliases to canonical hy
     google_messages: "google-messages",
     google_takeout: "google-takeout",
     imessage: "imessage",
+    signal: "signal",
   });
   assert.equal(canonicalConnectorKey("claude_code"), "claude-code");
   assert.equal(canonicalConnectorKey("codex"), "codex");
@@ -99,12 +100,14 @@ test("canonicalConnectorKey maps legacy snake_case local aliases to canonical hy
   assert.equal(canonicalConnectorKey("apple_photos"), "apple-photos");
   assert.equal(canonicalConnectorKey("google_messages"), "google-messages");
   assert.equal(canonicalConnectorKey("imessage"), "imessage");
+  assert.equal(canonicalConnectorKey("signal"), "signal");
   assert.equal(isLegacyLocalAlias("claude_code"), true);
   assert.equal(isLegacyLocalAlias("codex"), true);
   assert.equal(isLegacyLocalAlias("google_takeout"), true);
   assert.equal(isLegacyLocalAlias("apple_photos"), true);
   assert.equal(isLegacyLocalAlias("google_messages"), true);
   assert.equal(isLegacyLocalAlias("imessage"), true);
+  assert.equal(isLegacyLocalAlias("signal"), true);
   assert.equal(isLegacyLocalAlias("gmail"), false);
   assert.equal(isLegacyLocalAlias(""), false);
 });

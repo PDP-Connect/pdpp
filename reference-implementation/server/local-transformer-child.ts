@@ -172,8 +172,10 @@ async function runJob(job: TransformerJob): Promise<void> {
   }
 }
 
+let shuttingDown = false;
+
 function pump(): void {
-  while (active < workLimit && queue.length > 0) {
+  while (!shuttingDown && active < workLimit && queue.length > 0) {
     const job = queue.shift();
     if (!job) {
       break;
@@ -182,6 +184,22 @@ function pump(): void {
     highWater = Math.max(highWater, active);
     runJob(job).catch(() => undefined);
   }
+}
+
+// Stop admitting work and exit on a supervisor signal. Without this the child
+// relies on Node's default disposition, which never fires while the main thread
+// is blocked in a synchronous native call — the parent then has to escalate to
+// SIGKILL. This handler cannot rescue a child already wedged inside native code,
+// but it makes an ordinary busy child shut down promptly instead of being killed.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.on(signal, () => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    queue.length = 0;
+    process.exit(0);
+  });
 }
 
 const input = readline.createInterface({ crlfDelay: Number.POSITIVE_INFINITY, input: process.stdin });
