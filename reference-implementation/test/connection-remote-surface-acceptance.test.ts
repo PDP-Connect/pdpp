@@ -384,6 +384,75 @@ test(
 );
 
 test(
+  "7.6 acceptance: a connector whose manifest declares no browser binding ignores retired browser-surface rows from an earlier setup flow",
+  withTempDb(async () => {
+    const store = createSqliteBrowserSurfaceLeaseStore();
+    // Slack-shaped history: a fully torn-down browser phase from a since-
+    // migrated (now static-secret) setup flow — every surface `stopping`,
+    // every lease `released`, nothing active or unhealthy. Without the
+    // manifest gate this still lands on `BROWSER_SURFACE_UNKNOWN_PROJECTION`
+    // (see the "retired browser-surface history" test above), degrading the
+    // headline to "unknown" forever even though the connector's current
+    // design never places a managed remote surface at all.
+    await store.upsertSurface(
+      surfaceFixture({
+        connector_id: "slack",
+        health: "stopping",
+        profile_key: "slack",
+        surface_id: "surface_slack_legacy_browser_phase",
+      })
+    );
+    await store.upsertLease(
+      leaseFixture({
+        connector_id: "slack",
+        lease_id: "lease_slack_legacy_browser_phase",
+        profile_key: "slack",
+        released_at: "2026-05-19T10:06:00.000Z",
+        run_id: "run_slack_legacy#browser-phase",
+        status: "released",
+        surface_id: "surface_slack_legacy_browser_phase",
+      })
+    );
+
+    const withoutGate = await getConnectorBrowserSurfaceProjection("slack", { profileKey: "slack" });
+    assert.equal(
+      withoutGate.evidence?.axis,
+      "unknown",
+      "sanity check: the pre-fix call shape still reproduces the stuck-unknown bug"
+    );
+
+    const projection = await getConnectorBrowserSurfaceProjection("slack", {
+      manifestHasBrowserBinding: false,
+      profileKey: "slack",
+    });
+    assert.equal(projection.unreliable, false);
+    assert.equal(
+      projection.evidence,
+      null,
+      "no browser binding in the manifest means no remote-surface evidence at all"
+    );
+
+    const snapshot = projectConnectorSummaryConnectionHealth({
+      freshness: FRESH,
+      lastRun: succeededRun(),
+      lastSuccessfulRun: succeededRun(),
+      nowIso: NOW_ISO,
+      outbox: { axis: "idle" },
+      remoteSurface: projection.evidence,
+      schedule: { enabled: true, last_successful_at: PRIOR_SUCCESS_ISO },
+    });
+
+    assert.equal(
+      snapshot.state,
+      "healthy",
+      "a clean run must not be reported as unknown/not-measured because of a since-migrated connector's old browser-phase rows"
+    );
+    assert.equal(snapshot.axes.remote_surface, "none");
+    assert.equal(snapshot.remote_surface, null);
+  })
+);
+
+test(
   "7.6 acceptance: released browser-surface lease history with no surface rows still projects unknown, not none",
   withTempDb(async () => {
     const store = createSqliteBrowserSurfaceLeaseStore();
