@@ -394,7 +394,17 @@ function parseManifestDeclaration(raw: unknown): ManifestDeclaration {
 // ---------------------------------------------------------------------------
 
 interface DiscoveryInput {
-  readonly canonicalTotalRecords: number;
+  /**
+   * `null` means the canonical count comparison itself is UNAVAILABLE this
+   * pass (see `readPostgresDiscoveryContext`'s canonical-count-read doc) —
+   * never a fabricated "reads as zero" default. `classifyCandidate` treats
+   * `null` as "skip this one comparison," not as a mismatch signal on its
+   * own; a row this leaves unclassified for `record_checkpoint_mismatch` is
+   * still caught by every OTHER authority comparison (`dirty`, checkpoint,
+   * manifest, schedule, lifecycle, ...), and by the SAME comparison on a
+   * later pass once the count read succeeds.
+   */
+  readonly canonicalTotalRecords: number | null;
   readonly currentCheckpoint: RecordSourceCheckpoint;
   /** Live `MAX(spine_events.event_seq)` for this connection, unfiltered by event_type. `null` when no spine events exist for it. */
   readonly currentLifecycleEventSeq: number | null;
@@ -492,8 +502,15 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   // count drift with no corresponding checkpoint change means a direct
   // writer mutated `records` without going through the normal version-
   // allocating ingest/reset paths. Still a real change the stored snapshot
-  // must absorb.
-  if (Number(existingEvidence.total_records || 0) !== input.canonicalTotalRecords) {
+  // must absorb. `null` means the live count read itself failed/was
+  // cancelled this pass (see `canonicalTotalRecords`'s doc) — skip only
+  // THIS comparison rather than treat an unavailable count as a fabricated
+  // mismatch (or, worse, a fabricated zero that would falsely flag every
+  // non-empty connection as drifted every single pass the count is slow).
+  if (
+    input.canonicalTotalRecords !== null &&
+    Number(existingEvidence.total_records || 0) !== input.canonicalTotalRecords
+  ) {
     return "record_checkpoint_mismatch";
   }
   const storedFingerprint =
@@ -643,6 +660,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   if (connectorInstanceIds !== null && connectorInstanceIds.length === 0) {
     return {
       canonicalTotalRecordsByInstance: new Map<string, number>(),
+      canonicalTotalRecordsKnown: true,
       evidenceByInstance: new Map<string, Row>(),
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
@@ -800,6 +818,11 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   );
   return {
     canonicalTotalRecordsByInstance,
+    // SQLite's `better-sqlite3` driver is synchronous with no per-statement
+    // cancellation hook (see `discoverCandidates`'s own doc) — a query that
+    // reaches this point always ran to completion, so this backend's count
+    // is unconditionally known.
+    canonicalTotalRecordsKnown: true,
     evidenceByInstance,
     instanceRows: instanceRows as Row[],
     manifestByConnector,
@@ -843,6 +866,7 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   if (connectorInstanceIds !== null && connectorInstanceIds.length === 0) {
     return {
       canonicalTotalRecordsByInstance: new Map<string, number>(),
+      canonicalTotalRecordsKnown: true,
       evidenceByInstance: new Map<string, Row>(),
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
@@ -919,31 +943,71 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
     list.push(row);
     versionCountersByInstance.set(instanceId, list);
   }
-  // Cheap canonical-count supplement to the composite checkpoint: a direct
-  // writer that mutates `records` without allocating a version still
-  // changes the live count, and this catches it. One fixed aggregate query
-  // regardless of N (or of K, when scoped). (Production, 2026-08-18: THIS
-  // query, unbounded, contended with unrelated heavy I/O and alone consumed
-  // the round's entire deadline — the incident design review P1-2 fixes.)
-  const canonicalCountResult = scoped
-    ? await postgresDiscoveryQuery(
-        `SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records
-          WHERE deleted = FALSE AND connector_instance_id = ANY($1::text[])
-          GROUP BY connector_instance_id`,
-        [connectorInstanceIds],
-        deadline
-      )
-    : await postgresDiscoveryQuery(
-        "SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records WHERE deleted = FALSE GROUP BY connector_instance_id",
-        [],
-        deadline
-      );
-  const canonicalTotalRecordsByInstance = new Map(
-    (canonicalCountResult.rows as Row[]).map((row) => [
-      String(row.connector_instance_id),
-      Number(row.total_records || 0),
-    ])
-  );
+  // Cheap-IN-THEORY canonical-count supplement to the composite checkpoint:
+  // a direct writer that mutates `records` without allocating a version
+  // still changes the live count, and this catches it. One fixed aggregate
+  // query regardless of N (or of K, when scoped). (Production, 2026-08-18:
+  // THIS query, unbounded, contended with unrelated heavy I/O and alone
+  // consumed the round's entire deadline — the incident design review P1-2
+  // fixes.)
+  //
+  // Production, 2026-08-18 (second incident, same query): even bounded by
+  // `MIN_STATEMENT_TIMEOUT_MS`, this specific aggregate is NOT cheap at real
+  // data volume — `EXPLAIN ANALYZE` measured 4-7s for a connection with
+  // millions of live records (no covering index makes `deleted = FALSE`
+  // selective without an expensive index-only scan's heap fetches), far
+  // exceeding even a generous per-unit floor. Because this was the ONLY
+  // discovery query without its own failure isolation, its cancellation
+  // threw past `discoverCandidates` entirely — aborting classification for
+  // EVERY row in the batch, including rows already unambiguously `dirty`
+  // (`classifyCandidate` returns `"dirty"` before ever reaching this
+  // comparison). A durably-dirty backlog therefore never got a single
+  // candidate selected, pass after pass: `repaired: 0` AND `skipped: 0`,
+  // because nothing was ever classified, not merely deferred.
+  //
+  // This read is now independently fail-soft: its own cancellation degrades
+  // to "count comparison unavailable this pass" (`canonicalTotalRecordsKnown:
+  // false`, `classifyCandidate` skips ONLY the count-drift comparison — see
+  // that function's doc), instead of aborting the whole discovery batch the
+  // way every genuinely unexpected discovery error still correctly does.
+  // Every candidate this batch could otherwise classify (dirty, stale,
+  // checkpoint-mismatched, manifest-mismatched, ...) is still classified and
+  // still gets a repair turn; only the narrow count-drift-with-no-checkpoint-
+  // change signal is deferred to the next pass, same as any other bounded,
+  // best-effort signal in this file.
+  let canonicalTotalRecordsByInstance = new Map<string, number>();
+  let canonicalTotalRecordsKnown = true;
+  try {
+    const canonicalCountResult = scoped
+      ? await postgresDiscoveryQuery(
+          `SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records
+            WHERE deleted = FALSE AND connector_instance_id = ANY($1::text[])
+            GROUP BY connector_instance_id`,
+          [connectorInstanceIds],
+          deadline
+        )
+      : await postgresDiscoveryQuery(
+          "SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records WHERE deleted = FALSE GROUP BY connector_instance_id",
+          [],
+          deadline
+        );
+    canonicalTotalRecordsByInstance = new Map(
+      (canonicalCountResult.rows as Row[]).map((row) => [
+        String(row.connector_instance_id),
+        Number(row.total_records || 0),
+      ])
+    );
+  } catch (err) {
+    if (!(err instanceof PostgresStatementTimeoutError)) {
+      throw err;
+    }
+    console.error(
+      `[connector-summary-evidence] canonical record-count discovery cancelled by Postgres statement_timeout${
+        connectorInstanceIds ? ` for ${connectorInstanceIds.length} scoped id(s)` : " (complete census)"
+      } — count-drift comparison skipped this pass only; every other discovery signal still classifies normally.`
+    );
+    canonicalTotalRecordsKnown = false;
+  }
   // Terminal-gate revision (2026-07-29): schedule mutations have NO existing
   // dirty-independent backstop — `connector_schedules.updated_at` is already
   // written atomically with every schedule mutation on both backends (a
@@ -986,6 +1050,7 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   );
   return {
     canonicalTotalRecordsByInstance,
+    canonicalTotalRecordsKnown,
     evidenceByInstance,
     instanceRows: instanceResult.rows as Row[],
     manifestByConnector,
@@ -1033,7 +1098,9 @@ async function discoverCandidates(
       })),
     });
     const reason = classifyCandidate({
-      canonicalTotalRecords: ctx.canonicalTotalRecordsByInstance.get(instanceId) ?? 0,
+      canonicalTotalRecords: ctx.canonicalTotalRecordsKnown
+        ? (ctx.canonicalTotalRecordsByInstance.get(instanceId) ?? 0)
+        : null,
       currentCheckpoint,
       currentLifecycleEventSeq: ctx.maxLifecycleEventSeqByInstance.get(instanceId) ?? null,
       currentScheduleCheckpoint: ctx.scheduleUpdatedAtByInstance.get(instanceId) ?? "absent",
