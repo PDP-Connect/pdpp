@@ -1951,8 +1951,26 @@ interface FoldCasBaseline {
  * would make the CAS predicate compare against a baseline that was never
  * actually stored, so it would never match and the healing write would
  * never land.
+ *
+ * `instanceIdsWithAnyTerminalHistory` (`maxSeqByInstance`'s key set, from
+ * the caller) is what makes the historical-reason seed below TRUTHFUL. It
+ * answers "does this instance have ANY attributable terminal fact event,
+ * ever, at any generation" — not "was this row's own stored reason code
+ * historical last time," which is a description of the fold's PRIOR
+ * VERDICT, not of the underlying event log, and self-perpetuates once
+ * wrong (see the reproduction in
+ * connector-summary-fold-page-scope-zero-history-reproduction.test.ts): a
+ * zero-terminal-event row that is ever externally or transiently stamped
+ * `terminal_facts_historical` can never produce a fact-carrying event to
+ * flip `generationCurrentByInstance` back to `true` during the drain (its
+ * scoped read is always empty), so seeding straight from its own incoming
+ * reason code re-writes the identical wrong verdict every single pass,
+ * forever.
  */
-function seedFoldState(participants: readonly Row[]): {
+function seedFoldState(
+  participants: readonly Row[],
+  instanceIdsWithAnyTerminalHistory: ReadonlySet<string>
+): {
   casBaselineByInstance: Map<string, FoldCasBaseline>;
   checkpointByInstance: Map<string, number | null>;
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>;
@@ -1994,22 +2012,38 @@ function seedFoldState(participants: readonly Row[]): {
     // found — "no new events" is silence, not proof the source generation is
     // still current.
     //
-    // Deliberately NARROW: this must NOT catch every non-`current` state.
-    // `terminal_fold_incomplete` (a still-in-progress BUDGETED replay of a
-    // generation-CURRENT row) is an orthogonal reason — seeding `false` for
-    // it would make `writeParticipantStreamFacts` floor the checkpoint at
-    // its stale baseline every resumption round (`sourceGenerationCurrent ?
-    // writeSeq : checkpointByInstance.get(...)`), which never advances and
-    // starves the bounded-resume contract's own convergence. Only the two
-    // generation-refusal reason codes seed `false`; every other reason
-    // (`terminal_fold_incomplete`, `terminal_fold_failed`,
-    // `terminal_fold_contention`, `unobserved`, or simply `current`) seeds
-    // `true` — the neutral "assume still current, let a real refused event
-    // this round override it" default this predicate always had.
+    // This carry-forward is only truthful when a real attributable terminal
+    // event actually exists somewhere in this instance's history (that is
+    // the fact `terminal_facts_historical` is supposed to describe — see
+    // `foldTerminalEventFacts`'s generation-mismatch refusal). A row with NO
+    // attributable terminal event EVER (`instanceIdsWithAnyTerminalHistory`
+    // does not contain it) has nothing historical to carry forward; its
+    // reason code, if already `terminal_facts_historical`, can only be the
+    // fold's own prior verdict about itself, which must not be treated as
+    // new evidence — doing so makes a zero-history row that was ever
+    // wrongly/transiently stamped historical re-confirm the identical wrong
+    // verdict every pass, permanently, since its own drain read is always
+    // empty and can never produce the flip back to `true` any other way.
+    //
+    // Deliberately NARROW beyond that: this must NOT catch every non-
+    // `current` state. `terminal_fold_incomplete` (a still-in-progress
+    // BUDGETED replay of a generation-CURRENT row) is an orthogonal reason —
+    // seeding `false` for it would make `writeParticipantStreamFacts` floor
+    // the checkpoint at its stale baseline every resumption round
+    // (`sourceGenerationCurrent ? writeSeq : checkpointByInstance.get(...)`),
+    // which never advances and starves the bounded-resume contract's own
+    // convergence. Only the two generation-refusal reason codes, AND only
+    // when real terminal history exists to refuse, seed `false`; every other
+    // case (`terminal_fold_incomplete`, `terminal_fold_failed`,
+    // `terminal_fold_contention`, `unobserved`, `current`, or a historical
+    // reason with no attributable history behind it) seeds `true` — the
+    // neutral "assume still current, let a real refused event this round
+    // override it" default this predicate always had.
     generationCurrentSeedByInstance.set(
       instanceId,
-      row.terminal_facts_reason_code !== REASON_CODES.TERMINAL_FACTS_HISTORICAL &&
-        row.terminal_facts_reason_code !== "manifest_generation_changed"
+      !instanceIdsWithAnyTerminalHistory.has(instanceId) ||
+        (row.terminal_facts_reason_code !== REASON_CODES.TERMINAL_FACTS_HISTORICAL &&
+          row.terminal_facts_reason_code !== "manifest_generation_changed")
     );
     // A participant with NO checkpoint has never had a terminal event folded
     // into it, so it holds no position in the event log to resume from.
@@ -2604,7 +2638,7 @@ async function foldConnectorSummaryStreamFactsOnce(
     generationByInstance,
     generationCurrentSeedByInstance,
     sinceSeq,
-  } = seedFoldState(participants);
+  } = seedFoldState(participants, new Set(maxSeqByInstance.keys()));
   // Test-only: see `testOnlyFoldPauseHook` — a no-op unless a test installs
   // a hook. Held here, immediately after the baseline (checkpointByInstance)
   // is captured and before this pass's own terminal-event read/CAS write —
