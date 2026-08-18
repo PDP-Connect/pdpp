@@ -86,10 +86,16 @@ const RECONCILE_PAGE_SIZE = 25;
  * Revised 2026-08-18 after a real production regression: the ORIGINAL 50ms
  * floor claimed "every query this floor applies to is index-bounded and
  * normally fast" — that claim was false for the discovery batch's own
- * `COUNT(*) GROUP BY` over `records`, which has NO index covering `deleted`
- * (the exact query this whole mechanism exists to bound — see this file's
- * `readPostgresDiscoveryContext` comment on `canonicalCountResult`). Because
- * the fold phase runs BEFORE discovery/repair in `runBoundedObservationPhases`
+ * `COUNT(*) GROUP BY` over `records`, which had NO index covering `deleted`
+ * (the exact query this whole mechanism existed to bound). That query was a
+ * redundant supplementary drift check — `source_revision` already catches
+ * the same direct-writer-bypass scenario incrementally — and has since been
+ * REMOVED from this hot path entirely (2026-08-18, see `classifyCandidate`'s
+ * doc); this floor and the per-unit bound machinery below remain as general
+ * protection for every OTHER discovery/repair query, which is why they are
+ * kept even though the query that motivated 500ms specifically is gone.
+ * Because the fold phase runs BEFORE discovery/repair in
+ * `runBoundedObservationPhases`
  * (connector-summary-read-model.ts), discovery routinely starts with little
  * or no admission allowance left, so `remainingStatementBudgetMs` collapsed
  * to the 50ms floor on nearly every pass — cancelling that unindexed count
@@ -394,17 +400,6 @@ function parseManifestDeclaration(raw: unknown): ManifestDeclaration {
 // ---------------------------------------------------------------------------
 
 interface DiscoveryInput {
-  /**
-   * `null` means the canonical count comparison itself is UNAVAILABLE this
-   * pass (see `readPostgresDiscoveryContext`'s canonical-count-read doc) —
-   * never a fabricated "reads as zero" default. `classifyCandidate` treats
-   * `null` as "skip this one comparison," not as a mismatch signal on its
-   * own; a row this leaves unclassified for `record_checkpoint_mismatch` is
-   * still caught by every OTHER authority comparison (`dirty`, checkpoint,
-   * manifest, schedule, lifecycle, ...), and by the SAME comparison on a
-   * later pass once the count read succeeds.
-   */
-  readonly canonicalTotalRecords: number | null;
   readonly currentCheckpoint: RecordSourceCheckpoint;
   /** Live `MAX(spine_events.event_seq)` for this connection, unfiltered by event_type. `null` when no spine events exist for it. */
   readonly currentLifecycleEventSeq: number | null;
@@ -498,21 +493,27 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   if (!(storedCheckpoint && recordSourceCheckpointsEqual(storedCheckpoint, currentCheckpoint))) {
     return "record_checkpoint_mismatch";
   }
-  // Supplementary to the composite checkpoint: a canonical total-record
-  // count drift with no corresponding checkpoint change means a direct
-  // writer mutated `records` without going through the normal version-
-  // allocating ingest/reset paths. Still a real change the stored snapshot
-  // must absorb. `null` means the live count read itself failed/was
-  // cancelled this pass (see `canonicalTotalRecords`'s doc) — skip only
-  // THIS comparison rather than treat an unavailable count as a fabricated
-  // mismatch (or, worse, a fabricated zero that would falsely flag every
-  // non-empty connection as drifted every single pass the count is slow).
-  if (
-    input.canonicalTotalRecords !== null &&
-    Number(existingEvidence.total_records || 0) !== input.canonicalTotalRecords
-  ) {
-    return "record_checkpoint_mismatch";
-  }
+  // A direct writer that mutates `records` without allocating a version
+  // (bypassing the normal ingest/reset paths that advance `version_counter`
+  // or `record_reset_generation`) used to be caught ONLY by a supplementary
+  // `SELECT COUNT(*) ... GROUP BY connector_instance_id` full-table scan run
+  // here on every discovery pass — see git history for
+  // `readPostgresDiscoveryContext`'s removed `canonicalCountResult` (measured
+  // 3.3-6.1s / ~578k buffers against production's `records` table,
+  // 2026-08-18). That scan is now REDUNDANT, not merely slow: every write to
+  // `records`, on every path including a direct bypass writer, already fires
+  // the unconditional row-level trigger `pdpp_source_revision_records`
+  // (`ensurePostgresConnectorSummarySourceRevisionPrimitive` in
+  // postgres-storage.ts; SQLite has the equivalent in db.ts), which advances
+  // `connector_instances.source_revision` on INSERT, UPDATE, and DELETE
+  // regardless of whether the writer also touched `version_counter`. The
+  // `currentSourceRevision`/`source_revision_mismatch` comparison below
+  // already detects that exact scenario incrementally, from a single-row
+  // read already fetched for this pass, with no dependence on how many
+  // records the connection has. Do not reintroduce a canonical
+  // `records`-count aggregate in this hot path; a fact whose cost grows with
+  // total row count belongs in an incrementally-maintained signal (like
+  // `source_revision`) or a periodic audit, never a per-pass discovery read.
   const storedFingerprint =
     existingEvidence.manifest_fingerprint === null ? null : String(existingEvidence.manifest_fingerprint);
   const currentFingerprint = manifest.ok ? manifest.fingerprint : null;
@@ -659,8 +660,6 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   // rows, never "reconcile everything").
   if (connectorInstanceIds !== null && connectorInstanceIds.length === 0) {
     return {
-      canonicalTotalRecordsByInstance: new Map<string, number>(),
-      canonicalTotalRecordsKnown: true,
       evidenceByInstance: new Map<string, Row>(),
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
@@ -750,28 +749,13 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
     list.push(row);
     versionCountersByInstance.set(instanceId, list);
   }
-  // Cheap canonical-count supplement to the composite checkpoint: a direct
-  // writer that mutates `records` without allocating a version (bypassing
-  // the normal ingest/reset paths that advance version_counter or
-  // record_reset_generation) still changes the live count, and this catches
-  // it. One fixed aggregate query regardless of N (or of K, when scoped).
-  const canonicalCountRows: Row[] = scoped
-    ? db
-        .prepare(
-          `SELECT connector_instance_id, COUNT(*) AS total_records FROM records
-            WHERE deleted = 0 AND connector_instance_id IN (${placeholders})
-            GROUP BY connector_instance_id`
-        )
-        // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
-        .all(...connectorInstanceIds!)
-    : db
-        .prepare(
-          "SELECT connector_instance_id, COUNT(*) AS total_records FROM records WHERE deleted = 0 GROUP BY connector_instance_id"
-        )
-        .all();
-  const canonicalTotalRecordsByInstance = new Map(
-    canonicalCountRows.map((row) => [String(row.connector_instance_id), Number(row.total_records || 0)])
-  );
+  // A fleet-wide `SELECT COUNT(*) ... GROUP BY connector_instance_id` over
+  // `records` used to run here as a supplementary drift check (see
+  // `classifyCandidate`'s doc for why it was removed: `source_revision`,
+  // driven by a row-level trigger on every write to `records`, already
+  // catches the same direct-writer-bypass scenario incrementally). Removed
+  // 2026-08-18 — do not reintroduce a canonical `records`-count aggregate in
+  // this hot path.
   // Terminal-gate revision (2026-07-29): schedule mutations have NO existing
   // dirty-independent backstop — `connector_schedules.updated_at` is already
   // written atomically with every schedule mutation on both backends (a
@@ -817,12 +801,6 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
     maxLifecycleSeqRows.map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
   );
   return {
-    canonicalTotalRecordsByInstance,
-    // SQLite's `better-sqlite3` driver is synchronous with no per-statement
-    // cancellation hook (see `discoverCandidates`'s own doc) — a query that
-    // reaches this point always ran to completion, so this backend's count
-    // is unconditionally known.
-    canonicalTotalRecordsKnown: true,
     evidenceByInstance,
     instanceRows: instanceRows as Row[],
     manifestByConnector,
@@ -865,8 +843,6 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // identical and avoids six no-op round-trips).
   if (connectorInstanceIds !== null && connectorInstanceIds.length === 0) {
     return {
-      canonicalTotalRecordsByInstance: new Map<string, number>(),
-      canonicalTotalRecordsKnown: true,
       evidenceByInstance: new Map<string, Row>(),
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
@@ -943,77 +919,50 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
     list.push(row);
     versionCountersByInstance.set(instanceId, list);
   }
-  // Cheap-IN-THEORY canonical-count supplement to the composite checkpoint:
-  // a direct writer that mutates `records` without allocating a version
-  // still changes the live count, and this catches it. One fixed aggregate
-  // query regardless of N (or of K, when scoped). (Production, 2026-08-18:
-  // THIS query, unbounded, contended with unrelated heavy I/O and alone
-  // consumed the round's entire deadline — the incident design review P1-2
-  // fixes.)
+  // A fleet-wide `SELECT connector_instance_id, COUNT(*) ... GROUP BY
+  // connector_instance_id` over `records WHERE deleted = FALSE` used to run
+  // here as a supplementary drift check for a direct writer that mutates
+  // `records` without allocating a version. Removed 2026-08-18 — it is
+  // strictly redundant, not merely slow.
   //
-  // Production, 2026-08-18 (second incident, same query): even bounded by
-  // `MIN_STATEMENT_TIMEOUT_MS`, this specific aggregate is NOT cheap at real
-  // data volume — `EXPLAIN ANALYZE` measured 4-7s for a connection with
-  // millions of live records (no covering index makes `deleted = FALSE`
-  // selective without an expensive index-only scan's heap fetches), far
-  // exceeding even a generous per-unit floor. Because this was the ONLY
-  // discovery query without its own failure isolation, its cancellation
-  // threw past `discoverCandidates` entirely — aborting classification for
-  // EVERY row in the batch, including rows already unambiguously `dirty`
-  // (`classifyCandidate` returns `"dirty"` before ever reaching this
-  // comparison). A durably-dirty backlog therefore never got a single
-  // candidate selected, pass after pass: `repaired: 0` AND `skipped: 0`,
-  // because nothing was ever classified, not merely deferred.
+  // Production, 2026-08-18 (two incidents against this same query): first
+  // unbounded, contending with unrelated heavy I/O and alone consuming the
+  // round's entire deadline; then, even bounded by `MIN_STATEMENT_TIMEOUT_MS`,
+  // still measured 3.3-6.1s / ~578k buffers (~4.5 GB) read via `EXPLAIN
+  // (ANALYZE, BUFFERS)` against production's `records` table (5.46M rows,
+  // only 11 ever `deleted = true`, so that predicate has no selectivity to
+  // exploit — the scan is inherent to grouping the live rows, not fixable by
+  // indexing `deleted`). Because it was, at the time, the ONLY discovery
+  // query without its own failure isolation, its cancellation threw past
+  // `discoverCandidates` entirely — aborting classification for EVERY row in
+  // the batch, including rows already unambiguously `dirty`. A durably-dirty
+  // backlog got zero candidates selected, pass after pass: `repaired: 0` AND
+  // `skipped: 0`, because nothing was ever classified, not merely deferred.
+  // That was fixed by isolating this query's own cancellation (kept as a
+  // historical/regression guard, see
+  // connector-summary-evidence-canonical-count-cancel-isolation.test.ts),
+  // but isolation only stopped the SYMPTOM: even successfully isolated, the
+  // query still burned 3+ seconds of database time every ~2-second sweep
+  // pass before being cancelled, and the count-drift comparison it fed
+  // silently never ran.
   //
-  // This read is now independently fail-soft: its own cancellation degrades
-  // to "count comparison unavailable this pass" (`canonicalTotalRecordsKnown:
-  // false`, `classifyCandidate` skips ONLY the count-drift comparison — see
-  // that function's doc), instead of aborting the whole discovery batch the
-  // way every genuinely unexpected discovery error still correctly does.
-  // Every candidate this batch could otherwise classify (dirty, stale,
-  // checkpoint-mismatched, manifest-mismatched, ...) is still classified and
-  // still gets a repair turn; only the narrow count-drift-with-no-checkpoint-
-  // change signal is deferred to the next pass, same as any other bounded,
-  // best-effort signal in this file.
-  let canonicalTotalRecordsByInstance = new Map<string, number>();
-  let canonicalTotalRecordsKnown = true;
-  try {
-    const canonicalCountResult = scoped
-      ? await postgresDiscoveryQuery(
-          `SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records
-            WHERE deleted = FALSE AND connector_instance_id = ANY($1::text[])
-            GROUP BY connector_instance_id`,
-          [connectorInstanceIds],
-          deadline
-        )
-      : await postgresDiscoveryQuery(
-          "SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records WHERE deleted = FALSE GROUP BY connector_instance_id",
-          [],
-          deadline
-        );
-    canonicalTotalRecordsByInstance = new Map(
-      (canonicalCountResult.rows as Row[]).map((row) => [
-        String(row.connector_instance_id),
-        Number(row.total_records || 0),
-      ])
-    );
-  } catch (err) {
-    if (!(err instanceof PostgresStatementTimeoutError)) {
-      throw err;
-    }
-    console.error(
-      `[connector-summary-evidence] canonical record-count discovery cancelled by Postgres statement_timeout${
-        connectorInstanceIds ? ` for ${connectorInstanceIds.length} scoped id(s)` : " (complete census)"
-      } — count-drift comparison skipped this pass only; every other discovery signal still classifies normally.`
-    );
-    canonicalTotalRecordsKnown = false;
-  }
+  // The root fix is that this query was never necessary: `source_revision`
+  // (`connector_instances.source_revision`, advanced by the row-level
+  // trigger `pdpp_source_revision_records` on every INSERT/UPDATE/DELETE to
+  // `records`, regardless of whether the writer also allocated a
+  // `version_counter` entry) already detects the exact same "direct writer
+  // bypassed the normal ingest path" scenario, incrementally, from a
+  // single-row read already fetched for this pass — see
+  // `classifyCandidate`'s `source_revision_mismatch` comparison. A fact
+  // whose cost grows with total row count (this query) belongs in an
+  // incrementally-maintained signal (`source_revision`, which already
+  // existed) or a periodic audit, never a per-pass discovery read. Do not
+  // reintroduce a canonical `records`-count aggregate here.
   // Terminal-gate revision (2026-07-29): schedule mutations have NO existing
   // dirty-independent backstop — `connector_schedules.updated_at` is already
   // written atomically with every schedule mutation on both backends (a
   // durable repair receipt), just never compared. One batched read of
-  // exactly the requested (or complete) scope, same shape as the canonical
-  // record-count read above.
+  // exactly the requested (or complete) scope.
   const scheduleResult = scoped
     ? await postgresDiscoveryQuery(
         "SELECT connector_instance_id, updated_at FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])",
@@ -1049,8 +998,6 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
     (maxLifecycleSeqResult.rows as Row[]).map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
   );
   return {
-    canonicalTotalRecordsByInstance,
-    canonicalTotalRecordsKnown,
     evidenceByInstance,
     instanceRows: instanceResult.rows as Row[],
     manifestByConnector,
@@ -1098,9 +1045,6 @@ async function discoverCandidates(
       })),
     });
     const reason = classifyCandidate({
-      canonicalTotalRecords: ctx.canonicalTotalRecordsKnown
-        ? (ctx.canonicalTotalRecordsByInstance.get(instanceId) ?? 0)
-        : null,
       currentCheckpoint,
       currentLifecycleEventSeq: ctx.maxLifecycleEventSeqByInstance.get(instanceId) ?? null,
       currentScheduleCheckpoint: ctx.scheduleUpdatedAtByInstance.get(instanceId) ?? "absent",
