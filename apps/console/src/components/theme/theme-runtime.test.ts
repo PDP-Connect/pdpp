@@ -33,6 +33,7 @@ const DISABLE_TRANSITIONS = /disableTransitionOnChange/;
 const DISABLE_COLOR_SCHEME = /enableColorScheme=\{false\}/;
 const ENABLE_SYSTEM = /enableSystem/;
 const STORAGE_KEY = /storageKey="pdpp-theme"/;
+const THEME_COOKIE_BRIDGE = /document\.cookie\s*=\s*`\$\{THEME_KEY\}=.*Path=\/.*SameSite=Lax/;
 const ROOT_PROVIDER = /<ThemeProvider>/;
 const SUPPRESS_HYDRATION = /suppressHydrationWarning/;
 const THEME_COOKIE_IMPORT = /components\/theme\/theme-state/;
@@ -67,6 +68,7 @@ test("shared provider configures the required next-themes runtime", async () => 
   assert.equal(DISABLE_COLOR_SCHEME.test(src), false, "provider must let next-themes manage color-scheme");
   assert.match(src, ENABLE_SYSTEM);
   assert.match(src, STORAGE_KEY);
+  assert.match(src, THEME_COOKIE_BRIDGE, "the console theme must be visible to server-rendered reference pages");
 });
 
 test("status badge tones bind status surface tokens via co-located CSS", async () => {
