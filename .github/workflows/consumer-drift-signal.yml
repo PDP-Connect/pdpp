@@ -1,0 +1,108 @@
+name: Consumer drift signal
+
+# Event-driven producer-side counterpart to PDP-Connect/data-connectors'
+# .github/workflows/cross-repo-integrity.yml. That workflow only catches drift when
+# data-connectors itself runs (push/PR/weekly schedule there) — up to a week late for a change
+# that lands here first. This workflow gives an immediate signal AT the producer: on every
+# push or PR touching the canonical reference-contract paths, fetch the consumer's pinned SHA
+# and fail fast if those paths moved beyond it.
+#
+# No cross-repo secret exists (both repos are public) — this only ever does an unauthenticated
+# raw fetch of data-connectors' default-branch pin file, never a push or write back.
+#
+# Guarded paths come from reading data-connectors'
+# .github/scripts/cross-repo-integrity/check-reference-contract-drift.mjs directly. It
+# byte-compares two documented stand-ins against this repo's canonical source:
+#   - packages/reference-contract/src/common/terminal-run-commit.ts
+#   - packages/reference-contract/src/evidence/coherence.ts
+#   - packages/reference-contract/src/evidence/collection-scope.ts
+#   - reference-implementation/runtime/recovery-reason-codes.ts
+# Those exact files (not the whole packages/reference-contract or reference-implementation
+# trees) are what that job's comparison depends on.
+
+on:
+  push:
+    paths:
+      - "packages/reference-contract/src/common/terminal-run-commit.ts"
+      - "packages/reference-contract/src/evidence/coherence.ts"
+      - "packages/reference-contract/src/evidence/collection-scope.ts"
+      - "reference-implementation/runtime/recovery-reason-codes.ts"
+  pull_request:
+    paths:
+      - "packages/reference-contract/src/common/terminal-run-commit.ts"
+      - "packages/reference-contract/src/evidence/coherence.ts"
+      - "packages/reference-contract/src/evidence/collection-scope.ts"
+      - "reference-implementation/runtime/recovery-reason-codes.ts"
+
+permissions:
+  contents: read
+
+jobs:
+  check-consumer-pin:
+    name: Check data-connectors' recorded pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Fetch data-connectors' pin file and compare
+        env:
+          GUARDED_PATHS: >-
+            packages/reference-contract/src/common/terminal-run-commit.ts
+            packages/reference-contract/src/evidence/coherence.ts
+            packages/reference-contract/src/evidence/collection-scope.ts
+            reference-implementation/runtime/recovery-reason-codes.ts
+        run: |
+          set -euo pipefail
+
+          echo "Fetching PDP-Connect/data-connectors' default-branch pin file (unauthenticated raw fetch, no secrets)..."
+          http_status="$(curl -sS -o pins.json -w '%{http_code}' \
+            https://raw.githubusercontent.com/PDP-Connect/data-connectors/main/.github/cross-repo-pins.json || true)"
+
+          if [[ "$http_status" != "200" ]]; then
+            echo "No consumer pin recorded yet — signal inactive (fetch returned HTTP $http_status)."
+            echo "This is expected until PDP-Connect/data-connectors' cutover PR merges .github/cross-repo-pins.json to main."
+            exit 0
+          fi
+
+          pinned_sha="$(node -p 'try { require("./pins.json").repos["pdpp"].sha } catch { "" }' 2>/dev/null || true)"
+
+          if [[ -z "$pinned_sha" ]]; then
+            echo "No consumer pin recorded yet — signal inactive (data-connectors' pin file exists but has no pdpp entry)."
+            echo "This is expected until PDP-Connect/data-connectors' cutover PR merges .github/cross-repo-pins.json to main."
+            exit 0
+          fi
+
+          echo "Consumer pin found: pdpp @ $pinned_sha"
+
+          if ! git cat-file -e "$pinned_sha" 2>/dev/null; then
+            echo "Pinned SHA $pinned_sha is not reachable from this checkout (fetch-depth was widened above; if this"
+            echo "still fails, the pin may reference a commit this workflow's checkout doesn't have)."
+            exit 1
+          fi
+
+          if git diff --quiet "$pinned_sha" HEAD -- $GUARDED_PATHS; then
+            echo "OK: no change under \$GUARDED_PATHS since the consumer's pinned SHA ($pinned_sha)."
+            exit 0
+          fi
+
+          echo "FAIL: one or more reference-contract stand-in source files changed since"
+          echo "PDP-Connect/data-connectors last pinned this repo at $pinned_sha."
+          echo
+          echo "Changed paths:"
+          git diff --name-only "$pinned_sha" HEAD -- $GUARDED_PATHS
+          echo
+          echo "This means data-connectors' hand-maintained reference-contract stand-ins"
+          echo "(packages/polyfill-connectors/vendor/pdpp-reference-contract-0.0.1.tgz and"
+          echo "packages/polyfill-connectors/src/reference-implementation-stand-in/) are now stale against this"
+          echo "repo's canonical source. Coordinated repin procedure:"
+          echo "  1. Open a PR in PDP-Connect/data-connectors that updates the drifted stand-in file(s) to match"
+          echo "     this repo's new content."
+          echo "  2. In that same PR, update .github/cross-repo-pins.json's pdpp entry to this repo's new HEAD"
+          echo "     SHA, with a note explaining why the pin moved."
+          echo "  3. Merge that PR. This signal will go green on the next push/PR here once the pin catches up."
+          echo "Do not edit data-connectors' pin file from this repo — it is that repo's own record, updated only there."
+          exit 1
