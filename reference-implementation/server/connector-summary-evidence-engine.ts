@@ -52,6 +52,7 @@ import {
 import { getDb } from "./db.ts";
 import {
   isPostgresStorageBackend,
+  PostgresStatementTimeoutError,
   postgresQuery,
   postgresQueryBounded,
   withPostgresTransaction,
@@ -82,18 +83,32 @@ const RECONCILE_PAGE_SIZE = 25;
  * consume more than what was left when the unit started (production,
  * 2026-08-18: `repair_duration_ms: 5322` against a 2000ms pass budget).
  *
- * Floored at `MIN_STATEMENT_TIMEOUT_MS` even when only a sliver of budget
- * remains: every query this floor applies to is index-bounded and normally
- * fast (see the P1-2 file:line audit), so a near-zero remaining allowance
- * still deserves a short, real chance to complete rather than a
- * technicality timeout; a query that is genuinely slow under contention is
- * still caught, just up to `MIN_STATEMENT_TIMEOUT_MS` later than a literal
- * zero-margin cutoff would catch it. A disclosed tradeoff, not an
- * oversight. `deadline === null` (every caller except the maintenance
- * sweep) is unaffected — those callers keep the exact prior unbounded
- * `postgresQuery` behavior.
+ * Revised 2026-08-18 after a real production regression: the ORIGINAL 50ms
+ * floor claimed "every query this floor applies to is index-bounded and
+ * normally fast" — that claim was false for the discovery batch's own
+ * `COUNT(*) GROUP BY` over `records`, which has NO index covering `deleted`
+ * (the exact query this whole mechanism exists to bound — see this file's
+ * `readPostgresDiscoveryContext` comment on `canonicalCountResult`). Because
+ * the fold phase runs BEFORE discovery/repair in `runBoundedObservationPhases`
+ * (connector-summary-read-model.ts), discovery routinely starts with little
+ * or no admission allowance left, so `remainingStatementBudgetMs` collapsed
+ * to the 50ms floor on nearly every pass — cancelling that unindexed count
+ * query (which realistically takes low hundreds of ms, not 50) on almost
+ * every attempt. Within minutes this flipped 25 of 29 `connector_summary_
+ * evidence` rows from `current` to `failed` with zero visible error (see
+ * `PostgresStatementTimeoutError` handling below and in
+ * connector-summary-read-model.ts — cancellation is now loud and non-fatal
+ * to already-healthy rows).
+ *
+ * 500ms is a genuine minimum absolute timeout, not merely a "near-zero
+ * allowance" floor: it is chosen to comfortably exceed the unindexed count
+ * query's realistic healthy duration while still being well under the
+ * round's 2000ms pass budget, so a single per-unit cancellation remains
+ * possible for a genuinely pathological/runaway statement. `deadline ===
+ * null` (every caller except the maintenance sweep) is unaffected — those
+ * callers keep the exact prior unbounded `postgresQuery` behavior.
  */
-const MIN_STATEMENT_TIMEOUT_MS = 50;
+const MIN_STATEMENT_TIMEOUT_MS = 500;
 
 function remainingStatementBudgetMs(deadline: number | null): number | null {
   if (deadline === null) {
@@ -290,6 +305,17 @@ const REASON_CODES = {
   RETAINED_BYTES_UNAVAILABLE: "retained_bytes_unavailable",
   SOURCE_REVISION_DEFERRED: "canonical_source_revision_deferred",
   SOURCE_REVISION_EXHAUSTED: "canonical_source_revision_exhausted",
+  /**
+   * A repair unit's own pre-transaction read was cancelled by Postgres
+   * (`PostgresStatementTimeoutError`, SQLSTATE 57014) under the per-unit
+   * `statement_timeout` bound (design review P1-2) — the bound working as
+   * designed under load, NOT a defect in this connection's own canonical
+   * facts. Distinct from `RECORD_SNAPSHOT_FAILED` so an operator (or a
+   * later reconcile pass) can tell "this row's data is suspect" apart from
+   * "this row's read was merely cancelled by scheduling pressure and is
+   * still exactly as trustworthy as it was before this attempt."
+   */
+  STATEMENT_TIMEOUT: "repair_statement_timeout",
   TERMINAL_FOLD_FAILED: "terminal_fold_failed",
 } as const;
 
@@ -1080,6 +1106,7 @@ async function repairCandidate(connectorInstanceId: string, deadline: number | n
     }
     return await repairCandidateSqlite(connectorInstanceId);
   } catch (err) {
+    logRepairFailure(connectorInstanceId, REASON_CODES.LOCK_UNAVAILABLE, err);
     const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.LOCK_UNAVAILABLE, err);
     // The lock itself could not be acquired, so nothing about this
     // connection's canonical facts was even re-read this attempt — total
@@ -1087,6 +1114,44 @@ async function repairCandidate(connectorInstanceId: string, deadline: number | n
     const persisted = await persistFailedEvidence(connectorInstanceId, failedRow);
     return { deferred: false, failed: true, persisted, row: failedRow };
   }
+}
+
+/**
+ * The single place a caught repair/discovery error is classified against
+ * `REASON_CODES` — so a genuine Postgres `statement_timeout` cancellation
+ * (the per-unit HARD bound design review P1-2 requires, working as
+ * designed under load) is never confused with a real data/connectivity
+ * defect on that connection's own canonical facts. `defaultReasonCode` is
+ * the caller's existing classification for every OTHER error shape
+ * (`LOCK_UNAVAILABLE` for a lock-acquisition failure, `RECORD_SNAPSHOT_FAILED`
+ * for a genuine repair-read/write failure).
+ */
+function reasonCodeForRepairFailure(err: unknown, defaultReasonCode: string): string {
+  return err instanceof PostgresStatementTimeoutError ? REASON_CODES.STATEMENT_TIMEOUT : defaultReasonCode;
+}
+
+/**
+ * Make a cancelled/failed repair or discovery unit LOUD (production,
+ * 2026-08-18: a `PostgresStatementTimeoutError` cancelling discovery was
+ * silently converted into `summary_discovery_failed` evidence with NO
+ * console output anywhere — 25 rows degraded from `current` to `failed`
+ * with nothing in the container logs to explain why). This module has no
+ * injected structured logger (it is a library called from many contexts,
+ * including tests, without one), so `console.error` with a bracketed module
+ * tag is this codebase's established convention for a library-level module
+ * without one (see e.g. `records.ts`'s `[records] ...` lines) — durable
+ * evidence (`buildFailedRow`'s persisted reason code) and a console line are
+ * complementary, not substitutes for each other.
+ */
+function logRepairFailure(connectorInstanceId: string, reasonCode: string, err: unknown): void {
+  const sanitized = sanitizeProjectionError(err);
+  if (reasonCode === REASON_CODES.STATEMENT_TIMEOUT) {
+    console.error(
+      `[connector-summary-evidence] repair for ${connectorInstanceId} cancelled by Postgres statement_timeout (per-unit bound, design review P1-2) — this row's evidence is left as-is, not marked failed, and will be retried on a later pass: ${sanitized}`
+    );
+    return;
+  }
+  console.error(`[connector-summary-evidence] repair for ${connectorInstanceId} failed (${reasonCode}): ${sanitized}`);
 }
 
 function buildFailedRow(
@@ -1585,6 +1650,12 @@ async function repairCandidateSqlite(connectorInstanceId: string): Promise<Repai
       })
     );
   } catch (err) {
+    // `PostgresStatementTimeoutError` cannot occur on this branch —
+    // `better-sqlite3` has no interrupt/progress-handler hook, so nothing
+    // here can be cancelled — but `reasonCodeForRepairFailure` is still
+    // used (rather than a bare constant) so both backends share one
+    // classification path and cannot silently diverge if that ever changes.
+    logRepairFailure(connectorInstanceId, reasonCodeForRepairFailure(err, REASON_CODES.RECORD_SNAPSHOT_FAILED), err);
     const failedRow = buildFailedRow(
       connectorInstanceId,
       REASON_CODES.RECORD_SNAPSHOT_FAILED,
@@ -1785,6 +1856,25 @@ async function repairCandidatePostgres(
       )
     );
   } catch (err) {
+    logRepairFailure(connectorInstanceId, reasonCodeForRepairFailure(err, REASON_CODES.RECORD_SNAPSHOT_FAILED), err);
+    if (err instanceof PostgresStatementTimeoutError) {
+      // The per-unit HARD bound (design review P1-2) fired as designed —
+      // this unit's own pre-transaction read was cancelled by Postgres
+      // under load, which says NOTHING about whether this connection's
+      // canonical facts have actually changed. Marking the row `failed`
+      // here is exactly the production regression (2026-08-18): a healthy
+      // row was degraded solely because its repair got scheduled late in a
+      // busy pass. Leave the row's durable evidence completely untouched
+      // and defer — the SAME candidate reclassifies and retries on the
+      // next observation pass (design.md "Startup is acceleration, not
+      // authority": nothing here is ever permanently lost, only deferred).
+      return {
+        deferred: true,
+        failed: false,
+        persisted: true,
+        row: { connector_instance_id: connectorInstanceId },
+      };
+    }
     const failedRow = buildFailedRow(
       connectorInstanceId,
       REASON_CODES.RECORD_SNAPSHOT_FAILED,
