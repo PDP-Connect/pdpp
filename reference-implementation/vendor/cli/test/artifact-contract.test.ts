@@ -10,9 +10,12 @@ import { fileURLToPath } from "node:url";
 
 import { assertArtifactReceipt, bindNodeEnvironment, gitHeadSha } from "../scripts/artifact-receipt.ts";
 import { discoverTestFiles, needsTsx } from "../scripts/discover-tests.ts";
-import { assertManifestTargets } from "../scripts/package-contract.ts";
+import { assertBareSpecifiersResolve, assertManifestTargets } from "../scripts/package-contract.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+const UNDECLARED_PDPP_IMPORT =
+  /imports private workspace package "@pdpp\/reference-contract".*1\.5\.1-1\.5\.4 unrunnable/s;
+const UNDECLARED_THIRD_PARTY_IMPORT = /imports "left-pad".*not declared in dependencies/s;
 
 function makeManifest(overrides = {}) {
   return {
@@ -74,6 +77,44 @@ test("artifact contract rejects a bin that loses its shebang", () => {
   const root = emittedFixture({ shebang: false });
   // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.throws(() => assertManifestTargets(makeManifest(), root), /must retain its node shebang/);
+});
+
+test("bare-specifier check rejects the exact @pdpp/local-collector 1.5.1-1.5.4 defect shape: an undeclared private-package import", () => {
+  const root = emittedFixture();
+  writeFileSync(
+    join(root, "dist", "src", "index.js"),
+    'import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";\nexport const artifact = true;\n'
+  );
+  assert.throws(
+    () => assertBareSpecifiersResolve(makeManifest(), root, ["dist/src/index.js", "dist/bin/pdpp.js"]),
+    UNDECLARED_PDPP_IMPORT
+  );
+});
+
+test("bare-specifier check rejects any undeclared bare import, not just @pdpp/* ones", () => {
+  const root = emittedFixture();
+  writeFileSync(
+    join(root, "dist", "src", "index.js"),
+    'import leftPad from "left-pad";\nexport const artifact = true;\n'
+  );
+  assert.throws(
+    () => assertBareSpecifiersResolve(makeManifest(), root, ["dist/src/index.js", "dist/bin/pdpp.js"]),
+    UNDECLARED_THIRD_PARTY_IMPORT
+  );
+});
+
+test("bare-specifier check accepts declared dependencies and Node builtins", () => {
+  const root = emittedFixture();
+  writeFileSync(
+    join(root, "dist", "src", "index.js"),
+    'import { z } from "zod";\nimport path from "node:path";\nexport const artifact = true;\n'
+  );
+  assert.doesNotThrow(() =>
+    assertBareSpecifiersResolve(makeManifest({ dependencies: { zod: "^4.4.3" } }), root, [
+      "dist/src/index.js",
+      "dist/bin/pdpp.js",
+    ])
+  );
 });
 
 test("extension-complete discovery and loader selection are exact", async () => {
