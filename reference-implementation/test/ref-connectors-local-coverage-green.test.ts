@@ -1173,6 +1173,46 @@ test("coverage proof eligibility ignores wall-clock ordering when generations ma
   assert.equal(deriveLocalCoverageAxis({ ...base, manifestGeneration: 5 }).reliable, false);
 });
 
+test("unreliableReason distinguishes coverage genuinely unproven from a refused-to-read snapshot", () => {
+  const base = {
+    duplicateStores: [],
+    hasAuthoritativeInventory: true,
+    hasCommittedSnapshot: true,
+    malformed: false,
+    manifestGeneration: 4,
+    missingStores: [],
+    nowIso: "2026-06-03T12:00:00.000Z",
+    rows: [{ status: "collected", store: "projects", stream: "sessions" }],
+    state: { fetched_at: "2026-06-03T12:05:01.000Z" },
+    stateManifestGeneration: 4,
+    unexpectedStores: [],
+    updatedAt: "2026-06-03T12:05:01.000Z",
+  };
+
+  // Genuinely unproven: a real required store (e.g. an older collector build
+  // that predates a derived-stream descriptor such as claude_code's
+  // derived_messages) never showed up in the committed snapshot at all.
+  const genuinelyUnproven = deriveLocalCoverageAxis({
+    ...base,
+    missingStores: ["derived_messages"],
+  });
+  assert.equal(genuinelyUnproven.reliable, false);
+  assert.equal(genuinelyUnproven.axis, "unknown");
+  assert.equal(genuinelyUnproven.unreliableReason, "missing_stores");
+
+  // Proven but the server refused to read it: every required store IS present
+  // and accounted for, but the read-side generation fence rejects the proof as
+  // stale relative to the connection's current manifest generation.
+  const refusedToRead = deriveLocalCoverageAxis({ ...base, manifestGeneration: 5 });
+  assert.equal(refusedToRead.reliable, false);
+  assert.equal(refusedToRead.axis, "unknown");
+  assert.equal(refusedToRead.unreliableReason, "generation_mismatch");
+
+  // Reliable proof carries no unreliableReason at all -- the field only
+  // exists to explain a refusal, never to annotate a trusted result.
+  assert.equal(deriveLocalCoverageAxis(base).unreliableReason, undefined);
+});
+
 test(
   "local collector with unaccounted stores projects coverage gaps with actionable reason, not unknown",
   withTmpDb(async () => {
