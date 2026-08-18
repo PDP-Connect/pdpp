@@ -24,7 +24,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ConnectorCatalogEntry } from "./connection-catalog.ts";
-import { isRunnableAddOffer } from "./source-setup-presentation.ts";
+import {
+  isRunnableAddOffer,
+  sourceSetupAction,
+  sourceSetupGuidance,
+  sourceSetupStatus,
+} from "./source-setup-presentation.ts";
 
 /**
  * A complete, valid catalog entry fixture. Every field a real
@@ -38,6 +43,8 @@ function makeEntry(overrides: Partial<ConnectorCatalogEntry> & Pick<ConnectorCat
     deploymentReadiness: { blockers: [], guidance: null, state: "ready" },
     displayName: "Stub connector",
     externalDocs: [],
+    isKnownScaffold: false,
+    listingNote: null,
     modality: "network",
     nextStepKind: "unsupported",
     ownerActionable: true,
@@ -170,4 +177,109 @@ test("preview + browser_collector_manual (Venmo) is offered on /sources/add", ()
     true,
     "a registered, owner-actionable preview-tier browser-bound entry must be offered on /sources/add"
   );
+});
+
+/**
+ * The Development disclosure (below Preview on /sources/add) coverage.
+ *
+ * Root-caused live bug: every Development-tier connector -- both real,
+ * implemented-but-unproven connectors (imessage, spotify, oura,
+ * google_maps_data_portability, ...) and genuine SKIP_RESULT scaffolds
+ * (anthropic, linkedin, loom, ...) -- was invisible on /sources/add. The
+ * owner could not tell what existed, could not test an unproven connector
+ * himself, and could not distinguish a broken connector from a missing one.
+ * `buildOwnerConnectorCatalog` used to drop every publicTier "development"
+ * template before it became a catalog entry at all, so no presentation
+ * function ever saw one. These tests pin the fixed contract: a real
+ * Development entry is never a runnable ADD OFFER (isRunnableAddOffer stays
+ * false, unconditionally, for the whole tier -- see "development tier is
+ * never offered" above), but it DOES get a self-test action, distinct status
+ * label, and honest guidance in the Development disclosure. A KNOWN scaffold
+ * gets none of those: no action, "Not implemented" status, and guidance that
+ * says plainly there is nothing to test yet.
+ */
+
+test("development + real (non-scaffold) self-testable disposition gets a self-test action, never a runnable offer", () => {
+  const imessage = makeEntry({
+    connectorKey: "imessage",
+    disposition: "local_collector_enroll",
+    displayName: "iMessage",
+    isKnownScaffold: false,
+    modality: "local_collector",
+    ownerActionable: false,
+    publicTier: "development",
+    setupModality: "local_collector",
+  });
+  assert.equal(isRunnableAddOffer(imessage), false, "development is never a runnable /sources/add offer");
+  assert.ok(
+    sourceSetupAction(imessage),
+    "a real (non-scaffold) development entry with a self-testable disposition gets a self-test action"
+  );
+  assert.equal(sourceSetupStatus(imessage).label, "Development");
+});
+
+test("development + known scaffold gets no action and a distinct 'Not implemented' status", () => {
+  const anthropic = makeEntry({
+    connectorKey: "anthropic",
+    disposition: "browser_bound_runbook",
+    displayName: "Anthropic",
+    isKnownScaffold: true,
+    modality: "browser_bound",
+    ownerActionable: false,
+    publicTier: "development",
+    setupModality: "browser_bound",
+  });
+  assert.equal(isRunnableAddOffer(anthropic), false);
+  assert.equal(sourceSetupAction(anthropic), null, "a known scaffold must never render an add action");
+  assert.equal(sourceSetupStatus(anthropic).label, "Not implemented");
+  assert.match(
+    sourceSetupGuidance(anthropic),
+    /scaffold/i,
+    "scaffold guidance must say plainly there is nothing to test yet"
+  );
+});
+
+test("development + known scaffold with a self-testable disposition still gets no action", () => {
+  // The structural safety property: isKnownScaffold overrides disposition.
+  // Even if a scaffold's disposition happens to land in the self-test
+  // allowlist (e.g. a future scaffold resolves to static_secret_connect),
+  // clicking an action for it can never collect anything.
+  const scaffoldWithRunnableDisposition = makeEntry({
+    connectorKey: "hypothetical-scaffold",
+    disposition: "static_secret_connect",
+    isKnownScaffold: true,
+    publicTier: "development",
+    setupModality: "static_secret",
+  });
+  assert.equal(sourceSetupAction(scaffoldWithRunnableDisposition), null);
+});
+
+test("development + a disposition with no safe action gets honest fallback guidance, not the generic dead-end", () => {
+  const localCollectorUnproven = makeEntry({
+    connectorKey: "some-filesystem-connector",
+    disposition: "local_collector_unproven",
+    isKnownScaffold: false,
+    modality: "local_collector",
+    ownerActionable: false,
+    publicTier: "development",
+    setupModality: "local_collector",
+  });
+  assert.equal(sourceSetupAction(localCollectorUnproven), null);
+  assert.match(
+    sourceSetupGuidance(localCollectorUnproven),
+    /Development/,
+    "a real development entry without a safe action still gets development-framed guidance, not the unclassified dead-end"
+  );
+});
+
+test("development real entry surfaces its manifest listingNote in guidance when present", () => {
+  const spotify = makeEntry({
+    connectorKey: "spotify",
+    disposition: "static_secret_connect",
+    isKnownScaffold: false,
+    listingNote: "Hidden from the reference dashboard catalog until a credentialed run proves useful records in the deployment.",
+    publicTier: "development",
+    setupModality: "static_secret",
+  });
+  assert.equal(sourceSetupAction(spotify) !== null, true);
 });

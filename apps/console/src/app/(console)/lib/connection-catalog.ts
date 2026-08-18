@@ -26,6 +26,7 @@ import {
   classifyConnectorIntentModality,
   connectorKeyFromManifest,
   enrollmentKeyForCanonicalKey,
+  isKnownScaffoldConnector,
   manualUploadSetupFromManifest,
   type StaticSecretSetupFieldLike,
   staticSecretCredentialCaptureFromManifest,
@@ -49,6 +50,15 @@ export interface CatalogManifestLike {
       rationale?: string | null;
     } | null;
     public_listing?: {
+      /**
+       * Owner-facing reason this connector is not offered as a runnable
+       * "add now"/Preview card yet, when the manifest declares one. Written
+       * for a development-tier connector, so it is the most honest,
+       * connector-specific text available for the Development disclosure.
+       */
+      proof_gate?: string | null;
+      /** Manifest-authored explanation for the current lifecycle tier. */
+      rationale?: string | null;
       tier?: "supported" | "preview" | "development" | null;
     } | null;
   } | null;
@@ -108,7 +118,18 @@ export interface OwnerConnectorTemplateLike {
     kind?: string | null;
     svg?: string | null;
   } | null;
+  /**
+   * Server-owned fact, meaningful only for Development-tier entries: true when
+   * the connector-conformance roster names this connector a KNOWN scaffold
+   * (unconditional `SKIP_RESULT`, no real collection). A scaffold must never
+   * render an add action, even inside a Development disclosure.
+   */
+  is_known_scaffold?: boolean | null;
   public_listing?: {
+    /** Owner-facing reason this connector is not offered as a runnable card yet, when declared. */
+    proof_gate?: string | null;
+    /** Manifest-authored explanation for the current lifecycle tier. */
+    rationale?: string | null;
     tier?: "supported" | "preview" | "development" | null;
   } | null;
   registration_status?: string | null;
@@ -207,6 +228,21 @@ export interface ConnectorCatalogEntry {
   externalDocs: readonly ConnectorExternalDoc[];
   /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
   icon?: OwnerConnectorTemplateLike["icon"];
+  /**
+   * Meaningful only for Development-tier entries: true when the connector is
+   * a KNOWN scaffold (unconditional `SKIP_RESULT`, no real collection) rather
+   * than real-but-unproven. Drives whether a Development disclosure card may
+   * ever render an add action for this entry.
+   */
+  isKnownScaffold: boolean;
+  /**
+   * Manifest-authored explanation for the current lifecycle tier
+   * (`public_listing.rationale` or `public_listing.proof_gate`, in that
+   * order), when the manifest declares one. Most specific, most honest
+   * per-connector text available for the Development disclosure; a
+   * connector without one falls back to generic tier copy.
+   */
+  listingNote: string | null;
   /** Binding-derived modality. */
   modality: CatalogModality;
   /** The next owner step selected by the shared planner. */
@@ -260,6 +296,12 @@ function displayNameFor(manifest: CatalogManifestLike, connectorKey: string): st
 
 function cleanManifestText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function listingNoteFromPublicListing(
+  listing: { proof_gate?: string | null; rationale?: string | null } | null | undefined
+): string | null {
+  return cleanManifestText(listing?.rationale) ?? cleanManifestText(listing?.proof_gate);
 }
 
 function setupCopyFromManifest(manifest: CatalogManifestLike): {
@@ -335,6 +377,8 @@ export function buildConnectorCatalog(
       displayName: displayNameFor(manifest, connectorKey),
       disposition: plan.catalogDisposition,
       externalDocs: externalDocsFromManifest(manifest),
+      isKnownScaffold: isKnownScaffoldConnector(connectorKey),
+      listingNote: listingNoteFromPublicListing(manifest.capabilities?.public_listing),
       modality: plan.connectorModality,
       nextStepKind: plan.nextStepKind,
       proofGate: plan.proofGate,
@@ -477,13 +521,20 @@ export function buildOwnerConnectorCatalog(
   for (const template of templates) {
     const connectorKey = cleanManifestText(template.connector_key);
     const setupPlan = template.setup_plan;
-    // Development remains hidden unless the authenticated server explicitly
-    // exposes this exact template for UAT.
-    if (
-      !connectorKey ||
-      template.registration_status !== "registered" ||
-      (template.public_listing?.tier === "development" && template.uat_expose_unlisted_connectors !== true)
-    ) {
+    // Development-tier entries flow through as catalog entries so the owner
+    // running this instance can see what exists and self-test it -- they are
+    // never a runnable "add now" or Preview offer (see isRunnableAddOffer and
+    // the Development disclosure in source-setup-catalog.tsx). The manifest
+    // tier remains the sole listing-TIER authority; this only stops dropping
+    // the row outright.
+    //
+    // This supersedes the narrower `uat_expose_unlisted_connectors` gate that
+    // previously guarded this filter: that flag only revealed development rows
+    // the server explicitly opted in, which still left the owner unable to see
+    // the other development connectors on his own instance. The flag remains
+    // authoritative for the owner-actionable/disposition decisions above; it is
+    // only its use as a LISTING gate here that this replaces.
+    if (!connectorKey || template.registration_status !== "registered") {
       continue;
     }
     const disposition = setupPlan?.catalog_disposition;
@@ -528,6 +579,11 @@ export function buildOwnerConnectorCatalog(
       disposition,
       externalDocs: externalDocsFromManifest(manifestForCopy),
       icon: template.icon ?? null,
+      isKnownScaffold:
+        typeof template.is_known_scaffold === "boolean"
+          ? template.is_known_scaffold
+          : isKnownScaffoldConnector(connectorKey),
+      listingNote: listingNoteFromPublicListing(template.public_listing),
       modality: connectorModality,
       nextStepKind,
       ownerActionable: capability.actionable,

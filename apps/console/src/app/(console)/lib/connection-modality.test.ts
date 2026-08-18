@@ -45,6 +45,7 @@ test("supported browser-collector set is derived from browser-bound production r
     "heb",
     "reddit",
     "usaa",
+    "venmo",
     "whoop",
   ]);
 });

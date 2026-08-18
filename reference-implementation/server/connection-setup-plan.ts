@@ -1,7 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { PRODUCTION_READY_CONNECTORS } from "../../packages/polyfill-connectors/src/connector-conformance-roster.ts";
+import {
+  KNOWN_SCAFFOLD_CONNECTORS,
+  PRODUCTION_READY_CONNECTORS,
+} from "../../packages/polyfill-connectors/src/connector-conformance-roster.ts";
 import {
   type CredentialValidationMode,
   credentialValidationMode,
@@ -353,6 +356,26 @@ export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS: readonly SupportedBrowserCo
     Object.hasOwn(PRODUCTION_READY_CONNECTORS, connector)
   )
 );
+
+/**
+ * Whether this connector key names a KNOWN scaffold: manifest ships,
+ * registers, and validates, but its `collect()` is an unconditional
+ * `SKIP_RESULT` placeholder with no real parsing/pagination/cursor logic.
+ * `connector-conformance-roster.ts`'s `KNOWN_SCAFFOLD_CONNECTORS` is the
+ * single hand-maintained list this reads (kept disjoint from
+ * `PRODUCTION_READY_CONNECTORS` and `REAL_UNLISTED_CONNECTORS` by
+ * `connector-conformance.test.ts`), so a Development-tier connector never
+ * needs a second allowlist to tell "unproven but real" apart from
+ * "unimplemented": a genuine stub must never render an add action, even
+ * inside a Development disclosure, because clicking it can never collect
+ * anything.
+ */
+export function isKnownScaffoldConnector(connectorKey: string | null | undefined): boolean {
+  return (
+    typeof connectorKey === "string" &&
+    (KNOWN_SCAFFOLD_CONNECTORS as readonly string[]).includes(canonicalConnectorKey(connectorKey) ?? connectorKey)
+  );
+}
 
 export const PROVIDER_AUTH_RUNBOOK_PATH = "docs/operator/add-connection.md";
 
