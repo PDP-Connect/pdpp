@@ -7,7 +7,7 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { REDDIT_RETRYABLE_PATTERN, redditEnsureSession } from "../../connectors/reddit/index.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import { establishSession, type SessionEstablishArgs } from "../session-establish.ts";
-import { ensureRedditSession } from "./reddit.ts";
+import { ensureRedditSession, isSessionLive } from "./reddit.ts";
 
 type BrowserCookie = Awaited<ReturnType<BrowserContext["cookies"]>>[number];
 const STREAMING_ENV_KEYS = [
@@ -135,14 +135,28 @@ function makePageWithHiddenOtp(): Page {
   return fake as Page;
 }
 
-function makePageWithVisibleOtpAndLiveSessionAfterBrowserCompletion(): Page {
+/**
+ * `savedJsonStatus` models old.reddit.com's `/user/{u}/saved.json` response
+ * that `isSessionLive` now probes as its primary, durable signal. Defaults to
+ * 200 (live) since most fixtures using this factory model a genuinely
+ * authenticated session; a caller proving the pre-fix DOM-only behavior sets
+ * it to something else alongside a rendered logout link.
+ */
+function makePageWithVisibleOtpAndLiveSessionAfterBrowserCompletion({
+  savedJsonStatus = 200,
+}: {
+  savedJsonStatus?: number;
+} = {}): Page {
   const username = makeLocator();
   const password = makeLocator();
   const visibleOtp = makeLocator();
   const submit = makeLocator();
   const logout = makeLocator();
   const empty = makeLocator({ count: 0, visible: false });
-  const fake: Pick<Page, "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+  const fake: Pick<Page, "evaluate" | "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+    evaluate(): ReturnType<Page["evaluate"]> {
+      return Promise.resolve({ status: savedJsonStatus });
+    },
     getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
       return submit;
     },
@@ -277,6 +291,72 @@ async function withRedditCredentials(run: () => Promise<void>): Promise<void> {
 async function withoutRedditCredentials(run: () => Promise<void>): Promise<void> {
   await withRedditCredentialValues({}, run);
 }
+
+/**
+ * Page fake dedicated to `isSessionLive` itself: `savedJsonStatus` drives the
+ * new primary probe (`/user/{u}/saved.json` via `page.evaluate(fetch)`),
+ * `logoutLinkCount` drives the old DOM-only signal so tests can pin them
+ * independently — the whole point of the fix is that they can now disagree.
+ */
+function makePageForSessionLiveProbe({
+  savedJsonStatus,
+  logoutLinkCount,
+}: {
+  savedJsonStatus: number;
+  logoutLinkCount: number;
+}): Page {
+  const logout = makeLocator({ count: logoutLinkCount });
+  const empty = makeLocator({ count: 0, visible: false });
+  const fake: Pick<Page, "evaluate" | "goto" | "locator"> = {
+    evaluate(): ReturnType<Page["evaluate"]> {
+      return Promise.resolve({ status: savedJsonStatus });
+    },
+    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+      if (selector.includes("/logout") || selector.includes("logout")) {
+        return logout;
+      }
+      return empty;
+    },
+  };
+  return fake as Page;
+}
+
+// ─── isSessionLive: the owner-only JSON probe is the durable signal ───────
+//
+// The prior implementation trusted a single DOM selector (a rendered
+// logout link) on old.reddit.com. That selector went stale while a real,
+// working session existed underneath it, so the connector declared
+// `reddit_session_failed` even after the owner correctly solved the login
+// captcha. These pin the fix: the JSON probe decides liveness, and a
+// genuinely dead session must still fail even though the DOM check alone
+// would have (once) said "live".
+
+test("isSessionLive PASSES on a live session whose DOM lacks the logout link (the regression this fixes)", async () => {
+  await withRedditCredentials(async () => {
+    const page = makePageForSessionLiveProbe({ savedJsonStatus: 200, logoutLinkCount: 0 });
+    assert.equal(await isSessionLive(page), true);
+  });
+});
+
+test("isSessionLive FAILS on a genuinely logged-out session even if a stale logout link is still in the DOM (COUNTERWEIGHT)", async () => {
+  await withRedditCredentials(async () => {
+    const page = makePageForSessionLiveProbe({ savedJsonStatus: 403, logoutLinkCount: 1 });
+    assert.equal(await isSessionLive(page), false);
+  });
+});
+
+test("isSessionLive falls back to the DOM logout-link probe when no username is known yet (credential-less manual hand-off)", async () => {
+  await withoutRedditCredentials(async () => {
+    const live = makePageForSessionLiveProbe({ savedJsonStatus: 403, logoutLinkCount: 1 });
+    assert.equal(await isSessionLive(live), true);
+
+    const dead = makePageForSessionLiveProbe({ savedJsonStatus: 200, logoutLinkCount: 0 });
+    assert.equal(await isSessionLive(dead), false);
+  });
+});
 
 test("ensureRedditSession hands off when optional credentials are absent", async () => {
   await withoutRedditCredentials(async () => {
