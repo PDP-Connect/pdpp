@@ -890,10 +890,11 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   flex-direction: column;
   gap: 6px;
 }
-/* The hint is the only part allowed to change the block's height. The input row
-   above it is what must not move, because it sits between the two segmented
-   controls; a sentence appearing below the last control pushes nothing the
-   reader is currently looking at. */
+/* This block reveals rather than reserves its space, so choosing "other devices"
+   moves the command panel down. That is affordable HERE and was not before: the
+   command now sits below every control, so the growth pushes what the reader has
+   not reached yet. Put the command back between the controls and the space has
+   to be reserved again. */
 .pdpp-cmd__url {
   display: flex;
   flex-direction: column;
