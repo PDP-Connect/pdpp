@@ -39,8 +39,12 @@ const STREAM_REACH_REASON_SET = new Set<string>(STREAM_REACH_REASONS);
 /**
  * Operator-facing copy per reason. Operator-console voice: address the operator
  * running their own instance, name the failure class, point at the next action.
- * Never claim the stream connected or recovered. `unknown` preserves the prior
- * generic give-up message verbatim so no occurrence regresses.
+ * Never claim the stream connected or recovered. `unknown`'s entry here is the
+ * fallback used only when no status was available at all (see
+ * {@link unknownTroubleMessage}); when a status IS known it is appended so an
+ * unmapped status is visible rather than hidden behind identical generic copy
+ * — that silence is exactly what let the 503/streaming_companion_unavailable
+ * case go unnoticed before this reason was mapped.
  */
 const STREAM_REACH_MESSAGE: Record<StreamReachReason, string> = {
   companion_unavailable: "The browser session is no longer running on the server. Start the browser step again.",
@@ -51,6 +55,11 @@ const STREAM_REACH_MESSAGE: Record<StreamReachReason, string> = {
   unreachable_origin:
     "Couldn't reach the browser stream. Check that the reference server is reachable, then try again.",
 };
+
+function unknownTroubleMessage(probeStatus: number | null): string {
+  const base = STREAM_REACH_MESSAGE.unknown;
+  return probeStatus === null ? base : `${base} (server responded ${probeStatus})`;
+}
 
 export interface StreamReachProbeResult {
   /**
@@ -93,7 +102,8 @@ export function sanitizeStreamReachReason(value: unknown): StreamReachReason {
  */
 export function classifyStreamReachFailure(probe: StreamReachProbeResult): StreamReachClassification {
   const reason = classifyReason(probe);
-  return { reason, troubleMessage: STREAM_REACH_MESSAGE[reason] };
+  const troubleMessage = reason === "unknown" ? unknownTroubleMessage(probe.probeStatus) : STREAM_REACH_MESSAGE[reason];
+  return { reason, troubleMessage };
 }
 
 function classifyReason(probe: StreamReachProbeResult): StreamReachReason {
@@ -113,9 +123,27 @@ function classifyReason(probe: StreamReachProbeResult): StreamReachReason {
       // default to the more common expiry case rather than fabricating
       // companion loss.
       return probe.probeCode === "companion_unavailable" ? "companion_unavailable" : "session_expired";
+    case 503:
+      // The reference server raises StreamingCompanionUnavailableError as 503
+      // ("a browser-control interaction is current, but no ready browser
+      // surface is registered for this run") with body code
+      // `streaming_companion_unavailable`. That fell through to `unknown`,
+      // whose copy read as a network/proxy fault and sent the owner looking
+      // in the wrong place while the server had in fact answered with a
+      // specific, actionable reason. Verified 2026-08-18: the single
+      // STREAMING_COMPANION_UNAVAILABLE occurrence in the production log is
+      // recorded with statusCode 503. Other 503 codes (e.g. the managed n.eko
+      // window-settle probe's `managed_surface_window_settle_unavailable`)
+      // are a different, currently-unclassified condition — only match the
+      // companion-unavailable body code here rather than collapsing every
+      // 503 into this one reason.
+      return probe.probeCode === "streaming_companion_unavailable" ? "companion_unavailable" : "unknown";
     default:
-      // 5xx, proxy errors, or any other answered status: real but unclassified.
-      // Preserve the prior generic give-up rather than guessing.
+      // 5xx, proxy errors, or any other answered status: real but
+      // unclassified. Keep the reason `unknown` (the spine vocabulary stays
+      // closed), but the message includes the status code so the next
+      // unmapped status is at least visible instead of hiding behind
+      // identical generic copy the way this one did.
       return "unknown";
   }
 }
