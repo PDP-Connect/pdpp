@@ -3,12 +3,12 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/layout/concept-page.tsx";
-import { PdppRail } from "@/components/pdpp-concept/layout/rail.tsx";
-import { PdppConceptDocHeader } from "@/components/pdpp-concept/sections/concept-doc-header.tsx";
-import { PdppConceptSection } from "@/components/pdpp-concept/sections/concept-section.tsx";
-import { PdppRuledList, PdppRuledListItem } from "@/components/pdpp-concept/sections/ruled-list.tsx";
-import { Text } from "@/components/pdpp-concept/text.tsx";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
+import { PdppRail } from "@/components/layout/rail.tsx";
+import { PdppConceptDocHeader } from "@/components/sections/concept-doc-header.tsx";
+import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
+import { PdppRuledList, PdppRuledListItem } from "@/components/sections/ruled-list.tsx";
+import { Text } from "@/components/typography/text.tsx";
 import { docsRoute, maintainersRoute } from "@/lib/spec-nav-slugs.ts";
 
 // The unlisted index for everything that is NOT the specification.

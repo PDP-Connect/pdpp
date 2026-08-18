@@ -32,7 +32,7 @@
  *
  * Editorial values differ from brand's product values by intent, not by
  * accident: fluid clamp() rungs and a looser 1.65 body leading. Concept-only
- * Text packaging (deck, stamp chip, callout) lives in pdpp-concept/text-variants.ts.
+ * Text packaging (deck, stamp chip, callout) lives in typography/text-variants.ts.
  *
  * FLUID CLAMPS (layout @theme + type rungs below): linear 375px→1240px viewport,
  * 16px root — clamp(min, calc(intercept_rem + slope_vw * 1vw), max) with

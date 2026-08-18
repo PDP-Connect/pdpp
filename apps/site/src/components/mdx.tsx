@@ -7,7 +7,7 @@ import defaultMdxComponents from "fumadocs-ui/mdx";
 import type { MDXComponents } from "mdx/types";
 import type { ComponentPropsWithoutRef } from "react";
 import { Mermaid } from "@/components/mdx/mermaid.tsx";
-import { Text } from "@/components/pdpp-concept/text.tsx";
+import { Text } from "@/components/typography/text.tsx";
 import { cn } from "@/lib/utils.ts";
 
 type HeadingProps = ComponentPropsWithoutRef<"h1">;

@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Link from "next/link";
-import { Button } from "@/components/pdpp-concept/elements/button.tsx";
-import { PdppConceptDoc, PdppConceptFrontPage } from "@/components/pdpp-concept/layout/concept-page.tsx";
-import { PdppConceptShell } from "@/components/pdpp-concept/layout/concept-shell.tsx";
+import { Button } from "@/components/elements/button.tsx";
+import { PdppConceptDoc, PdppConceptFrontPage } from "@/components/layout/concept-page.tsx";
+import { PdppConceptShell } from "@/components/layout/concept-shell.tsx";
 import "@/styles/surfaces/concept/index.css";
 
 // Unmatched routes sit outside the concept route group, so the root 404 owns

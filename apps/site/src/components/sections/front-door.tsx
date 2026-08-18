@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Link from "next/link";
-import { Button } from "@/components/pdpp-concept/elements/button.tsx";
-import { WordmarkIcon } from "@/components/pdpp-concept/elements/icons.tsx";
-import { Text } from "@/components/pdpp-concept/text.tsx";
+import { Button } from "@/components/elements/button.tsx";
+import { WordmarkIcon } from "@/components/elements/icons.tsx";
+import { Text } from "@/components/typography/text.tsx";
+import { SPEC_STATUS_STAMP } from "@/lib/spec-status.ts";
 import { cn } from "@/lib/utils.ts";
-import { SPEC_STATUS_STAMP } from "../spec-status.ts";
 import { PdppHeroWaterStill } from "./hero-water-still.tsx";
 
 export function PdppFrontDoor() {

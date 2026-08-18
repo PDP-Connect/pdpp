@@ -6,8 +6,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { GITHUB_REPO_URL, repoBlobUrl, SITE_LICENSES } from "../src/components/pdpp-concept/site-facts.ts";
-import { SPEC_EDITORS, SPEC_STATUS } from "../src/components/pdpp-concept/spec-status.ts";
+import { GITHUB_REPO_URL, repoBlobUrl, SITE_LICENSES } from "../src/lib/site-facts.ts";
+import { SPEC_EDITORS, SPEC_STATUS } from "../src/lib/spec-status.ts";
 
 // The owner's standing rule for the site pass: anything that can go stale but is
 // tracked in the repo must be wired so it cannot. These tests are the "cannot".
@@ -100,7 +100,7 @@ test("no site source file hand-types the GitHub repo URL outside site-facts.ts",
     "src/components/docs/source-link.tsx",
     "src/app/specification/[[...slug]]/page.tsx",
     "src/app/(concept)/self-host/coverage/data.ts",
-    "src/components/pdpp-concept/layout/footer.tsx",
+    "src/components/layout/footer.tsx",
   ];
 
   for (const relativePath of filesThatMustDeriveIt) {

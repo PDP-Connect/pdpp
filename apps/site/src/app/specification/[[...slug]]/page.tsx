@@ -9,9 +9,9 @@ import { notFound } from "next/navigation";
 import type { ComponentPropsWithoutRef } from "react";
 import { LLMCopyButton, ViewOptions } from "@/components/ai/page-actions.tsx";
 import { getMDXComponents } from "@/components/mdx.tsx";
-import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
-import { Text } from "@/components/pdpp-concept/text.tsx";
+import { Text } from "@/components/typography/text.tsx";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
+import { repoBlobUrl } from "@/lib/site-facts.ts";
 import { MAINTAINER_DOC_SLUGS } from "@/lib/spec-nav-slugs.ts";
 
 interface DocsPageProps {

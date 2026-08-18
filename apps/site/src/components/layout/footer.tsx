@@ -4,11 +4,11 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { isContributorSurfaceEnabled } from "@/lib/contributor-surface.ts";
+import { DISCORD_INVITE_URL, GITHUB_REPO_URL, SITE_LICENSES } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 import { ColorSchemeMenu } from "../elements/color-scheme-menu.tsx";
 import { DiscordIcon, GithubIcon, WordmarkIcon } from "../elements/icons.tsx";
-import { DISCORD_INVITE_URL, GITHUB_REPO_URL, SITE_LICENSES } from "../site-facts.ts";
-import { Text } from "../text.tsx";
+import { Text } from "../typography/text.tsx";
 
 const GITHUB_URL_SCHEME_RE = /^https?:\/\//;
 const githubDisplayText = GITHUB_REPO_URL.replace(GITHUB_URL_SCHEME_RE, "");

@@ -3,15 +3,15 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { GithubIcon } from "@/components/pdpp-concept/elements/icons.tsx";
-import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/layout/concept-page.tsx";
-import { PdppRail } from "@/components/pdpp-concept/layout/rail.tsx";
-import { PdppCommandBuilder } from "@/components/pdpp-concept/sections/command-tabs.tsx";
-import { PdppConceptDocHeader } from "@/components/pdpp-concept/sections/concept-doc-header.tsx";
-import { PdppConceptSection } from "@/components/pdpp-concept/sections/concept-section.tsx";
-import { PdppRuledList, PdppRuledListItem } from "@/components/pdpp-concept/sections/ruled-list.tsx";
-import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
-import { Text } from "@/components/pdpp-concept/text.tsx";
+import { GithubIcon } from "@/components/elements/icons.tsx";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
+import { PdppRail } from "@/components/layout/rail.tsx";
+import { PdppCommandBuilder } from "@/components/sections/command-tabs.tsx";
+import { PdppConceptDocHeader } from "@/components/sections/concept-doc-header.tsx";
+import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
+import { PdppRuledList, PdppRuledListItem } from "@/components/sections/ruled-list.tsx";
+import { Text } from "@/components/typography/text.tsx";
+import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/lib/site-facts.ts";
 
 const SELF_HOST_TOC = [
   { href: "#run", label: "Run it" },

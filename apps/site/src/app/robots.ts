@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { MetadataRoute } from "next";
-import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
+import { SITE_ORIGIN } from "@/lib/site-facts.ts";
 import { MAINTAINER_DOC_SLUGS, maintainersRoute } from "@/lib/spec-nav-slugs.ts";
 
 // SEO/GEO standard MUST #1.5: robots.txt, page-level robots directives, and

@@ -24,7 +24,7 @@ Full guide: [docs/design-system/styling-in-apps.md](../../docs/design-system/sty
   colors + sectionIndex. **token owns metrics · CVA owns voice · packaging does not re-emit the rung.** Size ⊥
   color. Never put a palette word (`ink`, `teal`, `paper`) in the shared table. Full rules + anti-patterns:
   [styling-in-apps.md § Text ownership](../../docs/design-system/styling-in-apps.md#text-ownership-read-this-before-editing-variants).
-  Ladder enforcement test lives in `@pdpp/brand-react` only — do not duplicate in `pdpp-concept/text.test.ts`:
+  Ladder enforcement test lives in `@pdpp/brand-react` only — do not duplicate in `typography/text.test.ts`:
   [§ Enforcement (tests)](../../docs/design-system/styling-in-apps.md#enforcement-tests).
 - **Type rungs are declared once, in brand:** `eyebrow` · `small` · `body` · `lede` · `heading` · `title` ·
   `display` · `hero` (`packages/pdpp-brand/styles/tokens/semantic.css`, which also documents the five ladder

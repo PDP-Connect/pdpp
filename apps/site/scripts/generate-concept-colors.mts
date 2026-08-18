@@ -18,7 +18,7 @@ const outputPath = fileURLToPath(
   new URL("../src/styles/surfaces/concept/tokens/generated-schemes.css", import.meta.url)
 );
 const schemeNamesOutputPath = fileURLToPath(
-  new URL("../src/components/pdpp-concept/generated-color-scheme-names.ts", import.meta.url)
+  new URL("../src/generated/generated-color-scheme-names.ts", import.meta.url)
 );
 
 function renderDeclarations(tokens: Record<ConceptColorTokenName, string>): string {

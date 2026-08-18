@@ -3,19 +3,14 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { DiscordIcon, GithubIcon } from "@/components/pdpp-concept/elements/icons.tsx";
-import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/layout/concept-page.tsx";
-import { PdppRail } from "@/components/pdpp-concept/layout/rail.tsx";
-import { PdppConceptDocHeader } from "@/components/pdpp-concept/sections/concept-doc-header.tsx";
-import { PdppConceptSection } from "@/components/pdpp-concept/sections/concept-section.tsx";
-import {
-  DISCORD_INVITE_URL,
-  GITHUB_MAINTAINERS_URL,
-  GITHUB_NEW_ISSUE_URL,
-  GITHUB_REPO_URL,
-} from "@/components/pdpp-concept/site-facts.ts";
-import { SPEC_STATUS } from "@/components/pdpp-concept/spec-status.ts";
-import { Text } from "@/components/pdpp-concept/text.tsx";
+import { DiscordIcon, GithubIcon } from "@/components/elements/icons.tsx";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
+import { PdppRail } from "@/components/layout/rail.tsx";
+import { PdppConceptDocHeader } from "@/components/sections/concept-doc-header.tsx";
+import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
+import { Text } from "@/components/typography/text.tsx";
+import { DISCORD_INVITE_URL, GITHUB_MAINTAINERS_URL, GITHUB_NEW_ISSUE_URL, GITHUB_REPO_URL } from "@/lib/site-facts.ts";
+import { SPEC_STATUS } from "@/lib/spec-status.ts";
 
 const PARTICIPATE_TOC = [
   { href: "#get-involved", label: "Get involved" },

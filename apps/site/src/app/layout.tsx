@@ -4,8 +4,8 @@
 import { brandMono, brandSans, brandSerif } from "@pdpp/brand/fonts";
 import { LAUNCH_COLORS } from "@pdpp/brand/launch-colors";
 import type { Metadata } from "next";
-import { SITE_DESCRIPTION, SITE_ORIGIN, SITE_TITLE } from "@/components/pdpp-concept/site-facts.ts";
 import { SiteProviders } from "@/components/site/site-providers.tsx";
+import { SITE_DESCRIPTION, SITE_ORIGIN, SITE_TITLE } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 import "@/styles/site.css";
 
