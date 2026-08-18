@@ -2809,13 +2809,24 @@ function mapCoverageAxis(
  * policy; the connection-health projection then refuses to project
  * healthy even though the axis name is `unsupported`/`unavailable`/
  * `deferred`/`inventory_only`.
+ *
+ * `unknownStaleCollectorBuild` is `true` only when the axis is `unknown`
+ * SPECIFICALLY because `localCoverage.unreliableReason === "missing_stores"`
+ * (`deriveLocalCoverageAxis`, `describeLocalCoverageUnreliableReason`): the
+ * device's committed coverage snapshot structurally cannot contain a store
+ * the current descriptor authority requires, because that collector build
+ * predates the commit that taught the connector to report it at all (see
+ * `4d9e6b7e4`/`67c8730f3`). This is a concrete, owner-actionable cause
+ * ("update the collector"), distinct from ordinary evidence-not-yet-observed
+ * `unknown` — never fabricates a `complete`/non-`unknown` axis, purely a
+ * label the caller may use to give a more specific message.
  */
 function buildCoverageEvidence(
   lastRun: ConnectorRunSummary | null,
   pendingDetailGaps: readonly PendingDetailGapSummary[],
   manifestStreams: readonly ManifestStream[],
   localCoverage: LocalCoverageDiagnosticAxis | null = null
-): { axis: CoverageAxis; requiredButAccepted: boolean } {
+): { axis: CoverageAxis; requiredButAccepted: boolean; unknownStaleCollectorBuild: boolean } {
   const requiredButAccepted = pickRequiredAcceptedCoverage(manifestStreams) !== null;
   // Run-derived coverage is authoritative whenever a terminal spine run exists
   // (scheduler-managed connections) or any gap/contradiction evidence is
@@ -2827,9 +2838,11 @@ function buildCoverageEvidence(
   // collector completeness: an empty/drained outbox is NOT proof of coverage.
   const runAxis = mapCoverageAxis(lastRun, pendingDetailGaps, manifestStreams);
   if (runAxis === "unknown" && localCoverage !== null && localCoverage.axis !== "unknown") {
-    return { axis: localCoverage.axis, requiredButAccepted };
+    return { axis: localCoverage.axis, requiredButAccepted, unknownStaleCollectorBuild: false };
   }
-  return { axis: runAxis, requiredButAccepted };
+  const unknownStaleCollectorBuild =
+    runAxis === "unknown" && localCoverage !== null && localCoverage.unreliableReason === "missing_stores";
+  return { axis: runAxis, requiredButAccepted, unknownStaleCollectorBuild };
 }
 
 const DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER = ["terminal_gap", "retryable_gap", "gaps", "partial"] as const;
@@ -3073,7 +3086,12 @@ export function refineConnectionHealthWithCollectionReport(
 }
 
 function applyCoverageOverride(
-  resolvedCoverage: { axis: CoverageAxis; requiredButAccepted: boolean; unfillableAccounted?: boolean },
+  resolvedCoverage: {
+    axis: CoverageAxis;
+    requiredButAccepted: boolean;
+    unfillableAccounted?: boolean;
+    unknownStaleCollectorBuild: boolean;
+  },
   coverageOverride:
     | {
         readonly axis: CoverageAxis | undefined;
@@ -3082,7 +3100,12 @@ function applyCoverageOverride(
       }
     | null
     | undefined
-): { axis: CoverageAxis; requiredButAccepted: boolean; unfillableAccounted?: boolean } {
+): {
+  axis: CoverageAxis;
+  requiredButAccepted: boolean;
+  unfillableAccounted?: boolean;
+  unknownStaleCollectorBuild: boolean;
+} {
   if (!coverageOverride || coverageOverride.axis === undefined) {
     return resolvedCoverage;
   }
@@ -3096,6 +3119,14 @@ function applyCoverageOverride(
     // PRE-override axis/report pairing. Absent/`false` on the override always
     // means `false` here.
     unfillableAccounted: coverageOverride.unfillableAccounted === true,
+    // A collection-report override supplies its OWN, more specific axis
+    // (`refineConnectionHealthWithCollectionReport`'s required-unknown
+    // refusal) — it never re-derives `localCoverage.unreliableReason`, so it
+    // must not carry forward a stale-collector label that described the
+    // PRE-override axis. Only relevant when the override's axis is itself
+    // `unknown`; every other axis already ignores this field.
+    unknownStaleCollectorBuild:
+      coverageOverride.axis === "unknown" ? false : resolvedCoverage.unknownStaleCollectorBuild,
   };
 }
 
