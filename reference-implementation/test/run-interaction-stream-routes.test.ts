@@ -1829,6 +1829,83 @@ test("viewer handoff preserves the direct-CDP target for a replacement attach", 
   );
 });
 
+test("presentation-bearer expiry preserves the direct-CDP target for the in-image managed browser", async () => {
+  // Regression test for the interactive-login-connector outage: the
+  // connector's in-image Chromium (no n.eko) registers a direct-CDP target
+  // once via `registerTarget: true` (mirrors the connector's real
+  // `manualAction()` call before it emits the manual_action interaction).
+  // The presentation session's own bearer TTL is far shorter than the
+  // interaction's `timeout_seconds`, so the owner routinely takes longer to
+  // view/act than one bearer lifetime. Expiry of that bearer must not evict
+  // the registry record the still-pending interaction depends on.
+  let forceUnregisterCount = 0;
+  const streamingLogger = {
+    info(record: unknown) {
+      const msg = record && typeof record === "object" ? (record as { msg?: unknown }).msg : undefined;
+      if (msg === "run_target_force_unregistered") {
+        forceUnregisterCount += 1;
+      }
+    },
+  };
+  const clock = createInjectedClock();
+  const timers = createInjectedTimers(clock);
+  const streamingSessionStore = createStreamingSessionStore({ now: clock.now, ttlMs: 100 });
+  await withHarness(
+    {
+      registerTarget: true,
+      streamingClearTimeout: timers.clearTimeout,
+      streamingLogger,
+      streamingNow: clock.now,
+      streamingSessionStore,
+      streamingSetTimeout: timers.setTimeout,
+      timeoutSeconds: 60,
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mintUrl = `${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`;
+
+      const first = await fetchJson(mintUrl, {
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(first.status, 201, "first mint against the registered direct-CDP target must succeed");
+      const firstBody = first.body as MintBody;
+
+      const abort = new AbortController();
+      const stream = await fetch(`${asUrl}${firstBody.viewer_path}`, { signal: abort.signal });
+      assert.equal(stream.status, 200);
+
+      // Advance past the bearer TTL and let the scheduled expiry timer fire.
+      // The interaction itself is still pending (owner hasn't responded) —
+      // only the viewer's presentation bearer has expired.
+      clock.advance(101);
+      await timers.runDue();
+      abort.abort();
+
+      assert.equal(
+        forceUnregisterCount,
+        0,
+        "a presentation bearer expiring must not force-unregister the still-pending interaction's direct-CDP target"
+      );
+
+      const second = await fetchJson(mintUrl, {
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(
+        second.status,
+        201,
+        `re-mint after bearer expiry must still find the direct-CDP target ready, got: ${JSON.stringify(second.body)}`
+      );
+
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    }
+  );
+});
+
 test("SSE attach delivers an attached event and dispatches frames", async () => {
   await withHarness({}, async ({ asUrl, spotifyManifest, companions }) => {
     const started = await startRun(asUrl, spotifyManifest.connector_id);
