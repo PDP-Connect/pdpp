@@ -7,6 +7,7 @@ import { PdppConceptDocHeader } from "@/components/pdpp-concept/concept-doc-head
 import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
 import { PdppConceptSection } from "@/components/pdpp-concept/concept-section.tsx";
 import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
+import { PdppRuledList, PdppRuledListItem } from "@/components/pdpp-concept/ruled-list.tsx";
 import { Text } from "@/components/pdpp-concept/text.tsx";
 import { docsRoute, maintainersRoute } from "@/lib/spec-nav-slugs.ts";
 
@@ -40,9 +41,9 @@ const MAINTAINERS_TOC = [
 ] as const;
 
 interface DocEntry {
+  readonly body: string;
   readonly slug: string;
   readonly title: string;
-  readonly body: string;
 }
 
 // Grouped by the question a maintainer arrives with — why is it this way, what
@@ -101,23 +102,22 @@ const OPEN_DOCS: readonly DocEntry[] = [
   },
 ];
 
-// Reuses .pdpp-features (self-host's "What you get") rather than adding a
-// class: same shape — a ruled list of title-then-description rows — and
-// components.css states the intention to shrink, not grow, its BEM register.
+// Reuses PdppRuledList (self-host's "What you get") rather than a one-off
+// list: same shape — a ruled list of title-then-description rows.
 function DocList({ docs }: { docs: readonly DocEntry[] }) {
   return (
-    <ul className="pdpp-features">
+    <PdppRuledList>
       {docs.map((doc) => (
-        <li key={doc.slug}>
+        <PdppRuledListItem key={doc.slug}>
           <Link className="link-prose" href={`${docsRoute}/${doc.slug}`}>
             {doc.title}
           </Link>{" "}
           <Text as="span" color="foreground" size="body">
             {doc.body}
           </Text>
-        </li>
+        </PdppRuledListItem>
       ))}
-    </ul>
+    </PdppRuledList>
   );
 }
 

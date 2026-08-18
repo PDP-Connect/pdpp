@@ -9,6 +9,7 @@ import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/conce
 import { PdppConceptSection } from "@/components/pdpp-concept/concept-section.tsx";
 import { GithubIcon } from "@/components/pdpp-concept/icons.tsx";
 import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
+import { PdppRuledList, PdppRuledListItem } from "@/components/pdpp-concept/ruled-list.tsx";
 import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
 import { Text } from "@/components/pdpp-concept/text.tsx";
 
@@ -113,18 +114,18 @@ export default function ReferencePage() {
         </PdppConceptSection>
 
         <PdppConceptSection id="features" sectionIndex="02" title="What you get">
-          <ul className="pdpp-features">
+          <PdppRuledList>
             {features.map((feature) => (
-              <li key={feature.title}>
+              <PdppRuledListItem key={feature.title}>
                 <Text as="span" color="foreground" size="body" weight="semi">
                   {feature.title}.
                 </Text>{" "}
                 <Text as="span" color="foreground" size="body">
                   {feature.body}
                 </Text>
-              </li>
+              </PdppRuledListItem>
             ))}
-          </ul>
+          </PdppRuledList>
           <Text size="callout">
             Data that only lives on your machine, like Claude Code or Codex history, is ingested by the{" "}
             <a href={GITHUB_LOCAL_COLLECTOR} rel="noopener noreferrer" target="_blank">

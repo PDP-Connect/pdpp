@@ -22,7 +22,7 @@
  *   REMAINING BEM here — delete a block only when no call site references it:
  *          .pdpp-cmd* (command-tabs.tsx / self-host),
  *          .pdpp-channels, .pdpp-ruled-list, .pdpp-updates (participate),
- *          .pdpp-features, .pdpp-impl-table (self-host),
+ *          .pdpp-impl-table (self-host),
  *          .pdpp-terminal (terminal.tsx),
  *          .pdpp-doc scoping + base h2/h3/p (raw markdown / legacy prose),
  *          .pdpp-note (MDX remark asides — spec + concept),
@@ -41,7 +41,7 @@
  *   From this register spec still uses: ::selection, .pdpp-note (MDX asides;
  *   specification.css overrides in-body), data-selection-ground hook,
  *   .pdpp-eyebrow / .pdpp-caption. Spec does NOT use concept-page BEM
- *   (.pdpp-cmd, .pdpp-channels, .pdpp-features, .pdpp-impl-table, …).
+ *   (.pdpp-cmd, .pdpp-channels, .pdpp-impl-table, …).
  */
 
 /* ─── Document surface ────────────────────────────────────────────────────
@@ -293,7 +293,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   padding: 20px 0;
   border-bottom: 1px solid var(--border);
 }
-/* Separator, not a terminator — see .pdpp-features li:last-child. */
+/* Separator, not a terminator — see PdppRuledListItem (ruled-list.tsx) for the rationale. */
 .pdpp-ruled-list__item:last-child {
   border-bottom: none;
 }
@@ -432,7 +432,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 .pdpp-updates li:first-child {
   border-top: 1px solid var(--border-subtle);
 }
-/* Separator, not a terminator — see .pdpp-features li:last-child. */
+/* Separator, not a terminator — see PdppRuledListItem (ruled-list.tsx) for the rationale. */
 .pdpp-updates li:last-child {
   border-bottom: none;
 }
@@ -566,34 +566,6 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   );
 }
 
-/* ─── Feature list (Self-Host) ───────────────────────────────────────────── */
-.pdpp-features {
-  padding: 0;
-  margin: 24px 0 0;
-  list-style: none;
-  border-top: 1px solid var(--border-subtle);
-}
-.pdpp-features li {
-  padding: 14px 0;
-  color: var(--pdpp-concept-ink);
-  border-bottom: 1px solid var(--border-subtle);
-}
-/* The list opens on its own border-top, so each item's border-bottom is a
-   SEPARATOR between items. On the last item there is nothing below to
-   separate, and the section that follows draws its own rule — two lines a few
-   pixels apart. Owner-reported 2026-08-05: "within them, we should not have a
-   rule at the end of the last item." */
-.pdpp-features li:last-child {
-  border-bottom: none;
-}
-
-.pdpp-features strong {
-  margin-right: 10px;
-  font-family: var(--font-sans);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--pdpp-concept-ink);
-}
 .pdpp-config-table code {
   font-size: 13px;
 }
