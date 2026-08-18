@@ -51,7 +51,7 @@ function readViewerSource(): Promise<string> {
 test("trusted-touch keyboard focus reaches the viewer session synchronously", async () => {
   const src = await readViewerSource();
   const tapStart = src.indexOf("const handleMobileKeyboardPointer =");
-  const tapEnd = src.indexOf("const remoteTypeFor =", tapStart);
+  const tapEnd = src.indexOf("const dispatchPointerIntent =", tapStart);
   const trustedTap = src.slice(tapStart, tapEnd);
 
   assert.notEqual(tapStart, -1, "the production trusted-touch handler is present");
