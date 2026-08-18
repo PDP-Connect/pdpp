@@ -3614,12 +3614,16 @@ async function runCursorWalk(args: {
   let anyFoldIncomplete = false;
 
   for (;;) {
-    // Strictly deadline-gated, including the first page: `maxDurationMs` is a
-    // genuine bound on TOTAL wall-clock work, so no page — the most expensive
-    // unit here (discovery + fold + repair over `pageSize` connections) — may
-    // BEGIN after expiry. The walk's guarantee that clean rows still converge
-    // comes from running BEFORE any acceleration under the round's one
-    // deadline (see `runBoundedSummaryEvidenceSweep`), never from starting late.
+    // Strictly deadline-gated, including the first page: `maxDurationMs` is
+    // a genuine PASS ADMISSION deadline (design review P1-2 — not a
+    // wall-clock bound on this loop's total running time; see
+    // `runBoundedSummaryEvidenceSweep`'s doc for the exact two-contract
+    // framing), so no page — the most expensive unit here (discovery + fold
+    // + repair over `pageSize` connections) — may BEGIN after expiry. A page
+    // already admitted still runs to completion uninterrupted. The walk's
+    // guarantee that clean rows still converge comes from running BEFORE
+    // any acceleration under the round's one deadline (see
+    // `runBoundedSummaryEvidenceSweep`), never from starting late.
     if (pages >= maxPages || sweepNow() >= deadline) {
       break;
     }
@@ -4060,14 +4064,51 @@ export interface BoundedSweepResult {
  * or a page whose fold left terminal history unfolded, would look
  * indistinguishable from truly orphaned/current ones).
  *
- * `options.maxDurationMs` creates one cooperative absolute deadline for the
- * complete sweep and every started page passes that same deadline to its
- * repair and fold units. A unit that already started may finish, but no later
- * repair or fold batch starts after expiry. Each bounded fold has a finite
- * event cap (the caller's `maxEventsPerFold` or the local default), and a
- * cold page has a one-page missing-evidence cap. `options.maxPages`
- * additionally caps the number of pages processed; `options.pageSize`
- * controls how many connections each page covers.
+ * NAMING (design review P1-2, 2026-08-18): despite its name,
+ * `options.maxDurationMs` is NOT a wall-clock duration bound on this
+ * function's total running time, a maximum database-occupancy limit, a
+ * maximum I/O limit, or even a strict admission deadline in the sense of
+ * "no work happens after this instant" — a caller must not read it as
+ * "this call returns within maxDurationMs." It creates one cooperative PASS
+ * ADMISSION DEADLINE, checked only BETWEEN units (never inside one), so no
+ * NEW repair/fold/discovery unit begins once it has passed, but a unit
+ * already admitted always runs to completion uninterrupted — see the
+ * fourth-verdict incident quoted above (a 1ms budget, one connection, still
+ * folded all 2,001 events) and the live 2026-08-18 incident
+ * (`repair_duration_ms: 5322` against a 2000ms pass budget, `incomplete:
+ * true`, 5 candidates skipped — the overrun was not resource contention
+ * alone, the bound genuinely was not enforced mid-unit).
+ *
+ * Two SEPARATE contracts now exist, matching the reviewer's required
+ * correction:
+ *   1. PASS SOFT DEADLINE (this option): no additional ordinary
+ *      discovery/repair/fold unit is admitted once it has passed. Every
+ *      unit boundary in this file and connector-summary-evidence-engine.ts
+ *      already honored this.
+ *   2. PER-UNIT HARD BOUND (new, design review P1-2): each admitted
+ *      Postgres discovery/repair read query now carries its own
+ *      transaction-local `SET LOCAL statement_timeout`, derived from the
+ *      caller's remaining pass allowance
+ *      (`postgresDiscoveryQuery`/`postgresRepairReadQuery` in
+ *      connector-summary-evidence-engine.ts; `postgresQueryBounded` in
+ *      postgres-storage.ts) — so a single slow query can no longer, on its
+ *      own, silently consume the whole pass deadline the way the
+ *      2026-08-18 incident's canonical-count aggregate did. The fold's own
+ *      `maxEvents` row cap is a second, pre-existing per-unit hard bound
+ *      (finite regardless of clock time). SQLite has NO per-unit hard
+ *      bound — `better-sqlite3` is synchronous and exposes no
+ *      interrupt/progress-handler hook on its public API, so a slow SQLite
+ *      discovery/repair query cannot be cancelled once started. This is a
+ *      disclosed, unclosed gap on SQLite: every hot-path SQLite query here
+ *      is index-bounded (keyset `LIMIT`, or an indexed `MAX`/`GROUP BY`
+ *      aggregate — see the P1-2 file:line audit), so it is expected to be
+ *      fast in practice, but nothing in this codebase can force-cancel one
+ *      that isn't.
+ *
+ * Each bounded fold has a finite event cap (the caller's `maxEventsPerFold`
+ * or the local default), and a cold page has a one-page missing-evidence
+ * cap. `options.maxPages` additionally caps the number of pages processed;
+ * `options.pageSize` controls how many connections each page covers.
  *
  * `options.firstTranche` (2026-08-12) alternates which tranche gets the
  * round's genuine first opportunity — the FULL, undivided `maxDurationMs`
