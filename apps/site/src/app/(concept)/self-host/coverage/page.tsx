@@ -4,6 +4,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import type React from "react";
+import { Text } from "@/components/pdpp-concept/text.tsx";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { cn } from "@/lib/utils.ts";
 import { type CoverageState, type CoverageStatus, coverageRows, coverageSummary } from "./data.ts";
@@ -53,12 +54,16 @@ export default function ReferenceCoveragePage() {
       <div className="relative mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:py-14">
         <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_24rem]">
           <div>
-            <div className="pdpp-eyebrow text-muted-foreground">Reference implementation / Coverage honesty</div>
-            <h1 className="pdpp-display mt-3 max-w-4xl text-foreground">Coverage matrix</h1>
-            <p className="pdpp-body-lg mt-5 max-w-3xl text-muted-foreground">
+            <Text color="muted" size="eyebrow">
+              Reference implementation / Coverage honesty
+            </Text>
+            <Text as="h1" className="mt-3 max-w-4xl" size="display">
+              Coverage matrix
+            </Text>
+            <Text className="mt-5 max-w-3xl" color="muted" size="lede">
               This matrix is a manually seeded public artifact. It distinguishes protocol specification, docs,
               executable reference behavior, tests, demonstration surfaces, and intentionally deferred scope.
-            </p>
+            </Text>
             <div className="mt-7 flex flex-wrap gap-2.5">
               <Link className={buttonVariants({ variant: "default", size: "lg" })} href="/self-host">
                 Reference explainer
@@ -73,7 +78,13 @@ export default function ReferenceCoveragePage() {
           </div>
 
           <aside className="rounded-2xl border bg-card/80 p-4 shadow-sm backdrop-blur">
-            <div className="pdpp-eyebrow text-muted-foreground">Static check</div>
+            <Text color="muted" size="eyebrow">
+              Static check
+            </Text>
+            {/* pdpp-caption (15px italic serif) has no rung in the Text ladder — the
+                closest rungs (eyebrow/small at 14px, body at 15px/1.6) would silently
+                change the size or line-height. Left as BEM pending a token decision;
+                see docs/design-system/styling-in-apps.md "New type size?". */}
             <p className="pdpp-caption mt-2 text-muted-foreground">
               The data module validates evidence paths at import time. A row marked implemented, tested, or demonstrated
               must carry supporting links to docs, tests, routes, or source artifacts.
@@ -81,8 +92,10 @@ export default function ReferenceCoveragePage() {
             <div className="mt-5 grid grid-cols-2 gap-2">
               {summaryItems.map((item) => (
                 <div className="rounded-xl border bg-background/70 p-3" key={item.label}>
-                  <div className="pdpp-caption text-muted-foreground">{item.label}</div>
-                  <div className="pdpp-title mt-1 text-foreground">{item.value}</div>
+                  <p className="pdpp-caption text-muted-foreground">{item.label}</p>
+                  <Text as="div" className="mt-1 leading-[1.4]" size="body" weight="semi">
+                    {item.value}
+                  </Text>
                 </div>
               ))}
             </div>
@@ -109,7 +122,9 @@ export default function ReferenceCoveragePage() {
                 {coverageRows.map((row) => (
                   <tr className="border-b last:border-b-0" key={row.concept}>
                     <td className="max-w-[18rem] p-4 align-top">
-                      <div className="pdpp-title text-foreground">{row.concept}</div>
+                      <Text as="div" className="leading-[1.4]" size="body" weight="semi">
+                        {row.concept}
+                      </Text>
                       <p className="pdpp-caption mt-2 text-muted-foreground">{row.notes}</p>
                     </td>
                     <td className="p-4 align-top">
