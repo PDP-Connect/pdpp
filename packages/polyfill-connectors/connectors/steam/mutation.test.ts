@@ -42,7 +42,6 @@ function makeContext(streams: readonly string[]): {
 
 const missingArrayCases = [
   { body: { response: { game_count: 3 } }, stream: "owned_games" },
-  { body: { response: { total_count: 3 } }, stream: "recently_played_games" },
   { body: { friendslist: {} }, stream: "friends" },
 ] as const;
 
@@ -64,6 +63,48 @@ for (const { body, stream } of missingArrayCases) {
     );
   });
 }
+
+test("steam: recently_played_games with games entirely absent is a well-formed empty answer, not malformed", async () => {
+  // GetRecentlyPlayedGames documented shape when the account played nothing
+  // in the trailing two-week window: {"response":{"total_count":0}}, no
+  // `games` key at all. This must succeed with zero records, not throw
+  // steam_response_malformed (regression for 3ccca8000).
+  globalThis.fetch = async () => jsonResponse({ response: { total_count: 0 } });
+  const { ctx, messages } = makeContext(["recently_played_games"]);
+
+  await steamCollect(ctx);
+  assert.equal(
+    messages.filter((message) => message.type === "STATE" && message.stream === "recently_played_games").length,
+    1,
+    "an absent list must still advance its cursor as a real empty snapshot"
+  );
+  const coverage = messages.find(
+    (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      message.type === "DETAIL_COVERAGE" && message.stream === "recently_played_games"
+  );
+  assert.ok(coverage);
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+});
+
+test("steam: recently_played_games with games present but not an array is still malformed", async () => {
+  // A present-but-wrong-shaped `games` field is a genuine protocol violation
+  // (unlike an absent field), and must still fail before state or coverage.
+  globalThis.fetch = async () => jsonResponse({ response: { total_count: 3, games: "not-an-array" } });
+  const { ctx, messages } = makeContext(["recently_played_games"]);
+
+  await assert.rejects(() => steamCollect(ctx), /steam_response_malformed/);
+  assert.equal(
+    messages.some((message) => message.type === "STATE" && message.stream === "recently_played_games"),
+    false,
+    "a malformed list must not advance its cursor"
+  );
+  assert.equal(
+    messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "recently_played_games"),
+    false,
+    "a malformed list must not prove an empty boundary"
+  );
+});
 
 test("steam: an explicit empty games array remains valid zero proof", async () => {
   globalThis.fetch = async () => jsonResponse({ response: { games: [] } });

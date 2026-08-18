@@ -423,14 +423,14 @@ test("signal SKIP_RESULTs the attachments stream when sigtop exports nothing", a
   }
 });
 
-test("signal.json declares tier=development and no consent_time_field claim beyond messages.sent_at", async () => {
+test("signal.json declares tier=preview and no consent_time_field claim beyond messages.sent_at", async () => {
   const { readFile } = await import("node:fs/promises");
   const manifestPath = join(PACKAGE_ROOT, "manifests", "signal.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
     capabilities?: { public_listing?: { tier?: string } };
     streams: Array<{ name: string; consent_time_field?: string }>;
   };
-  assert.equal(manifest.capabilities?.public_listing?.tier, "development");
+  assert.equal(manifest.capabilities?.public_listing?.tier, "preview");
   const messages = manifest.streams.find((s) => s.name === "messages");
   assert.equal(messages?.consent_time_field, "sent_at");
 });
