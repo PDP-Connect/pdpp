@@ -1,6 +1,6 @@
 # Vendored cross-repo dependency tarballs (transitional)
 
-Built via `npm pack` from PDP-Connect/data-connect @ 48c8364c4627ee8d923f90c98de050eeaff236b3
+Built via `npm pack` from PDP-Connect/data-connect @ 525fffa6f7756b785700219afcaaacc4492a0819
 (the corrected Move R head), from inside that repo's workspace so sibling dependencies
 resolve during the prepack build. Same mechanism, same rationale, and same removal trigger
 as data-connectors PR #36's vendor/ directory: pnpm/npm git+path dependencies prepare the
