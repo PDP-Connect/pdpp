@@ -3607,6 +3607,28 @@ interface LocalCoverageDiagnosticAxis {
   readonly rows?: readonly LocalCoverageDiagnosticRow[];
   /** Stores the collector discovered but could not account for. */
   readonly unaccountedStores: readonly string[];
+  /**
+   * Which reliability precondition failed, present only when `reliable` is
+   * false. Distinguishes "this collector's build genuinely never measured a
+   * required store" (`missing_stores` — see `missingStores` on the read-side
+   * parse result) from every other refusal reason, so an operator does not
+   * have to re-derive this by hand-tracing `parseCoverageDiagnosticsStateSnapshot`
+   * against `LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR` the way this was
+   * first diagnosed in production (four local-device connections stuck on
+   * `coverage=unknown` because their agent build predated the derived-stream
+   * descriptors `derived_messages`/`derived_attachments`/`derived_memory_notes`
+   * (claude_code) and `derived_messages`/`derived_function_calls` (codex)).
+   * Never widens what counts as reliable -- purely a label on the same gate.
+   */
+  readonly unreliableReason?:
+    | "invalid_cursor"
+    | "generation_mismatch"
+    | "malformed"
+    | "no_authoritative_inventory"
+    | "no_committed_snapshot"
+    | "duplicate_stores"
+    | "missing_stores"
+    | "unexpected_stores";
 }
 
 const LOCAL_COVERAGE_ACCOUNTED_STATUSES = new Set([
@@ -3636,6 +3658,47 @@ const LOCAL_COVERAGE_ACCOUNTED_STATUSES = new Set([
  * load-bearing honesty guarantee: the spec forbids treating declared-stream
  * success (or a quiet outbox) as complete local collection.
  */
+/**
+ * Which reliability precondition failed, checked in the same order
+ * `deriveLocalCoverageAxis`'s `reliable` conjunction short-circuits, so the
+ * reported reason is always the FIRST precondition that actually failed --
+ * matching what a reader tracing the boolean by hand would find.
+ */
+function describeLocalCoverageUnreliableReason(input: {
+  readonly currentGeneration: number | null | undefined;
+  readonly duplicateStores: readonly string[];
+  readonly hasAuthoritativeInventory: boolean;
+  readonly hasCommittedSnapshot: boolean | undefined;
+  readonly malformed: boolean;
+  readonly missingStores: readonly string[];
+  readonly proofGeneration: number | null | undefined;
+  readonly unexpectedStores: readonly string[];
+  readonly validCursor: boolean;
+}): NonNullable<LocalCoverageDiagnosticAxis["unreliableReason"]> {
+  if (!input.validCursor) {
+    return "invalid_cursor";
+  }
+  if (!Number.isInteger(input.currentGeneration) || input.currentGeneration !== input.proofGeneration) {
+    return "generation_mismatch";
+  }
+  if (input.malformed) {
+    return "malformed";
+  }
+  if (!input.hasAuthoritativeInventory) {
+    return "no_authoritative_inventory";
+  }
+  if (input.hasCommittedSnapshot !== true) {
+    return "no_committed_snapshot";
+  }
+  if (input.duplicateStores.length > 0) {
+    return "duplicate_stores";
+  }
+  if (input.missingStores.length > 0) {
+    return "missing_stores";
+  }
+  return "unexpected_stores";
+}
+
 export function deriveLocalCoverageAxis(input: {
   readonly rows: readonly LocalCoverageDiagnosticRow[];
   readonly malformed: boolean;
@@ -3697,7 +3760,25 @@ export function deriveLocalCoverageAxis(input: {
     input.missingStores.length === 0 &&
     input.unexpectedStores.length === 0;
   if (!reliable) {
-    return { ...scopeField, axis: "unknown", evidenceAsOf: null, reliable: false, rows, unaccountedStores: [] };
+    return {
+      ...scopeField,
+      axis: "unknown",
+      evidenceAsOf: null,
+      reliable: false,
+      rows,
+      unaccountedStores: [],
+      unreliableReason: describeLocalCoverageUnreliableReason({
+        currentGeneration,
+        duplicateStores: input.duplicateStores,
+        hasAuthoritativeInventory: input.hasAuthoritativeInventory,
+        hasCommittedSnapshot: input.hasCommittedSnapshot,
+        malformed: input.malformed,
+        missingStores: input.missingStores,
+        proofGeneration,
+        unexpectedStores: input.unexpectedStores,
+        validCursor,
+      }),
+    };
   }
   if (rows.length === 0) {
     return {
