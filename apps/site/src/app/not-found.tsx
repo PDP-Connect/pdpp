@@ -3,7 +3,7 @@
 
 import Link from "next/link";
 import { Button } from "@/components/pdpp-concept/button.tsx";
-import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
+import { PdppConceptDoc, PdppConceptFrontPage } from "@/components/pdpp-concept/concept-page.tsx";
 import { PdppConceptShell } from "@/components/pdpp-concept/concept-shell.tsx";
 import "@/styles/surfaces/concept/index.css";
 
@@ -13,7 +13,7 @@ import "@/styles/surfaces/concept/index.css";
 export default function NotFound() {
   return (
     <PdppConceptShell>
-      <PdppConceptPage home>
+      <PdppConceptFrontPage>
         <PdppConceptDoc>
           <h1>Page not found</h1>
           <p className="m-0! mb-4! text-[20px] leading-[1.5]">
@@ -28,7 +28,7 @@ export default function NotFound() {
             </Button>
           </div>
         </PdppConceptDoc>
-      </PdppConceptPage>
+      </PdppConceptFrontPage>
     </PdppConceptShell>
   );
 }
