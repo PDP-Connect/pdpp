@@ -57,6 +57,10 @@ COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/pack
 COPY packages/polyfill-connectors/scripts/install-patchright-browser.ts packages/polyfill-connectors/scripts/install-patchright-browser.ts
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
 COPY reference-implementation/package.json reference-implementation/package.json
+# packages/polyfill-connectors depends on these via `file:../../vendor/*.tgz`;
+# pnpm resolves and unpacks that tarball during install, so it must be present
+# before the manifest-only install below, not just in the full source stage.
+COPY vendor/ vendor/
 
 # Do not run workspace prepare scripts against this manifest-only tree. Native
 # dependencies still need their approved install hooks before the runtime is
