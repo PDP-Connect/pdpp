@@ -3,11 +3,26 @@
 
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { relative, resolve, sep } from "node:path";
 
 const TEST_ARTIFACT = /(^|\/)\.?.+\.test\.(?:js|mjs|cjs|ts|mts|cts)$/;
 const WHITESPACE = /\s/;
 const NPM_PACK_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
+
+// Node's built-in module names, with and without the `node:` prefix.
+const NODE_BUILTIN_SPECIFIERS = new Set<string>(builtinModules.flatMap((name) => [name, `node:${name}`]));
+
+// Static `import`/`export` are anchored to the start of a line (optionally
+// indented): tsc/esbuild output always emits these as statements starting a
+// line, never mid-expression, so anchoring avoids false positives on runtime
+// code that merely contains the words "import"/"export" inside a string or
+// property access. `export` additionally requires a trailing `from "…"` —
+// the only valid syntax for a re-export naming a module specifier.
+const STATIC_IMPORT_OR_EXPORT_FROM =
+  /^[ \t]*(?:import\s+(?:[^"'\n;]*?\s+from\s+)?["']([^"'.][^"']*)["']|export\s+[^"'\n;]*?\s+from\s+["']([^"'.][^"']*)["'])/gm;
+const DYNAMIC_IMPORT = /\bimport\s*\(\s*["']([^"'.][^"']*)["']\s*\)/g;
+const REQUIRE_CALL = /\brequire\s*\(\s*["']([^"'.][^"']*)["']\s*\)/g;
 
 interface ExportTarget {
   label: string;
@@ -75,9 +90,12 @@ function collectExportTargets(value: unknown, label: string, targets: ExportTarg
 
 export interface PackageManifest {
   bin: Record<string, string>;
+  dependencies?: Record<string, string>;
   exports: Record<string, unknown>;
   files: string[];
   name: string;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
 }
 
 export function assertManifestTargets(manifest: unknown, packageRoot: string): asserts manifest is PackageManifest {
@@ -143,6 +161,107 @@ export function assertPackedFiles(manifest: PackageManifest, packedFiles: string
   }
   for (const [name, target] of Object.entries(manifest.bin)) {
     assert.equal(files.has(target.slice(2)), true, `packed bin target is missing: ${name} -> ${target}`);
+  }
+}
+
+/**
+ * Resolve a bare import specifier to the npm package name it names: the
+ * whole specifier for an unscoped package (`zod` from `zod/v4`), or the
+ * first two path segments for a scoped package (`@pdpp/read-core` from
+ * `@pdpp/read-core/records`).
+ */
+function bareSpecifierPackageName(specifier: string): string {
+  const segments = specifier.split("/");
+  if (specifier.startsWith("@")) {
+    return segments.slice(0, 2).join("/");
+  }
+  return segments[0];
+}
+
+function isBareSpecifier(specifier: string): boolean {
+  return !(specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("node:"));
+}
+
+/**
+ * Extract every bare (non-relative, non-absolute) import/export/require
+ * specifier a compiled `.js`/`.mjs`/`.d.ts` file references: static
+ * `import … from "x"` (including the bare side-effect form `import "x"`),
+ * `export … from "x"`, dynamic `import("x")`, and `require("x")`.
+ */
+function bareImportSpecifiers(source: string): Set<string> {
+  const specifiers = new Set<string>();
+  for (const match of source.matchAll(STATIC_IMPORT_OR_EXPORT_FROM)) {
+    const specifier = match[1] ?? match[2];
+    if (specifier && isBareSpecifier(specifier) && !specifier.startsWith("node:")) {
+      specifiers.add(specifier);
+    }
+  }
+  for (const pattern of [DYNAMIC_IMPORT, REQUIRE_CALL]) {
+    for (const [, specifier] of source.matchAll(pattern)) {
+      if (isBareSpecifier(specifier) && !specifier.startsWith("node:")) {
+        specifiers.add(specifier);
+      }
+    }
+  }
+  return specifiers;
+}
+
+/**
+ * Every published `@pdpp/local-collector` 1.5.1-1.5.4 shipped a compiled
+ * `import … from "@pdpp/reference-contract/common"` that was not in
+ * `dependencies` and does not exist on the npm registry: it resolved for
+ * every developer through the pnpm workspace link and failed closed for
+ * every real npm install with `ERR_MODULE_NOT_FOUND`. Neither
+ * `assertManifestTargets` (declared dependency sections only) nor
+ * `assertPackedFiles` (packed file layout only) looks at what the packed
+ * code actually imports, so a bare specifier undeclared in package.json can
+ * slip through both untouched. This closes that gap: every bare import,
+ * export-from, dynamic import(), and require() specifier compiled into the
+ * packed `.js`/`.mjs`/`.d.ts` files must resolve to either a Node builtin or
+ * a package the manifest actually declares as a real (non-workspace,
+ * non-file:) dependency. `@pdpp/cli` currently declares no runtime
+ * dependencies at all, so today this means: no bare specifiers other than
+ * Node builtins may appear in the packed output.
+ */
+export function assertBareSpecifiersResolve(
+  manifest: PackageManifest,
+  extractedRoot: string,
+  packedFiles: string[]
+): void {
+  const declaredPackages = new Set<string>([
+    ...Object.keys(manifest.dependencies ?? {}),
+    ...Object.keys(manifest.peerDependencies ?? {}),
+    ...Object.keys(manifest.optionalDependencies ?? {}),
+  ]);
+
+  for (const file of packedFiles) {
+    if (!(file.endsWith(".js") || file.endsWith(".mjs") || file.endsWith(".d.ts"))) {
+      continue;
+    }
+    const source = readFileSync(resolve(extractedRoot, file), "utf8");
+    for (const specifier of bareImportSpecifiers(source)) {
+      const packageName = bareSpecifierPackageName(specifier);
+      if (NODE_BUILTIN_SPECIFIERS.has(specifier) || NODE_BUILTIN_SPECIFIERS.has(packageName)) {
+        continue;
+      }
+      if (declaredPackages.has(packageName)) {
+        continue;
+      }
+      if (packageName.startsWith("@pdpp/")) {
+        throw new Error(
+          `${file} imports private workspace package "${packageName}" (specifier "${specifier}") which is not ` +
+            "declared in dependencies/peerDependencies/optionalDependencies. This is the exact defect that made " +
+            "every published @pdpp/local-collector 1.5.1-1.5.4 unrunnable (ERR_MODULE_NOT_FOUND on every " +
+            "install). Declare a real dependency, vendor the needed symbol, or rewrite the specifier at build " +
+            "time before packing."
+        );
+      }
+      throw new Error(
+        `${file} imports "${specifier}" (package "${packageName}") which is not declared in ` +
+          "dependencies/peerDependencies/optionalDependencies and is not a Node builtin. A clean npm install of " +
+          "this package would fail to resolve this import at runtime."
+      );
+    }
   }
 }
 
