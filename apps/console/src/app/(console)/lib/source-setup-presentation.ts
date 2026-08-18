@@ -385,9 +385,26 @@ export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSet
 
 /** Only runnable actions belong in /sources/add; server-setting and runbook cards do not. */
 export function isRunnableAddOffer(entry: ConnectorCatalogEntry): boolean {
+  const availability = sourceSetupAvailability(entry);
+  if (entry.publicTier === "supported") {
+    return availability === "available_now";
+  }
+  // A preview-tier entry is offered when its setup path is genuinely
+  // self-service, which is exactly what `available_now` already means: "the
+  // owner can add an account now from a shipped surface". The previous
+  // condition paired preview with ONLY `experimental_opt_in`, which held until
+  // the first preview-tier local-collector connector shipped -- enrollment
+  // issues a code the owner redeems on their own machine, so it resolves to
+  // `available_now` and matched neither arm. The connector was registered,
+  // owner-actionable, and invisible on /sources/add.
+  //
+  // Keyed on availability rather than on the one disposition that broke, so a
+  // future preview-tier disposition resolving to `available_now` does not
+  // reintroduce the same invisibility. The remaining availabilities
+  // (`requires_server_setup`, `not_available_here`) still correctly withhold
+  // the offer.
   return (
-    (entry.publicTier === "supported" && sourceSetupAvailability(entry) === "available_now") ||
-    (entry.publicTier === "preview" && sourceSetupAvailability(entry) === "experimental_opt_in")
+    entry.publicTier === "preview" && (availability === "experimental_opt_in" || availability === "available_now")
   );
 }
 
