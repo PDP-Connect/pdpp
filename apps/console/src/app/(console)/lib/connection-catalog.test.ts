@@ -270,6 +270,11 @@ test("browser-bound static-secret capability is not enough to create an account"
 test("non-browser static-secret connectors keep the existing single capture path", () => {
   const catalog = buildConnectorCatalog([
     {
+      // No public_listing declared -> defaults to Development (the same
+      // fixture shape this test always used). "gmail" is a real,
+      // live-proven connector key (STATIC_SECRET_LIVE_PROVEN_KEYS), so the
+      // shared planner resolves static_secret_connect purely from the
+      // connector key regardless of this synthetic manifest's declared tier.
       connector_id: "https://registry.pdpp.dev/connectors/gmail",
       display_name: "Gmail",
       runtime_requirements: { bindings: { network: { required: true } } },
@@ -290,7 +295,13 @@ test("non-browser static-secret connectors keep the existing single capture path
   assert.equal(entry.modality, "api_network");
   assert.equal(entry.setupModality, "static_secret");
   assert.equal(entry.disposition, "static_secret_connect");
-  assert.equal(sourceSetupAction(entry), null);
+  // "gmail" is real (not a known scaffold) and its disposition
+  // (static_secret_connect) IS in the Development disclosure's self-test
+  // allowlist, so it gets a self-test action in the Development disclosure
+  // even though it is not owner-actionable (the whole Development tier is
+  // hard-excluded from ownerActionable).
+  assert.equal(entry.isKnownScaffold, false);
+  assert.equal(sourceSetupAction(entry) !== null, true, "a real development entry gets a self-test action");
   assert.equal(sourceSetupSecondaryAction(entry), null);
   assert.equal(sourceSetupStatus(entry).label, "Development");
 });
@@ -690,8 +701,15 @@ test("configured Google provider readiness exposes the existing owner authorizat
   assert.equal(entry.supportState, "supported");
   assert.equal(entry.disposition, "provider_auth_connect");
   assert.equal(sourceSetupStatus(entry).label, "Development");
-  assert.match(sourceSetupGuidance(entry), PROVIDER_BROWSER_GUIDANCE_RE);
-  assert.equal(sourceSetupAction(entry), null);
+  // google-maps-data-portability is real, not a known scaffold (its own
+  // manifest documents exactly what is and is not implemented via
+  // public_listing.proof_gate), and provider_auth_connect IS in the
+  // Development disclosure's self-test allowlist -- so this configured,
+  // ready-to-authorize entry gets a self-test action even though it is not
+  // owner-actionable (the whole Development tier is hard-excluded from
+  // ownerActionable, and sourceSetupAvailability stays "not_available_here").
+  assert.equal(entry.isKnownScaffold, false);
+  assert.equal(sourceSetupAction(entry) !== null, true, "a real development entry gets a self-test action");
   assert.equal(sourceSetupAvailability(entry), "not_available_here");
   assert.deepEqual(providerAuthConnectEntries(catalog), [entry]);
 });
@@ -932,12 +950,17 @@ test("filesystem connectors outside the proven set are local-collector-unproven,
   }
 });
 
-test("owner catalog never offers a development template, whatever its setup state", () => {
-  // An unlisted connector must not be offered or addable on the OFFER surface,
-  // and `experimental` is not an exception: the Experimental section presents
-  // what is already offered rather than acting as a second door into the
-  // catalog. Both an experimental and a non-experimental unlisted template are
-  // asserted here so the gate cannot be reopened for one support_state alone.
+test("owner catalog never offers a development template as a runnable add offer, whatever its setup state", () => {
+  // A Development-tier template must never be a runnable OFFER (the main
+  // list or the Preview disclosure), and `experimental` is not an exception:
+  // the Experimental section presents what is already offered rather than
+  // acting as a second door into the catalog. Both an experimental and a
+  // non-experimental unlisted template are asserted here so the gate cannot
+  // be reopened for one support_state alone. Unlike the pre-Development-
+  // disclosure contract, these rows DO now appear in the raw catalog array
+  // (see connection-catalog.ts) so the owner can see them in the Development
+  // disclosure -- `isRunnableAddOffer` is the authority for "offered", not
+  // catalog membership.
   const catalog = buildOwnerConnectorCatalog(
     [],
     [
@@ -979,20 +1002,27 @@ test("owner catalog never offers a development template, whatever its setup stat
       }),
     ]
   );
+  const unlistedExperimental = catalog.find((e) => e.connectorKey === "unlisted-experimental");
+  assert.ok(unlistedExperimental, "development rows are visible in the catalog for the Development disclosure");
   assert.equal(
-    catalog.find((e) => e.connectorKey === "unlisted-experimental"),
-    undefined,
-    "an unlisted experimental template must not be offered"
+    isRunnableAddOffer(unlistedExperimental),
+    false,
+    "an unlisted experimental template must not be a runnable add offer"
   );
+
+  const unlistedProofGated = catalog.find((e) => e.connectorKey === "unlisted-proof-gated");
+  assert.ok(unlistedProofGated, "development rows are visible in the catalog for the Development disclosure");
   assert.equal(
-    catalog.find((e) => e.connectorKey === "unlisted-proof-gated"),
-    undefined,
-    "an unlisted non-experimental template must stay dropped"
+    isRunnableAddOffer(unlistedProofGated),
+    false,
+    "an unlisted non-experimental template must not be a runnable add offer"
   );
+
   // The listing gate must not swallow the Experimental section itself: a
   // connector the operator HAS listed still reaches it.
   const listedExperimental = catalog.find((e) => e.connectorKey === "listed-experimental");
   assert.ok(listedExperimental, "a preview experimental template must still be offered");
+  assert.equal(isRunnableAddOffer(listedExperimental), true, "a preview experimental template is a runnable offer");
   assert.equal(sourceSetupAvailability(listedExperimental), "experimental_opt_in");
   assert.ok(sourceSetupAction(listedExperimental), "a listed experimental template keeps its add action");
 });
@@ -1066,6 +1096,24 @@ test("isOwnerActionableEntry respects demo/test fallback rules when ownerActiona
   assert.equal(isOwnerActionableEntry(ynab), true);
 });
 
+/**
+ * A real (non-scaffold) Development entry whose disposition resolves to one
+ * of `sourceSetupAction`'s runnable dispositions gets a self-test action even
+ * though it is not owner-actionable (the server hard-disables
+ * `ownerActionable` for the whole Development tier). This mirrors the exact
+ * disposition set `sourceSetupAction` itself special-cases; kept here as an
+ * independent literal (not an import) so a drift between the two would fail
+ * this test rather than silently agreeing with itself.
+ */
+const DEVELOPMENT_SELF_TEST_DISPOSITIONS = new Set([
+  "local_collector_enroll",
+  "static_secret_connect",
+  "static_secret_experimental",
+  "manual_upload_connect",
+  "browser_collector_manual",
+  "provider_auth_connect",
+]);
+
 test("presentation consistency: helper functions agree with ownerActionable authority", async () => {
   // Every fixture in the presentation test suite must have presentation functions
   // that agree with isOwnerActionableEntry. This is the core maintainability check.
@@ -1076,27 +1124,47 @@ test("presentation consistency: helper functions agree with ownerActionable auth
   // false is what keeps it out of the calm "available now" list and every
   // owner-agent REST/actionability surface; the explicit Experimental opt-in
   // section is the only place its action renders.
+  //
+  // Exception: a real (non-scaffold) Development entry with a runnable
+  // disposition also has a real action -- the Development disclosure's own
+  // self-test opt-in -- even though isOwnerActionableEntry is false for the
+  // whole tier. A KNOWN scaffold never gets an action regardless of
+  // disposition: clicking it can never collect anything.
   const manifests = await loadCommittedManifests();
   const catalog = buildConnectorCatalog(manifests);
 
   for (const entry of catalog) {
     const isActionable = isOwnerActionableEntry(entry);
     const hasAction = sourceSetupAction(entry) !== null;
+    const isDevelopmentSelfTestable =
+      entry.publicTier === "development" && !entry.isKnownScaffold && DEVELOPMENT_SELF_TEST_DISPOSITIONS.has(entry.disposition);
 
     if (entry.supportState === "experimental") {
       assert.equal(isActionable, false, `${entry.connectorKey}: experimental must not be owner-actionable`);
-      assert.equal(hasAction, entry.publicTier !== "development", `${entry.connectorKey}: only preview experimental entries expose an opt-in action`);
+      assert.equal(
+        hasAction,
+        entry.publicTier !== "development" || isDevelopmentSelfTestable,
+        `${entry.connectorKey}: only preview experimental entries (or a self-testable development entry) expose an opt-in action`
+      );
       continue;
     }
 
     // The invariant: if isOwnerActionableEntry returns true, sourceSetupAction
-    // must have a non-null result. Mutations to either would break this.
+    // must have a non-null result. Mutations to either would break this. A
+    // development entry is the one deliberate exception: it can have an
+    // action while isOwnerActionableEntry stays false for the tier.
     assert.equal(
       hasAction,
-      isActionable && entry.publicTier !== "development",
-      `${entry.connectorKey}: sourceSetupAction must match isOwnerActionableEntry. ` +
-        `Helper says ${isActionable}, action is ${hasAction ? "set" : "null"}`
+      (isActionable && entry.publicTier !== "development") || isDevelopmentSelfTestable,
+      `${entry.connectorKey}: sourceSetupAction must match isOwnerActionableEntry (or the development self-test exception). ` +
+        `Helper says ${isActionable}, action is ${hasAction ? "set" : "null"}, isDevelopmentSelfTestable=${isDevelopmentSelfTestable}`
     );
+
+    // A KNOWN scaffold must NEVER get an action, regardless of disposition:
+    // it cannot collect anything, so an add button would be a dead end.
+    if (entry.publicTier === "development" && entry.isKnownScaffold) {
+      assert.equal(hasAction, false, `${entry.connectorKey}: a known scaffold must never expose an action`);
+    }
   }
 });
 
@@ -1305,14 +1373,27 @@ test("a connector-key allowlist cannot declare readiness a deployment has not su
   );
 });
 
-test("console catalog exposes a development connector only with server UAT authority", () => {
+test("console catalog uses the manifest tier as its sole listing authority", () => {
+  // Development-tier entries flow through as catalog rows -- the owner
+  // running this instance must be able to see what is registered and tell
+  // "unproven" apart from "unimplemented" (Development disclosure on
+  // /sources/add). But the manifest tier remains the sole RUNNABLE-OFFER
+  // authority: a development entry is never in the main list or the Preview
+  // disclosure, and the obsolete UAT exposure fact cannot promote it there
+  // either.
   const uatFalseTemplate = ownerTemplate({
     connectorKey: "test-unproven",
     tier: "development",
     uat_expose_unlisted_connectors: false,
   });
   let catalog = buildOwnerConnectorCatalog([], [uatFalseTemplate]);
-  assert.equal(catalog.length, 0, "development must be filtered from Add Source");
+  assert.equal(catalog.length, 1, "development must still be visible in the catalog for the Development disclosure");
+  let entry = catalog[0];
+  assert.ok(entry);
+  assert.equal(isRunnableAddOffer(entry), false, "development is never a runnable add offer");
+  // Real (non-scaffold), self-testable disposition: gets a self-test action
+  // in the Development disclosure even though it is never a runnable offer.
+  assert.equal(sourceSetupAction(entry) !== null, true, "a real development entry gets a self-test action");
 
   // The authenticated server can selectively expose one Development connector
   // without changing its lifecycle tier.
@@ -1322,7 +1403,19 @@ test("console catalog exposes a development connector only with server UAT autho
     uat_expose_unlisted_connectors: true,
   });
   catalog = buildOwnerConnectorCatalog([], [uatTrueTemplate]);
-  assert.equal(catalog.length, 1, "explicit UAT exposure must admit the named development connector");
-  assert.equal(catalog[0]?.publicTier, "development", "UAT exposure must not promote the lifecycle tier");
-  assert.equal(catalog[0]?.ownerActionable, true, "the exposed setup path must be actionable in UAT");
+  entry = catalog[0];
+  assert.ok(entry);
+  assert.equal(isRunnableAddOffer(entry), false, "UAT exposure must not override development");
+
+  // A KNOWN scaffold never gets a self-test action, regardless of UAT exposure.
+  const scaffoldTemplate: OwnerConnectorTemplateLike = {
+    ...ownerTemplate({ connectorKey: "test-scaffold", tier: "development" }),
+    is_known_scaffold: true,
+  };
+  catalog = buildOwnerConnectorCatalog([], [scaffoldTemplate]);
+  entry = catalog[0];
+  assert.ok(entry);
+  assert.equal(entry.isKnownScaffold, true);
+  assert.equal(isRunnableAddOffer(entry), false, "a scaffold is never a runnable add offer");
+  assert.equal(sourceSetupAction(entry), null, "a scaffold never gets a self-test action");
 });

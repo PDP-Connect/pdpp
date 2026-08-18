@@ -142,7 +142,15 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
 /** The owner-facing status label + tone for first-account setup. */
 export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStatus {
   if (entry.publicTier === "development") {
-    return { label: publicTierLabel(entry.publicTier), tone: "border-border bg-muted/30 text-muted-foreground" };
+    // "Not implemented" and "Development" are deliberately different labels:
+    // a scaffold has no collection code at all (there is nothing to test),
+    // while a real Development entry has an implemented, self-testable setup
+    // path that simply has not been proven against a live account yet.
+    // Collapsing these into one badge would hide exactly the distinction the
+    // owner needs to decide whether clicking a card can do anything.
+    return entry.isKnownScaffold
+      ? { label: "Not implemented", tone: "border-border bg-muted/30 text-muted-foreground" }
+      : { label: publicTierLabel(entry.publicTier), tone: "border-border bg-muted/30 text-muted-foreground" };
   }
   if (entry.publicTier === "preview") {
     return { label: publicTierLabel(entry.publicTier), tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg" };
@@ -258,8 +266,75 @@ const CLASSIFIED_UNAVAILABLE_DISPOSITIONS = new Set([
   "provider_auth_proof_gated",
 ]);
 
+/**
+ * Dispositions `sourceSetupAction`'s switch resolves to a real link. A real
+ * (non-scaffold) Development entry is only ever offered a self-test action,
+ * and keeps its disposition's normal guidance copy (never the generic
+ * Development fallback below), when its disposition is one of these --
+ * exactly the set a Preview or Supported entry with the same disposition
+ * would also get. Any disposition outside this set (proof-gated,
+ * deployment-blocked, unknown, etc.) has no safe action to offer regardless
+ * of tier.
+ */
+const DEVELOPMENT_SELF_TEST_DISPOSITIONS = new Set<ConnectorCatalogEntry["disposition"]>([
+  "local_collector_enroll",
+  "static_secret_connect",
+  "static_secret_experimental",
+  "manual_upload_connect",
+  "browser_collector_manual",
+  "provider_auth_connect",
+]);
+
+function isDevelopmentSelfTestDisposition(disposition: ConnectorCatalogEntry["disposition"]): boolean {
+  return DEVELOPMENT_SELF_TEST_DISPOSITIONS.has(disposition);
+}
+
+/**
+ * Fallback guidance for a Development entry with no self-test action and no
+ * useful disposition-specific copy of its own (an unrecognised/proof-gated/
+ * unproven disposition, the same set that would otherwise reach
+ * `unclassifiedSetupGuidance`'s generic "this dashboard does not recognise
+ * this source" text). A Development connector IS recognised -- it is just
+ * unproven or unimplemented -- so this names that honestly instead.
+ */
+function developmentFallbackGuidance(entry: ConnectorCatalogEntry): string {
+  if (entry.isKnownScaffold) {
+    const note = entry.listingNote;
+    return note
+      ? `This connector is scaffolded, not finished, and cannot collect data yet: ${note}`
+      : "This connector is scaffolded, not finished: it can reach the provider but does not collect data yet. There is nothing to test here yet.";
+  }
+  // A deployment-blocked entry needs the exact missing settings named, not a
+  // generic "unproven" note -- that fact is more actionable than anything
+  // else this branch could say, and it holds regardless of tier.
+  if (entry.disposition === "provider_auth_deployment_blocked") {
+    return `Development: also waiting on server settings: ${entry.deploymentReadiness.blockers
+      .map((blocker) => blocker.label || blocker.key)
+      .join(", ")}.`;
+  }
+  const note = entry.listingNote ?? entry.refreshPolicyRationale ?? entry.setupDescription;
+  const base =
+    "Development: this connector's setup path is implemented, but no live run against a real account has proven it yet.";
+  return note ? `${base} ${note}` : `${base} Test it with non-critical data.`;
+}
+
 /** One short owner-facing guidance line for first-account setup. */
 export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
+  // A self-testable Development entry (real, non-scaffold, disposition in
+  // the self-test allowlist) keeps the normal disposition-specific copy
+  // below -- the same text a Preview/Supported entry with that disposition
+  // gets -- because it correctly describes the self-test action this entry
+  // actually renders. Every OTHER Development entry gets the honest
+  // Development fallback here instead: a KNOWN scaffold always does (its own
+  // "nothing to test yet" fact must never be shadowed by a disposition case
+  // written for a non-development context, e.g. `browser_bound_runbook`'s
+  // "cannot start a new account from here yet", which sounds like a proven
+  // connector waiting on a feature rather than one with no collection code
+  // at all); a real entry with no safe action does too, so it never falls
+  // into the unclassified-disposition dead-end copy just below.
+  if (entry.publicTier === "development" && !isDevelopmentSelfTestDisposition(entry.disposition)) {
+    return developmentFallbackGuidance(entry);
+  }
   if (isUnavailableSetupEntry(entry) && !CLASSIFIED_UNAVAILABLE_DISPOSITIONS.has(entry.disposition)) {
     return unclassifiedSetupGuidance(entry);
   }
@@ -305,7 +380,18 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
 
 /** The primary next action for first-account setup, or null when none exists. */
 export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupAction | null {
-  if (entry.publicTier === "development" || !(isOwnerActionableEntry(entry) || isExperimentalEntry(entry))) {
+  if (entry.publicTier === "development") {
+    // A KNOWN scaffold (unconditional SKIP_RESULT, no real collection) must
+    // never render an action: clicking it can never collect anything, and an
+    // add button on a stub is a worse experience than the stub staying
+    // invisible. A real-but-unproven Development entry falls through to the
+    // same disposition switch below, so it gets the exact action a Preview
+    // entry with the same disposition would get -- the only difference is the
+    // Development disclosure's own copy naming it unproven.
+    if (entry.isKnownScaffold || !isDevelopmentSelfTestDisposition(entry.disposition)) {
+      return null;
+    }
+  } else if (!(isOwnerActionableEntry(entry) || isExperimentalEntry(entry))) {
     return null;
   }
   // Browser-bound connectors that also declare credential capture still start
