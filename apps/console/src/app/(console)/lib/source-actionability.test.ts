@@ -492,6 +492,69 @@ test("source actionability: revoked outranks draft — a revoked connection neve
   assert.equal(actionability.work, null);
 });
 
+// A PURE recovered historical fragment — production shape (2026-08-18): a
+// spine-events-only reconstruction of an owner-deleted connection, restored
+// under a synthetic `restored-historical-archive:` binding key with no
+// credential ever captured for the resurrected identity. The server already
+// marks this `source_visibility: "hidden_from_sources"` (see `ref-control.ts`
+// `deriveSourceVisibility`) and the Sources list already honors it
+// (`sources-view-model.ts` `isVisibleOnSourcesList`), but `source-work` derivation
+// never consulted the field, so the SAME fragment still landed in the
+// needs-you group with "Reconnect this account and collection resumes" — a
+// prompt that is false for a connection the owner already deleted and does
+// not intend to reconnect. `/syncs` and the dashboard "Needs you" section
+// both read `sourceWorkFromConnectors`, so this defect was owner-visible on
+// both surfaces.
+test("source actionability excludes a hidden_from_sources pure recovered fragment from every work group", () => {
+  const fragment = connector({
+    connection_id: "cin_e4ab231c7d49b8f59e4c80ed",
+    connector_id: "chatgpt",
+    display_name: "ChatGPT (historical archive 2 of 2)",
+    rendered_verdict: verdict({
+      forward_statement: "Reconnect this account and collection resumes.",
+      pill: { label: "Can't collect", tone: "red" },
+      required_actions: [action({ cta: "Reconnect this account", kind: "reauth" })],
+    }),
+    source_visibility: "hidden_from_sources",
+    source_work: "needs_owner",
+    status: "paused",
+  });
+
+  const actionability = projectSourceActionability(fragment);
+  assert.equal(actionability.work, null, "a hidden_from_sources fragment must never produce a work item");
+
+  const groups = sourceWorkFromConnectors([fragment]);
+  assert.equal(groups.needsOwner.length, 0);
+  assert.equal(groups.review.length, 0);
+  assert.equal(groups.systemIssues.length, 0);
+  assert.equal(groups.notMeasured.length, 0);
+  assert.equal(groups.working.length, 0);
+  assert.equal(groups.unavailable.length, 0);
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 0);
+});
+
+// A normal `"active"` visibility connection with the identical needs_owner
+// verdict shape must be unaffected — this guards against the fix
+// over-suppressing every credential-required connection instead of only the
+// hidden fragment.
+test("source actionability still surfaces a visible needs_owner connection with the same verdict shape", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({
+      connection_id: "cin_live_needs_owner",
+      rendered_verdict: verdict({
+        forward_statement: "Reconnect this account and collection resumes.",
+        pill: { label: "Can't collect", tone: "red" },
+        required_actions: [action({ cta: "Reconnect this account", kind: "reauth" })],
+      }),
+      source_visibility: "active",
+      source_work: "needs_owner",
+    }),
+  ]);
+
+  assert.equal(groups.needsOwner.length, 1);
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 1);
+});
+
 test("source actionability: a non-draft connection with real verdict evidence is never treated as setup_in_progress", () => {
   const actionability = projectSourceActionability(connector());
 

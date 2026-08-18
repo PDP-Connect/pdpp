@@ -480,8 +480,30 @@ function itemFromConnector(
   };
 }
 
+/**
+ * A PURE recovered historical fragment (`source_visibility: "hidden_from_sources"`
+ * — server-derived in `deriveSourceVisibility`, `ref-control.ts`) must never
+ * generate owner-facing work. The fragment's ONLY durable content is spine
+ * events replayed after an owner-initiated delete; it has no schedule, no
+ * stored credential, and the owner has already acted on it (by deleting the
+ * connection it was recovered from). A "Reconnect this account and
+ * collection resumes" prompt built from its `CredentialsValid: false`
+ * condition is technically correct (no credential exists) but not
+ * actionable in the way the copy implies — reconnecting a fragment the
+ * owner deleted does not "resume" anything, because nothing here was ever a
+ * live, ongoing collection the owner intends to continue. The Sources list
+ * already excludes this exact row (`sources-view-model.ts`
+ * `isVisibleOnSourcesList`); this mirrors that exclusion for every other
+ * owner-facing work surface (`/syncs`, the dashboard "Needs you" section)
+ * that reads `sourceWorkFromConnectors`, so an owner cannot see a hidden
+ * fragment on one surface and a live prompt for the SAME row on another.
+ */
+function isHiddenFragment(connector: RefConnectorSummary): boolean {
+  return connector.source_visibility === "hidden_from_sources";
+}
+
 export function sourceWorkItemFromConnector(connector: RefConnectorSummary): SourceWorkItem | null {
-  if (isRevokedConnector(connector)) {
+  if (isRevokedConnector(connector) || isHiddenFragment(connector)) {
     return null;
   }
 
