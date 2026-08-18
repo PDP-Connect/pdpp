@@ -3055,6 +3055,7 @@ type FoldOutcome = Awaited<ReturnType<typeof foldStreamFactsBestEffort>>;
 
 function emptyReconcilePhaseResult(): ReconcilePhaseResult {
   return {
+    attemptedIds: [],
     candidateReasonCounts: {} as ReconcilePhaseResult["candidateReasonCounts"],
     candidatesInspected: 0,
     discovered: 0,
@@ -3084,6 +3085,13 @@ function mergeReconcilePhaseResults(first: ReconcilePhaseResult, second: Reconci
     candidateReasonCounts[reason] = (candidateReasonCounts[reason] ?? 0) + count;
   }
   return {
+    // `missing` and `generic` classify disjoint candidate-reason subsets of
+    // the SAME requested scope, so concatenation here never double-attempts
+    // an id; the two phases' relative wall-clock order (`genericFirst`) does
+    // not need to be reflected in this concatenation order because callers
+    // (`runDirtyPriorityAcceleration`) only need the SET of attempted ids,
+    // not their cross-phase sequence.
+    attemptedIds: [...first.attemptedIds, ...second.attemptedIds],
     candidateReasonCounts: candidateReasonCounts as ReconcilePhaseResult["candidateReasonCounts"],
     candidatesInspected: Math.max(first.candidatesInspected, second.candidatesInspected),
     discovered: Math.max(first.discovered, second.discovered),
@@ -3282,6 +3290,15 @@ async function observeConnectorSummaryEvidence(
     readonly maxEvents?: number;
   } = {}
 ): Promise<{
+  /**
+   * Every id the repair phases actually invoked `repairCandidate` for this
+   * call, regardless of success/failure/deferred outcome — see
+   * `ReconcileResult.attemptedIds`. Empty when discovery itself failed
+   * (nothing about ANY row could be verified, so nothing was attempted) or
+   * when every requested id was fetched but the deadline expired before any
+   * repair started.
+   */
+  attemptedIds: readonly string[];
   candidateReasonCounts: Readonly<Record<string, number>>;
   candidatesInspected: number;
   failed: number;
@@ -3329,6 +3346,7 @@ async function observeConnectorSummaryEvidence(
     // dirty/stale marking. The next call's discovery retries from scratch.
     const failedRows = await markAllConnectorSummaryEvidenceDiscoveryFailed(err, connectorInstanceIds);
     return {
+      attemptedIds: [],
       candidateReasonCounts: {},
       candidatesInspected: 0,
       failed: failedRows.size,
@@ -3358,6 +3376,7 @@ async function observeConnectorSummaryEvidence(
   const failedRows =
     foldOutcome.failedRows.size === 0 ? result.failedRows : new Map([...result.failedRows, ...foldOutcome.failedRows]);
   return {
+    attemptedIds: result.attemptedIds,
     candidateReasonCounts: result.candidateReasonCounts,
     candidatesInspected: result.candidatesInspected,
     failed: result.failed + foldOutcome.failedRows.size,
@@ -3762,21 +3781,79 @@ function emitScopedObservationUnit(
  * Rotating start-of-page cursor for the dirty-priority tranche, in-process
  * closure state (reset on restart — worst case one extra round before
  * rotation resumes, same bounded-harmless contract as `nextFirstTranche`/
- * `nextFirstObservationPhase`). Advanced to the last id THIS round's page
- * covered regardless of whether that page's own repair converged, so a
- * dirty backlog larger than one page's budget cycles through every dirty
- * connection instead of always re-selecting the same lexicographic prefix
- * (see `readDirtyInstanceIdPage`'s doc for the production incident this
- * closes). `null` when there is nothing to resume from (either the tranche
- * has never run, or the dirty set was empty last round) — the next round's
- * page then starts from the beginning, same as before this fix for a fleet
- * with no rotation pressure.
+ * `nextFirstObservationPhase`; a durable per-item cursor was considered and
+ * rejected for THIS patch — see the "durable fairness" note on
+ * `lastAttemptedDirtyId` below for exactly what that restart cost means and
+ * why it was judged acceptable rather than silently left unstated).
+ *
+ * Advanced to the last id THIS round's page genuinely ATTEMPTED — repair was
+ * actually invoked for it, whether it then succeeded, failed, or was
+ * deferred — never merely the last id the page's discovery FETCHED
+ * (`lastAttemptedDirtyId` below computes this). Fetched-but-never-attempted
+ * ids stay eligible for the very next round's page instead of being skipped
+ * over.
+ *
+ * This distinction is load-bearing, not cosmetic (production, 2026-08-18):
+ * with a backlog SMALLER than one page (e.g. 8 dirty ids against a 25-id
+ * page limit), advancing to the last FETCHED id committed the cursor to id
+ * #8 every round regardless of how many candidates the deadline actually let
+ * `repairCandidates` reach. Because the "repair at least one" floor
+ * (`connector-summary-evidence-bounded-reconciliation.ts`'s
+ * `repairCandidates`) only guarantees candidate #1 a turn under an
+ * already-expired deadline, every round re-fetched the SAME 8 ids, attempted
+ * only #1 again, and reported alternating `repaired: 1` / `repaired: 0`
+ * while ids 2-8 were never attempted and the backlog never drained. The same
+ * class of gap exists for a backlog LARGER than one page: a permanently
+ * expired deadline advancing on "fetched" cycles through ids 1, 26, 51,
+ * 76, ... forever, since each page's fetch always reaches its full width
+ * even when the deadline lets almost none of it be attempted. Advancing on
+ * "attempted" instead means a page that only manages to attempt its first
+ * candidate rotates the cursor just past THAT candidate, so the next round's
+ * page starts at candidate #2 rather than re-fetching the identical prefix.
+ *
+ * Advancing to the last ATTEMPTED id preserves the original "never wedge on
+ * a permanently-failing page" property this cursor exists for: an attempt
+ * that fails, throws, or is deferred still counts as attempted (see
+ * `repairCandidates`'s `attemptedIds`), so a candidate that will never
+ * succeed still gets rotated past exactly like a candidate that succeeds —
+ * only a candidate NEVER GIVEN A TURN this round stays at the front of the
+ * next page.
+ *
+ * `null` when there is nothing to resume from (either the tranche has never
+ * run, or the dirty set was empty last round) — the next round's page then
+ * starts from the beginning, same as before this fix for a fleet with no
+ * rotation pressure.
  */
 let nextDirtyAfterId: string | null = null;
 
 /** Test-only: pin the rotation state so a test does not depend on prior calls' ordering. */
 export function __testOnlySetNextDirtyAfterId(afterId: string | null): void {
   nextDirtyAfterId = afterId;
+}
+
+/**
+ * The last id in `pageIds` order that `attemptedIds` actually contains, or
+ * `null` if none of them were attempted. `pageIds` order (not
+ * `attemptedIds` order) is authoritative here: `attemptedIds` can
+ * concatenate multiple repair phases that ran over disjoint candidate-reason
+ * subsets of the SAME page (see `mergeReconcilePhaseResults`), so it is not
+ * itself in the page's keyset order — but the fairness rotation cursor must
+ * advance monotonically along the SAME `connector_instance_id ASC` order
+ * `readDirtyInstanceIdPage` paginates by, or the next page's `afterId >`
+ * filter could skip an id that was fetched but never attempted.
+ */
+function lastAttemptedDirtyId(pageIds: readonly string[], attemptedIds: readonly string[]): string | null {
+  if (attemptedIds.length === 0) {
+    return null;
+  }
+  const attempted = new Set(attemptedIds);
+  let last: string | null = null;
+  for (const id of pageIds) {
+    if (attempted.has(id)) {
+      last = id;
+    }
+  }
+  return last;
 }
 
 async function runDirtyPriorityAcceleration(args: {
@@ -3816,27 +3893,21 @@ async function runDirtyPriorityAcceleration(args: {
     nextDirtyAfterId = null;
     return empty;
   }
-  // Committed for the NEXT call before this round's own observe/repair runs,
-  // so a round that throws, times out, or otherwise never reaches the end of
-  // its own page still rotates — exactly the `nextFirstObservationPhase`
-  // contract ("flipped regardless of this call's outcome"). A page whose
-  // repair does not converge this round is retried by a LATER dirty-priority
-  // round only after every other dirty id has had its own turn; the walk
-  // remains the correctness backstop regardless of how many rounds this
-  // tranche's rotation takes to cycle back to it.
-  //
-  // Only the DIRTY tranche rotates. When this page came from the
-  // incomplete-replay fallback instead, the dirty set was empty, so the
-  // cursor resets to the start — the next dirty row to appear gets picked up
-  // from the beginning rather than from a stale high-water id that would skip
-  // past it.
-  nextDirtyAfterId = rotatingDirtyIds.length > 0 ? (rotatingDirtyIds.at(-1) ?? null) : null;
   // The discovery read above is itself work that can consume the budget, so
   // the deadline is re-checked here — immediately before the expensive unit
-  // and never assumed to still hold from the entry check. Bailing costs
-  // nothing durable: the dirty markers stay set, so the next round selects
-  // exactly these ids again.
+  // and never assumed to still hold from the entry check. Bailing HERE, before
+  // `observe` ever runs, means literally nothing in this page was attempted —
+  // there is no "last attempted id" to advance to, so the cursor still
+  // advances to the last FETCHED id, exactly as before this fix. That is the
+  // one case where fetched-order rotation is still correct: the alternative
+  // (leaving the cursor unmoved) would re-fetch and re-decide-not-to-attempt
+  // the identical page forever under a permanently tight budget, which is the
+  // same "wedge on one page" failure mode this cursor exists to prevent.
+  // Nothing durable is lost either way — the dirty markers stay set, so a
+  // fetched-but-unattempted id is retried by a LATER round regardless of
+  // which fallback fires.
   if (sweepNow() >= args.deadline) {
+    nextDirtyAfterId = rotatingDirtyIds.length > 0 ? (rotatingDirtyIds.at(-1) ?? null) : null;
     return empty;
   }
   const startedAt = Date.now();
@@ -3844,6 +3915,23 @@ async function runDirtyPriorityAcceleration(args: {
     deadline: args.deadline,
     ...args.foldEventCap,
   });
+  // Advance to the last id THIS call actually gave a repair turn to — success,
+  // failure, or deferred all count (see `repairCandidates`'s `attemptedIds`
+  // and this cursor's own doc above for the production starvation this
+  // closes). Only when NOTHING was attempted (discovery itself failed inside
+  // `observeConnectorSummaryEvidence`, or every fetched id turned out not to
+  // be a classified candidate at all — e.g. already clean) does this fall
+  // back to the last FETCHED id, preserving the pre-existing "a page that
+  // cannot make progress still rotates, never wedges" guarantee.
+  //
+  // Only the DIRTY tranche rotates. When this page came from #146's
+  // incomplete-replay fallback instead, the dirty set was empty, so the cursor
+  // resets to the start rather than holding a stale high-water id that would
+  // skip past the next dirty row to appear.
+  nextDirtyAfterId =
+    rotatingDirtyIds.length > 0
+      ? (lastAttemptedDirtyId(rotatingDirtyIds, result.attemptedIds) ?? rotatingDirtyIds.at(-1) ?? null)
+      : null;
   emitScopedObservationUnit(result, pendingIds.length, startedAt);
   try {
     await args.onPageConverged?.(pendingIds, args.maintenanceLease);
