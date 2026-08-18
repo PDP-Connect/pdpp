@@ -152,7 +152,7 @@ test("embedded stream schemas are valid 2020-12 schemas with local references", 
 
 test("trusted native declaration stays in parity with duplicated serving metadata", () => {
   const nativeManifest = JSON.parse(
-    readFileSync(fileURLToPath(new URL("../manifests/northstar-hr.json", import.meta.url)), "utf8")
+    readFileSync(fileURLToPath(new URL("../fixtures/seed-manifests/northstar-hr.json", import.meta.url)), "utf8")
   ) as Record<string, unknown>;
   const declaration = requireSourceDeclaration(nativeManifest.source_declaration);
   assert.deepEqual(declaration.source, {

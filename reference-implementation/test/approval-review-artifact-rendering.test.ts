@@ -105,7 +105,7 @@ async function closeServer(server: TestServerHandle): Promise<void> {
 }
 
 function loadSpotifyManifest(): Record<string, unknown> & { connector_id: string } {
-  return JSON.parse(readFileSync(join(__dirname, "../manifests/spotify.json"), "utf8"));
+  return JSON.parse(readFileSync(join(__dirname, "../fixtures/seed-manifests/spotify.json"), "utf8"));
 }
 
 function sourceManifest() {

@@ -123,7 +123,7 @@ function fakeAdmitRunConnection(): (input: {
 }
 
 test("scheduler does not probe forward-evidence-debt (reconcile) for a connector instance with an already-active run", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-active-run-probe-suppression-"));
   const connectorPath = join(tmpDir, "long-running-connector.mjs");
   const startedMarkerPath = join(tmpDir, "started.marker");

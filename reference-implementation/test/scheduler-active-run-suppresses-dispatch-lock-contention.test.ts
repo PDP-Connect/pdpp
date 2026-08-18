@@ -152,7 +152,7 @@ async function withShortLockWait<T>(waitMs: number, operation: () => Promise<T>)
 
 test("guarded scheduler: a real in-flight run's held write lock never contends with the evidence-reconcile probe", async () => {
   await withShortLockWait(150, async () => {
-    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
     const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-lock-contention-"));
     const connectorPath = join(tmpDir, "long-running-connector.mjs");
     const startedMarkerPath = join(tmpDir, "started.marker");

@@ -76,7 +76,7 @@ interface Manifest {
 }
 
 async function registerSpotify(asUrl: string): Promise<Manifest> {
-  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")) as Manifest;
+  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")) as Manifest;
   const { status } = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(manifest),
     headers: { "Content-Type": "application/json" },

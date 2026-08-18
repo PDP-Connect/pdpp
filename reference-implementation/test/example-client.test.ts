@@ -150,7 +150,7 @@ async function withExampleApp<T>(fn: (baseUrl: string) => Promise<T>): Promise<T
 
 async function registerSpotify(asUrl: string): Promise<ConnectorManifest> {
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as ConnectorManifest;
   const response = await fetch(`${asUrl}/connectors`, {
     body: JSON.stringify(spotifyManifest),

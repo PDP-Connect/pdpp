@@ -141,7 +141,7 @@ test("MCP device authorization emits one CIMD transport event without changing i
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
     const registerResp = await fetch(`${asUrl}/connectors`, {
       body: JSON.stringify(spotifyManifest),
       headers: { "Content-Type": "application/json" },

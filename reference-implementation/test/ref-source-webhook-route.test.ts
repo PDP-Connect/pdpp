@@ -75,7 +75,7 @@ async function withHarness(
 ): Promise<void> {
   const oldSecrets = process.env.PDPP_SOURCE_WEBHOOK_SECRETS;
   const secret = "spotify_source_secret";
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const sourceId = spotifyManifest.connector_id;
   process.env.PDPP_SOURCE_WEBHOOK_SECRETS = `spotify:${secret}:${sourceId}`;
   const server = await startServer({
@@ -126,7 +126,7 @@ async function withRegisteredServer(
   fn: (input: { asUrl: string; rsUrl: string; spotifyConnectorId: string }) => Promise<void>
 ): Promise<void> {
   const oldSecrets = process.env.PDPP_SOURCE_WEBHOOK_SECRETS;
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   process.env.PDPP_SOURCE_WEBHOOK_SECRETS = input.secrets;
   const serverOpts: Parameters<typeof startServer>[0] = {
     asPort: 0,
@@ -210,7 +210,7 @@ async function withPostgresHarness(
         process.env.PDPP_DATABASE_URL = databaseUrl;
         process.env.PDPP_STORAGE_BACKEND = "postgres";
         process.env.PDPP_SOURCE_WEBHOOK_SECRETS = `spotify:${secret}:${sourceId}`;
-        const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+        const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
         const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
         try {
           const asUrl = `http://localhost:${server.asPort}`;
@@ -316,7 +316,7 @@ async function setWebhookBackgroundSafety(input: {
   connectorId: string;
   storage: "postgres" | "sqlite";
 }): Promise<void> {
-  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   manifest.capabilities = {
     ...(manifest.capabilities ?? {}),
     refresh_policy: {

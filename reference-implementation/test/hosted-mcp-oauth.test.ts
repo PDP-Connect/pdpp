@@ -276,7 +276,7 @@ function canonicalizeManifestForRegistration(manifest: ConnectorManifest): Conne
 }
 
 async function registerFirstPartyConnectorFixture(asUrl: string, fixtureName: string): Promise<ConnectorManifest> {
-  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${fixtureName}.json`), "utf8"));
+  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `fixtures/seed-manifests/${fixtureName}.json`), "utf8"));
   const manifest = canonicalizeManifestForRegistration(raw);
   const { status } = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(manifest),
