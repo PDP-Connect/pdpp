@@ -67,7 +67,7 @@ const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const SEED_CLIENT_ID = "pg_path_client_connector_seed";
 
 function loadSpotifyManifest() {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
 }
 
 if (POSTGRES_URL) {

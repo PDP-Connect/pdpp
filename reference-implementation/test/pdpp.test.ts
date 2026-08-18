@@ -1095,7 +1095,7 @@ async function withHarness(fn: (harness: Harness) => Promise<void>): Promise<voi
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const spotifyManifest: ConnectorManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   );
 
   try {
@@ -1114,7 +1114,7 @@ async function withHarness(fn: (harness: Harness) => Promise<void>): Promise<voi
 
 async function withNativeHarness(fn: (harness: NativeHarness) => Promise<void>): Promise<void> {
   const nativeManifest: NativeManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8")
   );
   const server = await startServer({
     asPort: 0,
@@ -1554,7 +1554,7 @@ async function mutateGrantStorageBinding(
 test("PDPP reference implementation integration", async (t) => {
   await t.test("pending consent survives server restart when backed by durable storage", async () => {
     const { dbPath, cleanup } = createTempDbPath();
-    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
 
     let server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0, ...TEST_INTROSPECTION_SERVER_OPTS });
     const asUrl = `http://localhost:${server.asPort}`;
@@ -1607,7 +1607,7 @@ test("PDPP reference implementation integration", async (t) => {
 
   await t.test("expired pending consent is rejected consistently across display and approve paths", async () => {
     const { dbPath, cleanup } = createTempDbPath();
-    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
     const server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0, ...TEST_INTROSPECTION_SERVER_OPTS });
     const asUrl = `http://localhost:${server.asPort}`;
 
@@ -1811,7 +1811,7 @@ test("PDPP reference implementation integration", async (t) => {
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
-    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
 
     try {
       await fetchJson(`${asUrl}/connectors`, {
@@ -4708,7 +4708,7 @@ test("PDPP reference implementation integration", async (t) => {
 
   await t.test("native client reads reject malformed grant storage bindings as invalid grants", async () => {
     const { dbPath, cleanup } = createTempDbPath();
-    const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8"));
+    const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
     let server = await startServer({
       asPort: 0,
       dbPath,
@@ -4787,7 +4787,7 @@ test("PDPP reference implementation integration", async (t) => {
 
   await t.test("native client reads reject grants missing structured storage bindings", async () => {
     const { dbPath, cleanup } = createTempDbPath();
-    const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8"));
+    const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
     let server = await startServer({
       asPort: 0,
       dbPath,
@@ -4865,7 +4865,7 @@ test("PDPP reference implementation integration", async (t) => {
     "polyfill client reads fail connector-first when the persisted storage binding points to an unknown connector",
     async () => {
       const { dbPath, cleanup } = createTempDbPath();
-      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
       let server = await startServer({
         asPort: 0,
         dbPath,
@@ -5019,7 +5019,7 @@ test("PDPP reference implementation integration", async (t) => {
     "native client introspection and revocation reject grants missing structured source bindings",
     async () => {
       const { dbPath, cleanup } = createTempDbPath();
-      const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8"));
+      const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
       let server = await startServer({
         asPort: 0,
         dbPath,
@@ -5111,7 +5111,7 @@ test("PDPP reference implementation integration", async (t) => {
     "polyfill client introspection and revocation reject grants missing structured source bindings",
     async () => {
       const { dbPath, cleanup } = createTempDbPath();
-      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
       let server = await startServer({
         asPort: 0,
         dbPath,
@@ -5216,7 +5216,7 @@ test("PDPP reference implementation integration", async (t) => {
     "polyfill client introspection and reads reject persisted grants with stream contracts that no longer resolve against the manifest",
     async () => {
       const { dbPath, cleanup } = createTempDbPath();
-      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
       const server = await startServer({
         asPort: 0,
         dbPath,
@@ -5305,7 +5305,7 @@ test("PDPP reference implementation integration", async (t) => {
     "polyfill client introspection and reads reject persisted grants whose manifest_version no longer matches the current manifest",
     async () => {
       const { dbPath, cleanup } = createTempDbPath();
-      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+      const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
       const server = await startServer({
         asPort: 0,
         dbPath,
@@ -6346,7 +6346,7 @@ test("PDPP reference implementation integration", async (t) => {
     "grant-scoped polyfill state rejects unknown grants and connector-mismatched grants instead of creating orphaned grant state",
     async () => {
       await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
-        const githubManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/github.json"), "utf8"));
+        const githubManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/github.json"), "utf8"));
         const githubConnectorKey = canonicalConnectorKey(githubManifest.connector_id) ?? githubManifest.connector_id;
         const ownerToken = await issueOwnerToken(asUrl, "u1");
 

@@ -637,7 +637,7 @@ test("composed browser origin carries metadata, owner session, console, device f
   await ensureConsoleBuild();
   const webPort = await allocatePort();
   const webOrigin = `http://127.0.0.1:${webPort}`;
-  const spotifyManifest = JSON.parse(await readFile(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(await readFile(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
 
   const server = await startServer({
     asPort: 0,

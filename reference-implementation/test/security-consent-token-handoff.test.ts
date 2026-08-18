@@ -222,7 +222,7 @@ function countConsentEvents(deviceCode: string, eventType: string): number {
 
 async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<void> {
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as SpotifyManifest;
   const server = await startServer({
     asPort: 0,
@@ -622,7 +622,7 @@ test("security: harden consent token handoff", async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "pdpp-consent-handoff-restart-"));
     const dbPath = join(directory, "pdpp.sqlite");
     const spotifyManifest = JSON.parse(
-      readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+      readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
     ) as SpotifyManifest;
     let first: TestServerHandle | null = null;
     let second: TestServerHandle | null = null;

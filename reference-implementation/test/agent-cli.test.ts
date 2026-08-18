@@ -370,7 +370,7 @@ async function registerSpotify(asUrl: string): Promise<SpotifyManifest> {
   const { join: pjoin, dirname: pdir } = await import("node:path");
   const { fileURLToPath } = await import("node:url");
   const __dir = pdir(fileURLToPath(import.meta.url));
-  const manifest = JSON.parse(rfs(pjoin(__dir, "../manifests/spotify.json"), "utf8")) as SpotifyManifest;
+  const manifest = JSON.parse(rfs(pjoin(__dir, "../fixtures/seed-manifests/spotify.json"), "utf8")) as SpotifyManifest;
   const resp = await fetch(`${asUrl}/connectors`, {
     body: JSON.stringify(manifest),
     headers: { "Content-Type": "application/json" },
