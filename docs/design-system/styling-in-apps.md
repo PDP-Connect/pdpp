@@ -49,9 +49,9 @@ We are **migrating** marketing/concept UI off hand-rolled `.pdpp-*` BEM in
 
 **Still BEM for now** (specificity / cascade hooks — migrate deliberately, don’t ghost-delete):
 
-- `.pdpp-concept` surface (type, links, paper)
+- `.pdpp-editorial` surface (type, links, paper)
 - `.pdpp-doc` prose/table/cmd scoping
-- `.pdpp-cta*` (beats `.pdpp-concept a`)
+- `.pdpp-cta*` (beats `.pdpp-editorial a`)
 - rail sticky behavior until its component owns it
 
 Site agent notes: [`apps/site/AGENTS.md`](../../apps/site/AGENTS.md). Site composition:
@@ -128,7 +128,7 @@ in step with those `@theme` files.
 
 ```tsx
 // good
-className={cn("container max-w-page", home && "[&_[data-slot=pdpp-concept-doc]]:pb-5!", className)}
+className={cn("container max-w-page", home && "[&_[data-slot=pdpp-editorial-doc]]:pb-5!", className)}
 
 // bad
 className={["container", "max-w-page", className].filter(Boolean).join(" ")}
@@ -138,7 +138,7 @@ Import from the package you are in. Do not reach across apps for `cn`.
 
 ### Group Tailwind smush for legibility
 
-Long `cn(...)` strings are unreadable as one blob. **Split by concern**, one string (or a few related strings) per group, with a short `//` comment above each group. Canonical example: [`PdppConceptPage`](../../apps/site/src/components/pdpp-concept/concept-page.tsx).
+Long `cn(...)` strings are unreadable as one blob. **Split by concern**, one string (or a few related strings) per group, with a short `//` comment above each group. Canonical example: [`PdppConceptPage`](../../apps/site/src/components/layout/concept-page.tsx).
 
 ```tsx
 className={cn(
@@ -148,10 +148,10 @@ className={cn(
   "grid grid-cols-[minmax(0,1fr)] items-start",
   // Rail split / mobile collapse
   "has-[>.pdpp-rail]:grid-cols-[…]",
-  "has-[>.pdpp-rail]:[&_[data-slot=pdpp-concept-doc]]:col-[3]",
+  "has-[>.pdpp-rail]:[&_[data-slot=pdpp-editorial-doc]]:col-[3]",
   "max-[720px]:grid-cols-[minmax(0,1fr)] max-[720px]:has-[>.pdpp-rail]:grid-cols-[minmax(0,1fr)]",
   // Short pages
-  home && "[&_[data-slot=pdpp-concept-doc]]:pb-5!",
+  home && "[&_[data-slot=pdpp-editorial-doc]]:pb-5!",
   className,
 )}
 ```
@@ -185,7 +185,7 @@ brand-react/text-variants.ts  →  size= / color= → those TW utils (voice only
 [data-surface="concept"]      →  --foreground ← ink, --primary ← teal, … (tokens/semantic.css)
        ↓                          + type VALUES rebound (concept tokens/semantic.css)
        ↓
-pdpp-concept/text.tsx         →  facade: defaults, concept-only colors/sizes, sectionIndex
+components/typography/text.tsx →  facade: defaults, concept-only colors/sizes, sectionIndex
 ```
 
 Never put a palette name (`ink`, `teal`, `paper`) in the shared table. Ink is a concept *value*, not the shared *name*.
@@ -193,10 +193,10 @@ Never put a palette name (`ink`, `teal`, `paper`) in the shared table. Ink is a 
 | Layer | Path | Owns |
 | --- | --- | --- |
 | **Brand semantic** | [`pdpp-brand/styles/tokens/semantic.css`](../../packages/pdpp-brand/styles/tokens/semantic.css) | shadcn/brand `@theme` (`--color-foreground`, …). Shared `Text` contract. **Sole declaration site for the eight type rungs** (`eyebrow` · `small` · `body` · `lede` · `heading` · `title` · `display` · `hero`), each setting the full quadruple. |
-| **Concept primitives** | [`tokens/primitive.css`](../../apps/site/src/styles/surfaces/concept/tokens/primitive.css) | Runtime palette `--pdpp-concept-*` (+ dark) and BEM rule borders only. Not layout or fonts. No comments inside `:root`/`[data-theme]`; formatter disabled. |
+| **Concept primitives** | [`tokens/primitive.css`](../../apps/site/src/styles/surfaces/concept/tokens/primitive.css) | Runtime palette `--pdpp-editorial-*` (+ dark) and BEM rule borders only. Not layout or fonts. No comments inside `:root`/`[data-theme]`; formatter disabled. |
 | **Concept semantic** | [`tokens/semantic.css`](../../apps/site/src/styles/surfaces/concept/tokens/semantic.css) | Layout `@theme` + `[data-surface="concept"]` palette/type rebind. Fonts: brand `--font-*` via `site.css` — BEM uses `var(--font-serif)` etc., not concept primitives. |
 | **Text variants** | [`brand-react/text-variants.ts`](../../packages/pdpp-brand-react/src/text-variants.ts) + [`text.tsx`](../../packages/pdpp-brand-react/src/text.tsx) | CVA over brand utils. No sectionIndex, no concept-only colors. |
-| **Concept facade** | [`pdpp-concept/text.tsx`](../../apps/site/src/components/pdpp-concept/text.tsx) + [`text-variants.ts`](../../apps/site/src/components/pdpp-concept/text-variants.ts) | Defaults, concept-only colors/sizes (CVA), section-index chrome. |
+| **Concept facade** | [`typography/text.tsx`](../../apps/site/src/components/typography/text.tsx) + [`text-variants.ts`](../../apps/site/src/components/typography/text-variants.ts) | Defaults, concept-only colors/sizes (CVA), section-index chrome. |
 
 #### Text ownership (read this before editing variants)
 
@@ -225,14 +225,14 @@ Never put a palette name (`ink`, `teal`, `paper`) in the shared table. Ink is a 
 
 | `color=` | Utility | Concept binds |
 | --- | --- | --- |
-| `foreground` (default) | `text-foreground` | `--pdpp-concept-ink` |
-| `muted` | `text-muted-foreground` | `--pdpp-concept-ink-soft` |
-| `primary` | `text-primary` | `--pdpp-concept-teal` |
-| `background` | `text-background` | `--pdpp-concept-paper` |
+| `foreground` (default) | `text-foreground` | `--pdpp-editorial-ink` |
+| `muted` | `text-muted-foreground` | `--pdpp-editorial-ink-soft` |
+| `primary` | `text-primary` | `--pdpp-editorial-teal` |
+| `background` | `text-background` | `--pdpp-editorial-paper` |
 
 **Concept-only colors** (facade → semantic util): `subtle` → `text-foreground-faint`; `accentStrong` → `text-primary-emphasis`; `onWash` → `text-primary-on-wash`; `onAccent*` → `text-on-primary-emphasis*`.
 
-**Color vocabulary:** primitives stay `--pdpp-concept-*` in `primitive.css`. `[data-surface="concept"]` in `tokens/semantic.css` rebinds them to shadcn runtime vars (`--foreground`, `--primary`, …). JSX and CVA use shadcn utilities only (`text-foreground`, `bg-primary-emphasis`, …). Legacy `text-ink` / `bg-paper` / `text-teal` utilities live in `compat-palette.css` as aliases → semantic slots (not → primitives); delete each alias when grep is clean.
+**Color vocabulary:** primitives stay `--pdpp-editorial-*` in `primitive.css`. `[data-surface="concept"]` in `tokens/semantic.css` rebinds them to shadcn runtime vars (`--foreground`, `--primary`, …). JSX and CVA use shadcn utilities only (`text-foreground`, `bg-primary-emphasis`, …). Legacy `text-ink` / `bg-paper` / `text-teal` utilities live in `compat-palette.css` as aliases → semantic slots (not → primitives); delete each alias when grep is clean.
 
 **Shared sizes** = ladder 1:1 (`eyebrow` … `hero`). **Concept-only sizes** (facade): `stamp` → brand `eyebrow` + chip extras; `callout`; `deck` (title + normal weight).
 
@@ -251,10 +251,10 @@ The eight-rung ladder is a **brand contract**. Enforce it once; do not copy the 
 | Test file | Owns | Does not own |
 | --- | --- | --- |
 | [`packages/pdpp-brand-react/src/text.test.ts`](../../packages/pdpp-brand-react/src/text.test.ts) | `textVariants.size` ↔ `--text-{rung}:` in [`pdpp-brand/styles/tokens/semantic.css`](../../packages/pdpp-brand/styles/tokens/semantic.css) (1:1, each size emits `text-{rung}`) | Concept packaging, concept color utils, surface value rebinding |
-| [`apps/site/src/components/pdpp-concept/text.test.ts`](../../apps/site/src/components/pdpp-concept/text.test.ts) | Facade behavior — smart quotes default, `sectionIndex` chrome, structural hosts (`li`/`pre`), icon truncation | The ladder list (concept has no `body`/`heading`/… in its CVA table) |
+| [`apps/site/src/components/typography/text.test.ts`](../../apps/site/src/components/typography/text.test.ts) | Facade behavior — smart quotes default, `sectionIndex` chrome, structural hosts (`li`/`pre`), icon truncation | The ladder list (concept has no `body`/`heading`/… in its CVA table) |
 | [`apps/site/scripts/site-surface-ownership.test.ts`](../../apps/site/scripts/site-surface-ownership.test.ts) | Route/surface CSS entrypoint ownership | Type rung names (future site CSS test could live here if needed) |
 
-**Why concept `text.test.ts` is not a duplicate:** `pdpp-concept/text-variants.ts` only declares packaging (`stamp` → brand `eyebrow`; `callout`/`deck` compose existing `text-body`/`text-title`). Editorial rung **values** are rebound in [`concept/tokens/semantic.css`](../../apps/site/src/styles/surfaces/concept/tokens/semantic.css) under `[data-surface="concept"]` — same mechanism as color remapping, not a second `size` axis.
+**Why concept `text.test.ts` is not a duplicate:** `typography/text-variants.ts` only declares packaging (`stamp` → brand `eyebrow`; `callout`/`deck` compose existing `text-body`/`text-title`). Editorial rung **values** are rebound in [`concept/tokens/semantic.css`](../../apps/site/src/styles/surfaces/concept/tokens/semantic.css) under `[data-surface="concept"]` — same mechanism as color remapping, not a second `size` axis.
 
 **When you add a rung:** update brand `semantic.css` + `tw-merge.ts` + `brand-react/text-variants.ts`. The brand test fails if any step is missed. Surfaces only rebind `--text-{rung}*` under their selector.
 
@@ -271,7 +271,7 @@ Canonical: [`text-variants.ts`](../../packages/pdpp-brand-react/src/text-variant
 
 ### Migrating editorial type (BEM → `Text`)
 
-Canonical worked example: [`PdppFrontDoor`](../../apps/site/src/components/pdpp-concept/front-door.tsx) (replaced `.pdpp-hero*` + raw `text-[…]`).
+Canonical worked example: [`PdppFrontDoor`](../../apps/site/src/components/sections/front-door.tsx) (replaced `.pdpp-hero*` + raw `text-[…]`).
 
 **Method — same PR, in order:**
 
@@ -296,7 +296,7 @@ Canonical worked example: [`PdppFrontDoor`](../../apps/site/src/components/pdpp-
 
 **Copy rhythm (default):** put `Text` siblings in a `flex flex-col` stack and own spacing with `gap-*`. Nest sub-stacks when the design uses different steps (e.g. `gap-5` for title block, `gap-3` for a body pair, outer `gap-7` before CTAs).
 
-`.pdpp-concept` is **surface only** (paper/ink/serif) — it does **not** set `p` margins. Legacy article rhythm is `.pdpp-doc p:not([data-slot=pdpp-concept-text])` (raw `<p>` only). `<Text>` is excluded — composed stacks own spacing with `gap-*` and do not need `mb-0!`.
+`.pdpp-editorial` is **surface only** (paper/ink/serif) — it does **not** set `p` margins. Legacy article rhythm is `.pdpp-doc p:not([data-slot=pdpp-editorial-text])` (raw `<p>` only). `<Text>` is excluded — composed stacks own spacing with `gap-*` and do not need `mb-0!`.
 
 ```tsx
 className={cn("flex flex-col gap-7 …")}
@@ -344,7 +344,7 @@ Do not add a new `.pdpp-hero__*` block when a size already covers the type. Do n
 
 ## Specificity while BEM remains
 
-Unlayered `.pdpp-concept a` / `.pdpp-doc p:not([data-slot])` / leftover heading BEM often beat a single TW utility.
+Unlayered `.pdpp-editorial a` / `.pdpp-doc p:not([data-slot])` / leftover heading BEM often beat a single TW utility.
 
 - CTAs: keep `pdpp-cta*` / concept `Button` until that specificity is owned in JSX.
 - Migrating margins/colors: measure computed styles; use `!` when the unlayered selector wins, or finish the BEM delete in the same change.
