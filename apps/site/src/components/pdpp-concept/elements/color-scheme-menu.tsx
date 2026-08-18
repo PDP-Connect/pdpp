@@ -15,8 +15,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover.tsx";
 import { cn } from "@/lib/utils.ts";
+import { conceptColorSchemeNames, primitiveConceptColorSchemeName } from "../generated-color-scheme-names.ts";
 import { Button } from "./button.tsx";
-import { conceptColorSchemeNames, primitiveConceptColorSchemeName } from "./generated-color-scheme-names.ts";
 
 const SCHEME_QUERY_KEY = "scheme";
 const SCHEME_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;

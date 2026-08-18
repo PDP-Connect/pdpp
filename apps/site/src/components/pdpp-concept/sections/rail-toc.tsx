@@ -4,7 +4,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { PdppRailSectionLabel } from "@/components/pdpp-concept/rail-section-label.tsx";
+import { PdppRailSectionLabel } from "@/components/pdpp-concept/sections/rail-section-label.tsx";
 import { cn } from "@/lib/utils.ts";
 
 export interface PdppRailTocItem {

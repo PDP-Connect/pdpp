@@ -3,7 +3,7 @@
 
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import type { ReactNode } from "react";
-import { PdppConceptShell } from "@/components/pdpp-concept/concept-shell.tsx";
+import { PdppConceptShell } from "@/components/pdpp-concept/layout/concept-shell.tsx";
 import { specDocsOptions } from "@/lib/docs-shared.tsx";
 import { getSpecNavTree } from "@/lib/docs-source.ts";
 import { getSpecFrontMatter } from "@/lib/spec-front-matter.ts";

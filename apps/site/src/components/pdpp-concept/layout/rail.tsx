@@ -1,10 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { PdppRailToc, type PdppRailTocItem } from "@/components/pdpp-concept/rail-toc.tsx";
+import { PdppRailToc, type PdppRailTocItem } from "@/components/pdpp-concept/sections/rail-toc.tsx";
 import { cn } from "@/lib/utils.ts";
 
-export type { PdppRailTocItem } from "@/components/pdpp-concept/rail-toc.tsx";
+export type { PdppRailTocItem } from "@/components/pdpp-concept/sections/rail-toc.tsx";
 
 export interface PdppRailProps {
   toc: readonly PdppRailTocItem[];

@@ -31,7 +31,7 @@ test("site presentation ownership stays explicit at route boundaries", async () 
       readSiteFile("app/specification/layout.tsx"),
       readSiteFile("app/not-found.tsx"),
       readSiteFile("components/docs/prose-page.tsx"),
-      readSiteFile("components/pdpp-concept/concept-shell.tsx"),
+      readSiteFile("components/pdpp-concept/layout/concept-shell.tsx"),
       readSiteFile("styles/site.css"),
     ]);
 

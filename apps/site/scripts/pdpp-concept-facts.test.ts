@@ -100,7 +100,7 @@ test("no site source file hand-types the GitHub repo URL outside site-facts.ts",
     "src/components/docs/source-link.tsx",
     "src/app/specification/[[...slug]]/page.tsx",
     "src/app/(concept)/self-host/coverage/data.ts",
-    "src/components/pdpp-concept/footer.tsx",
+    "src/components/pdpp-concept/layout/footer.tsx",
   ];
 
   for (const relativePath of filesThatMustDeriveIt) {

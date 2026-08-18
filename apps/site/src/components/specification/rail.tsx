@@ -14,8 +14,8 @@ import {
 } from "fumadocs-ui/layouts/docs/slots/sidebar";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PdppRailFrontMatter } from "@/components/pdpp-concept/rail-front-matter.tsx";
-import { PdppRailSectionLabel } from "@/components/pdpp-concept/rail-section-label.tsx";
+import { PdppRailFrontMatter } from "@/components/pdpp-concept/sections/rail-front-matter.tsx";
+import { PdppRailSectionLabel } from "@/components/pdpp-concept/sections/rail-section-label.tsx";
 import { useSpecRailData } from "./rail-context.tsx";
 
 // The `slots.sidebar.root` replacement.

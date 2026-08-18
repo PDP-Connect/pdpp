@@ -9,9 +9,9 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { publicSiteNav } from "@/lib/public-site-nav.ts";
 import { cn } from "@/lib/utils.ts";
-import { SearchIcon, WordmarkIcon } from "./icons.tsx";
-import { Text } from "./text.tsx";
-import { PdppThemeSwitch } from "./theme-switch.tsx";
+import { SearchIcon, WordmarkIcon } from "../elements/icons.tsx";
+import { PdppThemeSwitch } from "../elements/theme-switch.tsx";
+import { Text } from "../text.tsx";
 
 // Search lives in the global nav, not on any page. The owner's finding was that
 // a page-level search box is furniture on a front door and mis-sized on the spec

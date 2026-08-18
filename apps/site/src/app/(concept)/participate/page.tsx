@@ -3,11 +3,11 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { PdppConceptDocHeader } from "@/components/pdpp-concept/concept-doc-header.tsx";
-import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
-import { PdppConceptSection } from "@/components/pdpp-concept/concept-section.tsx";
-import { DiscordIcon, GithubIcon } from "@/components/pdpp-concept/icons.tsx";
-import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
+import { DiscordIcon, GithubIcon } from "@/components/pdpp-concept/elements/icons.tsx";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/layout/concept-page.tsx";
+import { PdppRail } from "@/components/pdpp-concept/layout/rail.tsx";
+import { PdppConceptDocHeader } from "@/components/pdpp-concept/sections/concept-doc-header.tsx";
+import { PdppConceptSection } from "@/components/pdpp-concept/sections/concept-section.tsx";
 import {
   DISCORD_INVITE_URL,
   GITHUB_MAINTAINERS_URL,
