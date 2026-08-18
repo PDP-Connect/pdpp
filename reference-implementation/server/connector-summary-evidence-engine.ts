@@ -2081,6 +2081,16 @@ function terminalFactsForRepair(existing: Row | undefined, row: Row, manifestGen
 // ---------------------------------------------------------------------------
 
 export interface ReconcileResult {
+  /**
+   * Every id `repair()` was actually invoked for this call, in attempt
+   * order — success, failure, and deferred outcomes all count as
+   * "attempted"; an id fetched but never reached because the deadline
+   * expired, or an id that was never classified as a candidate at all
+   * (e.g. it turned out clean), is excluded. See
+   * `runDirtyPriorityAcceleration` (connector-summary-read-model.ts) for
+   * the fairness-rotation cursor this feeds.
+   */
+  readonly attemptedIds: readonly string[];
   /** Safe, finite classification labels and their candidate counts. */
   readonly candidateReasonCounts: Readonly<Record<RepairCandidateReason, number>>;
   /** Number of canonical connection rows inspected during discovery. */
