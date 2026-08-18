@@ -264,7 +264,7 @@ interface ManifestLike {
 }
 
 function loadSpotifyManifest(): ManifestLike {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
 }
 
 async function registerConnector(asUrl: string, manifest: ManifestLike): Promise<void> {

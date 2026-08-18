@@ -66,7 +66,7 @@ async function closeServer(server: TestServerHandle): Promise<void> {
 }
 
 function loadSpotifyManifest(): Record<string, unknown> & { connector_id: string } {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
 }
 
 async function setup(backend: Backend = "sqlite", databaseUrl = POSTGRES_URL) {

@@ -27,7 +27,7 @@ import { createSqliteConnectorInstanceStore } from "../server/stores/connector-i
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
-const SPOTIFY_MANIFEST = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+const SPOTIFY_MANIFEST = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
 
 const TEST_PASSWORD = "hosted-ui-test-password";
 const OWNER_SUBJECT_ID = "owner_local";

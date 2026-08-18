@@ -35,7 +35,7 @@ const SPOTIFY_INSTANCE_ID = "cin_spotify_test";
 
 type RefTestServer = Awaited<ReturnType<typeof startServer>>;
 
-// Manifest shape read directly from `manifests/spotify.json`. Only the
+// Manifest shape read directly from `fixtures/seed-manifests/spotify.json`. Only the
 // field this suite touches (`connector_id` as a fallback for
 // `canonicalConnectorKeyFromManifest`) is declared.
 interface ConnectorManifest {
@@ -142,7 +142,7 @@ async function withServer(fn: (ctx: { asUrl: string; server: RefTestServer }) =>
 
 async function registerSpotifyManifest(asUrl: string): Promise<ConnectorManifest> {
   const manifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as ConnectorManifest;
   const resp = await fetch(`${asUrl}/connectors`, {
     body: JSON.stringify(manifest),

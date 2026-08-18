@@ -85,7 +85,7 @@ const FORCED_POSTGRES_DENIAL_ROLLBACK_RE = /forced postgres denial rollback/;
 const GRANT_BINDING_RE = /Grant is malformed|grant/i;
 const PROJECTED_DECLARATION_VERSION_RE = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
 function loadSpotifyManifest() {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
 }
 
 function createDecisionPause(): { paused: Promise<void>; release: () => void; hook: () => Promise<void> } {
