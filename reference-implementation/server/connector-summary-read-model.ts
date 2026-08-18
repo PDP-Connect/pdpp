@@ -275,6 +275,12 @@ export function normalizeSourceEventSeq(sourceEventSeq: unknown): number | null 
 function createConnectorSummaryStore() {
   if (isPostgresStorageBackend()) {
     return {
+      async countDirty(): Promise<number> {
+        const result = await postgresQuery<{ n: string | number }>(
+          "SELECT COUNT(*)::text AS n FROM connector_summary_evidence WHERE dirty <> 0"
+        );
+        return Number(result.rows[0]?.n ?? 0);
+      },
       async listDirtyInstanceIds({ afterId = null, limit }: { afterId?: string | null; limit: number }) {
         const result = afterId
           ? await postgresQuery(
@@ -498,6 +504,12 @@ function createConnectorSummaryStore() {
     };
   }
   return {
+    countDirty(): number {
+      const row = getDb().prepare("SELECT COUNT(*) AS n FROM connector_summary_evidence WHERE dirty <> 0").get() as {
+        n: number;
+      };
+      return row.n;
+    },
     listDirtyInstanceIds({ afterId = null, limit }: { afterId?: string | null; limit: number }) {
       const rows = (
         afterId
@@ -3572,6 +3584,26 @@ async function readDirtyInstanceIdPage(afterId: string | null, limit: number): P
   }
 }
 
+/**
+ * Cheap fleet-wide `COUNT(*) WHERE dirty <> 0`, read ONCE per bounded-sweep
+ * call, before either tranche runs (design reviewer P2-4: "no-progress
+ * telemetry"). This is the eligible-backlog half of the round's progress
+ * signal (see `runBoundedSummaryEvidenceSweep`'s progress-definition doc for
+ * the full reasoning and why `repaired > 0` alone is the wrong signal).
+ * Best-effort exactly like `readDirtyInstanceIdPage`: a count-read failure
+ * must never fail the sweep itself, only make this one round's progress
+ * telemetry report `0` (indistinguishable from "genuinely no backlog" to a
+ * caller that only sees the count) — the same fail-open posture design.md
+ * requires of every telemetry read in this file.
+ */
+async function readEligibleBacklogCount(): Promise<number> {
+  try {
+    return await createConnectorSummaryStore().countDirty();
+  } catch {
+    return 0;
+  }
+}
+
 function isExpectedProjectionRace(error: unknown): boolean {
   return error instanceof Error && error.name === TERMINAL_PROJECTION_PUBLICATION_RACE;
 }
@@ -3601,6 +3633,7 @@ async function runCursorWalk(args: {
   readonly coveredCompleteSet: boolean;
   readonly cursor: string | null;
   readonly discovered: number;
+  readonly failed: number;
   readonly repaired: number;
   readonly skipped: number;
 }> {
@@ -3609,6 +3642,7 @@ async function runCursorWalk(args: {
   let discovered = 0;
   let repaired = 0;
   let skipped = 0;
+  let failed = 0;
   let pages = 0;
   let coveredCompleteSet = false;
   let anyFoldIncomplete = false;
@@ -3656,6 +3690,7 @@ async function runCursorWalk(args: {
     discovered += pageIds.length;
     repaired += pageResult.reconciled;
     skipped += pageResult.skipped;
+    failed += pageResult.failed;
     emitScopedObservationUnit(pageResult, pageIds.length, pageStartedAt);
     if (pageResult.incomplete) {
       // Evidence folding and terminal projection publication are separate
@@ -3700,7 +3735,7 @@ async function runCursorWalk(args: {
     }
   }
 
-  return { anyFoldIncomplete, coveredCompleteSet, cursor, discovered, repaired, skipped };
+  return { anyFoldIncomplete, coveredCompleteSet, cursor, discovered, failed, repaired, skipped };
 }
 
 /**
@@ -3872,11 +3907,12 @@ async function runDirtyPriorityAcceleration(args: {
   ) => Promise<void>;
 }): Promise<{
   readonly discovered: number;
+  readonly failed: number;
   readonly incomplete: boolean;
   readonly repaired: number;
   readonly skipped: number;
 }> {
-  const empty = { discovered: 0, incomplete: false, repaired: 0, skipped: 0 };
+  const empty = { discovered: 0, failed: 0, incomplete: false, repaired: 0, skipped: 0 };
   if (sweepNow() >= args.deadline) {
     return empty;
   }
@@ -3945,6 +3981,7 @@ async function runDirtyPriorityAcceleration(args: {
     }
     return {
       discovered: pendingIds.length,
+      failed: result.failed,
       incomplete: true,
       repaired: result.reconciled,
       skipped: result.skipped,
@@ -3952,6 +3989,7 @@ async function runDirtyPriorityAcceleration(args: {
   }
   return {
     discovered: pendingIds.length,
+    failed: result.failed,
     incomplete: result.incomplete,
     repaired: result.reconciled,
     skipped: result.skipped,
@@ -4000,6 +4038,21 @@ function sweepNow(): number {
 export interface BoundedSweepResult {
   /** Total instances discovered+repaired+considered across every page processed this call. */
   readonly discovered: number;
+  /**
+   * The durably-dirty backlog (`COUNT(*) WHERE dirty <> 0`), read ONCE,
+   * before either tranche runs this round (design reviewer finding P2-4).
+   * This is the "eligible backlog" half of round-level progress — see
+   * `createResumableConnectorMaintenanceSweep`'s no-progress-counter doc in
+   * connector-maintenance-sweep.ts for the full progress definition, why
+   * `repaired > 0` is the wrong signal, and the real production incident
+   * (dirty backlog pinned at 8 rows for many minutes while passes alternated
+   * `repaired: 1` / `repaired: 0`) this metric exists to catch. A cheap,
+   * indexed read (same shape/cost as `readDirtyInstanceIdPage`'s own query,
+   * minus the row payload) — never itself a source of round-budget pressure.
+   */
+  readonly eligibleBacklog: number;
+  /** Round-level count of candidates/units this call's tranches reported as failed (discovery failure or a per-candidate repair failure — includes a `PostgresStatementTimeoutError` unit abort). Distinct from `skipped` (deferred, never attempted) and `incomplete` (deadline/fold budget exhausted). */
+  readonly failed: number;
   /**
    * `true` when the sweep reached the deadline (or the page-count cap)
    * before covering the complete canonical set, OR when a page's OWN fold
@@ -4137,9 +4190,17 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   const pageSize = options.pageSize ?? 25;
   const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
 
+  // Read ONCE, before either tranche runs (design reviewer finding P2-4's
+  // progress-definition requirement — see `eligibleBacklog`'s own doc on
+  // `BoundedSweepResult`). Best-effort: a failed count read must never fail
+  // or delay the sweep itself, so this is never awaited under the round's
+  // deadline gate the way a page read is.
+  const eligibleBacklog = await readEligibleBacklogCount();
+
   let discovered = 0;
   let repaired = 0;
   let skipped = 0;
+  let failed = 0;
 
   // Maintenance-priority acceleration (2026-08-10, extended 2026-08-13).
   // The cursor walk is the
@@ -4238,6 +4299,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     discovered += walk.discovered;
     repaired += walk.repaired;
     skipped += walk.skipped;
+    failed += walk.failed;
     return walk;
   }
 
@@ -4256,10 +4318,11 @@ export async function runBoundedSummaryEvidenceSweep(options: {
             ...(options.maintenanceLease ? { maintenanceLease: options.maintenanceLease } : {}),
             ...(options.onPageConverged ? { onPageConverged: options.onPageConverged } : {}),
           })
-        : { discovered: 0, incomplete: false, repaired: 0, skipped: 0 };
+        : { discovered: 0, failed: 0, incomplete: false, repaired: 0, skipped: 0 };
     discovered += acceleration.discovered;
     repaired += acceleration.repaired;
     skipped += acceleration.skipped;
+    failed += acceleration.failed;
     return acceleration;
   }
 
@@ -4288,6 +4351,8 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   const incomplete = !coveredCompleteSet || anyFoldIncomplete;
   return {
     discovered,
+    eligibleBacklog,
+    failed,
     incomplete,
     prunedComplete,
     repaired,

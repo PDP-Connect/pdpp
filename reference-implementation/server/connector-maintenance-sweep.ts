@@ -47,6 +47,20 @@ export interface ConnectorMaintenanceSweepOptions {
   readonly evidenceSweepMaxDurationMs?: number;
   readonly evidenceSweepPageSize?: number;
   readonly nowIso?: () => string;
+  /**
+   * Fires once the eligible dirty backlog has gone `NO_PROGRESS_ALERT_THRESHOLD_PASSES`
+   * consecutive rounds without shrinking or a complete-set prune (design
+   * reviewer finding P2-4) AND the current round's backlog is still
+   * non-zero — never on an already-empty backlog that simply has no work
+   * left to do. Best-effort, same posture as `onPhaseError`: never awaited,
+   * never allowed to affect sweep control flow. See `roundMadeProgress`'s
+   * doc for the exact progress definition and why `repaired > 0` is the
+   * wrong signal.
+   */
+  readonly onNoProgressAlert?: (info: {
+    readonly consecutiveNoProgressPasses: number;
+    readonly eligibleBacklog: number;
+  }) => void;
   readonly onPhaseError?: (
     phase: "attention" | "evidence" | "run_history_backfill" | "search_index_dirty" | "shells",
     err: unknown
@@ -72,11 +86,51 @@ export interface ConnectorMaintenanceSweepOptions {
 }
 
 interface ResumableEvidenceSweepResult {
+  /**
+   * Round-level progress fields (design reviewer finding P2-4), read
+   * best-effort from the adapter's raw result — `undefined` (never `null`)
+   * when the caller's `runEvidenceSweep` did not report them, which
+   * `roundMadeProgress` and the no-progress counter both treat as "unknown,
+   * assume progress" (fail-open: a caller that doesn't report these fields
+   * must never manufacture a false alert). See
+   * `runBoundedSummaryEvidenceSweep`'s `BoundedSweepResult.eligibleBacklog`
+   * doc for what these fields mean and why.
+   */
+  readonly eligibleBacklog?: number;
+  readonly failed?: number;
   readonly incomplete: boolean;
+  readonly prunedComplete?: boolean;
   readonly resumeAfterId: string | null;
 }
 
 const DEFAULT_CURSOR_LEASE_DURATION_MS = 30_000;
+
+/**
+ * Consecutive no-progress PASSES (transitions between two successive
+ * backlog observations that failed to shrink) before the maintenance sweep
+ * alerts (design reviewer finding P2-4). `runBoundedSummaryEvidenceSweep`'s
+ * own doc documents a HARD 2-ROUND starvation bound between the walk and
+ * acceleration tranches: a single round can legitimately report zero
+ * backlog movement while that alternation is simply giving the other
+ * tranche its turn, and `onPageConverged` publication races
+ * (`isExpectedProjectionRace`) can cost a round's progress too. N=3 clears
+ * that normal 2-round alternation noise with one round of margin, while
+ * still catching a genuinely stuck backlog fast: at the production
+ * maintenance-tick interval (`CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS`,
+ * ~60s in `server/index.ts`), 3 consecutive no-progress PASSES is ~3
+ * minutes — versus the real 2026-08-17 incident, which sat unnoticed for
+ * over an hour and was only found by manually polling the database.
+ *
+ * NOTE — a "pass" is a TRANSITION, not a raw round count: the first round
+ * this process ever observes a backlog number has nothing to compare
+ * against, so it bootstraps the baseline rather than counting as either a
+ * progress or a no-progress pass (see `nextNoProgressTrackingState`). A
+ * backlog stuck at the same value therefore alerts on its 4th consecutive
+ * observed round (1 baseline + 3 non-shrinking transitions) — worst case
+ * one extra ~60s tick beyond N, still on the order of minutes, not the real
+ * incident's hour-plus.
+ */
+const NO_PROGRESS_ALERT_THRESHOLD_PASSES = 3;
 
 /** The other tranche — the alternation this module keeps across ticks. */
 function otherTranche(tranche: "walk" | "acceleration"): "walk" | "acceleration" {
@@ -111,7 +165,109 @@ function readResumableEvidenceSweepResult(
   if (result.incomplete && (result.resumeAfterId === "" || (result.resumeAfterId === null && currentCursor !== null))) {
     return null;
   }
-  return { incomplete: result.incomplete, resumeAfterId: result.resumeAfterId as string | null };
+  return {
+    incomplete: result.incomplete,
+    resumeAfterId: result.resumeAfterId as string | null,
+    // Optional telemetry fields: read defensively (never rejected as
+    // malformed) — an adapter that omits or malshapes them loses only the
+    // no-progress ALERT, never the resumable-cursor contract the strict
+    // validation above protects.
+    ...(typeof result.eligibleBacklog === "number" ? { eligibleBacklog: result.eligibleBacklog } : {}),
+    ...(typeof result.failed === "number" ? { failed: result.failed } : {}),
+    ...(typeof result.prunedComplete === "boolean" ? { prunedComplete: result.prunedComplete } : {}),
+  };
+}
+
+/**
+ * Progress definition (design reviewer finding P2-4): a round made progress
+ * when the eligible dirty backlog genuinely shrank, OR a complete-set orphan
+ * prune ran. Read from `ResumableEvidenceSweepResult`'s optional telemetry
+ * fields — see that interface's doc for the fail-open "unknown means assume
+ * progress" contract when a caller does not report them.
+ *
+ * Deliberately NOT `repaired > 0`: `onPageConverged` fires once from the
+ * walk tranche and once from the acceleration tranche whenever both process
+ * the same fleet in one round (a counter hooked there double-counts), and —
+ * more fundamentally — `repaired > 0` is satisfied by repairing rows that
+ * are immediately re-dirtied by something else, which is exactly the real
+ * incident this metric exists to catch: production sat with the dirty
+ * backlog pinned at 8 rows for many minutes while passes alternated
+ * `repaired: 1` / `repaired: 0`, and every pass reported `incomplete: true`.
+ * A round that "repairs" a row without ever reducing the backlog is doing
+ * work, not making progress on the thing an operator cares about — whether
+ * the backlog is actually draining.
+ *
+ * Also deliberately NOT cursor movement: `runCursorWalk` does not null its
+ * cursor on completing a short page — it sets `cursor = pageIds.at(-1) ??
+ * cursor`, then breaks with `coveredCompleteSet = true` on
+ * `pageIds.length < pageSize`, leaving the cursor pinned at the LAST id
+ * rather than clearing it. A cursor-movement signal would therefore report
+ * "no progress" on every round after the walk reaches the end of a short
+ * fleet, even though the walk is genuinely complete and converged — a false
+ * alarm, not the real incident.
+ *
+ * Backlog-count-BY-REASON (e.g. "how many of these 8 are re-dirtied vs.
+ * genuinely new") is NOT provided and was not attempted: classifying a
+ * dirty row's reason requires joining live canonical authorities per
+ * candidate, which is exactly the unbounded discovery pass this bounded-
+ * sweep architecture exists to avoid paying on every round. The counter
+ * below answers "is the backlog stuck", which is what an operator needs to
+ * go look — not "why", which needs a targeted investigation regardless.
+ */
+function roundMadeProgress(
+  currentEligibleBacklog: number,
+  previousEligibleBacklog: number,
+  prunedComplete: boolean
+): boolean {
+  return prunedComplete === true || currentEligibleBacklog < previousEligibleBacklog;
+}
+
+interface NoProgressTrackingState {
+  readonly consecutiveNoProgressPasses: number;
+  readonly lastEligibleBacklog: number | null;
+}
+
+/**
+ * Computes the next no-progress-tracking state for one genuinely-run round
+ * and fires the alert once the threshold is crossed on a still-non-empty
+ * backlog. Extracted from `runEvidenceSweepRound` to keep that function's
+ * cognitive complexity within the repo's lint budget — this is pure
+ * bookkeeping with no cursor/lease concerns of its own. Returns (rather than
+ * mutates) the next state; the caller writes it back into its own closure
+ * variables (process-local, same contract as `nextFirstTranche`).
+ */
+function nextNoProgressTrackingState(
+  result: ResumableEvidenceSweepResult,
+  state: NoProgressTrackingState,
+  onNoProgressAlert?: (info: { readonly consecutiveNoProgressPasses: number; readonly eligibleBacklog: number }) => void
+): NoProgressTrackingState {
+  if (result.eligibleBacklog === undefined) {
+    return state;
+  }
+  if (state.lastEligibleBacklog === null) {
+    // Bootstrap: the first round this process has ever observed a backlog
+    // count has nothing to compare against, so it is neither a progress NOR
+    // a no-progress pass — it does not consume a slot in the counter (an
+    // earlier revision treated it as an implicit "progress" reset, which
+    // silently added one extra round of delay before the N=3 threshold
+    // could ever be reached — caught by this module's own test suite).
+    return { consecutiveNoProgressPasses: 0, lastEligibleBacklog: result.eligibleBacklog };
+  }
+  const consecutiveNoProgressPasses = roundMadeProgress(
+    result.eligibleBacklog,
+    state.lastEligibleBacklog,
+    result.prunedComplete === true
+  )
+    ? 0
+    : state.consecutiveNoProgressPasses + 1;
+  if (result.eligibleBacklog > 0 && consecutiveNoProgressPasses >= NO_PROGRESS_ALERT_THRESHOLD_PASSES) {
+    try {
+      onNoProgressAlert?.({ consecutiveNoProgressPasses, eligibleBacklog: result.eligibleBacklog });
+    } catch {
+      // Alerting must never affect sweep control flow.
+    }
+  }
+  return { consecutiveNoProgressPasses, lastEligibleBacklog: result.eligibleBacklog };
 }
 
 /**
@@ -145,6 +301,12 @@ export function createResumableConnectorMaintenanceSweep(
   let evidenceSweepInFlight = false;
   let observedResumeAfterId: string | null = null;
   let nextFirstTranche: "walk" | "acceleration" = "walk";
+  // No-progress tracking (design reviewer finding P2-4): in-process closure
+  // state, reset on restart — same bounded-harmless contract as
+  // `nextFirstTranche` above (worst case after a restart is losing up to
+  // `NO_PROGRESS_ALERT_THRESHOLD_PASSES - 1` rounds of accumulated count,
+  // never a false alert, never a missed one beyond that bounded window).
+  let noProgressTracking: NoProgressTrackingState = { consecutiveNoProgressPasses: 0, lastEligibleBacklog: null };
   const runEvidenceSweepRound = async (args: {
     readonly afterId?: string | null;
     readonly maxDurationMs: number;
@@ -179,6 +341,11 @@ export function createResumableConnectorMaintenanceSweep(
       if (!result) {
         throw new Error("Maintenance evidence sweep returned an invalid resumable result.");
       }
+      // Counter update happens for every genuinely-run round, regardless of
+      // whether the cursor commit below succeeds — the round DID run and DID
+      // (or did not) make progress; a lost cursor commit is a separate,
+      // already-handled concern (the round is simply discarded and retried).
+      noProgressTracking = nextNoProgressTrackingState(result, noProgressTracking, options.onNoProgressAlert);
       const nextCursor = result.incomplete ? result.resumeAfterId : null;
       committed = await cursorStore.commit({
         lease,
