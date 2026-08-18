@@ -296,11 +296,6 @@
   }
 }
 
-[data-pdpp-doc-theme] .pdpp-docs-hero__content h1,
-[data-pdpp-doc-theme] #nd-page h1 {
-  font-family: var(--font-serif);
-}
-
 [data-pdpp-doc-theme] .pdpp-docs-description {
   max-width: 56ch;
   margin-bottom: 0;
@@ -409,17 +404,17 @@
   }
 }
 
+/* Type (font-size/line-height) moved onto the `Text` ladder — see mdx.tsx
+   (h1-h4/p/li/blockquote) and text-variants.ts. This rule keeps only the
+   fumadocs `.prose` color-token bridge and the ink color for non-Text prose
+   chrome (e.g. Fumadocs-owned nodes this file doesn't wrap in `Text`). */
 [data-pdpp-doc-theme] .pdpp-docs-body.prose {
   --tw-prose-body: var(--pdpp-concept-ink);
-  font-size: 17px;
-  line-height: 1.65;
   color: var(--pdpp-concept-ink);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body :where(h2, h3, h4) {
-  font-family: var(--font-serif);
   color: var(--pdpp-concept-ink);
-  letter-spacing: normal;
 }
 
 /* Generated specification headings are fragment targets for Fumadocs' TOC.
@@ -453,8 +448,6 @@
 [data-pdpp-doc-theme] .pdpp-docs-body h2 {
   margin-top: 3.25rem;
   margin-bottom: 1rem;
-  font-size: clamp(1.45rem, 2vw, 1.82rem);
-  line-height: 1.08;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body > h2:first-child,
@@ -470,23 +463,25 @@
 [data-pdpp-doc-theme] .pdpp-docs-body h3 {
   margin-top: 2rem;
   margin-bottom: 0.75rem;
-  font-size: 1.12rem;
-  line-height: 1.2;
-}
-
-[data-pdpp-doc-theme] .pdpp-docs-body p,
-[data-pdpp-doc-theme] .pdpp-docs-body li {
-  color: var(--pdpp-concept-ink);
-}
-
-[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(strong) {
-  font-weight: 700;
-  color: inherit;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body li {
   margin-top: 6px;
   margin-bottom: 6px;
+}
+
+/* `Text`'s own base class carries `[&_strong]:font-medium` (500) — the site-
+   wide default, but currently unused/unverified on any shipped marketing
+   page (no <strong> ships on /, /self-host, /participate, /maintainers as of
+   this writing). The spec leans on <strong> functionally, as inline
+   mini-headers inside list items (see spec-core.md's protocol-surface list),
+   and measured in a browser, font-medium reads as barely distinguishable
+   from the surrounding 400 body weight at the serif lede rung — a real
+   legibility loss, not just a metric delta. Restated here as a scoped
+   exception rather than changing `Text`'s shared base class for every future
+   caller sitewide off a single, untested surface. */
+[data-pdpp-doc-theme] .pdpp-docs-body :where(strong) {
+  font-weight: 700;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body a {
