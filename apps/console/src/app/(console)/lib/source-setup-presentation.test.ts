@@ -144,3 +144,30 @@ test("preview + a not_available_here disposition is not offered", () => {
   });
   assert.equal(isRunnableAddOffer(entry), false, "an unsupported disposition must never be offered as runnable");
 });
+
+test("preview + browser_collector_manual (Venmo) is offered on /sources/add", () => {
+  // Root-caused live bug: the Venmo connector shipped with publicTier
+  // "development" (unproven-against-a-real-account, matching its manifest's
+  // own header comment), which unconditionally withholds the add offer
+  // regardless of disposition -- so it never appeared on /sources/add even
+  // though it is registered, owner-actionable, and browser_bound with static
+  // credential capture like reddit/amazon (disposition
+  // "browser_collector_manual", which resolves to availability
+  // "available_now"). Venmo has the same evidence profile that moved Signal
+  // to Preview: fixture-driven unit/integration tests pass, but no live run
+  // against a real account has been recorded. Promoted to "preview" so the
+  // owner can opt in to perform that first live run.
+  const venmo = makeEntry({
+    connectorKey: "venmo",
+    disposition: "browser_collector_manual",
+    displayName: "Venmo",
+    modality: "browser_bound",
+    publicTier: "preview",
+    setupModality: "static_secret",
+  });
+  assert.equal(
+    isRunnableAddOffer(venmo),
+    true,
+    "a registered, owner-actionable preview-tier browser-bound entry must be offered on /sources/add"
+  );
+});
