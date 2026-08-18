@@ -57,10 +57,11 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "assisted_after_owner_auth": true,
-      "rationale": "Manual only while this connector stays unproven and unlisted. Once proven, the session persists in the profile after first login, so background scheduling can be revisited then."
+      "rationale": "Manual only while this connector stays unproven against a real account. Once proven, the session persists in the profile after first login, so background scheduling can be revisited then."
     },
     "public_listing": {
-      "tier": "development"
+      "tier": "preview",
+      "rationale": "Real collection logic (browser-session auth against api.venmo.com's own JSON endpoints via the page's own cookie jar, matching the reddit/amazon pattern), verified by 70 unit/integration tests covering parsers, schemas, cursor behavior, redaction, and the credential-submit retry boundary (B4). Listed as Preview rather than Supported because no live run against a real Venmo account has been recorded yet. The owner opted this into listing to perform that first real run."
     }
   },
   "streams": [

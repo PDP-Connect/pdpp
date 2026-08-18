@@ -681,33 +681,41 @@ test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT flag set, unproven connectors 
   });
 });
 
-test("Development Venmo stays unavailable even when legacy UAT exposure is enabled", async () => {
+test("Development-tier connector stays unavailable even when legacy UAT exposure is enabled", async () => {
+  // Uses spotify (publicTier "development": hidden pending a credentialed
+  // proof run) as the development-tier fixture for this legacy-UAT-exposure
+  // gate. Venmo previously served this role, but it has since been promoted
+  // to publicTier "preview" -- see packages/polyfill-connectors/manifests/
+  // venmo.json's public_listing.rationale and source-setup-presentation.
+  // test.ts's "preview + browser_collector_manual (Venmo) is offered on
+  // /sources/add" -- so it no longer exercises the development-tier path
+  // this test targets.
   const previous = process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
   try {
     delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
     await withServer(async ({ asUrl, rsUrl }) => {
-      await registerConnector(asUrl, loadManifest("venmo"));
+      await registerConnector(asUrl, loadManifest("spotify"));
       const ownerToken = await issueOwnerToken(asUrl);
       const hidden = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
         headers: { Authorization: `Bearer ${ownerToken}` },
       });
       assert.equal(hidden.status, 200);
-      assert.equal(byConnector(hidden.body, "venmo").uat_expose_unlisted_connectors, false);
+      assert.equal(byConnector(hidden.body, "spotify").uat_expose_unlisted_connectors, false);
     });
 
     process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
     await withServer(async ({ asUrl, rsUrl }) => {
-      await registerConnector(asUrl, loadManifest("venmo"));
+      await registerConnector(asUrl, loadManifest("spotify"));
       const ownerToken = await issueOwnerToken(asUrl);
       const exposed = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
         headers: { Authorization: `Bearer ${ownerToken}` },
       });
       assert.equal(exposed.status, 200);
-      const venmo = byConnector(exposed.body, "venmo");
-      const listing = asRecord(venmo.public_listing);
-      const setup = asRecord(venmo.setup_plan);
+      const spotify = byConnector(exposed.body, "spotify");
+      const listing = asRecord(spotify.public_listing);
+      const setup = asRecord(spotify.setup_plan);
       assert.equal(listing.tier, "development");
-      assert.equal(venmo.uat_expose_unlisted_connectors, false);
+      assert.equal(spotify.uat_expose_unlisted_connectors, false);
       assert.equal(setup.setup_modality, "static_secret");
       assert.equal(setup.next_step_kind, "capture_static_secret");
     });

@@ -54,8 +54,9 @@
  * Tested surfaces: fixture-driven only (pilot-fixture.test.ts,
  * parsers.test.ts, schemas.test.ts, integration.test.ts,
  * src/auto-login/venmo.test.ts). No live network call has proven this
- * redesign against a real account yet. The manifest therefore keeps the
- * connector in Development until a live run is verified.
+ * redesign against a real account yet. The manifest lists it at Preview
+ * (see public_listing.rationale) so the owner can opt in to perform that
+ * first live run, matching the signal connector's precedent.
  *
  * CHANGES
  *   v0.2.0 (2026-08-10) — browser-session redesign; removed
