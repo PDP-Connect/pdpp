@@ -1153,6 +1153,7 @@ export function createSqliteConnectorDetailGapStore() {
       ];
       return rows.map((row) => rowToGap(row) as DetailGap);
     },
+
     // Page-scoped summary evidence. Each map is keyed only by the durable
     // connection identity; callers must not fall back to connector_id.
     listPendingGapsByConnectorInstanceIds(
@@ -1215,6 +1216,33 @@ export function createSqliteConnectorDetailGapStore() {
         LIMIT ?
       `,
           [connectorId, connectorInstanceId, Math.max(1, Math.min(limit, 500))]
+        ),
+      ];
+      return rows.map((row) => rowToGap(row) as DetailGap);
+    },
+
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async listTerminalGapsForConnector(
+      connectorId: string,
+      options: { connectorInstanceId?: string | null; limit?: number } = {}
+    ): Promise<DetailGap[]> {
+      const scopedConnectorInstanceId = nonEmptyString(options.connectorInstanceId);
+      const limit = Math.max(1, Math.min(Math.floor(Number(options.limit) || 500), 1000));
+      // REVIEWED-DYNAMIC: bounded status='terminal' read over the store-owned
+      // detail-gap table, scoped to one connector (and optionally one
+      // instance). Feeds the unfillable-proof classifier only — no
+      // lease/CAS semantics, read-only.
+      const rows = [
+        ...iterateDynamicSqlAcknowledged<DetailGapRow>(
+          `
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = ?
+          AND status = 'terminal'
+          AND (? IS NULL OR connector_instance_id = ?)
+        ORDER BY stream, gap_id
+        LIMIT ?
+      `,
+          [connectorId, scopedConnectorInstanceId, scopedConnectorInstanceId, limit]
         ),
       ];
       return rows.map((row) => rowToGap(row) as DetailGap);
@@ -1771,6 +1799,7 @@ export function createPostgresConnectorDetailGapStore() {
       );
       return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
     },
+
     async listPendingGapsByConnectorInstanceIds(
       connectorInstanceIds: readonly (string | null | undefined)[],
       { limit = 100, now = nowIso() }: { limit?: number; now?: string } = {}
@@ -1829,6 +1858,26 @@ export function createPostgresConnectorDetailGapStore() {
         LIMIT $3
       `,
         [connectorId, connectorInstanceId, Math.max(1, Math.min(limit, 500))]
+      );
+      return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
+    },
+
+    async listTerminalGapsForConnector(
+      connectorId: string,
+      options: { connectorInstanceId?: string | null; limit?: number } = {}
+    ): Promise<DetailGap[]> {
+      const scopedConnectorInstanceId = nonEmptyString(options.connectorInstanceId);
+      const limit = Math.max(1, Math.min(Math.floor(Number(options.limit) || 500), 1000));
+      const result = await postgresQuery<DetailGapRow>(
+        `
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = $1
+          AND status = 'terminal'
+          AND ($2::text IS NULL OR connector_instance_id = $2)
+        ORDER BY stream, gap_id
+        LIMIT $3
+      `,
+        [connectorId, scopedConnectorInstanceId, limit]
       );
       return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
     },

@@ -132,6 +132,8 @@ import {
   hasDegradingKnownGap,
   hasTerminalKnownGap,
   isRetryableKnownGap,
+  isStreamFullyUnfillableAccounted,
+  type TerminalGapProofRow,
 } from "./connector-gap-classification.ts";
 import {
   type HeartbeatRow,
@@ -557,6 +559,13 @@ export interface PendingDetailGapSummary {
   readonly attempt_count?: unknown;
   readonly connector_instance_id?: unknown;
   readonly last_attempt_at?: unknown;
+  /**
+   * Durable `connector_detail_gaps.last_error_json`, as parsed by `rowToGap`.
+   * Optional/`unknown` because only the terminal-gap unfillable-proof read
+   * (`listTerminalGapsForConnector`) populates it; the ordinary pending-gap
+   * projection never needed it before {@link isProvenUnfillableGap}.
+   */
+  readonly last_error?: unknown;
   readonly next_attempt_after?: unknown;
   readonly reason?: unknown;
   readonly source?: unknown;
@@ -588,6 +597,17 @@ interface DetailGapProjection {
    */
   readonly terminal: number | null;
   readonly terminalByStream: ReadonlyMap<string, number> | null;
+  /**
+   * Per-stream unfillable-accounted verdict (§10-A / `unfillableAccounted`):
+   * `true` only when the stream has at least one terminal gap AND every
+   * terminal gap in it carries durable per-item proof of impossibility
+   * ({@link isStreamFullyUnfillableAccounted}). A stream absent from the map,
+   * or explicitly `false`, must NOT be treated as accounted — absence means
+   * "not computed" (store does not implement the terminal-gap read) just as
+   * much as it means "not proven"; either way `unfillableAccounted` stays
+   * unset for that stream, preserving the pre-existing blocking behavior.
+   */
+  readonly unfillableAccountedByStream: ReadonlyMap<string, boolean> | null;
   readonly unreliable: boolean;
 }
 
@@ -621,6 +641,18 @@ interface ConnectorDetailGapStoreLike {
   listPendingGapsForConnector?: (
     connectorId: string,
     options?: { limit?: number }
+  ) => Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
+  /**
+   * Bounded `status = 'terminal'` gap read for one connector (optionally
+   * scoped to one instance), carrying `stream` + `last_error` so the caller
+   * can decide, per stream, whether every terminal gap is durably proven
+   * unfillable ({@link isStreamFullyUnfillableAccounted}). Absent on stores
+   * that have not implemented it yet — the caller then leaves
+   * `unfillableAccounted` unset, preserving the prior (never-set) behavior.
+   */
+  listTerminalGapsForConnector?: (
+    connectorId: string,
+    options?: { connectorInstanceId?: string | null; limit?: number }
   ) => Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
 }
 
@@ -1583,6 +1615,7 @@ async function getConnectorDetailGapProjection(
       recovered: await getRecoveredSourcePressureGapCount(store, connectorId, connectorInstanceId),
       terminal: await getTerminalGapCount(store, connectorId, connectorInstanceId),
       terminalByStream: await getTerminalGapCountsByStream(store, connectorId, connectorInstanceId),
+      unfillableAccountedByStream: await getUnfillableAccountedByStream(store, connectorId, connectorInstanceId),
       unreliable: false,
     };
   } catch {
@@ -1592,6 +1625,7 @@ async function getConnectorDetailGapProjection(
       recovered: null,
       terminal: null,
       terminalByStream: null,
+      unfillableAccountedByStream: null,
       unreliable: true,
     };
   }
@@ -1684,6 +1718,60 @@ async function getTerminalGapCountsByStream(
       map.set(stream, Math.floor(count));
     }
     return map;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Per-stream unfillable-accounted verdict (§10-A / `unfillableAccounted`).
+ * Reads the bounded terminal-gap rows (when the store implements
+ * `listTerminalGapsForConnector`) and groups them by stream, then applies
+ * {@link isStreamFullyUnfillableAccounted} to each group: a stream qualifies
+ * only when it has at least one terminal gap AND every one of them carries
+ * durable per-item impossibility proof. A store that has not implemented the
+ * read yields `null` (unmeasured) — never a fabricated verdict either way.
+ *
+ * The read is bounded (`DETAIL_GAP_PROJECTION_LIMIT`-scaled, see the store
+ * method's own cap); a connector with more terminal gaps than the bound would
+ * have some streams' groups truncated. Truncation can only ever make a stream
+ * fail to qualify (a hidden unproven row would already have to exist to flip
+ * a `true` to `false`, and a truncated *proven-only* group still requires
+ * every returned row to be proven) — it can never manufacture a false `true`
+ * from a page it never saw the whole of, because the classifier requires
+ * every gap in the read to be proven and stops considering the stream
+ * accounted the moment one is not. Fleet-wide terminal-gap volume at the time
+ * of writing is order-10s, far under the bound.
+ */
+async function getUnfillableAccountedByStream(
+  store: ConnectorDetailGapStoreLike,
+  connectorId: string,
+  connectorInstanceId?: string
+): Promise<ReadonlyMap<string, boolean> | null> {
+  if (typeof store.listTerminalGapsForConnector !== "function") {
+    return null;
+  }
+  try {
+    const rows = await Promise.resolve(
+      store.listTerminalGapsForConnector(connectorId, {
+        connectorInstanceId: connectorInstanceId ?? null,
+      })
+    );
+    const byStream = new Map<string, TerminalGapProofRow[]>();
+    for (const row of rows) {
+      const stream = typeof row?.stream === "string" ? row.stream : "";
+      if (!stream) {
+        continue;
+      }
+      const group = byStream.get(stream) ?? [];
+      group.push({ last_error: row.last_error, status: row.status });
+      byStream.set(stream, group);
+    }
+    const result = new Map<string, boolean>();
+    for (const [stream, group] of byStream) {
+      result.set(stream, isStreamFullyUnfillableAccounted(group));
+    }
+    return result;
   } catch {
     return null;
   }
@@ -2633,6 +2721,76 @@ export function rollupCollectionReportCoverageOverride(
 }
 
 /**
+ * Connection-level unfillable-accounted rollup (§10-A / `unfillableAccounted`),
+ * a sibling of {@link rollupCollectionReportCoverageOverride}: `true` only when
+ * the resolved connection coverage axis is `terminal_gap`, EVERY required
+ * stream whose own `coverage_condition` is `terminal_gap` is itself
+ * `coverage_unfillable_accounted`, AND no OTHER required stream is sitting at
+ * any less-settled condition (`unknown`, `retryable_gap`, `gaps`, `partial` —
+ * anything that is not `terminal_gap` and not an accepted/complete axis).
+ *
+ * That last clause is load-bearing: `terminal_gap` outranks `unknown` in
+ * {@link DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER}'s worst-wins precedence, so a
+ * connection can resolve to `terminal_gap` even when a SECOND required stream
+ * is merely unmeasured (never a `terminal_gap` entry at all — it is invisible
+ * to a filter that only looks at `terminal_gap` entries). Without this check,
+ * proving one stream's terminal gap accounted-for would silently paper over
+ * an unrelated stream that was simply never measured — exactly the false
+ * green the design intends to forbid (google-maps/whatsapp are the concrete
+ * shape of that other stream: zero coverage evidence, not a proven
+ * shortfall). Kept as a separate boolean-returning function rather than
+ * folded into the axis rollup's return shape so that function's existing
+ * bare-`CoverageAxis` contract (and its tests) is untouched — this is
+ * strictly additive.
+ *
+ * `resolvedAxis` must be the SAME axis `rollupCollectionReportCoverageOverride`
+ * settled on (its return value, or the pre-override axis when it returned
+ * `null`) — never independently re-derived, so the two can never disagree
+ * about whether the connection is even in `terminal_gap` state. When
+ * `resolvedAxis !== "terminal_gap"` this always returns `false`: partial
+ * proof of a `retryable_gap`/`gaps`/`partial` axis is not this claim.
+ */
+export function rollupCollectionReportUnfillableAccounted(
+  resolvedAxis: CoverageAxis,
+  report: readonly CollectionReportEntry[],
+  manifestStreams: readonly ManifestStream[] = []
+): boolean {
+  if (resolvedAxis !== "terminal_gap") {
+    return false;
+  }
+  const manifestByStream = firstManifestStreamsByName(manifestStreams);
+  const requiredEntries = report.filter((entry) => {
+    const manifestStream = manifestByStream.get(entry.stream);
+    return manifestStream ? isRequiredStream(manifestStream) : entry.required;
+  });
+  const requiredTerminalGapEntries = requiredEntries.filter((entry) => entry.coverage_condition === "terminal_gap");
+  // Every OTHER required stream must already be settled non-degrading
+  // (`complete`, or an accepted-coverage label) — never `unknown`,
+  // `retryable_gap`, `gaps`, or `partial`. Those axes are invisible to the
+  // terminal-gap-only filter above but must still block the connection.
+  const anyOtherRequiredStreamUnsettled = requiredEntries.some(
+    (entry) =>
+      entry.coverage_condition !== "terminal_gap" &&
+      entry.coverage_condition !== "complete" &&
+      entry.coverage_condition !== "unsupported" &&
+      entry.coverage_condition !== "unavailable" &&
+      entry.coverage_condition !== "deferred" &&
+      entry.coverage_condition !== "inventory_only"
+  );
+  if (anyOtherRequiredStreamUnsettled) {
+    return false;
+  }
+  // The resolved axis is terminal_gap, so at least one required stream must be
+  // — this guard only protects against a caller passing a mismatched
+  // `resolvedAxis`/`report` pair (a mismatch is a caller bug, not a state to
+  // claim accounted for).
+  return (
+    requiredTerminalGapEntries.length > 0 &&
+    requiredTerminalGapEntries.every((entry) => entry.coverage_unfillable_accounted === true)
+  );
+}
+
+/**
  * Oldest proof time among required streams whose coverage is proven complete —
  * the anchor the connection's Healthy gate ages against. Accepted-policy,
  * non-required, and unproven streams never contribute: an accepted absence
@@ -2736,30 +2894,56 @@ export function refineConnectionHealthWithCollectionReport(
     collectionReport,
     healthInput.manifestStreams
   );
+  // The axis the connection actually settles on: the override when the report
+  // degraded/upgraded it, otherwise the pre-report axis unchanged. Computing
+  // `unfillableAccounted` against THIS resolved axis (not blindly whenever a
+  // report exists) means a stream proof can only ever soften an ALREADY
+  // `terminal_gap` connection — it can never manufacture a `terminal_gap`
+  // classification that didn't already exist, and it is correctly `false`
+  // whenever the resolved axis is anything else.
+  const resolvedAxis = coverageOverride ?? reportAlignedHealth.axes.coverage;
+  const unfillableAccounted = rollupCollectionReportUnfillableAccounted(
+    resolvedAxis,
+    collectionReport,
+    healthInput.manifestStreams
+  );
   const freshnessOverride = proofAgeFreshnessOverride(refinedHealthInput, collectionReport);
-  if (coverageOverride === null && freshnessOverride === null) {
+  if (coverageOverride === null && freshnessOverride === null && !unfillableAccounted) {
     return reportAlignedHealth;
   }
   return projectConnectorSummaryConnectionHealth({
     ...refinedHealthInput,
     ...(freshnessOverride ? { freshness: freshnessOverride } : {}),
-    ...(coverageOverride ? { coverageOverride: { axis: coverageOverride } } : {}),
+    ...(coverageOverride || unfillableAccounted
+      ? { coverageOverride: { axis: resolvedAxis, unfillableAccounted } }
+      : {}),
   });
 }
 
 function applyCoverageOverride(
-  resolvedCoverage: { axis: CoverageAxis; requiredButAccepted: boolean },
+  resolvedCoverage: { axis: CoverageAxis; requiredButAccepted: boolean; unfillableAccounted?: boolean },
   coverageOverride:
-    | { readonly axis: CoverageAxis | undefined; readonly requiredButAccepted?: boolean }
+    | {
+        readonly axis: CoverageAxis | undefined;
+        readonly requiredButAccepted?: boolean;
+        readonly unfillableAccounted?: boolean;
+      }
     | null
     | undefined
-): { axis: CoverageAxis; requiredButAccepted: boolean } {
+): { axis: CoverageAxis; requiredButAccepted: boolean; unfillableAccounted?: boolean } {
   if (!coverageOverride || coverageOverride.axis === undefined) {
     return resolvedCoverage;
   }
   return {
     axis: coverageOverride.axis,
     requiredButAccepted: coverageOverride.requiredButAccepted ?? resolvedCoverage.requiredButAccepted,
+    // Unlike `requiredButAccepted`, this is NEVER inherited from
+    // `resolvedCoverage` when the override is silent about it: an override
+    // that changes the axis but says nothing about unfillable-proof must not
+    // accidentally carry forward a `true` that was only ever proven for the
+    // PRE-override axis/report pairing. Absent/`false` on the override always
+    // means `false` here.
+    unfillableAccounted: coverageOverride.unfillableAccounted === true,
   };
 }
 
@@ -2797,6 +2981,18 @@ export interface CollectionReportEntry {
   readonly coverage_condition: CoverageAxis;
   /** Manifest-declared coverage proof strategy, or `null` when not yet instrumented. */
   readonly coverage_strategy: CoverageEvidenceStrategy | null;
+  /**
+   * `true` only when `coverage_condition === "terminal_gap"` AND every
+   * terminal detail gap on this stream carries durable per-item impossibility
+   * proof ({@link isStreamFullyUnfillableAccounted}). `false`/absent for every
+   * other coverage condition (including a `terminal_gap` stream with even one
+   * unproven gap) — this is never a hint, only a settled per-stream fact the
+   * connection-level rollup can trust without re-deriving it. Optional so
+   * every pre-existing `CollectionReportEntry` literal (test fixtures, older
+   * callers) that omits it is read as `false` — the same "absent means not
+   * accounted for" convention every other field on this rollup already uses.
+   */
+  readonly coverage_unfillable_accounted?: boolean;
   /**
    * Connector-declared `covered` count (in-boundary items accounted for: emitted +
    * suppressed-because-unchanged), or `unknown` when the connector declared none.
@@ -3006,6 +3202,14 @@ export function buildCollectionReport(input: {
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly pendingDetailGapsReadLimit?: number | null;
   readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
+  /**
+   * Per-stream unfillable-accounted verdict (§10-A / `unfillableAccounted`),
+   * read from the durable detail-gap store's terminal rows. `null`/absent
+   * means unmeasured (the store has not implemented the read); every stream
+   * then reports `coverage_unfillable_accounted: false`, preserving the prior
+   * (never-set) behavior.
+   */
+  readonly unfillableAccountedByStream?: ReadonlyMap<string, boolean> | null;
   readonly freshness: FreshnessAxis;
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
@@ -3060,6 +3264,7 @@ interface IndexedCollectionReportInputs {
   readonly pendingGapReadHitLimit: boolean;
   readonly requiredCoverageEvidenceAuthoritative: boolean;
   readonly terminalGapCountByStream: ReadonlyMap<string, number>;
+  readonly unfillableAccountedByStream: ReadonlyMap<string, boolean>;
 }
 
 /**
@@ -3078,6 +3283,7 @@ function indexCollectionReportInputs(input: {
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly pendingDetailGapsReadLimit?: number | null;
   readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
+  readonly unfillableAccountedByStream?: ReadonlyMap<string, boolean> | null;
 }): IndexedCollectionReportInputs {
   const factByStream = resolveEffectiveStreamFacts(input);
   const manifestByStream = firstManifestStreamsByName(input.manifestStreams);
@@ -3107,6 +3313,7 @@ function indexCollectionReportInputs(input: {
     pendingGapReadHitLimit: pendingReadLimit !== null && pendingDetailGaps.length >= pendingReadLimit,
     requiredCoverageEvidenceAuthoritative: input.requiredCoverageEvidenceAuthoritative !== false,
     terminalGapCountByStream,
+    unfillableAccountedByStream: input.unfillableAccountedByStream ?? new Map<string, boolean>(),
   };
 }
 
@@ -3125,6 +3332,7 @@ function buildCollectionReportEntry(input: {
   readonly factByStream: ReadonlyMap<string, EffectiveStreamFact>;
   readonly pendingGapCountByStream: ReadonlyMap<string, number>;
   readonly terminalGapCountByStream: ReadonlyMap<string, number>;
+  readonly unfillableAccountedByStream: ReadonlyMap<string, boolean>;
   readonly pendingGapReadHitLimit: boolean;
   readonly requiredCoverageEvidenceAuthoritative: boolean;
   readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
@@ -3145,10 +3353,12 @@ function buildCollectionReportEntry(input: {
   // the same treatment `scoped: false` already gets, one level up. An accepted
   // -absence axis is a manifest statement about the stream itself, not a
   // measurement, so it survives a scope change untouched.
-  const coverageCondition =
-    input.evidenceScopeIsStale === true && !readAcceptedCoveragePolicy(manifestStream)
-      ? "unknown"
-      : derived.coverageCondition;
+  const evidenceScopeStale = input.evidenceScopeIsStale === true && !readAcceptedCoveragePolicy(manifestStream);
+  const coverageCondition = evidenceScopeStale ? "unknown" : derived.coverageCondition;
+  // A stale-scope declassification to `unknown` must also withdraw any
+  // unfillable-accounted claim: `unfillableAccounted` is only ever meaningful
+  // paired with the SAME `terminal_gap` condition it was proven against.
+  const unfillableAccounted = evidenceScopeStale ? false : derived.unfillableAccounted;
   const forwardDisposition = deriveForwardDisposition({
     attentionOpen: input.attentionOpen,
     coverage: coverageCondition,
@@ -3163,6 +3373,7 @@ function buildCollectionReportEntry(input: {
     considered: effectiveFact.considered === null ? "unknown" : effectiveFact.considered,
     coverage_condition: coverageCondition,
     coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
+    coverage_unfillable_accounted: unfillableAccounted,
     covered: effectiveFact.covered === null ? "unknown" : effectiveFact.covered,
     evidence_as_of:
       effective?.evidenceAsOf ??
@@ -3182,6 +3393,7 @@ interface CollectionReportEntryCoverage {
   readonly effective: EffectiveStreamFact | undefined;
   readonly effectiveFact: RuntimeCollectionFact;
   readonly manifestStream: ManifestStream | undefined;
+  readonly unfillableAccounted: boolean;
 }
 
 function deriveCollectionReportEntryCoverage(input: {
@@ -3189,6 +3401,7 @@ function deriveCollectionReportEntryCoverage(input: {
   readonly factByStream: ReadonlyMap<string, EffectiveStreamFact>;
   readonly pendingGapCountByStream: ReadonlyMap<string, number>;
   readonly terminalGapCountByStream: ReadonlyMap<string, number>;
+  readonly unfillableAccountedByStream: ReadonlyMap<string, boolean>;
   readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
   readonly localCoverageConditionByStream: ReadonlyMap<string, CoverageAxis>;
   readonly requiredCoverageEvidenceAuthoritative: boolean;
@@ -3225,6 +3438,14 @@ function deriveCollectionReportEntryCoverage(input: {
     terminalDetailGaps > 0
       ? "terminal_gap"
       : (localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream));
+  // Only meaningful when the stream actually landed on `terminal_gap`: a
+  // stream whose per-stream unfillable read happened to be `true` for some
+  // other axis (it can't be — the map is only ever populated from terminal
+  // gaps — but the guard keeps this honest by construction rather than by
+  // coincidence of the current terminal-gap-only population path) must never
+  // leak into a non-terminal_gap coverage condition.
+  const unfillableAccounted =
+    derivedCoverageCondition === "terminal_gap" && input.unfillableAccountedByStream.get(input.stream) === true;
   return {
     // A failed projection repair means the typed health layer cannot vouch for
     // its required evidence. A local policy result such as `inventory_only` or
@@ -3239,6 +3460,7 @@ function deriveCollectionReportEntryCoverage(input: {
     effective,
     effectiveFact,
     manifestStream,
+    unfillableAccounted,
   };
 }
 
@@ -3334,6 +3556,7 @@ export function projectCollectionReport(input: {
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly pendingDetailGapsReadLimit?: number | null;
   readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
+  readonly unfillableAccountedByStream?: ReadonlyMap<string, boolean> | null;
   readonly refreshPolicy: unknown;
   readonly schedule?: { readonly enabled: boolean } | null;
   /**
@@ -3397,6 +3620,7 @@ export function projectCollectionReport(input: {
         "false",
     schedule: input.schedule ?? null,
     terminalDetailGapsByStream: input.terminalDetailGapsByStream ?? null,
+    unfillableAccountedByStream: input.unfillableAccountedByStream ?? null,
   });
 }
 
@@ -3974,6 +4198,13 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
               recovered: recovered.get(id) ?? 0,
               terminal: terminal.get(id) ?? 0,
               terminalByStream: terminalByStream.get(id) ?? new Map(),
+              // Batch list-view path: only per-instance COUNTS are read here
+              // (`countGapsByStatusByStreamForConnectorInstanceIds`), never the
+              // per-gap rows the unfillable-proof classifier needs. `null` is
+              // the correct "not computed" signal, matching every other
+              // unmeasured field on this projection — never a fabricated
+              // per-stream verdict from counts alone.
+              unfillableAccountedByStream: null,
               unreliable: false,
             } satisfies DetailGapProjection,
           ])
@@ -4743,7 +4974,11 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * controller state has been observed for this connection.
    */
   readonly collectionRate?: CollectionRateSnapshot | null;
-  readonly coverageOverride?: { readonly axis: CoverageAxis; readonly requiredButAccepted?: boolean } | null;
+  readonly coverageOverride?: {
+    readonly axis: CoverageAxis;
+    readonly requiredButAccepted?: boolean;
+    readonly unfillableAccounted?: boolean;
+  } | null;
   readonly refreshPolicy?: unknown;
   readonly unreliableSources?: readonly string[];
   readonly schedule: unknown;
@@ -5587,6 +5822,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     requiredCoverageEvidenceAuthoritative: requiredCoverageEvidenceIsAuthoritative(evidence),
     schedule: localDeviceBacked ? null : normalizeScheduleEvidence(schedule),
     terminalDetailGapsByStream: detailGaps.terminalByStream,
+    unfillableAccountedByStream: detailGaps.unfillableAccountedByStream,
   });
   // `refineConnectionHealthWithCollectionReport` owns both report-derived
   // overrides: the required-unknown coverage refusal and the proof-age
@@ -6073,6 +6309,7 @@ async function projectConnectorSummaryForInstance(
             recovered: null,
             terminal: null,
             terminalByStream: null,
+            unfillableAccountedByStream: null,
             unreliable: true,
           }
         )
