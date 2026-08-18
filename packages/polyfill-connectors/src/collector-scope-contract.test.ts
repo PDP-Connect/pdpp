@@ -19,22 +19,18 @@
 
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
-import {
-	createServer,
-	type IncomingMessage,
-	type ServerResponse,
-} from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
-	buildCollectorStartMessage,
-	COLLECTION_SCOPE_STATE_KEY,
-	collectorScopeFingerprint,
-	hashCanonicalJson,
-	readCollectionScopeFromState,
-	resolveScopedStreamTimeRanges,
-	runCollectorConnector,
+  buildCollectorStartMessage,
+  COLLECTION_SCOPE_STATE_KEY,
+  collectorScopeFingerprint,
+  hashCanonicalJson,
+  readCollectionScopeFromState,
+  resolveScopedStreamTimeRanges,
+  runCollectorConnector,
 } from "@pdpp/collector-runtime";
 import { buildTerminalCollectionFacts } from "@pdpp/collector-runtime/collector-runner";
 import type { TerminalRunCommitRequest } from "@pdpp/collector-runtime/local-device-client";
@@ -47,95 +43,86 @@ const TIME_SCOPABLE = ["sessions", "messages"];
 const ALL_STREAMS = ["sessions", "messages", "skills", "coverage_diagnostics"];
 
 interface ScopeHarness {
-	close: () => Promise<void>;
-	terminalPosts: Record<string, unknown>[];
-	url: string;
+  close: () => Promise<void>;
+  terminalPosts: Record<string, unknown>[];
+  url: string;
 }
 
-async function startScopeHarness(
-	priorState: Record<string, unknown>,
-): Promise<ScopeHarness> {
-	const terminalPosts: Record<string, unknown>[] = [];
-	let persisted: Record<string, unknown> = { ...priorState };
+async function startScopeHarness(priorState: Record<string, unknown>): Promise<ScopeHarness> {
+  const terminalPosts: Record<string, unknown>[] = [];
+  let persisted: Record<string, unknown> = { ...priorState };
 
-	const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-		const chunks: Buffer[] = [];
-		req.on("data", (c: Buffer) => chunks.push(c));
-		req.on("end", () => {
-			const url = req.url ?? "";
-			const raw = Buffer.concat(chunks).toString("utf8");
-			let parsed: Record<string, unknown> | null = null;
-			try {
-				parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
-			} catch {
-				parsed = null;
-			}
-			const send = (status: number, body: unknown): void => {
-				res.writeHead(status, { "content-type": "application/json" });
-				res.end(JSON.stringify(body));
-			};
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      const url = req.url ?? "";
+      const raw = Buffer.concat(chunks).toString("utf8");
+      let parsed: Record<string, unknown> | null = null;
+      try {
+        parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+      } catch {
+        parsed = null;
+      }
+      const send = (status: number, body: unknown): void => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(body));
+      };
 
-			if (url.endsWith("/terminal-run-commits")) {
-				const request = (parsed ?? {}) as unknown as TerminalRunCommitRequest;
-				terminalPosts.push(parsed ?? {});
-				send(200, {
-					commit_id: request.commit_id,
-					envelope_hash: hashCanonicalJson(
-						canonicalTerminalRunCommitEnvelope(request),
-					),
-					object: "device_terminal_run_commit",
-					run_id: request.run_id,
-					terminal_event_id: `evt-${terminalPosts.length}`,
-				});
-				return;
-			}
+      if (url.endsWith("/terminal-run-commits")) {
+        const request = (parsed ?? {}) as unknown as TerminalRunCommitRequest;
+        terminalPosts.push(parsed ?? {});
+        send(200, {
+          commit_id: request.commit_id,
+          envelope_hash: hashCanonicalJson(canonicalTerminalRunCommitEnvelope(request)),
+          object: "device_terminal_run_commit",
+          run_id: request.run_id,
+          terminal_event_id: `evt-${terminalPosts.length}`,
+        });
+        return;
+      }
 
-			if (url.endsWith("/terminal-collection")) {
-				terminalPosts.push(parsed ?? {});
-				send(200, { object: "device_terminal_collection", status: "accepted" });
-				return;
-			}
-			if (url.endsWith("/state")) {
-				if (
-					req.method === "PUT" &&
-					parsed &&
-					typeof parsed.state === "object" &&
-					parsed.state
-				) {
-					persisted = {
-						...persisted,
-						...(parsed.state as Record<string, unknown>),
-					};
-				}
-				send(200, {
-					connector_instance_id: "connector-instance-1",
-					device_id: "device-1",
-					object: "device_source_instance_state",
-					source_instance_id: "src-1",
-					state: persisted,
-					updated_at: null,
-				});
-				return;
-			}
-			if (url.includes("/ingest-batches")) {
-				send(200, { accepted: true, object: "device_ingest_batch" });
-				return;
-			}
-			send(200, { object: "device_exporter_heartbeat", status: "accepted" });
-		});
-	});
+      if (url.endsWith("/terminal-collection")) {
+        terminalPosts.push(parsed ?? {});
+        send(200, { object: "device_terminal_collection", status: "accepted" });
+        return;
+      }
+      if (url.endsWith("/state")) {
+        if (req.method === "PUT" && parsed && typeof parsed.state === "object" && parsed.state) {
+          persisted = {
+            ...persisted,
+            ...(parsed.state as Record<string, unknown>),
+          };
+        }
+        send(200, {
+          connector_instance_id: "connector-instance-1",
+          device_id: "device-1",
+          object: "device_source_instance_state",
+          source_instance_id: "src-1",
+          state: persisted,
+          updated_at: null,
+        });
+        return;
+      }
+      if (url.includes("/ingest-batches")) {
+        send(200, { accepted: true, object: "device_ingest_batch" });
+        return;
+      }
+      send(200, { object: "device_exporter_heartbeat", status: "accepted" });
+    });
+  });
 
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const address = server.address();
-	const port = typeof address === "object" && address ? address.port : 0;
-	return {
-		close: () =>
-			new Promise<void>((resolve) => {
-				server.close(() => resolve());
-			}),
-		terminalPosts,
-		url: `http://127.0.0.1:${port}`,
-	};
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  return {
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+    terminalPosts,
+    url: `http://127.0.0.1:${port}`,
+  };
 }
 
 /**
@@ -144,12 +131,10 @@ async function startScopeHarness(
  * dropping whatever the declared bound excludes. `truncate` makes it exit
  * WITHOUT a DONE, which is how an aborted sample actually looks on the wire.
  */
-async function writeScopeFixture(input: {
-	truncate?: boolean;
-}): Promise<string> {
-	const dir = await mkdtemp(join(tmpdir(), "pdpp-scope-fixture-"));
-	const path = join(dir, "fixture.mjs");
-	const script = `(async () => {
+async function writeScopeFixture(input: { truncate?: boolean }): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-scope-fixture-"));
+  const path = join(dir, "fixture.mjs");
+  const script = `(async () => {
   let buf = "";
   await new Promise((r) => process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); }));
   const start = JSON.parse(buf.split("\\n")[0]);
@@ -168,15 +153,15 @@ async function writeScopeFixture(input: {
     emit({ type: "STATE", stream, cursor: { fetched_at: "2026-08-01T00:00:00.000Z" } });
   }
   ${
-		input.truncate
-			? `// Truncated exactly like an aborted \`--sample <n>\` run: the connector
+    input.truncate
+      ? `// Truncated exactly like an aborted \`--sample <n>\` run: the connector
   // reports a clean per-stream DONE for the records it did emit, but is stopped
   // before it ever enumerates its coverage stores, so no coverage_diagnostics
   // checkpoint is flushed. This is the honest shape of a bounded sample -- real
   // durable records, no coverage claim -- and it must stay non-green even
   // though the run "succeeded" and a boundary was declared.
   emit({ type: "DONE", status: "succeeded", records_emitted: 2 });`
-			: `if (scopes.has("skills")) {
+      : `if (scopes.has("skills")) {
   emit({ type: "RECORD", stream: "skills", key: "skill-1", data: { id: "skill-1" }, emitted_at: "2020-01-01T00:00:00.000Z" });
   emit({ type: "STATE", stream: "skills", cursor: { fetched_at: "2026-08-01T00:00:00.000Z" } });
   }
@@ -186,244 +171,200 @@ async function writeScopeFixture(input: {
   }
   emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: "2026-08-01T00:00:00.000Z" } });
   emit({ type: "DONE", status: "succeeded", records_emitted: 4 });`
-	}
+  }
 })().catch((err) => { process.stderr.write(String(err)); process.exit(1); });
 `;
-	await writeFile(path, script);
-	return path;
+  await writeFile(path, script);
+  return path;
 }
 
 function scopeState(since: string): Record<string, unknown> {
-	return {
-		[COLLECTION_SCOPE_STATE_KEY]: {
-			declared_at: "2026-08-01T00:00:00.000Z",
-			scope: { since },
-		},
-	};
+  return {
+    [COLLECTION_SCOPE_STATE_KEY]: {
+      declared_at: "2026-08-01T00:00:00.000Z",
+      scope: { since },
+    },
+  };
 }
 
 async function tempQueuePath(): Promise<string> {
-	const dir = await mkdtemp(join(tmpdir(), "pdpp-scope-queue-"));
-	return join(dir, "outbox.sqlite3");
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-scope-queue-"));
+  return join(dir, "outbox.sqlite3");
 }
 
 async function runScoped(input: {
-	harness: ScopeHarness;
-	truncate?: boolean;
+  harness: ScopeHarness;
+  truncate?: boolean;
 }): Promise<Awaited<ReturnType<typeof runCollectorConnector>> | null> {
-	const fixture = await writeScopeFixture({
-		...(input.truncate ? { truncate: true } : {}),
-	});
-	try {
-		return await runCollectorConnector({
-			baseUrl: input.harness.url,
-			connector: {
-				args: [fixture],
-				command: "node",
-				connector_id: "fixture-scope",
-				runtime_requirements: { bindings: {} },
-				streams: ALL_STREAMS,
-				timeScopableStreams: TIME_SCOPABLE,
-			},
-			deviceId: "device-1",
-			deviceToken: "device-token",
-			executionRoot: resolveExecutionRoot({ args: [fixture] }),
-			queuePath: await tempQueuePath(),
-			sourceInstanceId: "src-1",
-		});
-	} catch {
-		// A truncated child (no DONE) legitimately fails the run; the assertion
-		// under test is what the collector did NOT report, not that it succeeded.
-		return null;
-	}
+  const fixture = await writeScopeFixture({
+    ...(input.truncate ? { truncate: true } : {}),
+  });
+  try {
+    return await runCollectorConnector({
+      baseUrl: input.harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-scope",
+        runtime_requirements: { bindings: {} },
+        streams: ALL_STREAMS,
+        timeScopableStreams: TIME_SCOPABLE,
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      executionRoot: resolveExecutionRoot({ args: [fixture] }),
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-1",
+    });
+  } catch {
+    // A truncated child (no DONE) legitimately fails the run; the assertion
+    // under test is what the collector did NOT report, not that it succeeded.
+    return null;
+  }
 }
 
 test("the declared boundary reaches the connector only on streams that can prove it", () => {
-	const ranges = resolveScopedStreamTimeRanges({ since: SINCE }, TIME_SCOPABLE);
-	const start = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, ranges);
-	const byName = new Map(start.scope.streams.map((s) => [s.name, s]));
+  const ranges = resolveScopedStreamTimeRanges({ since: SINCE }, TIME_SCOPABLE);
+  const start = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, ranges);
+  const byName = new Map(start.scope.streams.map((s) => [s.name, s]));
 
-	assert.deepEqual(byName.get("sessions")?.time_range, { since: SINCE });
-	assert.deepEqual(byName.get("messages")?.time_range, { since: SINCE });
-	assert.equal(
-		"time_range" in (byName.get("skills") ?? {}),
-		false,
-		"a stream with no manifest time field must never carry a bound it cannot be measured against",
-	);
+  assert.deepEqual(byName.get("sessions")?.time_range, { since: SINCE });
+  assert.deepEqual(byName.get("messages")?.time_range, { since: SINCE });
+  assert.equal(
+    "time_range" in (byName.get("skills") ?? {}),
+    false,
+    "a stream with no manifest time field must never carry a bound it cannot be measured against"
+  );
 });
 
 test("since, roots, and both preserve the full requested inventory while applying each axis independently", () => {
-	const since = resolveScopedStreamTimeRanges({ since: SINCE }, TIME_SCOPABLE);
-	const sinceOnly = buildCollectorStartMessage(
-		ALL_STREAMS,
-		[],
-		null,
-		{},
-		since,
-		[],
-	);
-	const rootsOnly = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, {}, [
-		"proj-a",
-	]);
-	const both = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, since, [
-		"proj-a",
-	]);
-	for (const start of [sinceOnly, rootsOnly, both]) {
-		assert.deepEqual(
-			start.scope.streams.map((stream) => stream.name),
-			ALL_STREAMS,
-			"a bounded axis must not silently remove declared/default streams",
-		);
-	}
-	assert.deepEqual(
-		sinceOnly.scope.streams.find((stream) => stream.name === "skills"),
-		{ name: "skills" },
-		"non-time-scopable lightweight stores remain represented whole-store",
-	);
-	assert.deepEqual(
-		rootsOnly.scope.streams.find((stream) => stream.name === "skills")
-			?.source_roots,
-		["proj-a"],
-	);
-	assert.deepEqual(
-		both.scope.streams.find((stream) => stream.name === "sessions")?.time_range,
-		{ since: SINCE },
-	);
+  const since = resolveScopedStreamTimeRanges({ since: SINCE }, TIME_SCOPABLE);
+  const sinceOnly = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, since, []);
+  const rootsOnly = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, {}, ["proj-a"]);
+  const both = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, since, ["proj-a"]);
+  for (const start of [sinceOnly, rootsOnly, both]) {
+    assert.deepEqual(
+      start.scope.streams.map((stream) => stream.name),
+      ALL_STREAMS,
+      "a bounded axis must not silently remove declared/default streams"
+    );
+  }
+  assert.deepEqual(
+    sinceOnly.scope.streams.find((stream) => stream.name === "skills"),
+    { name: "skills" },
+    "non-time-scopable lightweight stores remain represented whole-store"
+  );
+  assert.deepEqual(rootsOnly.scope.streams.find((stream) => stream.name === "skills")?.source_roots, ["proj-a"]);
+  assert.deepEqual(both.scope.streams.find((stream) => stream.name === "sessions")?.time_range, { since: SINCE });
 });
 
 test("the reserved scope entry is never handed to the connector as a stream cursor", () => {
-	const start = buildCollectorStartMessage(["sessions"], [], {
-		...scopeState(SINCE),
-		sessions: { cursor: "s-1" },
-	});
-	assert.deepEqual(start.state, { sessions: { cursor: "s-1" } });
-	assert.equal(
-		JSON.stringify(start).includes(COLLECTION_SCOPE_STATE_KEY),
-		false,
-	);
+  const start = buildCollectorStartMessage(["sessions"], [], {
+    ...scopeState(SINCE),
+    sessions: { cursor: "s-1" },
+  });
+  assert.deepEqual(start.state, { sessions: { cursor: "s-1" } });
+  assert.equal(JSON.stringify(start).includes(COLLECTION_SCOPE_STATE_KEY), false);
 });
 
 test("scope is read from the same state payload the collector already fetches", () => {
-	assert.deepEqual(readCollectionScopeFromState(scopeState(SINCE)), {
-		since: SINCE,
-	});
-	assert.equal(
-		readCollectionScopeFromState({}),
-		null,
-		"a connection that declared nothing runs unscoped",
-	);
+  assert.deepEqual(readCollectionScopeFromState(scopeState(SINCE)), {
+    since: SINCE,
+  });
+  assert.equal(readCollectionScopeFromState({}), null, "a connection that declared nothing runs unscoped");
 });
 
 // (a) a truncated sample stays NON-GREEN (no coverage checkpoint)
 test("(a) a truncated pass commits no coverage, scoped or not", async () => {
-	const harness = await startScopeHarness(scopeState(SINCE));
-	try {
-		await runScoped({ harness, truncate: true });
-		assert.equal(
-			harness.terminalPosts.length,
-			0,
-			"a run that never reached DONE must report no terminal coverage evidence, even inside a declared scope",
-		);
-	} finally {
-		await harness.close();
-	}
+  const harness = await startScopeHarness(scopeState(SINCE));
+  try {
+    await runScoped({ harness, truncate: true });
+    assert.equal(
+      harness.terminalPosts.length,
+      0,
+      "a run that never reached DONE must report no terminal coverage evidence, even inside a declared scope"
+    );
+  } finally {
+    await harness.close();
+  }
 });
 
 // (b) a complete scoped pass COMMITS coverage bound to its scope
 test("(b) a complete scoped pass commits coverage stamped with its boundary", async () => {
-	const harness = await startScopeHarness(scopeState(SINCE));
-	try {
-		await runScoped({ harness });
-		assert.equal(
-			harness.terminalPosts.length,
-			1,
-			"a complete scoped pass is a real commit, not a truncation",
-		);
-		const post = harness.terminalPosts[0] as { collection_boundary?: string };
-		assert.equal(
-			post.collection_boundary,
-			`since=${SINCE}`,
-			"stored proof must state the region it covers, never leave it ambiguous",
-		);
-	} finally {
-		await harness.close();
-	}
+  const harness = await startScopeHarness(scopeState(SINCE));
+  try {
+    await runScoped({ harness });
+    assert.equal(harness.terminalPosts.length, 1, "a complete scoped pass is a real commit, not a truncation");
+    const post = harness.terminalPosts[0] as { collection_boundary?: string };
+    assert.equal(
+      post.collection_boundary,
+      `since=${SINCE}`,
+      "stored proof must state the region it covers, never leave it ambiguous"
+    );
+  } finally {
+    await harness.close();
+  }
 });
 
 // (c) out-of-scope data is NOT claimed as covered
 test("(c) a non-time-scopable global store remains represented but is not falsely scoped", async () => {
-	const harness = await startScopeHarness(scopeState(SINCE));
-	try {
-		await runScoped({ harness });
-		const post = harness.terminalPosts[0] as {
-			terminal_facts?: Array<{ scoped?: boolean; stream: string }>;
-		};
-		const byStream = new Map(
-			(post.terminal_facts ?? []).map((s) => [s.stream, s]),
-		);
+  const harness = await startScopeHarness(scopeState(SINCE));
+  try {
+    await runScoped({ harness });
+    const post = harness.terminalPosts[0] as {
+      terminal_facts?: Array<{ scoped?: boolean; stream: string }>;
+    };
+    const byStream = new Map((post.terminal_facts ?? []).map((s) => [s.stream, s]));
 
-		assert.equal(
-			byStream.get("sessions")?.scoped,
-			true,
-			"a timed stream carried the bound and proves it",
-		);
-		assert.equal(
-			byStream.get("skills")?.scoped,
-			false,
-			"skills remains whole-store, not since-scoped",
-		);
-	} finally {
-		await harness.close();
-	}
+    assert.equal(byStream.get("sessions")?.scoped, true, "a timed stream carried the bound and proves it");
+    assert.equal(byStream.get("skills")?.scoped, false, "skills remains whole-store, not since-scoped");
+  } finally {
+    await harness.close();
+  }
 });
 
 // (d) a scope change INVALIDATES prior proof
 test("(d) evidence measured under one boundary stops describing a changed one", async () => {
-	const first = await startScopeHarness(scopeState(SINCE));
-	let measured: string;
-	try {
-		await runScoped({ harness: first });
-		measured = (first.terminalPosts[0] as { collection_boundary: string })
-			.collection_boundary;
-	} finally {
-		await first.close();
-	}
+  const first = await startScopeHarness(scopeState(SINCE));
+  let measured: string;
+  try {
+    await runScoped({ harness: first });
+    measured = (first.terminalPosts[0] as { collection_boundary: string }).collection_boundary;
+  } finally {
+    await first.close();
+  }
 
-	const widened = "2026-01-01T00:00:00.000Z";
-	const second = await startScopeHarness(scopeState(widened));
-	try {
-		await runScoped({ harness: second });
-		const recomputed = (
-			second.terminalPosts[0] as { collection_boundary: string }
-		).collection_boundary;
-		assert.notEqual(
-			measured,
-			recomputed,
-			"a changed boundary must produce a distinguishable proof identity, so stale coverage cannot be reused",
-		);
-		assert.equal(recomputed, `since=${widened}`);
-	} finally {
-		await second.close();
-	}
+  const widened = "2026-01-01T00:00:00.000Z";
+  const second = await startScopeHarness(scopeState(widened));
+  try {
+    await runScoped({ harness: second });
+    const recomputed = (second.terminalPosts[0] as { collection_boundary: string }).collection_boundary;
+    assert.notEqual(
+      measured,
+      recomputed,
+      "a changed boundary must produce a distinguishable proof identity, so stale coverage cannot be reused"
+    );
+    assert.equal(recomputed, `since=${widened}`);
+  } finally {
+    await second.close();
+  }
 });
 
 test("the runner's fingerprint matches the contract's, so server and collector agree", async () => {
-	const { collectionScopeFingerprint: contractFingerprint } = await import(
-		"@pdpp/reference-contract/evidence"
-	);
-	for (const scope of [
-		null,
-		{ since: SINCE },
-		{ source_roots: ["b", "a", "a"] },
-		{ since: SINCE, source_roots: ["z"] },
-		{ since: "not-a-date" },
-	]) {
-		assert.equal(
-			collectorScopeFingerprint(scope),
-			contractFingerprint(scope),
-			`fingerprint drift on ${JSON.stringify(scope)} would silently invalidate or revalidate proof`,
-		);
-	}
+  const { collectionScopeFingerprint: contractFingerprint } = await import("@pdpp/reference-contract/evidence");
+  for (const scope of [
+    null,
+    { since: SINCE },
+    { source_roots: ["b", "a", "a"] },
+    { since: SINCE, source_roots: ["z"] },
+    { since: "not-a-date" },
+  ]) {
+    assert.equal(
+      collectorScopeFingerprint(scope),
+      contractFingerprint(scope),
+      `fingerprint drift on ${JSON.stringify(scope)} would silently invalidate or revalidate proof`
+    );
+  }
 });
 
 // The counterweight to (c): a roots boundary must NOT be honoured for a
@@ -433,61 +374,43 @@ test("the runner's fingerprint matches the contract's, so server and collector a
 // dangerous failure mode of this whole contract because the data still arrives
 // and the run still looks green.
 test("a supplied root cannot produce scoped:true for a connector that does not enforce roots", () => {
-	const coverage = new Map([
-		["photos-store", { status: "collected" as const, stream: "photos" }],
-		[
-			"diag-store",
-			{ status: "collected" as const, stream: "coverage_diagnostics" },
-		],
-	]);
+  const coverage = new Map([
+    ["photos-store", { status: "collected" as const, stream: "photos" }],
+    ["diag-store", { status: "collected" as const, stream: "coverage_diagnostics" }],
+  ]);
 
-	const unsupported = buildTerminalCollectionFacts(
-		coverage,
-		{},
-		["proj-a"],
-		false,
-	);
-	for (const fact of unsupported) {
-		assert.equal(
-			(fact as { scoped?: boolean }).scoped,
-			undefined,
-			`${fact.stream}: an unenforced roots boundary must be declassified, never claimed as scoped coverage`,
-		);
-	}
+  const unsupported = buildTerminalCollectionFacts(coverage, {}, ["proj-a"], false);
+  for (const fact of unsupported) {
+    assert.equal(
+      (fact as { scoped?: boolean }).scoped,
+      undefined,
+      `${fact.stream}: an unenforced roots boundary must be declassified, never claimed as scoped coverage`
+    );
+  }
 
-	// ...and the same inputs DO produce a scoped claim once the connector has
-	// declared (and implemented) enforcement, so the gate is the declaration
-	// rather than an accident of the data.
-	const supported = buildTerminalCollectionFacts(
-		coverage,
-		{},
-		["proj-a"],
-		true,
-		["photos"],
-	);
-	assert.equal(
-		(supported.find((fact) => fact.stream === "photos") as { scoped?: boolean })
-			.scoped,
-		true,
-	);
-	assert.equal(
-		(
-			supported.find((fact) => fact.stream === "coverage_diagnostics") as {
-				scoped?: boolean;
-			}
-		).scoped,
-		false,
-		"diagnostics is represented but is not falsely claimed as root-scoped",
-	);
+  // ...and the same inputs DO produce a scoped claim once the connector has
+  // declared (and implemented) enforcement, so the gate is the declaration
+  // rather than an accident of the data.
+  const supported = buildTerminalCollectionFacts(coverage, {}, ["proj-a"], true, ["photos"]);
+  assert.equal((supported.find((fact) => fact.stream === "photos") as { scoped?: boolean }).scoped, true);
+  assert.equal(
+    (
+      supported.find((fact) => fact.stream === "coverage_diagnostics") as {
+        scoped?: boolean;
+      }
+    ).scoped,
+    false,
+    "diagnostics is represented but is not falsely claimed as root-scoped"
+  );
 });
 
 test("roots are not transmitted to a connector that never declared root enforcement", () => {
-	// Sending a boundary a connector will silently ignore is worse than sending
-	// none: the run would look bounded while walking everything.
-	const start = buildCollectorStartMessage(["photos"], [], null, {}, {}, []);
-	assert.equal(
-		"source_roots" in (start.scope.streams[0] ?? {}),
-		false,
-		"an unsupported connector must receive no roots at all",
-	);
+  // Sending a boundary a connector will silently ignore is worse than sending
+  // none: the run would look bounded while walking everything.
+  const start = buildCollectorStartMessage(["photos"], [], null, {}, {}, []);
+  assert.equal(
+    "source_roots" in (start.scope.streams[0] ?? {}),
+    false,
+    "an unsupported connector must receive no roots at all"
+  );
 });

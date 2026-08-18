@@ -35,24 +35,24 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export class CollectorExecutionRootError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "CollectorExecutionRootError";
-	}
+  constructor(message: string) {
+    super(message);
+    this.name = "CollectorExecutionRootError";
+  }
 }
 
 function findPackageRoot(startDir: string): string | null {
-	let dir = startDir;
-	for (;;) {
-		if (existsSync(join(dir, "package.json"))) {
-			return realpathSync(dir);
-		}
-		const parent = dirname(dir);
-		if (parent === dir) {
-			return null;
-		}
-		dir = parent;
-	}
+  let dir = startDir;
+  for (;;) {
+    if (existsSync(join(dir, "package.json"))) {
+      return realpathSync(dir);
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      return null;
+    }
+    dir = parent;
+  }
 }
 
 /**
@@ -63,82 +63,73 @@ function findPackageRoot(startDir: string): string | null {
  * always the final positional argument in every call shape this package
  * uses (a trailing path, optionally preceded by loader flags/specifiers).
  */
-function resolvedEntrypointUnder(
-	args: readonly string[],
-	candidateRoot: string,
-): string | null {
-	for (let i = args.length - 1; i >= 0; i -= 1) {
-		const arg = args[i];
-		if (!arg || arg.startsWith("-")) {
-			continue;
-		}
-		const candidate = isAbsolute(arg) ? arg : resolve(candidateRoot, arg);
-		if (existsSync(candidate)) {
-			return candidate;
-		}
-	}
-	return null;
+function resolvedEntrypointUnder(args: readonly string[], candidateRoot: string): string | null {
+  for (let i = args.length - 1; i >= 0; i -= 1) {
+    const arg = args[i];
+    if (!arg || arg.startsWith("-")) {
+      continue;
+    }
+    const candidate = isAbsolute(arg) ? arg : resolve(candidateRoot, arg);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 function lastPositionalArg(args: readonly string[]): string | null {
-	for (let i = args.length - 1; i >= 0; i -= 1) {
-		const arg = args[i];
-		if (arg && !arg.startsWith("-")) {
-			return arg;
-		}
-	}
-	return null;
+  for (let i = args.length - 1; i >= 0; i -= 1) {
+    const arg = args[i];
+    if (arg && !arg.startsWith("-")) {
+      return arg;
+    }
+  }
+  return null;
 }
 
 function containsPath(root: string, target: string): boolean {
-	const relative = target.slice(root.length);
-	return (
-		target === root ||
-		(target.startsWith(root) && (relative.startsWith("/") || relative === ""))
-	);
+  const relative = target.slice(root.length);
+  return target === root || (target.startsWith(root) && (relative.startsWith("/") || relative === ""));
 }
 
 export interface ResolveExecutionRootInput {
-	readonly args: readonly string[];
+  readonly args: readonly string[];
 }
 
 export function resolveExecutionRoot(
-	spec: ResolveExecutionRootInput,
-	startUrl: string | URL = import.meta.url,
+  spec: ResolveExecutionRootInput,
+  startUrl: string | URL = import.meta.url
 ): string {
-	const positionalArg = lastPositionalArg(spec.args);
-	if (!positionalArg) {
-		throw new CollectorExecutionRootError(
-			"cannot resolve executionRoot: connector spec has no entrypoint argument in `args`",
-		);
-	}
+  const positionalArg = lastPositionalArg(spec.args);
+  if (!positionalArg) {
+    throw new CollectorExecutionRootError(
+      "cannot resolve executionRoot: connector spec has no entrypoint argument in `args`"
+    );
+  }
 
-	const packageRoot = findPackageRoot(dirname(fileURLToPath(startUrl)));
-	if (packageRoot) {
-		const entrypoint = resolvedEntrypointUnder(spec.args, packageRoot);
-		if (entrypoint && containsPath(packageRoot, realpathSync(entrypoint))) {
-			return packageRoot;
-		}
-	}
+  const packageRoot = findPackageRoot(dirname(fileURLToPath(startUrl)));
+  if (packageRoot) {
+    const entrypoint = resolvedEntrypointUnder(spec.args, packageRoot);
+    if (entrypoint && containsPath(packageRoot, realpathSync(entrypoint))) {
+      return packageRoot;
+    }
+  }
 
-	const cwdRoot = realpathSync(process.cwd());
-	const entrypointUnderCwd = resolvedEntrypointUnder(spec.args, cwdRoot);
-	if (
-		entrypointUnderCwd &&
-		containsPath(cwdRoot, realpathSync(entrypointUnderCwd))
-	) {
-		return cwdRoot;
-	}
+  const cwdRoot = realpathSync(process.cwd());
+  const entrypointUnderCwd = resolvedEntrypointUnder(spec.args, cwdRoot);
+  if (entrypointUnderCwd && containsPath(cwdRoot, realpathSync(entrypointUnderCwd))) {
+    return cwdRoot;
+  }
 
-	if (isAbsolute(positionalArg) && existsSync(positionalArg)) {
-		return dirname(realpathSync(positionalArg));
-	}
+  if (isAbsolute(positionalArg) && existsSync(positionalArg)) {
+    return dirname(realpathSync(positionalArg));
+  }
 
-	if (packageRoot) {
-		return packageRoot;
-	}
+  if (packageRoot) {
+    return packageRoot;
+  }
 
-	throw new CollectorExecutionRootError(
-		`cannot resolve executionRoot: no candidate root contains entrypoint "${positionalArg}"`,
-	);
+  throw new CollectorExecutionRootError(
+    `cannot resolve executionRoot: no candidate root contains entrypoint "${positionalArg}"`
+  );
 }

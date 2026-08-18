@@ -594,14 +594,14 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/claude_code/local-jsonl-incremental.test.ts",
-    line: 346,
+    line: 378,
     column: 8,
     category: "test_assertion_sequencing",
     note: "import(): test drives/asserts an ordered per-case side effect",
   },
   {
     path: "connectors/claude_code/local-jsonl-incremental.test.ts",
-    line: 713,
+    line: 834,
     column: 20,
     category: "test_assertion_sequencing",
     note: "makeAttachmentSource(): test drives/asserts an ordered per-case side effect",
