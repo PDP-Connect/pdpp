@@ -275,6 +275,43 @@ export function normalizeSourceEventSeq(sourceEventSeq: unknown): number | null 
 function createConnectorSummaryStore() {
   if (isPostgresStorageBackend()) {
     return {
+      async listDirtyInstanceIds({ afterId = null, limit }: { afterId?: string | null; limit: number }) {
+        const result = afterId
+          ? await postgresQuery(
+              `SELECT connector_instance_id
+                 FROM connector_summary_evidence
+                WHERE dirty <> 0 AND connector_instance_id > $1
+                ORDER BY connector_instance_id ASC
+                LIMIT $2`,
+              [afterId, limit]
+            )
+          : await postgresQuery(
+              `SELECT connector_instance_id
+                 FROM connector_summary_evidence
+                WHERE dirty <> 0
+                ORDER BY connector_instance_id ASC
+                LIMIT $1`,
+              [limit]
+            );
+        const ids = (result.rows as Row[]).map((row) => String(row.connector_instance_id));
+        if (ids.length > 0 || afterId === null) {
+          return ids;
+        }
+        // Wraparound: nothing dirty remains after the rotating cursor's
+        // position (every id at/after it has since been repaired or the
+        // cursor ran off the end) — restart from the beginning of the dirty
+        // set rather than reporting a false "nothing dirty" for the rest of
+        // this sweep's lifetime.
+        const wrapped = await postgresQuery(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE dirty <> 0
+            ORDER BY connector_instance_id ASC
+            LIMIT $1`,
+          [limit]
+        );
+        return (wrapped.rows as Row[]).map((row) => String(row.connector_instance_id));
+      },
       async listEvidence({
         connectorInstanceId,
         connectorInstanceIds,
@@ -461,6 +498,45 @@ function createConnectorSummaryStore() {
     };
   }
   return {
+    listDirtyInstanceIds({ afterId = null, limit }: { afterId?: string | null; limit: number }) {
+      const rows = (
+        afterId
+          ? getDb()
+              .prepare(
+                `SELECT connector_instance_id
+                   FROM connector_summary_evidence
+                  WHERE dirty <> 0 AND connector_instance_id > ?
+                  ORDER BY connector_instance_id ASC
+                  LIMIT ?`
+              )
+              .all(afterId, limit)
+          : getDb()
+              .prepare(
+                `SELECT connector_instance_id
+                   FROM connector_summary_evidence
+                  WHERE dirty <> 0
+                  ORDER BY connector_instance_id ASC
+                  LIMIT ?`
+              )
+              .all(limit)
+      ) as Row[];
+      if (rows.length > 0 || afterId === null) {
+        return rows.map((row) => String(row.connector_instance_id));
+      }
+      // Wraparound: see the Postgres branch's identical comment — restart
+      // from the beginning of the dirty set rather than reporting a false
+      // "nothing dirty" once the rotating cursor runs past the last id.
+      const wrapped = getDb()
+        .prepare(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE dirty <> 0
+            ORDER BY connector_instance_id ASC
+            LIMIT ?`
+        )
+        .all(limit) as Row[];
+      return wrapped.map((row) => String(row.connector_instance_id));
+    },
     listEvidence({
       connectorInstanceId,
       connectorInstanceIds,
@@ -3450,6 +3526,33 @@ async function readPendingMaintenanceInstanceIdPage(
   }
 }
 
+/**
+ * One bounded page of connections whose evidence is durably marked dirty,
+ * for the sweep's dirty-priority tranche. Best-effort by construction: the
+ * cursor walk is the correctness backstop, so a read failure here degrades
+ * to "no acceleration this round" (the walk still converges) rather than failing
+ * the whole maintenance tick.
+ *
+ * `afterId` rotates this page's starting point across rounds (see
+ * `nextDirtyAfterId`'s doc) — without it, `ORDER BY connector_instance_id ASC
+ * LIMIT` always returns the SAME prefix of the dirty set every round. A
+ * dirty backlog bigger than one page's budget can genuinely repair (never
+ * merely `deferred`/`skipped`) individual candidates without the round-wide
+ * `dirty` count ever visibly dropping, and every one of THOSE repairs still
+ * lands durably; what a fixed, non-rotating prefix prevents is any candidate
+ * PAST whatever the page's budget can reach ever getting a turn, forever
+ * (production, 2026-08-18: 16 dirty connections, same 16 reselected every
+ * round, `repaired: 0` sustained for a 110s+ window under contention from an
+ * unrelated background job).
+ */
+async function readDirtyInstanceIdPage(afterId: string | null, limit: number): Promise<readonly string[]> {
+  try {
+    return await createConnectorSummaryStore().listDirtyInstanceIds({ afterId, limit });
+  } catch {
+    return [];
+  }
+}
+
 function isExpectedProjectionRace(error: unknown): boolean {
   return error instanceof Error && error.name === TERMINAL_PROJECTION_PUBLICATION_RACE;
 }
@@ -3655,6 +3758,27 @@ function emitScopedObservationUnit(
  * left, so `deadline` is re-checked after it and immediately before the
  * observe — a started unit may finish, but none may BEGIN late.
  */
+/**
+ * Rotating start-of-page cursor for the dirty-priority tranche, in-process
+ * closure state (reset on restart — worst case one extra round before
+ * rotation resumes, same bounded-harmless contract as `nextFirstTranche`/
+ * `nextFirstObservationPhase`). Advanced to the last id THIS round's page
+ * covered regardless of whether that page's own repair converged, so a
+ * dirty backlog larger than one page's budget cycles through every dirty
+ * connection instead of always re-selecting the same lexicographic prefix
+ * (see `readDirtyInstanceIdPage`'s doc for the production incident this
+ * closes). `null` when there is nothing to resume from (either the tranche
+ * has never run, or the dirty set was empty last round) — the next round's
+ * page then starts from the beginning, same as before this fix for a fleet
+ * with no rotation pressure.
+ */
+let nextDirtyAfterId: string | null = null;
+
+/** Test-only: pin the rotation state so a test does not depend on prior calls' ordering. */
+export function __testOnlySetNextDirtyAfterId(afterId: string | null): void {
+  nextDirtyAfterId = afterId;
+}
+
 async function runDirtyPriorityAcceleration(args: {
   readonly deadline: number;
   readonly includeIncomplete: boolean;
@@ -3675,11 +3799,38 @@ async function runDirtyPriorityAcceleration(args: {
   if (sweepNow() >= args.deadline) {
     return empty;
   }
-  const pendingIds = await readPendingMaintenanceInstanceIdPage(args.limit, args.includeIncomplete);
+  // Dirty rows first, through the ROTATING cursor: a fixed `ORDER BY
+  // connector_instance_id ASC LIMIT` prefix re-selects the same connections
+  // every round, so a backlog larger than one page's budget starves every
+  // candidate past that prefix forever (production, 2026-08-18). Once the
+  // dirty set is genuinely empty, fall through to the prioritized-maintenance
+  // page so a bounded terminal replay that exhausted its event budget still
+  // resumes immediately instead of waiting for the fleet cursor to wrap.
+  const rotatingDirtyIds = await readDirtyInstanceIdPage(nextDirtyAfterId, args.limit);
+  const pendingIds =
+    rotatingDirtyIds.length > 0
+      ? rotatingDirtyIds
+      : await readPendingMaintenanceInstanceIdPage(args.limit, args.includeIncomplete);
   testOnlySweepDiscoveryHook("acceleration_dirty_ids");
   if (pendingIds.length === 0) {
+    nextDirtyAfterId = null;
     return empty;
   }
+  // Committed for the NEXT call before this round's own observe/repair runs,
+  // so a round that throws, times out, or otherwise never reaches the end of
+  // its own page still rotates — exactly the `nextFirstObservationPhase`
+  // contract ("flipped regardless of this call's outcome"). A page whose
+  // repair does not converge this round is retried by a LATER dirty-priority
+  // round only after every other dirty id has had its own turn; the walk
+  // remains the correctness backstop regardless of how many rounds this
+  // tranche's rotation takes to cycle back to it.
+  //
+  // Only the DIRTY tranche rotates. When this page came from the
+  // incomplete-replay fallback instead, the dirty set was empty, so the
+  // cursor resets to the start — the next dirty row to appear gets picked up
+  // from the beginning rather than from a stale high-water id that would skip
+  // past it.
+  nextDirtyAfterId = rotatingDirtyIds.length > 0 ? (rotatingDirtyIds.at(-1) ?? null) : null;
   // The discovery read above is itself work that can consume the budget, so
   // the deadline is re-checked here — immediately before the expensive unit
   // and never assumed to still hold from the entry check. Bailing costs

@@ -149,7 +149,20 @@ async function repairCandidates<TFailure>({
   let processed = 0;
   const state: RepairState = { failed: 0, failedRows: new Map(), repaired: 0 };
   for (const [id] of selected) {
-    if (deadline !== null && Date.now() >= deadline) {
+    // Guaranteed forward progress (2026-08-18): the FIRST selected candidate
+    // always gets attempted, even if `discover`'s own batched read (never
+    // deadline-checked — it is one indivisible await, not a per-candidate
+    // loop) already consumed the whole round's budget by the time this loop
+    // starts. Production: a discovery read contending with unrelated heavy
+    // I/O took 8.9s against a 2s round budget, so `Date.now() >= deadline`
+    // was ALREADY true before candidate #1 — every one of 16 dirty
+    // candidates was reported `skipped` with zero repair attempts, forever,
+    // because the SAME slow discovery repeated every round. A repair unit
+    // already selected represents real, already-spent discovery work; never
+    // attempting even one wastes that work and guarantees the backlog can
+    // never shrink. Every candidate AFTER the first still obeys the
+    // ordinary cooperative-deadline contract (no unit begins once expired).
+    if (processed > 0 && deadline !== null && Date.now() >= deadline) {
       break;
     }
     // biome-ignore lint/performance/noAwaitInLoops: Repairs are intentionally sequential to preserve lease and revision ordering.
