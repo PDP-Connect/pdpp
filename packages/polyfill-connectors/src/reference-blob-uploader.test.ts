@@ -111,6 +111,43 @@ test("makeReferenceBlobUploader: classifies transport and HTTP response families
   }
 });
 
+// The RI host's real error envelope (`request-helpers.ts` `pdppError`) is
+// always `{ error: { code, message, type, request_id, ... } }` — an OBJECT,
+// never a bare string. The `{ error: "denied" }` / `{ error: "unavailable" }`
+// fixtures above are synthetic and never occur against the real server, so
+// they can't catch a regression here. Reproduces a real production symptom:
+// Gmail attachment hydration_error values recorded verbatim as
+// `"blob upload failed (503): [object Object]"` (16 attachments quarantined
+// terminal on cin_12407c1afb78d56848fe0b20) because `String(body.error)` on
+// an object stringifies to `[object Object]` instead of the real message.
+test("makeReferenceBlobUploader: extracts the real message from the RI host's object-shaped error envelope", async () => {
+  const upload = makeReferenceBlobUploader({
+    fetchFn: async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "storage_unavailable",
+            message: "blob storage backend is temporarily unavailable",
+            request_id: "req_abc123",
+            type: "api_error",
+          },
+        }),
+        { status: 503 }
+      ),
+    ownerToken: "test-token",
+    rsUrl: "https://pdpp.example.test",
+  });
+  await assert.rejects(
+    () => upload(baseArgs),
+    (err) => {
+      expectFailureKind(err, "http_5xx");
+      assert.match(err.message, /blob storage backend is temporarily unavailable/);
+      assert.doesNotMatch(err.message, /\[object Object\]/);
+      return true;
+    }
+  );
+});
+
 test("makeReferenceBlobUploader: classifies invalid successful responses and integrity mismatches", async () => {
   const invalidResponseUpload = makeReferenceBlobUploader({
     fetchFn: async () => new Response(JSON.stringify({ object: "not-a-blob" }), { status: 200 }),
