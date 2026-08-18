@@ -48,7 +48,11 @@
 
 import type { EphemeralBrowserRuntimeProjection } from "./browser-surface/ephemeral-health-projection.ts";
 import { type BrowserSurfaceRepairEvidence, decideBrowserSurfaceRepair } from "./browser-surface/repair-decision.ts";
-import { BLOCKED_PROMOTION_THRESHOLD, OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS } from "./connection-health-policy.ts";
+import {
+  BLOCKED_PROMOTION_THRESHOLD,
+  OUTBOX_BLOCKED_BACKLOG_TOLERANCE,
+  OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS,
+} from "./connection-health-policy.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -130,6 +134,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_SUCCEEDED: "collection_succeeded",
   COLLECTION_SUCCEEDED_IMPORT_COMPLETE: "collection_succeeded_import_complete",
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
+  COVERAGE_COMPLETE_UNFILLABLE_ACCOUNTED: "coverage_complete_unfillable_accounted",
   COVERAGE_UNKNOWN: "coverage_unknown",
   CREDENTIAL_CONTINUITY_NOT_APPLICABLE: "credential_continuity_not_applicable",
   CREDENTIAL_CONTINUITY_PROVEN: "credential_continuity_proven",
@@ -996,6 +1001,37 @@ export interface ConnectionCoverageEvidence {
    * only to non-required streams and does not block healthy".
    */
   readonly requiredButAccepted?: boolean;
+  /**
+   * `true` only when EVERY outstanding gap behind a `terminal_gap` axis is
+   * backed by durable, per-item evidence that the item can never be
+   * collected — not merely that recovery has been attempted and failed.
+   *
+   * The canonical example is Gmail's `attachments` stream: an attachment
+   * whose `size_bytes` exceeds the connector's byte cap is a permanent,
+   * by-policy skip the connector itself already counts as covered in its
+   * own per-run `DETAIL_COVERAGE` accounting (`optionalSkipKeys`) — the
+   * gate condition here is just catching up to evidence the connector
+   * already has. `size_bytes > max_bytes` is a durable fact recorded once;
+   * it does not change on retry, so retrying can never resolve it.
+   *
+   * This is DELIBERATELY NOT satisfied by "we retried N times and it kept
+   * failing", however large N is (see `temporary_unavailable`'s attempt
+   * count). Attempt exhaustion proves the current strategy hasn't worked;
+   * it does not prove the item is impossible. Only a caller with concrete,
+   * per-item durable evidence of impossibility (a recorded byte size against
+   * a recorded limit, a provider 410 Gone, etc.) may set this `true` — never
+   * an inferred, absent-answer, or attempt-count heuristic. Setting this from
+   * a missing answer manufactures exactly the false green
+   * `design-notes/source-state-truth-2026-08-18.md`'s safety property
+   * forbids.
+   *
+   * Optional; absent/`false` preserves the shipped behavior exactly — a
+   * `terminal_gap` axis blocks `SourceCoverageComplete` regardless of
+   * `requiredButAccepted`. Ignored for every axis other than `terminal_gap`;
+   * `unsupported`/`unavailable` already have their own accepted-coverage
+   * path and a caller has no reason to combine the two.
+   */
+  readonly unfillableAccounted?: boolean;
 }
 
 /** Outbox/work rollup from local collector or other durable executor. */
@@ -2775,6 +2811,32 @@ function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: Conn
       type: "SourceCoverageComplete",
     });
   }
+  // A `terminal_gap` axis whose ENTIRE outstanding shortfall is backed by
+  // durable per-item evidence of impossibility (never an attempt count, never
+  // an absent answer — see `ConnectionCoverageEvidence.unfillableAccounted`)
+  // is coverage the connector has already fully accounted for: it collected
+  // everything collectible and can name exactly what it could not and why.
+  // This is satisfaction, not exemption — deliberately status `true`, not
+  // `not_applicable`, because the question "is coverage complete" has a real
+  // yes here, the same way the connector's own per-run DETAIL_COVERAGE already
+  // counts a by-policy skip as covered. `requiredButAccepted` (a contradictory
+  // manifest) and every other degrading axis are evaluated first and are
+  // unaffected — this branch only ever softens `terminal_gap`.
+  if (
+    axes.coverage === "terminal_gap" &&
+    input.coverage?.requiredButAccepted !== true &&
+    input.coverage?.unfillableAccounted === true
+  ) {
+    return condition({
+      message:
+        "Source coverage is complete: every collectible item was collected, and the rest is permanently uncollectable with a recorded reason.",
+      origin: "connector",
+      reason: CONDITION_REASON.COVERAGE_COMPLETE_UNFILLABLE_ACCOUNTED,
+      severity: "info",
+      status: "true",
+      type: "SourceCoverageComplete",
+    });
+  }
   if (input.coverage?.requiredButAccepted === true || isDegradingCoverage(axes.coverage)) {
     return condition({
       message: "Required source coverage is incomplete.",
@@ -3596,11 +3658,27 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
  */
 export interface HeartbeatOutboxEvidence {
   /**
+   * Open-backlog row count the device last reported (from its rolled-up
+   * outbox diagnostics `backlog_open` field). For a `gap`-kind row this
+   * counts `ready`, `leased`, AND `succeeded` — `succeeded` means the gap
+   * NOTIFICATION uploaded, not that the gap is resolved (see
+   * `local-device-outbox.ts::countOpenGaps`), so a small nonzero count can be
+   * pure debris from a superseded collector attempt rather than a live
+   * backlog. Distinguishes that bounded-debris case from a genuine
+   * state-read failure when a `blocked` heartbeat carries no dead letters —
+   * see `OUTBOX_BLOCKED_BACKLOG_TOLERANCE`. `null`/absent is treated as
+   * unknown magnitude, which does NOT get the debris carve-out (conservative:
+   * missing evidence classifies as `state_read_failed`, same as before this
+   * field existed).
+   */
+  readonly backlogOpenCount?: number | null;
+  /**
    * Dead-lettered record depth the device last reported (from its rolled-up
    * outbox diagnostics). Distinguishes a `blocked` heartbeat that is a pure
    * state-read failure (no dead letters) from one carrying a dead-letter
    * backlog. `null`/absent is treated as zero — a `blocked` heartbeat with no
-   * dead-letter evidence is classified `state_read_failed`.
+   * dead-letter evidence is classified `state_read_failed` (subject to the
+   * bounded-debris carve-out above).
    */
   readonly deadLetterCount?: number | null;
   readonly deadLetterErrorClasses?: readonly DeadLetterErrorClassEvidence[] | null;
@@ -3671,6 +3749,24 @@ export interface HeartbeatOutboxEvidence {
  * owner, owns recovery. A missing or unparseable `oldestRetryingAt` (no row
  * has ever failed) never triggers this path, so an ordinary healthy
  * backlog fails conservatively rather than fabricating a stall.
+ *
+ * Bounded-debris carve-out for `blocked` heartbeats: a device-side `gap`
+ * outbox row counts toward `backlog_open` while `succeeded` — for that
+ * row kind, `succeeded` means the gap NOTIFICATION uploaded, not that the
+ * gap is resolved (see `local-device-outbox.ts::countOpenGaps`). A failed
+ * collector attempt immediately superseded by a successful one leaves
+ * exactly this debris behind, and nothing ever re-drains a `succeeded`
+ * row, so without this carve-out the connection would sit `stalled`
+ * forever despite fully healthy collection evidence. When a `blocked`
+ * heartbeat has zero dead letters, a small (`<= OUTBOX_BLOCKED_BACKLOG_
+ * TOLERANCE`) `backlogOpenCount`, zero pending records, and a fresh
+ * heartbeat, the axis is `idle` rather than `stalled` — the notification
+ * already delivered; there is nothing left to retry or drain, and no
+ * owner action can resolve a row in a local SQLite file that will never
+ * be picked up again. Any of those signals failing (large or unknown
+ * backlog count, real pending work, or a stale heartbeat) falls through
+ * to the pre-existing `state_read_failed` classification, which stays the
+ * conservative default.
  */
 export function deriveOutboxAxisFromHeartbeat(
   evidence: HeartbeatOutboxEvidence,
@@ -3685,20 +3781,13 @@ export function deriveOutboxAxisFromHeartbeat(
   if (!evidence.lastHeartbeatAt) {
     return { axis: "unknown", cause: null, unreliable: false };
   }
-  if (evidence.lastHeartbeatStatus === "blocked") {
-    // A blocked heartbeat with dead letters is a backlog to retry+re-run; a
-    // blocked heartbeat with none is a failed state read cleared by re-running.
-    // Mirrors the device-side `last_error.kind` split.
-    const cause: OutboxStalledCause =
-      (evidence.deadLetterCount ?? 0) > 0
-        ? deadLetterStalledCause(evidence.deadLetterCount ?? 0, evidence.deadLetterErrorClasses ?? null)
-        : "state_read_failed";
-    return { axis: "stalled", cause, unreliable: false };
-  }
-
   const heartbeatAgeMs = ageMs(evidence.lastHeartbeatAt, options.nowIso);
   const pending = evidence.recordsPending ?? 0;
   const heartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > options.staleHeartbeatThresholdMs;
+
+  if (evidence.lastHeartbeatStatus === "blocked") {
+    return classifyBlockedHeartbeat(evidence, { heartbeatStale, pending });
+  }
 
   if (pending > 0 && heartbeatStale) {
     return { axis: "stalled", cause: "stale_pending", unreliable: false };
@@ -3720,6 +3809,57 @@ export function deriveOutboxAxisFromHeartbeat(
     return { axis: "idle", cause: null, unreliable: false };
   }
   return { axis: "unknown", cause: null, unreliable: false };
+}
+
+/**
+ * Classifies a `blocked` heartbeat: dead letters -> retry+re-run backlog;
+ * none -> either a bounded-debris carve-out (`idle`) or a genuine
+ * state-read failure. Extracted from `deriveOutboxAxisFromHeartbeat` to
+ * keep that function's cognitive complexity within the repo's lint budget.
+ */
+function classifyBlockedHeartbeat(
+  evidence: HeartbeatOutboxEvidence,
+  age: { heartbeatStale: boolean; pending: number }
+): { axis: OutboxAxis; cause: OutboxStalledCause | null; unreliable: boolean } {
+  // A blocked heartbeat with dead letters is a backlog to retry+re-run; a
+  // blocked heartbeat with none is a failed state read cleared by re-running.
+  // Mirrors the device-side `last_error.kind` split.
+  if ((evidence.deadLetterCount ?? 0) > 0) {
+    return {
+      axis: "stalled",
+      cause: deadLetterStalledCause(evidence.deadLetterCount ?? 0, evidence.deadLetterErrorClasses ?? null),
+      unreliable: false,
+    };
+  }
+  if (qualifiesForBoundedDebrisCarveOut(evidence, age)) {
+    return { axis: "idle", cause: null, unreliable: false };
+  }
+  return { axis: "stalled", cause: "state_read_failed", unreliable: false };
+}
+
+/**
+ * Bounded-debris carve-out: a small `backlog_open` count with zero dead
+ * letters, zero pending records, and a fresh heartbeat is read as stray
+ * gap-NOTIFICATION rows left behind by a superseded attempt (see
+ * `OUTBOX_BLOCKED_BACKLOG_TOLERANCE`), not a genuinely unreadable exporter
+ * state — the notification already uploaded; nothing is waiting to drain.
+ * `backlogOpenCount` absent/null does not qualify (unknown magnitude
+ * classifies conservatively, same as before this carve-out existed). A
+ * stale heartbeat or nonzero pending work also disqualifies: those are
+ * exactly the signals that distinguish "collector genuinely stuck" from
+ * "one clean row".
+ */
+function qualifiesForBoundedDebrisCarveOut(
+  evidence: HeartbeatOutboxEvidence,
+  age: { heartbeatStale: boolean; pending: number }
+): boolean {
+  return (
+    typeof evidence.backlogOpenCount === "number" &&
+    evidence.backlogOpenCount > 0 &&
+    evidence.backlogOpenCount <= OUTBOX_BLOCKED_BACKLOG_TOLERANCE &&
+    age.pending === 0 &&
+    !age.heartbeatStale
+  );
 }
 
 function deadLetterStalledCause(

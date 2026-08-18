@@ -116,6 +116,7 @@ function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, 
   }
   const result = deriveOutboxAxisFromHeartbeat(
     {
+      backlogOpenCount: row.outboxDiagnostics?.backlog_open ?? null,
       deadLetterCount: row.outboxDiagnostics?.dead_letter ?? null,
       deadLetterErrorClasses: deadLetterErrorClassesFromHeartbeat(row.lastError),
       evidenceTrusted: trusted,

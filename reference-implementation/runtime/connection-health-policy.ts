@@ -32,3 +32,29 @@ export const BLOCKED_PROMOTION_THRESHOLD = 7;
  * off).
  */
 export const OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Maximum `backlog_open` count that a `blocked` heartbeat with zero dead
+ * letters and zero pending records tolerates before it is treated as a
+ * genuine state-read failure.
+ *
+ * A device-side "gap" outbox row is counted `backlog_open` while its status
+ * is `ready`, `leased`, OR `succeeded` — for a gap row, `succeeded` means
+ * "the gap NOTIFICATION uploaded fine", not "the gap is resolved" (see
+ * `local-device-outbox.ts::countOpenGaps`). A failed collector attempt that
+ * is immediately superseded by a successful one leaves exactly this kind of
+ * debris: a handful of already-delivered notification rows that will never
+ * be picked up again by a later `succeeded`/`healthy` heartbeat, because
+ * nothing re-drains a `succeeded` row.
+ *
+ * Below this bound, a `blocked` heartbeat with no dead letters and no
+ * pending work is read as stray notification debris from a superseded run,
+ * not a broken exporter — the owner cannot act on "there is one stale row in
+ * a local SQLite file," and the collection evidence (records, batches,
+ * summary state) is the trustworthy signal here, not the heartbeat status
+ * alone. At or above this bound, the same `blocked` heartbeat still reads as
+ * `state_read_failed`: a large open-gap count is either a real stuck
+ * exporter or a runaway debris accumulation, and both need the owner to
+ * re-run the collector rather than being silently absorbed.
+ */
+export const OUTBOX_BLOCKED_BACKLOG_TOLERANCE = 3;
