@@ -397,12 +397,11 @@ test("owner route discovery scans browser-session, upload, and full nav owner su
 test("real published surface contains the subcommands rendered in owner UI", async () => {
   const surface = await derivePublishedCommandSurface();
   // The owner UI renders these today; they must exist in the published packages.
+  // @pdpp/local-collector's dispatch source left this repo in data-connect Move R
+  // (see surface-manifest.ts's PUBLISHED_PACKAGES comment) — its subcommand surface
+  // is no longer derivable here, so it is not asserted in this repo.
   // biome-ignore lint/suspicious/noUnnecessaryConditions: noUncheckedIndexedAccess makes this index type `Set<string> | undefined`; tsc rejects the non-optional access Biome suggests.
   assert.ok(surface["@pdpp/cli"]?.has("connect"), "@pdpp/cli must publish `connect`");
-  for (const sub of ["enroll", "run", "status", "doctor", "retry-dead-letters"]) {
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: noUncheckedIndexedAccess makes this index type `Set<string> | undefined`; tsc rejects the non-optional access Biome suggests.
-    assert.ok(surface["@pdpp/local-collector"]?.has(sub), `@pdpp/local-collector must publish \`${sub}\``);
-  }
 });
 
 test("every rendered PDPP-package command resolves to a published subcommand", async () => {

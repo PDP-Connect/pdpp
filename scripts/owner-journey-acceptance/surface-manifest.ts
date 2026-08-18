@@ -292,6 +292,15 @@ export const POST_SUBMIT_RULE = {
  *
  * `verificationMode` records how an owner could verify the command from a clean
  * shell; the harness requires every rendered command to carry one.
+ *
+ * `@pdpp/local-collector` is intentionally absent: its source left this repo in
+ * data-connect Move R (packages/local-collector was extracted, not vendored —
+ * unlike collector-runtime/connector-protocol, which pdpp still pulls in as
+ * vendor/*.tgz). There is no local dispatch file left to derive its subcommand
+ * surface from, so `pdpp-local-collector` commands fall through
+ * checkCommandFreshness's external-head branch (recorded, not gated) the same
+ * way `claude`/`codex` host commands do. Freshness for it is data-connect's
+ * responsibility now.
  */
 export const PUBLISHED_PACKAGES = {
   "@pdpp/cli": {
@@ -300,12 +309,6 @@ export const PUBLISHED_PACKAGES = {
     // Source of truth for the published subcommand set.
     commandDispatchFile: "packages/cli/src/index.ts",
     verificationMode: "npx -y @pdpp/cli --help",
-  },
-  "@pdpp/local-collector": {
-    specifier: "@pdpp/local-collector",
-    binName: "pdpp-local-collector",
-    commandDispatchFile: "packages/local-collector/bin/pdpp-local-collector.ts",
-    verificationMode: "npx -y @pdpp/local-collector --help",
   },
 };
 
