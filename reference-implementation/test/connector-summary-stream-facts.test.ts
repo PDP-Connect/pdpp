@@ -934,3 +934,135 @@ test("terminal CAS: a pass with a stale baseline cannot regress an already-curre
     );
   });
 });
+
+// Regression guard for the permanent-exclusion bug fixed alongside
+// `rowNeedsFoldParticipation`'s zero-checkpoint historical carve-out
+// (5bd5b665c): that carve-out excludes a `terminal_facts_historical` row with
+// a zero checkpoint from fold participation entirely, on the theory that it
+// "re-enters only when ... its checkpoint advances past zero." But nothing
+// besides the fold's OWN write ever advances `stream_facts_event_seq`, and
+// that write floored the checkpoint at its stale prior value (0) instead of
+// the round's own high-water for exactly this refused branch — so a row that
+// reaches checkpoint 0 + historical can never re-participate, never gets its
+// checkpoint written again, and is excluded forever, even once a genuinely
+// NEW, correctly-attributed terminal event lands for it. Fixed by always
+// advancing the write to `participantWriteSeq` (this round's own converged
+// high-water), mirroring how `manifest_generation_changed` rows are already
+// stamped with `terminal_facts_generation_boundary` at the moment of refusal
+// (`connector-summary-evidence-engine.ts`'s `terminalFactsForRepair`).
+test("fold: a zero-checkpoint historical row recovers when a genuinely new correctly-attributed terminal event lands, and does not re-participate on silent repeat passes", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovers", "imessage");
+    // The connection's manifest generation has already advanced to 1 (a
+    // manifest re-registration bumped it — auth.ts
+    // persistManifestAndAdvanceGenerations) BEFORE any terminal event is
+    // observed. `rebuildConnectorSummaryEvidence` syncs the evidence row's
+    // own `manifest_generation` column (what `seedFoldState` reads into
+    // `generationByInstance`) to match.
+    getDb()
+      .prepare("UPDATE connector_instances SET manifest_generation = 1 WHERE connector_instance_id = ?")
+      .run("cin_recovers");
+    await rebuildConnectorSummaryEvidence();
+    const evidenceGeneration = getDb()
+      .prepare("SELECT manifest_generation FROM connector_summary_evidence WHERE connector_instance_id = ?")
+      .get<{ manifest_generation: number }>("cin_recovers");
+    assert.equal(evidenceGeneration?.manifest_generation, 1, "premise: evidence generation tracks the instance");
+
+    // A legacy/out-of-band terminal event lands explicitly stamped at the
+    // OLD generation (0) — the exact shape a legacy or unattributed
+    // terminal event has per design.md "Health boundary": "Legacy or
+    // unattributed terminal events are historical, never current proof."
+    // The shared `seedTerminalEvent` helper leaves `manifest_generation`
+    // NULL so the `stamp_terminal_manifest_generation` trigger auto-stamps
+    // the connection's CURRENT generation; this event instead supplies an
+    // explicit stale value to model one that predates the transition.
+    seededEventSeq += 1;
+    getDb()
+      .prepare(
+        `INSERT INTO spine_events(
+           event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+           connector_instance_id, manifest_generation
+         )
+         VALUES(?, ?, 'run.completed', ?, ?, 'test', ?, 'runtime', 'test-connector', 'run', ?, 'succeeded', ?, ?, '1', ?, 0)`
+      )
+      .run(
+        `evt_${seededEventSeq}`,
+        seededEventSeq,
+        "2026-06-17T10:00:00.000Z",
+        "2026-06-17T10:00:00.000Z",
+        `trace_${seededEventSeq}`,
+        "run_stale_generation",
+        "run_stale_generation",
+        JSON.stringify({
+          collection_facts: {
+            reference_only: true,
+            schema_version: 1,
+            streams: [{ checkpoint: "committed", collected: 3, stream: "messages" }],
+          },
+          connection_id: "cin_recovers",
+          connector_instance_id: "cin_recovers",
+        }),
+        "cin_recovers"
+      );
+
+    const firstPass = await foldConnectorSummaryStreamFacts(["cin_recovers"]);
+    assert.equal(firstPass.participants, 1, "the row participates on its first pass after the generation bump");
+    assert.equal(firstPass.refused, 1, "the generation-mismatched event is refused, not folded as proof");
+
+    const refused = getDb()
+      .prepare(
+        "SELECT terminal_facts_state, terminal_facts_reason_code, stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      )
+      .get<{
+        stream_facts_event_seq: number | null;
+        terminal_facts_reason_code: string | null;
+        terminal_facts_state: string;
+      }>("cin_recovers");
+    assert.ok(refused, "evidence row exists after the refused pass");
+    assert.equal(refused.terminal_facts_state, "stale");
+    assert.equal(refused.terminal_facts_reason_code, "terminal_facts_historical");
+
+    // Property (b): a repeat pass with NOTHING new must not re-participate
+    // (the starvation guard `rowNeedsFoldParticipation` exists for).
+    const repeatPass = await foldConnectorSummaryStreamFacts(["cin_recovers"]);
+    assert.equal(
+      repeatPass.participants,
+      0,
+      "a historical row must not rejoin every pass when nothing new has arrived (starvation guard)"
+    );
+
+    // Property (a): a genuinely NEW terminal event, correctly attributed to
+    // the connection's now-current generation (1), must make the row
+    // recover.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovers",
+      occurredAt: "2026-06-17T11:00:00.000Z",
+      runId: "run_current_generation",
+      streams: [{ checkpoint: "committed", collected: 7, stream: "messages" }],
+    });
+    const recoveryPass = await foldConnectorSummaryStreamFacts(["cin_recovers"]);
+    assert.equal(
+      recoveryPass.participants,
+      1,
+      "the row re-enters the fold once a genuinely new terminal event lands for it"
+    );
+    assert.equal(recoveryPass.folded, 1, "the new correctly-attributed event is folded as proof");
+
+    const recovered = getDb()
+      .prepare(
+        "SELECT terminal_facts_state, terminal_facts_reason_code, stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      )
+      .get<{
+        stream_facts_event_seq: number | null;
+        terminal_facts_reason_code: string | null;
+        terminal_facts_state: string;
+      }>("cin_recovers");
+    assert.ok(recovered, "evidence row exists after recovery");
+    assert.equal(recovered.terminal_facts_state, "current", "the row recovers to current, not stuck historical");
+    assert.equal(recovered.terminal_facts_reason_code, null);
+    const recoveredFacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovers")), "messages");
+    assert.equal(recoveredFacts.run_id, "run_current_generation", "the new event's fact is what folded in");
+    assert.equal(recoveredFacts.fact.collected, 7);
+  });
+});
