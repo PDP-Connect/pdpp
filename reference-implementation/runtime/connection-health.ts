@@ -128,6 +128,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_FAILED: "collection_failed",
   COLLECTION_NOT_OBSERVED: "collection_not_observed",
   COLLECTION_SUCCEEDED: "collection_succeeded",
+  COLLECTION_SUCCEEDED_IMPORT_COMPLETE: "collection_succeeded_import_complete",
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
   COVERAGE_UNKNOWN: "coverage_unknown",
   CREDENTIAL_CONTINUITY_NOT_APPLICABLE: "credential_continuity_not_applicable",
@@ -139,6 +140,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   CREDENTIALS_NOT_PROBED: "credentials_not_probed",
   EXTERNAL_TOOL_UNAVAILABLE: "external_tool_unavailable",
   FRESH: "fresh",
+  FRESHNESS_NOT_APPLICABLE_COMPLETE: "freshness_not_applicable_complete",
   FRESHNESS_UNKNOWN: "freshness_unknown",
   LOCAL_EXPORTER_ACTIVE: "local_exporter_active",
   LOCAL_EXPORTER_DEAD_LETTER_BACKLOG: "local_exporter_dead_letter_backlog",
@@ -1018,6 +1020,32 @@ export interface ConnectionFreshnessEvidence {
 }
 
 /**
+ * Acquisition-completeness evidence: whether this connection's data collection
+ * is FINISHED by design rather than recurring.
+ *
+ * A one-time import (`source_kind = 'manual'`) ingests a file the owner
+ * supplied and then never collects again. Google Maps Timeline Import holds
+ * 299,248 records and WhatsApp-brennan holds 120,042; both have zero rows in
+ * `run_history` and no schedule, because there is nothing left to run. Their
+ * data is not stale — it is *final*. Asking "is it current?" of a completed
+ * import is a category error, and the shipped model answers it `unknown`
+ * forever, which the owner reads as "broken".
+ *
+ * `complete: true` makes freshness `not_applicable` (a settled answer) instead
+ * of `unknown` (a pending one), and lets the healthy predicate accept the
+ * absence of a freshness proof it can never obtain. It deliberately does NOT
+ * relax coverage: a completed import must still prove it ingested what it
+ * claimed, so a gap or unknown coverage keeps it out of green.
+ *
+ * Omit/`null` for every recurring source. That preserves the shipped behavior
+ * exactly — staleness still degrades a source the system was supposed to
+ * refresh and did not.
+ */
+export interface ConnectionAcquisitionEvidence {
+  readonly complete: boolean;
+}
+
+/**
  * Projection-reliability evidence. The caller names every required read
  * model and whether it is currently reliable. Any unreliable required
  * source forces the headline state to `unknown`.
@@ -1125,6 +1153,12 @@ export interface ConnectionCredentialEvidence {
 }
 
 export interface ComputeConnectionHealthInput {
+  /**
+   * Acquisition-completeness evidence. Present and `complete` only for sources
+   * whose collection is finished by design (one-time imports). See
+   * {@link ConnectionAcquisitionEvidence}.
+   */
+  readonly acquisition?: ConnectionAcquisitionEvidence | null;
   readonly activity: ConnectionActivityEvidence | null;
   readonly attention: ConnectionAttentionEvidence | null;
   readonly backoff: ConnectionBackoffEvidence | null;
@@ -1736,11 +1770,29 @@ export function hasIndependentDegradingEvidence(conditions: readonly ConnectionH
   return conditions.some(isDegradingCondition);
 }
 
+/**
+ * A required condition is satisfied when it is affirmatively `true`, or when it
+ * is `not_applicable` — a settled answer that the question does not apply to
+ * this connection.
+ *
+ * `unknown` is NOT satisfaction. That distinction is the whole point: a source
+ * whose coverage cannot be proven because its collector is out of date stays
+ * out of green, while a completed one-time import that will never refresh is
+ * not held to a freshness proof it can never produce.
+ */
+function conditionIsSettledSatisfied(
+  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
+  type: ConnectionConditionType
+): boolean {
+  const status = conditions.get(type)?.status;
+  return status === "true" || status === "not_applicable";
+}
+
 function isHealthyConditionSet(conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>): boolean {
   return (
     conditionIsTrue(conditions, "CollectionSucceeded") &&
     conditionIsTrue(conditions, "SourceCoverageComplete") &&
-    conditionIsTrue(conditions, "Fresh") &&
+    conditionIsSettledSatisfied(conditions, "Fresh") &&
     !conditionIsFalse(conditions, "AttentionClear") &&
     !conditionIsFalse(conditions, "ProjectionReliable") &&
     !conditionIsFalse(conditions, "RetryPolicyClear") &&
@@ -2020,6 +2072,23 @@ function collectionSucceededCondition(input: ComputeConnectionHealthInput): Conn
         observedAt: input.run?.lastSuccessAt ?? null,
         origin: "local_device",
         reason: CONDITION_REASON.COLLECTION_SUCCEEDED_LOCAL_DEVICE,
+        severity: "info",
+        status: "true",
+        type: "CollectionSucceeded",
+      });
+    }
+    // A completed one-time import writes no spine run either: the owner
+    // supplied a file, the ingest finished, and there is nothing to schedule.
+    // Its completeness declaration is the collection verdict, exactly as the
+    // local-device verdict is above. Coverage is still proven independently —
+    // the caller only sets `complete` once the import finished ingesting, and
+    // `SourceCoverageComplete` is checked separately by the healthy predicate.
+    if (input.acquisition?.complete === true) {
+      return condition({
+        message: "The one-time import finished ingesting.",
+        observedAt: input.run?.lastSuccessAt ?? null,
+        origin: "connector",
+        reason: CONDITION_REASON.COLLECTION_SUCCEEDED_IMPORT_COMPLETE,
         severity: "info",
         status: "true",
         type: "CollectionSucceeded",
@@ -2791,6 +2860,26 @@ export function isAssistedRefresh(refresh: ConnectionRefreshEvidence | null | un
 }
 
 function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
+  // A source whose acquisition is complete by design has no future capture to
+  // age against, so freshness is a question that does not apply here rather
+  // than one awaiting an answer. This branch is first because a completed
+  // import legitimately has no freshness axis at all: it never ran, so the
+  // axis is `unknown`, and that `unknown` is certainty, not doubt.
+  //
+  // Deliberately settled as `not_applicable` rather than `true`: claiming a
+  // finished 2023 export is "fresh" would be a second lie replacing the first.
+  // The healthy predicate accepts the not-applicable answer instead.
+  if (input.acquisition?.complete === true) {
+    return condition({
+      message: "This is a one-time import — its data is complete and will not refresh.",
+      observedAt: input.run?.lastSuccessAt ?? null,
+      origin: "connector",
+      reason: CONDITION_REASON.FRESHNESS_NOT_APPLICABLE_COMPLETE,
+      severity: "info",
+      status: "not_applicable",
+      type: "Fresh",
+    });
+  }
   if (axes.freshness === "fresh") {
     return condition({
       message: "Retained data satisfies the freshness policy.",

@@ -69,6 +69,7 @@
 import { isNullish } from "../lib/nullish.ts";
 import type { ConnectionHealthSnapshot } from "./connection-health.ts";
 import {
+  freshnessNotApplicable,
   hasOwnerBlockingAction,
   isPassiveScheduledRecovery,
   type RenderedVerdict,
@@ -405,7 +406,16 @@ function resolveOwnerStateResolver(
   // fallback for a genuinely unmeasured connection with nothing further to
   // say about it. (Active progress is handled above and always short-
   // circuits before this check.)
-  if (evidence.source === "none") {
+  //
+  // EXCEPTION: a completed one-time import also has `source === "none"` (no
+  // run ever, no freshness proof ever, none is ever coming) — but its
+  // absence of a freshness proof is SETTLED, not pending. `Fresh` is
+  // `not_applicable` from durable evidence (`source_kind = 'manual'`), the
+  // typed condition `freshnessNotApplicable` reads — never from copy strings
+  // (design gate #1). Falling through here lets it reach the ordinary
+  // green-tone `healthy` resolution below instead of being stuck at
+  // `not_measured` forever.
+  if (evidence.source === "none" && !freshnessNotApplicable(snapshot)) {
     return "not_measured";
   }
 
