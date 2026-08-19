@@ -694,7 +694,7 @@ test("SQLite warm v3 terminal projection is invalidated and replayed, now accept
           "warm summary evidence exists"
         ).stream_facts_fold_version
       ),
-      4
+      5
     );
 
     const healedProjection = {
@@ -820,7 +820,7 @@ test("SQLite route retries a lost v4 replay before trusting a mixed-version v2 t
             "first-route summary evidence exists"
           ).stream_facts_fold_version
         ),
-        4
+        5
       );
       // fix-pre-provenance-terminal-generation-semantics: the connection has
       // never advanced past generation 0, so BOTH the v2 delta's EMPTY_STREAM

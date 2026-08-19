@@ -597,9 +597,23 @@ async function runManifestRaceOracle(driver: Driver) {
     "the manifest fingerprint is not orphaned/stale — M2 is the durably stored manifest after the race"
   );
 
-  // A second reconcile pass after the race settles is idempotent.
+  // The engine-only reconcile above repairs the manifest/record/retained-
+  // bytes components but deliberately leaves `terminal_facts_state` at
+  // `stale`/`manifest_generation_changed` (see `classifyCandidate`'s
+  // `component_stale` reason in connector-summary-evidence-engine.ts) —
+  // since the 2026-07-29 terminal-gate revision, resolving that component is
+  // the terminal-fold barrier's job (`reconcileDirtyConnectorSummaryEvidence`
+  // / `rebuildConnectorSummaryEvidence`), run independently by the
+  // maintenance sweep rather than inline on every engine reconcile. A
+  // standalone `reconcileConnectorSummaryEvidence` pass legitimately keeps
+  // rediscovering the row as `component_stale` until that separate fold
+  // barrier actually runs — so settling the race requires both barriers,
+  // exactly as `runConnectorMaintenanceSweep` composes them in production.
+  await reconcileDirtyConnectorSummaryEvidence(null);
+
+  // Now that both barriers have run, a further reconcile pass is idempotent.
   const secondPass = await reconcileConnectorSummaryEvidence(null);
-  assert.equal(secondPass.repaired, 0, "a second pass after the race settles repairs nothing further");
+  assert.equal(secondPass.repaired, 0, "a pass after both barriers settle repairs nothing further");
 }
 
 async function runTerminalCollectionEvidenceOracle(driver: Driver) {
