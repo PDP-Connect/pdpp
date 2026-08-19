@@ -49,6 +49,12 @@ export interface CollectionReportEntryLike {
   readonly collected: number;
   readonly considered: number | "unknown";
   readonly coverage_condition: CoverageAxis;
+  /**
+   * Whether this stream's whole terminal shortfall carries durable per-item
+   * impossibility proof. Optional so existing callers are unaffected; absent
+   * reads `false`, the shipped behavior.
+   */
+  readonly coverage_unfillable_accounted?: boolean;
   readonly pending_detail_gaps: number;
   readonly stream: string;
 }
@@ -162,6 +168,10 @@ export function buildStreamRollups(
       gap_retryable: retryable,
       priority: effectivePriority,
       stream_id: entry.stream,
+      // Carried, never re-derived: the entry already holds the one owner's
+      // verdict, so the verdict's disposition reads the same fact the
+      // connection-health condition set does.
+      unfillable_accounted: entry.coverage_unfillable_accounted === true,
     };
   });
 }

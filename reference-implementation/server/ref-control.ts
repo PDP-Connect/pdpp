@@ -3453,6 +3453,10 @@ function buildCollectionReportEntry(input: {
     gapRetryable: coverageCondition === "retryable_gap",
     refresh: input.refresh,
     schedule: input.schedule ?? null,
+    // The same withdrawn-on-stale-scope boolean the entry publishes as
+    // `coverage_unfillable_accounted`, so this entry's disposition and its
+    // coverage condition are read off one fact.
+    unfillableAccounted,
   });
   return {
     checkpoint: effectiveFact.checkpoint ?? "unknown",

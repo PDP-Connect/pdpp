@@ -206,3 +206,77 @@ test("unknown-denominator: unknown coverage that is also manual-refresh stale st
   assert.notEqual(disposition, "owner_refresh_due");
   assert.notEqual(disposition, "complete");
 });
+
+// ─── unfillableAccounted: a fully-proven terminal_gap owes nothing ────────────
+//
+// Live Gmail (2026-08-18) had a fully healthy condition set — including
+// `SourceCoverageComplete: true / coverage_complete_unfillable_accounted` —
+// while the disposition still read `terminal`, so the pill rendered red. The
+// health gate had learned the fact and the disposition had not. These tests pin
+// the two readings of the SAME evidence to one answer.
+
+test("unfillable-accounted: a terminal_gap whose whole shortfall is proven unfillable is complete, not terminal", () => {
+  const disposition = deriveForwardDisposition(input({ coverage: "terminal_gap", unfillableAccounted: true }));
+  assert.equal(disposition, "complete");
+  assert.notEqual(disposition, "terminal");
+});
+
+test("ANTI-FALSE-GREEN: unfillableAccounted false (one unproven terminal gap) stays terminal", () => {
+  // Partial proof is not proof: `isStreamFullyUnfillableAccounted` is
+  // all-or-nothing, so a single unproven terminal gap leaves the flag false.
+  assert.equal(deriveForwardDisposition(input({ coverage: "terminal_gap", unfillableAccounted: false })), "terminal");
+});
+
+test("ANTI-FALSE-GREEN: an absent unfillableAccounted preserves the shipped terminal behavior", () => {
+  assert.equal(deriveForwardDisposition(input({ coverage: "terminal_gap" })), "terminal");
+});
+
+test("ANTI-FALSE-GREEN: unfillableAccounted never softens unsupported", () => {
+  // `unsupported` is a claim about the stream as a whole, not about a measured
+  // set of items proven impossible. It is a different claim and stays terminal.
+  assert.equal(deriveForwardDisposition(input({ coverage: "unsupported", unfillableAccounted: true })), "terminal");
+});
+
+test("ANTI-FALSE-GREEN: unfillableAccounted never softens unavailable", () => {
+  assert.equal(deriveForwardDisposition(input({ coverage: "unavailable", unfillableAccounted: true })), "terminal");
+});
+
+test("ANTI-FALSE-GREEN: unfillableAccounted never rescues a retryable_gap into complete", () => {
+  // A retryable gap has a live recovery path; an impossibility claim about it is
+  // incoherent and must not erase the outstanding work.
+  assert.equal(
+    deriveForwardDisposition(input({ coverage: "retryable_gap", gapRetryable: true, unfillableAccounted: true })),
+    "resumable"
+  );
+});
+
+test("ANTI-FALSE-GREEN: unfillableAccounted never promotes unknown coverage to complete", () => {
+  assert.equal(deriveForwardDisposition(input({ coverage: "unknown", unfillableAccounted: true })), "unmeasured");
+});
+
+test("unfillable-accounted: open owner attention still wins over an accounted terminal_gap", () => {
+  // Accounted coverage is not a reason to stop asking the owner for what they owe.
+  assert.equal(
+    deriveForwardDisposition(input({ attentionOpen: true, coverage: "terminal_gap", unfillableAccounted: true })),
+    "awaiting_owner"
+  );
+});
+
+test("unfillable-accounted: an accounted terminal_gap that is manual-refresh stale is owner_refresh_due", () => {
+  // Softening removes the GAP, not the freshness fact: the stream then flows
+  // through the ordinary freshness rules exactly as a `complete` stream does.
+  const disposition = deriveForwardDisposition(
+    input({ coverage: "terminal_gap", freshness: "stale", refresh: MANUAL_REFRESH, unfillableAccounted: true })
+  );
+  assert.equal(disposition, "owner_refresh_due");
+  assert.notEqual(disposition, "terminal");
+});
+
+test("unfillable-accounted: an accounted terminal_gap on a schedulable stale connection stays complete", () => {
+  assert.equal(
+    deriveForwardDisposition(
+      input({ coverage: "terminal_gap", freshness: "stale", refresh: SCHEDULABLE_REFRESH, unfillableAccounted: true })
+    ),
+    "complete"
+  );
+});

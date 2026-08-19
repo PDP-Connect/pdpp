@@ -189,6 +189,7 @@ function stream(overrides: Partial<StreamRollup> = {}): StreamRollup {
     gap_retryable: overrides.gap_retryable ?? false,
     priority: overrides.priority ?? "required",
     stream_id: overrides.stream_id ?? "s1",
+    unfillable_accounted: overrides.unfillable_accounted ?? false,
   };
 }
 
@@ -2371,4 +2372,114 @@ test("refresh_now: paused active schedule stays manual and keeps the owner refre
     // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
     /refreshes when you run it/i
   );
+});
+
+// ─── unfillable-accounted terminal_gap: the live Gmail shape ─────────────────
+//
+// Live Gmail (2026-08-18) reached a fully healthy condition set — including
+// `SourceCoverageComplete: true` with reason
+// `coverage_complete_unfillable_accounted` — while the disposition still read
+// `terminal`, so `buildRequiredActions` emitted a maintainer `code_fix` and the
+// pill rendered red ("Can't collect"). All five streams were settled; the only
+// shortfall was `attachments`, whose every terminal gap carried durable
+// size-vs-cap proof (a 29MB attachment against a 25MB cap is not a bug, and
+// there is no code fix to make). These tests pin the whole rendered verdict.
+
+test("unfillable-accounted: an all-proven terminal_gap stream renders non-red with no maintainer code_fix", () => {
+  const snap = snapshot({
+    axes: { coverage: "terminal_gap", freshness: "fresh" },
+    conditions: [collectionSucceededCondition()],
+    forward_disposition: "complete",
+    state: "healthy",
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [
+      stream({ coverage: "terminal_gap", stream_id: "attachments", unfillable_accounted: true }),
+      stream({ coverage: "complete", stream_id: "messages" }),
+    ],
+    null,
+    true
+  );
+
+  assert.equal(v.detail.forward_disposition, "complete");
+  assert.notEqual(v.pill.tone, "red");
+  assert.notEqual(v.pill.label, "Can't collect");
+  assert.ok(
+    !v.required_actions.some((a) => a.kind === "code_fix"),
+    "a fully-accounted terminal gap has no code fix to make"
+  );
+  assert.ok(!JSON.stringify(v).includes("Some data from this source can't be collected"));
+});
+
+test("ANTI-FALSE-GREEN: one unproven terminal gap beside a proven one stays red with the code_fix", () => {
+  // Partial proof is not proof. `attachments` is fully accounted; `messages`
+  // has an unproven terminal gap, so the connection is still genuinely stuck.
+  const snap = snapshot({
+    axes: { coverage: "terminal_gap", freshness: "fresh" },
+    forward_disposition: "terminal",
+    state: "degraded",
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [
+      stream({ coverage: "terminal_gap", stream_id: "attachments", unfillable_accounted: true }),
+      stream({ coverage: "terminal_gap", stream_id: "messages", unfillable_accounted: false }),
+    ],
+    null,
+    true
+  );
+
+  assert.equal(v.detail.forward_disposition, "terminal");
+  assert.equal(v.pill.tone, "red");
+  assert.equal(v.pill.label, "Can't collect");
+  const codeFix = v.required_actions.find((a) => a.kind === "code_fix");
+  assert.ok(codeFix, "an unproven terminal gap still owes a maintainer code_fix");
+  assert.equal(codeFix.audience, "maintainer");
+  // The action names the genuinely-stuck stream and ONLY that one: a stream
+  // already proven fully accounted is not something a maintainer can fix, and
+  // listing it would overstate the blast radius.
+  assert.deepEqual(codeFix.affects, ["messages"]);
+});
+
+test("ANTI-FALSE-GREEN: the USAA shape — a quarantined terminal gap with no size-vs-cap proof stays red", () => {
+  // A quarantined gap carries no per-item impossibility evidence, so
+  // `isStreamFullyUnfillableAccounted` leaves the flag false and nothing softens.
+  const snap = snapshot({
+    axes: { coverage: "terminal_gap", freshness: "fresh" },
+    forward_disposition: "terminal",
+    state: "degraded",
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: "terminal_gap", stream_id: "transactions", unfillable_accounted: false })],
+    null,
+    true
+  );
+
+  assert.equal(v.detail.forward_disposition, "terminal");
+  assert.equal(v.pill.tone, "red");
+  assert.equal(v.required_actions.find((a) => a.kind === "code_fix")?.audience, "maintainer");
+});
+
+test("ANTI-FALSE-GREEN: unsupported/unavailable streams are unaffected by the unfillable flag", () => {
+  for (const coverage of ["unsupported", "unavailable"] as const) {
+    const snap = snapshot({
+      axes: { coverage, freshness: "fresh" },
+      forward_disposition: "terminal",
+      state: "degraded",
+    });
+    const v = synthesizeRenderedVerdict(
+      snap,
+      [stream({ coverage, stream_id: "lost", unfillable_accounted: true })],
+      null,
+      true
+    );
+    assert.equal(v.detail.forward_disposition, "terminal", `${coverage} stays terminal`);
+    assert.equal(v.pill.tone, "red", `${coverage} stays red`);
+    assert.ok(
+      v.required_actions.some((a) => a.kind === "code_fix"),
+      `${coverage} still owes a code_fix`
+    );
+  }
 });
