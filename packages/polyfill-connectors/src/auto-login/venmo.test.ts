@@ -462,6 +462,11 @@ test("ensureVenmoSession: an expired session (dead initial probe) with saved cre
 
 test("probeVenmoAccount: navigates to venmo.com first when the page starts on about:blank", async () => {
   const gotoUrls: string[] = [];
+  // A real `page.goto` that lands successfully updates `page.url()` to the
+  // destination — this fake must mirror that (see
+  // `ensureVenmoOrigin`'s post-navigation landed-origin check) or it proves
+  // nothing about a real browser's behavior.
+  let currentUrl = "about:blank";
   const page: Pick<Page, "evaluate" | "goto" | "url"> = {
     // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
     async evaluate(): Promise<unknown> {
@@ -469,15 +474,63 @@ test("probeVenmoAccount: navigates to venmo.com first when the page starts on ab
     },
     goto(url: string): ReturnType<Page["goto"]> {
       gotoUrls.push(url);
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return currentUrl;
+    },
+  };
+  const result = await probeVenmoAccount(page as Page);
+  assert.equal(result.live, true, "the probe must actually run the fetch after navigating, not read the blank page");
+  assert.deepEqual(gotoUrls, ["https://venmo.com/"], "a fresh about:blank page must navigate to venmo.com first");
+});
+
+// Regression for production run_1787101857760 (2026-08-18, the owner's
+// first-ever Venmo run): `ensureVenmoOrigin`'s `page.goto` was wrapped in
+// `.catch(() => undefined)` and the function returned unconditionally
+// afterward, with no check that the navigation actually landed. When the
+// ONE-TIME navigation on a brand-new persistent-profile page silently failed
+// (rejected `goto`, or — as reproduced here — a `goto` that resolves without
+// the page actually leaving `about:blank`, e.g. a same-document
+// about:blank->about:blank no-op some Playwright/Patchright builds report as
+// a successful navigation), the probe proceeded straight to a credentialed
+// fetch from an opaque origin and threw the bare, uninformative
+// `venmo_probe_transport_error: Failed to fetch` — exactly what production
+// recorded. Before this fix, this exact scenario silently proceeded to the
+// fetch instead of failing fast with a diagnosable cause.
+test("probeVenmoAccount: a goto that resolves without leaving about:blank throws a diagnosable origin-navigation fault, not a bare fetch failure", async () => {
+  const gotoUrls: string[] = [];
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    async evaluate(): Promise<unknown> {
+      // Exactly what production hit: the browser's own fetch implementation
+      // reports "Failed to fetch" when called from an opaque (about:blank)
+      // origin. This must never be reached once ensureVenmoOrigin fails
+      // fast — asserted below via gotoUrls/evaluateCalls staying consistent
+      // with an early throw.
+      return await Promise.reject(new TypeError("Failed to fetch"));
+    },
+    goto(url: string): ReturnType<Page["goto"]> {
+      gotoUrls.push(url);
+      // Resolves (no rejection) — the real defect: a successful-looking
+      // `goto` that did not actually change the page's origin.
       return Promise.resolve(null);
     },
     url(): string {
       return "about:blank";
     },
   };
-  const result = await probeVenmoAccount(page as Page);
-  assert.equal(result.live, true, "the probe must actually run the fetch after navigating, not read the blank page");
-  assert.deepEqual(gotoUrls, ["https://venmo.com/"], "a fresh about:blank page must navigate to venmo.com first");
+  await assert.rejects(probeVenmoAccount(page as Page), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(
+      err.message,
+      /venmo_origin_navigation_failed/,
+      "a stuck-on-about:blank navigation must surface its own diagnosable cause, not an opaque downstream fetch failure"
+    );
+    assert.match(err.message, /venmo_probe_transport_error/, "still wrapped in the probe's own phase-aware fault name");
+    return true;
+  });
+  assert.deepEqual(gotoUrls, ["https://venmo.com/"], "the navigation must still be attempted exactly once");
 });
 
 test("probeVenmoAccount: does not re-navigate when the page is already on venmo.com", async () => {

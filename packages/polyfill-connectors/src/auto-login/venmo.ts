@@ -38,6 +38,41 @@ import { locatorIsVisible } from "./locator-helpers.ts";
 /** Same bound `index.ts`'s `errorDetail` applies after redaction — keeps one link short and legible without truncating mid-token. */
 const PROBE_TRANSPORT_DETAIL_MAX = 200;
 
+/**
+ * Fault-class name for a transport failure discovered by the PRE-submit
+ * session probe — see {@link probeVenmoAccount}'s B4 doc for why this must
+ * stay distinct from the post-submit name below.
+ */
+export const VENMO_PROBE_TRANSPORT_ERROR = "venmo_probe_transport_error";
+/** Fault-class name for a transport failure discovered by the POST-submit probe — see the B4 doc. Deliberately excluded from `VENMO_RETRYABLE_PATTERN`. */
+export const VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR = "venmo_post_submit_probe_transport_error";
+/** Fault-class name for {@link ensureVenmoOrigin} failing to land the page on the venmo.com origin — see that function's doc (production run_1787101857760). */
+export const VENMO_ORIGIN_NAVIGATION_FAILED = "venmo_origin_navigation_failed";
+
+/**
+ * This connector's classifying fault-class names — single source of truth,
+ * built from the same constants every throw site below uses, so it cannot
+ * drift from the vocabulary it names. Every one of these is >=24 chars and
+ * therefore invisible to an owner today: `runtime/connector-gap-bounding.ts`'s
+ * `boundConnectorErrorMessage` redacts any bare token this long
+ * (`stderr-redact.ts`'s `LONG_OPAQUE_RE`, an entropy heuristic for
+ * unlabelled API keys) with no notion that a categorical, PII-free reason
+ * code is not the kind of secret that rule exists to catch — the same
+ * defect class production hit for HEB (`heb_session_failed: [REDACTED]`,
+ * see `runtime/stderr-redact.ts`'s `declaredReasonTokens` doc) and, on
+ * 2026-08-18, for Venmo's own first live run (`run_1787101857760`:
+ * `venmo_session_failed: [REDACTED]: Failed to fetch` — the eaten token was
+ * exactly `VENMO_PROBE_TRANSPORT_ERROR`). Consumed by
+ * `runtime/declared-reason-tokens.ts` on the RS side so these survive that
+ * redaction pass without a hand-copied, driftable string list on the other
+ * side of the process boundary.
+ */
+export const VENMO_DECLARED_REASON_TOKENS: ReadonlySet<string> = new Set([
+  VENMO_PROBE_TRANSPORT_ERROR,
+  VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR,
+  VENMO_ORIGIN_NAVIGATION_FAILED,
+]);
+
 const HOME_URL = "https://venmo.com/";
 const LOGIN_URL = "https://venmo.com/login";
 const ACCOUNT_PROBE_URL = "https://venmo.com/account";
@@ -90,6 +125,24 @@ const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
  * session signal, a transport precondition. Every sibling browser
  * connector navigates before its first credentialed fetch
  * (reddit.ts:100, amazon.ts:90); this was the one that didn't.
+ *
+ * Production `run_1787101857760` (2026-08-18, the owner's first-ever Venmo
+ * run — a brand-new persistent profile, so `page.url()` starts on
+ * `about:blank`): the pre-submit probe threw
+ * `venmo_probe_transport_error: Failed to fetch`. The prior version of this
+ * function swallowed a failed `page.goto` with `.catch(() => undefined)` and
+ * returned regardless of whether the navigation actually landed on
+ * `venmo.com` — so a transient failure of THIS `goto` (not the eventual
+ * fetch) silently left the page on its opaque `about:blank` origin, and the
+ * caller's credentialed fetch then failed for a reason this function was
+ * supposed to have already ruled out. Every DOM-probing sibling connector
+ * (chase.ts's `probeSession`, reddit.ts's credential-less `isSessionLive`)
+ * has the same swallowed `.catch`, but degrades gracefully: a `waitFor`/
+ * `count` against an unnavigated page just times out to "not logged in".
+ * Venmo's probe is `fetch`-based, so the same swallowed failure surfaces as
+ * an opaque transport throw instead of a clean liveness signal — verifying
+ * the navigation actually landed is the fix that closes that gap for a
+ * fetch-based probe specifically.
  */
 export async function ensureVenmoOrigin(page: Page): Promise<void> {
   let currentOrigin: string | null = null;
@@ -102,6 +155,25 @@ export async function ensureVenmoOrigin(page: Page): Promise<void> {
     return;
   }
   await page.goto(HOME_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
+  let landedOrigin: string | null = null;
+  try {
+    landedOrigin = new URL(page.url()).origin;
+  } catch {
+    landedOrigin = null;
+  }
+  if (landedOrigin !== VENMO_ORIGIN) {
+    // Named distinctly from `venmo_probe_transport_error`/`venmo_transport_error`
+    // (the callers' own catch-and-wrap throws) so this fault's cause is legible
+    // on its own — "navigation to venmo.com did not land" rather than a bare
+    // "Failed to fetch" with no indication the origin was never established.
+    // Still retryable: this is the same class of transient-navigation fault
+    // VENMO_RETRYABLE_PATTERN already treats as safe to retry pre-submit, and
+    // both callers wrap this in their own try/catch that classifies it via
+    // that pattern the same way as any other transport error.
+    throw new Error(
+      `${VENMO_ORIGIN_NAVIGATION_FAILED}: could not establish the venmo.com origin (landed on ${landedOrigin ?? "unknown"})`
+    );
+  }
 }
 
 const noopCheckpoint: SessionCheckpointFn = () => Promise.resolve();
@@ -147,9 +219,14 @@ export async function probeVenmoAccount(
   page: Page,
   phase: VenmoProbePhase = "pre_submit"
 ): Promise<VenmoAccountProbeResult> {
-  await ensureVenmoOrigin(page);
   let outcome: { kind: "dead" } | { kind: "live"; ownerId: string } | { kind: "transport_error"; message: string };
   try {
+    // Folded into the same try/catch as the fetch below: a failed navigation
+    // (ensureVenmoOrigin now throws rather than silently proceeding — see its
+    // doc) must be classified through the SAME phase-aware transport-error
+    // path as a fetch failure, not escape unwrapped and skip the B4
+    // post-submit non-retry invariant this function exists to enforce.
+    await ensureVenmoOrigin(page);
     outcome = await page.evaluate(async (url) => {
       try {
         const res = await fetch(url, { credentials: "include", headers: { accept: "application/json" } });
@@ -164,10 +241,11 @@ export async function probeVenmoAccount(
       }
     }, ACCOUNT_PROBE_URL);
   } catch (err) {
-    // `page.evaluate` itself rejected — the execution context was destroyed
-    // (navigation raced the probe) or the page/browser crashed. Same
-    // "could not run at all" classification as a fetch throwing inside the
-    // callback: a transport fault, not proof the session is dead.
+    // Either `ensureVenmoOrigin` threw (navigation never landed on venmo.com)
+    // or `page.evaluate` itself rejected — the execution context was
+    // destroyed (navigation raced the probe) or the page/browser crashed.
+    // Same "could not run at all" classification as a fetch throwing inside
+    // the callback: a transport fault, not proof the session is dead.
     outcome = { kind: "transport_error", message: err instanceof Error ? err.message : String(err) };
   }
   if (outcome.kind === "transport_error") {
@@ -191,7 +269,7 @@ export async function probeVenmoAccount(
     // runtime terminal this run permanently instead of retrying it — losing
     // one run's-worth of collection is the safe failure mode, not repeatedly
     // re-submitting a real password.
-    const name = phase === "post_submit" ? "venmo_post_submit_probe_transport_error" : "venmo_probe_transport_error";
+    const name = phase === "post_submit" ? VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR : VENMO_PROBE_TRANSPORT_ERROR;
     throw new Error(`${name}: ${detail}`);
   }
   return outcome.kind === "live" ? { live: true, ownerId: outcome.ownerId } : { live: false, ownerId: null };
