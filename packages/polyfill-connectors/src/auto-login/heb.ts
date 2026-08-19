@@ -9,9 +9,12 @@
  *   2. If dead and stored sign-in details are present, fill the verified login
  *      form only, submit it, and wait for a bounded post-submit state change
  *      before re-checking the session.
- *   3. If H-E-B shows a verification-code page, emit the shared OTP
+ *   3. If H-E-B shows the post-authentication passkey-enrollment upsell,
+ *      decline it automatically and keep waiting for the live session. This
+ *      screen is not a challenge: sign-in has already succeeded behind it.
+ *   4. If H-E-B shows a verification-code page, emit the shared OTP
  *      interaction, fill and submit the code, then re-probe the live session.
- *   4. If H-E-B shows passkey, CAPTCHA, Incapsula, or any other unexpected
+ *   5. If H-E-B shows passkey, CAPTCHA, Incapsula, or any other unexpected
  *      UI, hand the browser to the owner and probe again.
  *
  * The runtime never logs or stores the provider password here. When the owner
@@ -38,7 +41,44 @@ const VERIFICATION_CODE_SELECTOR =
   'input[name="code"], input[name="otp"], input[name="verification_code"], input[autocomplete="one-time-code"]';
 const VERIFY_SUBMIT_TEXT_RE = /\b(verify|continue|submit)\b/i;
 const MAX_SPLIT_CODE_DIGITS = 8;
+/**
+ * Bounds the decline retries. H-E-B may re-render the screen once after the
+ * click; more than that means the decline is not taking effect and the run
+ * must stop with an honest error rather than spin.
+ */
+const MAX_PASSKEY_DECLINE_ATTEMPTS = 3;
 const PASSKEY_RE = /\bpasskey\b/i;
+/**
+ * The post-authentication passkey-enrollment upsell. H-E-B's OIDC provider
+ * serves it at `/interaction/<id>/passkey_registration` on accounts.heb.com;
+ * the path segment is the route name, so it is far more durable than the
+ * marketing copy on the page ("Skip the password", "You can now use passkeys
+ * to log in"), which H-E-B rewords freely.
+ *
+ * Deliberately matched against the URL only, never the body: every regex in
+ * this module runs over raw `page.content()`, and a marketing-copy match there
+ * can fire on invisible framework payload (embedded JSON, script chunks) on
+ * pages that are not this screen at all. The URL is the one signal that cannot
+ * be spoofed by page text.
+ */
+const PASSKEY_ENROLLMENT_URL_RE = /^https:\/\/accounts\.heb\.com\/interaction\/[^/]+\/passkey_registration\b/i;
+/**
+ * The decline control. Requiring a real, visible, enabled match keeps the
+ * automatic decline honest: if H-E-B ever turns this route into something
+ * mandatory, the run stops with a named error instead of clicking blind or
+ * inventing an OTP. Text-matched because the button carries no stable
+ * id/data-testid; scoped to `button`/`a`/`[role=button]` so it cannot match
+ * body prose. Anchored (`^...$`) so it matches the control's own label rather
+ * than any element that merely contains the words.
+ */
+const PASSKEY_DECLINE_SELECTOR = 'button, a, [role="button"], input[type="button"]';
+const PASSKEY_DECLINE_TEXT_RE = /^\s*(not now|skip|maybe later|no thanks)\s*$/i;
+/**
+ * Copy that ACCOMPANIES a code-entry screen. Necessary but never sufficient:
+ * H-E-B's own login form carries the string "Email me a one-time code" as the
+ * label of a radio button that merely OFFERS to send one, so this pattern
+ * matches the plain sign-in page too. See `hasUsableVerificationCodeInput`.
+ */
 const VERIFICATION_CODE_RE = /\b(verification code|security code|one[- ]time code|code sent)\b/i;
 const CAPTCHA_RE = /\b(captcha|verify you are human|security check)\b/i;
 const AUTHENTICATED_ORDERS_EVIDENCE_RE = /data-qe-id="orderResults"|data-testid="no-orders-message"/i;
@@ -48,6 +88,7 @@ export type HebAuthSurface =
   | "live"
   | "login_form"
   | "passkey"
+  | "passkey_enrollment"
   | "verification_code"
   | "captcha"
   | "incapsula"
@@ -198,14 +239,71 @@ async function resolveUniqueVerificationCodeFormRoot(page: Page): Promise<Locato
   return viableRoots === 1 ? resolved : null;
 }
 
-function classifyChallengeSurface(
+function isPasskeyEnrollmentUrl(url: string): boolean {
+  return PASSKEY_ENROLLMENT_URL_RE.test(url);
+}
+
+/**
+ * Resolve the visible, enabled "Not now" control on the passkey-enrollment
+ * screen. Returns `null` when the screen has no usable decline control, which
+ * is what keeps this fail-closed rather than fail-open.
+ */
+async function resolvePasskeyDeclineControl(page: Page): Promise<Locator | null> {
+  const candidates = page.locator(PASSKEY_DECLINE_SELECTOR);
+  const count = await candidates.count().catch((): number => 0);
+  for (let i = 0; i < count; i += 1) {
+    const candidate = candidates.nth(i);
+    const [visible, enabled, text] = await Promise.all([
+      candidate.isVisible().catch((): boolean => false),
+      candidate.isEnabled().catch((): boolean => false),
+      candidate.innerText().catch((): string => ""),
+    ]);
+    if (!(visible && enabled)) {
+      continue;
+    }
+    // Only an exact decline label is actionable. "Add passkey" cannot match
+    // this anchored pattern, so the enroll control is unreachable by
+    // construction — no separate enroll denylist is needed.
+    if (PASSKEY_DECLINE_TEXT_RE.test(text)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether this page can actually ACCEPT a code right now.
+ *
+ * This is the evidence that makes a `verification_code` classification honest.
+ * Prompting the owner for a code commits them to fetching a secret out of
+ * band, so the bar is a real, visible, enabled code input — one field, or the
+ * split per-digit layout H-E-B also uses. Text is not evidence: a radio label
+ * reading "Email me a one-time code" is an OFFER to send one, and no code has
+ * been dispatched at the moment it is on screen.
+ */
+async function hasUsableVerificationCodeInput(page: Page): Promise<boolean> {
+  const digitCount = await countUsableCandidates(page.locator(VERIFICATION_CODE_SELECTOR));
+  return isViableVerificationCodeDigitCount(digitCount);
+}
+
+/**
+ * Page-aware because `verification_code` is gated on a real code input rather
+ * than on copy alone. `passkey` and `captcha` stay text/URL-keyed: both route
+ * to a human handoff, so a false positive there costs an unnecessary browser
+ * handoff, not a demand for a secret that does not exist.
+ */
+async function classifyChallengeSurface(
+  page: Page,
   url: string,
   html: string
-): Exclude<HebAuthSurface, "live" | "login_form" | "unknown"> | null {
+): Promise<Exclude<HebAuthSurface, "live" | "login_form" | "unknown"> | null> {
   if (PASSKEY_RE.test(html) || PASSKEY_RE.test(url)) {
     return "passkey";
   }
-  if (VERIFICATION_CODE_RE.test(html) || VERIFICATION_CODE_RE.test(url)) {
+  if (
+    (VERIFICATION_CODE_RE.test(html) || VERIFICATION_CODE_RE.test(url)) &&
+    (await hasUsableVerificationCodeInput(page))
+  ) {
     return "verification_code";
   }
   if (CAPTCHA_RE.test(html) || CAPTCHA_RE.test(url)) {
@@ -218,12 +316,24 @@ function hasAuthenticatedOrdersEvidence(html: string): boolean {
   return AUTHENTICATED_ORDERS_EVIDENCE_RE.test(html);
 }
 
+/**
+ * Names what was actually observed. Deliberately distinct per reason so an
+ * operator can tell "the button was gone" from "the click did not stick".
+ */
+function passkeyEnrollmentDeclineError(reason: "control_unavailable" | "still_on_enrollment_page"): string {
+  return reason === "control_unavailable"
+    ? "heb_passkey_enrollment_decline_control_missing"
+    : "heb_passkey_enrollment_decline_ineffective";
+}
+
 function manualLoginMessage(surface: Exclude<HebAuthSurface, "live">): string {
   switch (surface) {
     case "login_form":
       return "H-E-B did not finish signing in automatically. Complete the sign-in form in the secure browser, then continue. PDPP will re-check the session afterward.";
     case "passkey":
       return "H-E-B is asking for a passkey. Complete the prompt in the secure browser, then continue. PDPP will re-check the session afterward.";
+    case "passkey_enrollment":
+      return "H-E-B is offering to set up a passkey and PDPP could not decline it automatically. Choose “Not now” in the secure browser, then continue. PDPP will re-check the session afterward.";
     case "verification_code":
       return "H-E-B is asking for a verification code. Enter it in the secure browser, then continue. PDPP will re-check the session afterward.";
     case "captcha":
@@ -247,7 +357,14 @@ async function inspectAuthSurface(page: Page): Promise<HebAuthSurface> {
   if (await hasUniqueLoginFormRoot(page)) {
     return "login_form";
   }
-  const challengeSurface = classifyChallengeSurface(url, html);
+  // Checked before challenge classification: this screen is post-authentication
+  // and must never reach the verification-code (OTP) branch. Keyed on the OIDC
+  // route only; whether a usable "Not now" exists is decided at click time so a
+  // missing control surfaces as its own error rather than as `unknown`.
+  if (isPasskeyEnrollmentUrl(url)) {
+    return "passkey_enrollment";
+  }
+  const challengeSurface = await classifyChallengeSurface(page, url, html);
   if (challengeSurface) {
     return challengeSurface;
   }
@@ -266,7 +383,14 @@ async function inspectPostSubmitAuthSurface(page: Page): Promise<HebAuthSurface>
   if (isIncapsulaBlocked(html)) {
     return "incapsula";
   }
-  const challengeSurface = classifyChallengeSurface(url, html);
+  // Checked before challenge classification: this screen is post-authentication
+  // and must never reach the verification-code (OTP) branch. Keyed on the OIDC
+  // route only; whether a usable "Not now" exists is decided at click time so a
+  // missing control surfaces as its own error rather than as `unknown`.
+  if (isPasskeyEnrollmentUrl(url)) {
+    return "passkey_enrollment";
+  }
+  const challengeSurface = await classifyChallengeSurface(page, url, html);
   if (challengeSurface) {
     return challengeSurface;
   }
@@ -304,7 +428,24 @@ function defaultPostSubmitWaitClock(page: Page): PostSubmitWaitClock {
 type PostSubmitAuthOutcome =
   | { kind: "live" }
   | { kind: "challenge"; surface: Exclude<HebAuthSurface, "live" | "login_form" | "unknown"> }
+  | { kind: "passkey_enrollment_decline_failed"; reason: "control_unavailable" | "still_on_enrollment_page" }
   | { kind: "timeout"; surface: Exclude<HebAuthSurface, "live"> };
+
+/**
+ * Click the "Not now" control on the passkey-enrollment screen. Returns
+ * `false` when no usable decline control is present so the caller can fail
+ * with an honest error rather than falling through to another surface.
+ */
+async function declinePasskeyEnrollment(page: Page): Promise<boolean> {
+  const decline = await resolvePasskeyDeclineControl(page);
+  if (!decline) {
+    return false;
+  }
+  return await decline
+    .click()
+    .then((): boolean => true)
+    .catch((): boolean => false);
+}
 
 interface WaitForPostSubmitAuthSurfaceOptions {
   readonly ignoreVerificationCode?: boolean;
@@ -317,6 +458,7 @@ async function waitForPostSubmitAuthSurface(
   { ignoreVerificationCode = false }: WaitForPostSubmitAuthSurfaceOptions = {}
 ): Promise<PostSubmitAuthOutcome> {
   const startedAt = clock.now();
+  let declineAttempts = 0;
   let observedUrl = page.url();
   let observedHtml = await page.content().catch((): string => "");
 
@@ -326,6 +468,24 @@ async function waitForPostSubmitAuthSurface(
     const surface = await inspectPostSubmitAuthSurface(page);
     if (surface === "live") {
       return { kind: "live" };
+    }
+    // Sign-in already succeeded behind this upsell. Decline it and keep waiting
+    // for the live session instead of treating it as a challenge. A failed or
+    // ineffective decline is reported as its own outcome — never as an OTP
+    // prompt, which is the defect this branch exists to prevent.
+    if (surface === "passkey_enrollment") {
+      await checkpoint?.("heb-passkey-enrollment-declining");
+      const declined = await declinePasskeyEnrollment(page);
+      if (!declined) {
+        return { kind: "passkey_enrollment_decline_failed", reason: "control_unavailable" };
+      }
+      await checkpoint?.("heb-passkey-enrollment-declined");
+      declineAttempts += 1;
+      if (declineAttempts > MAX_PASSKEY_DECLINE_ATTEMPTS) {
+        return { kind: "passkey_enrollment_decline_failed", reason: "still_on_enrollment_page" };
+      }
+      await clock.wait(POST_SUBMIT_POLL_INTERVAL_MS);
+      continue;
     }
     if (
       surface === "passkey" ||
@@ -411,6 +571,11 @@ async function handleVerifiedLoginFormSubmission({
   if (postSubmitSurface.kind === "live") {
     await checkpoint?.("heb-post-submit-live");
     return true;
+  }
+
+  if (postSubmitSurface.kind === "passkey_enrollment_decline_failed") {
+    await checkpoint?.("heb-passkey-enrollment-decline-failed");
+    throw new Error(passkeyEnrollmentDeclineError(postSubmitSurface.reason));
   }
 
   if (postSubmitSurface.kind === "challenge" && postSubmitSurface.surface === "verification_code") {
@@ -539,6 +704,14 @@ async function handleVerificationCodeSubmission({
   readonly postSubmitWaitClock?: PostSubmitWaitClock | undefined;
 }): Promise<boolean> {
   await checkpoint?.("heb-verification-code-loaded");
+  // Last line of defense before the owner is asked for a secret. Classification
+  // already required a usable code input, but this path is reachable from two
+  // callers, so the precondition is re-checked at the one place that actually
+  // spends the owner's attention. Failing here is named and loud; the run must
+  // never fabricate an OTP prompt for a page that cannot accept a code.
+  if (!(await hasUsableVerificationCodeInput(page))) {
+    throw new Error("heb_verification_code_input_missing");
+  }
   const resp = await sendInteraction({
     kind: "otp",
     message: "H-E-B sent a verification code. Reply with the code to continue signing in.",
@@ -583,6 +756,11 @@ async function handleVerificationCodeSubmission({
     return true;
   }
 
+  if (postSubmitSurface.kind === "passkey_enrollment_decline_failed") {
+    await checkpoint?.("heb-passkey-enrollment-decline-failed");
+    throw new Error(passkeyEnrollmentDeclineError(postSubmitSurface.reason));
+  }
+
   if (postSubmitSurface.surface === "verification_code") {
     throw new Error("heb_verification_code_not_accepted");
   }
@@ -603,6 +781,45 @@ async function handleVerificationCodeSubmission({
 
 export async function probeHebSession(page: Page): Promise<boolean> {
   return (await probeOrdersPage(page)) === "live";
+}
+
+/**
+ * Decline an enrollment upsell that was already on screen when the run began,
+ * then wait for the session to settle. Every failure path names what was
+ * observed; none of them prompts the owner for a code.
+ */
+async function declinePasskeyEnrollmentThenSettle({
+  checkpoint,
+  page,
+  postSubmitWaitClock,
+}: Pick<EnsureHebSessionArgs, "page"> & {
+  readonly checkpoint?: SessionCheckpointFn | undefined;
+  readonly postSubmitWaitClock?: PostSubmitWaitClock | undefined;
+}): Promise<boolean> {
+  await checkpoint?.("heb-passkey-enrollment-declining");
+  const declined = await declinePasskeyEnrollment(page);
+  if (!declined) {
+    throw new Error(passkeyEnrollmentDeclineError("control_unavailable"));
+  }
+  await checkpoint?.("heb-passkey-enrollment-declined");
+
+  const settled = await waitForPostSubmitAuthSurface(
+    page,
+    postSubmitWaitClock ?? defaultPostSubmitWaitClock(page),
+    checkpoint
+  );
+  if (settled.kind === "live") {
+    await checkpoint?.("heb-post-submit-live");
+    return true;
+  }
+  if (settled.kind === "passkey_enrollment_decline_failed") {
+    await checkpoint?.("heb-passkey-enrollment-decline-failed");
+    throw new Error(passkeyEnrollmentDeclineError(settled.reason));
+  }
+  if (await probeHebSession(page)) {
+    return true;
+  }
+  throw new Error(passkeyEnrollmentDeclineError("still_on_enrollment_page"));
 }
 
 export async function ensureHebSession({
@@ -639,6 +856,17 @@ export async function ensureHebSession({
     if (submitted) {
       return true;
     }
+  }
+
+  // Handled before the verification-code branch: a resumed session can land
+  // straight on the enrollment upsell, and that screen must never be mistaken
+  // for a challenge.
+  if (surface === "passkey_enrollment") {
+    return await declinePasskeyEnrollmentThenSettle({
+      checkpoint,
+      page,
+      postSubmitWaitClock,
+    });
   }
 
   if (surface === "verification_code") {
