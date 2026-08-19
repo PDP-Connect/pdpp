@@ -305,6 +305,18 @@ interface AttachmentHydrationFailure {
   readonly stage: AttachmentHydrationFailureStage;
 }
 
+/**
+ * A `failed` hydration's stage, if known, else the same `unclassified_failed`
+ * bucket already used by `attachment_hydration_failure_outcome` telemetry.
+ * This is the ONLY hydration-failure detail that ever reaches a DETAIL_GAP:
+ * a bounded category, never `AttachmentRecord.hydration_error` (raw IMAP/blob
+ * text that can embed hostnames, tokens, or URLs — see
+ * `buildAttachmentDetailGap`'s doc comment on why that string never crosses).
+ */
+function attachmentHydrationFailureClass(failure: AttachmentHydrationFailure | null): string {
+  return failure?.stage ?? "unclassified_failed";
+}
+
 export interface AttachmentHydrationResult {
   readonly failure: AttachmentHydrationFailure | null;
   readonly record: AttachmentRecord;
@@ -389,12 +401,28 @@ export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSumma
  *   - `failed`   → `gapKeys` (a retryable detail gap to re-attempt next run).
  *   - `too_large` or `deferred` → unaccounted (required denominator only).
  */
+/** A failed attachment hydration, paired with why it failed (bounded, non-secret). */
+export interface FailedAttachmentRecord {
+  readonly failureClass: string;
+  readonly record: AttachmentRecord;
+}
+
 export interface AttachmentDetailCoverage {
   /**
    * Failed attachment records, retained so the run can emit one matching
-   * DETAIL_GAP per `gapKeys` entry.
+   * DETAIL_GAP per `gapKeys` entry. The host commit-gate credits a missing
+   * required key only when it is hydrated, optional-skipped, or backed by a
+   * durable pending DETAIL_GAP — `gap_keys` alone do not satisfy it. Each
+   * record's `id` is exactly the value that landed in `gapKeys`, keeping the
+   * gap's `record_key` and the coverage key a single source of truth.
+   *
+   * `failureClass` is the bounded, non-secret classification (see
+   * `attachmentHydrationFailureClass`) — the only hydration-failure detail
+   * that reaches the emitted DETAIL_GAP. Without it, a gap that keeps
+   * failing on every retry never records why: `attempt_count` climbs but
+   * `last_error_json` stays null forever (the 2026-08 Gmail 5-row defect).
    */
-  failedRecords: AttachmentRecord[];
+  failedRecords: FailedAttachmentRecord[];
   gapKeys: string[];
   hydratedKeys: string[];
   requiredKeys: string[];
@@ -410,8 +438,17 @@ export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
  * its terminal `hydration_status`. A `deferred` status (never hydrated this
  * run) is still a considered key but has no terminal outcome bucket, so it
  * counts only toward the denominator. Pure: mutates the passed accumulator.
+ *
+ * `failure` is the same `AttachmentHydrationFailure | null` the hydrator
+ * already computes for aggregate telemetry — passed through here so a
+ * `failed` outcome's DETAIL_GAP can carry a bounded, non-secret `error.class`
+ * instead of recording an attempt with no evidence of why it failed.
  */
-export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, record: AttachmentRecord): void {
+export function recordAttachmentCoverage(
+  coverage: AttachmentDetailCoverage,
+  record: AttachmentRecord,
+  failure: AttachmentHydrationFailure | null = null
+): void {
   // The runtime rejects a DETAIL_COVERAGE whose required_keys repeats a key.
   // The same attachment id can legitimately reach this accumulator twice in a
   // run -- a message re-observed across pages, or a retry re-walking a
@@ -430,7 +467,10 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, rec
       return;
     case "failed":
       coverage.gapKeys.push(record.id);
-      coverage.failedRecords.push(record);
+      // Retain the record so a matching DETAIL_GAP is emitted for this key.
+      // `gap_keys` on DETAIL_COVERAGE are not enough on their own: the host
+      // commit-gate requires a durable pending DETAIL_GAP to credit the key.
+      coverage.failedRecords.push({ failureClass: attachmentHydrationFailureClass(failure), record });
       return;
     case "too_large":
     case "deferred":
@@ -499,11 +539,23 @@ async function emitAttachmentDetailCoverage(coverage: AttachmentDetailCoverage |
  * order-detail gap; retrying next run is the honest, non-destructive default.
  *
  * Reference-only and bounded: only opaque message and part identifiers cross
- * (X-GM-MSGID, the BODYSTRUCTURE part index, and the attachment id). No
- * filename, content, blob bytes, raw error text, tokens, cookies, URLs, request
- * bodies, or payload snippets are carried.
+ * (X-GM-MSGID, the BODYSTRUCTURE part index, and the attachment id), plus —
+ * when `failureClass` is supplied — a bounded, non-secret failure category
+ * (e.g. `imap_download_failed`, `blob_upload_http_5xx`, `unclassified_failed`;
+ * see `attachmentHydrationFailureClass`). No filename, content, blob bytes,
+ * raw error text, tokens, cookies, URLs, request bodies, or payload snippets
+ * are ever carried — `AttachmentRecord.hydration_error` (which CAN embed
+ * that raw text) never crosses this boundary, by construction: only the
+ * caller-supplied category string can reach `error.class`.
+ *
+ * Without a failure class, a repeatedly-retried gap accrues `attempt_count`
+ * on every run but never records why it keeps failing — `last_error_json`
+ * stays null forever, which is indistinguishable from "never attempted" and
+ * blocks the stream from ever proving its remaining gaps are impossible
+ * (2026-08 Gmail: 5 `attachments` gaps reached terminal status with 37-117
+ * attempts and a permanently-null `last_error_json`).
  */
-export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGapMessage {
+export function buildAttachmentDetailGap(attachment: AttachmentRecord, failureClass?: string): DetailGapMessage {
   return buildDetailGap({
     stream: "attachments",
     parentStream: "messages",
@@ -515,6 +567,7 @@ export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGa
       part_index: attachment.part_index,
       attachment_id: attachment.id,
     },
+    ...(failureClass ? { error: { class: failureClass } } : {}),
   });
 }
 
@@ -597,7 +650,7 @@ async function emitAttachmentRecords(
     // Record the outcome BEFORE emitting so the coverage denominator counts
     // every attempt even if the emit is scope-filtered downstream.
     if (deps.attachmentCoverage) {
-      recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
+      recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure);
     }
     const emitted = await deps.emitRecord("attachments", { ...hydrated });
     // Only `hydrated` may acknowledge a served gap as recovered. Unaccounted
@@ -630,8 +683,8 @@ async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | und
   if (!coverage) {
     return;
   }
-  for (const attachment of coverage.failedRecords) {
-    await emit(buildAttachmentDetailGap(attachment));
+  for (const failed of coverage.failedRecords) {
+    await emit(buildAttachmentDetailGap(failed.record, failed.failureClass));
   }
 }
 
@@ -1945,7 +1998,7 @@ async function settleServedAttachmentRecoveryAttempt(
 ): Promise<void> {
   const hydrated = hydration.record;
   if (deps.attachmentCoverage) {
-    recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
+    recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure);
   }
   const emitted = await deps.emitRecord("attachments", { ...hydrated });
   if (emitted && hydrated.hydration_status === "hydrated") {

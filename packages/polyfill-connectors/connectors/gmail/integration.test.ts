@@ -543,7 +543,7 @@ test("processMessage: a served gap whose attachment fails hydration AGAIN is nev
     "the re-failed attachment must be a retryable gap key"
   );
   assert.deepEqual(
-    attachmentCoverage.failedRecords.map((r) => r.id),
+    attachmentCoverage.failedRecords.map((r) => r.record.id),
     ["gmmsgid-1111:2"],
     "the re-failed attachment must be retained so a fresh DETAIL_GAP is emitted for it"
   );
@@ -3435,10 +3435,19 @@ test("recoverServedAttachmentGaps: an unclassified plain blob failure remains re
   assert.ok(failedAttachment, "the failed attachment record must still be emitted");
   assert.equal(failedAttachment.hydration_status, "failed");
   assert.deepEqual(attachmentCoverage.gapKeys, [failedAttachment.id]);
-  assert.deepEqual(attachmentCoverage.failedRecords, [failedAttachment]);
+  assert.deepEqual(attachmentCoverage.failedRecords, [
+    { failureClass: "unclassified_failed", record: failedAttachment },
+  ]);
   const [failedCoverageRecord] = attachmentCoverage.failedRecords;
   assert.ok(failedCoverageRecord, "failed recovery records must be retained for detail-gap emission");
-  assert.deepEqual(buildAttachmentDetailGap(failedCoverageRecord), {
+  // A served-recovery attempt that fails again on a retry (attempt N of an
+  // already-terminal-bound gap) must still record WHY — a bounded, non-secret
+  // failure class — not just increment attempt_count with no evidence. This
+  // is the exact class of defect behind the 2026-08 Gmail 5-row incident: 5
+  // `temporary_unavailable` attachment gaps reached terminal status after
+  // 37-117 retries with `last_error_json` permanently null, because this
+  // recovery-retry path recorded an attempt but never a cause.
+  assert.deepEqual(buildAttachmentDetailGap(failedCoverageRecord.record, failedCoverageRecord.failureClass), {
     type: "DETAIL_GAP",
     stream: "attachments",
     parent_stream: "messages",
@@ -3453,6 +3462,8 @@ test("recoverServedAttachmentGaps: an unclassified plain blob failure remains re
     },
     retryable: true,
     reference_only: true,
+    detail: { class: "unclassified_failed" },
+    last_error: { class: "unclassified_failed" },
   });
   assert.equal(JSON.stringify(summary).includes("private unclassified blob failure"), false);
 });
@@ -4347,8 +4358,14 @@ test("recordAttachmentCoverage: routes each hydration status into the honest buc
   assert.deepEqual(coverage.gapKeys, ["b:1"]);
   // too_large and deferred stay required, unaccounted (not in hydrated/gap).
   assert.deepEqual(
-    coverage.failedRecords.map((r) => r.id),
+    coverage.failedRecords.map((r) => r.record.id),
     ["b:1"]
+  );
+  // No `failure` argument was passed, so the failure class falls back to the
+  // same `unclassified_failed` bucket used by the aggregate telemetry.
+  assert.deepEqual(
+    coverage.failedRecords.map((r) => r.failureClass),
+    ["unclassified_failed"]
   );
 });
 
@@ -4527,11 +4544,11 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and un
   // an otherwise-successful run aborts at commit and re-fetches the same window
   // forever. The failed record is retained on the accumulator; one gap per key.
   assert.deepEqual(
-    coverage.failedRecords.map((r) => r.id),
+    coverage.failedRecords.map((r) => r.record.id),
     coverage.gapKeys,
     "exactly one retained failed record per gap_keys entry"
   );
-  const gaps = coverage.failedRecords.map((r) => buildAttachmentDetailGap(r));
+  const gaps = coverage.failedRecords.map((r) => buildAttachmentDetailGap(r.record, r.failureClass));
   // The gate matches DETAIL_GAP.record_key against the DETAIL_COVERAGE key.
   assert.deepEqual(
     gaps.map((g) => g.record_key),
@@ -4539,7 +4556,9 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and un
   );
   // Exact wire shape of the gap for `bad:1`: bounded, non-secret locator
   // (message + part identifiers only), temporary_unavailable (retryable),
-  // pending, reference_only, and no error block (no raw error text crosses).
+  // pending, reference_only, and a bounded non-secret failure class (no raw
+  // hydration_error text — which could echo upstream URLs/tokens — ever
+  // crosses; only the category string does).
   assert.deepEqual(gaps[0], {
     type: "DETAIL_GAP",
     stream: "attachments",
@@ -4555,11 +4574,13 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and un
     },
     retryable: true,
     reference_only: true,
+    detail: { class: "blob_upload_transport_failed" },
+    last_error: { class: "blob_upload_transport_failed" },
   });
-  // Defense-in-depth: the gap carries no error/last_error block, so no raw
-  // hydration_error string (which could echo upstream URLs/text) ever crosses.
-  assert.equal(gaps[0]?.detail, undefined);
-  assert.equal(gaps[0]?.last_error, undefined);
+  // Defense-in-depth: neither block carries raw hydration_error text (which
+  // could echo upstream URLs/tokens) — only the bounded category string.
+  assert.deepEqual(gaps[0]?.detail, { class: "blob_upload_transport_failed" });
+  assert.deepEqual(gaps[0]?.last_error, { class: "blob_upload_transport_failed" });
 });
 
 // ─── Bounded scope: collection_scope.since mapping to IMAP SINCE ──────────
