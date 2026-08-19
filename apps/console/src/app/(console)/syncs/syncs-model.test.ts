@@ -749,7 +749,7 @@ test("a broken connector does not rewrite a successful last run into sync failed
           required_actions: [
             action({
               audience: "maintainer",
-              cta: "Connector code needs a fix",
+              cta: "Some data from this source can't be collected",
               kind: "code_fix",
               satisfied_when: { kind: "none" },
               terminal: true,
@@ -794,7 +794,7 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
           required_actions: [
             action({
               audience: "maintainer",
-              cta: "Connector code needs a fix",
+              cta: "Some data from this source can't be collected",
               kind: "code_fix",
               satisfied_when: { kind: "none" },
               terminal: true,
@@ -811,7 +811,7 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "This connector needs a code fix before it can collect again.");
   assert.equal(card.summary.cta, "wait");
-  assert.equal(card.summary.actionLabel, "Connector code needs a fix");
+  assert.equal(card.summary.actionLabel, "Some data from this source can't be collected");
   assert.equal(card.summary.ownerActionRequired, false);
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.doesNotMatch(card?.summary.prose, RESUME_FALSE_REASSURANCE_RE);
@@ -1062,12 +1062,12 @@ test("syncs ranking only treats attention plus primary owner action as need-your
     source_work: "system_issue",
     rendered_verdict: renderedVerdict({
       channel: "attention",
-      forward_statement: "Connector code needs a fix before this can collect again.",
+      forward_statement: "Some data from this source can't be collected.",
       pill: { label: "Can't collect", tone: "red" },
       required_actions: [
         action({
           audience: "maintainer",
-          cta: "Connector code needs a fix",
+          cta: "Some data from this source can't be collected",
           kind: "code_fix",
           satisfied_when: { kind: "none" },
           terminal: true,

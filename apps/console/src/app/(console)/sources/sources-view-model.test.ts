@@ -333,7 +333,7 @@ test("toSourceInstanceView does not render maintainer or wait actions as owner C
     {
       affects: [],
       audience: "maintainer",
-      cta: "Connector code needs a fix",
+      cta: "Some data from this source can't be collected",
       kind: "code_fix",
       satisfied_when: { kind: "none" },
       terminal: true,
