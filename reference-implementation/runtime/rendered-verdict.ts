@@ -2203,14 +2203,57 @@ function channelCause(channel: RenderedChannel, runtimeCapped: boolean, primary:
 }
 
 /**
- * Project the inspection-layer `detail` and calibration `trace` OFF a verdict for a
- * grant-scoped client. The owner-only diagnostics (`detail`, `trace`) are stripped so a
- * grant-scoped REST/MCP read can never see them. Dispatch C wires this at the wire seam;
- * exported here so the grant-scope regression can pin the contract at the type level.
+ * An owner-audience `RequiredAction`. `audience` is narrowed to the literal `"owner"`
+ * so a `maintainer` or `none` action is not assignable to a grant-scoped verdict — the
+ * audience filter below is what produces this type, and the compiler holds the line.
  */
-export type GrantScopedVerdict = Omit<RenderedVerdict, "detail" | "trace">;
+export type OwnerScopedRequiredAction = RequiredAction & { readonly audience: "owner" };
+
+/**
+ * Project the owner-only material OFF a verdict for a grant-scoped client:
+ *
+ * - the inspection-layer `detail` and calibration `trace` (gap backlog, raw
+ *   disposition, conditions, next-attempt floor, collection rate);
+ * - every non-owner-audience entry of `required_actions`. A `maintainer` action's
+ *   `cta` is implementer-facing copy about a connector defect (`kind: "code_fix"`,
+ *   `surface: { kind: "maintainer" }`), and an `audience: "none"` action is an
+ *   internal wait marker. Neither is owner-facing material, so neither may reach a
+ *   third-party app holding a scoped grant.
+ *
+ * `streams[].action_ref` is a POSITIONAL index into `required_actions[]`, so dropping
+ * entries must renumber the survivors. A stream whose action was dropped gets
+ * `action_ref: null` — it keeps its own `statement`/`coverage`, it just no longer
+ * points at maintainer material.
+ *
+ * Dispatch C wires this at the wire seam; exported here so the grant-scope regression
+ * can pin the contract at the type level.
+ */
+export type GrantScopedVerdict = Omit<RenderedVerdict, "detail" | "required_actions" | "trace"> & {
+  readonly required_actions: readonly OwnerScopedRequiredAction[];
+};
+
+function isOwnerScopedAction(action: RequiredAction): action is OwnerScopedRequiredAction {
+  return action.audience === "owner";
+}
 
 export function toGrantScopedVerdict(verdict: RenderedVerdict): GrantScopedVerdict {
   const { detail: _detail, trace: _trace, ...rest } = verdict;
-  return rest;
+
+  const scopedActions: OwnerScopedRequiredAction[] = [];
+  // Old index -> new index for the surviving owner actions; absent = dropped.
+  const remapped = new Map<number, number>();
+  for (const [index, action] of rest.required_actions.entries()) {
+    if (isOwnerScopedAction(action)) {
+      remapped.set(index, scopedActions.length);
+      scopedActions.push(action);
+    }
+  }
+
+  return {
+    ...rest,
+    required_actions: scopedActions,
+    streams: rest.streams.map((row) =>
+      row.action_ref === null ? row : { ...row, action_ref: remapped.get(row.action_ref) ?? null }
+    ),
+  };
 }

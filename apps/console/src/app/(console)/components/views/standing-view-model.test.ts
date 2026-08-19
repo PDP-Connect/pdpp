@@ -379,7 +379,7 @@ test("attention truth: only attention-channel connections with an owner-satisfia
           {
             affects: [],
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -440,7 +440,7 @@ test("source issues show non-owner material verdicts without alarming as owner a
           {
             affects: [],
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -796,13 +796,13 @@ test("dashboard cross-surface: every source-work section count equals its render
       source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
-        forward_statement: "Connector code needs a fix before this can collect again.",
+        forward_statement: "Some data from this source can't be collected.",
         pill: { label: "Can't collect", tone: "red" },
         required_actions: [
           {
             affects: [],
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -973,13 +973,13 @@ test("source actionability follows primary-action parity with push policy", () =
       source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "attention",
-        forward_statement: "Connector code needs a fix before this can collect again.",
+        forward_statement: "Some data from this source can't be collected.",
         pill: { label: "Can't collect", tone: "red" },
         required_actions: [
           {
             affects: [],
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -1021,7 +1021,7 @@ test("maintainer-only actions are not advisory owner actions", () => {
           {
             affects: [],
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -1086,7 +1086,7 @@ test("source issues surface attention verdicts that have no owner action, even w
           {
             affects: [],
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,

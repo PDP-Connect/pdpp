@@ -169,7 +169,7 @@ test("recovery: a connector-defect code_fix verdict is a system issue with no re
       channel: "advisory",
       pill: { label: "Can't collect", tone: "red" },
       required_actions: [
-        action({ audience: "maintainer", cta: "Connector code needs a fix", kind: "code_fix", terminal: true }),
+        action({ audience: "maintainer", cta: "Some data from this source can't be collected", kind: "code_fix", terminal: true }),
       ],
     }),
     health({ detail_gap_backlog: backlog({ pending: 12 }), state: "degraded" })

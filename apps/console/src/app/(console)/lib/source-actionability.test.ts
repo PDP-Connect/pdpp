@@ -186,14 +186,14 @@ test("source actionability ignores non-owner local-device remediation for owner-
       required_actions: [
         action({
           audience: "maintainer",
-          cta: "Connector code needs a fix",
+          cta: "Some data from this source can't be collected",
           kind: "code_fix",
           remediation: {
             cause: "stalled_unknown",
             commands: [],
             kind: "local_collector_recovery",
             label: "Fix connector code",
-            summary: "Connector code needs a fix before owner recovery can proceed.",
+            summary: "A maintainer must repair the collector before owner recovery can proceed.",
             target: { identity_source: "source_instance_bindings", kind: "local_device" },
           },
           satisfied_when: { kind: "none" },
@@ -214,11 +214,11 @@ test("source actionability does not convert maintainer-primary work into owner w
       source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "attention",
-        forward_statement: "Connector code needs a fix before this can collect again.",
+        forward_statement: "Some data from this source can't be collected.",
         required_actions: [
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -312,12 +312,12 @@ test("source actionability keeps a Degraded pill (no wired owner action) in syst
       source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
-        forward_statement: "Connector code needs a fix before this can collect again.",
+        forward_statement: "Some data from this source can't be collected.",
         pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -377,7 +377,7 @@ test("source actionability resolves per-stream owner action availability from ac
           action({ cta: "Retry now", kind: "retry_gap", satisfied_when: { kind: "gap_recovered" } }),
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -621,12 +621,12 @@ test("source actionability headline counts only needs-owner work and exposes sta
       source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
-        forward_statement: "Connector code needs a fix before this can collect again.",
+        forward_statement: "Some data from this source can't be collected.",
         pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -982,7 +982,7 @@ test("recovery grouping: a connector-defect verdict with recoverable gaps stays 
         required_actions: [
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
