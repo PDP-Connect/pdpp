@@ -17,6 +17,7 @@ import {
 import { buildAgentVersion } from "@pdpp/collector-runtime/collector-build-info";
 import { buildLocalDeviceIngestBatchRequest } from "@pdpp/collector-runtime/local-device-envelope";
 import type { EmittedMessage, StartMessage, StreamScope } from "@pdpp/connector-protocol";
+import { resolveConnectorCommand } from "./resolve-tsx-binary.ts";
 
 /**
  * Stream name a connector's per-store proof claims (e.g. `collected`) ride
@@ -410,7 +411,10 @@ function spawnConnector(
 ): ChildProcessWithoutNullStreams {
   const env = { ...process.env, ...config.codexEnv, ...config.connectorEnv };
   env.PATH = buildLocalDeviceChildPath(env.PATH);
-  const command = config.connectorCommand ?? config.codexCommand ?? "tsx";
+  // Resolve `tsx` to an absolute path rather than trusting the augmented PATH
+  // alone: the augmentation is necessary for the child's own tooling but is
+  // not sufficient for the spawn itself under a minimal-environment supervisor.
+  const command = resolveConnectorCommand(config.connectorCommand ?? config.codexCommand ?? "tsx");
   const args = config.connectorArgs ?? config.codexArgs ?? [profile.entrypoint];
   return spawn(command, args, {
     cwd: PACKAGE_ROOT,
