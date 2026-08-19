@@ -359,7 +359,7 @@ test("fold-contract upgrade: a version-2 writer cannot overwrite a version-4 ter
     const version3Row = evidenceRow("cin_v3_owner");
     assert.equal(
       Number(version3Row.stream_facts_fold_version),
-      4,
+      5,
       "premise: the new fold contract owns the durable row"
     );
 
@@ -377,7 +377,7 @@ test("fold-contract upgrade: a version-2 writer cannot overwrite a version-4 ter
       }),
       foldVersion: 2,
     });
-    assert.equal(oldBinaryWriteAccepted, false, "the version-2 CAS baseline cannot match a version-4 row");
+    assert.equal(oldBinaryWriteAccepted, false, "the version-2 CAS baseline cannot match a version-5 row");
     assert.deepEqual(
       evidenceRow("cin_v3_owner"),
       version3Row,
