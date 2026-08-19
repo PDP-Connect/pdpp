@@ -1473,9 +1473,65 @@ export function selectMessagesBackfillFetchRange(args: {
   return `${startUid}:${Math.min(targetUid, startUid + windowUids - 1)}`;
 }
 
+/**
+ * Decide the ceiling the historical walk must reach on THIS run.
+ *
+ * The band defect this closes
+ * ---------------------------
+ * The two pointers divide one UID space, so they must MEET: every UID below
+ * `forward_uidnext` that the forward pass did not actually walk has to fall
+ * inside the historical walk's remit, or it belongs to neither walk and is
+ * never fetched.
+ *
+ * The old rule was `prior.target_uid ?? priorEnd` — once written, the ceiling
+ * only ever copied itself forward. Meanwhile the forward watermark advanced on
+ * every run with new mail. So the ceiling froze at the mailbox's size on the
+ * day the backfill started while the resume point climbed away from it, and the
+ * interval between them reopened continuously and grew without bound. Repairing
+ * the stored value (as `scripts/repair/gmail-backfill-target-extend.ts` did)
+ * fixed one instance of the gap and not the mechanism: the very next run with
+ * new mail reopened it.
+ *
+ * The rule here instead ties the ceiling to the ONE fact that makes the band
+ * provably empty: the historical walk must own everything up to where the
+ * forward walk genuinely resumes from. `forwardFloorUid` is that point minus
+ * one — the last UID the forward pass will NOT fetch on the next run.
+ *
+ * Why this cannot rewind or thrash
+ * --------------------------------
+ *   - It only ever RAISES: `Math.max` against the prior ceiling. A ceiling that
+ *     could fall would re-open `completed_at` on a finished walk and, worse,
+ *     let `backfilled_through_uid` sit above its own target.
+ *   - It never touches `backfilled_through_uid`. Progress through the mailbox
+ *     (~150k UIDs on the live instance) is preserved exactly; raising a ceiling
+ *     adds `new - old` UIDs of work and re-walks nothing already done.
+ *   - It is bounded per run. The ceiling rises to a watermark the mailbox
+ *     already passed, never to a live `uidnext` that moves while we walk, so
+ *     the walk converges on a fixed target instead of chasing the mailbox
+ *     forever. Termination is preserved: each run consumes a bounded page and
+ *     the ceiling only gains the UIDs that arrived since the last run.
+ */
+export function resolveMessagesBackfillTargetUid(args: {
+  forwardFloorUid: number;
+  prior: MessagesBackfillCursor;
+}): number {
+  const priorEnd = args.prior.backfilled_through_uid ?? 0;
+  const priorTarget = args.prior.target_uid ?? priorEnd;
+  // Monotonic by construction: the ceiling is a high-water mark, never a
+  // setting. A ceiling that fell below `backfilled_through_uid` would make the
+  // walk's own recorded progress illegal against its target.
+  return Math.max(priorTarget, args.forwardFloorUid);
+}
+
 export function advanceMessagesBackfillCursor(args: {
   now: string;
   pageEndUid: number;
+  /**
+   * The cursor for this run, whose `target_uid` is the ceiling already raised
+   * to meet the forward watermark by `resolveMessagesBackfillTargetUid`. The
+   * ceiling is read from here rather than passed separately so there is exactly
+   * one source of truth for it.
+   */
   prior: MessagesBackfillCursor;
 }): Required<MessagesBackfillCursor> {
   const priorEnd = args.prior.backfilled_through_uid ?? 0;
@@ -3112,8 +3168,21 @@ export async function runAllMailPasses(
     deps.requested.has("attachments") ||
     deps.requested.has("threads");
   const forwardFetchRange = selectAllMailFetchRange(session, deps.requested);
-  const historicalTargetUid =
-    session.messagesBackfill.target_uid ?? Math.max(0, (session.uidnext ?? session.priorUidnext) - 1);
+  // Where the forward walk resumes on the NEXT run, and therefore the last UID
+  // it will not fetch. The historical walk must own everything up to here or
+  // the interval between the two belongs to neither (see
+  // `resolveMessagesBackfillTargetUid`).
+  //
+  // On a full resync there is no forward range at all: the forward watermark
+  // below is written from the live `uidnext` without a single UID having been
+  // walked, so the ENTIRE mailbox below it is historical work and the ceiling
+  // must say so. Reading the same `session.uidnext` the watermark is written
+  // from is what keeps the two pointers describing one space.
+  const forwardFloorUid = Math.max(0, (session.uidnext ?? session.priorUidnext) - 1);
+  const historicalTargetUid = resolveMessagesBackfillTargetUid({
+    forwardFloorUid,
+    prior: session.messagesBackfill,
+  });
   const historicalCursor: MessagesBackfillCursor = {
     ...session.messagesBackfill,
     backfilled_through_uid: session.messagesBackfill.backfilled_through_uid ?? 0,
@@ -3420,6 +3489,11 @@ export async function runAllMailPasses(
         prior: historicalCursor,
       });
     } else {
+      // A completed walk with no fetch range left. This is reachable only when
+      // the ceiling did NOT move — `historicalTargetUid` is raised before the
+      // range is selected, so any reopened band yields a non-null range and is
+      // handled by the branch above. With an unchanged ceiling this cursor is
+      // already at its target, so carrying it forward is exact.
       nextMessagesBackfill = historicalCursor;
     }
   }

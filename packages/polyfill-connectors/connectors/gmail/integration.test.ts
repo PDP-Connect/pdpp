@@ -90,6 +90,7 @@ import {
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
+  resolveMessagesBackfillTargetUid,
   runAllMailPasses,
   runAttachmentBackfillAndRecoveryPass,
   selectAllMailFetchRange,
@@ -1491,6 +1492,150 @@ test("selectMessagesBackfillFetchRange: first and later pages are bounded UID ra
   );
 });
 
+/**
+ * The reopening-band guards.
+ *
+ * `backfill.target_uid` and `all_mail.forward_uidnext` split ONE UID space, so
+ * they must meet: `target_uid + 1 >= forward_uidnext`. The forward watermark
+ * climbs on every run that sees new mail; when the ceiling merely copied itself
+ * forward the interval between them reopened continuously and grew without
+ * bound. Live evidence: a 297-UID band swallowed two days of mail, was repaired
+ * to 0, and measured 2 then 3 within minutes as new mail arrived.
+ *
+ * Each behavior is pinned separately below so a mutation to one guard reddens
+ * on its own rather than being masked by a sibling.
+ */
+test("resolveMessagesBackfillTargetUid: the ceiling rises to meet the forward watermark", () => {
+  // The mechanism defect: a frozen ceiling under a climbing watermark.
+  assert.equal(
+    resolveMessagesBackfillTargetUid({
+      forwardFloorUid: 324_022,
+      prior: { backfilled_through_uid: 150_000, target_uid: 324_020, uidvalidity: 1 },
+    }),
+    324_022,
+    "a watermark that moved past the ceiling must pull the ceiling up, or the gap reopens every run"
+  );
+});
+
+test("resolveMessagesBackfillTargetUid: the ceiling never falls, so backfill progress is never rewound", () => {
+  // A ceiling that could fall would strand `backfilled_through_uid` above its
+  // own target and re-open a finished walk. On the live instance the walk is
+  // ~150k UIDs deep; rewinding would re-fetch every one of them.
+  assert.equal(
+    resolveMessagesBackfillTargetUid({
+      forwardFloorUid: 900,
+      prior: { backfilled_through_uid: 150_000, target_uid: 324_020, uidvalidity: 1 },
+    }),
+    324_020,
+    "a lower forward floor must never lower the ceiling"
+  );
+  assert.equal(
+    resolveMessagesBackfillTargetUid({
+      forwardFloorUid: 0,
+      prior: { backfilled_through_uid: 150_000, target_uid: 324_020, uidvalidity: 1 },
+    }),
+    324_020,
+    "a zero/absent forward floor must not collapse the ceiling"
+  );
+});
+
+test("resolveMessagesBackfillTargetUid: a first run with no stored ceiling adopts the forward floor", () => {
+  // On a full resync the forward pass fetches NOTHING, yet the watermark is
+  // written from the live uidnext. Everything below it is therefore historical
+  // work and the ceiling must say so.
+  assert.equal(
+    resolveMessagesBackfillTargetUid({ forwardFloorUid: 1200, prior: {} }),
+    1200,
+    "an unstarted walk takes the forward floor as its ceiling"
+  );
+});
+
+test("resolveMessagesBackfillTargetUid: a quiet mailbox leaves the ceiling exactly where it was", () => {
+  // Termination guard: when no mail arrived, the ceiling is unchanged, so the
+  // walk converges instead of chasing an ever-rising target forever.
+  const prior = { backfilled_through_uid: 150_000, target_uid: 324_020, uidvalidity: 1 };
+  assert.equal(resolveMessagesBackfillTargetUid({ forwardFloorUid: 324_020, prior }), 324_020);
+  // Idempotent: re-resolving against its own output is a fixed point.
+  assert.equal(
+    resolveMessagesBackfillTargetUid({
+      forwardFloorUid: 324_020,
+      prior: { ...prior, target_uid: 324_020 },
+    }),
+    324_020,
+    "re-resolving must be a fixed point, not a ratchet that keeps finding new work"
+  );
+});
+
+test("advanceMessagesBackfillCursor: an explicit raised ceiling reopens a completed walk without rewinding it", () => {
+  // A walk that finished at 1200 must reopen when the forward watermark has
+  // moved to 1301 — but `backfilled_through_uid` must hold at 1200, not rewind.
+  const completed = {
+    backfilled_through_uid: 1200,
+    completed_at: FROZEN_NOW,
+    target_uid: 1200,
+    uidvalidity: 123,
+  };
+  const reopened = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 1200,
+    prior: { ...completed, target_uid: 1300 },
+  });
+  assert.equal(reopened.target_uid, 1300, "the raised ceiling must be persisted");
+  assert.equal(reopened.backfilled_through_uid, 1200, "progress must never rewind when the ceiling rises");
+  assert.equal(reopened.completed_at, null, "a walk with UIDs left to reach is not complete");
+});
+
+test("advanceMessagesBackfillCursor: a settled walk under an unchanged ceiling stays settled", () => {
+  // The other half of the reopen rule: without new mail the ceiling does not
+  // move, so a finished walk must stay finished rather than re-scanning.
+  const completed = {
+    backfilled_through_uid: 1200,
+    completed_at: FROZEN_NOW,
+    target_uid: 1200,
+    uidvalidity: 123,
+  };
+  const settled = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 1200,
+    prior: completed,
+  });
+  assert.equal(settled.backfilled_through_uid, 1200);
+  assert.equal(typeof settled.completed_at, "string", "a walk that reached its ceiling stays complete");
+});
+
+test("advanceMessagesBackfillCursor: the commit honours the raised ceiling carried on the cursor", () => {
+  // The ceiling has exactly one source of truth: `prior.target_uid`, already
+  // raised by `resolveMessagesBackfillTargetUid`. A page that walked into the
+  // reopened band cannot be committed against a STALE ceiling — that is the
+  // half-fix where the repair looks applied but the next run re-reads the old
+  // value and the band reopens.
+  const stale = { backfilled_through_uid: 1200, completed_at: FROZEN_NOW, target_uid: 1200, uidvalidity: 123 };
+  assert.throws(
+    () => advanceMessagesBackfillCursor({ now: FROZEN_NOW, pageEndUid: 1300, prior: stale }),
+    /must not pass its target/,
+    "a page that walked the reopened band must not be committable against the stale ceiling"
+  );
+  const committed = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 1300,
+    prior: { ...stale, target_uid: 1300 },
+  });
+  assert.equal(committed.target_uid, 1300, "the cursor must store the raised ceiling for the next run to read");
+});
+
+test("advanceMessagesBackfillCursor: a partial page under a reopened ceiling stays incomplete", () => {
+  // A reopened band larger than one page must leave the walk open, so the next
+  // run continues into it rather than declaring the mailbox finished.
+  const partial = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 1700,
+    prior: { backfilled_through_uid: 1200, completed_at: FROZEN_NOW, target_uid: 2000, uidvalidity: 123 },
+  });
+  assert.equal(partial.target_uid, 2000);
+  assert.equal(partial.backfilled_through_uid, 1700);
+  assert.equal(partial.completed_at, null, "the walk has 1701..2000 left and must not report completion");
+});
+
 test("advanceMessagesBackfillCursor: page completion is monotonic and partial pages stay incomplete", () => {
   const partial = advanceMessagesBackfillCursor({
     now: FROZEN_NOW,
@@ -1822,10 +1967,144 @@ test("runAllMailPasses: scheduled runs advance historical pages while forwarding
       "control: the historical-only counts the regression emitted do NOT satisfy that check"
     );
 
+    // Run 2 raised the forward watermark to 1301, so UIDs 1201..1300 are now
+    // below where the forward walk resumes. The historical ceiling must have
+    // risen with it (1200 -> 1300) or that interval belongs to neither walk.
+    // Before the ceiling tracked the watermark this read "1001:1200", leaving
+    // 1201..1300 orphaned — the live 297-UID band in miniature.
+    assert.equal(
+      (second.backfill as Record<string, unknown>).target_uid,
+      1300,
+      "the historical ceiling must rise to meet the forward watermark, not stay frozen at 1200"
+    );
+
     const third = await run({ messages: second });
-    assert.deepEqual(fetchRanges, ["1001:1200", "1301:*"]);
+    assert.deepEqual(fetchRanges, ["1001:1300", "1301:*"]);
     assert.equal((third.all_mail as Record<string, unknown>).uidnext, 1301);
     assert.equal(typeof (third.backfill as Record<string, unknown>).completed_at, "string");
+    assert.equal(
+      (third.backfill as Record<string, unknown>).backfilled_through_uid,
+      1300,
+      "the walk closes the whole space up to the forward resume point"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+/**
+ * The band must not reopen after the historical walk has FINISHED.
+ *
+ * This is the live shape: the backfill reaches its ceiling, `completed_at` is
+ * stamped, and then mail keeps arriving. A completed walk that copies its stale
+ * ceiling forward leaves every newly-arrived UID above the ceiling and below the
+ * forward watermark — belonging to neither walk. That is precisely how the
+ * repaired live cursor went from band=0 to band=2 to band=3 within minutes.
+ *
+ * The end-to-end path is what makes this test necessary: the pure resolver is
+ * correct in isolation, but the completed-walk branch in `runAllMailPasses`
+ * chooses whether to consult it at all.
+ */
+test("runAllMailPasses: a completed historical walk reopens for new mail instead of freezing its ceiling", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  let uidNext = 1201;
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        get uidNext() {
+          return uidNext;
+        },
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        yield makeMsg({ uid: 1, emailId: "seed" });
+      },
+    };
+
+    const run = async (state: Record<string, unknown>) => {
+      protocolMessages.length = 0;
+      fetchRanges.length = 0;
+      await runAllMailPasses(client, makeAllMailMailbox(), state, {
+        emitRecord: () => Promise.resolve(true),
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["messages"]),
+      });
+      const stateMessage = protocolMessages.find(
+        (message) => message.type === "STATE" && message.stream === "messages"
+      );
+      assert.ok(stateMessage, "each run commits a messages state");
+      return stateMessage.cursor as Record<string, unknown>;
+    };
+
+    // Drive the walk all the way to completion against a still mailbox.
+    let cursor = await run({});
+    for (let i = 0; i < 4; i += 1) {
+      cursor = await run({ messages: cursor });
+    }
+    const settled = cursor.backfill as Record<string, unknown>;
+    assert.equal(typeof settled.completed_at, "string", "precondition: the historical walk has finished");
+    assert.equal(settled.target_uid, 1200, "precondition: the ceiling settled at the mailbox it walked");
+    assert.equal(settled.backfilled_through_uid, 1200);
+
+    // Now mail arrives. The forward watermark will move to 1301.
+    uidNext = 1301;
+    const afterNewMail = await run({ messages: cursor });
+    const reopened = afterNewMail.backfill as Record<string, unknown>;
+    const allMail = afterNewMail.all_mail as Record<string, unknown>;
+
+    assert.equal(allMail.forward_uidnext, 1301, "precondition: the forward watermark climbs with the mailbox");
+    // THE INVARIANT: ceiling + 1 >= resume. With a frozen ceiling of 1200 this
+    // is 1201 >= 1301 — false — and UIDs 1201..1300 belong to neither walk.
+    assert.ok(
+      (reopened.target_uid as number) + 1 >= (allMail.forward_uidnext as number),
+      `the two walks must meet: ceiling ${String(reopened.target_uid)} + 1 must reach ` +
+        `forward resume ${String(allMail.forward_uidnext)}, otherwise the band between them is orphaned`
+    );
+    assert.equal(reopened.target_uid, 1300, "the ceiling reopens to cover the newly-arrived UIDs");
+    // The reopened ceiling puts 1201..1300 back in the historical walk's remit,
+    // and because that band is smaller than one page the walk consumes it in
+    // this same run rather than deferring it. What must never happen is a
+    // DECREASE: that would discard walked work and re-fetch it.
+    assert.ok(
+      (reopened.backfilled_through_uid as number) >= (settled.backfilled_through_uid as number),
+      `reopening must never rewind progress: ${String(reopened.backfilled_through_uid)} < ` +
+        `${String(settled.backfilled_through_uid)} would re-fetch already-walked UIDs`
+    );
+    assert.equal(
+      reopened.backfilled_through_uid,
+      1300,
+      "the reopened band is smaller than a page, so this run closes it outright"
+    );
+    // Having closed the whole reopened band, the walk is complete again — and
+    // now genuinely contiguous with the forward watermark.
+    assert.equal(typeof reopened.completed_at, "string", "a walk that reached its reopened ceiling is complete");
   } finally {
     globalThis.process.stdout.write = originalWrite;
   }
