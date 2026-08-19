@@ -340,6 +340,16 @@ export interface StreamRollup {
   /** Manifest stream priority. `required` streams weight the worst-wins rollup. */
   readonly priority: "accepted_absence" | "optional" | "required";
   readonly stream_id: string;
+  /**
+   * Whether this stream's ENTIRE terminal shortfall carries durable per-item
+   * proof of impossibility — the collection report entry's
+   * `coverage_unfillable_accounted`, computed once by
+   * `isStreamFullyUnfillableAccounted`
+   * (`server/connector-gap-classification.ts`) and only carried here. Meaningful
+   * solely alongside `coverage: "terminal_gap"`. Optional; absent/`false`
+   * preserves the shipped behavior exactly.
+   */
+  readonly unfillable_accounted?: boolean;
 }
 
 /**
@@ -642,16 +652,40 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
 }
 
 /**
+ * Whether a stream's terminal shortfall is fully backed by durable per-item
+ * impossibility proof, so it owes nothing further. The one place this module
+ * asks that question — tone, the terminal-action gate, and the affected-stream
+ * list all read it, so they cannot drift apart. Meaningful only for
+ * `terminal_gap`; the boolean itself is computed once by
+ * `isStreamFullyUnfillableAccounted` (`server/connector-gap-classification.ts`)
+ * and merely carried here.
+ */
+function streamCoverageIsFullyAccounted(stream: StreamRollup): boolean {
+  return stream.coverage === "terminal_gap" && stream.unfillable_accounted === true;
+}
+
+/**
  * The worst per-stream coverage tone, weighted by manifest priority: an
  * `accepted_absence`/`optional` stream that is merely stale or partial annotates but
  * does NOT downgrade the pill below the required-stream tone (mitigates "worst-wins
  * over-ambers on a trivial optional stream", design Risks). A required stream always
  * contributes its full tone; optional stream coverage remains an advisory fact.
+ *
+ * A `terminal_gap` whose ENTIRE shortfall is proven permanently uncollectable
+ * tones GREEN, for the same reason it no longer derives a `terminal` disposition
+ * (`isUnfillableAccountedTerminalGap`, `connection-health.ts`): the connector
+ * collected everything collectible and can name exactly what it could not and
+ * why, which is the coverage axis's own `SourceCoverageComplete: true /
+ * coverage_complete_unfillable_accounted` verdict. Reading the raw axis here
+ * while the condition set reads the proof would re-introduce the very
+ * disagreement this pairing exists to remove — the pill would stay red under a
+ * fully healthy condition set. Only `terminal_gap` is softened; `unsupported`
+ * and `unavailable` keep their red.
  */
 function worstStreamCoverageTone(streams: readonly StreamRollup[]): VerdictTone {
   let worstTone: VerdictTone = "green";
   for (const stream of streams) {
-    const tone = coverageTone(stream.coverage);
+    const tone = streamCoverageIsFullyAccounted(stream) ? "green" : coverageTone(stream.coverage);
     if (stream.priority === "required") {
       worstTone = worse(worstTone, tone);
     }
@@ -722,6 +756,7 @@ function streamDisposition(
     gapRetryable: stream.gap_retryable,
     refresh,
     schedule,
+    unfillableAccounted: stream.unfillable_accounted === true,
   });
 }
 
@@ -1288,9 +1323,20 @@ function reauthSatisfaction(surface: OwnerActionSurface): SatisfactionContract {
   return { kind: "confirming_run_succeeded" };
 }
 
+/**
+ * The streams a maintainer `code_fix` action actually speaks to. A stream whose
+ * terminal shortfall is fully accounted for is excluded: naming it would tell
+ * the maintainer to fix something already proven impossible and unbroken (a
+ * 29MB attachment against a 25MB cap is not a defect), and would misreport the
+ * blast radius of the streams that ARE stuck.
+ */
 function terminalStreamIds(streams: readonly StreamRollup[]): string[] {
   return streams
-    .filter((s) => s.coverage === "terminal_gap" || s.coverage === "unsupported" || s.coverage === "unavailable")
+    .filter(
+      (s) =>
+        (s.coverage === "terminal_gap" || s.coverage === "unsupported" || s.coverage === "unavailable") &&
+        !streamCoverageIsFullyAccounted(s)
+    )
     .map((s) => s.stream_id);
 }
 

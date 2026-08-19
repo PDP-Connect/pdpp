@@ -3059,6 +3059,26 @@ export interface ForwardDispositionInput {
    * force the manual-refresh advisory.
    */
   readonly schedule?: ConnectionScheduleEvidence | null;
+  /**
+   * Whether the stream's ENTIRE terminal shortfall is backed by durable
+   * per-item proof of impossibility — the same already-computed boolean the
+   * coverage rollup threads onto `SourceCoverageComplete`
+   * (`ConnectionCoverageEvidence.unfillableAccounted`). The sole owner of the
+   * predicate is `isStreamFullyUnfillableAccounted`
+   * (`server/connector-gap-classification.ts`); this field only carries its
+   * verdict, and is never re-derived from gap rows here.
+   *
+   * Meaningful ONLY paired with the `terminal_gap` condition it was proven
+   * against — exactly the pairing `deriveCollectionReportEntryCoverage`
+   * (`server/ref-control.ts`) already enforces when it withdraws the claim on a
+   * stale evidence scope. `unsupported` and `unavailable` are different claims
+   * (the source or connector cannot serve the stream at all, not that a bounded
+   * set of items was measured and proven impossible), so they are never
+   * softened by this flag.
+   *
+   * Optional; absent/`false` preserves the shipped behavior exactly.
+   */
+  readonly unfillableAccounted?: boolean;
 }
 
 /**
@@ -3082,11 +3102,42 @@ function hasOutstandingGap(coverage: CoverageAxis): boolean {
 }
 
 /**
+ * A `terminal_gap` whose ENTIRE shortfall is proven permanently uncollectable
+ * carries no OUTSTANDING gap: there is no future run, owner action, or code fix
+ * that could fill it, because the items were measured and shown impossible (a
+ * recorded observed size strictly above a recorded cap). The stream owes
+ * nothing further, so it must not take the outstanding-gap branch — the same
+ * fact `sourceCoverageCondition` already reads to answer `SourceCoverageComplete`
+ * with a real `true`. Keeping both readings of the same evidence in agreement is
+ * the point: a healthy condition set must not coexist with a `terminal`
+ * disposition.
+ *
+ * Deliberately narrow in exactly the two ways the evidence is narrow:
+ *
+ *   - ONLY `terminal_gap`. `unsupported` / `unavailable` are claims about the
+ *     stream as a whole rather than about a measured set of items, and keep
+ *     returning `terminal`.
+ *   - ONLY when the proof covers everything. Partial proof is not proof; the
+ *     caller's boolean is already all-or-nothing
+ *     (`isStreamFullyUnfillableAccounted`), so one unproven terminal gap leaves
+ *     this `false` and the stream stays `terminal`.
+ *
+ * Open owner attention is checked BEFORE this softening in the gap block below,
+ * so an attention-blocked connection still reads `awaiting_owner` — accounted
+ * coverage is not a reason to stop asking the owner for what they owe.
+ */
+function isUnfillableAccountedTerminalGap(input: ForwardDispositionInput): boolean {
+  return input.coverage === "terminal_gap" && input.unfillableAccounted === true && !input.attentionOpen;
+}
+
+/**
  * Derive a stream's forward disposition as a pure function of its coverage
  * condition, gap retryability, open-attention presence, freshness axis, and the
  * connection's refresh policy. First match wins, and gaps are evaluated before
  * freshness so a real coverage gap is never masked by staleness:
  *
+ *   0. `terminal_gap` whose whole shortfall is proven unfillable, no
+ *      attention                                          -> not a gap; falls to 4/5
  *   1. outstanding gap + open owner attention             -> `awaiting_owner`
  *   2. outstanding recoverable detail gap or ordinary
  *      partial boundary, no attention                     -> `resumable`
@@ -3100,10 +3151,21 @@ function hasOutstandingGap(coverage: CoverageAxis): boolean {
  * considered denominator is unknown carries an `unmeasured` disposition instead
  * of `complete`, `checking`, or `resumable`.
  *
+ * Rule 0 resolves to `complete` rather than a distinct disposition because
+ * `complete` already means "no outstanding gap; a future run is not expected to
+ * collect anything new", which is precisely true here — it has never meant "no
+ * gap was ever recorded". The accepted-absence conditions `deferred` and
+ * `inventory_only` already reach `complete` the same way, with a recorded reason
+ * for data that will not arrive. The distinguishing fact (WHY nothing is owed)
+ * stays on the coverage axis, which reports the dedicated
+ * `coverage_complete_unfillable_accounted` reason and keeps the per-stream
+ * `coverage_condition: "terminal_gap"` visible; the disposition axis answers
+ * only "what does the next run do".
+ *
  * See `define-connector-progress-evidence-contract`.
  */
 export function deriveForwardDisposition(input: ForwardDispositionInput): ForwardDisposition {
-  if (hasOutstandingGap(input.coverage)) {
+  if (hasOutstandingGap(input.coverage) && !isUnfillableAccountedTerminalGap(input)) {
     // Rule 1: a gap blocked on structured owner attention awaits the owner,
     // regardless of whether the gap would otherwise be retryable. The owner must
     // act before any run can make progress.
@@ -3210,6 +3272,13 @@ function deriveConnectionForwardDisposition(
     gapRetryable: coverage === "retryable_gap",
     refresh: input.refresh ?? null,
     schedule: input.schedule ?? null,
+    // The SAME already-computed boolean `sourceCoverageCondition` reads for
+    // `SourceCoverageComplete`, so the condition set and the disposition can
+    // never disagree about a fully-accounted terminal gap. A contradictory
+    // manifest (`requiredButAccepted`) is excluded here exactly as it is there:
+    // the flag must never become a bypass for a manifest that both requires a
+    // stream and accepts its absence.
+    unfillableAccounted: input.coverage?.requiredButAccepted !== true && input.coverage?.unfillableAccounted === true,
   });
 }
 
