@@ -35,6 +35,7 @@
 import type { BrowserContext, Locator, Page } from "playwright";
 import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import { locatorIsUsable } from "./locator-helpers.ts";
 
 const DASHBOARD_URL = "https://secure.chase.com/web/auth/dashboard";
 const LOGON_URL = "https://secure.chase.com/web/auth/";
@@ -467,10 +468,19 @@ export async function ensureChaseSession({
     const method = (process.env.CHASE_2FA_METHOD ?? "text").toLowerCase();
     const label = METHOD_LABELS[method] ?? METHOD_LABELS.text ?? "Get a text";
 
-    await activePage
-      .getByRole("link", { name: new RegExp(`^${label}`, "i") })
-      .first()
-      .click({ timeout: 10_000 });
+    // Clicking the method option is what makes Chase dispatch a real code to
+    // the owner's phone. "Confirm Your Identity" being on screen does not
+    // establish that the chooser is ready: the copy also appears on Chase's
+    // interstitial and error variants of that page, and a rendered-but-
+    // disabled option reports itself visible. Require the specific delivery
+    // control to be usable — visible AND enabled — before the click.
+    const methodOption = activePage.getByRole("link", { name: new RegExp(`^${label}`, "i") }).first();
+    if (!(await locatorIsUsable(methodOption))) {
+      throw new Error(
+        `chase_delivery_method_not_available: the "${label}" option was not usable on the confirmation page; refused to dispatch a code.`
+      );
+    }
+    await methodOption.click({ timeout: 10_000 });
 
     // Wait for the Next button to be enabled/visible before clicking it.
     await clickChaseNext(activePage);

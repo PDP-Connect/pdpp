@@ -1637,7 +1637,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/auto-login/chase.ts",
-    line: 178,
+    line: 179,
     column: 32,
     category: "ordered_browser_interaction",
     note: "Promise.all(): sequential Playwright action against the shared page/context",
@@ -1812,21 +1812,21 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/auto-login/usaa.ts",
-    line: 158,
+    line: 174,
     column: 19,
     category: "ordered_browser_interaction",
     note: "action.count(): sequential Playwright action against the shared page/context",
   },
   {
     path: "src/auto-login/usaa.ts",
-    line: 163,
+    line: 179,
     column: 18,
     category: "ordered_browser_interaction",
     note: "locator.isVisible(): sequential Playwright action against the shared page/context",
   },
   {
     path: "src/auto-login/usaa.ts",
-    line: 304,
+    line: 347,
     column: 18,
     category: "bounded_retry_polling",
     note: "requestOtp(): retry/backoff/poll loop gated on the prior attempt's outcome",

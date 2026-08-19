@@ -202,6 +202,12 @@ async function withoutChaseCredentials(run: () => Promise<void>): Promise<void> 
  * selectors modelled here are copied from the module's own constants.
  */
 interface FakeOtpPageState {
+  /** Whether "Confirm Your Identity" is visible — the identity-challenge copy. */
+  challengeTextVisible?: boolean;
+  /** Whether the delivery-method option ("Get a text") is enabled. */
+  deliveryOptionEnabled?: boolean;
+  /** Whether the delivery-method option is present/visible at all. */
+  deliveryOptionPresent?: boolean;
   /** Usable (visible + enabled) OTP inputs. 0 = the page cannot accept a code. */
   otpInputs: number;
   /** Whether OTP_PROMPT_TEXT_WITH_SENT matches something visible. */
@@ -295,9 +301,37 @@ function textLocator(isVisible: () => boolean): Locator {
 }
 
 interface FakeOtpPage {
+  /**
+   * Clicks on the delivery-method option. Each one makes the real Chase send a
+   * code to the owner's phone, so this — not the prompt count — is what a test
+   * asserting "no dispatch" must check.
+   */
+  deliveryClicks: number;
   gotoCalls: string[];
   page: Page;
   state: FakeOtpPageState;
+}
+
+/**
+ * The delivery-method option ("Get a text"). Visibility and enabledness are
+ * read from `state` at call time; a visible-but-disabled option is the case a
+ * visibility-only guard would wrongly click.
+ */
+function deliveryOptionLocator(state: FakeOtpPageState, onClick: () => void): Locator {
+  const present = (): boolean => state.deliveryOptionPresent ?? false;
+  const fake: Pick<Locator, "click" | "count" | "first" | "isEnabled" | "isVisible" | "nth" | "waitFor"> = {
+    click: (): Promise<void> => {
+      onClick();
+      return Promise.resolve();
+    },
+    count: (): Promise<number> => Promise.resolve(present() ? 1 : 0),
+    first: (): Locator => fake as Locator,
+    isEnabled: (): Promise<boolean> => Promise.resolve(present() && (state.deliveryOptionEnabled ?? true)),
+    isVisible: (): Promise<boolean> => Promise.resolve(present()),
+    nth: (): Locator => fake as Locator,
+    waitFor: (): Promise<void> => (present() ? Promise.resolve() : Promise.reject(new Error("option absent"))),
+  };
+  return fake as Locator;
 }
 
 function isOtpSelector(selector: string): boolean {
@@ -315,6 +349,7 @@ function makeOtpPage(
 ): FakeOtpPage {
   const state: FakeOtpPageState = { ...init };
   const gotoCalls: string[] = [];
+  let deliveryClicks = 0;
   const signInButton: Pick<Locator, "click" | "count" | "first"> = {
     click: (): Promise<void> => {
       onAfterSignInClick?.(state);
@@ -328,19 +363,39 @@ function makeOtpPage(
     first: (): Locator => credentialField as Locator,
     waitFor: (): Promise<void> => Promise.resolve(),
   };
+  // `mds-button#next-content` → `.locator("button")` → `.first()`, the chain
+  // `clickChaseNext` walks. Advancing past it is not itself a dispatch; the
+  // dispatch already happened when the delivery option was clicked.
+  const nextButtonInner: Pick<Locator, "click" | "count" | "first"> = {
+    click: (): Promise<void> => Promise.resolve(),
+    count: (): Promise<number> => Promise.resolve(1),
+    first: (): Locator => nextButtonInner as Locator,
+  };
+  const nextButton = {
+    locator: (): Locator => nextButtonInner as Locator,
+  } as unknown as Locator;
 
   const fake: Pick<Page, "getByRole" | "getByText" | "goto" | "isClosed" | "locator"> = {
-    getByRole: (): Locator => absentLocator(),
+    getByRole: ((role: string): Locator => {
+      // The delivery-method option is the only role-based control this flow
+      // clicks, and clicking it is what dispatches a real code.
+      if (role === "link") {
+        return deliveryOptionLocator(state, (): void => {
+          deliveryClicks += 1;
+        });
+      }
+      return absentLocator();
+    }) as Page["getByRole"],
     getByText: (text: Parameters<Page["getByText"]>[0]): Locator => {
       const source = text instanceof RegExp ? text.source : String(text);
       // The dashboard "Sign Out" probe: visible only once signed in.
       if (/Sign Out/i.test(source)) {
         return textLocator((): boolean => !state.signedOut);
       }
-      // The identity-challenge method chooser. These tests land straight on
-      // the OTP surface, so the chooser is never on screen.
+      // The identity-challenge method chooser. Off screen unless a test opts
+      // in, so the existing OTP-surface tests are unaffected.
       if (/Confirm Your Identity/i.test(source)) {
-        return textLocator((): boolean => false);
+        return textLocator((): boolean => state.challengeTextVisible ?? false);
       }
       // Anything else here is the OTP prompt copy.
       return textLocator((): boolean => state.promptTextVisible);
@@ -360,10 +415,23 @@ function makeOtpPage(
       if (selector.includes("password") || selector.includes("userId") || selector.includes("username")) {
         return credentialField as Locator;
       }
+      // The "Next" control that follows the method chooser. Present only when
+      // the chooser is, matching Chase's real challenge page. Models the
+      // module's `mds-button#next-content` → `button` shadow hop.
+      if (selector.includes("next-content")) {
+        return state.deliveryOptionPresent ? nextButton : absentLocator();
+      }
       return absentLocator();
     },
   };
-  return { gotoCalls, page: fake as Page, state };
+  return {
+    get deliveryClicks(): number {
+      return deliveryClicks;
+    },
+    gotoCalls,
+    page: fake as Page,
+    state,
+  };
 }
 
 function makeOtpContext(page: Page): BrowserContext {
@@ -561,5 +629,91 @@ test("ensureChaseSession hands off when optional credentials are absent", async 
     assert.equal(requests[0]?.kind, "manual_action");
     assert.match(requests[0]?.message ?? "", /No optional Chase sign-in details/);
     assert.doesNotMatch(requests[0]?.message ?? "", /password|test-user/u);
+  });
+});
+
+test("the identity-challenge copy alone never dispatches a code when the delivery option is absent", async () => {
+  // "Confirm Your Identity" also appears on Chase's interstitial and error
+  // variants of that page. Clicking a delivery option is what makes Chase send
+  // a real code, so the copy alone must never authorize it.
+  await withChaseCredentials(async () => {
+    const fake = makeOtpPage({
+      challengeTextVisible: true,
+      deliveryOptionPresent: false,
+      otpInputs: 0,
+      promptTextVisible: false,
+      signedOut: true,
+    });
+    const context = makeOtpContext(fake.page);
+    const requests: InteractionRequest[] = [];
+
+    await assert.rejects(
+      ensureChaseSession({ context, page: fake.page, sendInteraction: recordingInteraction(requests) }),
+      /chase_delivery_method_not_available/
+    );
+
+    assert.equal(fake.deliveryClicks, 0, "no delivery option may be clicked: that click is a real code dispatch");
+    assert.deepEqual(
+      requests.filter((request) => request.kind === "otp"),
+      [],
+      "the owner is never asked for a code that was never sent"
+    );
+  });
+});
+
+test("a visible but DISABLED delivery option is not evidence the chooser is ready", async () => {
+  // Playwright reports a disabled control as visible, so a visibility-only
+  // guard would click here and spend a real code.
+  await withChaseCredentials(async () => {
+    const fake = makeOtpPage({
+      challengeTextVisible: true,
+      deliveryOptionEnabled: false,
+      deliveryOptionPresent: true,
+      otpInputs: 0,
+      promptTextVisible: false,
+      signedOut: true,
+    });
+    const context = makeOtpContext(fake.page);
+    const requests: InteractionRequest[] = [];
+
+    await assert.rejects(
+      ensureChaseSession({ context, page: fake.page, sendInteraction: recordingInteraction(requests) }),
+      /chase_delivery_method_not_available/
+    );
+
+    assert.equal(fake.deliveryClicks, 0, "a disabled option must not be clicked");
+  });
+});
+
+test("a genuine method chooser still dispatches exactly once and reaches the code prompt", async () => {
+  await withChaseCredentials(async () => {
+    const fake = makeOtpPage({
+      challengeTextVisible: true,
+      deliveryOptionPresent: true,
+      otpInputs: 1,
+      promptTextVisible: true,
+      signedOut: true,
+    });
+    // Chase authenticates once the code is submitted.
+    const context = makeOtpContext(fake.page);
+    const requests: InteractionRequest[] = [];
+
+    await ensureChaseSession({
+      context,
+      page: fake.page,
+      sendInteraction: (request: InteractionRequest): Promise<InteractionResponse> => {
+        if (request.kind === "otp") {
+          fake.state.signedOut = false;
+        }
+        return recordingInteraction(requests)(request);
+      },
+    });
+
+    assert.equal(fake.deliveryClicks, 1, "the genuine chooser dispatches exactly once, as before");
+    assert.deepEqual(
+      requests.map((request) => request.kind),
+      ["otp"],
+      "the owner is asked for the code that was genuinely dispatched"
+    );
   });
 });
