@@ -32,7 +32,13 @@ export interface SourceWebhookDependencies {
     bodyHash: string;
     receivedAt: string;
   }) => boolean | Promise<boolean>;
-  readonly ingestRecords: (input: { connectorId: string; streamName: string; body: string }) => Promise<{
+  readonly ingestRecords: (input: {
+    connectorId: string;
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+    streamName: string;
+    body: string;
+  }) => Promise<{
     readonly stream: string;
     readonly records_accepted: number;
     readonly records_rejected: number;
@@ -60,7 +66,9 @@ export interface SourceWebhookDependencies {
       readonly trigger_kind: "webhook";
     };
     connectorId: string;
+    connectorInstanceId: string;
     eventId: string;
+    ownerSubjectId: string;
     receivedAt: string;
     triggerKind: "webhook";
   }) =>
@@ -81,11 +89,17 @@ export interface SourceWebhookDependencies {
         readonly trigger_kind?: string;
       }
     | null;
-  readonly resolveConnectorId?: (sourceId: string) => string | null | undefined;
   readonly resolveSecret: (sourceId: string) => string | null | undefined;
+  readonly resolveTarget: (
+    sourceId: string
+  ) =>
+    | Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>
+    | { connectorId: string; connectorInstanceId: string; ownerSubjectId: string };
   readonly signalScheduler: (input: {
     connectorId: string;
+    connectorInstanceId: string;
     eventId: string;
+    ownerSubjectId: string;
     receivedAt: string;
   }) => void | Promise<void>;
 }
@@ -174,13 +188,12 @@ export async function executeSourceWebhook(
 
   verifySignature(secret, eventId, timestamp, input.body, signature);
   const payload = parseBody(input.body);
-  const resolvedConnectorId = deps.resolveConnectorId?.(sourceId) || sourceId;
-  // Canonicalize at the operation boundary: the configured connector id (from
-  // PDPP_SOURCE_WEBHOOK_SECRETS or the raw URL :sourceId) may be a URL-shaped
-  // first-party id or a legacy snake_case alias. Keying the webhook-triggered
-  // run, spine events, and last-run row by a non-canonical id splits identity
-  // from every other surface, so map it to the canonical key here.
-  const connectorId = canonicalConnectorKey(resolvedConnectorId) ?? resolvedConnectorId;
+  const resolvedTarget = await deps.resolveTarget(sourceId);
+  const connectorId = canonicalConnectorKey(resolvedTarget.connectorId) ?? resolvedTarget.connectorId;
+  const { connectorInstanceId, ownerSubjectId } = resolvedTarget;
+  if (!(connectorId && connectorInstanceId && ownerSubjectId)) {
+    throw new SourceWebhookError("invalid_source_target", "source webhook target is incomplete", 404);
+  }
   const bodyHash = createHmac("sha256", secret).update(input.body).digest("hex");
   const receivedAt = new Date(deps.nowMs()).toISOString();
   const claimed = await deps.claimEvent({ bodyHash, eventId, receivedAt, sourceId });
@@ -199,6 +212,8 @@ export async function executeSourceWebhook(
     const ingest = await deps.ingestRecords({
       body,
       connectorId,
+      connectorInstanceId,
+      ownerSubjectId,
       streamName: payload.stream,
     });
     return {
@@ -220,10 +235,18 @@ export async function executeSourceWebhook(
         ? null
         : // biome-ignore lint/style/noNestedTernary: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
           deps.requestRun
-          ? await deps.requestRun({ automationPolicy, connectorId, eventId, receivedAt, triggerKind: "webhook" })
+          ? await deps.requestRun({
+              automationPolicy,
+              connectorId,
+              connectorInstanceId,
+              eventId,
+              ownerSubjectId,
+              receivedAt,
+              triggerKind: "webhook",
+            })
           : null;
-    if (!deps.requestRun) {
-      await deps.signalScheduler({ connectorId, eventId, receivedAt });
+    if (automationPolicy.allowed_to_start !== false && !run) {
+      await deps.signalScheduler({ connectorId, connectorInstanceId, eventId, ownerSubjectId, receivedAt });
     }
     return {
       accepted: true,
