@@ -18,7 +18,15 @@ name: Consumer drift signal
 #   - packages/reference-contract/src/evidence/collection-scope.ts
 #   - reference-implementation/runtime/recovery-reason-codes.ts
 # Those exact files (not the whole packages/reference-contract or reference-implementation
-# trees) are what that job's comparison depends on.
+# trees) are what that job's comparison depends on. data-connectors' own pin-freshness job
+# (.github/workflows/cross-repo-integrity.yml) independently watches the wider
+# `packages/reference-contract` and `reference-implementation` trees for pdpp, a superset of
+# these four files, so this workflow's narrower list has no coverage gap relative to it.
+#
+# This workflow file and .github/consumer-drift-signal-config.json (the fail-closed activation
+# switch, see the job below) are also guarded paths in their own right, per the reviewer's
+# "Producer workflows should include their own control files in triggers" hardening finding:
+# a PR that only edits either of them would otherwise not trigger this signal at all.
 
 on:
   push:
@@ -27,12 +35,16 @@ on:
       - "packages/reference-contract/src/evidence/coherence.ts"
       - "packages/reference-contract/src/evidence/collection-scope.ts"
       - "reference-implementation/runtime/recovery-reason-codes.ts"
+      - ".github/workflows/consumer-drift-signal.yml"
+      - ".github/consumer-drift-signal-config.json"
   pull_request:
     paths:
       - "packages/reference-contract/src/common/terminal-run-commit.ts"
       - "packages/reference-contract/src/evidence/coherence.ts"
       - "packages/reference-contract/src/evidence/collection-scope.ts"
       - "reference-implementation/runtime/recovery-reason-codes.ts"
+      - ".github/workflows/consumer-drift-signal.yml"
+      - ".github/consumer-drift-signal-config.json"
 
 permissions:
   contents: read
@@ -47,6 +59,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Fetch data-connectors' pin file and compare
         env:
@@ -58,11 +71,19 @@ jobs:
         run: |
           set -euo pipefail
 
+          consumer_pin_required="$(node -p 'require("./.github/consumer-drift-signal-config.json").consumer_pin_required === true')"
+          echo "Fail-closed activation (.github/consumer-drift-signal-config.json consumer_pin_required): $consumer_pin_required"
+
           echo "Fetching PDP-Connect/data-connectors' default-branch pin file (unauthenticated raw fetch, no secrets)..."
           http_status="$(curl -sS -o pins.json -w '%{http_code}' \
             https://raw.githubusercontent.com/PDP-Connect/data-connectors/main/.github/cross-repo-pins.json || true)"
 
           if [[ "$http_status" != "200" ]]; then
+            if [[ "$consumer_pin_required" == "true" ]]; then
+              echo "::error::consumer_pin_required is true but fetching data-connectors' pin file returned HTTP $http_status." >&2
+              echo "::error::After activation, an unreachable/non-200 consumer pin fails closed instead of passing." >&2
+              exit 1
+            fi
             echo "No consumer pin recorded yet — signal inactive (fetch returned HTTP $http_status)."
             echo "This is expected until PDP-Connect/data-connectors' cutover PR merges .github/cross-repo-pins.json to main."
             exit 0
@@ -71,8 +92,24 @@ jobs:
           pinned_sha="$(node -p 'try { require("./pins.json").repos["pdpp"].sha } catch { "" }' 2>/dev/null || true)"
 
           if [[ -z "$pinned_sha" ]]; then
+            if [[ "$consumer_pin_required" == "true" ]]; then
+              echo "::error::consumer_pin_required is true but data-connectors' pin file has no pdpp entry (or is malformed)." >&2
+              echo "::error::After activation, a missing/malformed consumer pin entry fails closed instead of passing." >&2
+              exit 1
+            fi
             echo "No consumer pin recorded yet — signal inactive (data-connectors' pin file exists but has no pdpp entry)."
             echo "This is expected until PDP-Connect/data-connectors' cutover PR merges .github/cross-repo-pins.json to main."
+            exit 0
+          fi
+
+          if ! [[ "$pinned_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::data-connectors' recorded pdpp pin is not 40 lowercase hex characters: '$pinned_sha'" >&2
+            if [[ "$consumer_pin_required" == "true" ]]; then
+              echo "::error::After activation, an invalid pinned SHA fails closed instead of passing." >&2
+              exit 1
+            fi
+            echo "Signal inactive pre-activation despite the malformed SHA — see consumer_pin_required in"
+            echo ".github/consumer-drift-signal-config.json."
             exit 0
           fi
 
