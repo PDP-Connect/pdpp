@@ -231,6 +231,38 @@ test("apple_contacts integration: a second run emits a tombstone for a server-si
   }
 });
 
+test("apple_contacts integration: an initial sync of a genuinely empty address book proves verified-empty coverage", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    // No contacts at all, and no prior cursor: this run establishes the full
+    // boundary, so `considered: 0` is a real measurement ("I enumerated the
+    // address book and it held nothing") rather than a quiet change feed.
+    // Withholding the claim here would turn a legitimately-empty required
+    // stream into a permanent `unknown`, which is its own failure.
+    const only = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = only.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded");
+    assert.equal(recordsOf(only.messages, "contacts").length, 0);
+
+    const contactsCoverage = only.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(
+      contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE",
+      "a boundary-establishing run must still emit contacts coverage for a genuine zero"
+    );
+    assert.equal(contactsCoverage.considered, 0);
+    assert.equal(contactsCoverage.covered, 0);
+  } finally {
+    await server.close();
+  }
+});
+
 test("apple_contacts integration: an unchanged incremental sync re-enumerates the group inventory", async () => {
   const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
   try {
@@ -268,6 +300,17 @@ test("apple_contacts integration: an unchanged incremental sync re-enumerates th
     assert.ok(groupsCoverage && groupsCoverage.type === "DETAIL_COVERAGE");
     assert.equal(groupsCoverage.considered, 1);
     assert.equal(groupsCoverage.covered, 1);
+
+    // The quiet incremental run enumerated nothing, so it must not claim a
+    // contacts boundary. This is the shape observed in production on
+    // cin_d344ba53d6d95c7dd343393d: a stored sync_token with an empty
+    // fingerprint map, replaying as `considered: 0` forever.
+    const contactsCoverage = second.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.equal(
+      contactsCoverage,
+      undefined,
+      "an unchanged incremental sync must not claim a proven contacts boundary"
+    );
   } finally {
     await server.close();
   }
@@ -315,10 +358,20 @@ test("apple_contacts integration: incremental group requests re-enumerate a genu
     assert.equal(contactRecords.filter((message) => message.op !== "delete").length, 0);
     assert.equal(recordsOf(second.messages, "contact_groups").length, 0);
 
+    // The incremental contact delta is not a CONTACT boundary either. This run
+    // saw one deletion and zero live resources, which is a change feed, not an
+    // enumeration of the address book. Emitting `considered: 0, covered: 0`
+    // here would hand the coherence contract a fabricated
+    // `enumeration_boundary` proof and paint a required stream green off a
+    // quiet sync. The honest move is to emit no contacts coverage at all and
+    // let the stream read `unknown` until a run actually establishes the
+    // boundary.
     const contactsCoverage = second.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
-    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
-    assert.equal(contactsCoverage.considered, 0);
-    assert.equal(contactsCoverage.covered, 0);
+    assert.equal(
+      contactsCoverage,
+      undefined,
+      "an incremental contact delta must not claim a proven-empty contacts inventory"
+    );
 
     // The incremental contact delta is not a group boundary. The connector
     // must obtain a full snapshot before proving that the now-empty group

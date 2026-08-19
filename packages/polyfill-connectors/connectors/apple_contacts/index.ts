@@ -367,6 +367,7 @@ async function loadFullGroupSnapshot(args: {
  * is the whole per-book unit of work in one place.
  */
 async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
+  contactsBoundaryEstablished: boolean;
   contactsConsidered: number;
   contactsCovered: number;
   covered: boolean;
@@ -414,7 +415,18 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   // An incremental sync reports only changes, so its empty resource list is
   // not an empty inventory. Only the initial sync (no prior token) or the
   // non-incremental fallback establishes the full contact boundary.
-  let groupsBoundaryEstablished = !supportsSync || fullBoundary;
+  //
+  // This is a CONTACTS boundary fact as much as a groups one: on an
+  // incremental run `resourcesEnumerated` counts changed resources, not the
+  // address book's inventory, so a no-change run measures 0 without having
+  // enumerated anything. Emitting that as `considered: 0` would hand the
+  // coherence contract a fabricated `enumeration_boundary` proof
+  // (`packages/reference-contract/src/evidence/coherence.ts` rule 2 reads a
+  // measured `considered: 0` as "I enumerated the boundary and it held
+  // nothing"). Track the boundary for contacts explicitly and let the caller
+  // withhold the claim rather than overstate it.
+  const contactsBoundaryEstablished = !supportsSync || fullBoundary;
+  let groupsBoundaryEstablished = contactsBoundaryEstablished;
   const bookCovered = await emitAddressBookRecordIfRequested({ book, bookCursor, requested, emitRecord, supportsSync });
 
   const fingerprintState =
@@ -538,6 +550,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   // more resources failed to parse, considered > covered, so the caller
   // reads a real partial instead of a fabricated complete.
   return {
+    contactsBoundaryEstablished,
     contactsConsidered: resourcesEnumerated,
     contactsCovered: contactCount,
     hadUnparseableResource: unparseableResources > 0,
@@ -614,11 +627,13 @@ if (isMainModule(import.meta.url)) {
       let groupsBoundaryEstablished = true;
       let contactsConsidered = 0;
       let contactsCovered = 0;
+      let contactsBoundaryEstablished = true;
       let anyUnparseableResource = false;
 
       for (const book of books) {
         considered += 1;
         const {
+          contactsBoundaryEstablished: bookContactsBoundaryEstablished,
           contactsConsidered: bookContactsConsidered,
           contactsCovered: bookContactsCovered,
           covered: bookCovered,
@@ -646,12 +661,23 @@ if (isMainModule(import.meta.url)) {
         // count emitted for this book (including a genuine zero-group book).
         groupsConsidered += groupsEmitted;
         groupsBoundaryEstablished = groupsBoundaryEstablished && bookGroupsBoundaryEstablished;
+        contactsBoundaryEstablished = contactsBoundaryEstablished && bookContactsBoundaryEstablished;
         contactsConsidered += bookContactsConsidered;
         contactsCovered += bookContactsCovered;
         anyUnparseableResource = anyUnparseableResource || hadUnparseableResource;
       }
 
-      if (requested.has("contacts")) {
+      // Withhold the contacts coverage claim entirely when no book established
+      // a full boundary this run. An incremental sync-collection delta is a
+      // change feed, not an inventory: its `considered` is the number of
+      // CHANGED resources, so a quiet run would otherwise emit
+      // `considered: 0, covered: 0` and be read as a proven-empty address
+      // book. Emitting nothing leaves the stream honestly unproven (the
+      // coherence contract's `checkpoint_only`/`no_proof_strategy` -> axis
+      // `unknown`) instead of falsely complete. A run that DOES establish the
+      // boundary — initial sync, stale-token resync, or the non-incremental
+      // fallback — still proves a genuine zero exactly as before.
+      if (requested.has("contacts") && contactsBoundaryEstablished) {
         // `considered` counts every resource the server enumerated;
         // `covered` counts only the ones this run successfully parsed and
         // accounted for (emitted, or suppressed as unchanged by the

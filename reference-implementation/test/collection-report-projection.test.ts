@@ -189,6 +189,112 @@ test("declared checkpoint-window strategy with a measured boundary and committed
   assert.equal(entry.forward_disposition, "complete");
 });
 
+// ─── vacuous-zero coverage: a required stream that reported nothing ───────────
+//
+// A connector that emits NO coverage fact for a manifest-declared required
+// stream must leave that stream `unknown`, never `complete`. This is the
+// runtime half of the apple_contacts fix (production connection
+// cin_d344ba53d6d95c7dd343393d): the connector withholds its DETAIL_COVERAGE on
+// an incremental run that enumerated nothing, and the projection must carry
+// that silence through as unproven rather than as "not owed".
+
+test("required manifest stream with NO fact at all reads unknown, never complete", () => {
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    // The run reported a fact for `address_books` only. `contacts` is declared
+    // and required, but the connector emitted no coverage for it.
+    collectionFacts: { streams: [fact({ considered: 1, covered: 1, stream: "address_books" })] },
+    freshness: "fresh",
+    manifestStreams: [
+      { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "address_books" },
+      { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "contacts", required: true },
+    ],
+    refresh: null,
+  });
+  const contacts = entryFor(entries, "contacts");
+  assert.equal(contacts.required, true);
+  assert.equal(contacts.considered, "unknown");
+  // The whole point: silence is unproven, not satisfied.
+  assert.equal(contacts.coverage_condition, "unknown");
+  // The stream that DID measure its boundary is untouched.
+  assert.equal(entryFor(entries, "address_books").coverage_condition, "complete");
+});
+
+test("a measured considered:0 on a required stream still proves verified-empty coverage", () => {
+  // Proof-of-emptiness must remain expressible. A connector that genuinely
+  // enumerated the boundary and found nothing reports `considered: 0` and is
+  // entitled to `complete` — this is the existing coherence-contract channel
+  // (rule 2, `enumeration_boundary`) and the fix must not break it.
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [fact({ checkpoint: "committed", collected: 0, considered: 0, covered: 0, stream: "contacts" })],
+    },
+    freshness: "fresh",
+    manifestStreams: [
+      { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "contacts", required: true },
+    ],
+    refresh: null,
+  });
+  const entry = entryFor(entries, "contacts");
+  assert.equal(entry.considered, 0);
+  assert.equal(entry.coverage_condition, "complete");
+});
+
+test("a NON-required manifest stream with no fact is unchanged by the required-stream gate", () => {
+  // Constraint: only required streams change behavior. An optional declared
+  // stream with no fact reads `unknown` here too, but it must not roll up into
+  // the connection axis — proven by the rollup test below.
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: { streams: [fact({ considered: 3, covered: 3, stream: "address_books" })] },
+    freshness: "fresh",
+    manifestStreams: [
+      { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "address_books" },
+      {
+        coverage_strategy: "full_inventory",
+        freshness_strategy: "scheduled_window",
+        name: "canvases",
+        required: false,
+      },
+    ],
+    refresh: null,
+  });
+  const optional = entryFor(entries, "canvases");
+  assert.equal(optional.required, false);
+  assert.equal(optional.coverage_condition, "unknown");
+  // The connection-level rollup only considers required streams, so an
+  // optional unknown must NOT drag a complete axis to unknown.
+  const optionalManifest: ManifestStreamFixture[] = [
+    { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "address_books" },
+    { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "canvases", required: false },
+  ];
+  assert.equal(rollupCollectionReportCoverageOverride("complete", entries, optionalManifest), null);
+});
+
+test("a required stream reading unknown drags the connection coverage axis off complete", () => {
+  // The end-to-end consequence: this is what stops the Healthy pill. The axis
+  // becomes `unknown`, which withholds healthy WITHOUT manufacturing a
+  // degraded/"Can't collect" verdict.
+  const manifestStreams: ManifestStreamFixture[] = [
+    { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "address_books" },
+    { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "contacts", required: true },
+  ];
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: { streams: [fact({ considered: 1, covered: 1, stream: "address_books" })] },
+    freshness: "fresh",
+    manifestStreams,
+    refresh: null,
+  });
+  const override = rollupCollectionReportCoverageOverride("complete", entries, manifestStreams);
+  assert.equal(override, "unknown");
+  // Explicitly NOT a degrading axis: unknown may withhold healthy, but it must
+  // never manufacture a false red.
+  assert.notEqual(override, "terminal_gap");
+  assert.notEqual(override, "partial");
+});
+
 test("unreliable projection withholds required complete coverage but preserves optional policy outcomes", () => {
   const entries = buildCollectionReport({
     attentionOpen: false,
