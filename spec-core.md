@@ -231,7 +231,7 @@ This design ensures that a client authorized for fields A and B cannot infer tha
 
 Tombstones use the same `object: "record"` envelope as regular response records, with `deleted: true`. The `id` field is the canonical key string (see RECORD envelope, Compound key encoding below). Both `deleted_at` and `emitted_at` are required on tombstone objects. No `data` field is present on tombstones.
 
-A tombstone signals that a record left the stream. For subset or derived streams this means membership removal; it does not assert that the source record was deleted.
+A tombstone signals that a record left the stream. For subset or derived streams this means membership removal; it does not assert that the source record was deleted. See [Derived subset streams](#predicate-based-grant-scoping) (Section 12) for the non-normative discussion of this stream shape.
 
 `deleted_at` represents the time the record was deleted in the source system, if known; otherwise the time the RS processed the deletion directive. If the source system deletion time is unknown, the RS SHOULD use the `emitted_at` value of the delete directive as `deleted_at`.
 
@@ -721,7 +721,7 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 |-----------|------|----------|--------|-------------|
 | `source` | object | yes | Protocol-enforced | Source binding. `id` is required and is the stable absolute URI authorization identity for the data surface. `kind` is optional. When present, it is a client trust expectation that the accepted declaration's provenance class is `connector` or `provider_native`. It is not authorization equality and never selects runtime. |
 | `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced, with the exception of `https://pdpp.dev/purpose/ai_training` (see below). |
-| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. |
+| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. Clients SHOULD phrase it as a single sentence addressed to the user. |
 | `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. See [Section 7](#grant). |
 | `retention` | object | no | Structured policy declaration | Requested retention constraints: `{ max_duration, on_expiry }`. |
 | `streams` | StreamRequest[] | yes (unless `selection_preset` is used) | Protocol-enforced | Requested streams with per-stream parameters. |
@@ -754,7 +754,7 @@ Per-stream, within the `streams` array. All are optional except `name`.
 |-----------|------|--------|-------------|
 | `name` | string | Protocol-enforced | Stream name, or `*` for all streams (resolved at consent time against the retained SourceDeclaration). |
 | `necessity` | enum | Consent-flow control at issuance time | `required` (default) or `optional`. Optional streams are presented as user choices during consent. |
-| `instance_ids` | string[] | Protocol-enforced | Optional opaque owner-instance handles for this stream. Handles are scoped to issuer, subject, `source.id`, and stream. Omission never means fan-in. The AS resolves exactly one eligible handle or requires an explicit owner choice. |
+| `instance_ids` | string[] | Protocol-enforced | Optional opaque owner-instance handles for this stream. Handles are scoped to issuer, subject, `source.id`, and stream. Omission never means fan-in (reading across more than one connected instance of the same source). The AS resolves exactly one eligible handle or requires an explicit owner choice. |
 | `time_range.since` | ISO 8601 | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. |
 | `time_range.until` | ISO 8601 | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. A hard cap: applies to future resources as well as past ones. |
 | `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. AS returns 400 `invalid_request` if both are present. |
@@ -802,7 +802,7 @@ Every field in the issued grant is derived from either the selection request, cl
 
 **Note:** This section defines the immutable consent artifact and the constraints a resource server enforces for a token-bound client. Grant database schema, signed-token format, hosted registries, and deployment topology are out of scope for this document.
 
-The grant is an immutable consent artifact. It is the output of the authorization flow.
+A grant is an immutable consent artifact. It is the output of the authorization flow.
 
 The authorization server issues an access token bound to the grant. The client uses the access token (not the raw grant) to authenticate with the resource server. The resource server resolves the token to the grant and enforces its constraints on every request. Grant lifecycle (active, expired, revoked) is tracked by the authorization server, not stored in the grant itself.
 
@@ -839,11 +839,11 @@ The authorization server issues an access token bound to the grant. The client u
 
 ### Grant fields
 
-**The following field table is normative.** TypeScript types in Section 13 are non-normative.
+[Section 13](#typescript-types) gives the same shapes as TypeScript types for convenience; it is non-normative, and where it conflicts with a field table, the field table wins.
 
 | Field | Type | Required | Status | Description |
 |-------|------|----------|--------|-------------|
-| `version` | string | yes | Protocol metadata | Grant schema version. This contract requires exactly `0.1.0`. |
+| `version` | string | yes | Protocol metadata | Tracks the version of this specification's grant schema (not a URL; there is no external schema document to resolve). This contract requires exactly `0.1.0`. |
 | `grant_id` | string | yes | Protocol metadata | Unique identifier. |
 | `issued_at` | ISO 8601 | yes | Protocol metadata | When the grant was issued. |
 | `subject` | object | yes | Identity binding | Exactly `{ id }`. The `subject.id` is an opaque string, unique within the issuing AS's namespace. No format constraint is imposed. |
@@ -856,14 +856,14 @@ The authorization server issues an access token bound to the grant. The client u
 | `streams` | StreamGrant[] | yes | Protocol-enforced | Granted streams. Always expanded; no wildcards. See StreamGrant fields table below. |
 | `selection_preset` | string | no | Informational | Which SourceDeclaration preset was selected. The resolved streams and fields remain authoritative. |
 | `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
-| `expires_at` | ISO 8601 or null | no | Protocol-enforced | Grant expiry. null means no expiry. |
+| `expires_at` | ISO 8601 | no | Protocol-enforced | Grant expiry. Absent means no expiry. |
 
 ### StreamGrant fields
 
 | Field | Type | Required | Status | Description |
 |-------|------|----------|--------|-------------|
 | `name` | string | yes | Protocol-enforced | Unique stream name within the grant. Always concrete; no wildcards in issued grants. |
-| `instance_ids` | string[] | yes | Protocol-enforced | Unique non-empty opaque instance handles scoped to issuer, subject, source ID, and this stream. Multiple handles authorize fan-in only when explicitly listed. |
+| `instance_ids` | string[] | yes | Protocol-enforced | Unique non-empty opaque instance handles scoped to issuer, subject, source ID, and this stream. Multiple handles authorize fan-in only when explicitly listed. Example: two connected Gmail accounts are two instances of the same source kind, each with its own handle. |
 | `fields` | string[] | yes | Protocol-enforced | Unique non-empty resolved field allowlist, authoritative for RS enforcement. Top-level field names only. |
 | `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, since?, until? }` resolved from the retained declaration. `field` is required and at least one bound is present. `since` is inclusive; `until` is exclusive. |
 | `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Absent means all records. |
@@ -920,9 +920,9 @@ explicitly migrate such state MUST require fresh consent.
 | `single_use` | The grant is consumed at first token issuance. The AS marks the grant consumed atomically with issuance of the first client access token. The AS MUST reject subsequent attempts to issue new client access tokens against the same consumed grant. The RS honors all tokens issued against the grant until token expiry or revocation. The client MAY retry or resume pagination using the same access token. Failure to complete retrieval before token expiry does not un-consume the grant. |
 | `continuous` | The grant is fulfilled repeatedly. The client may query the resource server incrementally over time. Active until expiry or revocation. |
 
-### time constraint semantics
+### Time constraint semantics
 
-The request's `time_range` is resolved against the retained stream
+The selection request's `time_range` is resolved against the retained stream
 `consent_time_field` into the grant's `time_constraint`. The grant freezes that
 field with the bounds. The filter is:
 
@@ -1014,8 +1014,7 @@ Retention is a structured policy declaration and policy commitment by the data r
       "instance_ids": ["openai-account-a"],
       "fields": ["id", "conversation_id", "role", "content", "source_created_at"]
     }
-  ],
-  "expires_at": null
+  ]
 }
 ```
 
@@ -1068,8 +1067,11 @@ On every request, the resource server:
 
 For owner-token current-capability reads, the RS MAY compute
 `effective_filter = grant_filter AND request_filter`; request filters can only
-narrow the current owner read and cannot widen it. In v0.1, client-token reads
-do not have request-time predicate filters (see List records below).
+narrow the current owner read and cannot widen it. For owner tokens there is no
+grant filter; the effective filter is the request filter alone, since owners
+have full access to their own data. For client tokens the effective filter is
+`grant_filter AND request_filter`. In v0.1, client-token reads do not have
+request-time predicate filters (see List records below).
 
 The RS MUST NOT re-validate authorization against the current SourceDeclaration. All enforcement constraints are in the resolved grant. Current serving metadata MAY route a granted instance, describe current schemas or query capabilities, or reject a request that cannot currently be served. It MUST NOT widen or reinterpret a stream, instance, field, time field, bound, or resource key.
 
@@ -1078,8 +1080,8 @@ The RS MUST NOT re-validate authorization against the current SourceDeclaration.
 ### Token introspection
 
 For separated AS/RS deployments, the RS MUST authenticate to the AS
-introspection endpoint as required by RFC 7662. PDPP defines the following
-extension fields in the introspection response:
+introspection endpoint as required by RFC 7662. The introspection response
+combines standard RFC 7662 fields with PDPP-defined extensions:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -1090,6 +1092,8 @@ extension fields in the introspection response:
 | `client_id` | string | The client identifier. Present for client tokens. |
 | `exp` | integer | Optional expiry timestamp (Unix epoch). Omitted when the token has no expiration. |
 | `authorization_details` | array | The approved RFC 9396 detail for a client token. It carries the resolved grant enforcement constraints defined in Section 7. |
+
+`active`, `client_id`, `exp`, and other base members come from RFC 7662. `authorization_details` comes from RFC 9396. The `pdpp_`-prefixed members, along with `subject_id` and `grant_id`, are defined by this specification.
 
 The introspection response MUST contain the complete context needed to enforce
 the request. The separated RS MUST enforce only from that response and MUST
@@ -1159,7 +1163,7 @@ GET /v1/streams/{stream}
 Authorization: Bearer <access_token>
 ```
 
-Returns full source stream metadata. This endpoint is not grant-projected: grants determine whether the caller may access the stream and what reads or queries are permitted, but they do not redact or rewrite the metadata document returned here. Response:
+A caller may fetch metadata only for streams its grant covers. The metadata document itself is not grant-projected: it is returned whole, not redacted or rewritten per grant. Response:
 
 ```json
 {
@@ -1385,6 +1389,8 @@ Every non-2xx response returns a structured error:
 }
 ```
 
+Clients MUST treat unrecognized error codes as opaque and fall back to the HTTP status class and the error `type`.
+
 | Code | HTTP Status | Type | Meaning |
 |------|------------|------|---------|
 | `invalid_cursor` | 400 | `invalid_request_error` | Cursor token is malformed or unrecognized. |
@@ -1464,7 +1470,7 @@ A conformant Core RS:
 2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter.
 3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results no longer than `min(token_exp, 60 seconds)`.
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
-5. Computes effective filters as `grant_filter AND request_filter`.
+5. For owner tokens, computes the effective filter as the request filter alone (there is no grant filter). For client tokens, computes the effective filter as `grant_filter AND request_filter`.
 6. Returns structured errors as defined in Section 8 (unified error table).
 7. Supports incremental sync via `changes_since` for `mutable_state` streams, including tombstone entries, omission of records whose grant-authorized projection did not change, and HTTP 410 with error code `cursor_expired` on cursor expiry.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response.
@@ -1635,7 +1641,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Predicate-based grant scoping | Deferred; see spec-deferred for subset template design direction |
 | Real-time streaming | Different spec needed |
 
-### Predicate-based grant scoping
+### Predicate-based grant scoping {#predicate-based-grant-scoping}
 
 v0.1 grants narrow access only by stream selection, named view or field projection, time range, and explicit resource identifiers. Generic predicate expressions (e.g., `filter[sender_domain]=amazon.com` as a grant parameter) are not supported.
 
@@ -1661,9 +1667,9 @@ Current active editors and maintainers are listed in `MAINTAINERS.md`. This repo
 
 ---
 
-## 13. TypeScript Types
+## 13. TypeScript Types {#typescript-types}
 
-**Note:** TypeScript types in this section are non-normative. The normative definitions are the prose field tables in Sections 5, 6, and 7.
+**Note:** TypeScript types in this section are a non-normative convenience mirror of the normative prose field tables in Sections 5, 6, and 7. Where a type in this section conflicts with a field table, the field table wins.
 
 ```typescript
 // --- Record model ---
@@ -1764,7 +1770,7 @@ interface DataGrant {
     max_duration: string;  // ISO 8601 duration
     on_expiry: 'delete' | 'anonymize';
   };
-  expires_at?: string | null;
+  expires_at?: string;  // ISO 8601; absent means no expiry
 }
 
 // --- Source Declaration ---
