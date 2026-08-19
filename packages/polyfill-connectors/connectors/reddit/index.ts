@@ -595,12 +595,18 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
  */
 export async function redditEnsureSession({
   capture,
+  checkpoint,
   context,
   onCredentialSubmit,
   page,
   sendInteraction,
 }: EnsureSessionArgs): Promise<void> {
-  await ensureRedditSession({ capture, context, onCredentialSubmit, page, sendInteraction });
+  // Forwarding `checkpoint` is the point of production run_1787109028586's
+  // fix: without it the watchdog's no-progress message could only name the
+  // runtime's own `session-establish:begin`, so a 120s stall inside the
+  // first liveness probe was indistinguishable from a stall anywhere else in
+  // session establishment.
+  await ensureRedditSession({ capture, checkpoint, context, onCredentialSubmit, page, sendInteraction });
 }
 
 if (isMainModule(import.meta.url)) {

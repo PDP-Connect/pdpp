@@ -941,3 +941,162 @@ test("REDDIT_RETRYABLE_PATTERN still matches its intended legitimate pre-submit 
     assert.equal(REDDIT_RETRYABLE_PATTERN.test(message), true, `${message} should still be retryable`);
   }
 });
+
+// ─── Bounded liveness probe: a hang must never reach the watchdog ─────────
+//
+// Production `run_1787109028586`: `ensureRedditSession` entered its first
+// liveness probe and the run emitted NOTHING for 120s until the runtime
+// watchdog killed it —
+//   reddit_session_establish_timeout: no session-establishment progress for
+//   120061ms (last checkpoint: session-establish:begin); failing run closed
+//
+// Two independent unbounded awaits produced that. The in-page `fetch` had no
+// timeout, so an accepted-but-unanswered connection (Reddit throttling a host
+// that had just failed several logins) never settles — and the callback's
+// own try/catch cannot help, because a hang is not a rejection. The
+// `page.evaluate` wrapping it had no timeout either, so a wedged page context
+// hangs identically with the callback never running at all.
+//
+// These tests use a page whose probe promise NEVER resolves. Without the
+// bounds, each one hangs until the node:test 120s timeout — which is exactly
+// the production failure, reproduced.
+
+/**
+ * Shrunk stand-in for the production `evaluate` bound. The bound must be real
+ * wall-clock in production, so tests inject a small one rather than sleeping
+ * the production value — see `SessionProbeOptions`. Large enough that a
+ * healthy in-process fake still wins the race comfortably.
+ */
+const PROBE_BOUND_MS = 50;
+
+/**
+ * Page whose JSON-probe `evaluate` never settles — the tarpit/wedged-context
+ * shape. `waitForTimeout` resolves immediately so the retry wrapper's own
+ * loop cost is not what is being measured.
+ */
+function makeHangingProbePage(): { evaluateCalls: () => number; page: Page } {
+  let evaluateCalls = 0;
+  const empty = makeLocator({ count: 0, visible: false });
+  const fake: Pick<Page, "evaluate" | "goto" | "locator" | "waitForTimeout"> = {
+    evaluate(): ReturnType<Page["evaluate"]> {
+      evaluateCalls += 1;
+      // Never resolves, never rejects. A `catch` cannot see this.
+      return new Promise<never>(() => undefined);
+    },
+    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    locator(_selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+      return empty;
+    },
+    waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+      return Promise.resolve();
+    },
+  };
+  return { evaluateCalls: () => evaluateCalls, page: fake as Page };
+}
+
+test("isSessionLive returns false (never hangs, never throws) when the in-page probe never resolves", async () => {
+  await withRedditCredentials(async () => {
+    const { page } = makeHangingProbePage();
+    const startedAt = Date.now();
+    // The assertion that matters is that this line is REACHED at all: before
+    // the fix this await never settles and the test dies on node:test's
+    // timeout rather than failing.
+    const live = await isSessionLive(page, { evaluateTimeoutMs: PROBE_BOUND_MS });
+    const elapsed = Date.now() - startedAt;
+    assert.equal(live, false, "a probe that could not answer must read as 'not live', not throw and not hang");
+    assert.ok(elapsed < 30_000, `probe should resolve within its own bound, took ${elapsed}ms`);
+  });
+});
+
+test("isSessionLive reports a timed-out probe distinctly from a genuinely dead session (diagnostics must not collapse)", async () => {
+  await withRedditCredentials(async () => {
+    const { page: hanging } = makeHangingProbePage();
+    const timeoutStages: string[] = [];
+    assert.equal(
+      await isSessionLive(hanging, {
+        evaluateTimeoutMs: PROBE_BOUND_MS,
+        onProbeTimeout: (stage) => timeoutStages.push(stage),
+      }),
+      false
+    );
+    assert.deepEqual(timeoutStages, ["evaluate"], "a tarpit must be nameable in diagnostics");
+
+    // COUNTERWEIGHT: the same `false` verdict from a session that really is
+    // logged out must NOT fire the timeout signal — otherwise the signal
+    // carries no information.
+    const deadStages: string[] = [];
+    const dead = makePageForSessionLiveProbe({ logoutLinkCount: 0, savedJsonStatus: 403 });
+    assert.equal(
+      await isSessionLive(dead, {
+        evaluateTimeoutMs: PROBE_BOUND_MS,
+        onProbeTimeout: (stage) => deadStages.push(stage),
+      }),
+      false
+    );
+    assert.deepEqual(deadStages, [], "a genuinely dead session is not a probe timeout");
+  });
+});
+
+test("isSessionLive still returns true for a normal 200 and false for a normal non-200 (the bound changes nothing else)", async () => {
+  await withRedditCredentials(async () => {
+    assert.equal(await isSessionLive(makePageForSessionLiveProbe({ logoutLinkCount: 0, savedJsonStatus: 200 })), true);
+    assert.equal(await isSessionLive(makePageForSessionLiveProbe({ logoutLinkCount: 1, savedJsonStatus: 403 })), false);
+  });
+});
+
+test("isSessionLiveWithRetry's total bound holds even when EVERY probe times out", async () => {
+  await withRedditCredentials(async () => {
+    const { evaluateCalls, page } = makeHangingProbePage();
+    const startedAt = Date.now();
+    const live = await isSessionLiveWithRetry(page, {
+      evaluateTimeoutMs: PROBE_BOUND_MS,
+      pollIntervalMs: 0,
+      retryForMs: 20,
+    });
+    const elapsed = Date.now() - startedAt;
+    assert.equal(live, false);
+    // The wrapper checks its deadline only BETWEEN probes, so its window is
+    // real only because each probe is itself bounded. One hanging probe used
+    // to pin this open forever.
+    assert.ok(evaluateCalls() >= 1, "the wrapper must actually have probed");
+    assert.ok(elapsed < 60_000, `retry wrapper must stay bounded, took ${elapsed}ms`);
+  });
+});
+
+test("ensureRedditSession checkpoints BEFORE the probe, so a stall there is named rather than silent", async () => {
+  await withRedditCredentials(async () => {
+    const { page } = makeHangingProbePage();
+    const checkpoints: string[] = [];
+    // A live cookie plus a hanging probe is exactly run_1787109028586's shape:
+    // the cookie check passes and the run then disappears into the probe.
+    await ensureRedditSession({
+      checkpoint: (label: string): Promise<void> => {
+        checkpoints.push(label);
+        return Promise.resolve();
+      },
+      context: makeContext([{ domain: ".reddit.com", name: "reddit_session", path: "/", value: "live" } as never]),
+      manualHandoffProbeRetry: { pollIntervalMs: 0, retryForMs: 0 },
+      page,
+      sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
+        return Promise.resolve({
+          request_id: req.request_id ?? "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
+      },
+      sessionProbe: { evaluateTimeoutMs: PROBE_BOUND_MS },
+    }).catch((): undefined => undefined);
+
+    assert.equal(
+      checkpoints[0],
+      "reddit-session-probe",
+      `the FIRST checkpoint must name the probe, so the watchdog stops reporting the runtime's own session-establish:begin as the last known phase; got ${JSON.stringify(checkpoints)}`
+    );
+    assert.ok(
+      checkpoints.some((c) => c.startsWith("reddit-session-probe-timeout:")),
+      `a timed-out probe must leave a distinct diagnostic marker; got ${JSON.stringify(checkpoints)}`
+    );
+  });
+});
