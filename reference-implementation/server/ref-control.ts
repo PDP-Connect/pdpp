@@ -1432,6 +1432,30 @@ function buildRecordProjectionFromRetainedRows(input: {
   };
 }
 
+/**
+ * The retained-record count a `RecordProjection` can HONESTLY claim, or `null`
+ * when it can claim none.
+ *
+ * `RecordProjection.totalRecords` sums a SPARSE table: a stream row exists only
+ * once that stream has been written and measured, so a connection the
+ * retained-size projection never measured contributes no rows and sums to `0` —
+ * the same value a connection that genuinely holds nothing produces. Reporting
+ * that `0` as a count states "we hold none of your data" on the strength of no
+ * measurement at all.
+ *
+ * A zero total is therefore only a real measurement when the connection's
+ * retained-size projection is PROVEN clean and computed (`retainedSizeReliable`)
+ * — the same proof `projectStreamRecordSummariesWithDeclaredZeros` already
+ * requires before it will synthesize an exact per-stream zero. A positive total
+ * is a real measurement and always stands on its own.
+ */
+export function liveRetainedRecordsOrNull(live: RecordProjection): number | null {
+  if (live.totalRecords > 0) {
+    return live.totalRecords;
+  }
+  return live.retainedSizeReliable ? 0 : null;
+}
+
 function projectStreamRecordSummaries(byStream: ReadonlyMap<string, StreamProjection>): StreamRecordSummary[] {
   return [...byStream.entries()]
     .map(([stream, projection]) => ({
@@ -5642,7 +5666,14 @@ function buildRenderedVerdictForSummary(input: {
   readonly manifestStreams: readonly VerdictManifestStreamLike[];
   readonly observedAt: string;
   readonly refreshPolicy: unknown;
-  readonly retainedRecords: number;
+  /**
+   * Retained-record count, or `null` when no measurement stands behind it.
+   * NEVER coerce an absent measurement to `0` here: the renderer distinguishes
+   * the two, and only `null` reaches the honest "Retained-record count is
+   * unavailable" / "Refresh to update." wording. A fabricated `0` renders as a
+   * confident "Holding 0 records." over data the owner still holds.
+   */
+  readonly retainedRecords: number | null;
   readonly runtimeOk: boolean;
   readonly schedule: unknown;
 }): RenderedVerdict {
@@ -5939,6 +5970,33 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     collectionReport
   );
   const recoveredCount = detailGaps.recovered;
+  // A non-current `record_snapshot` means the stored counts predate a failure,
+  // so they must never read as an authoritative exact count. Resolved here
+  // because both the rendered verdict below and the `total_records` projection
+  // further down gate on the same fact.
+  const recordSnapshotCurrent = evidence ? evidence.record_snapshot.state === "current" : false;
+  // The retained-size projection (`live.totalRecords`) is a SPARSE, separately
+  // maintained rollup: a connection it has never measured has no
+  // `retained_size_stream`/`retained_size_connection` rows at all, and summing
+  // zero rows yields `0` — indistinguishable, at that layer, from a connection
+  // that genuinely holds nothing. Two paused manual file-import connections
+  // (google-maps, whatsapp) held 299,248 and 120,042 records with no
+  // retained-size rows, so the sparse sum reported `0` and the owner was told
+  // "Holding 0 records." about data they still had.
+  //
+  // The maintained evidence row is the authoritative count for this connection
+  // (`total_records`, counted from the canonical `records` read), and its
+  // `record_snapshot` state says whether that count is still trustworthy. Use
+  // it when it is current; otherwise make NO claim rather than a false zero.
+  // `retainedRecordsForVerdict` is `null` exactly when nothing measured stands
+  // behind a count — the renderer already turns that into honest "unavailable"
+  // wording.
+  const retainedRecordsForVerdict: number | null = evidence
+    ? // biome-ignore lint/style/noNestedTernary: Mirrors the protocol's compact value selection contract used throughout this projection.
+      recordSnapshotCurrent
+      ? evidence.total_records
+      : null
+    : liveRetainedRecordsOrNull(live);
   const renderedVerdict = buildRenderedVerdictForSummary({
     attentionRecords: attention.records,
     collectionReport,
@@ -5949,7 +6007,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
     observedAt: nowIso,
     refreshPolicy,
-    retainedRecords: live.totalRecords,
+    retainedRecords: retainedRecordsForVerdict,
     runtimeOk,
     schedule: localDeviceBacked ? null : schedule,
   });
@@ -6032,7 +6090,6 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // whether a stream was fully seen, which is a claim only an exact-ZERO
   // assertion depends on. Re-testing `known` here would downgrade real counts
   // for want of a denominator they never needed.
-  const recordSnapshotCurrent = evidence ? evidence.record_snapshot.state === "current" : false;
   const manifestStreamsByName = new Map((manifest.streams ?? []).map((stream) => [stream.name, stream]));
   const observedCheckpointStreams = parseObservedCheckpointStreams(evidence?.record_checkpoint);
   const retainsZeroProof = (stream: string): boolean =>
