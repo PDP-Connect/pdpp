@@ -2790,6 +2790,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
+    await ensurePostgresRecordsCanonicalCountIndex(client, log);
     await ensurePostgresConnectorSummarySourceRevisionPrimitive(client);
   } finally {
     try {
@@ -4431,6 +4432,111 @@ async function ensurePostgresLexicalScopedGinIndex(
        USING GIN (connector_instance_id, stream, document)`
   );
   log(`[PDPP] Lexical search migration: scoped GIN index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+}
+
+/**
+ * Production incident, 2026-08-18 (found chasing a5505bb59/this branch's own
+ * discovery-side fix): `repairCandidatePostgres`'s per-connection canonical
+ * read -- `SELECT stream, COUNT(*)::int, MAX(emitted_at) FROM records WHERE
+ * connector_instance_id = $1 AND deleted = FALSE GROUP BY stream`
+ * (connector-summary-evidence-engine.ts, `canonicalResult`) -- was judged
+ * "legitimate, necessary, cheap" earlier in this same investigation without
+ * measuring it against a real multi-million-row connection. It is not cheap:
+ * measured directly against production (READ-ONLY, `EXPLAIN (ANALYZE,
+ * BUFFERS)`) for the fleet's two largest connections (2.42M and 1.30M live
+ * records out of 5.46M total), this query took 3.67-4.07 SECONDS each,
+ * `Parallel Seq Scan`-ing ~584k buffers (~4.5 GB) -- none of `records`'
+ * existing seven indexes cover `(connector_instance_id, deleted)` without a
+ * `stream` predicate this GROUP-BY query cannot supply. Both connections
+ * were repeatedly selected as repair candidates, cancelled by the per-unit
+ * `statement_timeout` floor every pass, and left `dirty` forever: the
+ * existing per-connection catch (`reasonCodeForRepairFailure`/
+ * `logRepairFailure`) correctly avoids marking evidence `failed` on a
+ * cancellation, but "correctly deferred, forever, on the same two rows" is
+ * still an unbounded backlog, not a fix.
+ *
+ * REJECTED alternatives (see connector-summary-evidence-lifecycle-seq-index
+ * test file's sibling investigation and this commit's message for the full
+ * comparison): raising `MIN_STATEMENT_TIMEOUT_MS`, or giving repair a larger
+ * bound than discovery, both re-trap on the NEXT connection to cross
+ * whatever new ceiling is picked -- this query's cost is O(row count) with
+ * no upper bound, so any fixed timeout is a matter of when, not if. A
+ * maintained counter (`retained_size_stream.record_count`, already
+ * incrementally upserted on every write) was close but rejected as the
+ * primary fix: it carries no `last_updated`/`MAX(emitted_at)` column at all
+ * (a schema change of its own), and its row-presence semantics differ from
+ * this sparse `GROUP BY` in a way `buildRepairedRow`'s `known_zero` vs
+ * `unobserved` distinction depends on -- reusing it would change repair's
+ * classification logic, a larger and riskier change than closing an
+ * honestly-measured index gap.
+ *
+ * This index closes the gap the SAME way as this table's other five
+ * `connector_instance_id`-leading indexes above: `(connector_instance_id,
+ * deleted, stream)` matches the query's WHERE + GROUP BY columns exactly,
+ * `INCLUDE (emitted_at)` lets the MAX() aggregate read directly from the
+ * index without a further heap lookup for that column. Verified directly
+ * (production-representative selectivity: one connection at ~4.4% of a
+ * 5.46M-row table, matching the real `cin_2de5ede05c8cc8d45935c414`/total
+ * ratio, seeded and measured in a throwaway scratch database, never
+ * production DDL): the SAME query plans a `Bitmap Heap Scan` off this
+ * index post-VACUUM at 83.7ms, versus the 4.07s unindexed `Parallel Seq
+ * Scan` measured on live production data -- and no change to
+ * `canonicalResult`'s shape or `buildRepairedRow`'s consumption of it.
+ *
+ * SCOPE OF THAT MEASUREMENT, stated honestly: the 83.7ms figure is at ONE
+ * connection holding ~4.4% of the table. This index helps in proportion to
+ * how SELECTIVE the connection is, and a covering index stops being the
+ * cheaper plan once a single connection owns a large fraction of `records`
+ * -- past roughly a third, the planner correctly prefers a sequential scan
+ * and this index will simply be ignored. That is not a defect in the index;
+ * it is the point at which "read this one connection's rows" and "read the
+ * whole table" converge. So this closes the gap for the fleet's normal
+ * shape (many connections, each a small slice) and does NOT by itself
+ * guarantee every future connection stays inside
+ * `MIN_STATEMENT_TIMEOUT_MS`. A connection that grows to dominate the table
+ * needs a bounded/resumable read, not a wider index or a bigger timeout.
+ * Built `CONCURRENTLY` for the same reason as
+ * `idx_pg_lexical_search_scope_document` above: `records` already holds
+ * millions of rows in production, and a plain `CREATE INDEX` would hold a
+ * table-wide write lock for the whole build.
+ */
+const RECORDS_CANONICAL_COUNT_INDEX_LOCK_ID = "8022352479012002";
+
+async function ensurePostgresRecordsCanonicalCountIndex(
+  client: PoolClient,
+  log: StorageLog = NOOP_STORAGE_LOG
+): Promise<void> {
+  await withPostgresAdvisoryLock(client, RECORDS_CANONICAL_COUNT_INDEX_LOCK_ID, async () => {
+    const existing = await client.query(
+      `SELECT ix.indisvalid AS valid
+         FROM pg_class idx
+         JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+         JOIN pg_index ix ON ix.indexrelid = idx.oid
+        WHERE ns.nspname = current_schema()
+          AND idx.relname = 'idx_pg_records_canonical_count'
+        LIMIT 1`
+    );
+    if ((existing.rowCount ?? 0) > 0 && existing.rows[0]?.valid === true) {
+      return;
+    }
+    if ((existing.rowCount ?? 0) > 0) {
+      log("[PDPP] Records migration: dropping invalid canonical-count index before rebuild");
+      await client.query("DROP INDEX CONCURRENTLY IF EXISTS idx_pg_records_canonical_count");
+    }
+
+    // Existing deployments can have millions of records rows. Build
+    // concurrently so startup does not hold a table-wide write lock while
+    // the reference remains otherwise readable — same reasoning as
+    // idx_pg_lexical_search_scope_document above.
+    log("[PDPP] Records migration: building canonical-count index idx_pg_records_canonical_count");
+    const startedAt = Date.now();
+    await client.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_records_canonical_count
+         ON records(connector_instance_id, deleted, stream)
+         INCLUDE (emitted_at)`
+    );
+    log(`[PDPP] Records migration: canonical-count index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  });
 }
 
 function localDeviceConnectorId(connectorId: string): string {
