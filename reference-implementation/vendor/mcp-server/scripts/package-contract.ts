@@ -177,7 +177,7 @@ function bareSpecifierPackageName(specifier: string): string {
   if (specifier.startsWith("@")) {
     return segments.slice(0, 2).join("/");
   }
-  return segments[0];
+  return segments[0] ?? specifier;
 }
 
 function isBareSpecifier(specifier: string): boolean {
@@ -200,7 +200,7 @@ function bareImportSpecifiers(source: string): Set<string> {
   }
   for (const pattern of [DYNAMIC_IMPORT, REQUIRE_CALL]) {
     for (const [, specifier] of source.matchAll(pattern)) {
-      if (isBareSpecifier(specifier) && !specifier.startsWith("node:")) {
+      if (specifier && isBareSpecifier(specifier) && !specifier.startsWith("node:")) {
         specifiers.add(specifier);
       }
     }
