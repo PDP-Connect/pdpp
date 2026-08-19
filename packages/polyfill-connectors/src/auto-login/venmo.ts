@@ -111,7 +111,69 @@ const LOGIN_URL = "https://venmo.com/login";
  * so the guard could never have fixed a fault the URL itself was causing.
  */
 export const ACCOUNT_PROBE_URL = "https://api.venmo.com/v1/account";
+/**
+ * The ONE origin a credentialed page-context fetch may run from. Not a
+ * stylistic preference: `api.venmo.com` answers a `credentials:"include"`
+ * cross-origin fetch with `Access-Control-Allow-Origin: https://venmo.com`,
+ * and the CORS spec forbids the wildcard form entirely once credentials are
+ * involved — the header must echo one exact origin. So `id.venmo.com` and
+ * `account.venmo.com` are real Venmo hosts that still cannot issue this
+ * fetch. This value is the fetch PRECONDITION, not the trust boundary; see
+ * {@link VENMO_FAMILY_HOSTS} for the latter.
+ */
 const VENMO_ORIGIN = "https://venmo.com";
+
+/**
+ * Venmo's real first-party host family — the hosts a correct, non-hostile
+ * sign-in flow legitimately parks the page on before {@link ensureVenmoOrigin}
+ * navigates back to {@link VENMO_ORIGIN}.
+ *
+ * Each entry is load-bearing, verified against live behavior 2026-08-18:
+ *   - `venmo.com`         the canonical app origin and the only CORS-granted one.
+ *   - `www.venmo.com`     the marketing/apex alias venmo.com itself redirects between.
+ *   - `id.venmo.com`      where sign-in actually happens (`id.venmo.com/signin?...`).
+ *   - `account.venmo.com` where a signed-in `venmo.com/account` request lands
+ *                         (302 -> account.venmo.com, per ACCOUNT_PROBE_URL's doc).
+ *   - `api.venmo.com`     the JSON API `collect()` and the probe both read.
+ *
+ * An EXACT host set, deliberately not a suffix test. `"evil-venmo.com"` and
+ * `"notvenmo.com"` both satisfy `endsWith("venmo.com")`, so a suffix match
+ * would hand an attacker-controlled page the same "this is Venmo, carry on"
+ * verdict as the real thing. Membership is `Set.has(hostname)` — the same
+ * shape `streaming-target-registration.ts`'s `ALLOWED_CDP_TARGET_HOSTS` uses
+ * for the same reason.
+ */
+const VENMO_FAMILY_HOSTS: ReadonlySet<string> = new Set([
+  "account.venmo.com",
+  "api.venmo.com",
+  "id.venmo.com",
+  "venmo.com",
+  "www.venmo.com",
+]);
+
+/**
+ * Whether `url` is a page on Venmo's own https host family.
+ *
+ * HTTPS is required, not incidental: `venmo.com`'s own redirect chain
+ * terminates on `http://account.venmo.com:8080/` (see {@link ACCOUNT_PROBE_URL}),
+ * and a plain-http Venmo page is both a downgraded origin and one whose
+ * credentialed fetch the browser's mixed-content rule blocks anyway. Treating
+ * it as "close enough to Venmo" would re-admit exactly the fault that
+ * production `run_1787108832272` recorded.
+ */
+export function isVenmoFamilyUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // `about:blank` and any other unparseable/opaque page land here.
+    return false;
+  }
+  if (parsed.protocol !== "https:") {
+    return false;
+  }
+  return VENMO_FAMILY_HOSTS.has(parsed.hostname);
+}
 const USERNAME_SELECTOR = 'input[name="phoneEmailUsername"], input#username, input[autocomplete="username"]';
 const PASSWORD_SELECTOR = 'input[name="password"], input#password, input[type="password"]';
 const OTP_SELECTOR =
@@ -191,6 +253,22 @@ const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
  * an opaque transport throw instead of a clean liveness signal — verifying
  * the navigation actually landed is the fix that closes that gap for a
  * fetch-based probe specifically.
+ *
+ * This function checks TWO different facts, and conflating them is what broke
+ * production `run_1787151856448`:
+ *
+ *   1. PRECONDITION — the page must END on `https://venmo.com`, because that
+ *      is the single origin `api.venmo.com` grants a credentialed fetch to
+ *      (see {@link VENMO_ORIGIN}). Nothing weaker satisfies CORS.
+ *   2. TRUST — landing on another of Venmo's OWN hosts
+ *      ({@link VENMO_FAMILY_HOSTS}) is normal, expected behavior after a real
+ *      sign-in; landing off that family entirely is not.
+ *
+ * The first version tested only (1) and treated any miss as fatal, so an owner
+ * who genuinely signed in at `id.venmo.com` — the correct flow — had the run
+ * terminalled by the guard meant to protect it. A guard that fires on correct
+ * behavior teaches operators to ignore it, so the family case now re-navigates
+ * instead of throwing, while a landing outside the family still fails loudly.
  */
 export async function ensureVenmoOrigin(page: Page): Promise<void> {
   let currentOrigin: string | null = null;
@@ -203,11 +281,42 @@ export async function ensureVenmoOrigin(page: Page): Promise<void> {
     return;
   }
   await page.goto(HOME_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
+  const landedUrl = page.url();
   let landedOrigin: string | null = null;
   try {
-    landedOrigin = new URL(page.url()).origin;
+    landedOrigin = new URL(landedUrl).origin;
   } catch {
     landedOrigin = null;
+  }
+  // A landing anywhere in Venmo's own host family is CORRECT behavior, not a
+  // fault. Production `run_1787151856448` (connection
+  // cin_94f4a295dda3f17d0f307a33), captured via PDPP_BROWSER_SURFACE_DIAGNOSTICS:
+  //   interaction_start    -> https://id.venmo.com/signin
+  //   interaction_response -> https://account.venmo.com/   (status: success)
+  // The owner completed a real sign-in and this guard terminalled the run on
+  // the SUCCESS page.
+  //
+  // `venmo.com` is still the only origin the credentialed `api.venmo.com`
+  // fetch can run from (CORS forbids a wildcard once credentials are sent), so
+  // a family host is not "good enough" to return on — it is grounds to
+  // navigate once more rather than to fail. Bounded to exactly one extra
+  // attempt: no loop, and a non-family landing gets no retry at all.
+  //
+  // Honest limit: if Venmo ever 302s a signed-in `venmo.com/` request to
+  // `account.venmo.com` DETERMINISTICALLY, this retry cannot converge and the
+  // run fails with the named error. That is the correct failure — it is a real
+  // inability to satisfy the fetch precondition, reported as such, rather than
+  // a silent proceed into an opaque `TypeError: Failed to fetch`. The probe
+  // that follows is the actual evidence of session liveness; this guard only
+  // guarantees that probe runs from an origin where a negative result MEANS
+  // something.
+  if (landedOrigin !== VENMO_ORIGIN && isVenmoFamilyUrl(landedUrl)) {
+    await page.goto(HOME_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
+    try {
+      landedOrigin = new URL(page.url()).origin;
+    } catch {
+      landedOrigin = null;
+    }
   }
   if (landedOrigin !== VENMO_ORIGIN) {
     // Named distinctly from `venmo_probe_transport_error`/`venmo_transport_error`
@@ -218,10 +327,34 @@ export async function ensureVenmoOrigin(page: Page): Promise<void> {
     // VENMO_RETRYABLE_PATTERN already treats as safe to retry pre-submit, and
     // both callers wrap this in their own try/catch that classifies it via
     // that pattern the same way as any other transport error.
+    // `landedOrigin` is an ORIGIN (scheme+host+port), never a full URL — no
+    // path, query, or fragment, so no session token or account identifier can
+    // ride along into `connector_error_json`. A non-Venmo origin is reported
+    // as an opaque class rather than echoed: if a hostile redirect landed us
+    // somewhere, its hostname is attacker-chosen text and this message is
+    // owner-visible.
+    const landedDescription = describeLandedOrigin(landedOrigin, page.url());
     throw new Error(
-      `${VENMO_ORIGIN_NAVIGATION_FAILED}: could not establish the venmo.com origin (landed on ${landedOrigin ?? "unknown"})`
+      `${VENMO_ORIGIN_NAVIGATION_FAILED}: could not establish the venmo.com origin (landed on ${landedDescription})`
     );
   }
+}
+
+/**
+ * How a failed landing is described in the owner-visible error text.
+ *
+ * A Venmo-family origin is named outright — that is the diagnostically useful
+ * case ("we ended on id.venmo.com and could not get back"). Anything else is
+ * reported as an opaque class: an origin we did not expect may be
+ * attacker-chosen text, and this string lands in `connector_error_json`.
+ * Origins carry no path/query/fragment, so nothing token-shaped rides along
+ * either way.
+ */
+function describeLandedOrigin(landedOrigin: string | null, landedUrl: string): string {
+  if (landedOrigin === null) {
+    return "unknown";
+  }
+  return isVenmoFamilyUrl(landedUrl) ? landedOrigin : "a non-venmo.com origin";
 }
 
 const noopCheckpoint: SessionCheckpointFn = () => Promise.resolve();

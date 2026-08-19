@@ -10,7 +10,9 @@ import type { InteractionRequest, InteractionResponse } from "../connector-runti
 import type { CaptureSession } from "../fixture-capture.ts";
 import {
   ACCOUNT_PROBE_URL,
+  ensureVenmoOrigin,
   ensureVenmoSession,
+  isVenmoFamilyUrl,
   probeVenmoAccount,
   VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR,
   VENMO_PROBE_TRANSPORT_ERROR,
@@ -1160,6 +1162,171 @@ test("probeVenmoAccount: a hung POST-submit probe keeps the non-retryable name, 
     assert.equal(VENMO_RETRYABLE_PATTERN.test(err.message), false);
     return true;
   });
+});
+
+// ─── Origin family: ensureVenmoOrigin's acceptance set ───────────────────
+//
+// Production `run_1787151856448` (connection cin_94f4a295dda3f17d0f307a33):
+// the owner completed a REAL manual Venmo sign-in in the secure browser and
+// clicked continue; the run then died with
+//   venmo_session_failed: venmo_probe_transport_error:
+//   venmo_origin_navigation_failed: could not establish the venmo.com origin
+// Venmo signs users in at `id.venmo.com` and bounces a signed-in
+// `venmo.com/` request around its own host family, so the guard's
+// exact-equality acceptance set rejected the CORRECT outcome. A guard that
+// fires on correct behavior is worse than no guard, so the family is now
+// accepted as a place to re-navigate FROM — while the CORS precondition
+// (ending on `https://venmo.com`) and the hostile-landing failure both stay.
+
+/**
+ * A page that reports `finalUrl` after `goto` regardless of the requested URL
+ * — the shape of Venmo's own app redirecting a navigation somewhere else.
+ * Records every navigation so a test can prove the guard re-navigated rather
+ * than silently accepting a non-CORS origin.
+ */
+function makeRedirectingPage(
+  initialUrl: string,
+  finalUrl: string | ((attempt: number) => string)
+): { gotoUrls: string[]; page: Page } {
+  const gotoUrls: string[] = [];
+  let currentUrl = initialUrl;
+  const page: Pick<Page, "goto" | "url"> = {
+    goto(url: string): ReturnType<Page["goto"]> {
+      gotoUrls.push(url);
+      currentUrl = typeof finalUrl === "function" ? finalUrl(gotoUrls.length) : finalUrl;
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return currentUrl;
+    },
+  };
+  return { gotoUrls, page: page as Page };
+}
+
+test("isVenmoFamilyUrl: every legitimate Venmo host is accepted", () => {
+  for (const url of [
+    "https://venmo.com/",
+    "https://www.venmo.com/",
+    "https://id.venmo.com/signin?country.x=US",
+    "https://account.venmo.com/account",
+    "https://api.venmo.com/v1/account",
+  ]) {
+    assert.equal(isVenmoFamilyUrl(url), true, `${url} is a real Venmo host and must be recognized`);
+  }
+});
+
+// The exact attack an `endsWith("venmo.com")` suffix test would admit:
+// `evil-venmo.com` and `notvenmo.com` BOTH satisfy that suffix.
+test("isVenmoFamilyUrl: lookalike hosts a suffix match would admit are rejected", () => {
+  for (const url of [
+    "https://evil-venmo.com/",
+    "https://venmo.com.attacker.net/",
+    "https://notvenmo.com/",
+    "https://venmo.com.evil.co/signin",
+    "https://api.venmo.com.attacker.net/v1/account",
+  ]) {
+    assert.equal(isVenmoFamilyUrl(url), false, `${url} is NOT Venmo and must never be treated as the family`);
+  }
+});
+
+test("isVenmoFamilyUrl: a plain-http Venmo host and an opaque origin are both rejected", () => {
+  // venmo.com's own chain terminates on http://account.venmo.com:8080/ — a
+  // downgraded origin whose credentialed fetch is blocked as mixed content.
+  assert.equal(isVenmoFamilyUrl("http://account.venmo.com:8080/"), false);
+  assert.equal(isVenmoFamilyUrl("http://venmo.com/"), false);
+  assert.equal(isVenmoFamilyUrl("about:blank"), false);
+  assert.equal(isVenmoFamilyUrl("not a url"), false);
+});
+
+test("ensureVenmoOrigin: a post-sign-in page on id.venmo.com re-navigates to venmo.com instead of failing the run", async () => {
+  // The exact production shape: the owner signed in at id.venmo.com, so the
+  // page sits there when the probe runs. Attempt 1 gets bounced back to
+  // id.venmo.com by Venmo's app; attempt 2 lands.
+  const { gotoUrls, page } = makeRedirectingPage("https://id.venmo.com/signin", (attempt) =>
+    attempt === 1 ? "https://id.venmo.com/signin" : "https://venmo.com/"
+  );
+  await assert.doesNotReject(
+    ensureVenmoOrigin(page),
+    "a real sign-in landing on id.venmo.com must not terminal the run"
+  );
+  assert.deepEqual(
+    gotoUrls,
+    ["https://venmo.com/", "https://venmo.com/"],
+    "the guard must re-navigate, bounded to one extra attempt"
+  );
+});
+
+// The CONFIRMED production shape, captured by PDPP_BROWSER_SURFACE_DIAGNOSTICS
+// on run_1787151856448 / connection cin_94f4a295dda3f17d0f307a33:
+//   phase interaction_start    -> surface url https://id.venmo.com/signin
+//   phase interaction_response -> surface url https://account.venmo.com/
+//                                 (response_status: "success")
+// The owner signed in successfully and the page came to rest on
+// account.venmo.com. That host is the post-login landing origin and MUST be
+// accepted as a legitimate place to navigate back from.
+test("ensureVenmoOrigin: the confirmed post-login rest origin https://account.venmo.com/ is accepted, not rejected (run_1787151856448)", async () => {
+  assert.equal(
+    isVenmoFamilyUrl("https://account.venmo.com/"),
+    true,
+    "the observed post-login landing origin must be in the family set"
+  );
+  const { gotoUrls, page } = makeRedirectingPage("https://account.venmo.com/", (attempt) =>
+    attempt === 1 ? "https://account.venmo.com/" : "https://venmo.com/"
+  );
+  await assert.doesNotReject(
+    ensureVenmoOrigin(page),
+    "a successful sign-in resting on account.venmo.com must not terminal the run"
+  );
+  assert.equal(new URL(page.url()).origin, "https://venmo.com", "and must end on the CORS-granted origin");
+  assert.equal(gotoUrls.length, 2);
+});
+
+test("ensureVenmoOrigin: a navigation Venmo redirects to account.venmo.com still ends on the CORS-granted origin", async () => {
+  const { gotoUrls, page } = makeRedirectingPage("about:blank", (attempt) =>
+    attempt === 1 ? "https://account.venmo.com/account" : "https://venmo.com/"
+  );
+  await assert.doesNotReject(ensureVenmoOrigin(page));
+  assert.equal(
+    new URL(page.url()).origin,
+    "https://venmo.com",
+    "the probe's credentialed fetch needs this exact origin"
+  );
+  assert.equal(gotoUrls.length, 2);
+});
+
+// The guard must NOT become a no-op: a family host that never converges to
+// venmo.com still fails, because the credentialed api.venmo.com fetch
+// genuinely cannot run from id.venmo.com.
+test("ensureVenmoOrigin: a page stuck on a Venmo family host that never reaches venmo.com still fails loudly", async () => {
+  const { gotoUrls, page } = makeRedirectingPage("https://id.venmo.com/signin", "https://id.venmo.com/signin");
+  await assert.rejects(ensureVenmoOrigin(page), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /venmo_origin_navigation_failed/);
+    return true;
+  });
+  assert.equal(gotoUrls.length, 2, "bounded: exactly one re-navigation, never an unbounded loop");
+});
+
+test("ensureVenmoOrigin: landing on a genuinely unexpected origin fails with the named error and does not echo the hostile host", async () => {
+  const { gotoUrls, page } = makeRedirectingPage("about:blank", "https://evil-venmo.com/harvest?session=SECRETVALUE");
+  await assert.rejects(ensureVenmoOrigin(page), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /venmo_origin_navigation_failed/, "an unexpected landing must still fail loudly");
+    assert.doesNotMatch(err.message, /evil-venmo/, "an attacker-chosen hostname must not be echoed to the owner");
+    assert.doesNotMatch(err.message, /SECRETVALUE/, "no path/query may ride along into connector_error_json");
+    return true;
+  });
+  assert.equal(gotoUrls.length, 1, "a non-family landing must NOT get a second navigation attempt");
+});
+
+test("ensureVenmoOrigin: an already-on-venmo.com page performs no navigation at all (COUNTERWEIGHT)", async () => {
+  const { gotoUrls, page } = makeRedirectingPage("https://venmo.com/account", "https://venmo.com/");
+  await assert.doesNotReject(ensureVenmoOrigin(page));
+  assert.deepEqual(
+    gotoUrls,
+    [],
+    "already on the CORS-granted origin — re-navigating would discard page state for nothing"
+  );
 });
 
 test("probeVenmoAccount: normal live and dead sessions are unaffected by the bound (COUNTERWEIGHT)", async () => {
