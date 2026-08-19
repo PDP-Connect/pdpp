@@ -5,9 +5,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Locator, Page } from "playwright";
 import { VENMO_RETRYABLE_PATTERN } from "../../connectors/venmo/index.ts";
+import { API_BASE } from "../../connectors/venmo/parsers.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
-import { ensureVenmoSession, probeVenmoAccount } from "./venmo.ts";
+import {
+  ACCOUNT_PROBE_URL,
+  ensureVenmoSession,
+  probeVenmoAccount,
+  VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR,
+  VENMO_PROBE_TRANSPORT_ERROR,
+} from "./venmo.ts";
 
 const STREAMING_ENV_KEYS = [
   "PDPP_RUN_ID",
@@ -852,4 +859,115 @@ test("B4 counterweight: a pre-submit transport fault keeps its retryable name an
       return true;
     });
   });
+});
+
+// ─── Probe endpoint + bounded probe ──────────────────────────────────────
+//
+// Production `run_1787108832272`:
+//   {"code":null,"message":"venmo_session_failed: venmo_probe_transport_error:
+//    Failed to fetch","retryable":true}
+// on a host where `https://venmo.com/` itself returned 200 in 0.14s, so this
+// was never host connectivity.
+//
+// Root cause: the probe fetched `https://venmo.com/account` — Venmo's own web
+// app route, NOT the `api.venmo.com/v1/account` JSON endpoint whose
+// `data.user.id` shape this probe parses and `collect()` actually uses. As of
+// 2026-08-18 that route answers a redirect chain ending on plain HTTP
+// (`302 -> https://account.venmo.com/account`, `307 ->
+// http://account.venmo.com:8080/`), and a browser fetch from the HTTPS
+// venmo.com page is blocked at that http:// hop by the mixed-content rule.
+// A blocked redirect reaches page JS as exactly `TypeError: Failed to fetch`.
+
+test("probeVenmoAccount fetches the api.venmo.com JSON endpoint, not the venmo.com web route that redirects to plain HTTP", async () => {
+  const fetchedUrls: string[] = [];
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    evaluate(_fn: unknown, arg: unknown): ReturnType<Page["evaluate"]> {
+      fetchedUrls.push((arg as { url: string }).url);
+      return Promise.resolve({ kind: "live", ownerId: "1234567890123456789" });
+    },
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/";
+    },
+  };
+
+  await probeVenmoAccount(page as Page);
+
+  assert.deepEqual(fetchedUrls, [ACCOUNT_PROBE_URL]);
+  assert.equal(
+    ACCOUNT_PROBE_URL,
+    `${API_BASE}/account`,
+    "the probe must hit the SAME endpoint collect() does — a probe that tests a different URL than collection uses proves nothing about collection"
+  );
+  assert.ok(
+    !fetchedUrls.some((u) => u === "https://venmo.com/account"),
+    "https://venmo.com/account 302->307s to http://account.venmo.com:8080/, which a browser blocks as mixed content and reports as 'Failed to fetch'"
+  );
+});
+
+test("probeVenmoAccount: a probe whose in-page fetch never resolves throws a bounded transport error instead of hanging", async () => {
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    evaluate(): ReturnType<Page["evaluate"]> {
+      // Never resolves, never rejects — the tarpit/wedged-context shape.
+      return new Promise<never>(() => undefined);
+    },
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/";
+    },
+  };
+
+  const startedAt = Date.now();
+  // Reaching this assertion at all is the point: unbounded, this never settles.
+  await assert.rejects(probeVenmoAccount(page as Page, "pre_submit", { evaluateTimeoutMs: 50 }), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, new RegExp(`^${VENMO_PROBE_TRANSPORT_ERROR}: `));
+    return true;
+  });
+  assert.ok(Date.now() - startedAt < 30_000, "the probe must resolve within its own bound");
+});
+
+test("probeVenmoAccount: a hung POST-submit probe keeps the non-retryable name, so a stall never resubmits a password (B4)", async () => {
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    evaluate(): ReturnType<Page["evaluate"]> {
+      return new Promise<never>(() => undefined);
+    },
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/";
+    },
+  };
+
+  await assert.rejects(probeVenmoAccount(page as Page, "post_submit", { evaluateTimeoutMs: 50 }), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, new RegExp(`^${VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR}: `));
+    // The bound must not launder a post-submit fault into the retryable
+    // pre-submit name — a retry re-enters ensureVenmoSession and resubmits
+    // the saved password against Venmo's own anti-automation gate.
+    assert.equal(VENMO_RETRYABLE_PATTERN.test(err.message), false);
+    return true;
+  });
+});
+
+test("probeVenmoAccount: normal live and dead sessions are unaffected by the bound (COUNTERWEIGHT)", async () => {
+  const makePage = (outcome: unknown): Page =>
+    ({
+      evaluate: (): Promise<unknown> => Promise.resolve(outcome),
+      goto: (): Promise<null> => Promise.resolve(null),
+      url: (): string => "https://venmo.com/",
+    }) as unknown as Page;
+
+  const live = await probeVenmoAccount(makePage({ kind: "live", ownerId: "42" }), "pre_submit", {
+    evaluateTimeoutMs: 50,
+  });
+  assert.deepEqual(live, { live: true, ownerId: "42" });
+
+  const dead = await probeVenmoAccount(makePage({ kind: "dead" }), "pre_submit", { evaluateTimeoutMs: 50 });
+  assert.deepEqual(dead, { live: false, ownerId: null });
 });

@@ -30,13 +30,22 @@
 
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
-import { manualBrowserLogin } from "../browser-handoff.ts";
+import { DEADLINE_TIMEOUT, manualBrowserLogin, withDeadline } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
 import { locatorIsVisible } from "./locator-helpers.ts";
 
 /** Same bound `index.ts`'s `errorDetail` applies after redaction — keeps one link short and legible without truncating mid-token. */
 const PROBE_TRANSPORT_DETAIL_MAX = 200;
+
+/**
+ * Per-probe bounds for the page-context account probe — see
+ * {@link probeVenmoAccount}. The outer (`evaluate`) bound is deliberately
+ * longer than the inner (`fetch`) one so a healthy page reports its own abort
+ * as a clean transport error rather than racing the outer deadline.
+ */
+const PROBE_FETCH_TIMEOUT_MS = 8000;
+const PROBE_EVALUATE_TIMEOUT_MS = 12_000;
 
 /**
  * Fault-class name for a transport failure discovered by the PRE-submit
@@ -75,7 +84,33 @@ export const VENMO_DECLARED_REASON_TOKENS: ReadonlySet<string> = new Set([
 
 const HOME_URL = "https://venmo.com/";
 const LOGIN_URL = "https://venmo.com/login";
-const ACCOUNT_PROBE_URL = "https://venmo.com/account";
+/**
+ * The probe hits the SAME endpoint `collect()` does — `api.venmo.com/v1/account`
+ * (`connectors/venmo/parsers.ts`'s `API_BASE`), the one that actually returns
+ * the `data.user.id` JSON this function parses.
+ *
+ * It used to point at `https://venmo.com/account`, which is not that endpoint
+ * and never returned JSON at all. That URL is Venmo's own web app route, and
+ * as of 2026-08-18 it answers a redirect chain that terminates on plain HTTP:
+ *
+ *   https://venmo.com/account          -> 302 https://account.venmo.com/account
+ *   https://account.venmo.com/account  -> 307 http://account.venmo.com:8080/
+ *
+ * A `fetch` issued from the HTTPS `venmo.com` page follows those redirects and
+ * is then blocked by the browser's mixed-content rule on the final http:// hop.
+ * A blocked redirect surfaces to page JS as exactly `TypeError: Failed to
+ * fetch` — indistinguishable, from inside the callback, from a network
+ * failure. That is production `run_1787108832272`'s
+ * `venmo_probe_transport_error: Failed to fetch`, on a host where
+ * `https://venmo.com/` itself was reachable and returning 200.
+ *
+ * The origin guard below is still required and still correct: `api.venmo.com`
+ * grants a credentialed cross-origin fetch only to `Access-Control-Allow-Origin:
+ * https://venmo.com`. The previous URL made that guard look like the whole
+ * story, because a same-origin `venmo.com` URL needs no CORS grant at all —
+ * so the guard could never have fixed a fault the URL itself was causing.
+ */
+export const ACCOUNT_PROBE_URL = "https://api.venmo.com/v1/account";
 const VENMO_ORIGIN = "https://venmo.com";
 const USERNAME_SELECTOR = 'input[name="phoneEmailUsername"], input#username, input[autocomplete="username"]';
 const PASSWORD_SELECTOR = 'input[name="password"], input#password, input[type="password"]';
@@ -217,7 +252,8 @@ export type VenmoProbePhase = "post_submit" | "pre_submit";
  */
 export async function probeVenmoAccount(
   page: Page,
-  phase: VenmoProbePhase = "pre_submit"
+  phase: VenmoProbePhase = "pre_submit",
+  { evaluateTimeoutMs = PROBE_EVALUATE_TIMEOUT_MS }: { readonly evaluateTimeoutMs?: number } = {}
 ): Promise<VenmoAccountProbeResult> {
   let outcome: { kind: "dead" } | { kind: "live"; ownerId: string } | { kind: "transport_error"; message: string };
   try {
@@ -227,19 +263,42 @@ export async function probeVenmoAccount(
     // path as a fetch failure, not escape unwrapped and skip the B4
     // post-submit non-retry invariant this function exists to enforce.
     await ensureVenmoOrigin(page);
-    outcome = await page.evaluate(async (url) => {
-      try {
-        const res = await fetch(url, { credentials: "include", headers: { accept: "application/json" } });
-        if (res.status < 200 || res.status >= 300) {
-          return { kind: "dead" as const };
-        }
-        const body = (await res.json().catch(() => null)) as { data?: { user?: { id?: string } } } | null;
-        const ownerId = body?.data?.user?.id ?? null;
-        return ownerId ? { kind: "live" as const, ownerId } : { kind: "dead" as const };
-      } catch (err) {
-        return { kind: "transport_error" as const, message: err instanceof Error ? err.message : String(err) };
-      }
-    }, ACCOUNT_PROBE_URL);
+    // Bounded on both layers, for the same reasons as reddit.ts's
+    // `isSessionLive`: the in-page `fetch` has no default timeout (an
+    // accepted-but-unanswered connection hangs the callback forever, and the
+    // `catch` cannot see a hang), and `page.evaluate` has no default timeout
+    // either (a wedged page context never runs the callback at all, so the
+    // inner abort has nothing to abort).
+    const evaluated = await withDeadline(
+      page.evaluate(
+        async ({ fetchTimeoutMs, url }) => {
+          try {
+            const res = await fetch(url, {
+              credentials: "include",
+              headers: { accept: "application/json" },
+              signal: AbortSignal.timeout(fetchTimeoutMs),
+            });
+            if (res.status < 200 || res.status >= 300) {
+              return { kind: "dead" as const };
+            }
+            const body = (await res.json().catch(() => null)) as { data?: { user?: { id?: string } } } | null;
+            const ownerId = body?.data?.user?.id ?? null;
+            return ownerId ? { kind: "live" as const, ownerId } : { kind: "dead" as const };
+          } catch (err) {
+            return { kind: "transport_error" as const, message: err instanceof Error ? err.message : String(err) };
+          }
+        },
+        { fetchTimeoutMs: PROBE_FETCH_TIMEOUT_MS, url: ACCOUNT_PROBE_URL }
+      ),
+      evaluateTimeoutMs
+    );
+    // A page context that never answers is a transport fault, not a dead
+    // session — and it stays phase-aware, so a post-submit hang still gets
+    // the non-retryable name (B4) rather than silently retrying a password.
+    outcome =
+      evaluated === DEADLINE_TIMEOUT
+        ? { kind: "transport_error", message: `probe did not return within ${evaluateTimeoutMs}ms` }
+        : evaluated;
   } catch (err) {
     // Either `ensureVenmoOrigin` threw (navigation never landed on venmo.com)
     // or `page.evaluate` itself rejected — the execution context was
