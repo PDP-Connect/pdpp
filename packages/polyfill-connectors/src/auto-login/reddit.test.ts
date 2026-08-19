@@ -7,7 +7,7 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { REDDIT_RETRYABLE_PATTERN, redditEnsureSession } from "../../connectors/reddit/index.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import { establishSession, type SessionEstablishArgs } from "../session-establish.ts";
-import { ensureRedditSession, isSessionLive, isSessionLiveWithRetry } from "./reddit.ts";
+import { ensureRedditSession, isSessionLive, isSessionLiveWithRetry, REDDIT_JSON_ORIGIN } from "./reddit.ts";
 
 type BrowserCookie = Awaited<ReturnType<BrowserContext["cookies"]>>[number];
 const STREAMING_ENV_KEYS = [
@@ -16,6 +16,30 @@ const STREAMING_ENV_KEYS = [
   "PDPP_STREAMING_REGISTRATION_TOKEN",
   "PDPP_LOCAL_DEVICE_TOKEN",
 ] as const;
+
+/**
+ * Tracks the fake page's current URL across `goto` calls.
+ *
+ * The probe's origin guard reads `page.url()` and navigates when it is wrong,
+ * so a fake whose `goto` does not move its URL cannot model that guard at all
+ * — it would report the start URL forever and make every navigation look like
+ * a failure. Fakes below start on `www.reddit.com`, which is where a real
+ * signed-in session actually sits (production `run_1787164349370`) and is the
+ * WRONG origin for the JSON fetch; a working `goto` is what gets them to the
+ * right one, exactly as in production.
+ */
+function makeNavigation(startUrl = "https://www.reddit.com/") {
+  const state = { url: startUrl };
+  return {
+    goto(url: string): Promise<null> {
+      state.url = url;
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return state.url;
+    },
+  };
+}
 
 function makeContext(cookies: BrowserCookie[] = []): BrowserContext {
   const fake: Pick<BrowserContext, "cookies"> = {
@@ -36,9 +60,13 @@ function makePageWithoutLoginInputs(): Page {
     },
     waitFor: (): Promise<void> => Promise.reject(new Error("Timeout waiting for locator")),
   };
-  const fake: Pick<Page, "goto" | "locator"> = {
-    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-      return Promise.resolve(null);
+  const nav = makeNavigation();
+  const fake: Pick<Page, "goto" | "locator" | "url"> = {
+    goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return nav.goto(url);
+    },
+    url(): string {
+      return nav.url();
     },
     locator(_selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
       return emptyLocator as Locator;
@@ -116,12 +144,16 @@ function makePageWithHiddenOtp(): Page {
   const hiddenOtp = makeLocator({ visible: false });
   const empty = makeLocator({ count: 0, visible: false });
   const submit = makeLocator();
-  const fake: Pick<Page, "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+  const nav = makeNavigation();
+  const fake: Pick<Page, "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"> = {
     getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
       return submit;
     },
-    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-      return Promise.resolve(null);
+    goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return nav.goto(url);
+    },
+    url(): string {
+      return nav.url();
     },
     locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
       if (selector.includes("username")) {
@@ -163,15 +195,19 @@ function makePageWithVisibleOtpAndLiveSessionAfterBrowserCompletion({
   const submit = makeLocator();
   const logout = makeLocator();
   const empty = makeLocator({ count: 0, visible: false });
-  const fake: Pick<Page, "evaluate" | "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+  const nav = makeNavigation();
+  const fake: Pick<Page, "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"> = {
     evaluate(): ReturnType<Page["evaluate"]> {
       return Promise.resolve({ status: savedJsonStatus });
     },
     getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
       return submit;
     },
-    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-      return Promise.resolve(null);
+    goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return nav.goto(url);
+    },
+    url(): string {
+      return nav.url();
     },
     locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
       if (selector.includes("/logout") || selector.includes("logout")) {
@@ -204,12 +240,16 @@ function makePageWithMissingSubmit(): Page {
   const password = makeLocator();
   const hiddenSubmit = makeLocator({ visible: false });
   const empty = makeLocator({ count: 0, visible: false });
-  const fake: Pick<Page, "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+  const nav = makeNavigation();
+  const fake: Pick<Page, "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"> = {
     getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
       return hiddenSubmit;
     },
-    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-      return Promise.resolve(null);
+    goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return nav.goto(url);
+    },
+    url(): string {
+      return nav.url();
     },
     locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
       if (selector.includes("username")) {
@@ -317,12 +357,26 @@ function makePageForSessionLiveProbe({
 }): Page {
   const logout = makeLocator({ count: logoutLinkCount });
   const empty = makeLocator({ count: 0, visible: false });
-  const fake: Pick<Page, "evaluate" | "goto" | "locator"> = {
+  const nav = makeNavigation();
+  const fake: Pick<Page, "evaluate" | "goto" | "locator" | "url"> = {
+    // Models the browser's actual CORS behavior, which is the whole defect:
+    // Reddit sends no `Access-Control-Allow-Origin`, so a credentialed fetch
+    // issued from any origin OTHER than the target is blocked before it
+    // reaches the network and reaches page JS as `TypeError: Failed to fetch`.
+    // `isSessionLive`'s callback catches that and reports `status: 0`. A fake
+    // that returned `savedJsonStatus` regardless of the page's origin is
+    // exactly why this bug passed every test while breaking production.
     evaluate(): ReturnType<Page["evaluate"]> {
+      if (new URL(nav.url()).origin !== REDDIT_JSON_ORIGIN) {
+        return Promise.resolve({ status: 0 });
+      }
       return Promise.resolve({ status: savedJsonStatus });
     },
-    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-      return Promise.resolve(null);
+    goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return nav.goto(url);
+    },
+    url(): string {
+      return nav.url();
     },
     locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
       if (selector.includes("/logout") || selector.includes("logout")) {
@@ -332,6 +386,85 @@ function makePageForSessionLiveProbe({
     },
   };
   return fake as Page;
+}
+
+/**
+ * A page whose navigation never lands on the JSON origin — a redirect loop, a
+ * captcha interstitial, or a `goto` that fails outright. The probe cannot
+ * issue its fetch at all, which is NOT the same fact as "the session is dead".
+ */
+function makePageStuckOffJsonOrigin(): Page {
+  const empty = makeLocator({ count: 0, visible: false });
+  const fake: Pick<Page, "evaluate" | "goto" | "locator" | "url"> = {
+    evaluate(): ReturnType<Page["evaluate"]> {
+      // Must never be reached: the guard returns before probing.
+      return Promise.reject(new Error("probe issued from the wrong origin"));
+    },
+    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return Promise.resolve(null); // resolves, but the URL never changes
+    },
+    locator(_selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+      return empty;
+    },
+    url(): string {
+      return "https://www.reddit.com/login/";
+    },
+  };
+  return fake as Page;
+}
+
+/**
+ * Credential-less DOM-fallback fixture whose logout link exists ONLY on the
+ * JSON origin — which is the truth: `old.reddit.com` renders that link,
+ * `www.reddit.com`'s modern markup does not. A fixture that returns the same
+ * count on any origin cannot detect a missing origin guard at all, because the
+ * DOM answer would be identical either way.
+ */
+function makePageWithLogoutLinkOnlyOnJsonOrigin(): Page {
+  const empty = makeLocator({ count: 0, visible: false });
+  const nav = makeNavigation();
+  const fake: Pick<Page, "evaluate" | "goto" | "locator" | "url"> = {
+    evaluate(): ReturnType<Page["evaluate"]> {
+      return Promise.resolve({ status: 0 });
+    },
+    goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return nav.goto(url);
+    },
+    locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+      if (selector.includes("logout")) {
+        const onJsonOrigin = new URL(nav.url()).origin === REDDIT_JSON_ORIGIN;
+        return makeLocator({ count: onJsonOrigin ? 1 : 0 });
+      }
+      return empty;
+    },
+    url(): string {
+      return nav.url();
+    },
+  };
+  return fake as Page;
+}
+
+/** A page already sitting on the JSON origin, counting navigations so a
+ *  redundant `goto` on every probe is visible rather than silently wasteful. */
+function makePageAlreadyOnJsonOrigin(): { gotoCalls: () => number; page: Page } {
+  const empty = makeLocator({ count: 0, visible: false });
+  let gotoCalls = 0;
+  const fake: Pick<Page, "evaluate" | "goto" | "locator" | "url"> = {
+    evaluate(): ReturnType<Page["evaluate"]> {
+      return Promise.resolve({ status: 200 });
+    },
+    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      gotoCalls += 1;
+      return Promise.resolve(null);
+    },
+    locator(_selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+      return empty;
+    },
+    url(): string {
+      return `${REDDIT_JSON_ORIGIN}/`;
+    },
+  };
+  return { gotoCalls: () => gotoCalls, page: fake as Page };
 }
 
 // ─── isSessionLive: the owner-only JSON probe is the durable signal ───────
@@ -355,6 +488,78 @@ test("isSessionLive FAILS on a genuinely logged-out session even if a stale logo
   await withRedditCredentials(async () => {
     const page = makePageForSessionLiveProbe({ savedJsonStatus: 403, logoutLinkCount: 1 });
     assert.equal(await isSessionLive(page), false);
+  });
+});
+
+// ─── The origin guard: production run_1787164349370 ──────────────────────
+//
+// A LIVE session read as dead for eleven weeks because the probe fetched
+// `old.reddit.com` from a page sitting on `www.reddit.com`. Reddit grants no
+// cross-origin access to that JSON, so the browser blocked the request and the
+// callback's `catch` reported it as `status: 0` — indistinguishable, at the
+// verdict level, from a logged-out 403. Read from the live page, the two hosts
+// disagreed completely: www => 200, old => TypeError: Failed to fetch.
+
+test("isSessionLive establishes the JSON origin before probing, so a LIVE session on www.reddit.com reads live (the production defect)", async () => {
+  await withRedditCredentials(async () => {
+    // Starts on www.reddit.com — a real signed-in session's page — where the
+    // cross-origin fetch is blocked. Only the origin guard makes this pass.
+    const page = makePageForSessionLiveProbe({ savedJsonStatus: 200, logoutLinkCount: 0 });
+    assert.equal(page.url(), "https://www.reddit.com/", "fixture must start on the wrong origin to be meaningful");
+    assert.equal(await isSessionLive(page), true);
+    assert.equal(new URL(page.url()).origin, REDDIT_JSON_ORIGIN, "the probe must have established the JSON origin");
+  });
+});
+
+test("isSessionLive does NOT weaken: a logged-out session still reads not-live once the origin is correct (COUNTERWEIGHT)", async () => {
+  await withRedditCredentials(async () => {
+    // Same navigation, genuine 403. The guard must not launder a dead session
+    // into a live one by making the fetch merely reachable.
+    const page = makePageForSessionLiveProbe({ savedJsonStatus: 403, logoutLinkCount: 1 });
+    assert.equal(await isSessionLive(page), false);
+    assert.equal(new URL(page.url()).origin, REDDIT_JSON_ORIGIN);
+  });
+});
+
+test("isSessionLive reports an unreachable origin distinctly from a logged-out session (a CORS/navigation fault must not collapse into 'not live')", async () => {
+  await withRedditCredentials(async () => {
+    const stages: string[] = [];
+    // Navigation never lands on the JSON origin — the probe cannot even ask.
+    const page = makePageStuckOffJsonOrigin();
+    assert.equal(await isSessionLive(page, { onProbeTimeout: (stage) => stages.push(stage) }), false);
+    // Same verdict as logged-out, but it must be NAMEABLE in diagnostics —
+    // "we could not ask" is a different operator action than "you are logged
+    // out", and collapsing them is what hid this bug for eleven weeks.
+    assert.deepEqual(stages, ["origin"], "an unestablished origin must be nameable in diagnostics");
+  });
+});
+
+test("isSessionLive: a logged-out session reports NO origin fault (COUNTERWEIGHT — the two diagnoses must stay distinct)", async () => {
+  await withRedditCredentials(async () => {
+    const stages: string[] = [];
+    const page = makePageForSessionLiveProbe({ savedJsonStatus: 403, logoutLinkCount: 0 });
+    assert.equal(await isSessionLive(page, { onProbeTimeout: (stage) => stages.push(stage) }), false);
+    assert.deepEqual(stages, [], "a genuine logout is not an origin fault");
+  });
+});
+
+test("isSessionLive's credential-less DOM fallback establishes the JSON origin too — the logout link only exists there", async () => {
+  await withoutRedditCredentials(async () => {
+    // Starts on www.reddit.com, whose modern markup has no logout link. Without
+    // the origin guard the fallback reads the wrong page's DOM, counts 0, and
+    // reports a live session as dead — the same defect as the JSON probe, on
+    // the path that runs when no credentials are configured.
+    const page = makePageWithLogoutLinkOnlyOnJsonOrigin();
+    assert.equal(await isSessionLive(page), true);
+    assert.equal(new URL(page.url()).origin, REDDIT_JSON_ORIGIN);
+  });
+});
+
+test("isSessionLive skips redundant navigation when the page is ALREADY on the JSON origin", async () => {
+  await withRedditCredentials(async () => {
+    const { page, gotoCalls } = makePageAlreadyOnJsonOrigin();
+    assert.equal(await isSessionLive(page), true);
+    assert.equal(gotoCalls(), 0, "an already-correct origin must not be re-navigated on every probe");
   });
 });
 
@@ -444,19 +649,27 @@ function makePageBlockedThenLiveAfterProbes({ liveAfterProbeCall }: { liveAfterP
   probeCallCount: () => number;
 } {
   const empty = makeLocator({ count: 0, visible: false });
+  const nav = makeNavigation();
   let probeCalls = 0;
-  const fake: Pick<Page, "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+  const fake: Pick<Page, "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"> = {
     getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
       return empty;
     },
     goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-      if (url.includes("old.reddit.com")) {
-        probeCalls += 1;
-      }
-      return Promise.resolve(null);
+      return nav.goto(url);
     },
+    url(): string {
+      return nav.url();
+    },
+    // A PROBE is a logout-link read, not a navigation. These used to be the
+    // same event because the DOM fallback navigated unconditionally on every
+    // call; the origin guard now navigates only when the page is on the wrong
+    // origin, so after the first probe lands there are no further `goto`s and
+    // a navigation-counting fake would freeze at 1 and never go live. Counting
+    // the read keeps this fixture measuring what it claims to measure.
     locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
       if (selector.includes("logout")) {
+        probeCalls += 1;
         return makeLocator({ count: probeCalls >= liveAfterProbeCall ? 1 : 0 });
       }
       return empty;
@@ -544,12 +757,16 @@ test("ensureRedditSession waits past a slow client-side render instead of treati
     const password = makeLocator();
     const submit = makeLocator();
     const empty = makeLocator({ count: 0, visible: false });
-    const page: Pick<Page, "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+    const nav = makeNavigation();
+    const page: Pick<Page, "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"> = {
       getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
         return submit;
       },
-      goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-        return Promise.resolve(null);
+      goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+        return nav.goto(url);
+      },
+      url(): string {
+        return nav.url();
       },
       locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
         if (selector.includes("username")) {
@@ -661,12 +878,16 @@ test("ensureRedditSession detects an OTP field that renders 1.2s after submit in
     const submit = makeLocator();
     const empty = makeLocator({ count: 0, visible: false });
     const { locator: delayedOtp } = makeDelayedAttachLocator({ attachesAfterMs: 1200 });
-    const page: Pick<Page, "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+    const nav = makeNavigation();
+    const page: Pick<Page, "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"> = {
       getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
         return submit;
       },
-      goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-        return Promise.resolve(null);
+      goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+        return nav.goto(url);
+      },
+      url(): string {
+        return nav.url();
       },
       locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
         if (selector.includes("username")) {
@@ -775,9 +996,13 @@ test("ensureRedditSession fires onCredentialSubmit exactly once via the CSS-fall
     const empty = makeLocator({ count: 0, visible: false });
     // No getByRole on this page shape, so clickRedditLoginSubmit must take
     // its CSS-selector fallback branch — the second marker call site.
-    const page: Pick<Page, "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
-      goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-        return Promise.resolve(null);
+    const nav = makeNavigation();
+    const page: Pick<Page, "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"> = {
+      goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+        return nav.goto(url);
+      },
+      url(): string {
+        return nav.url();
       },
       locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
         if (selector.includes("username")) {
@@ -977,14 +1202,18 @@ const PROBE_BOUND_MS = 50;
 function makeHangingProbePage(): { evaluateCalls: () => number; page: Page } {
   let evaluateCalls = 0;
   const empty = makeLocator({ count: 0, visible: false });
-  const fake: Pick<Page, "evaluate" | "goto" | "locator" | "waitForTimeout"> = {
+  const nav = makeNavigation();
+  const fake: Pick<Page, "evaluate" | "goto" | "locator" | "url" | "waitForTimeout"> = {
     evaluate(): ReturnType<Page["evaluate"]> {
       evaluateCalls += 1;
       // Never resolves, never rejects. A `catch` cannot see this.
       return new Promise<never>(() => undefined);
     },
-    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
-      return Promise.resolve(null);
+    goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return nav.goto(url);
+    },
+    url(): string {
+      return nav.url();
     },
     locator(_selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
       return empty;

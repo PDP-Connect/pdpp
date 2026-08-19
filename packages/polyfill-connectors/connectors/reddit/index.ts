@@ -50,7 +50,12 @@
 
 import { isMainModule } from "@pdpp/connector-protocol";
 import type { Page } from "playwright";
-import { ensureRedditSession, isSessionLive } from "../../src/auto-login/reddit.ts";
+import {
+  ensureRedditJsonOrigin,
+  ensureRedditSession,
+  isSessionLive,
+  REDDIT_JSON_ORIGIN,
+} from "../../src/auto-login/reddit.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
@@ -152,11 +157,30 @@ interface ProgressExtra {
 
 // ─── Fetch through the page (preserves session cookie + anti-bot) ───────
 
+/**
+ * Every listing fetch is issued from the page, and Reddit grants NO
+ * cross-origin access to its listing JSON — so the page must already be on
+ * {@link REDDIT_JSON_ORIGIN} or the browser blocks the request before it
+ * reaches the network, surfacing as `TypeError: Failed to fetch` (mapped to
+ * `status: 0` below, then to `reddit_http_0`).
+ *
+ * `ensureSession` normally leaves the page on the right origin, but collect
+ * runs after an arbitrary amount of navigation and the reauth path can move it
+ * again, so this does not assume — it re-establishes the origin on the first
+ * fetch and then no-ops (a URL check, no navigation) for every page after it.
+ * This is the same defect that broke the liveness probe in
+ * `run_1787164349370`; see `src/auto-login/reddit.ts`'s REDDIT_JSON_ORIGIN.
+ */
 async function redditFetch(page: Page, path: string): Promise<RedditFetchResult> {
+  if (!(await ensureRedditJsonOrigin(page))) {
+    // Reported as a transport-shaped failure so the existing retry
+    // classification handles it, rather than a bare throw from collect.
+    return { status: 0, json: { error: "reddit_json_origin_unavailable" } as never };
+  }
   return (await page.evaluate(
-    async ({ path: evalPath, userAgent }) => {
+    async ({ origin, path: evalPath, userAgent }) => {
       try {
-        const res = await fetch(`https://old.reddit.com${evalPath}`, {
+        const res = await fetch(`${origin}${evalPath}`, {
           credentials: "include",
           headers: {
             accept: "application/json",
@@ -175,7 +199,7 @@ async function redditFetch(page: Page, path: string): Promise<RedditFetchResult>
         return { status: 0, json: { error: String(err) } };
       }
     },
-    { path, userAgent: USER_AGENT }
+    { origin: REDDIT_JSON_ORIGIN, path, userAgent: USER_AGENT }
   )) as RedditFetchResult;
 }
 
@@ -479,8 +503,12 @@ export function buildStreamTable(userPath: string, emittedAt: string): RedditStr
 }
 
 /** Build a RedditListingFetch bound to a Playwright page. Extracted
- *  so tests can substitute a non-browser fetch. */
-function makePageFetch(page: Page): RedditListingFetch {
+ *  so tests can substitute a non-browser fetch.
+ *
+ *  Exported so `redditFetch`'s origin guard is directly testable: reaching it
+ *  only through `collectAllStreams` means every listing/parsing fixture has to
+ *  model navigation, which would bury the one behavior under test. */
+export function makePageFetch(page: Page): RedditListingFetch {
   return (path) => redditFetch(page, path);
 }
 

@@ -160,6 +160,80 @@ const SESSION_PROBE_FETCH_TIMEOUT_MS = 8000;
 const SESSION_PROBE_EVALUATE_TIMEOUT_MS = 12_000;
 
 /**
+ * The JSON host every in-page `fetch` must be issued to, and — because Reddit
+ * grants no cross-origin access to it — the origin the page must already be on
+ * when it issues that fetch.
+ *
+ * `old.reddit.com` and `www.reddit.com` serve the SAME listing JSON, but they
+ * are different origins, and neither answers a credentialed cross-origin
+ * request: as of 2026-08-19 a request to either host carrying
+ * `Origin: https://www.reddit.com` comes back with NO
+ * `Access-Control-Allow-Origin` header at all. CORS forbids a wildcard once
+ * credentials are sent, so there is no header Reddit could send that would
+ * make the cross-origin form work either.
+ *
+ * That is production `run_1787164349370`. The owner was genuinely signed in as
+ * confirmed over CDP, the page sat on `https://www.reddit.com/`, and the probe
+ * fetched `https://old.reddit.com/user/{u}/saved.json`. Read from that page,
+ * the two calls disagreed completely:
+ *
+ *   fetch('https://www.reddit.com/user/{u}/saved.json') -> 200
+ *   fetch('https://old.reddit.com/user/{u}/saved.json') -> TypeError: Failed to fetch
+ *
+ * The browser blocks the second before it reaches the network, and a blocked
+ * fetch surfaces to page JS as exactly `TypeError: Failed to fetch` — which
+ * the probe's `catch` mapped to `status: 0`, i.e. "not live". So a working
+ * session read as dead, every run threw `reddit_login_unexpected_ui`, and five
+ * of six streams collected nothing from 2026-06-02 onward while Reddit pruned
+ * the listings past ~1000 items underneath.
+ *
+ * Switching the probe to `www.reddit.com` would have fixed THAT page, and only
+ * by accident: it would break again the moment the page legitimately sits on
+ * `old.reddit.com` (which `isSessionLive`'s own credential-less fallback
+ * navigates to). The origin is the invariant, not the hostname — so the fix
+ * establishes the origin rather than guessing which one the page is on. The
+ * collect path in `connectors/reddit/index.ts` depends on this same origin
+ * holding for its own `redditFetch`.
+ */
+export const REDDIT_JSON_ORIGIN = "https://old.reddit.com";
+
+/**
+ * Put the page on {@link REDDIT_JSON_ORIGIN} so a credentialed same-origin
+ * `fetch` is possible at all, and report whether that succeeded.
+ *
+ * Returns `false` rather than throwing: a probe that cannot establish its
+ * origin has not proven the session is dead, only that it could not ask. Every
+ * caller already treats `false` as "could not determine live" and proceeds to
+ * login, which is the correct action either way.
+ *
+ * Bounded like every other step in this probe — `goto` carries an explicit
+ * timeout, so this cannot reintroduce an unbounded await.
+ */
+export async function ensureRedditJsonOrigin(page: Page): Promise<boolean> {
+  try {
+    if (new URL(page.url()).origin === REDDIT_JSON_ORIGIN) {
+      return true;
+    }
+  } catch {
+    // An unnavigated page (`about:blank`) has no parseable origin — fall
+    // through and navigate rather than treating it as a fault.
+  }
+  try {
+    await page.goto(`${REDDIT_JSON_ORIGIN}/`, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+  } catch {
+    return false;
+  }
+  try {
+    return new URL(page.url()).origin === REDDIT_JSON_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Options for a single liveness probe.
  *
  * `evaluateTimeoutMs` is a test seam of the same kind as
@@ -201,12 +275,22 @@ export async function isSessionLive(page: Page, options: SessionProbeOptions = {
   const { evaluateTimeoutMs = SESSION_PROBE_EVALUATE_TIMEOUT_MS, onProbeTimeout } = options;
   const username = process.env.REDDIT_USERNAME;
   if (username) {
+    // The fetch below is same-origin ONLY because of this: Reddit grants no
+    // cross-origin access to its JSON, so a probe issued from the wrong origin
+    // is blocked by the browser and reads as a dead session no matter how live
+    // the session is. See REDDIT_JSON_ORIGIN.
+    if (!(await ensureRedditJsonOrigin(page))) {
+      // Could not even ask — nameable in diagnostics as its own stage rather
+      // than collapsing into the same silent `false` as a logged-out session.
+      onProbeTimeout?.("origin");
+      return false;
+    }
     try {
       const result = await withDeadline(
         page.evaluate(
-          async ({ path, fetchTimeoutMs }) => {
+          async ({ origin, path, fetchTimeoutMs }) => {
             try {
-              const res = await fetch(`https://old.reddit.com${path}`, {
+              const res = await fetch(`${origin}${path}`, {
                 credentials: "include",
                 headers: { accept: "application/json" },
                 signal: AbortSignal.timeout(fetchTimeoutMs),
@@ -220,6 +304,7 @@ export async function isSessionLive(page: Page, options: SessionProbeOptions = {
           },
           {
             fetchTimeoutMs: SESSION_PROBE_FETCH_TIMEOUT_MS,
+            origin: REDDIT_JSON_ORIGIN,
             path: `/user/${encodeURIComponent(username)}/saved.json`,
           }
         ) as Promise<{ status: number }>,
@@ -238,10 +323,13 @@ export async function isSessionLive(page: Page, options: SessionProbeOptions = {
   }
 
   try {
-    await page.goto("https://old.reddit.com/", {
-      waitUntil: "domcontentloaded",
-      timeout: 30_000,
-    });
+    // Same origin requirement as the JSON probe above, for a different reason:
+    // the logout link only exists in old.reddit.com's markup. Reuses the shared
+    // guard so both paths agree on what "on the right origin" means.
+    if (!(await ensureRedditJsonOrigin(page))) {
+      onProbeTimeout?.("origin");
+      return false;
+    }
     // `count()` is a CDP round-trip with no default timeout of its own, so a
     // wedged renderer hangs it the same way the JSON probe above hung. The
     // `goto` timeout does not cover it — that bound is already spent by the

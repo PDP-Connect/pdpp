@@ -26,6 +26,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Page } from "playwright";
+import { REDDIT_JSON_ORIGIN } from "../../src/auto-login/reddit.ts";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { createRepairBudget } from "../../src/repair-budget.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
@@ -33,6 +34,7 @@ import {
   buildStreamTable,
   collectAllStreams,
   collectStream,
+  makePageFetch,
   makeReauth,
   normalizeRedditTerminalError,
   paginate,
@@ -855,6 +857,9 @@ function makeReauthCapablePage(fetch: RedditListingFetch): { probeCalls: number;
     locator: () => ({
       count: async () => 1, // credential-less fallback path only; unused once REDDIT_USERNAME is set
     }),
+    // Already on the JSON origin, as a real run is by collect time — the
+    // origin guard in `redditFetch`/`isSessionLive` then no-ops.
+    url: () => `${REDDIT_JSON_ORIGIN}/`,
   } as any;
   return {
     get probeCalls() {
@@ -1269,13 +1274,24 @@ test("collectStream: schema-invalid item not counted in covered, still emitted f
 
 // ─── Invariant 11: real collectAllStreams emits DETAIL_COVERAGE ───────────
 
-/** Create a mock page that redirects evaluate calls to a scripted fetch */
+/**
+ * Create a mock page that redirects evaluate calls to a scripted fetch.
+ *
+ * `url()` reports the JSON origin because that is where a real run's page
+ * already sits by the time collect runs: `redditFetch`'s origin guard is a
+ * URL check that no-ops in that state. Modeling it keeps these listing/parsing
+ * oracles about listings and parsing. The guard's own behavior — including a
+ * page on the WRONG origin — is proven separately below and in
+ * `src/auto-login/reddit.test.ts`, not accidentally by every test here.
+ */
 function createMockPageForFetch(fetch: RedditListingFetch) {
   return {
     evaluate: (_fn: (args: unknown) => Promise<unknown>, args: unknown): Promise<unknown> => {
       const { path } = args as { path: string };
       return fetch(path);
     },
+    goto: (): Promise<null> => Promise.resolve(null),
+    url: (): string => `${REDDIT_JSON_ORIGIN}/`,
   };
 }
 
@@ -1402,4 +1418,54 @@ test("collectAllStreams: one valid + one invalid child emits DETAIL_COVERAGE wit
   assert.equal(coverageMsg.covered, 1, "only schema-valid item counts as covered");
   assert.equal(harness.emitted.length, 1, "runtime emits only valid record");
   assert.equal(harness.skipped.length, 1, "runtime SKIP_RESULT logs invalid record");
+});
+
+
+// ─── Invariant 12: the collect path's in-page fetch is same-origin ────────
+//
+// `redditFetch` has the SAME cross-origin defect the liveness probe had
+// (production `run_1787164349370`): Reddit sends no
+// `Access-Control-Allow-Origin`, so a credentialed fetch issued from a page on
+// the wrong origin is blocked by the browser before it reaches the network and
+// surfaces as `TypeError: Failed to fetch` -> `status: 0` -> `reddit_http_0`.
+// A live session would fail every listing with an opaque HTTP error.
+
+/** A page that models the browser's CORS rule: the in-page fetch only succeeds
+ *  when the page itself is already on the JSON origin. */
+function makeCorsAwarePage(startUrl: string): { gotoCalls: () => number; page: Page } {
+  let url = startUrl;
+  let gotoCalls = 0;
+  const page = {
+    evaluate: (_fn: unknown, args: unknown): Promise<unknown> => {
+      const { origin } = args as { origin: string };
+      if (new URL(url).origin !== origin) {
+        // Blocked before the network — exactly what the real callback catches.
+        return Promise.resolve({ status: 0, json: { error: "TypeError: Failed to fetch" } });
+      }
+      return Promise.resolve({ status: 200, json: listing([], null) });
+    },
+    goto: (target: string): Promise<null> => {
+      gotoCalls += 1;
+      url = target;
+      return Promise.resolve(null);
+    },
+    url: (): string => url,
+  } as unknown as Page;
+  return { gotoCalls: () => gotoCalls, page };
+}
+
+test("redditFetch establishes the JSON origin, so a listing fetched from a www.reddit.com page succeeds instead of failing CORS", async () => {
+  const { gotoCalls, page } = makeCorsAwarePage("https://www.reddit.com/");
+  const result = await makePageFetch(page)(`${USER_PATH}/saved.json`);
+
+  assert.equal(result.status, 200, "the collect fetch must not be blocked by the page's origin");
+  assert.equal(gotoCalls(), 1, "the wrong origin must be corrected exactly once");
+});
+
+test("redditFetch does not re-navigate when the page is already on the JSON origin (COUNTERWEIGHT)", async () => {
+  const { gotoCalls, page } = makeCorsAwarePage(`${REDDIT_JSON_ORIGIN}/`);
+  const result = await makePageFetch(page)(`${USER_PATH}/saved.json`);
+
+  assert.equal(result.status, 200);
+  assert.equal(gotoCalls(), 0, "an already-correct origin must not be re-navigated on every listing page");
 });
