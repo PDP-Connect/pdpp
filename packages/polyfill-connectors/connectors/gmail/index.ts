@@ -3362,17 +3362,31 @@ export async function runAllMailPasses(
 
   if (messageHistoryRequested && historicalFetchRange) {
     const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);
+    // Sums BOTH passes, like the `message_bodies` DETAIL_COVERAGE above: the
+    // forward pass runs in the same call to `runAllMailPasses` and emits its
+    // own `messages` records via the same shared `emitRecord`, so the raw
+    // collected-record count already includes them. Reporting only
+    // `historicalMessageCoverage` undercounted the denominator against that
+    // total every scheduled run with new mail waiting alongside a pending
+    // historical backfill.
+    //
+    // Both emissions below MUST read these same two numbers. The runtime's
+    // `isHealthyBoundedContinuation` accepts a bounded page only when the
+    // continuation's considered/covered are identical to the DETAIL_COVERAGE
+    // fact's — it binds a continuation to complete *same-page* facts, and the
+    // summing above is what defines "the page" here. Feeding the continuation
+    // historical-only counts desyncs the pair by exactly the forward-pass
+    // count, the identity check fails, and the stream degrades to a
+    // retryable_gap instead of deriving complete. The sibling `threads`
+    // emission never desyncs precisely because it feeds one variable to both.
+    const messagesCoverage = {
+      considered: historicalMessageCoverage.considered + forwardMessageCoverage.considered,
+      covered: historicalMessageCoverage.covered + forwardMessageCoverage.covered,
+    };
     await emit(
       buildDetailCoverageMessage({
-        // Sums BOTH passes, like the `message_bodies` DETAIL_COVERAGE above:
-        // the forward pass runs in the same call to `runAllMailPasses` and
-        // emits its own `messages` records via the same shared `emitRecord`,
-        // so the raw collected-record count already includes them. Reporting
-        // only `historicalMessageCoverage` here undercounted the denominator
-        // against that total every scheduled run with new mail waiting
-        // alongside a pending historical backfill.
-        considered: historicalMessageCoverage.considered + forwardMessageCoverage.considered,
-        covered: historicalMessageCoverage.covered + forwardMessageCoverage.covered,
+        considered: messagesCoverage.considered,
+        covered: messagesCoverage.covered,
         hydratedKeys: [],
         requiredKeys: [],
         stateStream: "messages",
@@ -3382,8 +3396,8 @@ export async function runAllMailPasses(
     if (historicalPageEndUid < historicalTargetUid) {
       await emitHistoricalContinuationSkip(emit, "messages", {
         boundary: String(historicalCursor.uidvalidity),
-        considered: historicalMessageCoverage.considered,
-        covered: historicalMessageCoverage.covered,
+        considered: messagesCoverage.considered,
+        covered: messagesCoverage.covered,
         slice_start: Number(historicalFetchRange.split(":")[0]),
         slice_end: historicalPageEndUid,
       });

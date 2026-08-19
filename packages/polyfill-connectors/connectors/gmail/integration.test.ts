@@ -1775,6 +1775,53 @@ test("runAllMailPasses: scheduled runs advance historical pages while forwarding
         "(which does sum both passes) avoids"
     );
 
+    // The continuation must describe the SAME page the DETAIL_COVERAGE fact
+    // describes. The runtime's isHealthyBoundedContinuation
+    // (reference-implementation/server/continuation-proof.ts) admits a bounded
+    // page only when continuation.considered === fact.considered AND
+    // continuation.covered === fact.covered. When the coverage fact summed both
+    // passes but the continuation reported historical-only counts, the pair
+    // desynced by exactly the forward-pass count on every run that carried new
+    // mail alongside a pending backfill (observed live: fact 52/52 vs
+    // continuation 51/51), the identity check failed, and the stream fell
+    // through to retryable_gap instead of deriving complete.
+    const messagesSkip = protocolMessages.find(
+      (message) => message.type === "SKIP_RESULT" && message.stream === "messages"
+    );
+    const skipContinuation = messagesSkip?.continuation as Record<string, unknown> | undefined;
+    assert.equal(
+      messagesSkip?.reason,
+      "historical_backfill_pending",
+      "a page with historical work remaining still emits its bounded continuation"
+    );
+    assert.deepEqual(
+      skipContinuation && { considered: skipContinuation.considered, covered: skipContinuation.covered },
+      { considered: messagesCoverage?.considered, covered: messagesCoverage?.covered },
+      "the historical continuation skip must carry the SAME considered/covered as the messages " +
+        "DETAIL_COVERAGE fact — the runtime's isHealthyBoundedContinuation requires that identity, so any " +
+        "drift between the two emissions silently degrades a complete stream to a retryable_gap"
+    );
+
+    // End-to-end: the runtime predicate itself accepts the synced pair, and
+    // would reject the historical-only counts the desynced code emitted.
+    const isHealthyBoundedContinuation = (
+      fact: { considered: number; covered: number },
+      cont: { considered: number; covered: number }
+    ) => cont.considered === fact.considered && cont.covered === fact.covered && fact.considered === fact.covered;
+    assert.equal(
+      isHealthyBoundedContinuation(
+        { considered: messagesCoverage?.considered as number, covered: messagesCoverage?.covered as number },
+        { considered: skipContinuation?.considered as number, covered: skipContinuation?.covered as number }
+      ),
+      true,
+      "the emitted fact/continuation pair satisfies the runtime's bounded-continuation identity check"
+    );
+    assert.equal(
+      isHealthyBoundedContinuation({ considered: 2, covered: 2 }, { considered: 1, covered: 1 }),
+      false,
+      "control: the historical-only counts the regression emitted do NOT satisfy that check"
+    );
+
     const third = await run({ messages: second });
     assert.deepEqual(fetchRanges, ["1001:1200", "1301:*"]);
     assert.equal((third.all_mail as Record<string, unknown>).uidnext, 1301);
