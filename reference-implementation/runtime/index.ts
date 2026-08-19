@@ -60,6 +60,14 @@ import {
   buildIngestHttpFailure,
   buildInvalidIngestResponseFailure,
 } from "./ingest-failures.ts";
+import {
+  DEFAULT_INGEST_RETRY_POLICY,
+  INGEST_SATURATED_FAILURE_REASON,
+  type IngestRetryPolicy,
+  isRetryableIngestStatus,
+  nextIngestRetryDelayMs,
+  parseIngestRetryAfterMs,
+} from "./ingest-retry.ts";
 import { isClosedPipeWriteError } from "./pipe-errors.ts";
 import {
   validateProgressAttachmentHydrationFailureOutcome,
@@ -489,6 +497,25 @@ export interface RuntimeRunConnectorOptions {
    */
   detailGapStore?: RuntimeDetailGapStoreCapabilities;
   grantId?: string | null;
+  /**
+   * Bounds for retrying a RECORD-batch ingest POST the RS answered with a
+   * retryable status (503 `ingest_batch_storage_error`, typically produced by
+   * the global writer-admission gate). Defaults to
+   * {@link DEFAULT_INGEST_RETRY_POLICY}. Overridden in tests to assert the
+   * bound without waiting on it.
+   */
+  ingestRetryPolicy?: IngestRetryPolicy;
+  /**
+   * Test seam for ingest-retry backoff jitter. Defaults to `Math.random`.
+   */
+  ingestRetryRandom?: () => number;
+  /**
+   * Test seam for the ingest-retry backoff. Defaults to a real timer. Injected
+   * so a test can prove the retry SEQUENCE (attempt counts, delays honored,
+   * bounded exhaustion) deterministically instead of genuinely sleeping
+   * through it.
+   */
+  ingestRetrySleep?: (ms: number) => Promise<void>;
   manifest: ConnectorManifest;
   onInteraction?: ((interaction: ConnectorMessage) => unknown) | null;
   onInteractionTerminal?: ((info: { interactionId: string; status: string }) => unknown) | null;
@@ -2139,6 +2166,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     // detail gaps then returns before any forward walk / list-phase fetches.
     // Threaded from the scheduler's recoveryOnly decision into the START message.
     recoveryOnly = false,
+    // Bounded ingest-retry policy plus its clock/jitter seams. See
+    // runtime/ingest-retry.ts for why the runtime retries a 503 at all.
+    ingestRetryPolicy = DEFAULT_INGEST_RETRY_POLICY,
+    ingestRetrySleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    ingestRetryRandom = Math.random,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
   const claimedConnectorInstanceId = resolveRuntimeConnectorInstanceId({
@@ -3398,6 +3430,115 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     onProgress({ reason: "manifest_stream_unresolved", stream, type: "stream_skipped" });
   }
 
+  /**
+   * POST one RECORD batch to the RS, retrying a status the server marked
+   * retryable within the bounds of {@link ingestRetryPolicy}.
+   *
+   * The RS answers a SYSTEMIC ingest failure with 503 (see
+   * `ingest_batch_storage_error` in server/routes/ref-error-status.ts, whose
+   * comment states 503 means "safe to retry the identical batch"). The
+   * dominant producer of that 503 is the GLOBAL writer-admission gate, which
+   * clears in well under a second — so failing the whole run on the first 503,
+   * as this path used to, discarded every buffered record for a condition that
+   * would have resolved on its own. Retrying is safe because the ingest write
+   * is an upsert on `(connector_instance_id, stream, record_key)`; see
+   * runtime/ingest-retry.ts for the full idempotency argument, including why an
+   * accepted-prefix of a partially-committed batch does not duplicate.
+   *
+   * Bounded by construction: at most `maxAttempts` requests and
+   * `maxAttempts - 1` sleeps, each sleep individually capped. It cannot spin.
+   *
+   * A NON-retryable status returns its response unchanged on the first
+   * attempt, so `readIngestResponse` shapes the same terminal error a 4xx
+   * produced before this retry existed. Cancellation is honored between
+   * attempts: a run that was cancelled or timed out mid-backoff stops waiting
+   * and returns the last response rather than continuing to retry work whose
+   * outcome is already terminal.
+   */
+  async function postIngestBatchWithRetry(
+    url: string,
+    ndjson: string,
+    stream: string,
+    batchSize: number
+  ): Promise<Response> {
+    const maxAttempts = Math.max(1, ingestRetryPolicy.maxAttempts);
+    let response: Response | null = null;
+    // Body of the LAST retryable response, kept so the exhaustion error can
+    // still carry the server's own diagnosis (`ingest_batch_storage_error`,
+    // `connector_instance_busy`, `run_terminal`, …). Without it the terminal
+    // message would say only "the endpoint stayed saturated" and an operator
+    // would lose the reason WHY — which is the whole value of the 503 body.
+    // Read here rather than at the throw site because a `Response` body can
+    // only be consumed once, and a retried response is otherwise discarded.
+    let lastRetryableBody = "";
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential retry is the point — each attempt must observe the previous one's status and wait out its backoff before the next.
+      response = await fetch(url, {
+        body: ndjson,
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          "Content-Type": "application/x-ndjson",
+        },
+        method: "POST",
+        signal: cancelSignal ?? null,
+      });
+      if (response.ok || !isRetryableIngestStatus(response.status)) {
+        return response;
+      }
+      lastRetryableBody = await response.text().catch(() => "");
+      if (attempt >= maxAttempts) {
+        break;
+      }
+      // Cancellation/timeout already owns this run's terminal outcome; don't
+      // spend the remaining retry budget on a batch whose result is moot.
+      // Hand back a REPLAY of the response rather than the original: its body
+      // was consumed above, and `readIngestResponse` calls `.text()` on
+      // whatever it receives — returning the drained original would surface a
+      // "body already read" TypeError in place of the real ingest failure.
+      if (terminalStopRequested()) {
+        return new Response(lastRetryableBody, {
+          headers: response.headers,
+          status: response.status,
+        });
+      }
+      const delayMs = nextIngestRetryDelayMs({
+        attempt,
+        policy: ingestRetryPolicy,
+        random: ingestRetryRandom,
+        retryAfterMs: parseIngestRetryAfterMs(response.headers.get("retry-after")),
+      });
+      onProgress({
+        attempt,
+        delay_ms: delayMs,
+        max_attempts: maxAttempts,
+        status: response.status,
+        stream,
+        type: "ingest_retry",
+      });
+      await ingestRetrySleep(delayMs);
+    }
+    // Bound exhausted against a status the server itself called retryable. Fail
+    // with a reason that names the real condition — the ingest endpoint stayed
+    // saturated for the whole budget — rather than reusing `ingest_http_error`,
+    // which would read as "the RS rejected this batch" and send an operator
+    // looking for a data defect that does not exist.
+    // The last response's body is folded in so the server's own diagnosis
+    // (`ingest_batch_storage_error`, `connector_instance_busy`, `run_terminal`)
+    // survives into the terminal message alongside the saturation framing.
+    const exhausted = buildIngestHttpFailure(
+      `Ingest for ${stream} exhausted ${maxAttempts} attempts against a retryable ingest endpoint`,
+      stream,
+      batchSize,
+      // `response` is non-null here: the loop only breaks after an assignment.
+      (response as Response).status,
+      lastRetryableBody,
+      (response as Response).headers.get("content-type")
+    );
+    exhausted.failure_reason = INGEST_SATURATED_FAILURE_REASON;
+    exhausted.pdpp_error_code = INGEST_SATURATED_FAILURE_REASON;
+    throw exhausted;
+  }
+
   async function flushBatch(stream: string): Promise<void> {
     // Cancellation owns the terminal outcome. Do not start another ingest for
     // a RECORD that was already buffered in the parent after the child was
@@ -3425,15 +3566,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
     ingestUrl.searchParams.set("run_id", runId);
     recordsAttempted += batch.length;
-    const resp = await fetch(ingestUrl.toString(), {
-      body: ndjson,
-      headers: {
-        Authorization: `Bearer ${ownerToken}`,
-        "Content-Type": "application/x-ndjson",
-      },
-      method: "POST",
-      signal: cancelSignal ?? null,
-    });
+    const resp = await postIngestBatchWithRetry(ingestUrl.toString(), ndjson, stream, batch.length);
     // Cancellation may have been requested while this fetch was in flight, but
     // the response already arrived: the RS committed its durable receipts
     // (acceptance or permanent rejection) before answering. Discarding that
@@ -3463,12 +3596,26 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       throw err;
     }
     // Defensive protocol-violation net, NOT the primary retry classifier.
-    // The RS contract (rs.records.ingest) now guarantees that any SYSTEMIC
+    // The RS contract (rs.records.ingest) guarantees that any SYSTEMIC
     // per-record failure — a storage/coordination error that never proved a
     // record's own data invalid — makes the whole HTTP response non-2xx
-    // (RecordsIngestSystemicFailureError, mapped to 503), which the `!resp.ok`
-    // branch above already turns into a thrown, retryable failure via
-    // buildIngestHttpFailure. A PERMANENT per-record rejection (malformed
+    // (RecordsIngestSystemicFailureError, mapped to 503). That case is handled
+    // BEFORE this point, and handled by actually retrying:
+    // `postIngestBatchWithRetry` re-POSTs the identical batch on a retryable
+    // status within a bounded budget, so a transient saturation of the global
+    // writer-admission gate resolves instead of killing the run. Only when that
+    // budget is exhausted does it throw — with failure_reason
+    // `ingest_endpoint_saturated`, naming the saturation rather than implying
+    // the RS rejected the data. A non-retryable non-2xx returns straight
+    // through to `readIngestResponse`, whose `!resp.ok` branch throws a
+    // terminal failure via buildIngestHttpFailure exactly as before.
+    //
+    // (This comment previously claimed the `!resp.ok` branch produced "a
+    // thrown, retryable failure." Nothing retried it: the throw killed the run
+    // and dropped every buffered record. The retry the comment described is
+    // what runtime/ingest-retry.ts now implements.)
+    //
+    // A PERMANENT per-record rejection (malformed
     // JSON, a genuine schema/identity defect) legitimately stays inside a
     // 2xx envelope with records_rejected > 0 — that is the intentional
     // per-record isolation contract, whether it covers one record or every
