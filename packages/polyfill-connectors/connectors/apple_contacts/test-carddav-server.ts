@@ -23,6 +23,18 @@ export interface FakeServerOptions {
   /** When true, REPORT sync-collection returns 501 (unsupported); the
    *  server still answers addressbook-query so the fallback path works. */
   disableSyncCollection?: boolean;
+  /**
+   * When true, sync-collection obeys RFC 6578 §3.2 faithfully: a request
+   * carrying a NON-EMPTY `<D:sync-token>` returns only the members that
+   * changed since that token — for a quiet collection, an EMPTY response with
+   * a fresh token — while a request with an empty token still returns every
+   * member. The default (false) returns all contacts for any token, which is
+   * a permissive fiction convenient for most tests.
+   *
+   * Set this to reproduce the class of defect where an empty CHANGE FEED is
+   * mistaken for an empty INVENTORY.
+   */
+  enforceRfc6578IncrementalSemantics?: boolean;
   password: string;
   /** When true, /.well-known/carddav redirects to a second listener
    *  simulating iCloud's regional-host resolution, instead of a
@@ -71,6 +83,19 @@ function multistatus(inner: string): string {
   return `<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="${NS_D}" xmlns:CS="${NS_CS}" xmlns:C="urn:ietf:params:xml:ns:carddav">${inner}</D:multistatus>`;
 }
 
+/**
+ * Read the `<D:sync-token>` value out of a sync-collection REPORT body.
+ * RFC 6578 §3.2 distinguishes an EMPTY token (send me the whole collection)
+ * from a non-empty one (send me only what changed since then), so the fake
+ * server needs the actual value, not merely its presence.
+ */
+const SYNC_TOKEN_RE = /<(?:[A-Za-z0-9]+:)?sync-token>([\s\S]*?)<\/(?:[A-Za-z0-9]+:)?sync-token>/;
+
+function extractSyncTokenFromRequest(body: string): string {
+  const match = SYNC_TOKEN_RE.exec(body);
+  return match?.[1]?.trim() ?? "";
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -101,6 +126,7 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
     username,
     password,
     disableSyncCollection = false,
+    enforceRfc6578IncrementalSemantics = false,
     regionalHost = false,
     wellKnownAnswersInlineWithoutPrincipal = false,
     syncReportRedirectsToUnsafeOrigin = false,
@@ -165,7 +191,7 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
       )
       .join("");
 
-  const respondSyncCollection = (res: ServerResponse): void => {
+  const respondSyncCollection = (res: ServerResponse, requestedSyncToken: string): void => {
     if (syncReportRedirectsToUnsafeOrigin) {
       res.writeHead(302, { Location: "https://attacker.example/steal-carddav-creds" });
       res.end();
@@ -180,7 +206,11 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
     const deleted = [...deletedHrefs]
       .map((href) => `<D:response><D:href>${href}</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response>`)
       .join("");
-    const responseBody = multistatus(`${contactResponseBlocks()}${deleted}<D:sync-token>${newToken}</D:sync-token>`);
+    // RFC 6578 §3.2: a non-empty sync-token requests only what changed since
+    // that token. Nothing has changed in this fixture, so the change feed is
+    // empty — while the collection itself still holds every contact.
+    const members = enforceRfc6578IncrementalSemantics && requestedSyncToken.length > 0 ? "" : contactResponseBlocks();
+    const responseBody = multistatus(`${members}${deleted}<D:sync-token>${newToken}</D:sync-token>`);
     res.writeHead(207, { "Content-Type": "application/xml" });
     res.end(responseBody);
   };
@@ -197,7 +227,7 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
 
   interface Route {
     match: (req: IncomingMessage, url: string, body: string) => boolean;
-    respond: (req: IncomingMessage, res: ServerResponse, thisOrigin: () => string) => void;
+    respond: (req: IncomingMessage, res: ServerResponse, thisOrigin: () => string, body: string) => void;
   }
 
   const routes: Route[] = [
@@ -228,7 +258,7 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
     },
     {
       match: (req, url, body) => req.method === "REPORT" && url === BOOK_PATH && body.includes("sync-collection"),
-      respond: (_req, res) => respondSyncCollection(res),
+      respond: (_req, res, _origin, body) => respondSyncCollection(res, extractSyncTokenFromRequest(body ?? "")),
     },
     {
       match: (req, url, body) => req.method === "REPORT" && url === BOOK_PATH && body.includes("addressbook-query"),
@@ -252,7 +282,7 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
       const body = await readBody(req);
       const route = routes.find((r) => r.match(req, url, body));
       if (route) {
-        route.respond(req, res, thisOrigin);
+        route.respond(req, res, thisOrigin, body);
         return;
       }
 

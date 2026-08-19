@@ -45,6 +45,7 @@ import {
   normalizeGapScope,
   VIOLATION_LIST_MAX,
 } from "./connector-gap-bounding.ts";
+import { describeCursorBandViolation, evaluateCursorBand } from "./cursor-band-contiguity.ts";
 import { declaredReasonTokensFor } from "./declared-reason-tokens.ts";
 import { createDetailGapPageReader, validateDetailGapsPageRequest } from "./detail-gap-paging.ts";
 import {
@@ -3563,6 +3564,41 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         throw buildHttpFailure(`State persistence failed for ${stream}`, resp.status, body);
       }
       committedStateStreams.add(stream);
+
+      // Cursor-band contiguity: the cursor that was just durably committed is
+      // the exact artifact that decides what future runs will fetch, so this
+      // is the moment a two-pointer walk can be caught skipping an identifier
+      // band. Evaluated AFTER the successful persist so the reported numbers
+      // are the ones actually stored, never a staged value that failed to
+      // commit. Pure and allocation-light; `not_registered` short-circuits for
+      // every stream that declares no band, which is all but one today.
+      const bandVerdict = evaluateCursorBand({ connectorId, cursor, stream });
+      if (bandVerdict.violated) {
+        await emitSpineEventTracked({
+          actor_id: connectorId,
+          actor_type: "runtime",
+          data: {
+            band_size: bandVerdict.bandSize,
+            ceiling: bandVerdict.ceiling,
+            grant_id: grantId,
+            message: describeCursorBandViolation({ connectorId, stream, verdict: bandVerdict }),
+            reason: bandVerdict.reason,
+            resume: bandVerdict.resume,
+            source: runSource,
+          },
+          event_type: "run.cursor_band_violated",
+          object_id: runId,
+          object_type: "run",
+          run_id: runId,
+          scenario_id: traceContext.scenario_id,
+          // `failed` is the honest status: unlike a coverage claim, this is a
+          // proven defect in the fetch plan, not an unproven absence. No
+          // upstream fact could make the stored arithmetic hold.
+          status: "failed",
+          stream_id: stream,
+          trace_id: traceContext.trace_id,
+        });
+      }
 
       await emitSpineEventTracked({
         actor_id: connectorId,
