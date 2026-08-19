@@ -57,6 +57,22 @@ export const VENMO_PROBE_TRANSPORT_ERROR = "venmo_probe_transport_error";
 export const VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR = "venmo_post_submit_probe_transport_error";
 /** Fault-class name for {@link ensureVenmoOrigin} failing to land the page on the venmo.com origin — see that function's doc (production run_1787101857760). */
 export const VENMO_ORIGIN_NAVIGATION_FAILED = "venmo_origin_navigation_failed";
+/**
+ * Fault-class name for the password screen never arriving after a successful
+ * identifier submit on Venmo's two-step sign-in — see {@link fillVenmoPassword}.
+ *
+ * Deliberately a distinct, named, NON-retryable-by-omission class rather than
+ * a fall-through: the identifier has been sent to Venmo at this point, so a
+ * blind retry re-enters `ensureVenmoSession` and re-submits it. It is also
+ * distinct from the OTP vocabulary on purpose — a missing password field is
+ * not evidence Venmo asked for a code, and treating it as one is exactly the
+ * fabricated-prompt defect class this file's OTP path already guards against.
+ *
+ * Declared here rather than beside its sibling sign-in constants below because
+ * {@link VENMO_DECLARED_REASON_TOKENS} is built eagerly at module load and
+ * would read it from the temporal dead zone otherwise.
+ */
+export const VENMO_PASSWORD_SCREEN_TIMEOUT = "venmo_password_screen_timeout";
 
 /**
  * This connector's classifying fault-class names — single source of truth,
@@ -80,6 +96,7 @@ export const VENMO_DECLARED_REASON_TOKENS: ReadonlySet<string> = new Set([
   VENMO_PROBE_TRANSPORT_ERROR,
   VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR,
   VENMO_ORIGIN_NAVIGATION_FAILED,
+  VENMO_PASSWORD_SCREEN_TIMEOUT,
 ]);
 
 const HOME_URL = "https://venmo.com/";
@@ -174,8 +191,61 @@ export function isVenmoFamilyUrl(url: string): boolean {
   }
   return VENMO_FAMILY_HOSTS.has(parsed.hostname);
 }
-const USERNAME_SELECTOR = 'input[name="phoneEmailUsername"], input#username, input[autocomplete="username"]';
+/**
+ * Venmo's identifier field, across both sign-in generations.
+ *
+ * `input[name="login_email"]` is the CURRENT one and the reason this connector
+ * had collected zero records ever. Read live over CDP during production
+ * `run_1787164654406`: `https://id.venmo.com/signin?...` renders exactly two
+ * enabled, visible inputs — `{type: email, name: "login_email"}` and an unnamed
+ * `{type: password}` — under the copy "Log in" / "Enter email, mobile, or
+ * username" / "Next". None of the three prior candidates
+ * (`phoneEmailUsername`, `#username`, `[autocomplete="username"]`) match
+ * `login_email`, so `loginWithSavedCredentials` found no identifier field,
+ * concluded the sign-in form had not rendered, and handed off to the owner on
+ * every run regardless of the saved credentials being present and correct.
+ *
+ * The older candidates are KEPT, not replaced: they cost one selector-union
+ * branch each, and Venmo demonstrably serves more than one sign-in generation
+ * (this is the second shape this file has had to learn). A union that still
+ * matches the previous shape degrades to the old behavior rather than to a
+ * handoff if Venmo rolls back or A/B-splits.
+ */
+const USERNAME_SELECTOR =
+  'input[name="login_email"], input[name="phoneEmailUsername"], input#username, input[autocomplete="username"]';
 const PASSWORD_SELECTOR = 'input[name="password"], input#password, input[type="password"]';
+/**
+ * The step-one ("Next") control on Venmo's two-step sign-in.
+ *
+ * Venmo now splits sign-in across two screens: identifier -> `Next` ->
+ * password. The live page carries a submit button with id `btnNext`, whose
+ * accessible name ("Next") {@link SUBMIT_BUTTON_NAME_RE} already matches — so
+ * this id is a FALLBACK for the case where the accessible name is absent,
+ * localized, or rendered as an icon, not the primary path. See
+ * {@link clickVenmoLoginSubmit}.
+ */
+const STEP_ONE_SUBMIT_SELECTOR = "#btnNext";
+/**
+ * How long to wait for the password screen after submitting the identifier.
+ *
+ * A real bound, not a sleep: the prior code slept a fixed 1500ms and then
+ * looked once, so a slower-than-1.5s second screen was misread as "no password
+ * field" and a faster one wasted the remainder. This is the ceiling on a wait
+ * that resolves as soon as the field is actually visible.
+ */
+const PASSWORD_SCREEN_TIMEOUT_MS = 15_000;
+/**
+ * Copy/markup that means a human-verification challenge is blocking the flow.
+ *
+ * Venmo's own sign-in page embeds a reCAPTCHA iframe from `paypalobjects.com`
+ * (confirmed live, `run_1787164654406`). Solving it is explicitly NOT a goal:
+ * when one blocks progress the connector hands the page to the owner via the
+ * existing `manual_action` path with `reason: "captcha"`, the same shape
+ * reddit/amazon/chatgpt use. The alternative failure modes are the two this
+ * must never produce — a silent failure, or a spin.
+ */
+const CAPTCHA_FRAME_SELECTOR =
+  'iframe[src*="recaptcha"], iframe[src*="paypalobjects.com"], iframe[title*="recaptcha" i], div.g-recaptcha';
 const OTP_SELECTOR =
   'input[name="otp"], input[name="code"], input[autocomplete="one-time-code"], input[name="smsCode"]';
 const SUBMIT_BUTTON_NAME_RE = /^(log in|sign in|continue|next)$/i;
@@ -222,6 +292,18 @@ const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
     kind: "css",
     selector: OTP_SELECTOR,
     description: "OTP candidates; hidden fields must not trigger an OTP interaction.",
+  },
+  {
+    id: "step-one-submit",
+    kind: "css",
+    selector: STEP_ONE_SUBMIT_SELECTOR,
+    description: "Venmo's two-step identifier ('Next') control; absence means a one-screen or unrecognized form.",
+  },
+  {
+    id: "captcha",
+    kind: "css",
+    selector: CAPTCHA_FRAME_SELECTOR,
+    description: "Human-verification frames; presence explains a stalled password step but never blocks a healthy one.",
   },
 ];
 
@@ -365,6 +447,13 @@ interface EnsureVenmoSessionArgs {
   credentials?: Readonly<Record<string, string>>;
   onCredentialSubmit?: () => void;
   page: Page;
+  /**
+   * Bound on the wait for Venmo's second (password) sign-in screen; defaults
+   * to {@link PASSWORD_SCREEN_TIMEOUT_MS}. Exposed so a test can assert the
+   * bound is real without sitting through the production one — the same seam
+   * `probeVenmoAccount`'s `evaluateTimeoutMs` already provides.
+   */
+  passwordScreenTimeoutMs?: number;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
 
@@ -536,18 +625,62 @@ async function hasUsableVenmoOtpInput(page: Page): Promise<boolean> {
   return isViableVenmoOtpDigitCount(await countUsableVenmoOtpInputs(page));
 }
 
-async function clickVenmoLoginSubmit(page: Page): Promise<boolean> {
+/**
+ * Click the sign-in form's submit control. Returns `false` when no control
+ * could be found — the caller decides whether that is fatal.
+ *
+ * Candidate order is deliberate. The semantic role query comes first because
+ * an accessible name is the most stable thing about a button; `extraSelectors`
+ * (Venmo's `#btnNext` on the identifier screen) is tried before the generic
+ * `button[type="submit"]` because on a page carrying more than one submit
+ * control the generic selector's `.first()` is a coin flip, whereas the id is
+ * exact.
+ */
+async function clickVenmoLoginSubmit(page: Page, extraSelectors: readonly string[] = []): Promise<boolean> {
   const semantic = page.getByRole("button", { name: SUBMIT_BUTTON_NAME_RE }).first();
   if (await locatorIsVisible(semantic)) {
     await semantic.click();
     return true;
   }
-  const fallback = page.locator('button[type="submit"]').first();
-  if (await locatorIsVisible(fallback)) {
-    await fallback.click();
-    return true;
+  for (const selector of [...extraSelectors, 'button[type="submit"]']) {
+    const fallback = page.locator(selector).first();
+    if (await locatorIsVisible(fallback)) {
+      await fallback.click();
+      return true;
+    }
   }
   return false;
+}
+
+/**
+ * Whether a human-verification challenge is currently rendered.
+ *
+ * Presence of the frame is the signal, and it is deliberately checked only
+ * where a challenge would EXPLAIN a stall — never as a precondition for
+ * proceeding. Venmo embeds reCAPTCHA on the sign-in page unconditionally
+ * (`run_1787164654406`), including on flows that complete without ever
+ * challenging the user, so treating a mere embed as "blocked" would hand every
+ * healthy login to the owner. See {@link fillVenmoPassword}.
+ */
+async function hasVenmoCaptcha(page: Page): Promise<boolean> {
+  return await locatorIsVisible(page.locator(CAPTCHA_FRAME_SELECTOR));
+}
+
+/**
+ * Wait for the password screen to actually render, bounded.
+ *
+ * `waitFor` resolves the instant the field is visible and rejects at the
+ * deadline — the replacement for a fixed `waitForTimeout(1500)` that could
+ * neither wait long enough for a slow screen nor return early from a fast one.
+ * There is no polling loop here and therefore nothing that can spin.
+ */
+async function waitForVenmoPasswordScreen(page: Page, timeoutMs: number): Promise<boolean> {
+  return await page
+    .locator(PASSWORD_SELECTOR)
+    .first()
+    .waitFor({ state: "visible", timeout: timeoutMs })
+    .then((): true => true)
+    .catch((): false => false);
 }
 
 async function captureLoginState(capture: CaptureSession | null | undefined, page: Page, label: string): Promise<void> {
@@ -641,35 +774,79 @@ async function requestManualLoginForChallenge({
 type ManualHandoff = Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction">;
 
 /**
- * Fill the password field, handling Venmo's split username-then-password
- * sign-in variant: if no password field is visible yet, submit once to
- * advance past the username-only screen and look again. Returns a manual
- * handoff result when neither attempt finds a password field, or `null`
- * when the password was filled and the caller should continue.
+ * Fill the password field, advancing Venmo's two-step sign-in when needed.
+ *
+ * Venmo's current flow (live `run_1787164654406`) is identifier -> `Next` ->
+ * password on a SECOND screen. The one-screen shape is still handled first and
+ * costs nothing: if a password field is already visible, this fills it and
+ * returns without ever clicking anything.
+ *
+ * Returns `null` when the password was filled and the caller should continue
+ * to the password submit; returns a probe result when the flow was handed to
+ * the owner instead. Throws {@link VENMO_PASSWORD_SCREEN_TIMEOUT} when the
+ * second screen never arrives for a reason we cannot attribute.
+ *
+ * THIS FUNCTION NEVER MARKS THE CREDENTIAL AS SUBMITTED. The click it performs
+ * sends the IDENTIFIER only — an email/username, not a secret — so the
+ * `onCredentialSubmit` marker and its non-retryable classification stay with
+ * the password submit in {@link loginWithSavedCredentials}. Firing the marker
+ * here would classify every identifier-screen fault as "a password went out",
+ * permanently terminalling runs that cost nothing to retry.
  */
-async function fillVenmoPassword(args: ManualHandoff & { password: string }): Promise<VenmoAccountProbeResult | null> {
-  const { capture, page, password, sendInteraction } = args;
+async function fillVenmoPassword(
+  args: ManualHandoff & { password: string; passwordScreenTimeoutMs?: number }
+): Promise<VenmoAccountProbeResult | null> {
+  const { capture, page, password, passwordScreenTimeoutMs = PASSWORD_SCREEN_TIMEOUT_MS, sendInteraction } = args;
   const passwordIn = page.locator(PASSWORD_SELECTOR).first();
   if (await locatorIsVisible(passwordIn)) {
     await passwordIn.fill(password);
     return null;
   }
-  // Some Venmo sign-in variants split username/password across two
-  // screens (continue, then password). Submit once to advance, then
-  // fill password on the next screen if it appears.
-  await clickVenmoLoginSubmit(page);
-  await page.waitForTimeout(1500);
-  const passwordIn2 = page.locator(PASSWORD_SELECTOR).first();
-  if (!(await locatorIsVisible(passwordIn2))) {
+  // Two-step flow: advance past the identifier-only screen. `#btnNext` is
+  // Venmo's current step-one control; the semantic "Next" name inside
+  // clickVenmoLoginSubmit matches it first when the accessible name is
+  // present.
+  if (!(await clickVenmoLoginSubmit(page, [STEP_ONE_SUBMIT_SELECTOR]))) {
+    // No way to advance at all. This is the genuinely-unrecognized page the
+    // handoff exists for, so it hands off rather than throwing — nothing has
+    // been submitted, and the owner can still finish by hand.
+    await captureLoginState(capture, page, "venmo-step-one-submit-missing");
     return await requestManualLoginForChallenge({
       ...(capture ? { capture } : {}),
       page,
-      reason: "password field did not render",
+      reason: "could not advance past the sign-in identifier step",
       sendInteraction,
     });
   }
-  await passwordIn2.fill(password);
-  return null;
+  await captureLoginState(capture, page, "venmo-identifier-submitted");
+  if (await waitForVenmoPasswordScreen(page, passwordScreenTimeoutMs)) {
+    await page.locator(PASSWORD_SELECTOR).first().fill(password);
+    return null;
+  }
+  // The password screen did not arrive within the bound. A rendered captcha is
+  // the one cause we can attribute and the one the owner can actually resolve,
+  // so it routes to the existing manual path with an honest message rather
+  // than to a named failure they cannot act on. Checked only HERE — after a
+  // real stall — because Venmo embeds reCAPTCHA on healthy sign-ins too.
+  await captureLoginState(capture, page, "venmo-password-screen-missing");
+  if (await hasVenmoCaptcha(page)) {
+    return await waitForManualLogin({
+      ...(capture ? { capture } : {}),
+      message:
+        "Venmo is showing a human-verification challenge (CAPTCHA) that PDPP will not attempt to solve. " +
+        "Complete the challenge and finish signing in to Venmo in the secure browser, then respond success.",
+      page,
+      reason: "captcha",
+      sendInteraction,
+    });
+  }
+  // No captcha, no password screen, and no evidence of what Venmo did. Fail
+  // with a named, bounded error rather than falling through into the OTP path,
+  // where an absent password field would be misread as a verification prompt
+  // and fabricate a code demand the owner never received.
+  throw new Error(
+    `${VENMO_PASSWORD_SCREEN_TIMEOUT}: the password step did not render within ${passwordScreenTimeoutMs}ms after the identifier was submitted`
+  );
 }
 
 /**
@@ -757,10 +934,11 @@ async function loginWithSavedCredentials({
   checkpoint,
   onCredentialSubmit,
   page,
+  passwordScreenTimeoutMs,
   sendInteraction,
   username,
   password,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
+}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "passwordScreenTimeoutMs" | "sendInteraction"> & {
   checkpoint: SessionCheckpointFn;
   onCredentialSubmit?: () => void;
   password: string;
@@ -785,13 +963,27 @@ async function loginWithSavedCredentials({
   }
   await userIn.fill(username);
 
-  const passwordHandoff = await fillVenmoPassword({ ...(capture ? { capture } : {}), page, password, sendInteraction });
+  // Two-step flow, submit 1 of 2: `fillVenmoPassword` may click Venmo's `Next`
+  // control to reach the password screen. That click sends the IDENTIFIER, not
+  // a secret, so it deliberately does NOT fire `onCredentialSubmit` — see that
+  // function's doc.
+  const passwordHandoff = await fillVenmoPassword({
+    ...(capture ? { capture } : {}),
+    page,
+    password,
+    ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),
+    sendInteraction,
+  });
   if (passwordHandoff) {
     return passwordHandoff;
   }
 
   await captureLoginState(capture, page, "venmo-login-before-submit");
   await checkpoint("venmo-password-submit");
+  // Submit 2 of 2 — the one that sends the saved PASSWORD. Everything after
+  // this line is post-submit: the marker fires here and only here, and it must
+  // stay immediately after the click that succeeded so no branch can reach the
+  // post-submit probes without having set it.
   if (!(await clickVenmoLoginSubmit(page))) {
     await captureLoginState(capture, page, "venmo-login-submit-missing");
     throw new Error("venmo_login_submit_missing");
@@ -831,6 +1023,7 @@ export async function ensureVenmoSession({
   credentials = {},
   onCredentialSubmit,
   page,
+  passwordScreenTimeoutMs,
   sendInteraction,
 }: EnsureVenmoSessionArgs): Promise<VenmoAccountProbeResult> {
   await checkpoint("venmo-auth-probe");
@@ -856,6 +1049,7 @@ export async function ensureVenmoSession({
     checkpoint,
     ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
     page,
+    ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),
     sendInteraction,
     username,
     password,

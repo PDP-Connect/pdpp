@@ -356,8 +356,8 @@ test("ensureVenmoSession: captures a locator probe of the login page, recording 
     for (const call of probeCalls) {
       assert.deepEqual(
         call.probeIds,
-        ["username", "password", "submit-role", "otp"],
-        "every capture must record all four selector candidates the connector relies on"
+        ["username", "password", "submit-role", "otp", "step-one-submit", "captcha"],
+        "every capture must record every selector candidate the connector relies on — including the two-step 'Next' control and the captcha frame, whose presence/absence is what distinguishes a two-step page from an unrecognized one"
       );
     }
   });
@@ -655,6 +655,479 @@ test("ensureVenmoSession: a code input that vanishes after classification fails 
       [],
       "the prompt must not fire once the code input is gone"
     );
+  });
+});
+
+// ─── Two-step sign-in (identifier -> Next -> password) ───────────────────
+//
+// Production `run_1787164654406`, read live over CDP while the page sat on
+// `https://id.venmo.com/signin?...`. Its visible, ENABLED inputs were exactly:
+//
+//   {t: INPUT, ty: password, n: "",           dis: false, vis: true}
+//   {t: INPUT, ty: email,    n: "login_email", dis: false, vis: true}
+//
+// plus a `btnNext` submit button and a reCAPTCHA iframe served from
+// paypalobjects.com. Page copy: "Log in" / "Enter email, mobile, or username" /
+// "Next" / "Sign up".
+//
+// `login_email` matched NONE of the connector's three username candidates
+// (`phoneEmailUsername`, `#username`, `[autocomplete="username"]`), so
+// `loginWithSavedCredentials` read a perfectly ordinary Venmo sign-in page as
+// "the sign-in form did not render" and handed off to the owner every single
+// time — which is why this connector had collected zero records, ever, across
+// all three connections on the instance. The owner completed sign-in by hand
+// twice that night and both runs still ended in the manual-handoff path.
+//
+// SYNTHETIC FIXTURE, STATED PLAINLY: no Venmo auth-page capture exists on disk
+// and live contact is forbidden (it is the owner's real payments account). The
+// DOM shape above is the measured ground truth these fakes model. If the real
+// page differs in ways this shape does not capture, these tests will pass and
+// a live login may still not complete.
+
+/**
+ * Venmo's CURRENT two-step sign-in, modelled selector-by-selector on the live
+ * DOM above.
+ *
+ * The page starts on screen one: the `login_email` identifier field and
+ * `#btnNext` are present, and NO password field is visible. Clicking a submit
+ * control advances to screen two, where the password field becomes visible.
+ * That ordering is the whole point — a fake that exposed the password field
+ * from the start could not tell a working two-step fix from the broken
+ * one-screen assumption.
+ *
+ * `passwordAppearsAfterNext: false` models the second screen never arriving.
+ * `captchaVisible` models the reCAPTCHA frame the live page really does embed.
+ */
+function makeTwoStepVenmoPage({
+  captchaVisible = false,
+  identifierSelectorMatches = true,
+  passwordAppearsAfterNext = true,
+  passwordScreenDelayMs = 0,
+  semanticSubmitVisible = true,
+}: {
+  captchaVisible?: boolean;
+  identifierSelectorMatches?: boolean;
+  passwordAppearsAfterNext?: boolean;
+  /**
+   * How long Venmo's second screen takes to render after the identifier is
+   * submitted. Non-zero is the realistic case and the ONLY one that can tell a
+   * real wait from a fixed sleep: a `waitFor` resolves the instant the field
+   * appears no matter when that is, whereas a `waitForTimeout(N)` followed by
+   * a single visibility check silently misreads any screen slower than `N` as
+   * "no password field". With this at 0 the two are indistinguishable.
+   */
+  passwordScreenDelayMs?: number;
+  /**
+   * `false` models a step-one control with no accessible name — an icon-only
+   * or localized "Next" button that `SUBMIT_BUTTON_NAME_RE` cannot match. This
+   * is the ONLY situation the `#btnNext` id fallback exists for; with the
+   * semantic button present the role query always wins and the id is never
+   * consulted.
+   */
+  semanticSubmitVisible?: boolean;
+} = {}): {
+  clicks: string[];
+  fillCalls: Record<string, string>;
+  page: Page;
+} {
+  const clicks: string[] = [];
+  const fillCalls: Record<string, string> = {};
+  let onPasswordScreen = false;
+  let probeCount = 0;
+  let currentUrl = "https://id.venmo.com/signin?country.x=US";
+
+  const advance = (via: string): void => {
+    clicks.push(via);
+    if (!passwordAppearsAfterNext) {
+      return;
+    }
+    if (passwordScreenDelayMs <= 0) {
+      onPasswordScreen = true;
+      return;
+    }
+    // Venmo's second screen renders asynchronously. A timer models that
+    // honestly: nothing about the password field is true at click time, and it
+    // becomes true later, on its own schedule.
+    const timer = setTimeout(() => {
+      onPasswordScreen = true;
+    }, passwordScreenDelayMs);
+    // Never let the fixture's own timer hold the test process open.
+    timer.unref?.();
+  };
+
+  /**
+   * A password locator that reports its CURRENT visibility on every read and
+   * whose `waitFor` genuinely polls until visible or the deadline passes —
+   * Playwright's real semantics. A fake whose `waitFor` resolved immediately
+   * would make a fixed sleep and a real wait look identical.
+   */
+  const passwordLocator = (): Locator => {
+    const fake: Pick<Locator, "click" | "count" | "fill" | "first" | "isEnabled" | "isVisible" | "waitFor"> = {
+      click: (): Promise<void> => Promise.resolve(),
+      count: (): Promise<number> => Promise.resolve(onPasswordScreen ? 1 : 0),
+      fill: (value: string): Promise<void> => {
+        // Only a rendered field can be typed into. Recording a fill against a
+        // screen that has not arrived would let a broken wait look successful.
+        if (onPasswordScreen) {
+          fillCalls.password = value;
+        }
+        return Promise.resolve();
+      },
+      first(): Locator {
+        return fake as Locator;
+      },
+      isEnabled: (): Promise<boolean> => Promise.resolve(onPasswordScreen),
+      isVisible: (): Promise<boolean> => Promise.resolve(onPasswordScreen),
+      async waitFor(options?: { timeout?: number }): Promise<void> {
+        const deadline = Date.now() + (options?.timeout ?? 30_000);
+        while (!onPasswordScreen) {
+          if (Date.now() >= deadline) {
+            throw new Error("Timeout waiting for locator");
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      },
+    };
+    return fake as Locator;
+  };
+
+  // Screen one's control. The live page's button carries the accessible name
+  // "Next", which SUBMIT_BUTTON_NAME_RE already matches, so the semantic role
+  // query is what fires here — `#btnNext` is the id fallback.
+  const roleSubmit = semanticSubmitVisible
+    ? makeClickRecordingLocator(() => {
+        advance(onPasswordScreen ? "role-submit-password-screen" : "role-submit-identifier-screen");
+      })
+    : makeLocator({ count: 0, visible: false });
+
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      probeCount += 1;
+      // Probe 1 is the pre-submit liveness check (dead — this is why we log
+      // in at all). Everything after the password submit reports live.
+      return probeCount > 1 && onPasswordScreen ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
+    },
+    getByRole: (): Locator => roleSubmit,
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      if (selector === "body") {
+        return makeLocator({ innerText: "Log in Enter email, mobile, or username Next Sign up" });
+      }
+      if (selector.includes("login_email")) {
+        // The live identifier field: type=email, name="login_email".
+        return identifierSelectorMatches
+          ? makeFillRecordingLocator((value) => {
+              fillCalls.username = value;
+            })
+          : makeLocator({ count: 0, visible: false });
+      }
+      if (selector.includes('input[name="password"]')) {
+        // Screen two only. Not-visible on screen one is the fact that makes
+        // this a TWO-step page rather than a one-screen form. The locator
+        // re-reads the live state on every call, so it flips the moment the
+        // second screen renders — it is not frozen at bind time.
+        return passwordLocator();
+      }
+      if (selector.includes("otp") || selector.includes("code")) {
+        return makeLocator({ count: 0, visible: false });
+      }
+      if (selector === "#btnNext") {
+        // Screen one's id-addressed control. Present only on screen one — on
+        // screen two the id is gone, so a connector that kept clicking it
+        // would find nothing.
+        return onPasswordScreen
+          ? makeLocator({ count: 0, visible: false })
+          : makeClickRecordingLocator(() => advance("btnNext"));
+      }
+      if (selector === 'button[type="submit"]') {
+        // The generic fallback both screens carry.
+        return makeClickRecordingLocator(() => advance("generic-submit"));
+      }
+      if (selector.includes("recaptcha") || selector.includes("paypalobjects")) {
+        return makeLocator({ count: captchaVisible ? 1 : 0, visible: captchaVisible });
+      }
+      return makeLocator({ count: 0, visible: false });
+    },
+    url: (): string => currentUrl,
+    waitForLoadState: (): ReturnType<Page["waitForLoadState"]> => Promise.resolve(),
+    // Honors its argument, unlike the other fakes in this file. A
+    // `waitForTimeout` that resolved instantly would make a fixed sleep
+    // indistinguishable from a real bounded wait, which is precisely the
+    // difference these two-step tests exist to pin.
+    waitForTimeout(ms: number): ReturnType<Page["waitForTimeout"]> {
+      return new Promise((resolve) => {
+        setTimeout(resolve, ms).unref?.();
+      });
+    },
+  };
+  return { clicks, fillCalls, page: page as Page };
+}
+
+/** A visible locator that records each click, so a test can pin WHICH control advanced the flow. */
+function makeClickRecordingLocator(onClick: () => void): Locator {
+  const fake: Pick<Locator, "click" | "count" | "fill" | "first" | "isEnabled" | "isVisible" | "waitFor"> = {
+    click: (): Promise<void> => {
+      onClick();
+      return Promise.resolve();
+    },
+    count: (): Promise<number> => Promise.resolve(1),
+    fill: (): Promise<void> => Promise.resolve(),
+    first(): Locator {
+      return fake as Locator;
+    },
+    isEnabled: (): Promise<boolean> => Promise.resolve(true),
+    isVisible: (): Promise<boolean> => Promise.resolve(true),
+    waitFor: (): Promise<void> => Promise.resolve(),
+  };
+  return fake as Locator;
+}
+
+// (a) The headline case: the real two-step page completes login with NO owner
+// handoff. Before the selector fix this test fails at the first hurdle — the
+// connector never finds `login_email` and hands off with "sign-in form did not
+// render", the exact message both of the owner's manual runs produced.
+test("ensureVenmoSession: the live two-step page (login_email -> Next -> password) completes login with no owner handoff", async () => {
+  await withVenmoCredentials(async () => {
+    const { clicks, fillCalls, page } = makeTwoStepVenmoPage();
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
+    assert.equal(result.live, true, "a recognized two-step Venmo sign-in must complete, not hand off");
+    assert.equal(fillCalls.username, "test-user", "the login_email identifier field must actually be filled");
+    assert.equal(fillCalls.password, "test-password", "the password must be filled on the SECOND screen");
+    assert.deepEqual(
+      requests,
+      [],
+      "the owner must not be interrupted at all on a sign-in the connector can complete itself"
+    );
+    assert.equal(clicks.length, 2, "exactly two submits: one to advance past the identifier, one to send the password");
+  });
+});
+
+// The wait must be a WAIT, not a sleep. The replaced code slept a fixed
+// 1500ms and then looked exactly once, so a second screen slower than that was
+// misread as "no password field" and the run was handed to the owner — while a
+// faster one wasted the remainder. This models a screen that renders at 2500ms
+// (comfortably past the old sleep, comfortably inside the real bound): a
+// genuine `waitFor` resolves the instant it appears, a fixed sleep cannot.
+test("ensureVenmoSession: a password screen slower than the old fixed sleep is still awaited and filled, not misread as absent", async () => {
+  await withVenmoCredentials(async () => {
+    const { fillCalls, page } = makeTwoStepVenmoPage({ passwordScreenDelayMs: 2500 });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      passwordScreenTimeoutMs: 10_000,
+      sendInteraction,
+    });
+    assert.equal(result.live, true, "a slow-but-arriving password screen is a success, not a handoff");
+    assert.equal(fillCalls.password, "test-password", "the password must be filled once the screen actually renders");
+    assert.deepEqual(requests, [], "the owner must not be interrupted for a screen that simply took a moment");
+  });
+});
+
+// The `#btnNext` id fallback, isolated. With the semantic "Next" name present
+// the role query wins and this id is never consulted — so the only way to
+// prove the fallback is real is a step-one control whose accessible name
+// SUBMIT_BUTTON_NAME_RE cannot match (icon-only or localized). The assertion
+// is on WHICH control fired: `#btnNext` must be preferred over the generic
+// `button[type="submit"]`, whose `.first()` is a coin flip on a page carrying
+// more than one submit control.
+test("ensureVenmoSession: an unnamed step-one control is advanced via #btnNext, in preference to the generic submit selector", async () => {
+  await withVenmoCredentials(async () => {
+    const { clicks, fillCalls, page } = makeTwoStepVenmoPage({ semanticSubmitVisible: false });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
+    assert.equal(result.live, true);
+    assert.equal(fillCalls.password, "test-password");
+    assert.equal(
+      clicks[0],
+      "btnNext",
+      "the identifier screen must advance via Venmo's exact id, not a positional guess among submit buttons"
+    );
+    assert.deepEqual(requests, [], "an id-addressable step-one control needs no owner handoff");
+  });
+});
+
+// (3) The credential-resubmission guard under a TWO-submit flow. The marker
+// must bind to the PASSWORD submit, never the identifier submit — an
+// identifier is not a secret, and marking it as one would terminal runs that
+// cost nothing to retry.
+test("ensureVenmoSession: onCredentialSubmit fires exactly once on a two-step flow — at the password submit, not the identifier submit", async () => {
+  await withVenmoCredentials(async () => {
+    const { clicks, page } = makeTwoStepVenmoPage();
+    const { sendInteraction } = recordingSendInteraction();
+    const markerAtClickCount: number[] = [];
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      onCredentialSubmit: () => {
+        markerAtClickCount.push(clicks.length);
+      },
+      page,
+      sendInteraction,
+    });
+    assert.equal(result.live, true);
+    assert.equal(markerAtClickCount.length, 1, "two submits, but only ONE of them sent a credential");
+    assert.equal(
+      markerAtClickCount[0],
+      2,
+      "the marker must fire after the SECOND click (the password submit) — firing at 1 would classify the identifier submit as a credential submission"
+    );
+  });
+});
+
+// The counterweight for (3): a two-step run that dies BEFORE the password is
+// ever sent must not be marked as a credential submission, or the runtime
+// permanently terminals a run that was safe to retry.
+test("ensureVenmoSession: a two-step flow that stalls before the password screen never fires onCredentialSubmit", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makeTwoStepVenmoPage({ passwordAppearsAfterNext: false });
+    const { sendInteraction } = recordingSendInteraction();
+    let markerCount = 0;
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        onCredentialSubmit: () => {
+          markerCount += 1;
+        },
+        page,
+        passwordScreenTimeoutMs: 50,
+        sendInteraction,
+      }),
+      /venmo_password_screen_timeout/
+    );
+    assert.equal(markerCount, 0, "no password was ever submitted, so nothing may be marked as a credential submission");
+  });
+});
+
+// (c) The password screen never arriving must produce a BOUNDED, NAMED
+// failure — not a spin, and above all not a fall-through into the OTP path,
+// where an absent password field would be misread as a verification prompt and
+// fabricate a code demand the owner never received.
+test("ensureVenmoSession: a password screen that never renders fails with a bounded, named error and never fabricates an OTP prompt", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makeTwoStepVenmoPage({ passwordAppearsAfterNext: false });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const startedAt = Date.now();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        passwordScreenTimeoutMs: 50,
+        sendInteraction,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /venmo_password_screen_timeout/, "the failure must name its own cause");
+        return true;
+      }
+    );
+    // Reaching this assertion at all is the anti-spin proof: unbounded, the
+    // wait never settles.
+    assert.ok(Date.now() - startedAt < 20_000, "the wait must respect its own bound rather than spin");
+    assert.deepEqual(
+      requests.filter((req): boolean => req.kind === "otp"),
+      [],
+      "a missing password field is not evidence Venmo sent a code — no OTP prompt may be fabricated"
+    );
+  });
+});
+
+// (d) reCAPTCHA is really on this page. Automating past it is not the goal:
+// a captcha that blocks progress must hand off honestly via the existing
+// manual path, rather than becoming a silent failure or a spin.
+test("ensureVenmoSession: a captcha blocking the password screen hands off to the owner instead of spinning or failing silently", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makeTwoStepVenmoPage({ captchaVisible: true, passwordAppearsAfterNext: false });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const startedAt = Date.now();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        passwordScreenTimeoutMs: 50,
+        sendInteraction,
+      }),
+      // The handoff happened; the owner's simulated "success" did not produce a
+      // live session, so the run still ends honestly rather than claiming one.
+      /venmo_login_incomplete_after_submit/
+    );
+    assert.ok(Date.now() - startedAt < 20_000, "a captcha must not turn into an unbounded wait");
+    const manual = requests.filter((req): boolean => req.kind === "manual_action");
+    assert.equal(manual.length, 1, "a blocking captcha must reach the owner exactly once");
+    assert.match(
+      manual[0]?.message ?? "",
+      /CAPTCHA|verification challenge/i,
+      "the owner must be told what is actually blocking the sign-in"
+    );
+    assert.doesNotMatch(manual[0]?.message ?? "", /test-password/, "the saved password must never reach the owner copy");
+    assert.deepEqual(
+      requests.filter((req): boolean => req.kind === "otp"),
+      [],
+      "a captcha is not a code prompt"
+    );
+  });
+});
+
+// (b) The detection this fix must NOT weaken. A page with no identifier field
+// at all is a genuinely unrecognized page, and must still hand off with the
+// existing message. The bug was that a RECOGNIZED page was misread — not that
+// this check exists.
+test("ensureVenmoSession: a page with no username field still hands off with the existing 'sign-in form did not render' message", async () => {
+  await withVenmoCredentials(async () => {
+    const { fillCalls, page } = makeTwoStepVenmoPage({ identifierSelectorMatches: false });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        sendInteraction,
+      }),
+      /venmo_login_incomplete_after_submit/
+    );
+    const manual = requests.filter((req): boolean => req.kind === "manual_action");
+    assert.equal(manual.length, 1, "an unrecognized sign-in page must still reach the owner");
+    assert.match(
+      manual[0]?.message ?? "",
+      /sign-in form did not render/,
+      "the existing, load-bearing handoff message must survive the two-step fix"
+    );
+    assert.equal(fillCalls.username, undefined, "nothing may be typed into a form the connector does not recognize");
+    assert.equal(fillCalls.password, undefined);
+  });
+});
+
+// COUNTERWEIGHT: the one-screen sign-in (both fields visible at once) must
+// still work, and must NOT click a step-one control it does not need. A fix
+// that made two-step work by always clicking twice would submit a bare
+// identifier into a form that already had the password.
+test("ensureVenmoSession: a one-screen sign-in still completes with a single submit (COUNTERWEIGHT)", async () => {
+  await withVenmoCredentials(async () => {
+    const { fillCalls, page } = makePageWithWorkingLoginForm();
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
+    assert.equal(result.live, true);
+    assert.equal(fillCalls.username, "test-user");
+    assert.equal(fillCalls.password, "test-password");
+    assert.deepEqual(requests, [], "a one-screen form needs no owner involvement");
   });
 });
 
