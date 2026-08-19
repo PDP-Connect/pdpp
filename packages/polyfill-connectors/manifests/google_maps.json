@@ -162,7 +162,7 @@
           "group_by": ["activity_type"]
         }
       },
-      "coverage_strategy": "checkpoint_window",
+      "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "manual_as_of"
     },
     {
@@ -242,7 +242,7 @@
           "group_by": ["segment_kind"]
         }
       },
-      "coverage_strategy": "checkpoint_window",
+      "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "manual_as_of"
     }
   ],
