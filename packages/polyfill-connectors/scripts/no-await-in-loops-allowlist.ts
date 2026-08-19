@@ -2260,9 +2260,16 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/auto-login/venmo.test.ts",
-    line: 808,
+    line: 1015,
     column: 9,
     category: "test_assertion_sequencing",
     note: "ensureVenmoSession(): test drives an ordered retry-if-retryable dispatch simulation",
+  },
+  {
+    path: "src/auto-login/venmo.ts",
+    line: 382,
+    column: 32,
+    category: "ordered_browser_interaction",
+    note: "Promise.all(): sequential Playwright action against the shared page/context",
   },
 ];

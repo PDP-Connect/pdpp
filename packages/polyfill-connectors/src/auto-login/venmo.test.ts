@@ -23,17 +23,41 @@ const STREAMING_ENV_KEYS = [
   "PDPP_LOCAL_DEVICE_TOKEN",
 ] as const;
 
-function makeLocator({ count = 1, visible = true }: { count?: number; visible?: boolean } = {}): Locator {
-  const fake: Pick<Locator, "click" | "count" | "fill" | "first" | "innerText" | "isVisible" | "waitFor"> = {
+/**
+ * `enabled` is modelled separately from `visible` on purpose: Playwright
+ * reports a disabled field as visible, so the two are independent facts and a
+ * locator fake that conflated them could not express the inert-code-box page.
+ */
+function makeLocator({
+  count = 1,
+  enabled = true,
+  innerText = "",
+  visible = true,
+}: {
+  count?: number;
+  enabled?: boolean;
+  innerText?: string;
+  visible?: boolean;
+} = {}): Locator {
+  const fake: Pick<
+    Locator,
+    "click" | "count" | "fill" | "first" | "innerText" | "isEnabled" | "isVisible" | "nth" | "waitFor"
+  > = {
     click: (): Promise<void> => Promise.resolve(),
     count: (): Promise<number> => Promise.resolve(count),
     fill: (_value: string): Promise<void> => Promise.resolve(),
     first(): Locator {
       return fake as Locator;
     },
-    innerText: (): Promise<string> => Promise.resolve(""),
+    innerText: (): Promise<string> => Promise.resolve(innerText),
+    isEnabled(): Promise<boolean> {
+      return Promise.resolve(enabled);
+    },
     isVisible(): Promise<boolean> {
       return Promise.resolve(visible);
+    },
+    nth(): Locator {
+      return fake as Locator;
     },
     waitFor(): Promise<void> {
       return count > 0 ? Promise.resolve() : Promise.reject(new Error("Timeout waiting for locator"));
@@ -446,6 +470,189 @@ test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, nev
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "otp");
     assert.doesNotMatch(requests[0]?.message ?? "", /test-password/);
+  });
+});
+
+/**
+ * Drives `ensureVenmoSession` from the login form through to the OTP decision
+ * with an OTP field whose usability and the page's body copy are both set by
+ * the caller. `onOtpClassified` fires on each read of the OTP selector, which
+ * is the connector's own classification checkpoint — that is where a test can
+ * mutate the page out from under the prompt site.
+ *
+ * Synthetic, not a real capture: no Venmo auth-page markup exists on disk, and
+ * the live site is off limits because it is the owner's real payments account.
+ * The selectors modelled here come from the module's own constants.
+ */
+function makeOtpDecisionPage({
+  bodyText,
+  otpCount = 1,
+  otpEnabled = true,
+  otpVisible = true,
+  onOtpClassified,
+}: {
+  bodyText: string;
+  otpCount?: number;
+  otpEnabled?: boolean;
+  otpVisible?: boolean;
+  onOtpClassified?: (mutate: (next: { otpVisible: boolean }) => void) => void;
+}): { page: Page } {
+  const state = { otpVisible };
+  let currentUrl = "https://venmo.com/";
+  const submit = makeLocator();
+  const otpLocator = (): Locator => makeLocator({ count: otpCount, enabled: otpEnabled, visible: state.otpVisible });
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      return { kind: "dead" };
+    },
+    getByRole: (): Locator => submit,
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      if (selector === "body") {
+        return makeLocator({ innerText: bodyText });
+      }
+      if (selector.includes("username")) {
+        return makeLocator();
+      }
+      if (selector.includes("password")) {
+        return makeLocator();
+      }
+      if (selector.includes("otp") || selector.includes("code")) {
+        // Reading the OTP selector is the connector's classification
+        // checkpoint. Resolve the locator against the CURRENT state first,
+        // then let the test mutate what the next read will see.
+        const resolved = otpLocator();
+        onOtpClassified?.((next) => {
+          state.otpVisible = next.otpVisible;
+        });
+        return resolved;
+      }
+      return makeLocator({ count: 0, visible: false });
+    },
+    url: (): string => currentUrl,
+    waitForLoadState: (): ReturnType<Page["waitForLoadState"]> => Promise.resolve(),
+    waitForTimeout: (): ReturnType<Page["waitForTimeout"]> => Promise.resolve(),
+  };
+  return { page: page as Page };
+}
+
+test("ensureVenmoSession: a page matching the OTP copy with no code input hands off instead of demanding a code", async () => {
+  await withVenmoCredentials(async () => {
+    // Matching copy with nothing that can accept a code. Venmo dispatched
+    // nothing, so PDPP must demand nothing.
+    const { page } = makeOtpDecisionPage({
+      bodyText: "We sent a verification code to your phone",
+      otpCount: 0,
+      otpVisible: false,
+    });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        sendInteraction,
+      }),
+      /venmo_login_incomplete_after_submit/
+    );
+    assert.deepEqual(
+      requests.filter((req): boolean => req.kind === "otp"),
+      [],
+      "no OTP prompt may be emitted for a page that cannot accept a code"
+    );
+  });
+});
+
+test("ensureVenmoSession: a rendered but disabled code box never asks the owner for a code", async () => {
+  await withVenmoCredentials(async () => {
+    // The defect shape this fix closes. A disabled field still reports itself
+    // visible, so a visibility-only check read an inert box as a live
+    // challenge and demanded a code Venmo never sent.
+    const { page } = makeOtpDecisionPage({
+      bodyText: "We sent a verification code to your phone",
+      otpEnabled: false,
+      otpVisible: true,
+    });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        sendInteraction,
+      }),
+      /venmo_login_incomplete_after_submit/
+    );
+    assert.deepEqual(
+      requests.filter((req): boolean => req.kind === "otp"),
+      [],
+      "a code box that cannot accept input is not evidence a code was sent"
+    );
+    assert.equal(
+      requests.filter((req): boolean => req.kind === "manual_action").length,
+      1,
+      "the owner is handed the browser rather than asked for a code that does not exist"
+    );
+  });
+});
+
+test("ensureVenmoSession: a split per-digit code layout still counts as a real code-entry page", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makeOtpDecisionPage({
+      bodyText: "Enter the code we sent you",
+      otpCount: 6,
+    });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    }).catch((): undefined => undefined);
+    assert.equal(
+      requests.filter((req): boolean => req.kind === "otp").length,
+      1,
+      "a boxed per-digit layout must stay recognized as a genuine code screen"
+    );
+  });
+});
+
+test("ensureVenmoSession: a code input that vanishes after classification fails loudly instead of prompting", async () => {
+  await withVenmoCredentials(async () => {
+    // Classification sees a usable input; Venmo re-renders it away before the
+    // prompt site is reached. The prompt-site re-check must catch that.
+    // Sequenced off the connector's own reads rather than a timer. Read 1 only
+    // binds the locator; read 2 is `hasUsableVenmoOtpInput` deciding this IS an
+    // OTP page. Venmo re-renders the input away at that instant, so the
+    // prompt-site re-check (read 3) must find nothing and throw.
+    let otpSelectorReads = 0;
+    const { page } = makeOtpDecisionPage({
+      bodyText: "We sent a verification code to your phone",
+      onOtpClassified: (mutate) => {
+        otpSelectorReads += 1;
+        if (otpSelectorReads === 2) {
+          mutate({ otpVisible: false });
+        }
+      },
+    });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        sendInteraction,
+      }),
+      /venmo_otp_input_missing/
+    );
+    assert.deepEqual(
+      requests.filter((req): boolean => req.kind === "otp"),
+      [],
+      "the prompt must not fire once the code input is gone"
+    );
   });
 });
 

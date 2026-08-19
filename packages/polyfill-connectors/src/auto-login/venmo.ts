@@ -29,7 +29,7 @@
  */
 
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 import { DEADLINE_TIMEOUT, manualBrowserLogin, withDeadline } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
@@ -117,7 +117,20 @@ const PASSWORD_SELECTOR = 'input[name="password"], input#password, input[type="p
 const OTP_SELECTOR =
   'input[name="otp"], input[name="code"], input[autocomplete="one-time-code"], input[name="smsCode"]';
 const SUBMIT_BUTTON_NAME_RE = /^(log in|sign in|continue|next)$/i;
+/**
+ * Copy that ACCOMPANIES a code-entry screen. Necessary but never sufficient:
+ * "we sent"/"we texted" is ordinary Venmo prose that also appears on device-
+ * approval screens and notification banners, none of which can accept a code.
+ * See {@link hasUsableVenmoOtpInput}.
+ */
 const OTP_PROMPT_TEXT_RE = /verification code|enter the code|we (?:sent|texted)|2-step|two-factor/i;
+/**
+ * A split per-digit layout has one input per digit. Venmo's current web
+ * sign-in renders a single 6-digit field, but the bound keeps a redesign to a
+ * boxed layout classifiable instead of silently unrecognized. Anything larger
+ * is a page full of inputs, not a code entry.
+ */
+const MAX_SPLIT_CODE_DIGITS = 10;
 const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
   "No optional Venmo sign-in details were provided. Sign in to Venmo in the secure browser, then respond success.";
 
@@ -334,6 +347,62 @@ export async function probeVenmoAccount(
   return outcome.kind === "live" ? { live: true, ownerId: outcome.ownerId } : { live: false, ownerId: null };
 }
 
+/**
+ * Every OTP input this module recognizes, unnarrowed — the countable form of
+ * {@link findVenmoOtpInput}. Classification needs to count candidates (a split
+ * per-digit layout has several); the fill path needs exactly one. Both read the
+ * same selector so a page can never be classified off an input the fill path
+ * would not find.
+ */
+function venmoOtpInputCandidates(page: Page): Locator {
+  return page.locator(OTP_SELECTOR);
+}
+
+function findVenmoOtpInput(page: Page): Locator {
+  return venmoOtpInputCandidates(page).first();
+}
+
+function isViableVenmoOtpDigitCount(codeCount: number): boolean {
+  return codeCount === 1 || (codeCount > 1 && codeCount <= MAX_SPLIT_CODE_DIGITS);
+}
+
+/**
+ * Count the OTP inputs that are actually usable right now — visible AND
+ * enabled. `locatorIsVisible` answers only the first half: a disabled field
+ * still reports itself visible, so a rendered-but-inert code box passed the
+ * old check and reached the prompt. Presence, and even visibility, is not
+ * evidence; usability is.
+ */
+async function countUsableVenmoOtpInputs(page: Page): Promise<number> {
+  const candidates = venmoOtpInputCandidates(page);
+  const count = await candidates.count().catch((): number => 0);
+  let usable = 0;
+  for (let i = 0; i < count; i += 1) {
+    const candidate = candidates.nth(i);
+    const [visible, enabled] = await Promise.all([
+      candidate.isVisible().catch((): boolean => false),
+      candidate.isEnabled().catch((): boolean => false),
+    ]);
+    if (visible && enabled) {
+      usable += 1;
+    }
+  }
+  return usable;
+}
+
+/**
+ * Whether this page can actually ACCEPT a code right now.
+ *
+ * This is the evidence that makes an OTP classification honest. Prompting the
+ * owner commits them to fetching a secret out of band, and a fabricated prompt
+ * on a payments account trains them to expect code demands Venmo never sent.
+ * So the bar is a real, visible, enabled code input: one field, or the split
+ * per-digit layout.
+ */
+async function hasUsableVenmoOtpInput(page: Page): Promise<boolean> {
+  return isViableVenmoOtpDigitCount(await countUsableVenmoOtpInputs(page));
+}
+
 async function clickVenmoLoginSubmit(page: Page): Promise<boolean> {
   const semantic = page.getByRole("button", { name: SUBMIT_BUTTON_NAME_RE }).first();
   if (await locatorIsVisible(semantic)) {
@@ -482,20 +551,27 @@ async function fillVenmoPassword(args: ManualHandoff & { password: string }): Pr
  */
 async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccountProbeResult | null> {
   const { capture, page, sendInteraction } = args;
-  const otpIn = page.locator(OTP_SELECTOR).first();
+  const otpIn = findVenmoOtpInput(page);
   const bodyText = (
     await page
       .locator("body")
       .innerText()
       .catch((): string => "")
   ).slice(0, 1000);
-  if (!((await locatorIsVisible(otpIn)) || OTP_PROMPT_TEXT_RE.test(bodyText))) {
+  // A usable code input is what makes this an OTP challenge. Matching copy
+  // alone still routes to a handoff below rather than a prompt, but a code box
+  // that is merely RENDERED is not evidence either: a disabled field reports
+  // itself visible, so `locatorIsVisible` alone let an inert box demand a code
+  // Venmo never sent.
+  const usableOtpInput = await hasUsableVenmoOtpInput(page);
+  if (!(usableOtpInput || OTP_PROMPT_TEXT_RE.test(bodyText))) {
     return null;
   }
   await captureLoginState(capture, page, "venmo-otp-detected");
-  if (!(await locatorIsVisible(otpIn))) {
-    // Prompt text matched but no known input shape — hand off rather
-    // than guess a selector for a UI we can't confirm.
+  if (!usableOtpInput) {
+    // Either the prompt copy matched with no known input shape, or an input
+    // rendered that cannot accept a code. Hand off rather than guess a
+    // selector for a UI we can't confirm — and never fabricate a code demand.
     return await requestManualLoginForChallenge({
       ...(capture ? { capture } : {}),
       page,
@@ -503,6 +579,13 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccoun
       reason: "verification step did not match a known input",
       sendInteraction,
     });
+  }
+  // Last line of defense before the owner is asked for a secret. Classification
+  // already required a usable code input, but Venmo can re-render or navigate
+  // between that check and this one. Fail loudly with a named error rather than
+  // prompting against a page that cannot accept a code.
+  if (!(await hasUsableVenmoOtpInput(page))) {
+    throw new Error("venmo_otp_input_missing");
   }
   const resp = await sendInteraction({
     kind: "otp",
