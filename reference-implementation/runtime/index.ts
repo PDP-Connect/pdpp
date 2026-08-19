@@ -45,6 +45,7 @@ import {
   normalizeGapScope,
   VIOLATION_LIST_MAX,
 } from "./connector-gap-bounding.ts";
+import { declaredReasonTokensFor } from "./declared-reason-tokens.ts";
 import { createDetailGapPageReader, validateDetailGapsPageRequest } from "./detail-gap-paging.ts";
 import {
   validateDoneError,
@@ -2924,7 +2925,15 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       data.reported_records_emitted = reportedRecordsEmitted;
     }
     if (connectorError?.message) {
-      data.connector_error_message = boundConnectorErrorMessage(connectorError.message);
+      // `connectorId` closes over the enclosing run's canonical connector
+      // id. `declaredReasonTokensFor` returns `undefined` for every
+      // connector not registered in `declared-reason-tokens.ts` — those
+      // stay byte-identical to prior behavior; only a connector that
+      // declared its own reason-token vocabulary gets it preserved here.
+      data.connector_error_message = boundConnectorErrorMessage(
+        connectorError.message,
+        declaredReasonTokensFor(connectorId)
+      );
     }
     // Unlike `message`, `code` is copied without redaction — it is a typed,
     // non-secret channel by contract, so it MUST be validated (not
