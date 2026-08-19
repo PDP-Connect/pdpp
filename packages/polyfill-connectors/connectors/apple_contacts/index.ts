@@ -50,6 +50,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import {
+  addressbookMultiget,
   addressbookQueryAll,
   CardDavStructuralError,
   listAddressBooks,
@@ -334,6 +335,49 @@ async function emitContactGroupsIfRequested(args: {
   return groupsEmitted;
 }
 
+/**
+ * Fetch and emit vCard bodies for members a sync-collection response
+ * enumerated without inlining `address-data` (RFC 6352 §8.7
+ * addressbook-multiget). Returns the count of enumerated members whose body
+ * the server never handed over, so the caller can keep them in the coverage
+ * denominator instead of dropping them.
+ */
+async function hydrateMissingBodies(args: {
+  authHeader: string;
+  bookUrl: string;
+  emitContactRecord: (resource: VCardResource) => Promise<void>;
+  fetchImpl: DiscoveryFetch;
+  hrefs: readonly string[];
+  progress: (message: string, extra?: { count?: number; stream?: string; total?: number }) => Promise<void>;
+  trustedOrigins: string[];
+}): Promise<number> {
+  const { authHeader, bookUrl, emitContactRecord, fetchImpl, hrefs, progress, trustedOrigins } = args;
+  if (hrefs.length === 0) {
+    return 0;
+  }
+  await progress("Fetching contact bodies the sync response did not inline", {
+    stream: "contacts",
+    count: 0,
+    total: hrefs.length,
+  });
+  const fetched = await addressbookMultiget({ bookUrl, authHeader, fetchImpl, trustedOrigins, hrefs }).catch(
+    (err: unknown) => {
+      throw classifyCardDavRequestFailure(err, { retryableByDefault: true });
+    }
+  );
+  const fetchedByHref = new Map(fetched.map((resource) => [resource.href, resource]));
+  let unfetched = 0;
+  for (const href of hrefs) {
+    const resource = fetchedByHref.get(href);
+    if (resource) {
+      await emitContactRecord(resource);
+      continue;
+    }
+    unfetched += 1;
+  }
+  return unfetched;
+}
+
 async function loadFullGroupSnapshot(args: {
   authHeader: string;
   bookUrl: string;
@@ -462,6 +506,26 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     for (const resource of resolvedSyncResult.resources) {
       await emitContactRecord(resource);
     }
+    // A sync-collection response is only obliged to enumerate members; RFC
+    // 6578 §3.2 does not require the server to inline the `address-data` the
+    // request asked for, and iCloud returns `getetag` only. Fetch those
+    // bodies explicitly (RFC 6352 §8.7 addressbook-multiget) — treating an
+    // un-inlined member as absent is what made a populated address book
+    // report zero contacts.
+    const unfetched = await hydrateMissingBodies({
+      authHeader,
+      bookUrl: book.url,
+      emitContactRecord,
+      fetchImpl,
+      hrefs: resolvedSyncResult.hrefsMissingBodies,
+      progress,
+      trustedOrigins,
+    });
+    // A member the server enumerated but whose body it never returned must
+    // stay in the denominator: considered-but-not-covered is an honest
+    // partial, where dropping it would fabricate a complete claim.
+    resourcesEnumerated += unfetched;
+    unparseableResources += unfetched;
     for (const deletedHref of resolvedSyncResult.deletedHrefs) {
       if (requested.has("contacts")) {
         await emitRecord("contacts", contactTombstone(book.url, deletedHref));

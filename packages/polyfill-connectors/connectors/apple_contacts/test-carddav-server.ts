@@ -35,11 +35,30 @@ export interface FakeServerOptions {
    * mistaken for an empty INVENTORY.
    */
   enforceRfc6578IncrementalSemantics?: boolean;
+  /** When true, `addressbook-multiget` answers 404 for every requested href.
+   *  Models a member the server enumerated but whose body it will not hand
+   *  over, so the client must report considered-but-not-covered rather than a
+   *  proven zero. */
+  multigetReturnsNoBodies?: boolean;
   password: string;
   /** When true, /.well-known/carddav redirects to a second listener
    *  simulating iCloud's regional-host resolution, instead of a
    *  same-origin redirect. */
   regionalHost?: boolean;
+  /**
+   * When true, the sync-collection REPORT enumerates members with `getetag`
+   * ONLY — it does not inline the requested `address-data` — and additionally
+   * reports the collection's own href alongside its members. This is the
+   * behavior observed live against iCloud (p196-contacts.icloud.com, probe
+   * 2026-08-19) and it is RFC-legal: RFC 6578 §3.2 obliges the server to
+   * enumerate changed members, not to inline arbitrary properties. Bodies are
+   * then only obtainable via `addressbook-multiget` (RFC 6352 §8.7).
+   *
+   * Set this to reproduce the class of defect where a client drops every
+   * enumerated member that arrived without an inlined body, turning a
+   * populated address book into a measured zero.
+   */
+  syncCollectionOmitsAddressData?: boolean;
   /** When true, the sync-collection REPORT (and addressbook-query REPORT)
    *  respond with a 302 to an untrusted, unrelated origin instead of the
    *  normal multistatus body — models a compromised/misconfigured server
@@ -69,6 +88,8 @@ export interface FakeCardDavServer {
   url: (path: string) => string;
 }
 
+const TRAILING_SLASH_RE = /\/$/;
+const ABSOLUTE_HREF_RE = /^https?:\/\//i;
 const NS_D = "DAV:";
 const NS_CS = "http://calendarserver.org/ns/";
 const PRINCIPAL_PATH = "/principals/owner/";
@@ -130,6 +151,8 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
     regionalHost = false,
     wellKnownAnswersInlineWithoutPrincipal = false,
     syncReportRedirectsToUnsafeOrigin = false,
+    syncCollectionOmitsAddressData = false,
+    multigetReturnsNoBodies = false,
   } = options;
   const contacts = new Map<string, FakeContact>();
   const deletedHrefs = new Set<string>();
@@ -191,6 +214,50 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
       )
       .join("");
 
+  /** Members enumerated with `getetag` only — no inlined `address-data`. */
+  const etagOnlyResponseBlocks = (): string =>
+    [...contacts.values()]
+      .map(
+        (c) =>
+          `<D:response><D:href>${c.href}</D:href><D:propstat><D:prop><D:getetag>"${c.uid}-${String(changeCounter)}"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`
+      )
+      .join("");
+
+  const HREF_RE = /<[^:>]*:?href[^>]*>([\s\S]*?)<\/[^:>]*:?href>/gi;
+
+  /** RFC 6352 §8.7 addressbook-multiget: return bodies for exactly the
+   *  requested hrefs, and 404 any href the collection does not hold. */
+  const respondAddressbookMultiget = (res: ServerResponse, body: string): void => {
+    const requestedHrefs = [...body.matchAll(HREF_RE)].map((m) => (m[1] ?? "").trim());
+    // iCloud answers 400 to an absolute <D:href> inside a multiget and 207 to
+    // the path form (probe against p196-contacts.icloud.com, 2026-08-19).
+    // Enforce that here so a regression to absolute hrefs fails in tests
+    // instead of only against the real provider.
+    if (requestedHrefs.some((href) => ABSOLUTE_HREF_RE.test(href))) {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("Bad Request");
+      return;
+    }
+    const blocks = requestedHrefs
+      .map((href) => {
+        const path = (() => {
+          try {
+            return new URL(href, "http://placeholder.invalid").pathname;
+          } catch {
+            return href;
+          }
+        })();
+        const contact = multigetReturnsNoBodies ? undefined : [...contacts.values()].find((c) => c.href === path);
+        if (!contact) {
+          return `<D:response><D:href>${href}</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response>`;
+        }
+        return `<D:response><D:href>${contact.href}</D:href><D:propstat><D:prop><D:getetag>"${contact.uid}-${String(changeCounter)}"</D:getetag><C:address-data>${xmlEscape(contact.vcard)}</C:address-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`;
+      })
+      .join("");
+    res.writeHead(207, { "Content-Type": "application/xml" });
+    res.end(multistatus(blocks));
+  };
+
   const respondSyncCollection = (res: ServerResponse, requestedSyncToken: string): void => {
     if (syncReportRedirectsToUnsafeOrigin) {
       res.writeHead(302, { Location: "https://attacker.example/steal-carddav-creds" });
@@ -209,8 +276,16 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
     // RFC 6578 §3.2: a non-empty sync-token requests only what changed since
     // that token. Nothing has changed in this fixture, so the change feed is
     // empty — while the collection itself still holds every contact.
-    const members = enforceRfc6578IncrementalSemantics && requestedSyncToken.length > 0 ? "" : contactResponseBlocks();
-    const responseBody = multistatus(`${members}${deleted}<D:sync-token>${newToken}</D:sync-token>`);
+    const quiet = enforceRfc6578IncrementalSemantics && requestedSyncToken.length > 0;
+    const populatedMembers = syncCollectionOmitsAddressData ? etagOnlyResponseBlocks() : contactResponseBlocks();
+    const members = quiet ? "" : populatedMembers;
+    // iCloud reports the collection's own href (without a trailing slash)
+    // beside its members. A client must not mistake it for a contact.
+    const collectionBlock =
+      syncCollectionOmitsAddressData && !quiet
+        ? `<D:response><D:href>${BOOK_PATH.replace(TRAILING_SLASH_RE, "")}</D:href><D:propstat><D:prop><D:getetag>collection-${String(changeCounter)}</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`
+        : "";
+    const responseBody = multistatus(`${collectionBlock}${members}${deleted}<D:sync-token>${newToken}</D:sync-token>`);
     res.writeHead(207, { "Content-Type": "application/xml" });
     res.end(responseBody);
   };
@@ -259,6 +334,10 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
     {
       match: (req, url, body) => req.method === "REPORT" && url === BOOK_PATH && body.includes("sync-collection"),
       respond: (_req, res, _origin, body) => respondSyncCollection(res, extractSyncTokenFromRequest(body ?? "")),
+    },
+    {
+      match: (req, url, body) => req.method === "REPORT" && url === BOOK_PATH && body.includes("addressbook-multiget"),
+      respond: (_req, res, _origin, body) => respondAddressbookMultiget(res, body ?? ""),
     },
     {
       match: (req, url, body) => req.method === "REPORT" && url === BOOK_PATH && body.includes("addressbook-query"),

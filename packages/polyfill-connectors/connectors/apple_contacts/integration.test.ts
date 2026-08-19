@@ -561,3 +561,109 @@ test("apple_contacts integration: never logs credentials or vCard field values i
     await server.close();
   }
 });
+
+/**
+ * Live-shape regression (probe against p196-contacts.icloud.com, 2026-08-19).
+ *
+ * iCloud answers a `sync-collection` REPORT by enumerating each member with
+ * `getetag` ONLY — it does not inline the `address-data` the request asked
+ * for — and it also lists the collection's own href beside its members. That
+ * is RFC-legal (RFC 6578 §3.2 requires enumeration, not inlining), so the
+ * client must fetch bodies via `addressbook-multiget` (RFC 6352 §8.7).
+ *
+ * Before this was handled, the connector dropped every member that arrived
+ * without an inlined body, and a populated address book reported a *measured*
+ * zero — the most dangerous possible failure, because a proven zero is
+ * indistinguishable downstream from a genuinely empty account.
+ */
+test("apple_contacts integration: collects contacts when sync-collection enumerates members without inlining address-data", async () => {
+  const server = await startFakeCardDavServer({
+    username: USERNAME,
+    password: PASSWORD,
+    syncCollectionOmitsAddressData: true,
+  });
+  try {
+    server.contacts.set("frank", {
+      uid: "frank",
+      href: "/addressbooks/owner/card/frank.vcf",
+      vcard: buildVCard({ uid: "frank", fn: "Frank Example", email: "frank@example.com", categories: ["Family"] }),
+    });
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded");
+
+    const contacts = recordsOf(result.messages, "contacts");
+    assert.equal(contacts.length, 1, "the enumerated member's body must be fetched, not dropped");
+    assert.equal(contacts[0]?.display_name, "Frank Example");
+
+    // The collection's own href is enumerated alongside its members; it must
+    // not be mistaken for a contact resource.
+    assert.equal(
+      contacts.some((c) => String(c.id).endsWith("/addressbooks/owner/card")),
+      false,
+      "the collection itself must not be emitted as a contact"
+    );
+
+    const contactsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(contactsCoverage.considered, 1);
+    assert.equal(contactsCoverage.covered, 1);
+
+    // Groups derive from CATEGORIES, which only exist once bodies are hydrated.
+    const groups = recordsOf(result.messages, "contact_groups");
+    assert.deepEqual(
+      groups.map((g) => g.name),
+      ["Family"]
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("apple_contacts integration: an enumerated member whose body never arrives is an honest partial, not a proven zero", async () => {
+  const server = await startFakeCardDavServer({
+    username: USERNAME,
+    password: PASSWORD,
+    syncCollectionOmitsAddressData: true,
+    multigetReturnsNoBodies: true,
+  });
+  try {
+    server.contacts.set("ghost", {
+      uid: "ghost",
+      href: "/addressbooks/owner/card/ghost.vcf",
+      vcard: buildVCard({ uid: "ghost", fn: "Ghost Example" }),
+    });
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded");
+
+    assert.equal(recordsOf(result.messages, "contacts").length, 0);
+
+    const contactsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(contactsCoverage.considered, 1, "the member the server enumerated must stay in the denominator");
+    assert.equal(contactsCoverage.covered, 0);
+    assert.equal(
+      contactsCoverage.considered > contactsCoverage.covered,
+      true,
+      "an unfetchable member must read as an honest partial, never a proven zero"
+    );
+  } finally {
+    await server.close();
+  }
+});
