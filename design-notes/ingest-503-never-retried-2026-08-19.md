@@ -93,11 +93,18 @@ than fixing anything; runs still die under enough load until the client retries.
 
 ## Open
 
-- **Are the 56,440 records lost, or re-fetched next run?**
-  `buffered_records_dropped` proves they left the buffer, not that they were
-  never recovered. Checkpointing may re-fetch them. This decides whether the
-  bug cost the owner data or only wasted work, and it is the question worth
-  answering next.
+- ~~Are the 56,440 records lost, or re-fetched next run?~~ **Answered: not
+  lost.** All 129 killed runs ran `checkpointed_streaming` with
+  `persist_state: true`, and the failure payloads carry
+  `checkpoint_commit: not_committed, retryable: true` — the cursor never
+  advanced past the failed batch, so the next run re-fetches from it.
+  Corroborated against Gmail's own record stream, the worst-hit connector with
+  86 kills: it ingested about 50,000 records a day straight through the outage
+  window, and across three days there is exactly one inter-record gap longer
+  than two hours (2h40m, the shape of a quiet mailbox overnight, not a hole).
+
+  So this bug cost work, wall-clock, and green status — not data. Worth
+  stating plainly, because "56,440 records dropped" reads as loss and is not.
 - **What saturated the global gate at 03:10?** No other run touched that
   instance and no semantic work was logged. The gate is global, so any
   concurrent writer counts, but the holder is not identifiable from current
