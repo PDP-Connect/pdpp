@@ -35,6 +35,7 @@ type RunConnectorTestOptions = Omit<RuntimeRunConnectorOptions, "detailGapStore"
 type RunConnectorFn = (opts: RunConnectorTestOptions) => Promise<RuntimeRunConnectorResult>;
 const runConnectorWithGapStore = runConnector as RunConnectorFn;
 const DIFFERENT_PARENT_STREAM_PATTERN = /different parent stream/;
+const TOO_LARGE_REFUSAL_PATTERN = /too_large/;
 
 // This file never routes through the real connector-instance store — every
 // dependency it hands the runtime (detail gap store, state server, etc.) is
@@ -2797,6 +2798,134 @@ test(
   })
 );
 
+// ─── `--reason=` extension: explicit named terminal-reason requeue ──────────
+//
+// Reproduces the Gmail cin_12407c1afb78d56848fe0b20 shape: a terminal
+// `temporary_unavailable` attachments row with NO recorded last_error (37-117
+// silent retries), scoped alongside a `too_large` row that DOES carry a
+// durable size-vs-cap proof, on the SAME connector instance and stream. The
+// extension must reopen the former under an explicit `--reason=` and refuse
+// the latter categorically, never by accident of which one happens to be
+// requeued first.
+
+test(
+  "store requeues an explicitly named non-default reason (temporary_unavailable) and leaves other reasons on the same instance untouched",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorInstanceId = "cin_gmail_reason_scope_test";
+    const seededTempUnavailable = await store.upsertPendingGap({
+      connectorId: "gmail",
+      connectorInstanceId,
+      gapId: "gap_temp_unavailable_reason_scope",
+      reason: "temporary_unavailable",
+      recordKey: "attachment_temp_unavailable",
+      stream: "attachments",
+    });
+    assert.ok(seededTempUnavailable, "seededTempUnavailable is present");
+    // Production shape: terminalized after repeated attempts with no recorded error at all.
+    await store.markGapStatus(seededTempUnavailable.gap_id, "terminal", {});
+
+    const seededQuarantined = await store.upsertPendingGap({
+      connectorId: "gmail",
+      connectorInstanceId,
+      gapId: "gap_quarantined_reason_scope",
+      reason: "quarantined",
+      recordKey: "attachment_quarantined",
+      stream: "attachments",
+    });
+    assert.ok(seededQuarantined, "seededQuarantined is present");
+    await store.markGapStatus(seededQuarantined.gap_id, "terminal", {
+      lastError: { class: "quarantined" },
+      reason: "quarantined",
+    });
+
+    const summary = await store.requeueQuarantinedTerminalGapsForConnectorInstance("gmail", connectorInstanceId, {
+      reason: "temporary_unavailable",
+      streams: ["attachments"],
+    });
+
+    assert.deepEqual(summary, { matched: 1, requeued: 1 });
+
+    const requeued = await store.getGapById(seededTempUnavailable.gap_id);
+    assert.ok(requeued, "requeued is present");
+    assert.equal(requeued.status, "pending", "the named-reason row moved out of terminal");
+    assert.equal(requeued.reason, "temporary_unavailable", "an already-honest reason is preserved, not rewritten");
+    assert.equal(requeued.attempt_count, 0);
+
+    const untouched = await store.getGapById(seededQuarantined.gap_id);
+    assert.ok(untouched, "untouched is present");
+    assert.equal(untouched.status, "terminal", "a different reason on the SAME instance/stream is never swept up");
+    assert.equal(untouched.reason, "quarantined");
+  })
+);
+
+test(
+  "store refuses to requeue too_large even when --reason=too_large is named explicitly, on both backends",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorInstanceId = "cin_gmail_too_large_refusal_test";
+    const seeded = await store.upsertPendingGap({
+      connectorId: "gmail",
+      connectorInstanceId,
+      gapId: "gap_too_large_refusal",
+      reason: "too_large",
+      recordKey: "oversized_attachment",
+      stream: "attachments",
+    });
+    assert.ok(seeded, "seeded is present");
+    await store.markGapStatus(seeded.gap_id, "terminal", {
+      lastError: { class: "too_large", message: "attachment exceeds max size: 29209135 > 26214400 bytes" },
+      reason: "too_large",
+    });
+
+    await assert.rejects(
+      () =>
+        store.requeueQuarantinedTerminalGapsForConnectorInstance("gmail", connectorInstanceId, {
+          reason: "too_large",
+          streams: ["attachments"],
+        }),
+      TOO_LARGE_REFUSAL_PATTERN,
+      "the store refuses the call outright rather than matching zero rows silently"
+    );
+
+    // Zero rows changed: the refusal is a thrown error before any read/write,
+    // not a mutation that happened to affect nothing.
+    const untouched = await store.getGapById(seeded.gap_id);
+    assert.ok(untouched, "untouched is present");
+    assert.equal(untouched.status, "terminal");
+    assert.equal(untouched.reason, "too_large");
+  })
+);
+
+test(
+  "store default reason (quarantined) is unchanged by the --reason= extension",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorInstanceId = "cin_amazon_default_reason_test";
+    const seeded = await store.upsertPendingGap({
+      connectorId: "amazon",
+      connectorInstanceId,
+      reason: "temporary_unavailable",
+      recordKey: "default_reason_order",
+      stream: "order_items",
+    });
+    assert.ok(seeded, "seeded is present");
+    await store.markGapStatus(seeded.gap_id, "terminal", {
+      lastError: { class: "quarantined" },
+      reason: "quarantined",
+    });
+
+    // No `reason` option at all — must behave exactly as before this change.
+    const summary = await store.requeueQuarantinedTerminalGapsForConnectorInstance("amazon", connectorInstanceId, {});
+
+    assert.deepEqual(summary, { matched: 1, requeued: 1 });
+    const requeued = await store.getGapById(seeded.gap_id);
+    assert.ok(requeued, "requeued is present");
+    assert.equal(requeued.status, "pending");
+    assert.equal(requeued.reason, "temporary_unavailable", "quarantine unwrap logic is unchanged");
+  })
+);
+
 // ─── Durable lease acceptance tests ──────────────────────────────────────────
 //
 // These tests prove the lease fix: gaps marked in_progress when served are
@@ -3357,6 +3486,46 @@ test(
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 if (POSTGRES_URL) {
+  test("Postgres store refuses to requeue too_large even when --reason=too_large is named explicitly", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gap_pg_too_large_refusal_${suffix}`;
+    const connectorInstanceId = `cin_pg_too_large_refusal_${suffix}`;
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      const seeded = await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        reason: "too_large",
+        recordKey: "oversized_attachment_pg",
+        stream: "attachments",
+      });
+      assert.ok(seeded, "seeded is present");
+      await store.markGapStatus(seeded.gap_id, "terminal", {
+        lastError: { class: "too_large", message: "attachment exceeds max size: 30000000 > 26214400 bytes" },
+        reason: "too_large",
+      });
+
+      await assert.rejects(
+        () =>
+          store.requeueQuarantinedTerminalGapsForConnectorInstance(connectorId, connectorInstanceId, {
+            reason: "too_large",
+          }),
+        TOO_LARGE_REFUSAL_PATTERN,
+        "the store refuses the call outright rather than matching zero rows silently"
+      );
+
+      const untouched = await store.getGapById(seeded.gap_id);
+      assert.ok(untouched, "untouched is present");
+      assert.equal(untouched.status, "terminal");
+    } finally {
+      await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
   test("detail-gap page batch preserves exact-instance pending and aggregate facts on Postgres", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `gap_pg_batch_${suffix}`;
