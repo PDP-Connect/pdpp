@@ -1636,6 +1636,13 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
     note: "el.isVisible(): sequential Playwright action against the shared page/context",
   },
   {
+    path: "src/auto-login/chase.ts",
+    line: 178,
+    column: 32,
+    category: "ordered_browser_interaction",
+    note: "Promise.all(): sequential Playwright action against the shared page/context",
+  },
+  {
     path: "src/auto-login/chatgpt.ts",
     line: 341,
     column: 7,

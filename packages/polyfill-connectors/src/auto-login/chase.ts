@@ -42,7 +42,20 @@ const LOGON_URL = "https://secure.chase.com/web/auth/";
 const SIGN_OUT_TEXT = /Sign Out|Log Off/i;
 const CHALLENGE_TEXT = /Confirm Your Identity|Choose a confirmation method/i;
 const OTP_PROMPT_TEXT = /Enter (the|your) code|identification code|verification code/i;
+/**
+ * Copy that ACCOMPANIES a code-entry screen. Necessary but never sufficient:
+ * "we sent" is ordinary Chase prose that appears on notifications, alert
+ * banners, and the method chooser's own "we sent a code to..." confirmation
+ * line, none of which can accept a code. See `hasUsableChaseOtpInput`.
+ */
 const OTP_PROMPT_TEXT_WITH_SENT = /Enter (the|your) code|identification code|verification code|we sent/i;
+/**
+ * A split per-digit layout has one input per digit. Chase's current OTP screen
+ * uses a single `mds-text-input-secure` field, but the bound keeps a redesign
+ * to a boxed layout classifiable instead of silently unrecognized. Anything
+ * larger is a page full of inputs, not a code entry.
+ */
+const MAX_SPLIT_CODE_DIGITS = 10;
 const REMEMBER_DEVICE_TEXT = /remember|trust|don't ask/i;
 const NEXT_BUTTON_TEXT = /^Next$/i;
 const OTP_INPUT_FALLBACK_SELECTOR =
@@ -147,7 +160,55 @@ function usablePage(context: BrowserContext, preferred: Page): Page | Promise<Pa
   return openPage ?? context.newPage();
 }
 
+function isViableChaseOtpDigitCount(codeCount: number): boolean {
+  return codeCount === 1 || (codeCount > 1 && codeCount <= MAX_SPLIT_CODE_DIGITS);
+}
+
+/**
+ * Count the OTP inputs that are actually usable right now — visible and
+ * enabled. Chase's light DOM also carries a disabled hidden mirror named
+ * `otp-input`, so presence in the DOM is not evidence; usability is.
+ */
+async function countUsableChaseOtpInputs(page: Page): Promise<number> {
+  const candidates = chaseOtpInputCandidates(page);
+  const count = await candidates.count().catch((): number => 0);
+  let usable = 0;
+  for (let i = 0; i < count; i += 1) {
+    const candidate = candidates.nth(i);
+    const [visible, enabled] = await Promise.all([
+      candidate.isVisible().catch((): boolean => false),
+      candidate.isEnabled().catch((): boolean => false),
+    ]);
+    if (visible && enabled) {
+      usable += 1;
+    }
+  }
+  return usable;
+}
+
+/**
+ * Whether this page can actually ACCEPT a code right now.
+ *
+ * This is the evidence that makes an OTP classification honest. Prompting the
+ * owner for a code commits them to fetching a secret out of band — and on a
+ * bank, a fabricated prompt also trains them to expect OTP demands that Chase
+ * never sent. So the bar is a real, visible, enabled code input: one field, or
+ * the split per-digit layout. Text is not evidence: "we sent" is prose that
+ * appears on pages with no code entry at all.
+ */
+async function hasUsableChaseOtpInput(page: Page): Promise<boolean> {
+  return isViableChaseOtpDigitCount(await countUsableChaseOtpInputs(page));
+}
+
+/**
+ * Matching copy alone can never reach the prompt. A page that says "we sent"
+ * but carries no usable code input is not an OTP challenge, and treating it as
+ * one is how the owner ends up waiting for a code that was never dispatched.
+ */
 async function isOnChaseOtpPage(page: Page): Promise<boolean> {
+  if (!(await hasUsableChaseOtpInput(page))) {
+    return false;
+  }
   const textVisible = await page
     .getByText(OTP_PROMPT_TEXT_WITH_SENT)
     .first()
@@ -182,7 +243,14 @@ async function clickChaseNext(page: Page, fallbackInput?: Locator): Promise<void
   throw new Error("chase_next_button_not_found");
 }
 
-function findChaseOtpInput(page: Page): Locator {
+/**
+ * Every OTP input this module recognizes, unnarrowed — the countable form of
+ * `findChaseOtpInput`. Classification needs to count candidates (a split
+ * per-digit layout has several); the fill path needs exactly one. Both read
+ * the same selectors so a page can never be classified off an input the fill
+ * path would not find.
+ */
+function chaseOtpInputCandidates(page: Page): Locator {
   // Chase's visible OTP input is inside the open shadow root of
   // mds-text-input-secure#otpInput, while the light DOM also contains a
   // disabled hidden input named otp-input. Use a host-then-shadow locator so
@@ -190,8 +258,11 @@ function findChaseOtpInput(page: Page): Locator {
   return page
     .locator("mds-text-input-secure#otpInput")
     .locator("input#otpInput-input, input[autocomplete='one-time-code']")
-    .or(page.locator(OTP_INPUT_FALLBACK_SELECTOR))
-    .first();
+    .or(page.locator(OTP_INPUT_FALLBACK_SELECTOR));
+}
+
+function findChaseOtpInput(page: Page): Locator {
+  return chaseOtpInputCandidates(page).first();
 }
 
 async function probeSession(page: Page): Promise<boolean> {
@@ -225,6 +296,15 @@ async function submitChaseOtp({
   sendInteraction,
   surface,
 }: HandleChaseOtpArgs): Promise<{ loggedIn: boolean; page: Page }> {
+  // Last line of defense before the owner is asked for a secret. Classification
+  // already required a usable code input, but Chase can re-render or navigate
+  // between that check and this one, and the cost of being wrong here is a
+  // demand for a bank code that was never sent. Fail loudly with a named error
+  // rather than prompting against a page that cannot accept a code.
+  if (!(await hasUsableChaseOtpInput(page))) {
+    throw new Error("chase_otp_input_missing");
+  }
+
   const resp = await sendInteraction({
     kind: "otp",
     message: "Chase sent a 2FA code. Reply with it.",
