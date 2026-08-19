@@ -611,7 +611,7 @@ interface DetailGapProjection {
   readonly unreliable: boolean;
 }
 
-interface ConnectorDetailGapStoreLike {
+export interface ConnectorDetailGapStoreLike {
   countGapsByStatusByStreamForConnector?: (
     connectorId: string,
     options: { status: string; connectorInstanceId?: string | null }
@@ -642,6 +642,29 @@ interface ConnectorDetailGapStoreLike {
     connectorId: string,
     options?: { limit?: number }
   ) => Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
+  /**
+   * Page-scoped batch equivalent of {@link listTerminalGapsForConnector},
+   * keyed only by durable connection identity. `gapsByConnectorInstanceId`
+   * carries only instances read IN FULL; an instance whose terminal-gap count
+   * exceeded the store's per-instance cap is named in
+   * `truncatedConnectorInstanceIds` and carries no rows at all, so a partial
+   * row set can never be mistaken for a complete one. Absent on stores that
+   * have not implemented the read — the caller then leaves
+   * `unfillableAccountedByStream` `null` (unmeasured), exactly as the
+   * single-connection path does.
+   */
+  listTerminalGapsByConnectorInstanceIds?: (
+    connectorInstanceIds: readonly string[],
+    options?: { rowsPerInstance?: number }
+  ) =>
+    | Promise<{
+        readonly gapsByConnectorInstanceId: ReadonlyMap<string, readonly PendingDetailGapSummary[]>;
+        readonly truncatedConnectorInstanceIds: ReadonlySet<string>;
+      }>
+    | {
+        readonly gapsByConnectorInstanceId: ReadonlyMap<string, readonly PendingDetailGapSummary[]>;
+        readonly truncatedConnectorInstanceIds: ReadonlySet<string>;
+      };
   /**
    * Bounded `status = 'terminal'` gap read for one connector (optionally
    * scoped to one instance), carrying `stream` + `last_error` so the caller
@@ -1752,26 +1775,90 @@ async function getUnfillableAccountedByStream(
     return null;
   }
   try {
-    const rows = await Promise.resolve(
-      store.listTerminalGapsForConnector(connectorId, {
-        connectorInstanceId: connectorInstanceId ?? null,
-      })
+    return unfillableAccountedByStreamFromRows(
+      await Promise.resolve(
+        store.listTerminalGapsForConnector(connectorId, {
+          connectorInstanceId: connectorInstanceId ?? null,
+        })
+      )
     );
-    const byStream = new Map<string, TerminalGapProofRow[]>();
-    for (const row of rows) {
-      const stream = typeof row?.stream === "string" ? row.stream : "";
-      if (!stream) {
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Group one connection's terminal-gap rows by stream and run
+ * {@link isStreamFullyUnfillableAccounted} over each group. Shared verbatim by
+ * the single-connection reader above and the batch list-page reader
+ * ({@link getUnfillableAccountedByStreamForInstanceIds}) so the two paths
+ * cannot drift into disagreeing verdicts for the same rows — the defect this
+ * seam was extracted to fix was exactly that: the list page skipped the read
+ * and reported `false` where the detail page reported `true`.
+ *
+ * The caller owns completeness: this helper assumes it was handed EVERY
+ * terminal gap for the connection. Handing it a truncated set would let a
+ * proven-only prefix claim `true` for a stream whose unproven row was past the
+ * cap, so both callers must refuse to call it on a partial read.
+ */
+function unfillableAccountedByStreamFromRows(rows: readonly PendingDetailGapSummary[]): ReadonlyMap<string, boolean> {
+  const byStream = new Map<string, TerminalGapProofRow[]>();
+  for (const row of rows) {
+    const stream = typeof row?.stream === "string" ? row.stream : "";
+    if (!stream) {
+      continue;
+    }
+    const group = byStream.get(stream) ?? [];
+    group.push({ last_error: row.last_error, status: row.status });
+    byStream.set(stream, group);
+  }
+  const result = new Map<string, boolean>();
+  for (const [stream, group] of byStream) {
+    result.set(stream, isStreamFullyUnfillableAccounted(group));
+  }
+  return result;
+}
+
+/**
+ * Per-stream unfillable-accounted verdicts for a whole identity page, in one
+ * batched store read (§10-A / `unfillableAccounted`). This is the list-page
+ * counterpart of {@link getUnfillableAccountedByStream}; before it existed the
+ * batch path hardcoded `null`, which silently degraded every stream's
+ * `coverage_unfillable_accounted` to `false` on `/sources` while the
+ * single-connection detail read reported the same rows as `true`.
+ *
+ * Returns `null` (unmeasured for the WHOLE page) when the store does not
+ * implement the read or the read throws — matching how every other optional
+ * field on this projection fails, and never fabricating a verdict from the
+ * per-stream COUNTS the page already has.
+ *
+ * Per-instance, an entry is absent (unmeasured) when the store reported that
+ * instance's read as truncated. A truncated read is a partial row set, and a
+ * partial set cannot prove "every terminal gap in this stream is unfillable" —
+ * the one unproven gap could be the row past the cap. Absent is the honest
+ * answer; `deriveCollectionReportEntryCoverage` reads absent exactly as it
+ * reads `false` (not accounted), so truncation degrades to the pre-existing
+ * blocking behavior rather than to a fabricated green.
+ */
+export async function getUnfillableAccountedByStreamForInstanceIds(
+  store: ConnectorDetailGapStoreLike,
+  connectorInstanceIds: readonly string[]
+): Promise<ReadonlyMap<string, ReadonlyMap<string, boolean>> | null> {
+  if (typeof store.listTerminalGapsByConnectorInstanceIds !== "function") {
+    return null;
+  }
+  try {
+    const read = await Promise.resolve(store.listTerminalGapsByConnectorInstanceIds(connectorInstanceIds));
+    const byInstanceId = new Map<string, ReadonlyMap<string, boolean>>();
+    for (const [connectorInstanceId, rows] of read.gapsByConnectorInstanceId) {
+      // Defense in depth: the store already withholds truncated instances'
+      // rows, but never classify a set this side has been told is partial.
+      if (read.truncatedConnectorInstanceIds.has(connectorInstanceId)) {
         continue;
       }
-      const group = byStream.get(stream) ?? [];
-      group.push({ last_error: row.last_error, status: row.status });
-      byStream.set(stream, group);
+      byInstanceId.set(connectorInstanceId, unfillableAccountedByStreamFromRows(rows));
     }
-    const result = new Map<string, boolean>();
-    for (const [stream, group] of byStream) {
-      result.set(stream, isStreamFullyUnfillableAccounted(group));
-    }
-    return result;
+    return byInstanceId;
   } catch {
     return null;
   }
@@ -4150,6 +4237,7 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     credentials,
     coverage,
     heartbeats,
+    unfillableAccounted,
   ] = await Promise.all([
     listRetainedSizeConnectionsByInstanceIds(ids),
     listRetainedSizeStreamsByInstanceIds(ids),
@@ -4177,6 +4265,7 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
       .catch(() => null),
     readCommittedLocalCoverageDiagnosticsByConnectionIds(ids).catch(() => null),
     listSourceInstanceHeartbeatsByConnectionIds(ids).catch(() => null),
+    getUnfillableAccountedByStreamForInstanceIds(detailStore, ids),
   ]);
 
   const connectionsByInstanceId = new Map<string, RetainedSizeConnectionProjectionRow>();
@@ -4198,13 +4287,24 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
               recovered: recovered.get(id) ?? 0,
               terminal: terminal.get(id) ?? 0,
               terminalByStream: terminalByStream.get(id) ?? new Map(),
-              // Batch list-view path: only per-instance COUNTS are read here
-              // (`countGapsByStatusByStreamForConnectorInstanceIds`), never the
-              // per-gap rows the unfillable-proof classifier needs. `null` is
-              // the correct "not computed" signal, matching every other
-              // unmeasured field on this projection — never a fabricated
-              // per-stream verdict from counts alone.
-              unfillableAccountedByStream: null,
+              // The per-stream unfillable verdict needs the terminal-gap ROWS,
+              // not the counts the line above reads, so this path takes its own
+              // batched row read (`listTerminalGapsByConnectorInstanceIds`) and
+              // runs the SAME `isStreamFullyUnfillableAccounted` classifier the
+              // single-connection detail path runs. It used to hardcode `null`,
+              // which silently degraded every stream to
+              // `coverage_unfillable_accounted: false` on `/sources` while the
+              // detail page reported the identical rows as `true`.
+              //
+              // `null` survives as the honest unmeasured signal in exactly two
+              // cases, both decided upstream in
+              // `getUnfillableAccountedByStreamForInstanceIds`: the whole read
+              // was unavailable (store lacks the method, or it threw), or THIS
+              // instance's read was truncated by the store's per-instance cap.
+              // A truncated read is a partial row set and partial proof is not
+              // proof, so it must never yield a verdict. Never derived from
+              // counts.
+              unfillableAccountedByStream: unfillableAccounted?.get(id) ?? null,
               unreliable: false,
             } satisfies DetailGapProjection,
           ])

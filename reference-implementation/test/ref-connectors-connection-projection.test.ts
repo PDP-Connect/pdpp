@@ -51,7 +51,12 @@ interface DetailGapStoreForTest {
   markGapStatus: (
     gapId: string,
     status: string,
-    options?: { runId?: string; error?: { class: string } }
+    // `lastError` is the durable `connector_detail_gaps.last_error_json` write
+    // (`MarkGapStatusOptions`); it is what the §10-A unfillable-proof
+    // classifier reads back out. `error` is not a real store option — it is
+    // accepted here only because pre-existing callers in this file pass it,
+    // and the store ignores unknown keys.
+    options?: { runId?: string; error?: { class: string }; lastError?: unknown }
   ) => Promise<DetailGapForTest | null>;
   upsertPendingGap: (input: {
     connectorId: string;
@@ -826,6 +831,236 @@ test(
     assert.ok(detailGapFiles, "the detail surface has a files collection_report entry");
     assert.equal(detailGapFiles.coverage_condition, "terminal_gap");
     assert.notEqual(detail.rendered_verdict.pill.label, "Healthy");
+  })
+);
+
+// ─── §10-A unfillableAccounted on the BATCH list path ────────────────────────
+//
+// The `/sources` LIST page builds its detail-gap projection through
+// `loadPageProductEvidence`, a different code path from the single-connection
+// detail read. It used to hardcode `unfillableAccountedByStream: null`, so a
+// Gmail connection whose 32 terminal `attachments` gaps ALL carried
+// size-vs-cap proof rendered `coverage_unfillable_accounted: false` on the
+// list while the detail page rendered `true` off the identical rows. These
+// tests pin the batch path to the same classifier, including its refusals.
+//
+// The proof shape is `AttachmentTooLargeError`'s wire message
+// (`"... exceeds max size: <observed> > <limit> bytes"`), reproduced from the
+// live rows on cin_12407c1afb78d56848fe0b20.
+
+const OVERSIZED_ATTACHMENT_ERROR = {
+  class: "too_large",
+  message: "attachment exceeds max size: 29209135 > 26214400 bytes",
+} as const;
+
+async function seedTerminalGap({
+  connectorInstanceId,
+  gapStore,
+  lastError,
+  recordKey,
+  stream = "files",
+}: {
+  connectorInstanceId: string;
+  gapStore: DetailGapStoreForTest;
+  lastError?: unknown;
+  recordKey: string;
+  stream?: string;
+}): Promise<void> {
+  const gap = await gapStore.upsertPendingGap({
+    connectorId: CONNECTOR_ID,
+    connectorInstanceId,
+    grantId: "grant_1",
+    parentStream: "messages",
+    reason: lastError ? "too_large" : "temporary_unavailable",
+    recordKey,
+    stream,
+  });
+  assert.ok(gap, "upsertPendingGap returns the created gap");
+  await gapStore.markGapStatus(gap.gap_id, "terminal", {
+    ...(lastError === undefined ? {} : { lastError }),
+    runId: "run_unfillable_proof",
+  });
+}
+
+// The run whose terminal facts sit under the gaps above. `files` is the
+// gap-bearing stream in every test below.
+async function seedUnfillableProofRun(connectorInstanceId: string, runId: string): Promise<void> {
+  await seedManualRunWithCollectionFacts({
+    connectorInstanceId,
+    occurredAt: "2026-05-20T12:12:00.000Z",
+    runId,
+    streams: [
+      {
+        checkpoint: "not_staged",
+        collected: 2,
+        considered: null,
+        covered: null,
+        pending_detail_gaps: 0,
+        skipped: null,
+        stream: "messages",
+      },
+      {
+        checkpoint: "not_staged",
+        collected: 1,
+        considered: null,
+        covered: null,
+        pending_detail_gaps: 0,
+        skipped: null,
+        stream: "files",
+      },
+    ],
+  });
+}
+
+async function listFilesEntry(connectorInstanceId: string): Promise<CollectionReportEntry> {
+  invalidateConnectorSummariesCache();
+  const summaries = await listConnectorSummaries();
+  const summary = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === connectorInstanceId
+  );
+  assert.ok(summary, "the connection projects a source-list summary");
+  const { files } = collectionReportByStream(summary.collection_report);
+  assert.ok(files, "the gap-bearing files stream has a list collection_report entry");
+  return files;
+}
+
+test(
+  "list page proves coverage_unfillable_accounted when every terminal gap in the stream carries size-vs-cap proof",
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "Gmail-shaped fully-proven terminal gaps",
+      sourceBinding: { account: "gmail", kind: "browser_collector" },
+      sourceBindingKey: "gmail-proven",
+      sourceKind: "browser_collector",
+    });
+
+    const gapStore = getTestDetailGapStore();
+    for (const recordKey of ["attachment_a", "attachment_b", "attachment_c"]) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered test setup is intentionally sequential — each upsert commits to the shared gap store before the next.
+      await seedTerminalGap({
+        connectorInstanceId: WORK_INSTANCE_ID,
+        gapStore,
+        lastError: OVERSIZED_ATTACHMENT_ERROR,
+        recordKey,
+      });
+    }
+    await seedUnfillableProofRun(WORK_INSTANCE_ID, "run_unfillable_all_proven");
+
+    const files = await listFilesEntry(WORK_INSTANCE_ID);
+    assert.equal(files.coverage_condition, "terminal_gap", "premise: the stream is on the terminal_gap axis");
+    assert.equal(
+      files.coverage_unfillable_accounted,
+      true,
+      "the batch list path runs the proof classifier over the terminal-gap rows, not just their counts"
+    );
+  })
+);
+
+test(
+  "list page refuses coverage_unfillable_accounted when one terminal gap in the stream lacks proof",
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "Gmail-shaped partially-proven terminal gaps",
+      sourceBinding: { account: "gmail", kind: "browser_collector" },
+      sourceBindingKey: "gmail-partial",
+      sourceKind: "browser_collector",
+    });
+
+    const gapStore = getTestDetailGapStore();
+    await seedTerminalGap({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      gapStore,
+      lastError: OVERSIZED_ATTACHMENT_ERROR,
+      recordKey: "attachment_proven",
+    });
+    // Production's `temporary_unavailable` shape: terminalized after N failed
+    // attempts with NO recorded error at all. Retry exhaustion is not proof.
+    await seedTerminalGap({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      gapStore,
+      recordKey: "attachment_unproven",
+    });
+    await seedUnfillableProofRun(WORK_INSTANCE_ID, "run_unfillable_partial");
+
+    const files = await listFilesEntry(WORK_INSTANCE_ID);
+    assert.equal(files.coverage_condition, "terminal_gap", "premise: the stream is on the terminal_gap axis");
+    assert.equal(
+      files.coverage_unfillable_accounted,
+      false,
+      "one unproven terminal gap sinks the whole stream — partial proof is not proof"
+    );
+  })
+);
+
+test(
+  "list and detail derive the identical unfillable-accounted verdict from the same terminal-gap rows",
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "Gmail-shaped proven gaps (parity)",
+      sourceBinding: { account: "gmail", kind: "browser_collector" },
+      sourceBindingKey: "gmail-parity-proven",
+      sourceKind: "browser_collector",
+    });
+    // A sibling on the SAME page with an unproven gap: proves the batch read
+    // groups per connection instead of pooling the page's rows together.
+    await seedInstance({
+      connectorInstanceId: PERSONAL_INSTANCE_ID,
+      displayName: "Gmail-shaped unproven gaps (parity sibling)",
+      sourceBinding: { account: "gmail-personal", kind: "browser_collector" },
+      sourceBindingKey: "gmail-parity-unproven",
+      sourceKind: "browser_collector",
+    });
+
+    const gapStore = getTestDetailGapStore();
+    await seedTerminalGap({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      gapStore,
+      lastError: OVERSIZED_ATTACHMENT_ERROR,
+      recordKey: "attachment_proven",
+    });
+    await seedTerminalGap({
+      connectorInstanceId: PERSONAL_INSTANCE_ID,
+      gapStore,
+      recordKey: "attachment_unproven",
+    });
+    await seedUnfillableProofRun(WORK_INSTANCE_ID, "run_unfillable_parity_work");
+    await seedUnfillableProofRun(PERSONAL_INSTANCE_ID, "run_unfillable_parity_personal");
+
+    const listWorkFiles = await listFilesEntry(WORK_INSTANCE_ID);
+    const listPersonalFiles = await listFilesEntry(PERSONAL_INSTANCE_ID);
+
+    const detailWork = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
+    assert.ok(detailWork, "the proven connection resolves a source-detail summary");
+    const { files: detailWorkFiles } = collectionReportByStream(detailWork.collection_report);
+    assert.ok(detailWorkFiles, "the detail surface has a files collection_report entry");
+    const detailPersonal = await getConnectorSummaryForRoute(PERSONAL_INSTANCE_ID);
+    assert.ok(detailPersonal, "the unproven connection resolves a source-detail summary");
+    const { files: detailPersonalFiles } = collectionReportByStream(detailPersonal.collection_report);
+    assert.ok(detailPersonalFiles, "the sibling detail surface has a files collection_report entry");
+
+    // The defect this test exists for was the two paths DISAGREEING, so assert
+    // the whole entry, not only the one field: any future field that only one
+    // path computes fails here too.
+    assert.deepEqual(
+      listWorkFiles,
+      detailWorkFiles,
+      "list and detail agree on the fully-proven connection's collection_report entry"
+    );
+    assert.deepEqual(
+      listPersonalFiles,
+      detailPersonalFiles,
+      "list and detail agree on the unproven sibling's collection_report entry"
+    );
+    // Pin the verdicts themselves so a both-paths-wrong regression cannot pass
+    // the deepEqual above by agreeing on `false` everywhere.
+    assert.equal(listWorkFiles.coverage_unfillable_accounted, true);
+    assert.equal(listPersonalFiles.coverage_unfillable_accounted, false);
   })
 );
 

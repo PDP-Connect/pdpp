@@ -661,6 +661,93 @@ function mergeSqlitePendingGapsByConnectorInstanceId(
   mergeGapRowsByConnectorInstanceId(result, rows);
 }
 
+// Result of the page-scoped terminal-gap read. `gapsByConnectorInstanceId`
+// carries only instances whose terminal gaps were read IN FULL;
+// `truncatedConnectorInstanceIds` names the instances whose row count exceeded
+// the per-instance cap, and those instances appear in neither map — they are
+// unmeasured, not empty. Keeping the two apart at the store boundary is what
+// stops a caller from mistaking "no rows returned" for "no terminal gaps".
+export interface TerminalGapPageRead {
+  readonly gapsByConnectorInstanceId: ReadonlyMap<string, readonly DetailGap[]>;
+  readonly truncatedConnectorInstanceIds: ReadonlySet<string>;
+}
+
+// Per-instance row cap for `listTerminalGapsByConnectorInstanceIds`. The
+// single-connection read (`listTerminalGapsForConnector`) caps at 500; a page
+// read fans that out across every connection on the page, so the per-instance
+// cap is deliberately smaller. It is a *detection* bound, not a silent
+// truncation: the query selects one row PAST the cap so the caller can tell
+// "this instance had at most `cap` terminal gaps and you have all of them"
+// apart from "there were more and you are holding a partial set". Fleet-wide
+// terminal-gap volume is order-10s per connection, so a real page never
+// reaches this.
+const TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE = 200;
+
+// Clamp a caller-supplied per-instance cap into [1, TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE].
+// The ceiling is the store's, not the caller's: a page read must never be
+// talked into an unbounded scan. Tests lower it to exercise truncation.
+function normalizeTerminalGapRowsPerInstance(rowsPerInstance: unknown): number {
+  const n = Number(rowsPerInstance);
+  if (!Number.isFinite(n)) {
+    return TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE;
+  }
+  return Math.max(1, Math.min(Math.floor(n), TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE));
+}
+
+// Splits an over-cap instance's rows out of a per-instance accumulator.
+// Selecting `cap + 1` rows per instance means an instance that comes back with
+// MORE than `cap` rows is provably truncated: we return its identity in
+// `truncatedConnectorInstanceIds` and drop its rows entirely rather than hand
+// the caller a partial set. A partial terminal-gap set cannot support an
+// "every gap in this stream is proven unfillable" verdict — the unproven row
+// could be exactly the one past the cap — so "unmeasured" is the only honest
+// answer. Trimming to `cap` and staying silent would be the false-green this
+// whole read path exists to refuse.
+function partitionTruncatedTerminalGaps(gapsByInstanceId: Map<string, DetailGap[]>, cap: number): Set<string> {
+  const truncated = new Set<string>();
+  for (const [connectorInstanceId, gaps] of gapsByInstanceId) {
+    if (gaps.length > cap) {
+      truncated.add(connectorInstanceId);
+      gapsByInstanceId.delete(connectorInstanceId);
+    }
+  }
+  return truncated;
+}
+
+// One SQLite bind-limited chunk of the
+// `listTerminalGapsByConnectorInstanceIds` per-instance selection: queries a
+// single chunk of connector-instance ids, taking `cap + 1` rows per instance
+// so the caller can detect truncation (see
+// `partitionTruncatedTerminalGaps`). Ordered by `stream, gap_id` to match the
+// single-connection `listTerminalGapsForConnector` read, so the two paths see
+// the same rows in the same order for the same data. Carries no lease/CAS
+// semantics — read-only.
+function mergeSqliteTerminalGapsByConnectorInstanceId(
+  result: Map<string, DetailGap[]>,
+  connectorInstanceIdChunk: readonly string[],
+  perInstanceRowBudget: number
+): void {
+  const placeholders = connectorInstanceIdChunk.map(() => "?").join(", ");
+  // REVIEWED-DYNAMIC: bounded status='terminal' read over the store-owned
+  // detail-gap table, scoped to an explicit connector-instance-id set. Feeds
+  // the unfillable-proof classifier only — read-only.
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<DetailGapRow>(
+      `WITH ranked AS (
+       SELECT connector_detail_gaps.*, ROW_NUMBER() OVER (
+         PARTITION BY connector_instance_id
+         ORDER BY stream, gap_id
+       ) AS row_number
+       FROM connector_detail_gaps
+       WHERE connector_instance_id IN (${placeholders})
+         AND status = 'terminal'
+     ) SELECT * FROM ranked WHERE row_number <= ? ORDER BY connector_instance_id, row_number`,
+      [...connectorInstanceIdChunk, perInstanceRowBudget]
+    ),
+  ];
+  mergeGapRowsByConnectorInstanceId(result, rows);
+}
+
 // Groups a batch of already-ranked/limited detail-gap rows by their durable
 // connector-instance identity, merging into a caller-owned accumulator.
 // Shared by both backends' `listPendingGapsByConnectorInstanceIds`: the
@@ -1328,6 +1415,32 @@ export function createSqliteConnectorDetailGapStore() {
       return rows.map((row) => rowToGap(row) as DetailGap);
     },
 
+    // Page-scoped batch analogue of `listTerminalGapsForConnector`, keyed only
+    // by durable connection identity (never connector_id). See
+    // `TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE` / `partitionTruncatedTerminalGaps`
+    // for the truncation contract: an instance whose terminal gaps exceed the
+    // per-instance cap is reported in `truncatedConnectorInstanceIds` with NO
+    // rows, so the caller reads it as unmeasured instead of deciding a
+    // proof verdict from a partial set.
+    listTerminalGapsByConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { rowsPerInstance = TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE }: { rowsPerInstance?: number } = {}
+    ): Promise<TerminalGapPageRead> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return Promise.resolve({ gapsByConnectorInstanceId: new Map(), truncatedConnectorInstanceIds: new Set() });
+      }
+      const cap = normalizeTerminalGapRowsPerInstance(rowsPerInstance);
+      const gapsByConnectorInstanceId = new Map<string, DetailGap[]>();
+      for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
+        mergeSqliteTerminalGapsByConnectorInstanceId(gapsByConnectorInstanceId, chunk, cap + 1);
+      }
+      return Promise.resolve({
+        gapsByConnectorInstanceId,
+        truncatedConnectorInstanceIds: partitionTruncatedTerminalGaps(gapsByConnectorInstanceId, cap),
+      });
+    },
+
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async listTerminalGapsForConnector(
       connectorId: string,
@@ -1967,6 +2080,38 @@ export function createPostgresConnectorDetailGapStore() {
         [connectorId, connectorInstanceId, Math.max(1, Math.min(limit, 500))]
       );
       return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
+    },
+
+    // Postgres analogue of the SQLite page-scoped terminal-gap read. Same
+    // `cap + 1` truncation-detection contract, same `stream, gap_id` ordering
+    // as `listTerminalGapsForConnector`; no bind-limit chunking is needed
+    // because `= ANY($1::text[])` binds the whole id set as one parameter.
+    async listTerminalGapsByConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { rowsPerInstance = TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE }: { rowsPerInstance?: number } = {}
+    ): Promise<TerminalGapPageRead> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return { gapsByConnectorInstanceId: new Map(), truncatedConnectorInstanceIds: new Set() };
+      }
+      const cap = normalizeTerminalGapRowsPerInstance(rowsPerInstance);
+      const query = await postgresQuery<DetailGapRow>(
+        `WITH ranked AS (
+           SELECT connector_detail_gaps.*, ROW_NUMBER() OVER (
+             PARTITION BY connector_instance_id
+             ORDER BY stream, gap_id
+           ) AS row_number
+           FROM connector_detail_gaps
+           WHERE connector_instance_id = ANY($1::text[])
+             AND status = 'terminal'
+         ) SELECT * FROM ranked WHERE row_number <= $2 ORDER BY connector_instance_id, row_number`,
+        [ids, cap + 1]
+      );
+      const gapsByConnectorInstanceId = groupGapRowsByConnectorInstanceId(query.rows as DetailGapRow[]);
+      return {
+        gapsByConnectorInstanceId,
+        truncatedConnectorInstanceIds: partitionTruncatedTerminalGaps(gapsByConnectorInstanceId, cap),
+      };
     },
 
     async listTerminalGapsForConnector(

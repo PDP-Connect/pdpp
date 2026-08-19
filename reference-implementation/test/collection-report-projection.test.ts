@@ -7,6 +7,8 @@ import test from "node:test";
 import {
   buildCollectionReport,
   type CollectionReportEntry,
+  type ConnectorDetailGapStoreLike,
+  getUnfillableAccountedByStreamForInstanceIds,
   projectCollectionReport,
   type RuntimeCollectionFact,
   rollupCollectionReportCoverageOverride,
@@ -1947,4 +1949,113 @@ test("proof-predicate parity: a stored `disabled` checkpoint proves durable cove
   );
   assert.equal(entry.checkpoint, "disabled");
   assert.equal(entry.evidence_as_of, "2026-07-10T00:00:00.000Z");
+});
+
+// ─── getUnfillableAccountedByStreamForInstanceIds (batch list-page reader) ────
+//
+// The list page's per-stream unfillable verdict comes from a batched
+// terminal-gap ROW read. These pin the reader's refusals directly, against a
+// fake store, because the real store's per-instance cap is not reachable from
+// the projection call site: the honest-`null` and truncation contracts are the
+// whole safety argument for reading a bounded page at all.
+
+type TerminalGapPageReadFixture = Awaited<
+  ReturnType<NonNullable<ConnectorDetailGapStoreLike["listTerminalGapsByConnectorInstanceIds"]>>
+>;
+
+/** A store exposing ONLY the batch terminal-gap read, returning a caller-supplied page. */
+function batchGapStore(
+  read: TerminalGapPageReadFixture | (() => TerminalGapPageReadFixture)
+): ConnectorDetailGapStoreLike {
+  return {
+    listPendingGaps: () => [],
+    listTerminalGapsByConnectorInstanceIds: () => (typeof read === "function" ? read() : read),
+  };
+}
+
+const PROVEN_GAP = { last_error: { message: "attachment exceeds max size: 29209135 > 26214400 bytes" } };
+// Production's retry-exhausted shape: terminalized with no recorded error.
+const UNPROVEN_GAP = { last_error: null };
+
+test("batch unfillable read proves a stream whose terminal gaps all carry size-vs-cap evidence", async () => {
+  const verdicts = await getUnfillableAccountedByStreamForInstanceIds(
+    batchGapStore({
+      gapsByConnectorInstanceId: new Map([
+        [
+          "cin_a",
+          [
+            { ...PROVEN_GAP, stream: "attachments" },
+            { ...PROVEN_GAP, stream: "attachments" },
+          ],
+        ],
+      ]),
+      truncatedConnectorInstanceIds: new Set(),
+    }),
+    ["cin_a"]
+  );
+  assert.equal(verdicts?.get("cin_a")?.get("attachments"), true);
+});
+
+test("batch unfillable read refuses a stream holding even one unproven terminal gap", async () => {
+  const verdicts = await getUnfillableAccountedByStreamForInstanceIds(
+    batchGapStore({
+      gapsByConnectorInstanceId: new Map([
+        [
+          "cin_a",
+          [
+            { ...PROVEN_GAP, stream: "attachments" },
+            { ...UNPROVEN_GAP, stream: "attachments" },
+            { ...PROVEN_GAP, stream: "labels" },
+          ],
+        ],
+      ]),
+      truncatedConnectorInstanceIds: new Set(),
+    }),
+    ["cin_a"]
+  );
+  assert.equal(
+    verdicts?.get("cin_a")?.get("attachments"),
+    false,
+    "partial proof is not proof — one unproven gap sinks the stream"
+  );
+  assert.equal(verdicts?.get("cin_a")?.get("labels"), true, "a sibling stream is judged on its own gaps");
+});
+
+test("batch unfillable read leaves a truncated instance unmeasured even when every returned row is proven", async () => {
+  const verdicts = await getUnfillableAccountedByStreamForInstanceIds(
+    batchGapStore({
+      // The store withholds a truncated instance's rows; assert the reader
+      // refuses even if a future store regression hands them over anyway.
+      gapsByConnectorInstanceId: new Map([
+        ["cin_truncated", [{ ...PROVEN_GAP, stream: "attachments" }]],
+        ["cin_complete", [{ ...PROVEN_GAP, stream: "attachments" }]],
+      ]),
+      truncatedConnectorInstanceIds: new Set(["cin_truncated"]),
+    }),
+    ["cin_truncated", "cin_complete"]
+  );
+  assert.equal(
+    verdicts?.get("cin_truncated"),
+    undefined,
+    "a truncated read is unmeasured, never a `true` fabricated from the rows that happened to fit"
+  );
+  assert.equal(verdicts?.get("cin_complete")?.get("attachments"), true, "the complete sibling is still decided");
+});
+
+test("batch unfillable read is null (unmeasured) when the store does not implement it or the read throws", async () => {
+  assert.equal(
+    await getUnfillableAccountedByStreamForInstanceIds({ listPendingGaps: () => [] }, ["cin_a"]),
+    null,
+    "a store without the batch read yields unmeasured, never a verdict derived from counts"
+  );
+  assert.equal(
+    await getUnfillableAccountedByStreamForInstanceIds(
+      batchGapStore(() => {
+        throw new Error("detail gap store unavailable");
+      }),
+      ["cin_a"]
+    ),
+    null,
+    "a throwing read yields unmeasured, matching every other optional field on this projection"
+  );
 });
