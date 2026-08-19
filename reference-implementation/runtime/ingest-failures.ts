@@ -182,9 +182,11 @@ interface IngestEnvelopeContractViolationFailureInput {
  * classifier does not recognize — unknown defaults to systemic). Any
  * systemic failure anywhere in a batch makes the operation throw
  * `RecordsIngestSystemicFailureError`, which the route maps to a non-2xx
- * (503) response — so `readIngestResponse`'s `!resp.ok` branch above already
- * throws a retryable failure for that case via `buildIngestHttpFailure`,
- * BEFORE this function is ever reached. A 2xx response with `records_rejected`
+ * (503) response. The runtime handles that case BEFORE this function is ever
+ * reached, by RETRYING it: `postIngestBatchWithRetry` (runtime/index.ts,
+ * policy in runtime/ingest-retry.ts) re-POSTs the identical batch within a
+ * bounded budget, and only throws — as `ingest_endpoint_saturated` — once that
+ * budget is exhausted. A 2xx response with `records_rejected`
  * covering some or even all of the batch is the intentional, unchanged
  * per-record isolation contract and must resolve as a counted, continued
  * success no matter how many records it rejects — count alone was
