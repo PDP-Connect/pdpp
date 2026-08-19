@@ -3,20 +3,52 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Requeue quarantined terminal detail gaps for one explicit connection.
+ * Requeue terminal detail gaps for one explicit connection, for an
+ * explicitly named, allowlisted terminal `reason`.
  *
  * This is an owner/operator repair tool for the reference implementation's
- * durable detail-gap substrate. It exists for the narrow case where a connector
- * or runtime repair makes it reasonable to retry rows that previously exhausted
- * their no-progress budget and were terminalized as `quarantined`.
+ * durable detail-gap substrate. It exists for the case where a connector or
+ * runtime repair makes it reasonable to retry rows that previously exhausted
+ * a bounded attempt budget and were terminalized under a reason that does
+ * NOT represent durable impossibility.
+ *
+ * `--reason` defaults to `quarantined` (the original, narrower behavior this
+ * tool shipped with) but may name any reason on the store's requeueable
+ * allowlist: `quarantined`, `temporary_unavailable`, `retry_exhausted`,
+ * `run_cap_deferred`. Every one of those is a BOUNDED-BUDGET exhaustion on a
+ * signal that was never proven non-transient — retrying is a legitimate
+ * re-measurement, not wishful thinking.
+ *
+ * Reasons that represent durable impossibility are refused categorically by
+ * the store layer (`assertRequeueableReason` in
+ * `server/stores/connector-detail-gap-store.ts`), not merely left out of a
+ * suggested list here:
+ *   - `not_found` / `gone` / `permanent_forbidden` — proven by an explicit
+ *     non-transient HTTP signal (404/410/permanent-403); the resource is
+ *     confirmed gone, not merely unretried.
+ *   - `too_large` — Gmail's oversized-attachment terminal class. A `too_large`
+ *     row can carry durable per-item proof (observed byte size recorded
+ *     strictly greater than the configured cap). Requeuing a 29 MB
+ *     attachment against a 25 MB cap can never converge — it would spin the
+ *     recovery budget forever confirming the same impossibility. This tool
+ *     has no way to check that per-row proof safely in bulk, so `too_large`
+ *     is refused outright rather than requeued speculatively.
+ *   - `auth_failure` — requires owner re-authentication, not a data retry.
+ *   - `not_available_in_mode` / `out_of_scope` / `user_disabled` —
+ *     informational, by-design terminal states, not failures to retry.
+ *
+ * See `assertRequeueableReason`'s doc comment for the full reasoning.
  *
  * Safety model:
  *   - Dry-run by default; `--apply` is required to write.
  *   - Requires one explicit connector id and connector instance id.
  *   - Optional `--stream` filters are additive; no payloads or locators print.
+ *   - `--reason` is validated against the store's allowlist BEFORE any read
+ *     or write; an unlisted reason (including `too_large`) fails closed with
+ *     an explanatory error and touches zero rows.
  *   - The implementation's apply path uses the tested detail-gap store
- *     primitive. It does not revive permanent terminal classes such as
- *     `not_found`, `gone`, or `permanent_forbidden`.
+ *     primitive, which re-checks `status = 'terminal' AND reason = <reason>`
+ *     in the same UPDATE that flips a row back to pending.
  *
  * Usage:
  *   PDPP_DATABASE_URL=postgres://... \
@@ -24,6 +56,7 @@
  *     --connector-id=amazon \
  *     --connector-instance-id=cin_... \
  *     --stream=order_items \
+ *     [--reason=temporary_unavailable] \
  *     [--limit=100 --apply]
  */
 
@@ -32,13 +65,19 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../../server/postgres-storage.ts";
-import { createPostgresConnectorDetailGapStore } from "../../server/stores/connector-detail-gap-store.ts";
+import {
+  createPostgresConnectorDetailGapStore,
+  TERMINAL_REQUEUE_REASON_ALLOWLIST,
+} from "../../server/stores/connector-detail-gap-store.ts";
+
+const DEFAULT_REQUEUE_REASON = "quarantined";
 
 interface ParsedRequeueArgs {
   apply: boolean;
   connectorId: string | null;
   connectorInstanceId: string | null;
   limit: number;
+  reason: string;
   streams: string[];
 }
 
@@ -58,6 +97,11 @@ function applyParsedFlag(out: ParsedRequeueArgs, seenStreams: Set<string>, key: 
   } else if (key === "limit") {
     const parsed = Number.parseInt(String(value), 10);
     out.limit = Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 500) : out.limit;
+  } else if (key === "reason") {
+    const reason = String(value);
+    if (reason) {
+      out.reason = reason;
+    }
   } else if (key === "stream") {
     const stream = String(value);
     if (stream && !seenStreams.has(stream)) {
@@ -73,6 +117,7 @@ function parseArgs(argv: string[]): ParsedRequeueArgs {
     connectorId: null,
     connectorInstanceId: null,
     limit: 100,
+    reason: DEFAULT_REQUEUE_REASON,
     streams: [],
   };
   const seenStreams = new Set<string>();
@@ -88,6 +133,16 @@ function parseArgs(argv: string[]): ParsedRequeueArgs {
   return out;
 }
 
+/**
+ * Validate CLI args, INCLUDING the `--reason` allowlist check, before any
+ * database access happens. An unlisted reason (e.g. `too_large`,
+ * `not_found`, `auth_failure`) fails here with an explanatory error and the
+ * command never opens a connection or reads a row — refusal is immediate
+ * and total, not a zero-row no-op that could be mistaken for "nothing
+ * matched". The store re-asserts the same allowlist independently
+ * (`assertRequeueableReason`); this earlier check exists purely for a fast,
+ * connection-free operator error message.
+ */
 function validateArgs(args: ParsedRequeueArgs): string | null {
   if (!args.connectorId) {
     return "--connector-id is required";
@@ -95,12 +150,16 @@ function validateArgs(args: ParsedRequeueArgs): string | null {
   if (!args.connectorInstanceId) {
     return "--connector-instance-id is required";
   }
+  if (!TERMINAL_REQUEUE_REASON_ALLOWLIST.has(args.reason)) {
+    return `--reason='${args.reason}' is not requeueable (allowed: ${[...TERMINAL_REQUEUE_REASON_ALLOWLIST].join(", ")}); durable-impossibility reasons such as 'too_large' and 'not_found' are refused by design`;
+  }
   return null;
 }
 
 interface CountQuarantinedScope {
   connectorId: string;
   connectorInstanceId: string;
+  reason: string;
   streams: string[];
 }
 
@@ -118,7 +177,12 @@ interface PostgresQueryResult<Row> {
   rows: Row[];
 }
 
-async function countQuarantined({ connectorId, connectorInstanceId, streams }: CountQuarantinedScope): Promise<number> {
+async function countQuarantined({
+  connectorId,
+  connectorInstanceId,
+  reason,
+  streams,
+}: CountQuarantinedScope): Promise<number> {
   const result: PostgresQueryResult<GapCountRow> = await postgresQuery(
     `
       SELECT COUNT(*) AS gap_count
@@ -126,10 +190,10 @@ async function countQuarantined({ connectorId, connectorInstanceId, streams }: C
       WHERE connector_id = $1
         AND connector_instance_id = $2
         AND status = 'terminal'
-        AND reason = 'quarantined'
-        AND ($3::text[] IS NULL OR stream = ANY($3::text[]))
+        AND reason = $3
+        AND ($4::text[] IS NULL OR stream = ANY($4::text[]))
     `,
-    [connectorId, connectorInstanceId, streams.length ? streams : null]
+    [connectorId, connectorInstanceId, reason, streams.length ? streams : null]
   );
   // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- Biome does not model noUncheckedIndexedAccess; `result.rows[0]` is genuinely `GapCountRow | undefined` (verified with an isolated tsc repro), so both `?.` and `?? 0` are live for the zero-rows case.
   return Number(result.rows[0]?.gap_count ?? 0);
@@ -159,13 +223,19 @@ async function main(): Promise<void> {
 
   await initPostgresStorage({ backend: "postgres", databaseUrl });
   try {
-    const matched = await countQuarantined({ connectorId, connectorInstanceId, streams: args.streams });
+    const matched = await countQuarantined({
+      connectorId,
+      connectorInstanceId,
+      reason: args.reason,
+      streams: args.streams,
+    });
     const summary = args.apply
       ? await createPostgresConnectorDetailGapStore().requeueQuarantinedTerminalGapsForConnectorInstance(
           connectorId,
           connectorInstanceId,
           {
             limit: args.limit,
+            reason: args.reason,
             streams: args.streams,
           }
         )
@@ -179,6 +249,7 @@ async function main(): Promise<void> {
           connector_instance_id: connectorInstanceId,
           limit: args.limit,
           matched,
+          reason: args.reason,
           requeued: summary.requeued,
           streams: args.streams,
         },
