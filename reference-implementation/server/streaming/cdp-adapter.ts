@@ -296,6 +296,47 @@ function isObject(value: unknown): value is CdpJsonObject {
   return value !== null && typeof value === "object";
 }
 
+/**
+ * CDP's `Input.dispatchTouchEvent` does not reliably synthesize a `click`
+ * DOM event the way real touchscreen hardware does through the compositor's
+ * gesture recognizer — verified live against a Reddit reCAPTCHA checkbox: a
+ * touch tap at the checkbox's exact coordinates left it unchecked, while a
+ * mouse click at the same coordinates advanced the challenge. remote-surface
+ * 1.5.2's neko backend already works around this for its own transport
+ * (`NekoPointerController`, "canonical tap-to-click pattern": buttonDown +
+ * buttonUp instead of native touch), but `dispatchCdpPointerInput` in
+ * `@opendatalabs/remote-surface/backends/cdp` still branches on
+ * `pointerType === "touch"` into a raw `Input.dispatchTouchEvent` for every
+ * pointer action, with no such fallback.
+ *
+ * Rather than patch the installed dependency, this reroutes a touch/pen
+ * press-or-release intent onto the same mouse path a real mouse pointerdown/
+ * pointerup already takes (proven end-to-end above) — `clickCount: 1` is
+ * required there for `Input.dispatchMouseEvent` to synthesize a real click
+ * (see backend.js's own comment: a press/release without clickCount doesn't
+ * focus inputs, toggle checkboxes, or follow links).
+ *
+ * `pointermove` is left alone: the report's own symptom ("scrolling works")
+ * shows touch motion already reaches the remote page correctly, and CDP
+ * touch drag has no analogous click-synthesis gap to route around.
+ */
+export function normalizeTouchPointerInputForCdp(event: CdpJsonObject): CdpJsonObject {
+  if (event.type !== "pointer") {
+    return event;
+  }
+  if (event.pointerType !== "touch" && event.pointerType !== "pen") {
+    return event;
+  }
+  if (event.action !== "pointerdown" && event.action !== "pointerup" && event.action !== "pointercancel") {
+    return event;
+  }
+  return {
+    ...event,
+    clickCount: typeof event.clickCount === "number" && event.clickCount > 0 ? event.clickCount : 1,
+    pointerType: "mouse",
+  };
+}
+
 function createLogger(
   logger: CdpLogger | undefined,
   context: CdpJsonObject
@@ -1332,7 +1373,8 @@ export function createCdpCompanion({
         if (!backendLifecycle) {
           throw codedError("Streaming companion is not started", "companion_not_started");
         }
-        await backendLifecycle.input(event as unknown as RemoteSurfaceInputPayload);
+        const normalized = event.type === "pointer" ? normalizeTouchPointerInputForCdp(event) : event;
+        await backendLifecycle.input(normalized as unknown as RemoteSurfaceInputPayload);
         return;
       }
       if (event.type === "clipboard" && event.action === "local_to_remote") {
