@@ -72,7 +72,7 @@ const GRANT_BINDING_RE = /Grant is malformed|grant/i;
 const PROJECTED_DECLARATION_VERSION_RE = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
 
 function loadNativeManifest(): Record<string, unknown> {
-  return JSON.parse(readFileSync(new URL("../manifests/northstar-hr.json", import.meta.url), "utf8"));
+  return JSON.parse(readFileSync(new URL("../fixtures/seed-manifests/northstar-hr.json", import.meta.url), "utf8"));
 }
 
 async function seedActiveSpotifyInstance(connectorInstanceId: string, account: string): Promise<void> {

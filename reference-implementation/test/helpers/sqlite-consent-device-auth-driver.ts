@@ -79,7 +79,7 @@ interface PollRow {
 }
 
 function loadSpotifyManifest(): SpotifyManifest {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
 }
 
 function pastIso() {

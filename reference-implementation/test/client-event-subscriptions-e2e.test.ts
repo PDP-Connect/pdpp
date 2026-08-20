@@ -367,7 +367,7 @@ test("client event subscriptions deliver signed hints end-to-end", async () => {
   const receiver = await startReceiver();
 
   try {
-    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
     const connectorId = spotifyManifest.connector_id;
     assert.equal(
       (
@@ -503,7 +503,7 @@ test("grant revoke disables subscription and notifies client", async () => {
   const receiver = await startReceiver();
 
   try {
-    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
     const connectorId = spotifyManifest.connector_id;
     await fetch(`${asUrl}/connectors`, {
       body: JSON.stringify(spotifyManifest),
@@ -565,7 +565,7 @@ test("trusted owner-agent event subscriptions deliver signed hints and are revok
   const receiver = await startReceiver();
 
   try {
-    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
     const connectorId = spotifyManifest.connector_id;
     await fetch(`${asUrl}/connectors`, {
       body: JSON.stringify(spotifyManifest),
@@ -786,7 +786,7 @@ test("registered owner bearer cannot see client-grant subscriptions", async () =
   const rsUrl = `http://localhost:${server.rsPort}`;
   const receiver = await startReceiver();
   try {
-    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
     await fetch(`${asUrl}/connectors`, {
       body: JSON.stringify(spotifyManifest),
       headers: { "Content-Type": "application/json" },

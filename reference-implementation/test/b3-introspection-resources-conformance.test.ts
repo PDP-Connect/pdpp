@@ -34,7 +34,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
-const MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "manifests");
+const MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests");
 const INTROSPECTION_AUTHORIZATION = basicIntrospectionAuthorization(TEST_RS_INTROSPECTION_CREDENTIALS);
 
 function introspectionHeaders(contentType = "application/json"): Record<string, string> {

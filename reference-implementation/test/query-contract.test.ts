@@ -127,7 +127,7 @@ async function withHarness(
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as JsonObject;
   const topArtists = spotifyManifest.streams.find((stream: JsonObject) => stream.name === "top_artists");
   topArtists.query = {

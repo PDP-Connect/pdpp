@@ -70,7 +70,7 @@ test("HTTP consent consumes one accepted provider-native revision without discov
   const revisionDatabase = new Database(":memory:");
   const revisionStore = createSqliteAcceptedSourceDeclarationRevisionStore(revisionDatabase);
   const nativeManifest = JSON.parse(
-    readFileSync(new URL("../manifests/northstar-hr.json", import.meta.url), "utf8")
+    readFileSync(new URL("../fixtures/seed-manifests/northstar-hr.json", import.meta.url), "utf8")
   ) as Record<string, unknown>;
   const declarationA = structuredClone(nativeManifest.source_declaration) as ValidatedTestDeclaration;
   declarationA.declaration_version = "accepted:northstar:a";
@@ -204,7 +204,7 @@ test("HTTP consent consumes one accepted provider-native revision without discov
       assert.deepEqual(evidence.resource_authority, { authority_binding: AUTHORITY, status: "verified" });
     }
 
-    const spotify = JSON.parse(readFileSync(new URL("../manifests/spotify.json", import.meta.url), "utf8")) as Record<
+    const spotify = JSON.parse(readFileSync(new URL("../fixtures/seed-manifests/spotify.json", import.meta.url), "utf8")) as Record<
       string,
       unknown
     >;
@@ -297,7 +297,7 @@ if (POSTGRES_URL) {
         const revisionDatabase = new Database(":memory:");
         const revisionStore = createSqliteAcceptedSourceDeclarationRevisionStore(revisionDatabase);
         const nativeManifest = JSON.parse(
-          readFileSync(new URL("../manifests/northstar-hr.json", import.meta.url), "utf8")
+          readFileSync(new URL("../fixtures/seed-manifests/northstar-hr.json", import.meta.url), "utf8")
         ) as Record<string, unknown>;
         const declaration = structuredClone(nativeManifest.source_declaration) as ValidatedTestDeclaration;
         declaration.declaration_version = "accepted:northstar:postgres";

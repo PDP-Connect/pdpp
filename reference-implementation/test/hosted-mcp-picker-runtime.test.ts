@@ -81,7 +81,7 @@ function pkceChallenge(verifier: string): string {
 }
 
 async function registerFixture(asUrl: string, fixtureName: string): Promise<Record<string, unknown>> {
-  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${fixtureName}.json`), "utf8"));
+  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `fixtures/seed-manifests/${fixtureName}.json`), "utf8"));
   const canonical = canonicalConnectorKeyFromManifest(raw);
   const manifest = canonical && canonical !== raw.connector_id ? { ...raw, connector_id: canonical } : raw;
   const resp = await fetch(`${asUrl}/connectors`, {

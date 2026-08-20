@@ -323,8 +323,8 @@ test("cli/commands/seed.ts: seedableConnectorsFromManifests intersects manifest 
   assert.deepEqual(seedableConnectorsFromManifests(manifests, ["acme", "bravo"]), ["acme", "bravo"]);
 });
 
-test("cli/commands/seed.ts: seedableConnectorsFromManifests against the real manifests/ and the real seed connector export reproduces the historical [github, reddit, spotify] set", () => {
-  const manifestsDir = join(riRoot, "manifests");
+test("cli/commands/seed.ts: seedableConnectorsFromManifests against the real fixtures/seed-manifests/ and the real seed connector export reproduces the historical [github, reddit, spotify] set", () => {
+  const manifestsDir = join(riRoot, "fixtures", "seed-manifests");
   const manifests = readdirSync(manifestsDir)
     .filter((file) => file.endsWith(".json"))
     .map((file) => JSON.parse(readFileSync(join(manifestsDir, file), "utf8")));
