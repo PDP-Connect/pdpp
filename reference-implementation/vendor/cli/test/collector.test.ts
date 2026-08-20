@@ -14,7 +14,6 @@ import { COLLECTOR_HELP, runCollector } from "../src/collector/commands.ts";
 import { CollectorUsageError } from "../src/collector/errors.ts";
 import {
   resolveCollectorRunnerScript,
-  resolveLocalCollectorPackage,
   resolveTsxBinary,
   spawnCollectorRunner,
 } from "../src/collector/runner.ts";
@@ -140,20 +139,16 @@ test("runner resolver returns null outside any workspace", async () => {
   assert.equal(script, null);
 });
 
-test("@pdpp/local-collector resolver resolves the workspace package", () => {
-  const cliSrcDir = fileURLToPath(new URL("../src/collector/", import.meta.url));
-  const resolved = resolveLocalCollectorPackage(cliSrcDir);
-  assert.ok(resolved, "expected to resolve @pdpp/local-collector via workspace deps");
-  // Either Node-resolved (@pdpp/local-collector under node_modules) or the
-  // monorepo workspace fallback (packages/local-collector) is acceptable.
-  assert.match(
-    resolved.manifestPath,
-    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
-    /(?:@pdpp[\\/]+local-collector|packages[\\/]+local-collector)[\\/]+package\.json$/
-  );
-  assert.ok(resolved.packageDir.endsWith("local-collector"));
-});
-
+// A prior test here asserted resolveLocalCollectorPackage() finds
+// @pdpp/local-collector via node_modules or the monorepo `packages/local-collector`
+// fallback. Both paths became structurally impossible from inside this repo once
+// @pdpp/local-collector moved to data-connect (it's no longer vendored here, and
+// @pdpp/cli deliberately declares no runtime dependency on it — see the test
+// below and "@pdpp/cli does not declare a runtime dependency on @pdpp/local-collector").
+// Deleted rather than skipped: a test asserting a state that can never recur here
+// has negative value. The positive-resolution case it covered is still a real user
+// path (`npm i -g @pdpp/cli && npm i -g @pdpp/local-collector`) — reinstate it as an
+// installed-package fixture test once @pdpp/local-collector publishes from data-connect.
 test("spawnCollectorRunner throws actionable install hint when nothing resolves", async () => {
   await assert.rejects(
     () =>

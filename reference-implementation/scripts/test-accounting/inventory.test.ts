@@ -900,7 +900,6 @@ test("the checked authority graph contains only direct leaves and no recursive a
   }
   const packagePaths = [
     "packages/cli/package.json",
-    "packages/local-collector/package.json",
     "packages/mcp-server/package.json",
     "packages/operator-ui/package.json",
     "packages/pdpp-brand-react/package.json",
