@@ -304,6 +304,43 @@ async function guardGithubPagination(
  * cannot know its full inventory for the run (e.g. a search-API cap truncation)
  * MUST NOT call this — it leaves `considered` unknown and relies on its
  * terminal-gap evidence instead.
+ *
+ * ── Why no provider-reported total is bound here ──────────────────────────
+ *
+ * GitHub exposes several tempting scalars. Each was measured against this
+ * instance's live holdings and REJECTED. Do not bind them:
+ *
+ *   `public_repos` / `public_gists` (from `/user`, already stored on the
+ *   `user_stats` record) measure a strict SUBSET, not this stream's boundary.
+ *   Live: `public_repos: 94` against 575 held repositories — of which 355 are
+ *   private and 465 belong to orgs, neither of which `public_repos` counts.
+ *   `public_gists: 8` matched the 8 public gists exactly while 43 secret gists
+ *   sat outside it. Binding either would assert a permanent ~6x false gap.
+ *
+ *   `Link: rel="last"` yields a PAGE count, so an item total only under the
+ *   assumption that every page is full — which the last page never is. It also
+ *   cannot survive the deletion semantics below.
+ *
+ *   `total_count` on `/search/issues` IS authoritative for its query, and is
+ *   already consumed for cap-detection (see `PR_SEARCH_RESULT_CAP`). It is not
+ *   promoted to the denominator because a search index is eventually
+ *   consistent with the REST list this stream walks, so a benign index lag
+ *   would read as coverage loss.
+ *
+ * The deeper constraint applies to ALL of them: PDPP deliberately RETAINS
+ * records after the provider deletes them, and GitHub genuinely deletes repos,
+ * issues and gists. A provider total therefore describes the surviving account
+ * and is legitimately SMALLER than what we hold. Any two-way
+ * `provider_total === held_count` check flags successful preservation as a
+ * defect. A sound anchor here would have to be the three-way relation
+ * `provider_total === live_holdings - known_tombstoned`, and this connector
+ * declares no tombstones at all (no `isTombstone`), so the third term is
+ * unavailable and the relation cannot be closed.
+ *
+ * A scalar also cannot distinguish missing from surplus from duplicated. If a
+ * real anchor is wanted later, compare the provider's ID SET against the held
+ * ID set — GitHub returns stable numeric ids on every one of these streams —
+ * and tombstone the upstream-absent ids rather than counting them as loss.
  */
 async function declareListConsidered(
   ctx: StreamCtx,
