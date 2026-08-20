@@ -218,6 +218,84 @@ export function decideContainerHeadedBrowserGate(inputs: ContainerHeadedBrowserG
   return { kind: "fail_closed" };
 }
 
+/**
+ * Stable error thrown by `failFastOnUnusableViewport` when a HEADED launch's
+ * initial page reports a definitively-zero viewport — the observable
+ * fingerprint of a display that is set but unusable (Chromium's GPU/
+ * compositor init failed silently, so the launch API still returns a live
+ * page, but it can never lay out content). Distinct from
+ * `HeadedBrowserUnavailableError` (which fires BEFORE any launch attempt,
+ * for the container policy gate) — this fires AFTER a launch that
+ * "succeeded" by Playwright's own bookkeeping but is unusable in practice.
+ */
+export const UNUSABLE_VIEWPORT_CODE = "browser_viewport_unusable";
+
+export class UnusableViewportError extends Error {
+  readonly code: typeof UNUSABLE_VIEWPORT_CODE;
+
+  constructor(args: { message: string }) {
+    super(args.message);
+    this.name = "UnusableViewportError";
+    this.code = UNUSABLE_VIEWPORT_CODE;
+  }
+}
+
+/**
+ * Pure predicate: does this viewport reading indicate a definitively-zero
+ * (unusable) display? Exported so the decision can be unit-tested without a
+ * real Chromium — `failFastOnUnusableViewport` is not itself practical to
+ * exercise headless-in-CI (a real headless launch has a real, non-zero
+ * viewport by construction; reproducing a broken-display headed launch
+ * needs an actual misconfigured X server).
+ *
+ * Deliberately conservative: only `0` (not merely small, not undefined/NaN)
+ * on BOTH dimensions counts as unusable. `viewportSize()` returning `null`
+ * alone is not enough — `viewport: null` (this launcher's own baseline
+ * option, matching the window's native size) is Playwright's DOCUMENTED
+ * normal behavior for using the OS window size instead of an emulated one,
+ * so a null `viewportSize()` is the common case for a perfectly healthy
+ * headed launch and must never trip this check by itself. A real broken
+ * display must show up as an actual zero measurement from the page itself
+ * (`window.innerWidth`/`innerHeight`), not merely the absence of an
+ * explicit emulated viewport size.
+ */
+export function isDefinitivelyZeroViewport(measurement: {
+  innerHeight: number | undefined;
+  innerWidth: number | undefined;
+}): boolean {
+  return measurement.innerWidth === 0 && measurement.innerHeight === 0;
+}
+
+const UNUSABLE_VIEWPORT_MESSAGE =
+  "Browser launched but its viewport measures 0x0 - no usable display (DISPLAY is set but the window " +
+  "never laid out; common when Chromium's GPU/compositor init silently fails, e.g. tmux with an empty " +
+  "XAUTHORITY). Remedies: set PDPP_BROWSER_HEADLESS=1, or fix XAUTHORITY for this display.";
+
+/**
+ * Checks the just-launched initial page's real viewport and throws
+ * `UnusableViewportError` if it is definitively zero (see
+ * `isDefinitivelyZeroViewport`), instead of letting the caller proceed into
+ * a run that can never succeed. Best-effort on the measurement itself: if
+ * `window.innerWidth`/`innerHeight` cannot be read at all (page not ready,
+ * evaluate throws), this does NOT fail the launch — an unreadable
+ * measurement is not evidence of a broken display, and a normal
+ * headless/headed launch must be unaffected by this check.
+ */
+async function failFastOnUnusableViewport(page: { evaluate: <T>(fn: () => T) => Promise<T> }): Promise<void> {
+  let measurement: { innerHeight: number | undefined; innerWidth: number | undefined };
+  try {
+    measurement = await page.evaluate(() => {
+      const browserWindow = (globalThis as { window?: { innerWidth?: number; innerHeight?: number } }).window;
+      return { innerWidth: browserWindow?.innerWidth, innerHeight: browserWindow?.innerHeight };
+    });
+  } catch {
+    return; // unreadable is not evidence of unusable — never block a launch on this alone.
+  }
+  if (isDefinitivelyZeroViewport(measurement)) {
+    throw new UnusableViewportError({ message: UNUSABLE_VIEWPORT_MESSAGE });
+  }
+}
+
 export function configuredBrowserChannel(env: Record<string, string | undefined> = process.env): string | undefined {
   const raw = env.PDPP_BROWSER_CHANNEL;
   if (raw === undefined) {
@@ -800,6 +878,22 @@ export async function acquireIsolatedBrowser({
     }
     return localChromium.launchPersistentContext(isolatedDir, baseLaunchOptions);
   });
+
+  // Fail fast on an unusable display instead of proceeding into a doomed
+  // run. Root-cause precedent (see the venmo fix in this same change and
+  // the DISPLAY/XAUTHORITY warning above): a headed launch whose display is
+  // set but unauthenticated/unusable (common under tmux with an empty
+  // XAUTHORITY) still returns a live Browser/Context/Page from Playwright —
+  // the GPU/compositor failure is silent at the launch API. The page then
+  // never lays out, `page.goto` never actually commits visually, and every
+  // downstream probe fails with an opaque transport error dozens of seconds
+  // later. `launchPersistentContext` already opens an initial page for a
+  // persistent context, so this is the earliest point a real viewport
+  // reading is available.
+  const [initialPage] = context.pages();
+  if (initialPage) {
+    await failFastOnUnusableViewport(initialPage);
+  }
 
   // Publish the CDP host:port to env so the browser-binding-local handoff
   // helper (`browser-handoff.ts`) can compose per-interaction wsUrls at

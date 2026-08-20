@@ -18,6 +18,7 @@ import {
   HEADED_BROWSER_UNAVAILABLE_CODE,
   HeadedBrowserUnavailableError,
   isCdpAttachSessionRaceError,
+  isDefinitivelyZeroViewport,
   resolveDeploymentBrowserHeadless,
   resolvePageTargetWsUrl,
   runCdpAttemptWithRaceGuard,
@@ -870,4 +871,40 @@ test("connectOverCdpWithRetry rides out an UNHANDLED-rejection race end-to-end t
   assert.equal(attempts, 2, "one raced attempt, then a clean one");
   assert.equal(slept, 1, "slept once between the converted race and the retry");
   assert.deepEqual(disconnects, ["BROWSER_ATTEMPT_1"], "the orphaned first browser was disconnected before retry");
+});
+
+// ─── isDefinitivelyZeroViewport (FIX 3 predicate) ─────────────────────────
+//
+// `failFastOnUnusableViewport` itself is not practically testable
+// headless-in-CI: a real headless launch has a real, non-zero viewport by
+// construction, and reproducing the actual broken-display failure mode (a
+// headed Chromium under a misconfigured X server / tmux with empty
+// XAUTHORITY) needs a genuinely broken display, not something this suite
+// can fabricate. Only the pure classification predicate is unit-tested
+// here; the wiring around it (launch → evaluate → throw) was verified by
+// reading `acquireIsolatedBrowser`'s launch path, not by an automated test.
+
+test("isDefinitivelyZeroViewport: both dimensions zero is unusable", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 0, innerHeight: 0 }), true);
+});
+
+test("isDefinitivelyZeroViewport: a normal viewport is not unusable", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 1280, innerHeight: 720 }), false);
+});
+
+test("isDefinitivelyZeroViewport: a small-but-nonzero viewport is NOT flagged (conservative)", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 1, innerHeight: 1 }), false);
+});
+
+test("isDefinitivelyZeroViewport: only width zero is not enough (must be BOTH dimensions)", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 0, innerHeight: 720 }), false);
+});
+
+test("isDefinitivelyZeroViewport: only height zero is not enough (must be BOTH dimensions)", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 1280, innerHeight: 0 }), false);
+});
+
+test("isDefinitivelyZeroViewport: undefined measurements (unreadable) are NOT flagged", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: undefined, innerHeight: undefined }), false);
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 0, innerHeight: undefined }), false);
 });
