@@ -61,6 +61,13 @@ const CORE_BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:latest";
 // Hoisted: these are compiled once rather than per assertion.
 const IMAGE_OVERRIDE_RE = /PDPP_CORE_IMAGE=\S*?pdpp\/core(:|\s|$)/;
 const REPO_RELATIVE_COMPOSE_RE = /-f\s+deploy\/docker/;
+const RESTART_POLICY_RE = /--restart unless-stopped/;
+const LOCAL_PORT_MAPPING_RE = /-p 127\.0\.0\.1:3000:3000/;
+const LOG_FOLLOW_RE = /docker logs -f pdpp$/;
+const COMPOSE_START_AND_PRINT_RE = /docker compose up -d && printf/;
+const OWNER_PASSWORD_OUTPUT_RE = /Owner password: %s/;
+const CREDENTIAL_KEY_RE = /PDPP_CREDENTIAL_ENCRYPTION_KEY/;
+const KEEP_PASSWORD_RE = /Keep this password with the \.env file/;
 // The artifacts that do NOT exist. `core:main` was published by #79
 // (2f0a62ae5) and verified anonymously at sha256:a13e92e8…; `core-browser`
 // was never published and never will be, because `core` itself carries
@@ -196,6 +203,25 @@ test("the docker method emits the neutral versioned core-browser image with a pe
     assert.ok(text.includes("docker run"), "docker command is not a single docker run line");
     assert.ok(!text.includes("docker compose"), "docker command should be one container, not Compose");
   }
+});
+
+test("the local Docker default stays private and survives terminal closure", () => {
+  const built = buildCommand("docker", defaultChoices);
+  assert.ok(built.segments);
+  const text = commandText(built.segments);
+  assert.match(text, RESTART_POLICY_RE);
+  assert.match(text, LOCAL_PORT_MAPPING_RE);
+  assert.match(text, LOG_FOLLOW_RE);
+});
+
+test("the Compose command prints the generated owner password after startup", () => {
+  const built = buildCommand("compose", defaultChoices);
+  assert.ok(built.segments);
+  const text = commandText(built.segments);
+  assert.match(text, COMPOSE_START_AND_PRINT_RE);
+  assert.match(text, OWNER_PASSWORD_OUTPUT_RE);
+  assert.match(text, CREDENTIAL_KEY_RE);
+  assert.match(text, KEEP_PASSWORD_RE);
 });
 
 test("the docker command carries Access and Search choices the same as compose does", () => {

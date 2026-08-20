@@ -42,7 +42,6 @@ function buildConnectTargets(origin: string) {
     claudeCodeCommand: `claude mcp add --transport http pdpp ${mcpUrl}`,
     codexCommand: `codex mcp add pdpp --url ${mcpUrl}`,
     mcpUrl,
-    pdppCliCommand: `npx -y @pdpp/cli connect ${base}`,
   };
 }
 
@@ -295,12 +294,6 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
     },
   ];
   const secondaryEntries: SetupEntry[] = [
-    {
-      body: "For a local client that uses scoped REST reads instead of MCP.",
-      label: "PDPP CLI connect command",
-      title: "PDPP CLI",
-      value: targets.pdppCliCommand,
-    },
     {
       body: "For clients that read the public instructions before choosing MCP or CLI.",
       label: "Instructions URL",

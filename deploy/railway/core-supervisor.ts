@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import process from "node:process";
 
 import { prepareFirstBoot } from "./core-first-boot.ts";
@@ -17,6 +18,8 @@ const DEFAULT_XVFB_SCREEN = "1920x1080x24";
 const XVFB_START_TIMEOUT_MS = 10_000;
 const DISPLAY_RE = /^:\d+$/u;
 const SCREEN_RE = /^\d+x\d+x(?:8|16|24|32)$/u;
+const REFERENCE_READY_POLL_MS = 100;
+const DEFAULT_REFERENCE_READY_FILE = "/tmp/pdpp-reference-ready";
 
 function configuredDisplay(): string {
   const display = process.env.PDPP_XVFB_DISPLAY?.trim() || DEFAULT_XVFB_DISPLAY;
@@ -100,6 +103,49 @@ async function startManagedDisplay(): Promise<string | undefined> {
   return display;
 }
 
+function referenceReadyFile(): string {
+  return process.env.PDPP_REFERENCE_READY_FILE?.trim() || DEFAULT_REFERENCE_READY_FILE;
+}
+
+function clearReferenceReadyFile(file: string): void {
+  try {
+    unlinkSync(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+async function waitForTcpPort(child: ChildProcess, port: number): Promise<void> {
+  for (;;) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`reference server exited before port ${String(port)} became ready`);
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: this probe must wait between retries so it does not busy-loop during a cold start
+    const listening = await new Promise<boolean>((resolve) => {
+      const socket = net.createConnection({ host: "127.0.0.1", port, timeout: REFERENCE_READY_POLL_MS });
+      const finish = (value: boolean) => {
+        socket.destroy();
+        resolve(value);
+      };
+      socket.once("connect", () => finish(true));
+      socket.once("error", () => finish(false));
+      socket.once("timeout", () => finish(false));
+    });
+    if (listening) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, REFERENCE_READY_POLL_MS));
+  }
+}
+
+async function publishReferenceReadiness(child: ChildProcess, readyFile: string): Promise<void> {
+  await Promise.all([waitForTcpPort(child, 7662), waitForTcpPort(child, 7663)]);
+  writeFileSync(readyFile, "ready\n", { mode: 0o600 });
+  console.log("[core] reference services ready; dashboard requests can now be served");
+}
+
 function stop(signal: NodeJS.Signals) {
   if (shuttingDown) {
     return;
@@ -121,6 +167,8 @@ async function main(): Promise<void> {
   // (subsequent boots) an owner password when the platform did not supply one,
   // so owner data is gated by default. See ./core-first-boot.ts.
   const firstBoot = prepareFirstBoot();
+  const readyFile = referenceReadyFile();
+  clearReferenceReadyFile(readyFile);
   const display = await startManagedDisplay();
   const childBaseEnv = { ...process.env };
   if (display) {
@@ -136,6 +184,7 @@ async function main(): Promise<void> {
     RS_PORT: "7663",
     PDPP_AS_URL: "http://127.0.0.1:7662",
     PDPP_RS_URL: "http://127.0.0.1:7663",
+    PDPP_REFERENCE_READY_FILE: readyFile,
   };
 
   const consoleEnv = {
@@ -145,6 +194,7 @@ async function main(): Promise<void> {
     PORT: process.env.PORT || "3000",
     PDPP_AS_URL: "http://127.0.0.1:7662",
     PDPP_RS_URL: "http://127.0.0.1:7663",
+    PDPP_REFERENCE_READY_FILE: readyFile,
   };
 
   for (const line of firstBoot.bannerLines) {
@@ -164,13 +214,21 @@ async function main(): Promise<void> {
     return;
   }
 
-  start("reference", process.execPath, ["/app/reference-implementation/server/index.ts"], {
+  const reference = start("reference", process.execPath, ["/app/reference-implementation/server/index.ts"], {
     cwd: "/app",
     env: referenceEnv,
   });
   start("console", process.execPath, ["/console/apps/console/server.js"], {
     cwd: "/console",
     env: consoleEnv,
+  });
+  publishReferenceReadiness(reference, readyFile).catch((error: unknown) => {
+    if (shuttingDown) {
+      return;
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`[core] reference readiness failed: ${detail}`);
+    stop("SIGTERM");
   });
 }
 

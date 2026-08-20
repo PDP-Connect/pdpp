@@ -16,13 +16,16 @@ search downloads, and persists its model cache under `/var/lib/pdpp`.
 ## Quickstart
 
 ```sh
-docker run -d --name pdpp --restart unless-stopped -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
-  ghcr.io/pdp-connect/pdpp/core:latest
-docker logs -f pdpp
+docker run -d --name pdpp --restart unless-stopped -p 127.0.0.1:3000:3000 \
+  -v pdpp_data:/var/lib/pdpp \
+  ghcr.io/pdp-connect/pdpp/core:latest && docker logs -f pdpp
 ```
 
-No flags to fill in. On first boot the container generates an owner password,
-saves it to the `pdpp_data` volume, and prints a one-time banner:
+The command keeps the container running in the background and follows its logs
+so the first-boot password is visible immediately. Press `Ctrl-C` to stop
+following the logs; it does not stop the container. On first boot the
+container generates an owner password, saves it to the `pdpp_data` volume,
+and prints a one-time banner:
 
 ```
 [core] ────────────────────────────────────────────────────────────────
@@ -41,8 +44,16 @@ saves it to the `pdpp_data` volume, and prints a one-time banner:
 Open the dashboard URL, sign in with the printed password, and connect your
 first source. Records live in SQLite on the `pdpp_data` volume; restarts and
 container replacements keep your data and your password. Prefer to choose the
-password yourself? Add `-e PDPP_OWNER_PASSWORD=...` — the environment variable
-always wins and no banner is printed.
+password yourself? Add `-e PDPP_OWNER_PASSWORD=...` when you create the
+container. Keep that setting in your deployment configuration for future
+replacements; an environment value wins over the password stored on the
+volume, and no generated-password banner is printed.
+
+The first request can arrive while the reference services are still warming up.
+PDPP shows a startup page and retries automatically; wait for the dashboard
+instead of restarting the container. If the page remains unavailable after the
+container reports that the reference services are ready, inspect the recent
+logs with `docker logs --tail=200 pdpp`.
 
 The quickstart serves plain HTTP on localhost. That is fine on your own
 machine; do not port-forward it to the internet as-is. For a public node, put
@@ -58,10 +69,18 @@ plus Postgres with pgvector. No repository clone required:
 ```sh
 mkdir pdpp && cd pdpp
 curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/main/deploy/docker/docker-compose.yml
+umask 077
+PDPP_OWNER_PASSWORD="$(openssl rand -base64 24)"
+PDPP_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 printf 'PDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
-  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
-docker compose up -d
+  "$PDPP_OWNER_PASSWORD" "$PDPP_CREDENTIAL_ENCRYPTION_KEY" > .env
+echo PDPP_CORE_IMAGE=ghcr.io/pdp-connect/pdpp/core:latest >> .env
+docker compose up -d && printf '\nPDPP is running at http://localhost:3000/\nOwner password: %s\n\nKeep this password with the .env file.\n' "$PDPP_OWNER_PASSWORD"
 ```
+
+The password is generated in the terminal, saved in `.env`, and printed only
+after the stack starts successfully. The encryption key is saved but never
+printed.
 
 The compose file refuses to boot until both secrets exist in `.env` — the
 owner password gates the dashboard, and the credential encryption key seals
