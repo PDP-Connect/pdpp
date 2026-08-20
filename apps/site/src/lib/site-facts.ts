@@ -37,6 +37,11 @@ export const DISCORD_INVITE_URL = "https://discord.gg/FV4bkZBdmA";
 // scripts/pdpp-concept-facts.test.ts, which fails if the SPDX identifiers here
 // stop matching the LICENSE files on disk — so this list cannot silently drift
 // from the licenses the repository actually carries.
+// Required by the LFDT project agreement: this text and link must appear on
+// the site footer.
+export const LFDT_COPYRIGHT_NOTICE = "Copyright © LF Decentralized Trust Labs a Series of LF Projects, LLC";
+export const LFPROJECTS_URL = "https://lfprojects.org";
+
 export const SITE_LICENSES = [
   {
     artifact: "Specification text",

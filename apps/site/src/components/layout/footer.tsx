@@ -4,7 +4,13 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { isContributorSurfaceEnabled } from "@/lib/contributor-surface.ts";
-import { DISCORD_INVITE_URL, GITHUB_REPO_URL, SITE_LICENSES } from "@/lib/site-facts.ts";
+import {
+  DISCORD_INVITE_URL,
+  GITHUB_REPO_URL,
+  LFDT_COPYRIGHT_NOTICE,
+  LFPROJECTS_URL,
+  SITE_LICENSES,
+} from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 import { ColorSchemeMenu } from "../elements/color-scheme-menu.tsx";
 import { DiscordIcon, GithubIcon, WordmarkIcon } from "../elements/icons.tsx";
@@ -158,6 +164,16 @@ export function PdppConceptFooter() {
             </Suspense>
           </div>
         )}
+      </div>
+
+      <div className="container max-w-page pb-8">
+        <Text color="onAccentLabel" size="stamp" weight="normal">
+          {LFDT_COPYRIGHT_NOTICE}. For web site terms of use, trademark policy and other project policies please see{" "}
+          <a className={footerLinkClassName} href={LFPROJECTS_URL} rel="noopener noreferrer" target="_blank">
+            {LFPROJECTS_URL.replace(GITHUB_URL_SCHEME_RE, "")}
+          </a>
+          .
+        </Text>
       </div>
     </footer>
   );
