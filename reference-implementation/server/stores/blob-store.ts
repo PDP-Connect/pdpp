@@ -19,7 +19,11 @@
  */
 
 import { getMany, getOne, referenceQueries } from "../../lib/db.ts";
-import { postgresListBlobBindings, postgresLoadBlobSize, postgresLoadContentAddressedBlob } from "../postgres-records.ts";
+import {
+  postgresListBlobBindings,
+  postgresLoadBlobSize,
+  postgresLoadContentAddressedBlob,
+} from "../postgres-records.ts";
 import { isPostgresStorageBackend } from "../postgres-storage.ts";
 
 /**
@@ -59,7 +63,6 @@ type MaybeAsync<T> = T | Promise<T>;
 
 export interface BlobStore {
   listBlobBindings: (blobId: string, opts?: { limit?: number }) => MaybeAsync<readonly BlobBinding[]>;
-  loadContentAddressedBlob: (blobId: string) => MaybeAsync<BlobRow | null>;
   /**
    * Single indexed point lookup for just `size_bytes`, keyed by `blob_id`
    * (primary key). Distinct from `loadContentAddressedBlob`, which also
@@ -68,6 +71,7 @@ export interface BlobStore {
    * `null` when the blob row does not exist.
    */
   loadBlobSize: (blobId: string) => MaybeAsync<number | null>;
+  loadContentAddressedBlob: (blobId: string) => MaybeAsync<BlobRow | null>;
 }
 
 /**
@@ -97,11 +101,11 @@ export function createBlobStore(): BlobStore {
       ): MaybeAsync<readonly BlobBinding[]> {
         return postgresListBlobBindings(blobId, { limit }) as unknown as Promise<readonly BlobBinding[]>;
       },
-      loadContentAddressedBlob(blobId: string): MaybeAsync<BlobRow | null> {
-        return postgresLoadContentAddressedBlob(blobId) as unknown as Promise<BlobRow | null>;
-      },
       loadBlobSize(blobId: string): MaybeAsync<number | null> {
         return postgresLoadBlobSize(blobId);
+      },
+      loadContentAddressedBlob(blobId: string): MaybeAsync<BlobRow | null> {
+        return postgresLoadContentAddressedBlob(blobId) as unknown as Promise<BlobRow | null>;
       },
     };
   }
@@ -114,13 +118,13 @@ export function createBlobStore(): BlobStore {
       const { rows } = getMany<BlobBinding>(referenceQueries.blobsListBindingsById, [blobId, blobId], { limit });
       return rows;
     },
-    loadContentAddressedBlob(blobId: string): BlobRow | null {
-      const row = getOne<BlobRow>(referenceQueries.blobsGetRowById, [blobId]);
-      return row ?? null;
-    },
     loadBlobSize(blobId: string): number | null {
       const row = getOne<{ size_bytes: number }>(referenceQueries.blobsGetSizeById, [blobId]);
       return row ? row.size_bytes : null;
+    },
+    loadContentAddressedBlob(blobId: string): BlobRow | null {
+      const row = getOne<BlobRow>(referenceQueries.blobsGetRowById, [blobId]);
+      return row ?? null;
     },
   };
 }

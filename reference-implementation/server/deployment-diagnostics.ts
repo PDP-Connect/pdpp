@@ -28,12 +28,6 @@ import type { SemanticEmbeddingWarmStatus } from "./search-semantic.ts";
 // on the validator-strict types here — diagnostics must survive partially-
 // malformed manifests without crashing the page.
 export interface DiagnosticsManifest {
-  readonly connector_id?: string;
-  readonly display_name?: string;
-  readonly streams?: ReadonlyArray<{
-    readonly name?: string;
-    readonly query?: { readonly search?: { readonly semantic_fields?: readonly string[] } };
-  }>;
   readonly capabilities?: {
     readonly auth?: {
       readonly deployment_config?: ReadonlyArray<
@@ -41,6 +35,12 @@ export interface DiagnosticsManifest {
       > | null;
     } | null;
   } | null;
+  readonly connector_id?: string;
+  readonly display_name?: string;
+  readonly streams?: ReadonlyArray<{
+    readonly name?: string;
+    readonly query?: { readonly search?: { readonly semantic_fields?: readonly string[] } };
+  }>;
 }
 
 export interface DiagnosticsManifestEntry {

@@ -280,7 +280,10 @@ test("optional terminal stream stays visible as an advisory across health, fleet
   assert.equal(projected.snapshot.axes.coverage, "complete");
   assert.equal(projected.verdict.pill.label, "Healthy");
   assert.equal(projected.verdict.pill.tone, "green");
-  assert.equal(projected.verdict.streams.some((row) => row.stream_id === "optional_stream"), true);
+  assert.equal(
+    projected.verdict.streams.some((row) => row.stream_id === "optional_stream"),
+    true
+  );
   assert.equal(projected.ownerState.resolver, "healthy");
 
   const fleet = fleetFor("optional-stream", projected);

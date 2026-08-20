@@ -91,7 +91,6 @@ const EXPECTED_CODE_TO_STATUS = {
   run_terminal: 503,
   source_webhook_event_conflict: 409,
   "source.authorization_details_invalid": 400,
-  stream_not_declared: 404,
   static_secret_binding_invalid: 409,
   static_secret_draft_required: 409,
   static_secret_identity_ambiguous: 409,
@@ -101,6 +100,7 @@ const EXPECTED_CODE_TO_STATUS = {
   static_secret_identity_revoked: 409,
   static_secret_identity_unavailable: 503,
   static_secret_identity_unverified_replacement: 409,
+  stream_not_declared: 404,
   unknown_field: 400,
   unsupported_version: 400,
 };

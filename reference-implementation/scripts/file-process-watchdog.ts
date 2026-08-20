@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { performance } from "node:perf_hooks";
+
 /**
  * Bound a child process by output inactivity and by an independent absolute
  * per-file deadline.

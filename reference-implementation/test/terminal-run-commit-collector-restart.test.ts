@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { runCollectorConnector } from "../../packages/polyfill-connectors/src/collector-runner.ts";
+import { runCollectorConnector } from "@pdpp/collector-runtime";
 import { handleLocalDeviceTerminalRunCommit } from "../operations/local-device-terminal-collection.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";

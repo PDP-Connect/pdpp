@@ -162,14 +162,14 @@ export function filterRunCoverageEvidence(
 ): { readonly run: ConnectorRunSummary | null; readonly pendingDetailGaps: PendingDetailGapSummary[] } {
   const filteredPending = filterRequiredStreamEvidence(pendingDetailGaps, (gap) => gap.stream, isRequired);
   if (!run) {
-    return { run: null, pendingDetailGaps: filteredPending };
+    return { pendingDetailGaps: filteredPending, run: null };
   }
   const filteredGaps = filterRequiredStreamEvidence(
     run.known_gaps,
     (gap) => (gap && typeof gap === "object" && !Array.isArray(gap) ? (gap as { stream?: unknown }).stream : null),
     isRequired
   );
-  return { run: { ...run, known_gaps: filteredGaps }, pendingDetailGaps: filteredPending };
+  return { pendingDetailGaps: filteredPending, run: { ...run, known_gaps: filteredGaps } };
 }
 
 export function isKnownSkipShadowedByPendingDetailGap(gap: unknown, pendingStreams: ReadonlySet<string>): boolean {

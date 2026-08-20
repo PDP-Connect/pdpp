@@ -79,7 +79,10 @@ test("changing the declared boundary invalidates prior proof, including to and f
 
 test("a no-op edit does NOT discard valid proof", () => {
   assert.equal(
-    scopeChangeInvalidatesProof({ since: SINCE, source_roots: ["a", "b"] }, { source_roots: ["b", "a", "a"], since: `  ${SINCE}  ` }),
+    scopeChangeInvalidatesProof(
+      { since: SINCE, source_roots: ["a", "b"] },
+      { since: `  ${SINCE}  `, source_roots: ["b", "a", "a"] }
+    ),
     false,
     "reordered/duplicated roots and padded bounds normalize to the same region"
   );
