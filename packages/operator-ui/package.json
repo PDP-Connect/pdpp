@@ -79,7 +79,7 @@
     "@pdpp/list-envelope": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.30.0",
+    "lucide-react": "^1.31.0",
     "next-themes": "^0.4.6",
     "tailwind-merge": "^3.6.0"
   },
@@ -95,9 +95,9 @@
     "@types/react-dom": "^19.2.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "tsx": "^4.23.11",
+    "tsx": "^4.23.12",
     "typescript": "^7.0.2",
-    "ultracite": "7.10.2"
+    "ultracite": "7.10.5"
   },
   "license": "Apache-2.0"
 }
