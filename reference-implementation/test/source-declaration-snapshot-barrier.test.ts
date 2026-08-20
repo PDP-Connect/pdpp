@@ -174,7 +174,7 @@ test("source declaration snapshot survives same-version replacement and deletion
     assert.equal("version" in retained.source_declaration_snapshot.declaration, false);
 
     const collectionExtension =
-      retained.source_declaration_snapshot.declaration.extensions?.["https://pdpp.org/profile/collection"];
+      retained.source_declaration_snapshot.declaration.extensions?.["https://pdpp.dev/profile/collection"];
     assert.ok(collectionExtension);
     assert.deepEqual(collectionExtension.connector, {
       id: registeredManifest.manifest_uri,

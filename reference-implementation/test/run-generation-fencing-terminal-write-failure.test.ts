@@ -45,7 +45,7 @@ const MODULE_MOCKS_AVAILABLE = typeof (test.mock as any).module === "function";
 const SKIP_REASON =
   "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/generation-fence-emit-failure-test";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/generation-fence-emit-failure-test";
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
   name: "Generation Fence Emit-Failure Test",

@@ -9,7 +9,7 @@ import {
   snapshotSourceDeclaration,
 } from "./source-declaration.ts";
 
-export const COLLECTION_PROFILE_URI = "https://pdpp.org/profile/collection";
+export const COLLECTION_PROFILE_URI = "https://pdpp.dev/profile/collection";
 export const LEGACY_CONNECTOR_PROJECTION_VERSION_PREFIX = "reference.legacy-connector-projection.v1";
 
 export interface LegacyConnectorDeclarationAttribution {

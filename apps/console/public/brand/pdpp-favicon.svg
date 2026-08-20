@@ -1,5 +1,11 @@
-<!-- biome-ignore lint/a11y/noSvgWithoutTitle: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. -->
-<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-  <rect fill="oklch(0.52 0.11 45)" height="24" width="12" x="4" y="4" />
-  <rect fill="oklch(0.58 0.18 253)" height="24" width="12" x="16" y="4" />
+<!-- Production single-P mark on a deep blue plate, matching apps/site favicon. -->
+<!-- biome-ignore lint/a11y/noSvgWithoutTitle: decorative favicon; the accessible name lives on the link that renders the mark. -->
+<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+  <rect fill="#1d4f8f" height="80" rx="17.33" width="80" />
+  <g transform="translate(23.75 1.42) scale(0.4062)">
+    <path
+      d="M60 30C65.3043 30 70.3919 32.1067 74.1426 35.8574C77.8933 39.6081 80 44.6957 80 50V110C80 115.304 77.8933 120.392 74.1426 124.143C70.3919 127.893 65.3043 130 60 130H20V160H0V30H60ZM20 50V110H60V50H20Z"
+      fill="#ffffff"
+    />
+  </g>
 </svg>

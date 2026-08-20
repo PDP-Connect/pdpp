@@ -259,7 +259,7 @@ function minimalNestedAuthManifest(connectorKey: string): Record<string, unknown
     connector_id: connectorKey,
     connector_key: connectorKey,
     display_name: connectorKey,
-    manifest_uri: `https://registry.pdpp.org/connectors/${connectorKey}`,
+    manifest_uri: `https://registry.pdpp.dev/connectors/${connectorKey}`,
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1032,7 +1032,7 @@ test("connector stderr progress and retained diagnostics redact secret and proxy
       connector_id: "stderr-server-test",
       connector_key: "stderr-server-test",
       display_name: "Stderr server test",
-      manifest_uri: "https://registry.pdpp.org/connectors/stderr-server-test",
+      manifest_uri: "https://registry.pdpp.dev/connectors/stderr-server-test",
       protocol_version: "0.1.0",
       streams: [
         {

@@ -25,7 +25,7 @@ function activeSub(overrides: Partial<ActiveSubscription> = {}): ActiveSubscript
   return {
     ...baseSub,
     scope: {
-      source: { connector_id: "gmail", id: "https://registry.pdpp.org/connectors/gmail", kind: "connector" },
+      source: { connector_id: "gmail", id: "https://registry.pdpp.dev/connectors/gmail", kind: "connector" },
       streams: [
         { instance_ids: ["gmail_default"], name: "messages" },
         { instance_ids: ["gmail_default"], name: "contacts" },
@@ -127,7 +127,7 @@ test("derive respects client-narrowed filters subset", () => {
   const sub = activeSub({
     scope: {
       filters: { streams: ["messages"] },
-      source: { connector_id: "gmail", id: "https://registry.pdpp.org/connectors/gmail", kind: "connector" },
+      source: { connector_id: "gmail", id: "https://registry.pdpp.dev/connectors/gmail", kind: "connector" },
       streams: [
         { instance_ids: ["gmail_default"], name: "messages" },
         { instance_ids: ["gmail_default"], name: "contacts" },
@@ -161,7 +161,7 @@ test("derive respects client-narrowed filters subset", () => {
 test("derive enforces source and instance_ids from the closed grant", () => {
   const sub = activeSub({
     scope: {
-      source: { connector_id: "gmail", id: "https://registry.pdpp.org/connectors/gmail", kind: "connector" },
+      source: { connector_id: "gmail", id: "https://registry.pdpp.dev/connectors/gmail", kind: "connector" },
       streams: [{ instance_ids: ["conn_work"], name: "messages" }],
     },
   });
@@ -210,7 +210,7 @@ test("derive enforces source and instance_ids from the closed grant", () => {
 test("derive enforces resource and time constraints before emitting a hint", () => {
   const sub = activeSub({
     scope: {
-      source: { connector_id: "gmail", id: "https://registry.pdpp.org/connectors/gmail", kind: "connector" },
+      source: { connector_id: "gmail", id: "https://registry.pdpp.dev/connectors/gmail", kind: "connector" },
       streams: [
         {
           instance_ids: ["gmail_default"],
