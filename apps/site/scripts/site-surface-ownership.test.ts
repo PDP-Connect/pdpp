@@ -10,7 +10,11 @@ const SITE_ROOT = fileURLToPath(new URL("../src/", import.meta.url));
 
 /** Token-ownership probes — hoisted so the regexes compile once per module. */
 const BACKGROUND_REBIND_RE = /--background: var\(--pdpp-concept-paper\)/;
-const CONTAINER_PAGE_VALUE_RE = /--container-page: 1080px/;
+// 1280 is the median landing-page container across 16 measured protocol and
+// infra sites (see the header of concept/tokens/semantic.css); 1080 sat at the
+// 10th percentile. This pin exists to keep the value declared HERE rather than
+// as a runtime primitive, so it moves with the token, not with the number.
+const CONTAINER_PAGE_VALUE_RE = /--container-page: 1280px/;
 const CONTAINER_PAGE_RE = /--container-page/;
 const CONCEPT_MAX_RE = /--pdpp-concept-max/;
 const CONCEPT_SERIF_RE = /--pdpp-concept-serif/;

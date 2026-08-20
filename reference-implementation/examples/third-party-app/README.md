@@ -35,7 +35,7 @@ the reference AS currently advertises:
    ```bash
    curl -sS -X POST http://localhost:7662/connectors \
      -H 'Content-Type: application/json' \
-     --data @reference-implementation/manifests/spotify.json
+     --data @reference-implementation/fixtures/seed-manifests/spotify.json
    ```
 
 3. Start the example third-party client app:

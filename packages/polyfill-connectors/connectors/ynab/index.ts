@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -31,6 +32,8 @@
  * and most-recent month).
  */
 
+import { isMainModule } from "@pdpp/connector-protocol";
+import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import { type ConnectorHttpGovernor, createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   type CollectContext,
@@ -40,8 +43,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { redactTransportDetail } from "../../src/http-retry.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { ynabPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 

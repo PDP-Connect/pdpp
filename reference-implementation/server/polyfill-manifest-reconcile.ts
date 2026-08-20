@@ -87,8 +87,8 @@ export function defaultPolyfillManifestsDir(): string {
  * here. Kept overridable for tests.
  */
 export function defaultReferenceFixturesDir(): string {
-  // server/polyfill-manifest-reconcile.ts → ../manifests
-  return resolve(__dirname, "..", "manifests");
+  // server/polyfill-manifest-reconcile.ts → ../fixtures/seed-manifests
+  return resolve(__dirname, "..", "fixtures", "seed-manifests");
 }
 
 // Manifest JSON files are user-authored; we only require a
@@ -192,7 +192,7 @@ export interface ReconcileOptions {
   manifestsDir?: string;
   /**
    * Directory containing the reference-fixture manifests served by the
-   * deterministic seed connector (`reference-implementation/manifests/`).
+   * deterministic seed connector (`reference-implementation/fixtures/seed-manifests/`).
    * Used to detect the narrow fixture→polyfill transition that requires
    * record invalidation. Override only in tests; defaults to the canonical
    * dir resolved from this file's location.

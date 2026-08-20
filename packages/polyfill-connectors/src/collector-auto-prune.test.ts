@@ -8,12 +8,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
+import { LocalDeviceOutbox } from "@pdpp/collector-runtime";
 import {
   autoPruneSucceededOutbox,
   DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY,
   resolveCollectorAutoPrunePolicy,
-} from "./collector-runner.ts";
-import { LocalDeviceOutbox } from "./local-device-outbox.ts";
+} from "@pdpp/collector-runtime/collector-runner";
 
 async function tempOutboxPath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "pdpp-auto-prune-")), "outbox.sqlite");

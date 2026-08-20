@@ -107,7 +107,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import { parse } from "@babel/parser";
-import type { DetailGapMessage } from "./connector-runtime-protocol.ts";
+import type { DetailGapMessage } from "@pdpp/connector-protocol";
 
 export interface ReasonEmissionScanResult {
   /** Reason codes resolved (directly or via one hop) to a finite literal set. */

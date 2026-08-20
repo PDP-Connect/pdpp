@@ -52,7 +52,7 @@ import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-cre
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
-const MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "manifests");
+const MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests");
 const EXAMPLES_DOC = join(
   REFERENCE_IMPL_DIR,
   "..",

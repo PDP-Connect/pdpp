@@ -350,7 +350,7 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as TestConnectorManifest;
 
   try {
@@ -390,7 +390,7 @@ interface NativeHarnessContext {
 }
 
 async function withNativeHarness(fn: (ctx: NativeHarnessContext) => Promise<void>): Promise<void> {
-  const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8"));
+  const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
   const server = await startServer({
     asPort: 0,
     dbPath: ":memory:",
@@ -2055,7 +2055,10 @@ rl.on('line', (line) => {
         display: { name: "Event Spine Multi-Stream Checkpoint Test" },
         protocol_version: "0.1.0",
         publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
-        source: { id: "https://registry.pdpp.dev/connectors/event-spine-multi-stream-checkpoint-test", kind: "connector" },
+        source: {
+          id: "https://registry.pdpp.dev/connectors/event-spine-multi-stream-checkpoint-test",
+          kind: "connector",
+        },
         streams: manifest.streams,
       },
     });

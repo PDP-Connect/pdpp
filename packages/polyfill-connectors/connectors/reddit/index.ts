@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -47,6 +48,7 @@
  *   See docs/reference/connector-authoring-guide.md §9.1.
  */
 
+import { isMainModule } from "@pdpp/connector-protocol";
 import type { Page } from "playwright";
 import { ensureRedditSession, isSessionLive } from "../../src/auto-login/reddit.ts";
 import {
@@ -60,7 +62,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { createRepairBudget } from "../../src/repair-budget.ts";
 import {
   appendNewChildren,

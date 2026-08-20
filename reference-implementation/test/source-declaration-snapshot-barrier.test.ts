@@ -72,7 +72,7 @@ const GRANT_BINDING_RE = /Grant is malformed|grant/i;
 const PROJECTED_DECLARATION_VERSION_RE = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
 
 function loadNativeManifest(): Record<string, unknown> {
-  return JSON.parse(readFileSync(new URL("../manifests/northstar-hr.json", import.meta.url), "utf8"));
+  return JSON.parse(readFileSync(new URL("../fixtures/seed-manifests/northstar-hr.json", import.meta.url), "utf8"));
 }
 
 async function seedActiveSpotifyInstance(connectorInstanceId: string, account: string): Promise<void> {
@@ -174,7 +174,7 @@ test("source declaration snapshot survives same-version replacement and deletion
     assert.equal("version" in retained.source_declaration_snapshot.declaration, false);
 
     const collectionExtension =
-      retained.source_declaration_snapshot.declaration.extensions?.["https://pdpp.org/profile/collection"];
+      retained.source_declaration_snapshot.declaration.extensions?.["https://pdpp.dev/profile/collection"];
     assert.ok(collectionExtension);
     assert.deepEqual(collectionExtension.connector, {
       id: registeredManifest.manifest_uri,

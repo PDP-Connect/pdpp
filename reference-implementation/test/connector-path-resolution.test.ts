@@ -6,7 +6,7 @@
  *
  * Regression: the reference fixture manifest and the shipped polyfill
  * manifest can share a `connector_id`. GitHub is the live example today:
- * both reference-implementation/manifests/github.json and
+ * both reference-implementation/fixtures/seed-manifests/github.json and
  * packages/polyfill-connectors/manifests/github.json use connector_id
  * https://registry.pdpp.dev/connectors/github. Before the fix in
  * runtime/controller.ts, a controller-triggered polyfill GitHub run
@@ -53,7 +53,7 @@ interface FixtureManifest extends ConnectorManifest {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "..", "packages", "polyfill-connectors", "manifests");
-const REFERENCE_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "manifests");
+const REFERENCE_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests");
 
 function readManifest(dir: string, file: string): FixtureManifest {
   return JSON.parse(readFileSync(join(dir, file), "utf8"));

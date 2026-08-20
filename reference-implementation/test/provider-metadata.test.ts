@@ -1173,7 +1173,7 @@ test("explicit browser-facing public urls drive metadata, device verification, a
     // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
     assert.match(deviceBody.verification_uri_complete, /^http:\/\/localhost:3000\/device\?user_code=/);
 
-    const spotifyManifest = JSON.parse(await readFile(new URL("../manifests/spotify.json", import.meta.url), "utf8"));
+    const spotifyManifest = JSON.parse(await readFile(new URL("../fixtures/seed-manifests/spotify.json", import.meta.url), "utf8"));
     const registerConnector = await fetch(`${asUrl}/connectors`, {
       body: JSON.stringify(spotifyManifest),
       headers: { "Content-Type": "application/json" },

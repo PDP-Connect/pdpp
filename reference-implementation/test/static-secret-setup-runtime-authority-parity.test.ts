@@ -92,7 +92,7 @@ test("password-without-secret probe: setup and runtime agree it is static-secret
     // not, so this exact shape would satisfy setup and vanish from the
     // generated runtime registry.
     const probeManifest: ConnectorManifestLike = {
-      connector_id: `https://registry.pdpp.org/connectors/${probeKey}`,
+      connector_id: `https://registry.pdpp.dev/connectors/${probeKey}`,
       connector_key: probeKey,
       display_name: "Authority Parity Probe — password type implies secret (test fixture, not a real connector)",
       runtime_requirements: { bindings: { network: { required: true } } },
@@ -149,7 +149,7 @@ test("missing-label probe: a secret field with no label fails manifest generatio
     // credential setup could never collect. Now both sides call the same
     // normalizer, which throws instead of silently disagreeing.
     const probeManifest = {
-      connector_id: `https://registry.pdpp.org/connectors/${probeKey}`,
+      connector_id: `https://registry.pdpp.dev/connectors/${probeKey}`,
       connector_key: probeKey,
       display_name: "Authority Parity Probe — secret field missing label (test fixture, not a real connector)",
       runtime_requirements: { bindings: { network: { required: true } } },
@@ -199,7 +199,7 @@ test("empty-env probe: a secret field with zero env aliases fails manifest gener
       }
     }
     const probeManifest = {
-      connector_id: `https://registry.pdpp.org/connectors/${probeKey}`,
+      connector_id: `https://registry.pdpp.dev/connectors/${probeKey}`,
       connector_key: probeKey,
       display_name: "Authority Parity Probe — secret field with zero env aliases (test fixture, not a real connector)",
       runtime_requirements: { bindings: { network: { required: true } } },
@@ -249,7 +249,7 @@ test("fail-before counterweight: a synthetic new static-secret manifest is recog
       }
     }
     const probeManifest: ConnectorManifestLike = {
-      connector_id: `https://registry.pdpp.org/connectors/${probeKey}`,
+      connector_id: `https://registry.pdpp.dev/connectors/${probeKey}`,
       connector_key: probeKey,
       display_name: "Authority Parity Probe (test fixture, not a real connector)",
       runtime_requirements: { bindings: { network: { required: true } } },

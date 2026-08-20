@@ -1,14 +1,14 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import type { CollectionRateProgress } from "./connector-runtime-protocol.ts";
+import type { CollectionRateProgress } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import {
   type HttpRetryBudget,
   type HttpRetryResponse,
   RetryExhaustedError,
   retryHttp,
   TerminalHttpStatusError,
-} from "./http-retry.ts";
+} from "@pdpp/connector-protocol/http-retry";
 import { type PacingSnapshot, ProviderPacing } from "./provider-pacing.ts";
 import type { ProviderPacingProfile } from "./provider-profile.ts";
 import type { SendGovernor } from "./send-governor.ts";

@@ -19,11 +19,11 @@ import {
   createPostgresManualUploadArtifactStore,
   createSqliteManualUploadArtifactStore,
 } from "./stores/manual-upload-artifact-store.ts";
-import { createRecordRejectionStore } from "./stores/record-rejection-store.ts";
 import {
   createPostgresProviderAppConfigStore,
   createSqliteProviderAppConfigStore,
 } from "./stores/provider-app-config-store.ts";
+import { createRecordRejectionStore } from "./stores/record-rejection-store.ts";
 
 interface ConnectorNamespace {
   connectorId: string;

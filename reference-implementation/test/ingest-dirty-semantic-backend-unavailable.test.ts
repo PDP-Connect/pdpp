@@ -46,12 +46,12 @@ function manifestWithSemanticFields(connectorId: string) {
         name: "items",
         primary_key: ["id"],
         query: { search: { lexical_fields: ["subject"], semantic_fields: ["subject"] } },
-        selection: { fields: true, resources: true },
         schema: {
           properties: { id: { type: "string" }, subject: { type: "string" } },
           required: ["id", "subject"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "mutable_state",
       },
     ],
@@ -171,12 +171,12 @@ test("a scope whose stream does NOT declare semantic_fields clears normally with
           name: "items",
           primary_key: ["id"],
           query: { search: { lexical_fields: ["subject"] } }, // no semantic_fields
-          selection: { fields: true, resources: true },
           schema: {
             properties: { id: { type: "string" }, subject: { type: "string" } },
             required: ["id", "subject"],
             type: "object",
           },
+          selection: { fields: true, resources: true },
           semantics: "mutable_state",
         },
       ],

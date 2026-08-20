@@ -5,10 +5,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
-import { runCollectorConnector } from "../../packages/polyfill-connectors/src/collector-runner.ts";
+import { runCollectorConnector } from "@pdpp/collector-runtime";
 import { handleLocalDeviceTerminalRunCommit } from "../operations/local-device-terminal-collection.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
@@ -229,6 +229,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
       },
       deviceId: DEVICE_ID,
       deviceToken: "device-token",
+      executionRoot: dirname(fixture),
       outboxPolicy: { maxDrainIterations: 1, retryBackoffMs: 1 },
       queuePath,
       runId: "run-terminal-restart",

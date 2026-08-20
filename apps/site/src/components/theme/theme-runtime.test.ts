@@ -8,6 +8,10 @@
  *   - The shared provider owns browser persistence under `pdpp-theme`.
  *   - Root layouts suppress the expected theme hydration delta.
  *   - Theme state is applied with `data-theme` and follows the system default.
+ *   - The provider also sets the plain `.dark` class fumadocs' own CSS reads
+ *     (fumadocs is not in the `data-theme` cascade — see next.js's
+ *     `theme: { enabled: false }` — so without the class its `body`/sidebar
+ *     colors never left light mode).
  */
 
 import assert from "node:assert/strict";
@@ -32,7 +36,7 @@ const STATUS_BADGE_CSS_FILE = `${HERE}../../../../../packages/operator-ui/src/co
 
 const NEXT_THEMES_IMPORT = /from "next-themes"/;
 const NEXT_THEMES_PROVIDER = /ThemeProvider as NextThemesProvider/;
-const ATTRIBUTE = /attribute="data-theme"/;
+const ATTRIBUTE = /attribute=\{\["data-theme",\s*"class"\]\}/;
 const DEFAULT_THEME = /defaultTheme="system"/;
 const DISABLE_TRANSITIONS = /disableTransitionOnChange/;
 const DISABLE_COLOR_SCHEME = /enableColorScheme=\{false\}/;

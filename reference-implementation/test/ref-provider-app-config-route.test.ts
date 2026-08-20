@@ -28,7 +28,10 @@ import type {
   ProviderAppConfigStore,
   ProviderIdentityGroupDescriptor,
 } from "../server/routes/ref-provider-app-config.ts";
-import { mountRefProviderAppConfigGet, mountRefProviderAppConfigPost } from "../server/routes/ref-provider-app-config.ts";
+import {
+  mountRefProviderAppConfigGet,
+  mountRefProviderAppConfigPost,
+} from "../server/routes/ref-provider-app-config.ts";
 
 interface FakeRequest {
   readonly body?: unknown;
@@ -61,21 +64,21 @@ function fakeResponse(): FakeResponse {
 }
 
 const FIXTURE_GROUP: ProviderIdentityGroupDescriptor = {
+  fields: [
+    { envAlias: "FIXTURE_CLIENT_ID", label: "Client ID", logicalKey: "client_id", secret: false },
+    { envAlias: "FIXTURE_CLIENT_SECRET", label: "Client Secret", logicalKey: "client_secret", secret: true },
+  ],
   identityGroup: "shared-fixture-oauth-app",
   providerIdentityLabel: "Shared Fixture OAuth App",
-  fields: [
-    { logicalKey: "client_id", label: "Client ID", secret: false, envAlias: "FIXTURE_CLIENT_ID" },
-    { logicalKey: "client_secret", label: "Client Secret", secret: true, envAlias: "FIXTURE_CLIENT_SECRET" },
-  ],
 };
 
 interface Harness {
   ctx: MountRefProviderAppConfigContext;
   getHandler: FakeRouteHandler;
   postHandler: FakeRouteHandler;
+  satisfiedEnvAliases: Set<string>;
   setManyCalls: Array<{ identityGroup: string; values: Readonly<Record<string, string>>; updatedAt: string }>;
   storedByKey: Map<string, string>;
-  satisfiedEnvAliases: Set<string>;
 }
 
 function buildHarness(overrides: Partial<MountRefProviderAppConfigContext> = {}): Harness {
@@ -89,7 +92,7 @@ function buildHarness(overrides: Partial<MountRefProviderAppConfigContext> = {})
         [...storedByKey.keys()].filter((k) => k.startsWith(`${identityGroup}:`)).map((k) => k.split(":")[1] as string)
       ),
     setMany: ({ identityGroup, values, updatedAt }) => {
-      setManyCalls.push({ identityGroup, values, updatedAt });
+      setManyCalls.push({ identityGroup, updatedAt, values });
       for (const [logicalKey, value] of Object.entries(values)) {
         storedByKey.set(`${identityGroup}:${logicalKey}`, value);
       }
@@ -102,6 +105,8 @@ function buildHarness(overrides: Partial<MountRefProviderAppConfigContext> = {})
     handleError: (_res, err) => {
       throw err;
     },
+    isEnvAliasSatisfied: (envAlias) => satisfiedEnvAliases.has(envAlias),
+    listProviderIdentityGroups: () => Promise.resolve([FIXTURE_GROUP]),
     now: () => "2026-08-09T00:00:00.000Z",
     pdppError: (_res, status, code, message) => {
       const err = new Error(message) as Error & { status: number; code: string };
@@ -112,8 +117,6 @@ function buildHarness(overrides: Partial<MountRefProviderAppConfigContext> = {})
     requireOwnerSession: (_req, _res, next) => (typeof next === "function" ? next() : undefined),
     resolveProviderIdentityGroup: (identityGroup) =>
       Promise.resolve(identityGroup === FIXTURE_GROUP.identityGroup ? FIXTURE_GROUP : null),
-    listProviderIdentityGroups: () => Promise.resolve([FIXTURE_GROUP]),
-    isEnvAliasSatisfied: (envAlias) => satisfiedEnvAliases.has(envAlias),
     ...overrides,
   };
 
@@ -134,7 +137,7 @@ function buildHarness(overrides: Partial<MountRefProviderAppConfigContext> = {})
   if (!(getHandler && postHandler)) {
     throw new Error("route handlers were not captured");
   }
-  return { ctx, getHandler, postHandler, setManyCalls, storedByKey, satisfiedEnvAliases };
+  return { ctx, getHandler, postHandler, satisfiedEnvAliases, setManyCalls, storedByKey };
 }
 
 // ─── GET ────────────────────────────────────────────────────────────────────
@@ -150,7 +153,11 @@ test("GET returns the opaque identity_group token plus label + logical field lab
     provider_identity_label: string;
     logical_keys: Record<string, unknown>[];
   };
-  assert.equal(body.identity_group, FIXTURE_GROUP.identityGroup, "identity_group is returned as a hidden addressing token");
+  assert.equal(
+    body.identity_group,
+    FIXTURE_GROUP.identityGroup,
+    "identity_group is returned as a hidden addressing token"
+  );
   assert.equal(body.provider_identity_label, "Shared Fixture OAuth App");
   assert.equal(body.logical_keys.length, 2);
   for (const field of body.logical_keys) {
@@ -179,7 +186,10 @@ test("GET with no identity_group lists every registered group, in the same per-g
   await getHandler({ query: {} }, res);
 
   assert.equal(res.statusCode, 200);
-  const body = res.body as { object: string; groups: Array<{ identity_group: string; provider_identity_label: string }> };
+  const body = res.body as {
+    object: string;
+    groups: Array<{ identity_group: string; provider_identity_label: string }>;
+  };
   assert.equal(body.object, "provider_app_config_list");
   assert.equal(body.groups.length, 1);
   assert.equal(body.groups[0]?.identity_group, FIXTURE_GROUP.identityGroup);

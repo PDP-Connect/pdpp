@@ -221,7 +221,9 @@ interface ReferenceManifest {
 }
 
 function loadReferenceManifest(name: string): ReferenceManifest {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests", `${name}.json`), "utf8")) as ReferenceManifest;
+  return JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests", `${name}.json`), "utf8")
+  ) as ReferenceManifest;
 }
 
 async function registerConnector(asUrl: string, manifest: ReferenceManifest): Promise<ReferenceManifest> {

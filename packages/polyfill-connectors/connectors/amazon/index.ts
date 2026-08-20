@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,6 +20,7 @@
  * On session expiry, emits INTERACTION kind=manual_action with sign-in URL.
  */
 
+import { isMainModule } from "@pdpp/connector-protocol";
 import pRetry, { AbortError } from "p-retry";
 import type { BrowserContext, Page } from "playwright";
 import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
@@ -31,7 +33,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor, recordFingerprint } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildOrderItemRecord,
   buildOrderRecord,

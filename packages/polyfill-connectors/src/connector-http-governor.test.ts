@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { RetryExhaustedError } from "@pdpp/connector-protocol/http-retry";
 import {
   buildCollectionRateProgress,
   buildPacingStateFields,
@@ -13,7 +14,6 @@ import {
   DEFAULT_PACING_STALENESS_MS,
   readPersistedPacingInterval,
 } from "./connector-http-governor.ts";
-import { RetryExhaustedError } from "./http-retry.ts";
 import { RetryBudget } from "./provider-budget.ts";
 import { PreflightWaitProbe } from "./send-governor.ts";
 

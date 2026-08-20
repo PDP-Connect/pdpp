@@ -171,7 +171,18 @@ test("§10-B computeSourcePressureCooldown: without consecutiveCooldownCycles (d
 
 test("§10-B ChatGPT manifest declares a finite positive-integer max_cooldown_cycles", () => {
   const manifest = JSON.parse(
-    readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "packages", "polyfill-connectors", "manifests", "chatgpt.json"), "utf8")
+    readFileSync(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "..",
+        "packages",
+        "polyfill-connectors",
+        "manifests",
+        "chatgpt.json"
+      ),
+      "utf8"
+    )
   ) as { capabilities: { refresh_policy: { max_cooldown_cycles: number } } };
   const value = manifest.capabilities.refresh_policy.max_cooldown_cycles;
   assert.ok(Number.isInteger(value) && value > 0, `max_cooldown_cycles must be a positive integer, got ${value}`);

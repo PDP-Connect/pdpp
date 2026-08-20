@@ -18,7 +18,7 @@ const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const REPO_ROOT = dirname(dirname(PACKAGE_ROOT));
 const MANIFEST_DIRS = [
   { label: "polyfill", path: join(PACKAGE_ROOT, "manifests") },
-  { label: "reference", path: join(REPO_ROOT, "reference-implementation", "manifests") },
+  { label: "reference", path: join(REPO_ROOT, "reference-implementation", "fixtures", "seed-manifests") },
 ];
 
 const VALID_COVERAGE_STRATEGIES = new Set([

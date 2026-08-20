@@ -17,7 +17,9 @@ export function SpecificationShell({ children }: { children: ReactNode }) {
   return (
     <PdppConceptShell className="pdpp-docs-shell" data-pdpp-doc-theme="true">
       <SpecRailProvider frontMatter={getSpecFrontMatter()}>
-        {/* Same page measure as PdppConceptPage / masthead / footer. */}
+        {/* Same page measure as PdppConceptPage / masthead / footer — no
+            full-bleed exception, so the rail's links open on the same x as
+            the wordmark here as on every other page. */}
         <div className="container max-w-page">
           <DocsLayout
             sidebar={{ collapsible: false }}

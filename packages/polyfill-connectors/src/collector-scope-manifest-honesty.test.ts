@@ -27,9 +27,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-
+import { buildCollectorStartMessage, resolveScopedStreamTimeRanges } from "@pdpp/collector-runtime";
 import { LOCAL_COLLECTOR_DEFINITIONS } from "./collector-registry.ts";
-import { buildCollectorStartMessage, resolveScopedStreamTimeRanges } from "./collector-runner.ts";
 
 interface ManifestStream {
   consent_time_field?: string;

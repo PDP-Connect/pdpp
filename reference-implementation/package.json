@@ -59,6 +59,8 @@
   "dependencies": {
     "@fastify/formbody": "^8.0.2",
     "@huggingface/transformers": "^4.2.0",
+    "@pdpp/collector-runtime": "file:../vendor/pdpp-collector-runtime-0.0.1.tgz",
+    "@pdpp/connector-protocol": "file:../vendor/pdpp-connector-protocol-0.0.1.tgz",
     "@pdpp/mcp-server": "workspace:*",
     "@pdpp/reference-contract": "workspace:*",
     "better-sqlite3": "^13.0.3",

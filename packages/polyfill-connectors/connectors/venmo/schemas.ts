@@ -14,8 +14,8 @@
  * connector converts once at parse time, never carries a float through).
  */
 
+import { nullablePdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
 import { z } from "zod";
-import { nullablePdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Module-scoped regexes (Biome useTopLevelRegex).

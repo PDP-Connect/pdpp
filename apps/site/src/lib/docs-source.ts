@@ -5,7 +5,7 @@ import type * as PageTree from "fumadocs-core/page-tree";
 import { type InferPageType, loader } from "fumadocs-core/source";
 import { lucideIconsPlugin } from "fumadocs-core/source/plugins/lucide-icons";
 import { docs } from "../../.source/dynamic.ts";
-import { docsRoute, PRIMARY_SLUGS, SUPPORTING_SLUGS } from "./spec-nav-slugs.ts";
+import { docsRoute, PRIMARY_SLUGS } from "./spec-nav-slugs.ts";
 
 export const source = loader({
   baseUrl: docsRoute,
@@ -45,12 +45,12 @@ function pick(byUrl: Map<string, PageTree.Item>, slugs: readonly string[]): Page
     .filter((item): item is PageTree.Item => item !== undefined);
 }
 
-// The tree the rail renders: the five specification documents under a single
-// "Specification" label, then a separator the rail draws as a bare hairline,
-// then the supporting documents.
+// The tree the rail renders: the specification set, and nothing else. Every
+// non-normative document (guides, rationale, deferred concerns, open questions)
+// keeps its URL but is listed only on /maintainers — see MAINTAINER_DOC_SLUGS.
 //
-// The separator names are load-bearing — components/specification/rail.tsx renders "Specification"
-// as the rail's one label and every other separator as a rule with no heading.
+// The separator name is load-bearing: components/specification/rail.tsx renders
+// "Specification" as the rail's one label.
 export function getSpecNavTree(): PageTree.Root {
   const full = source.getPageTree();
   const byUrl = itemsByUrl(full);
@@ -59,8 +59,6 @@ export function getSpecNavTree(): PageTree.Root {
     children: [
       { $id: "spec-rail-primary", name: "Specification", type: "separator" },
       ...pick(byUrl, PRIMARY_SLUGS),
-      { $id: "spec-rail-supporting", name: "", type: "separator" },
-      ...pick(byUrl, SUPPORTING_SLUGS),
     ],
   };
 }

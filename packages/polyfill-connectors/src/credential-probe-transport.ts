@@ -17,7 +17,7 @@
  * ever made under test.
  *
  * This module is reference-only: it is NOT re-exported from the runner barrel
- * (`src/runner/index.ts`), so the publishable local-collector slice never
+ * (`@pdpp/collector-runtime`), so the publishable local-collector slice never
  * carries it. Each transport performs exactly ONE bounded request and never
  * logs the secret.
  */

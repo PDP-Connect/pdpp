@@ -66,8 +66,13 @@
 
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type CollectorConnectorSpec, enrollCollector, runCollectorConnector } from "../src/collector-runner.ts";
-import { COLLECTOR_RUNTIME_CAPABILITIES } from "../src/runtime-capabilities.ts";
+import {
+  COLLECTOR_RUNTIME_CAPABILITIES,
+  type CollectorConnectorSpec,
+  enrollCollector,
+  runCollectorConnector,
+} from "@pdpp/collector-runtime";
+import { resolveExecutionRoot } from "../src/execution-root.ts";
 
 const DEFAULT_QUEUE_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -101,7 +106,12 @@ export interface CliOptions {
 
 const KNOWN_CONNECTOR_DEFAULTS: Record<
   string,
-  { command: string; args: string[]; streams: string[]; bindings?: Record<string, { required: boolean }> }
+  {
+    command: string;
+    args: string[];
+    streams: string[];
+    bindings?: Record<string, { required: boolean }>;
+  }
 > = {
   codex: {
     command: "tsx",
@@ -191,6 +201,7 @@ async function main(): Promise<void> {
     connector: spec,
     deviceId: options.deviceId,
     deviceToken: options.deviceToken,
+    executionRoot: resolveExecutionRoot(spec),
     queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId),
     ...(options.runId ? { runId: options.runId } : {}),
     sourceInstanceId: options.sourceInstanceId,

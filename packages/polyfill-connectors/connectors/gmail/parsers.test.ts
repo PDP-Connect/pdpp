@@ -6,8 +6,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
 import type { MessageStructureObject } from "imapflow";
-import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import {
   addressListToArray,
   bigintToCursor,

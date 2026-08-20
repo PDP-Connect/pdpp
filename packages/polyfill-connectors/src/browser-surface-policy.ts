@@ -23,7 +23,7 @@
  * Boundary: this is connector-runtime policy, NOT PDPP Core and NOT a Collection
  * Profile / manifest field. It lives in the polyfill-connectors package (the
  * connector-runtime layer), is side-effect-free, and is intentionally NOT
- * re-exported from the runner barrel (`src/runner/index.ts`) so it is a targeted
+ * re-exported from the runner barrel (`@pdpp/collector-runtime`) so it is a targeted
  * import for the connector entry and the reference lease caller, not a broad
  * connector-runtime surface. Keys are bare connector runtime names (the `name`
  * passed to `runConnector`, post registry-prefix strip), matching the

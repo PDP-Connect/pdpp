@@ -213,7 +213,7 @@ test("workflowUpdatesForMode enables non-active managed workflows in hosted mode
 
 test("changeTouchesConnectorSurface flags bundled connector and reference-manifest paths", () => {
   assert.equal(changeTouchesConnectorSurface(["packages/polyfill-connectors/manifests/gmail.json"]), true);
-  assert.equal(changeTouchesConnectorSurface(["reference-implementation/manifests/github.json"]), true);
+  assert.equal(changeTouchesConnectorSurface(["reference-implementation/fixtures/seed-manifests/github.json"]), true);
   assert.equal(changeTouchesConnectorSurface(["reference-implementation/server/ref-control.ts"]), false);
   assert.equal(changeTouchesConnectorSurface([]), false);
   assert.equal(
@@ -227,7 +227,7 @@ test("changeTouchesConnectorSurface flags bundled connector and reference-manife
 
 test("connectorGateRequired is required when the connector surface is touched", () => {
   assert.equal(connectorGateRequired(["packages/polyfill-connectors/connectors/gmail/index.ts"]), true);
-  assert.equal(connectorGateRequired(["reference-implementation/manifests/github.json"]), true);
+  assert.equal(connectorGateRequired(["reference-implementation/fixtures/seed-manifests/github.json"]), true);
   assert.equal(connectorGateRequired(["CONTRIBUTING.md"]), false);
   assert.equal(connectorGateRequired([]), false);
 });
@@ -293,14 +293,17 @@ test("changeTouchesRiProduction flags RI production paths but not connectors/tes
   }
   assert.equal(changeTouchesRiProduction(["reference-implementation/connectors/seed/index.ts"]), false);
   assert.equal(changeTouchesRiProduction(["reference-implementation/test/some.test.ts"]), false);
-  assert.equal(changeTouchesRiProduction(["reference-implementation/manifests/github.json"]), false);
+  assert.equal(changeTouchesRiProduction(["reference-implementation/fixtures/seed-manifests/github.json"]), false);
   assert.equal(changeTouchesRiProduction(["CONTRIBUTING.md"]), false);
   assert.equal(changeTouchesRiProduction([]), false);
 });
 
 test("zeroConnectorKnowledgeGateRequired triggers on RI production, connector-surface, and gate-self changes", () => {
   assert.equal(zeroConnectorKnowledgeGateRequired(["reference-implementation/server/connector-key.ts"]), true);
-  assert.equal(zeroConnectorKnowledgeGateRequired(["reference-implementation/manifests/github.json"]), true);
+  assert.equal(
+    zeroConnectorKnowledgeGateRequired(["reference-implementation/fixtures/seed-manifests/github.json"]),
+    true
+  );
   assert.equal(zeroConnectorKnowledgeGateRequired(["packages/polyfill-connectors/manifests/gmail.json"]), true);
   assert.equal(zeroConnectorKnowledgeGateRequired(["scripts/ci-mode.ts"]), true);
   assert.equal(
@@ -322,7 +325,10 @@ test("streamEvidenceInventoryGateRequired covers both shipped roots and only the
     "docs/reference/stream-evidence-inventory.md",
   ]);
   assert.equal(streamEvidenceInventoryGateRequired(["packages/polyfill-connectors/manifests/gmail.json"]), true);
-  assert.equal(streamEvidenceInventoryGateRequired(["reference-implementation/manifests/github.json"]), true);
+  assert.equal(
+    streamEvidenceInventoryGateRequired(["reference-implementation/fixtures/seed-manifests/github.json"]),
+    true
+  );
   for (const path of STREAM_EVIDENCE_INVENTORY_PATHS) {
     assert.equal(streamEvidenceInventoryGateRequired([path]), true);
   }
@@ -354,7 +360,7 @@ function copySignoffGateFixtureFiles(dir: string) {
   copy("packages/polyfill-connectors/src");
   copy("packages/polyfill-connectors/manifests");
   copy("packages/polyfill-connectors/connectors");
-  copy("reference-implementation/manifests");
+  copy("reference-implementation/fixtures/seed-manifests");
   copy("reference-implementation/package.json");
   copy("reference-implementation/tsconfig.json");
   for (const prefix of RI_PRODUCTION_PATH_PREFIXES) {
@@ -462,11 +468,11 @@ test("signoff CLI fails closed when --base cannot be resolved", () => {
 test("signoff cannot post success for a reference-only required flip while the generated inventory is stale", () => {
   const fixture = initSignoffFixtureRepo({ withSignoffGateFiles: true });
   try {
-    const manifestPath = join(fixture.dir, "reference-implementation/manifests/github.json");
+    const manifestPath = join(fixture.dir, "reference-implementation/fixtures/seed-manifests/github.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     manifest.streams[0].required = false;
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-    fixture.run(["add", "reference-implementation/manifests/github.json"]);
+    fixture.run(["add", "reference-implementation/fixtures/seed-manifests/github.json"]);
     fixture.run(["commit", "--quiet", "-m", "flip reference requiredness"]);
     fixture.run(["push", "--quiet"]);
 
@@ -492,7 +498,7 @@ test("signoff cannot post success when a manifest moves out of either protected 
       destination: "archive/polyfill-github.json",
     },
     {
-      source: "reference-implementation/manifests/github.json",
+      source: "reference-implementation/fixtures/seed-manifests/github.json",
       destination: "archive/reference-github.json",
     },
   ];
@@ -527,8 +533,8 @@ test("signoff recognizes Unicode and embedded-newline paths under both protected
     const protectedPaths = [
       "packages/polyfill-connectors/manifests/évidence.txt",
       "packages/polyfill-connectors/manifests/embedded\nnewline.txt",
-      "reference-implementation/manifests/évidence.txt",
-      "reference-implementation/manifests/embedded\nnewline.txt",
+      "reference-implementation/fixtures/seed-manifests/évidence.txt",
+      "reference-implementation/fixtures/seed-manifests/embedded\nnewline.txt",
     ];
     for (const path of protectedPaths) {
       writeFileSync(join(fixture.dir, path), "fixture\n");

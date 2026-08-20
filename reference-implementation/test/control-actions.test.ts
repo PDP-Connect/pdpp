@@ -258,7 +258,7 @@ async function withHarness(
   server.schedulerManager?.stop?.();
   const asUrl = `http://localhost:${server.asPort}`;
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as WithHarnessContext["spotifyManifest"];
   try {
     const registerResp = await fetch(`${asUrl}/connectors`, {
@@ -705,7 +705,7 @@ test("GET /_ref/records/timeline honors limit and filters records by stream", as
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as WithHarnessContext["spotifyManifest"];
   try {
     await fetch(`${asUrl}/connectors`, {
@@ -965,7 +965,7 @@ test("controller startup reconciles abandoned controller-managed runs after rest
   const tempDir = mkdtempSync(join(tmpdir(), "pdpp-ref-controller-restart-"));
   const dbPath = join(tempDir, "reference.sqlite");
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as WithHarnessContext["spotifyManifest"];
   // The connector instance, controller_active_runs rows, and run.* spine
   // events are all keyed by the canonical connector key (Decision 1), so the

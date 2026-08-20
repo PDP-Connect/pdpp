@@ -11,6 +11,18 @@
  * @theme / [data-surface="concept"] blocks — TW IntelliSense false `{ expected`
  * cascade; notes in this header only.
  *
+ * --container-page is the landing-page width for the whole concept surface,
+ * chrome included. It was 1080, the 10th percentile of its class: of 16
+ * protocol and infra landing pages measured at 1920 on 2026-08-15, only
+ * OAuth.net (960) and Matrix (1000) cap at or below it, and the median is
+ * 1280 — hit exactly by Deno, Astro and Let's Encrypt (Kubernetes 1200,
+ * Rust 1152, W3C 1312, IETF 1300, OpenTelemetry 1320, Tailscale 1440,
+ * MCP 1472, Terraform 1600, SQLite uncapped). Raised on the token rather
+ * than per-page so masthead, hero and footer keep one left edge; scoping it
+ * to the page container alone left the hero hanging 100px outside the chrome
+ * that frames it. One container serves every surface — there is no railed
+ * override, which is what keeps the masthead at the same x on every page.
+ *
  * Shared `Text` colors use brand/shadcn utils (text-foreground, text-primary, …).
  * Legacy ink/paper/teal TW classes remain in compat-palette.css until migrated.
  *
@@ -25,11 +37,23 @@
  * FLUID CLAMPS (layout @theme + type rungs below): linear 375px→1240px viewport,
  * 16px root — clamp(min, calc(intercept_rem + slope_vw * 1vw), max) with
  * slope_vw = (max−min)/8.65 and intercept_rem = (min−slope_vw×3.75)/16.
+ *
+ * --container-measure is a brand-shared key (like --background/--text-*
+ * above), not a concept-only one — @pdpp/brand's own @theme already declares
+ * it, so redeclaring it in this file's @theme does not win the cascade; it
+ * must be rebound under [data-surface="concept"] below, same as the palette
+ * and type rungs. Fixed px there, not ch: ch resolves against each element's
+ * own font-size, so the same "68ch" token used to cap a 27px h1 near 950px and
+ * a 15px body paragraph near 544px on the same page — headings ran far wider
+ * than the prose under them. 600px reads as ~75ch at the concept surface's
+ * 15px body rung and ~67ch at the specification surface's 17px body rung
+ * (both Source Serif 4), landing inside the conventional 60-75ch body measure
+ * either way, and now applies identically to headings/lists/paragraphs
+ * regardless of their own font-size.
  */
 
 @theme {
-  --container-page: 1080px;
-  --container-measure: 68ch;
+  --container-page: 1280px;
 
   --spacing-pad: clamp(20px, calc(0.9249rem + 1.3873vw), 32px);
   --spacing-gutter: clamp(40px, calc(2.2832rem + 0.9249vw), 48px);
@@ -41,6 +65,8 @@
    Rung names/utilities are declared in brand @theme; this surface only
    rebinds values so product defaults stay outside concept pages. */
 [data-surface="concept"] {
+  --container-measure: 600px;
+
   --background: var(--pdpp-concept-paper);
   --foreground: var(--pdpp-concept-ink);
   --muted-foreground: var(--pdpp-concept-ink-soft);

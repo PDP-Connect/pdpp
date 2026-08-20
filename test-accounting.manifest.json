@@ -225,23 +225,6 @@
       "include": ["packages/list-envelope/src/**/*.test.ts"]
     },
     {
-      "id": "local-collector",
-      "cwd": ".",
-      "loader": "node-test",
-      "authority_argument": null,
-      "execution": "direct",
-      "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
-      "command": [
-        "node",
-        "--test",
-        "--import",
-        "tsx",
-        "--test-reporter",
-        "scripts/test-accounting/node-reporter.ts"
-      ],
-      "include": ["packages/local-collector/test/*.test.ts"]
-    },
-    {
       "id": "polyfill-connectors",
       "cwd": ".",
       "loader": "node-test",

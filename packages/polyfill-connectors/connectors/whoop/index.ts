@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { isMainModule } from "@pdpp/connector-protocol";
 import type { Page } from "playwright";
 import { manualAction } from "../../src/browser-handoff.ts";
 import {
@@ -12,7 +14,6 @@ import {
   type RecordData,
   runConnector,
 } from "../../src/connector-runtime.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import {
   bodyRecord,
   cycleRecord,

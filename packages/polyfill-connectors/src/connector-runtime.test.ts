@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { EmittedMessage } from "@pdpp/connector-protocol";
 import type { BrowserContext, Page } from "playwright";
 import {
   type BrowserLaunchSource,
@@ -28,7 +29,6 @@ import {
   selectBrowserPageForRun,
   shouldCloseBrowserPageAfterRun,
 } from "./connector-runtime.ts";
-import type { EmittedMessage } from "./connector-runtime-protocol.ts";
 import type { CaptureSession } from "./fixture-capture.ts";
 
 const HEADLESS: BrowserRuntimeVisibility = {

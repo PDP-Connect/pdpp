@@ -21,7 +21,7 @@ export function PdppRail({ toc }: PdppRailProps) {
       className={cn(
         // Page grid col 1; self-start so sticky works (page also items-start)
         "col-1 hidden self-start font-sans lg:block",
-        "lg:sticky lg:top-[72px] lg:pt-[calc(var(--spacing-section-gap)/1.5)]",
+        "lg:sticky lg:top-[var(--pdpp-masthead-height,72px)] lg:pt-[calc(var(--spacing-section-gap)/1.5)]",
         // Scrollbar thumb idle → ink on hover/focus.
         // --foreground, not --color-foreground: an arbitrary value is emitted
         // as authored, and --color-foreground is frozen to brand ink at :root.

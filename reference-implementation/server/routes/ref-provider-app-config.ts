@@ -102,6 +102,11 @@ export interface MountRefProviderAppConfigContext {
    * as "configured" for the first-setup completeness check; the alias name
    * itself is never returned to the caller. */
   isEnvAliasSatisfied: (envAlias: string) => boolean;
+  /** Every distinct `provider_identity_group` declared by a registered
+   * connector manifest, each already resolved to its descriptor — same
+   * shape `resolveProviderIdentityGroup` returns for one group. Used only
+   * by the no-`identity_group` GET (list) path. */
+  listProviderIdentityGroups: () => Promise<readonly ProviderIdentityGroupDescriptor[]>;
   now?: () => string;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
@@ -109,11 +114,6 @@ export interface MountRefProviderAppConfigContext {
    * returns the group's display label plus the union of their declared
    * `deployment_config` logical fields. Absent/unknown group -> null. */
   resolveProviderIdentityGroup: (identityGroup: string) => Promise<ProviderIdentityGroupDescriptor | null>;
-  /** Every distinct `provider_identity_group` declared by a registered
-   * connector manifest, each already resolved to its descriptor — same
-   * shape `resolveProviderIdentityGroup` returns for one group. Used only
-   * by the no-`identity_group` GET (list) path. */
-  listProviderIdentityGroups: () => Promise<readonly ProviderIdentityGroupDescriptor[]>;
 }
 
 // ---------------------------------------------------------------------------

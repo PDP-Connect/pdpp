@@ -6,7 +6,7 @@ description: "Bearer tokens at both boundaries: wire format and semantics. Ident
 <Callout type="info" title="Spec status">
   Status: **Informative**
 
-  Date: 2026-07-07 (revised from 2026-03-30)
+  Date: 2026-08-14 (revised from 2026-03-30)
 
   Scope: Design rationale for the two-boundary bearer-token authentication model.
 </Callout>

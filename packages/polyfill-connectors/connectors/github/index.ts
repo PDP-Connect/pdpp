@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -23,6 +24,7 @@
  * which main() surfaces as a retryable DONE failure (see catch at bottom).
  */
 
+import { isMainModule } from "@pdpp/connector-protocol";
 import {
   buildCollectionRateProgress,
   buildPacingStateFields,
@@ -38,7 +40,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { RetryBudget } from "../../src/provider-budget.ts";
 import { githubPacingProfile } from "../../src/provider-profile.ts";
 import {

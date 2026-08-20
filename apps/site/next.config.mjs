@@ -81,6 +81,15 @@ const nextConfig = {
         permanent: true,
         source: "/docs/:path*",
       },
+      // /specification/reference-materials was the first attempt at this index.
+      // It sat INSIDE the specification route while its whole purpose was being
+      // outside it, so it became /maintainers. Redirected rather than dropped:
+      // it was live on this branch and the documents it listed are unchanged.
+      {
+        destination: "/maintainers",
+        permanent: true,
+        source: "/specification/reference-materials",
+      },
       // The goal design has no separate docs-index landing page: /specification
       // itself serves the core protocol document (see
       // src/app/specification/[[...slug]]/page.tsx). /specification/spec-core

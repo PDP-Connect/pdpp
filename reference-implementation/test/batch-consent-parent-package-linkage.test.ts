@@ -64,7 +64,7 @@ interface ConnectorManifest {
 }
 
 function loadManifest(name: string): ConnectorManifest {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${name}.json`), "utf8")) as ConnectorManifest;
+  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `fixtures/seed-manifests/${name}.json`), "utf8")) as ConnectorManifest;
 }
 
 async function registerManifest(asUrl: string, manifest: ConnectorManifest) {

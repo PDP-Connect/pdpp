@@ -897,7 +897,7 @@ if (POSTGRES_URL) {
   test("postgres runtime storage covers records, blobs, spine, lexical, and semantic fallback", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `pg-runtime-${suffix.replaceAll("_", "-")}`;
-    const sourceId = `https://registry.pdpp.org/connectors/${connectorId}`;
+    const sourceId = `https://registry.pdpp.dev/connectors/${connectorId}`;
     const clientId = `pg_client_${suffix}`;
     const ownerSubjectId = `pg_owner_${suffix}`;
     const stream = "events";

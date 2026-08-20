@@ -19,11 +19,11 @@ import {
   projectStorageDisplayName,
   resolveRequestConnectionId,
 } from "./connection-id-request.ts";
+import { assertConnectorInstanceWritableStatus } from "./connector-instance-admission.ts";
 import {
   type ConnectorInstanceWriteOwnership,
   withConnectorInstanceWrite,
 } from "./connector-instance-write-coordinator.ts";
-import { assertConnectorInstanceWritableStatus } from "./connector-instance-admission.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
 import { assertGrantedManifestReadAuthority, assertManifestReadAuthority } from "./manifest-read-authority.ts";
 import {
@@ -48,7 +48,12 @@ import {
   fieldWindowError,
   normalizeWindowSelector,
 } from "./record-field-window.ts";
-import { compileRequestFilters, nonNullSchemaTypes, passesRequestFilters, passesTimeConstraint } from "./record-filters.ts";
+import {
+  compileRequestFilters,
+  nonNullSchemaTypes,
+  passesRequestFilters,
+  passesTimeConstraint,
+} from "./record-filters.ts";
 import { firstSemanticTimeValue, SEMANTIC_TIME_UNKNOWN } from "./semantic-time-coercion.ts";
 import {
   getChangeHistoryLimit,

@@ -28,6 +28,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
+import { isMainModule } from "@pdpp/connector-protocol";
 import {
   ATTACHMENT_PREVIEW_CHARS,
   applyProjectDirScope,
@@ -48,7 +49,6 @@ import {
 } from "../../connectors/claude_code/parsers.ts";
 import type { ClaudeCodeState, JsonlObject, SessionAccumulator } from "../../connectors/claude_code/types.ts";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 
 const nowIso = (): string => new Date().toISOString();
 
