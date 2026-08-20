@@ -809,9 +809,22 @@ test("UAT allowlist: development connector exposed only when flag+key+valid-setu
   try {
     // Scenario table: all combinations of flag, allowlist, setup validity
     const scenarios = [
-      { connectorKey: "venmo", expectedExposed: false, label: "no flag, with allowlist", list: "", uat: false },
-      { connectorKey: "venmo", expectedExposed: false, label: "flag ON, empty allowlist", list: "", uat: true },
-      { connectorKey: "venmo", expectedExposed: true, label: "flag+allowlist+valid-setup", list: "venmo", uat: true },
+      // spotify is the development-tier fixture (publicTier "development",
+      // setup modality static_secret — hidden pending a credentialed proof
+      // run). Venmo previously filled this role but is now publicTier
+      // "preview", so it is offered on its own merits and can no longer
+      // exercise the development-tier gate. This mirrors the same swap already
+      // made in "Development-tier connector stays unavailable even when legacy
+      // UAT exposure is enabled" above.
+      { connectorKey: "spotify", expectedExposed: false, label: "no flag, with allowlist", list: "", uat: false },
+      { connectorKey: "spotify", expectedExposed: false, label: "flag ON, empty allowlist", list: "", uat: true },
+      {
+        connectorKey: "spotify",
+        expectedExposed: true,
+        label: "flag+allowlist+valid-setup",
+        list: "spotify",
+        uat: true,
+      },
       {
         connectorKey: "doordash",
         expectedExposed: false,
@@ -837,8 +850,8 @@ test("UAT allowlist: development connector exposed only when flag+key+valid-setu
 
       await withServer(async ({ asUrl, rsUrl }) => {
         // Register the connector to test
-        if (scenario.connectorKey === "venmo") {
-          await registerConnector(asUrl, loadManifest("venmo"));
+        if (scenario.connectorKey === "spotify") {
+          await registerConnector(asUrl, loadManifest("spotify"));
         }
         if (scenario.connectorKey === "doordash") {
           const m = loadManifest("doordash");
