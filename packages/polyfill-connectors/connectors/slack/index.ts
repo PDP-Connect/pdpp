@@ -95,6 +95,7 @@ import {
   parseMessageRow,
   selectCommittedMaxTs,
   toSlackTime,
+  tsToIso,
   WORKSPACE_LIST_ARROW,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
@@ -206,6 +207,78 @@ function missingPreviouslyObservedChannelIds(
   return priorObservedChannelIds.filter((id) => !current.has(id)).sort();
 }
 
+/**
+ * Channel ids slackdump proved it finished paginating.
+ *
+ * `CHUNK.FINAL` is slackdump's OWN end-of-pagination marker for a chunk
+ * (see its schema: "FINAL SMALLINT NOT NULL DEFAULT FALSE" alongside
+ * `NUM_REC`), and `TYPE_ID = 0` is the MESSAGES chunk type per the
+ * archive's `TYPES` table. A channel with a final messages chunk is one
+ * slackdump walked to the end; a channel with only non-final message
+ * chunks was cut short mid-walk.
+ *
+ * This is the provider-side completeness anchor for Slack messages. It is
+ * measured from the archive tool's own bookkeeping, not from anything this
+ * connector emitted, and it is the only per-channel completeness fact
+ * slackdump exposes — there is no per-channel message count and no
+ * `has_more` flag anywhere in the archive schema.
+ *
+ * Returns an empty set on an archive too old to carry `CHUNK` (the
+ * `safeAll` fallback). The caller treats an empty result as "cannot
+ * prove", never as "nothing is complete".
+ */
+function archiveFinalizedChannelIds(db: DatabaseSync): Set<string> {
+  const rows = safeAll<{ id: string }>(
+    db,
+    `
+    SELECT DISTINCT CHANNEL_ID AS id
+    FROM CHUNK
+    WHERE TYPE_ID = 0 AND FINAL = 1 AND CHANNEL_ID IS NOT NULL AND CHANNEL_ID != ''
+  `
+  );
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Every channel id in the archive's own CHANNEL inventory — what Slack told
+ * slackdump this account can see, independent of how much of each channel
+ * was actually archived.
+ *
+ * This is the denominator side of the message-coverage set comparison:
+ * inventory minus finalized is the set of channels whose history is NOT
+ * proven complete. On this owner's workspace that difference is large (973
+ * channels in PDPP's inventory against 552 with a finalized message chunk
+ * across all archives), and before this evidence existed it was entirely
+ * invisible.
+ */
+function archiveInventoryChannelIds(db: DatabaseSync): Set<string> {
+  const rows = safeAll<{ id: string }>(
+    db,
+    `
+    SELECT DISTINCT ID AS id
+    FROM CHANNEL
+    WHERE ID IS NOT NULL AND ID != ''
+  `
+  );
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Channels present in the archive's inventory whose message history
+ * slackdump never proved it finished walking.
+ *
+ * Deliberately a SET difference over channel ids, not a count comparison.
+ * A count cannot distinguish "we are short N channels" from "we hold N
+ * extra" from "N are duplicated", and — critically for a preservation
+ * product — a channel we hold history for that Slack has since archived or
+ * deleted must NOT read as loss. This asks only the one-directional
+ * question: which channels does the SOURCE list that we cannot prove we
+ * finished? Channels we hold but Slack no longer lists never appear here.
+ */
+export function unprovenChannelIds(inventory: ReadonlySet<string>, finalized: ReadonlySet<string>): string[] {
+  return [...inventory].filter((id) => !finalized.has(id)).sort((a, b) => a.localeCompare(b));
+}
+
 async function emitMissingChannelDiagnostic(
   emit: CollectContext["emit"],
   missingChannelIds: readonly string[]
@@ -226,6 +299,60 @@ async function emitMissingChannelDiagnostic(
       missing_channel_ids: visibleIds,
       missing_count: missingChannelIds.length,
       truncated: visibleIds.length < missingChannelIds.length,
+    },
+    recovery_hint: {
+      action: "retry_by_runtime",
+      retryable: true,
+    },
+  });
+}
+
+/**
+ * Emit the per-channel message-completeness evidence for this archive: the
+ * set of inventoried channels slackdump never proved it finished walking.
+ *
+ * Before this existed, a channel that the archive simply never visited was
+ * indistinguishable from a channel with no messages — an invisible hole
+ * (403 of this owner's 973 channels hold zero messages, 278 of them public).
+ * This converts that into durable, operator-visible evidence.
+ *
+ * Emits nothing when the archive carries no `CHUNK` bookkeeping at all: an
+ * archive that cannot report finality cannot prove anything is missing
+ * either, and inventing a gap from absent evidence is the same defect as
+ * inventing coverage from it.
+ */
+async function emitUnprovenChannelDiagnostic(
+  emit: CollectContext["emit"],
+  db: DatabaseSync,
+  messageFamilyRequested: boolean
+): Promise<void> {
+  if (!messageFamilyRequested) {
+    return;
+  }
+  const inventory = archiveInventoryChannelIds(db);
+  const finalized = archiveFinalizedChannelIds(db);
+  if (finalized.size === 0) {
+    return;
+  }
+  const unproven = unprovenChannelIds(inventory, finalized);
+  if (unproven.length === 0) {
+    return;
+  }
+  const visibleIds = unproven.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
+  await emit({
+    type: "SKIP_RESULT",
+    stream: "messages",
+    reason: "channel_history_not_finalized",
+    message:
+      `Slack archive lists ${String(inventory.size)} channels but slackdump proved a finished message walk for only ` +
+      `${String(finalized.size)}; ${String(unproven.length)} channel(s) have unproven history. Their messages may be ` +
+      "absent or partial. A full re-archive is required to close this.",
+    diagnostics: {
+      inventory_count: inventory.size,
+      finalized_count: finalized.size,
+      unproven_count: unproven.length,
+      unproven_channel_ids: visibleIds,
+      truncated: visibleIds.length < unproven.length,
     },
     recovery_hint: {
       action: "retry_by_runtime",
@@ -850,6 +977,7 @@ function mergeMessagesPassResults(left: MessagesPassResult, right: MessagesPassR
     channelMaxTs: selectCommittedChannelLastTs(left.channelMaxTs, right.channelMaxTs),
     maxMessageTs: selectMaxSlackTs(left.maxMessageTs, right.maxMessageTs),
     considered: left.considered + right.considered,
+    covered: left.covered + right.covered,
   };
 }
 
@@ -1521,6 +1649,15 @@ export interface MessagesPassDeps {
 export interface MessagesPassResult {
   channelMaxTs: Record<string, string>;
   considered: number;
+  /**
+   * Rows this pass actually accounted for: enumerated AND successfully
+   * shaped into a record. Measured per-row from the parse outcome, never
+   * aliased to `considered` — a row whose timestamp could not be parsed is
+   * counted in `considered` but not here, so it reads an honest `partial`
+   * instead of the tautological `complete` the prior `covered: considered`
+   * produced.
+   */
+  covered: number;
   maxMessageTs: string | null;
 }
 
@@ -1595,8 +1732,17 @@ export async function emitMessagesPass(
   const channelMaxTs: Record<string, string> = {};
   let maxMessageTs: string | null = null;
   let considered = 0;
+  let covered = 0;
   for (const r of rows) {
     considered += 1;
+    // A row whose Slack `ts` will not parse gets a fabricated `sent_at`
+    // (parseMessageRow's `?? sentAtFallback`). It is still emitted — the
+    // body is real — but it is NOT objectively accounted for, so it must
+    // not raise the coverage numerator. Measured here, at the enumeration
+    // site, from the row's own parse outcome.
+    if (tsToIso(r.TS) !== null) {
+      covered += 1;
+    }
     const parsed = parseMessageRow(r, nowIso());
     const { ts } = parsed;
     // Track the max ts seen in this run for the post-loop STATE emit.
@@ -1618,7 +1764,7 @@ export async function emitMessagesPass(
       }
     }
   }
-  return { channelMaxTs, maxMessageTs, considered };
+  return { channelMaxTs, covered, maxMessageTs, considered };
 }
 
 // ─── Per-stream helpers ────────────────────────────────────────────────
@@ -1704,7 +1850,7 @@ async function declareListConsidered(
   );
 }
 
-async function declareMessageFamilyCoverage(deps: StreamDeps, considered: number): Promise<void> {
+async function declareMessageFamilyCoverage(deps: StreamDeps, considered: number, covered: number): Promise<void> {
   for (const stream of ["reactions", "message_attachments"] as const) {
     if (deps.requested.has(stream)) {
       await deps.emit(
@@ -1714,7 +1860,7 @@ async function declareMessageFamilyCoverage(deps: StreamDeps, considered: number
           requiredKeys: [],
           hydratedKeys: [],
           considered,
-          covered: considered,
+          covered,
         })
       );
     }
@@ -1731,7 +1877,7 @@ async function declareMessageFamilyCoverage(deps: StreamDeps, considered: number
  * and the runtime rejects a repeated (state_stream, stream) DETAIL_COVERAGE
  * pair.
  */
-async function declareMergedMessageCoverage(deps: StreamDeps, considered: number): Promise<void> {
+async function declareMergedMessageCoverage(deps: StreamDeps, considered: number, covered: number): Promise<void> {
   if (
     !(deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments"))
   ) {
@@ -1744,10 +1890,10 @@ async function declareMergedMessageCoverage(deps: StreamDeps, considered: number
       requiredKeys: [],
       hydratedKeys: [],
       considered,
-      covered: considered,
+      covered,
     })
   );
-  await declareMessageFamilyCoverage(deps, considered);
+  await declareMessageFamilyCoverage(deps, considered, covered);
 }
 
 /**
@@ -2621,7 +2767,7 @@ export async function runRequestedStreams(
     await runUsersStream(deps);
   }
   // Messages, reactions, message_attachments share one pass for efficiency.
-  let result: MessagesPassResult = { channelMaxTs: {}, maxMessageTs: null, considered: 0 };
+  let result: MessagesPassResult = { channelMaxTs: {}, covered: 0, maxMessageTs: null, considered: 0 };
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
     const priorTs = options.allowLegacyMessageCursorFallback === false ? null : (messagesState?.last_ts ?? null);
@@ -2906,6 +3052,14 @@ if (isMainModule(import.meta.url)) {
         await emitMissingChannelDiagnostic(emit, reconciledSourceCache.missingChannelIds);
       }
 
+      // The existing diagnostic above compares the archive against this
+      // connector's OWN prior state, so a channel never archived in the
+      // first place is invisible to it forever. This one compares the
+      // archive's inventory against slackdump's own per-channel
+      // end-of-pagination marker — a source-side fact — and so surfaces
+      // exactly that never-visited hole.
+      await emitUnprovenChannelDiagnostic(emit, db, messageFamilyRequested);
+
       // Register the opt-in __uploads reclaim once every archive this run
       // actually read is known: the base/scoped archive, every scoped archive
       // reconcileMessageSourceCache refreshed or repaired AND folded into the
@@ -2946,7 +3100,7 @@ if (isMainModule(import.meta.url)) {
         });
       }
 
-      await declareMergedMessageCoverage(deps, messageResult.considered);
+      await declareMergedMessageCoverage(deps, messageResult.considered, messageResult.covered);
 
       // Drop fingerprint entries for IDs that disappeared from the source
       // since the prior run on streams we actually requested. Streams the
