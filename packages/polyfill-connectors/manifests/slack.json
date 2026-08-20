@@ -1532,6 +1532,7 @@
     }
   ],
   "reason_display_messages": {
+    "channel_history_not_finalized": "Some channels in this archive have unproven history, so their messages may be incomplete",
     "optional_stream_failed": "We couldn't collect one part of your Slack data, so we skipped it",
     "source_partition_missing": "Some previously seen Slack channels are missing from this export, so message coverage is incomplete"
   }

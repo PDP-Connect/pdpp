@@ -82,6 +82,7 @@
   "streams": [
     {
       "name": "timeline_points",
+      "required": false,
       "description": "Timestamped Google Maps Timeline location points.",
       "display": {
         "label": "Your Google Maps location points",
@@ -247,6 +248,7 @@
     }
   ],
   "reason_display_messages": {
+    "element_unaccounted": "Some Timeline entries had no usable time or ID, so we couldn't save them",
     "invalid_json": "We couldn't read one of your Google Maps Timeline export files",
     "record_too_large": "This Google Maps Timeline record is too large; re-export your Timeline and try again",
     "timeline_points_not_found": "We couldn't find any location points to import",

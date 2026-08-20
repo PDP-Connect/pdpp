@@ -844,6 +844,7 @@
   ],
   "reason_display_messages": {
     "claude_dir_not_found": "We couldn't find your Claude Code data folder",
-    "scope_matched_no_sources": "None of your configured project folders matched any Claude Code projects"
+    "scope_matched_no_sources": "None of your configured project folders matched any Claude Code projects",
+    "source_unreadable": "We couldn't read this folder, so we don't know what's in it"
   }
 }
