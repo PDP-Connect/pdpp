@@ -108,6 +108,12 @@ interface ConnectorMessage {
 interface ManifestStream {
   availability?: { state?: string } | null;
   consent_time_field?: string | null;
+  /**
+   * Closed enum selecting an RI-owned cursor-band variant (see
+   * `runtime/cursor-band-contiguity.ts`). Declaring opts this stream INTO a
+   * contiguity check; omitting it is silence, never a healthy verdict.
+   */
+  cursor_shape?: string | null;
   name: string;
   parent_streams?: string[] | null;
   primary_key?: string | string[] | null;
@@ -2958,14 +2964,15 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       data.reported_records_emitted = reportedRecordsEmitted;
     }
     if (connectorError?.message) {
-      // `connectorId` closes over the enclosing run's canonical connector
-      // id. `declaredReasonTokensFor` returns `undefined` for every
-      // connector not registered in `declared-reason-tokens.ts` — those
-      // stay byte-identical to prior behavior; only a connector that
-      // declared its own reason-token vocabulary gets it preserved here.
+      // `manifest` closes over the enclosing run's own resolved manifest.
+      // `declaredReasonTokensFor` returns `undefined` for every connector
+      // that declares no `capabilities.declared_reason_tokens` — those stay
+      // byte-identical to prior behavior; only a connector that declared its
+      // own reason-token vocabulary gets it preserved here. The RI reads the
+      // declaration generically and never learns a connector name.
       data.connector_error_message = boundConnectorErrorMessage(
         connectorError.message,
-        declaredReasonTokensFor(connectorId)
+        declaredReasonTokensFor(manifest)
       );
     }
     // Unlike `message`, `code` is copied without redaction — it is a typed,
@@ -3719,7 +3726,16 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // are the ones actually stored, never a staged value that failed to
       // commit. Pure and allocation-light; `not_registered` short-circuits for
       // every stream that declares no band, which is all but one today.
-      const bandVerdict = evaluateCursorBand({ connectorId, cursor, stream });
+      //
+      // The stream's manifest declares WHETHER it walks a band, via a closed
+      // `cursor_shape` enum the RI recognizes; the RI owns what that shape
+      // MEANS (paths, epoch guard, arithmetic). An undeclared or unrecognized
+      // shape selects no variant and stays silent — declaring can only opt a
+      // stream in, never exempt one from a check it would otherwise get.
+      const bandVerdict = evaluateCursorBand({
+        cursor,
+        declaredShape: manifestByStream.get(stream)?.cursor_shape,
+      });
       if (bandVerdict.violated) {
         await emitSpineEventTracked({
           actor_id: connectorId,

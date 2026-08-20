@@ -162,8 +162,10 @@
         },
         "required": ["id", "thread_id", "received_at"]
       },
+      "required": true,
       "primary_key": ["id"],
       "cursor_field": "received_at",
+      "cursor_shape": "imap_uid_band",
       "consent_time_field": "received_at",
       "selection": {
         "fields": true,
