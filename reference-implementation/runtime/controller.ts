@@ -1058,10 +1058,6 @@ const RECOVERY_CONTINUATION_PENDING_READ_LIMIT = 100;
 // FAST they run, which is what the owner actually feels when each envelope
 // costs an interactive sign-in.
 const RECOVERY_CONTINUATION_MIN_INTERVAL_MS = 60_000;
-// Last continuation launch per connection id. Process-local on purpose: a
-// restart clears it, and the depth cap plus the eligibility check remain the
-// durable bounds. This only smooths bursts within one process lifetime.
-const recoveryContinuationLastStartedAt = new Map<string, number>();
 
 // Typed terminal reason for a run whose launch path threw before the
 // runtime recorded any terminal event (e.g. env/spawn prep failed before
@@ -2404,6 +2400,14 @@ function browserSurfaceReplacementReceiptStoreFor(
  * Create a new controller instance.
  */
 export function createController(opts: ControllerOptions = {}): Controller {
+  // Last continuation launch per connection id. Scoped to THIS controller, not
+  // the module: a module-global map is shared by every controller in the
+  // process, so one controller's continuation would throttle an unrelated
+  // controller that happens to drive the same connection id, and nothing ever
+  // evicts the entries. Per-controller state is released with the controller,
+  // and a restart clears it — the depth cap plus the eligibility check remain
+  // the durable bounds. This only smooths bursts within one controller's life.
+  const recoveryContinuationLastStartedAt = new Map<string, number>();
   const log: ControllerLogger = opts.logger || console;
   const resolveConnectorPath = opts.connectorPathResolver || resolveDefaultConnectorPath;
   const ownerClientId = opts.ownerClientId || "cli_longview";

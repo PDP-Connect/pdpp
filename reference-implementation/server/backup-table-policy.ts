@@ -78,6 +78,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Stored connector credentials require the credential encryption key to decrypt after restore.",
   },
+  connector_instance_groups: {
+    classification: "backup_required",
+    reason:
+      "Connection grouping is owner-decided data, never inferred at read time, so it cannot be rebuilt after restore.",
+  },
   connector_instance_tombstones: {
     classification: "backup_required",
     reason: "Deletion tombstones prevent connection resurrection.",
