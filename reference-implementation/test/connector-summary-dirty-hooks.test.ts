@@ -66,7 +66,9 @@ const NOW = "2026-06-17T00:00:00.000Z";
 // `{ connector_id }` stub fails manifest validation; `connector_instances` also
 // FK-references `connectors`, so the row must exist. The spotify manifest is a
 // stable, committed fixture with declared streams.
-const SPOTIFY_MANIFEST = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests", "spotify.json"), "utf8"));
+const SPOTIFY_MANIFEST = JSON.parse(
+  readFileSync(join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests", "spotify.json"), "utf8")
+);
 const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey(SPOTIFY_MANIFEST.connector_id);
 if (!SPOTIFY_CONNECTOR_KEY) {
   throw new Error("the Spotify fixture must have a canonical connector key");
@@ -513,7 +515,7 @@ async function issueOwnerToken(asUrl: string): Promise<string> {
 }
 
 function loadReferenceManifest(name: string): { connector_id: string } {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests", `${name}.json`), "utf8"));
+  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests", `${name}.json`), "utf8"));
 }
 
 async function registerConnector(asUrl: string, manifest: { connector_id: string }) {

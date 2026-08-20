@@ -41,7 +41,7 @@ import {
 // `provider` field here is arbitrary test data, not something the module
 // branches on.
 const GDP_BINDING = { kind: "provider_auth_account", provider: "google_data_portability" };
-const FIXTURE_CONNECTION_CONFIG = [{ envVar: "FIXTURE_REFRESH_TOKEN", bundleField: "refresh_token" }];
+const FIXTURE_CONNECTION_CONFIG = [{ bundleField: "refresh_token", envVar: "FIXTURE_REFRESH_TOKEN" }];
 type ResolveArgs = Parameters<typeof resolveProviderAuthRunEnv>[0];
 type CredentialStore = NonNullable<ResolveArgs["credentialStore"]>;
 type RecoverSecretArgs = Parameters<CredentialStore["recoverSecret"]>[0];
@@ -58,12 +58,12 @@ function poisonStore(): CredentialStore {
 
 test("resolveProviderAuthRunEnv: no declared connection_config short-circuits to null before touching the store", async () => {
   const result = await resolveProviderAuthRunEnv({
+    connectionConfig: [],
     connectorId: "github",
     connectorInstanceId: "cin_1",
     credentialStore: poisonStore(),
     ownerSubjectId: "owner",
     sourceBinding: GDP_BINDING,
-    connectionConfig: [],
   });
   assert.equal(result, null);
 });
@@ -76,12 +76,12 @@ test("resolveProviderAuthRunEnv: a non-provider-auth source binding short-circui
     { kind: "provider_native", provider: "google_data_portability" },
   ]) {
     const result = await resolveProviderAuthRunEnv({
+      connectionConfig: FIXTURE_CONNECTION_CONFIG,
       connectorId: "google-maps-data-portability",
       connectorInstanceId: "cin_1",
       credentialStore: poisonStore(),
       ownerSubjectId: "owner",
       sourceBinding: binding,
-      connectionConfig: FIXTURE_CONNECTION_CONFIG,
     });
     assert.equal(result, null, `binding ${JSON.stringify(binding)} must gate to null`);
   }
@@ -91,12 +91,12 @@ test("resolveProviderAuthRunEnv: matching binding + declared connection_config b
   await assert.rejects(
     () =>
       resolveProviderAuthRunEnv({
+        connectionConfig: FIXTURE_CONNECTION_CONFIG,
         connectorId: "google-maps-data-portability",
         connectorInstanceId: "cin_1",
         credentialStore: null,
         ownerSubjectId: "owner",
         sourceBinding: GDP_BINDING,
-        connectionConfig: FIXTURE_CONNECTION_CONFIG,
       }),
     (err: unknown) => {
       assert.ok(err instanceof ProviderAuthRunCredentialError);
@@ -128,12 +128,12 @@ test("resolveProviderAuthRunEnv: a non-secret_bundle credential kind -> provider
   await assert.rejects(
     () =>
       resolveProviderAuthRunEnv({
+        connectionConfig: FIXTURE_CONNECTION_CONFIG,
         connectorId: "google-maps-data-portability",
         connectorInstanceId: "cin_1",
         credentialStore: store,
         ownerSubjectId: "owner",
         sourceBinding: GDP_BINDING,
-        connectionConfig: FIXTURE_CONNECTION_CONFIG,
       }),
     (err: unknown) => {
       assert.ok(err instanceof ProviderAuthRunCredentialError);
@@ -150,16 +150,19 @@ test("resolveProviderAuthRunEnv: a non-secret_bundle credential kind -> provider
 test("resolveProviderAuthRunEnv: generic refresh_token field resolves via connection_config", async () => {
   const store = {
     recoverSecret() {
-      return Promise.resolve({ credentialKind: "secret_bundle", secret: JSON.stringify({ refresh_token: "rt-generic" }) });
+      return Promise.resolve({
+        credentialKind: "secret_bundle",
+        secret: JSON.stringify({ refresh_token: "rt-generic" }),
+      });
     },
   };
   const result = await resolveProviderAuthRunEnv({
+    connectionConfig: [{ bundleField: "refresh_token", envVar: "GOOGLE_CALENDAR_REFRESH_TOKEN" }],
     connectorId: "google-calendar",
     connectorInstanceId: "cin_1",
     credentialStore: store,
     ownerSubjectId: "owner",
     sourceBinding: { kind: "provider_auth_account" },
-    connectionConfig: [{ envVar: "GOOGLE_CALENDAR_REFRESH_TOKEN", bundleField: "refresh_token" }],
   });
   assert.deepEqual(result, { GOOGLE_CALENDAR_REFRESH_TOKEN: "rt-generic" });
 });
@@ -174,13 +177,13 @@ test("resolveProviderAuthRunEnv: legacy field name resolves via manifest-declare
     },
   };
   const result = await resolveProviderAuthRunEnv({
+    connectionConfig: [{ bundleField: "refresh_token", envVar: "GOOGLE_CALENDAR_REFRESH_TOKEN" }],
     connectorId: "google-calendar",
     connectorInstanceId: "cin_1",
     credentialStore: store,
+    legacyBundleFieldAliases: { refresh_token: "google_owner_account_refresh_token" },
     ownerSubjectId: "owner",
     sourceBinding: { kind: "provider_auth_account" },
-    connectionConfig: [{ envVar: "GOOGLE_CALENDAR_REFRESH_TOKEN", bundleField: "refresh_token" }],
-    legacyBundleFieldAliases: { refresh_token: "google_owner_account_refresh_token" },
   });
   assert.deepEqual(result, { GOOGLE_CALENDAR_REFRESH_TOKEN: "rt-legacy" });
 });
@@ -195,15 +198,19 @@ test("resolveProviderAuthRunEnv: an optional (required: false) connection_config
     },
   };
   const result = await resolveProviderAuthRunEnv({
+    connectionConfig: [
+      { bundleField: "access_token", envVar: "GOOGLE_DATAPORTABILITY_ACCESS_TOKEN" },
+      {
+        bundleField: "denied_resource_groups",
+        envVar: "GOOGLE_DATAPORTABILITY_DENIED_RESOURCE_GROUPS",
+        required: false,
+      },
+    ],
     connectorId: "google-maps-data-portability",
     connectorInstanceId: "cin_1",
     credentialStore: store,
     ownerSubjectId: "owner",
     sourceBinding: { kind: "provider_auth_account" },
-    connectionConfig: [
-      { envVar: "GOOGLE_DATAPORTABILITY_ACCESS_TOKEN", bundleField: "access_token" },
-      { envVar: "GOOGLE_DATAPORTABILITY_DENIED_RESOURCE_GROUPS", bundleField: "denied_resource_groups", required: false },
-    ],
   });
   assert.deepEqual(result, { GOOGLE_DATAPORTABILITY_ACCESS_TOKEN: "at-1" });
 });

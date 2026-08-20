@@ -27,7 +27,12 @@ const STATUS_BADGE_CSS_FILE = `${HERE}../../../../../packages/operator-ui/src/co
 
 const NEXT_THEMES_IMPORT = /from "next-themes"/;
 const NEXT_THEMES_PROVIDER = /ThemeProvider as NextThemesProvider/;
-const ATTRIBUTE = /attribute="data-theme"/;
+// Both attributes, not just data-theme: fumadocs' own components key their
+// dark styling off a plain `.dark` class, so the shared provider writes the
+// class alongside the data attribute the brand tokens read. Console and site
+// assert against the same provider file; only the site's copy of this
+// expectation was updated when the provider changed, so this one failed CI.
+const ATTRIBUTE = /attribute=\{\["data-theme",\s*"class"\]\}/;
 const DEFAULT_THEME = /defaultTheme="system"/;
 const DISABLE_TRANSITIONS = /disableTransitionOnChange/;
 const DISABLE_COLOR_SCHEME = /enableColorScheme=\{false\}/;

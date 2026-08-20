@@ -5,10 +5,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import {
-  buildLocalDeviceIngestBatchRequest,
-  buildLocalDeviceRecordEnvelope,
-} from "../../packages/polyfill-connectors/src/local-device-envelope.ts";
+import { buildLocalDeviceRecordEnvelope } from "@pdpp/collector-runtime";
+import { buildLocalDeviceIngestBatchRequest } from "@pdpp/collector-runtime/local-device-envelope";
 import { registerConnector } from "../server/auth.ts";
 import { COLLECTOR_PROTOCOL_VERSION } from "../server/collector-protocol.ts";
 import { getDb } from "../server/db.ts";

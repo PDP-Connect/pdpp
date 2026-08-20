@@ -203,7 +203,7 @@ async function registerOptionalSingleSecretConnector(asUrl: string, connectorKey
   // canonical key explicitly").
   manifest.connector_key = connectorKey;
   manifest.connector_id = connectorKey;
-  manifest.manifest_uri = `https://registry.pdpp.org/connectors/${connectorKey}`;
+  manifest.manifest_uri = `https://registry.pdpp.dev/connectors/${connectorKey}`;
   const setup = manifest.setup as { credential_capture: { required?: boolean } };
   setup.credential_capture.required = false;
   const resp = await fetch(`${asUrl}/connectors`, {
@@ -218,7 +218,7 @@ async function registerRequiredOnePathBundleConnector(asUrl: string, connectorKe
   const manifest = structuredClone(loadManifest("jellyfin"));
   manifest.connector_key = connectorKey;
   manifest.connector_id = connectorKey;
-  manifest.manifest_uri = `https://registry.pdpp.org/connectors/${connectorKey}`;
+  manifest.manifest_uri = `https://registry.pdpp.dev/connectors/${connectorKey}`;
   const setup = manifest.setup as {
     credential_capture: { fields: Array<{ name: string }>; required?: boolean };
   };

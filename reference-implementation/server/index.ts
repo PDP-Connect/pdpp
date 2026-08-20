@@ -729,9 +729,9 @@ interface ServerOpts {
   clientEventSubscriptionsCapability?: unknown;
   clientEventSubscriptionsSupported?: boolean;
   configuredProviderAuthConnectorKeys?: readonly string[];
+  connectionScopedRunEnvResolver?: ReturnType<typeof buildConnectionScopedRunEnvResolver>;
   /** Operator-owned connector child environment policy; defaults to the JSON env contract. */
   connectorEnvironmentPolicy?: ConnectorEnvironmentPolicy | null;
-  connectionScopedRunEnvResolver?: ReturnType<typeof buildConnectionScopedRunEnvResolver>;
   connectorInstanceId?: string;
   connectorPathResolver?: ((connectorId: string, manifest?: ConnectorManifest) => string | null) | null;
   controller?: Controller | null;
@@ -6553,6 +6553,18 @@ function buildRsApp(opts: ServerOpts = {}) {
       options?: { requireConnectionAdmission?: boolean; runId?: string | null }
     ) =>
       ingestRecord(target as Parameters<typeof ingestRecord>[0], record as Parameters<typeof ingestRecord>[1], options),
+    ingestRecords: (
+      target: unknown,
+      records: readonly unknown[],
+      afterRecord: ((record: unknown, outcome: unknown) => Promise<void>) | undefined,
+      options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+    ) =>
+      ingestRecords(
+        target as Parameters<typeof ingestRecords>[0],
+        records as Parameters<typeof ingestRecords>[1],
+        afterRecord,
+        options
+      ),
     insertOrReplayRecordRejection: async ({
       code,
       ...input
@@ -6572,18 +6584,6 @@ function buildRsApp(opts: ServerOpts = {}) {
         receipt_id: receipt.receiptId,
       };
     },
-    ingestRecords: (
-      target: unknown,
-      records: readonly unknown[],
-      afterRecord: ((record: unknown, outcome: unknown) => Promise<void>) | undefined,
-      options?: { requireConnectionAdmission?: boolean; runId?: string | null }
-    ) =>
-      ingestRecords(
-        target as Parameters<typeof ingestRecords>[0],
-        records as Parameters<typeof ingestRecords>[1],
-        afterRecord,
-        options
-      ),
     // Same cache the mutation routes below already invalidate on every other
     // connection-mutating action (revoke, reactivate, schedule, run, rename,
     // delete). `maybeActivateDraftAfterIngest` (rs-mutation.ts) calls this
@@ -7263,8 +7263,8 @@ function buildRsApp(opts: ServerOpts = {}) {
     requireToken,
     resolveResource: (req: unknown) =>
       resolvePublicUrl(req as Parameters<typeof resolvePublicUrl>[0], explicitResource),
-    uatExposeUnlistedConnectors: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT === "1",
     uatConnectorAllowlist: parseUatConnectorAllowlist(process.env.PDPP_UAT_CONNECTOR_ALLOWLIST),
+    uatExposeUnlistedConnectors: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT === "1",
   } as unknown as Parameters<typeof mountOwnerConnectorTemplates>[1]);
 
   // GET /v1/owner/control is the bearer-authed owner-agent control entrypoint:
@@ -8104,8 +8104,8 @@ export async function startServer(opts: ServerOpts = {}) {
   }
 
   schedulerManager = createReferenceSchedulerManager({
-    connectorEnvironmentPolicy,
     connectionScopedRunEnvResolver,
+    connectorEnvironmentPolicy,
     connectorPathResolver: opts.connectorPathResolver || resolveDefaultConnectorPath,
     controller,
     logger,

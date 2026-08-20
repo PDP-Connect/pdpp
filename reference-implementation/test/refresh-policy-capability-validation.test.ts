@@ -157,8 +157,16 @@ test("validateRefreshPolicyCapability: accepts max_cooldown_cycles / max_recover
   );
   assert.equal(validateRefreshPolicyCapability(validPolicy({ max_cooldown_cycles: 1 }), CODE), undefined, "min bound");
   assert.equal(validateRefreshPolicyCapability(validPolicy({ max_cooldown_cycles: 24 }), CODE), undefined, "max bound");
-  assert.equal(validateRefreshPolicyCapability(validPolicy({ max_recovery_attempts: 1 }), CODE), undefined, "min bound");
-  assert.equal(validateRefreshPolicyCapability(validPolicy({ max_recovery_attempts: 20 }), CODE), undefined, "max bound");
+  assert.equal(
+    validateRefreshPolicyCapability(validPolicy({ max_recovery_attempts: 1 }), CODE),
+    undefined,
+    "min bound"
+  );
+  assert.equal(
+    validateRefreshPolicyCapability(validPolicy({ max_recovery_attempts: 20 }), CODE),
+    undefined,
+    "max bound"
+  );
 });
 
 test("validateRefreshPolicyCapability: REJECTS an absurd/extreme max_cooldown_cycles or max_recovery_attempts — a connector must not self-attest out of escalation", () => {
@@ -172,7 +180,10 @@ test("validateRefreshPolicyCapability: REJECTS an absurd/extreme max_cooldown_cy
     "max_cooldown_cycles must be an integer between"
   );
 
-  assertRejects(validPolicy({ max_recovery_attempts: 999_999_999 }), "max_recovery_attempts must be an integer between");
+  assertRejects(
+    validPolicy({ max_recovery_attempts: 999_999_999 }),
+    "max_recovery_attempts must be an integer between"
+  );
   assertRejects(validPolicy({ max_recovery_attempts: 21 }), "max_recovery_attempts must be an integer between");
   assertRejects(validPolicy({ max_recovery_attempts: 0 }), "max_recovery_attempts must be an integer between");
   assertRejects(validPolicy({ max_recovery_attempts: -5 }), "max_recovery_attempts must be an integer between");

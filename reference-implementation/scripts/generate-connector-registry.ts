@@ -4,7 +4,7 @@
 /**
  * Regenerates `server/generated/connector-registry.generated.ts` from the
  * shipped connector manifests (`packages/polyfill-connectors/manifests/*.json`,
- * `reference-implementation/manifests/*.json`) and the connector-owned
+ * `reference-implementation/fixtures/seed-manifests/*.json`) and the connector-owned
  * local-collector bundle registry (`@pdpp/polyfill-connectors/collectors`).
  *
  * Why this exists: `server/connector-key.ts` and `server/connection-setup-plan.ts`
@@ -27,7 +27,7 @@
  *   - firstPartyConnectorKeys: every manifest's connector_key (or the
  *     canonical slug of its connector_id)
  *   - nativeConnectorKeys: manifests using storage_binding.connector_id
- *     instead of a registry-URL connector_id (reference-implementation/manifests)
+ *     instead of a registry-URL connector_id (reference-implementation/fixtures/seed-manifests)
  *   - legacyLocalAliases: derived by cross-referencing each local-collector
  *     bundle definition's own `connector_id` (the npm-package directory name,
  *     necessarily snake_case) against its manifest's canonical `connector_key`
@@ -55,7 +55,7 @@
  * manifest directory instead of writing synthetic/probe manifests into the
  * real, shared `packages/polyfill-connectors/manifests`. Unset in normal use
  * (CLI, `pnpm run generate:connector-registry`, the drift-check test), where
- * the real directory applies. `reference-implementation/manifests` (RI's own
+ * the real directory applies. `reference-implementation/fixtures/seed-manifests` (RI's own
  * native-storage-binding fixtures) has no override — no test currently needs
  * one — and is always read from its real, fixed location.
  */
@@ -103,7 +103,7 @@ function readReferenceManifestFile(manifestPath: string): ManifestLike {
 }
 
 function readReferenceManifests(): { file: string; manifest: ManifestLike }[] {
-  const realDir = resolve(riRoot, "manifests");
+  const realDir = resolve(riRoot, "fixtures", "seed-manifests");
   const out: { file: string; manifest: ManifestLike }[] = [];
   for (const file of readdirSync(realDir)) {
     if (!file.endsWith(".json")) {
@@ -134,7 +134,7 @@ const polyfillManifests = readPolyfillManifests();
 const referenceManifests = readReferenceManifests();
 
 // First-party connector keys: every polyfill manifest's canonical key.
-// (reference-implementation/manifests are the native-storage-binding fixtures
+// (reference-implementation/fixtures/seed-manifests are the native-storage-binding fixtures
 // handled separately below — northstar-hr has no connector_id/connector_key
 // at all and is excluded, matching today's hand-maintained list.)
 const firstPartyConnectorKeys = polyfillManifests
@@ -142,7 +142,7 @@ const firstPartyConnectorKeys = polyfillManifests
   .filter((key): key is string => key !== null)
   .sort((a, b) => a.localeCompare(b));
 
-// Native connector keys: reference-implementation/manifests entries that
+// Native connector keys: reference-implementation/fixtures/seed-manifests entries that
 // declare storage_binding.connector_id instead of a registry-URL connector_id.
 const nativeConnectorKeys = referenceManifests
   .map(({ manifest }) => manifest.storage_binding?.connector_id)
@@ -271,7 +271,7 @@ const output = `// Copyright The PDP-Connect Contributors
 // GENERATED FILE — do not hand-edit. Produced by
 // reference-implementation/scripts/generate-connector-registry.ts from the
 // shipped connector manifests (packages/polyfill-connectors/manifests/,
-// reference-implementation/manifests/) and
+// reference-implementation/fixtures/seed-manifests/) and
 // @pdpp/polyfill-connectors's LOCAL_COLLECTOR_DEFINITIONS. Regenerate with
 // \`pnpm --filter pdpp-reference-implementation run generate:connector-registry\`.
 // scripts/check-generated-artifacts.ts fails CI if this file drifts from

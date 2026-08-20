@@ -22,7 +22,7 @@ import { ownerSessionHeaders } from "../lib/fetch.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REF_ROOT = join(__dirname, "..", "..");
 const SEED_CONNECTOR_PATH = join(REF_ROOT, "connectors", "seed", "index.ts");
-const MANIFESTS_DIR = join(REF_ROOT, "manifests");
+const MANIFESTS_DIR = join(REF_ROOT, "fixtures", "seed-manifests");
 const OWNER_AUTH_REQUIRED_PATTERN = /owner_session_required|owner placeholder auth|401/i;
 
 interface SeedManifestFields {

@@ -112,7 +112,7 @@ export function connectorKeyFromRegistryUrl(value: unknown): string | null {
  *
  * Accepted shapes (today's union):
  *   - URL-shaped first-party id: `https://registry.pdpp.dev/connectors/<slug>`
- *   - Native bare slug from `reference-implementation/manifests/*.json`
+ *   - Native bare slug from `reference-implementation/fixtures/seed-manifests/*.json`
  *     (e.g. `northstar_hr_native`)
  *   - Bare first-party canonical key (e.g. `gmail`, `claude-code`)
  *   - Legacy snake_case local-collector alias (`claude_code`, `codex`)

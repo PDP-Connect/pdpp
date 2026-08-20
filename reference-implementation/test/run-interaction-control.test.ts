@@ -265,7 +265,7 @@ async function withHarness(
   })) as ClosableServer;
   const asUrl = `http://localhost:${server.asPort}`;
   const spotifyManifest: SpotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   );
   try {
     await registerConnector(asUrl, spotifyManifest);
@@ -287,7 +287,7 @@ async function withCustomHarness(connectorPath: string, fn: (ctx: HarnessContext
   })) as ClosableServer;
   const asUrl = `http://localhost:${server.asPort}`;
   const spotifyManifest: SpotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   );
   try {
     await registerConnector(asUrl, spotifyManifest);

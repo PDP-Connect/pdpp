@@ -463,7 +463,7 @@ test("scheduler-doctor reads a real /_ref/schedules from a live reference server
   const { closeDb } = await import("../server/db.ts");
   const { readFileSync } = await import("node:fs");
   const REFERENCE_IMPL_DIR = join(__dirname, "..");
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const ownerPassword = "scheduler-doctor-test-pw";
 
   const server = (await startServer({
@@ -520,7 +520,7 @@ test("controller.listSchedules projects persisted history when no active run is 
   const { closeDb } = await import("../server/db.ts");
   const { readFileSync } = await import("node:fs");
   const REFERENCE_IMPL_DIR = join(__dirname, "..");
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   // Records, schedules, and history are keyed by the canonical connector key
   // (the controller/ingest path canonicalizes the manifest's URL-shaped
   // connector_id). Store-direct seeds below must use the same canonical key,
@@ -845,7 +845,7 @@ test("controller.listSchedules projects last failure code from history when no a
   const { closeDb } = await import("../server/db.ts");
   const { readFileSync } = await import("node:fs");
   const REFERENCE_IMPL_DIR = join(__dirname, "..");
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   // Store-direct history seeds must use the canonical connector key — the
   // controller projects history under it. See canonicalize-connector-keys.
   const canonicalSpotifyId = canonicalConnectorKey(spotifyManifest.connector_id);
@@ -961,7 +961,7 @@ test("controller.listSchedules does not expose raw scheduler error messages as e
   const { closeDb } = await import("../server/db.ts");
   const { readFileSync } = await import("node:fs");
   const REFERENCE_IMPL_DIR = join(__dirname, "..");
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   // Store-direct history seeds must use the canonical connector key — the
   // controller projects history under it. See canonicalize-connector-keys.
   const canonicalSpotifyId = canonicalConnectorKey(spotifyManifest.connector_id);

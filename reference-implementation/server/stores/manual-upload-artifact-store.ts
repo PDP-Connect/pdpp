@@ -261,6 +261,18 @@ function normalizePatch(patch: ManualUploadArtifactPatch): NormalizedPatch {
 
 export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtifactStore {
   return {
+    claimForSweep(artifactId: string, cutoffIso: string, nowIso: string): boolean {
+      const result = execDynamicSqlAcknowledged(
+        `UPDATE manual_upload_artifacts
+            SET status = 'validating',
+                updated_at = ?
+          WHERE artifact_id = ?
+            AND status IN (${IN_FLIGHT_STATUSES.map(() => "?").join(", ")})
+            AND updated_at < ?`,
+        [nowIso, artifactId, ...IN_FLIGHT_STATUSES, cutoffIso]
+      );
+      return result.changes > 0;
+    },
     get(artifactId: string): ManualUploadArtifact | null {
       return mapRow(sqliteGetOne("SELECT * FROM manual_upload_artifacts WHERE artifact_id = ? LIMIT 1", [artifactId]));
     },
@@ -327,19 +339,6 @@ export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtif
       return rows.map(mapRow).filter((row): row is ManualUploadArtifact => row !== null);
     },
 
-    claimForSweep(artifactId: string, cutoffIso: string, nowIso: string): boolean {
-      const result = execDynamicSqlAcknowledged(
-        `UPDATE manual_upload_artifacts
-            SET status = 'validating',
-                updated_at = ?
-          WHERE artifact_id = ?
-            AND status IN (${IN_FLIGHT_STATUSES.map(() => "?").join(", ")})
-            AND updated_at < ?`,
-        [nowIso, artifactId, ...IN_FLIGHT_STATUSES, cutoffIso]
-      );
-      return result.changes > 0;
-    },
-
     update(artifactId: string, patch: ManualUploadArtifactPatch): ManualUploadArtifact | null {
       const next = normalizePatch(patch);
       execDynamicSqlAcknowledged(
@@ -376,6 +375,19 @@ export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtif
 
 export function createPostgresManualUploadArtifactStore(): PostgresManualUploadArtifactStore {
   return {
+    async claimForSweep(artifactId: string, cutoffIso: string, nowIso: string): Promise<boolean> {
+      const placeholders = IN_FLIGHT_STATUSES.map((_, i) => `$${i + 3}`).join(", ");
+      const result = await postgresQuery(
+        `UPDATE manual_upload_artifacts
+            SET status = 'validating',
+                updated_at = $1
+          WHERE artifact_id = $2
+            AND status IN (${placeholders})
+            AND updated_at < $${IN_FLIGHT_STATUSES.length + 3}`,
+        [nowIso, artifactId, ...IN_FLIGHT_STATUSES, cutoffIso]
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
     async get(artifactId: string): Promise<ManualUploadArtifact | null> {
       const result = await postgresQuery<ManualUploadArtifactRow>(
         "SELECT * FROM manual_upload_artifacts WHERE artifact_id = $1 LIMIT 1",
@@ -432,20 +444,6 @@ export function createPostgresManualUploadArtifactStore(): PostgresManualUploadA
         [connectorInstanceId, limit]
       );
       return result.rows.map(mapRow);
-    },
-
-    async claimForSweep(artifactId: string, cutoffIso: string, nowIso: string): Promise<boolean> {
-      const placeholders = IN_FLIGHT_STATUSES.map((_, i) => `$${i + 3}`).join(", ");
-      const result = await postgresQuery(
-        `UPDATE manual_upload_artifacts
-            SET status = 'validating',
-                updated_at = $1
-          WHERE artifact_id = $2
-            AND status IN (${placeholders})
-            AND updated_at < $${IN_FLIGHT_STATUSES.length + 3}`,
-        [nowIso, artifactId, ...IN_FLIGHT_STATUSES, cutoffIso]
-      );
-      return (result.rowCount ?? 0) > 0;
     },
 
     async listInFlightOlderThan(cutoffIso: string): Promise<ManualUploadArtifact[]> {

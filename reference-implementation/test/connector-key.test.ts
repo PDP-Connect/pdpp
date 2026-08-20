@@ -32,7 +32,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYFILL_MANIFESTS_DIR = resolve(__dirname, "..", "..", "packages", "polyfill-connectors", "manifests");
-const REFERENCE_MANIFESTS_DIR = resolve(__dirname, "..", "manifests");
+const REFERENCE_MANIFESTS_DIR = resolve(__dirname, "..", "fixtures", "seed-manifests");
 
 const REGISTRY_PREFIX = "https://registry.pdpp.dev/connectors/";
 
@@ -225,8 +225,8 @@ test("canonicalConnectorKeyFromManifest rejects invalid explicit connector_key",
 });
 
 test("canonicalConnectorKeyFromManifest falls back to storage_binding.connector_id", () => {
-  // Native reference manifest shape (`reference-implementation/manifests/
-  // northstar-hr.json`).
+  // Native reference manifest shape (`reference-implementation/fixtures/
+  // seed-manifests/northstar-hr.json`).
   const manifest = {
     provider_id: "northstar_hr",
     storage_binding: { connector_id: "northstar_hr_native" },

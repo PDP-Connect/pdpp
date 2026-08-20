@@ -242,7 +242,7 @@ function isSharedLibraryRelativeConnectorModulePath(resolvedRelPath: string): bo
   return SHARED_LIBRARY_RELATIVE_CONNECTOR_MODULE_PATH_RE.test(resolvedRelPath);
 }
 
-const MANIFEST_ROOTS = ["reference-implementation/manifests", "packages/polyfill-connectors/manifests"];
+const MANIFEST_ROOTS = ["reference-implementation/fixtures/seed-manifests", "packages/polyfill-connectors/manifests"];
 
 function isUnderManifestRoot(resolvedRelPath: string): boolean {
   return MANIFEST_ROOTS.some((root) => resolvedRelPath === root || resolvedRelPath.startsWith(`${root}/`));

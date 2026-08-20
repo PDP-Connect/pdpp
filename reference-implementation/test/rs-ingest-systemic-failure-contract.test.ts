@@ -161,11 +161,6 @@ function mountRealIngestRoute(opts: {
     handleError: (_res: unknown, err: unknown) => {
       throw err;
     },
-    insertOrReplayRecordRejection: async (input: { code: string; inputIndex: number }) => ({
-      code: input.code,
-      input_index: input.inputIndex,
-      receipt_id: `rr_${input.inputIndex}_${input.code}`,
-    }),
     ingestRecord: async (target: unknown, record: unknown, options: unknown) => {
       try {
         return await ingestRecord(
@@ -184,6 +179,11 @@ function mountRealIngestRoute(opts: {
         throw lineError;
       }
     },
+    insertOrReplayRecordRejection: async (input: { code: string; inputIndex: number }) => ({
+      code: input.code,
+      input_index: input.inputIndex,
+      receipt_id: `rr_${input.inputIndex}_${input.code}`,
+    }),
     ...(opts.useBatchCapability
       ? {
           ingestRecords: (target: unknown, records: unknown, afterRecord: unknown, options: unknown) =>

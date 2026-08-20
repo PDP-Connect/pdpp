@@ -33,11 +33,11 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { closeDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/connector-instance-credential-store.ts";
 import {
   admitOwnerRunConnection,
   createSqliteConnectorInstanceStore,
 } from "../server/stores/connector-instance-store.ts";
-import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/connector-instance-credential-store.ts";
 import type { ActiveRunRecord, SchedulerRunHistoryRecord } from "../server/stores/scheduler-store.ts";
 import { getDefaultSchedulerStore } from "../server/stores/scheduler-store.ts";
 import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
@@ -51,7 +51,7 @@ function readServerSchedulerFixtureManifest(): Record<string, unknown> & {
   display_name: string;
   manifest_uri: string;
 } {
-  const base = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")) as Record<
+  const base = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")) as Record<
     string,
     unknown
   > & { capabilities?: Record<string, unknown> };
@@ -74,7 +74,7 @@ function readServerSchedulerFixtureManifest(): Record<string, unknown> & {
     connector_id: "scheduler-fixture",
     connector_key: "scheduler-fixture",
     display_name: "Scheduler fixture",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-fixture",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-fixture",
   };
 }
 
@@ -596,7 +596,7 @@ test("server-owned scheduler refreshes after schedule route mutations", async ()
 });
 
 test("server-owned scheduler ignores paused and deleted persisted schedules", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-server-scheduler-paused-deleted-"));
   const dbPath = join(tmpDir, "pdpp.sqlite");
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
@@ -796,7 +796,7 @@ test("autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_
 });
 
 test("scheduler history records checkpoint summaries from runConnector results", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -888,7 +888,7 @@ test("scheduler history records checkpoint summaries from runConnector results",
 });
 
 test("scheduler hydrates persisted history without bypassing a fresh persisted last-run interval", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1220,7 +1220,7 @@ test("scheduler preserves failure reasons and checkpoint summaries from failed r
   const manifest = {
     connector_id: "scheduler-failure-test",
     display_name: "Scheduler Failure Test Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-failure-test",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-failure-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1353,7 +1353,7 @@ test("scheduler preserves partial checkpoint commit summaries from state persist
   const manifest = {
     connector_id: "scheduler-partial-checkpoint-test",
     display_name: "Scheduler Partial Checkpoint Test Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-partial-checkpoint-test",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-partial-checkpoint-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1559,7 +1559,7 @@ test("scheduler preserves terminal counter mismatch failures from runConnector r
   const manifest = {
     connector_id: "scheduler-terminal-counter-mismatch-test",
     display_name: "Scheduler Terminal Counter Mismatch Test Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-terminal-counter-mismatch-test",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-terminal-counter-mismatch-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1707,7 +1707,7 @@ test("scheduler preserves connector-declared terminal error details from failed 
   const manifest = {
     connector_id: "scheduler-terminal-error-test",
     display_name: "Scheduler Terminal Error Test Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-terminal-error-test",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-terminal-error-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1843,7 +1843,7 @@ test("scheduler preserves known gaps from partial connector runs", async () => {
   const manifest = {
     connector_id: "scheduler-known-gap-test",
     display_name: "Scheduler Known Gap Test Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-known-gap-test",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-known-gap-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1953,7 +1953,7 @@ test("scheduler preserves connector-declared terminal error details from cancell
   const manifest = {
     connector_id: "scheduler-cancelled-terminal-error-test",
     display_name: "Scheduler Cancelled Terminal Error Test Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-cancelled-terminal-error-test",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-cancelled-terminal-error-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -2089,7 +2089,7 @@ test("scheduler does not retry deterministic connector protocol violations", asy
   const manifest = {
     connector_id: "scheduler-no-retry-protocol-violation",
     display_name: "Scheduler No Retry Protocol Violation Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-no-retry-protocol-violation",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-no-retry-protocol-violation",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -2195,7 +2195,7 @@ test("scheduler retries connector-declared retryable failures and records the su
   const manifest = {
     connector_id: "scheduler-retryable-terminal-error",
     display_name: "Scheduler Retryable Terminal Error Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-retryable-terminal-error",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-retryable-terminal-error",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -2327,7 +2327,7 @@ test("scheduler does not retry connector-declared non-retryable failures", async
   const manifest = {
     connector_id: "scheduler-nonretryable-terminal-error",
     display_name: "Scheduler Nonretryable Terminal Error Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-nonretryable-terminal-error",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-nonretryable-terminal-error",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -3181,7 +3181,7 @@ rl.on('line', (line) => {
 });
 
 test("scheduler treats single_use grants as one successful run followed by exhausted skips without persisting state", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -3288,7 +3288,7 @@ test("scheduler treats single_use grants as one successful run followed by exhau
 });
 
 test("scheduler does not start overlapping runs for the same connector while a prior run is active", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-active-run-"));
   const attemptsPath = join(tmpDir, "attempts.log");
   const connectorPath = join(tmpDir, "slow-connector.mjs");
@@ -3371,7 +3371,7 @@ rl.on('line', (line) => {
 });
 
 test("scheduler keeps single_use grants reusable after failed runs until a later success consumes them", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-single-use-retry-"));
   const attemptsPath = join(tmpDir, "attempts.log");
   const connectorPath = join(tmpDir, "flaky-single-use-connector.mjs");
@@ -3514,7 +3514,7 @@ rl.on('line', (line) => {
 });
 
 test("scheduler stop prevents retryable failures from launching another attempt after backoff", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-stop-retry-"));
   const attemptsPath = join(tmpDir, "attempts.log");
   const connectorPath = join(tmpDir, "retryable-connector.mjs");
@@ -3616,7 +3616,7 @@ rl.on('line', (line) => {
 });
 
 test("scheduler start is idempotent and does not launch a second immediate run", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -3821,7 +3821,7 @@ rl.on('line', (line) => {
 });
 
 test("scheduler skips automatic run with needs_human_attention when isNeedsHuman returns true", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -3885,7 +3885,7 @@ test("scheduler skips automatic run with needs_human_attention when isNeedsHuman
 });
 
 test("scheduler records one not-ready skip for automatic runs when runtime prerequisites are absent", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-not-ready-test",
@@ -3952,7 +3952,7 @@ test("scheduler records one not-ready skip for automatic runs when runtime prere
 });
 
 test("scheduler emits a fresh not-ready skip when readiness reason changes", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-not-ready-changing-test",
@@ -4017,7 +4017,7 @@ test("scheduler emits a fresh not-ready skip when readiness reason changes", asy
 });
 
 test("scheduler default readiness checker skips missing manifest-declared external tools", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-missing-tool-test",
@@ -4090,7 +4090,7 @@ test("scheduler default readiness checker skips missing manifest-declared extern
 });
 
 test("scheduler default readiness checker probes a manifest-declared executable_env_override with version when set", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-slackdump-bin-test",
@@ -4250,7 +4250,7 @@ test("scheduler default readiness checker applies local-source checks declared b
 });
 
 test("scheduler default readiness checker does not treat browser bindings as ready by default", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-browser-not-ready-test",
@@ -4358,7 +4358,7 @@ test("scheduler default readiness checker does not treat browser bindings as rea
 });
 
 test("scheduler default readiness checker treats PDPP_NEKO_CDP_HTTP_URL as managed browser surface", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-browser-neko-cdp-ready-test",
@@ -4454,7 +4454,7 @@ test("scheduler default readiness checker treats PDPP_NEKO_CDP_HTTP_URL as manag
 });
 
 test("scheduler default readiness checker treats PDPP_NEKO_MANAGED_CONNECTORS as managed browser surface", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-browser-neko-managed-ready-test",
@@ -4552,7 +4552,7 @@ test("scheduler marks connector as needs-human when automatic run triggers inter
   const manifest = {
     connector_id: "scheduler-interaction-test",
     display_name: "Interaction Test Connector",
-    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-interaction-test",
+    manifest_uri: "https://registry.pdpp.dev/connectors/scheduler-interaction-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -4671,7 +4671,7 @@ rl.on('line', (line) => {
 // the last-run map is empty, and the skip-message formatter substitutes
 // safe phrasing if the resolved timestamp is still epoch-suspicious.
 test("scheduler backoff skip derives next_attempt_at from history when last_run_time is missing", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-backoff-1970-regression",
@@ -4792,7 +4792,7 @@ test("scheduler backoff skip derives next_attempt_at from history when last_run_
 // `gave_up` phrasing instead, and a one-shot `schedule.gave_up` event
 // fires.
 test("scheduler backoff skip uses gave_up phrasing once health-state crosses blocked threshold", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-backoff-blocked-msg",
@@ -4892,7 +4892,7 @@ test("scheduler backoff skip uses gave_up phrasing once health-state crosses blo
 });
 
 test("scheduler does not re-emit persisted backoff transition markers on restart", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-backoff-restart-noise",
