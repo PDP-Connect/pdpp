@@ -127,13 +127,13 @@ import { mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { isMainModule } from "@pdpp/connector-protocol";
 import {
   buildDetailCoverageMessage,
   type CollectContext,
   type RecordData,
   runConnector,
 } from "../../src/connector-runtime.ts";
-import { isMainModule } from "@pdpp/connector-protocol";
 import {
   makeReferenceBlobUploader,
   type ReferenceBlobRef,
@@ -375,8 +375,13 @@ function messagesSelect(db: DatabaseSync): string {
   const hasSourceServiceId = columnExists(db, "messages", "sourceServiceId");
   const hasReceivedAtMs = columnExists(db, "messages", "received_at_ms");
   const hasConversationServiceId = columnExists(db, "conversations", "serviceId");
-  const senderExpr =
-    hasSourceServiceId && hasConversationServiceId ? "c.id" : hasSourceServiceId ? "m.sourceServiceId" : "NULL";
+  let senderExpr = "NULL";
+  if (hasSourceServiceId) {
+    // With both columns present the join resolves the sender to a conversation
+    // id; without `conversations.serviceId` the raw service id is the best the
+    // schema can offer. Neither column means no sender at all.
+    senderExpr = hasConversationServiceId ? "c.id" : "m.sourceServiceId";
+  }
   const receivedExpr = hasReceivedAtMs ? "m.received_at_ms" : "NULL";
   const joinClause =
     hasSourceServiceId && hasConversationServiceId

@@ -70,10 +70,7 @@
             "type": "string"
           },
           "sender": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "sent_at": {
@@ -82,17 +79,11 @@
             "x_pdpp_role": "event-time"
           },
           "body": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "has_attachments": {
             "type": "boolean"
@@ -101,15 +92,9 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "conversation_id",
-          "sent_at"
-        ]
+        "required": ["id", "conversation_id", "sent_at"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "sent_at",
       "consent_time_field": "sent_at",
       "selection": {
@@ -119,13 +104,8 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "body",
-            "sender"
-          ],
-          "semantic_fields": [
-            "body"
-          ]
+          "lexical_fields": ["body", "sender"],
+          "semantic_fields": ["body"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -147,37 +127,20 @@
             "type": "string"
           },
           "type": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "private",
-              "group",
-              null
-            ]
+            "type": ["string", "null"],
+            "enum": ["private", "group", null]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "member_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -185,12 +148,8 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": [
-            "title"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["title"],
+          "semantic_fields": ["title"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -223,16 +182,9 @@
             "x_pdpp_role": "actor"
           }
         },
-        "required": [
-          "id",
-          "message_id",
-          "emoji",
-          "sender"
-        ]
+        "required": ["id", "message_id", "emoji", "sender"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -240,9 +192,7 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": [
-            "sender"
-          ]
+          "lexical_fields": ["sender"]
         }
       },
       "relationships": [
@@ -272,16 +222,10 @@
             "type": "string"
           },
           "message_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "conversation_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "filename": {
             "type": "string",
@@ -291,38 +235,20 @@
             "type": "string"
           },
           "size_bytes": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "content_sha256": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "hydration_status": {
             "type": "string",
-            "enum": [
-              "deferred",
-              "hydrated",
-              "failed",
-              "too_large",
-              "missing"
-            ]
+            "enum": ["deferred", "hydrated", "failed", "too_large", "missing"]
           },
           "hydration_error": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "blob_ref": {
-            "type": [
-              "object",
-              "null"
-            ],
+            "type": ["object", "null"],
             "properties": {
               "blob_id": {
                 "type": "string"
@@ -337,24 +263,12 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "blob_id",
-              "mime_type",
-              "sha256",
-              "size_bytes"
-            ]
+            "required": ["blob_id", "mime_type", "sha256", "size_bytes"]
           }
         },
-        "required": [
-          "id",
-          "filename",
-          "content_type",
-          "hydration_status"
-        ]
+        "required": ["id", "filename", "content_type", "hydration_status"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true

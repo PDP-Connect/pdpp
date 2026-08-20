@@ -59,10 +59,10 @@ export interface AllMailInventoryProgress {
   all_mail_exists: number;
   /** Highest UID the historical backfill has admitted so far. */
   backfilled_through_uid: number;
-  /** Whether the historical walk has reached its ceiling. */
-  historical_backfill_complete: boolean;
   /** The UID the forward walk resumes at, i.e. the historical walk's ceiling. */
   forward_floor_uid: number;
+  /** Whether the historical walk has reached its ceiling. */
+  historical_backfill_complete: boolean;
   /** The UID epoch these numbers describe. Counts are comparable only within one. */
   uidvalidity: number;
 }

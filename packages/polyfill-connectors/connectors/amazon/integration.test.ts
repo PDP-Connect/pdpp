@@ -2048,17 +2048,21 @@ test("a run with zero considered orders still emits a zero-required DETAIL_COVER
  * item list: every item that page showed must survive into a record. A merged
  * list SHORTER than the detail list means an item was seen and then lost.
  */
-function findItemCountShortfalls(protocolMessages: readonly unknown[]): Array<Record<string, unknown>> {
+function findItemCountShortfalls(protocolMessages: readonly unknown[]): Record<string, unknown>[] {
   return protocolMessages.filter(
-    (m) => (m as { type?: string; reason?: string }).type === "SKIP_RESULT" &&
+    (m) =>
+      (m as { type?: string; reason?: string }).type === "SKIP_RESULT" &&
       (m as { reason?: string }).reason === "item_count_shortfall"
-  ) as Array<Record<string, unknown>>;
+  ) as Record<string, unknown>[];
 }
 
 test("emitOrderAndItems: every detail-page item becoming a record reports no shortfall", async () => {
   const { deps, protocolMessages, emitted } = makeRecordingDeps();
   const detail = makeDetail({
-    items: [makeDetailItem({ asin: "B000000001", name: "Widget A" }), makeDetailItem({ asin: "B000000002", name: "Widget B" })],
+    items: [
+      makeDetailItem({ asin: "B000000001", name: "Widget A" }),
+      makeDetailItem({ asin: "B000000002", name: "Widget B" }),
+    ],
   });
   await emitOrderAndItems(deps, makeListOrder({ items: [] }), detail, "2026-01-05");
 
@@ -2072,7 +2076,10 @@ test("emitOrderAndItems: a detail item that never becomes a record is reported a
   // Before this check that loss was silent.
   const { deps, protocolMessages, emitted } = makeRecordingDeps();
   const detail = makeDetail({
-    items: [makeDetailItem({ asin: "B000000001", name: "Widget A" }), makeDetailItem({ asin: "B000000001", name: "Widget A" })],
+    items: [
+      makeDetailItem({ asin: "B000000001", name: "Widget A" }),
+      makeDetailItem({ asin: "B000000001", name: "Widget A" }),
+    ],
   });
   await emitOrderAndItems(deps, makeListOrder({ items: [] }), detail, "2026-01-05");
 
@@ -2126,7 +2133,9 @@ test("emitOrderAndItems: the denominator is the detail page, never the list card
 
 test("emitOrderAndItems: items out of scope suppress the reconciliation entirely", async () => {
   const { deps, protocolMessages } = makeRecordingDeps({ wantsItems: false });
-  const detail = makeDetail({ items: [makeDetailItem({ asin: "B000000001" }), makeDetailItem({ asin: "B000000001" })] });
+  const detail = makeDetail({
+    items: [makeDetailItem({ asin: "B000000001" }), makeDetailItem({ asin: "B000000001" })],
+  });
   await emitOrderAndItems(deps, makeListOrder({ items: [] }), detail, "2026-01-05");
 
   assert.equal(

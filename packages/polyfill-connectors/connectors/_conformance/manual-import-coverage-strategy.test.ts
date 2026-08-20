@@ -54,7 +54,13 @@ function manualUploadManifests(): { manifest: Manifest; name: string }[] {
 }
 
 test("every manual-upload connector is discoverable by setup modality", () => {
-  const found = manualUploadManifests().map(({ manifest }) => manifest.connector_key).sort();
+  // `connector_key` is optional on the manifest type, so a missing key would
+  // otherwise sort as a silent `undefined` hole. Surface it as the literal
+  // string instead: the deepEqual below then fails loudly on the real defect
+  // rather than on an unexplained gap in the roster.
+  const found = manualUploadManifests()
+    .map(({ manifest }) => manifest.connector_key ?? "<missing connector_key>")
+    .sort((a, b) => a.localeCompare(b));
   // Guards the filter itself: if `setup.modality` were renamed, the roster
   // would silently empty and every assertion below would vacuously pass.
   assert.deepEqual(found, ["google-maps", "netflix-export", "whatsapp"]);

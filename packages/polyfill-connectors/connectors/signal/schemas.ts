@@ -42,8 +42,8 @@
  *     as imessage's attachments.id.
  */
 
-import { z } from "zod";
 import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
+import { z } from "zod";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Module-scoped regexes (Biome useTopLevelRegex).
