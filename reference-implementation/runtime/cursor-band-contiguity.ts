@@ -32,11 +32,39 @@
  * false and a 297-UID band — two days of mail — was unreachable. This check
  * evaluates to `violated` on exactly that state.
  *
- * SCOPE: WHY ONLY GMAIL `messages` TODAY
- * --------------------------------------
+ * WHO DECLARES, AND WHO OWNS THE SEMANTICS
+ * ----------------------------------------
+ * A stream opts in by declaring a CLOSED enum in its manifest:
+ *
+ *     "cursor_shape": "imap_uid_band"
+ *
+ * That declaration carries exactly one bit of connector fact — "this stream's
+ * cursor is a two-pointer walk of an IMAP UID space" — which only the
+ * connector can know. Everything else below (which paths hold the ceiling and
+ * the resume pointer, the `UIDVALIDITY` epoch guard, the `ceiling + 1 >=
+ * resume` arithmetic) is IMAP-specific RI logic and stays RI-owned, keyed off
+ * the declared enum. The manifest selects a variant; it never supplies the
+ * formula.
+ *
+ * That split is the point. If the manifest carried the PATHS, a connector
+ * could mis-path its own ceiling and quietly turn a real violation into
+ * `incomplete_cursor` silence — the audited party would be defining the
+ * audit. Because the enum is closed, an unrecognized value selects no variant
+ * and yields `not_registered`, and declaring can only opt a connector IN:
+ * omission yields `not_applicable`/`not_registered`, which is never reported
+ * as healthy. The failure mode of a bad declaration is a check that does not
+ * run, never a check that lies.
+ *
+ * Precedent: manifests already declare `cursor_field`, and
+ * `capabilities.refresh_policy.max_recovery_attempts` uses the same "manifest
+ * declares, RI clamps" shape.
+ *
+ * SCOPE: WHY ONLY THE IMAP UID BAND TODAY
+ * ---------------------------------------
  * A fleet-wide survey of every persisted cursor shape (44 connectors, and the
  * live `connector_state` table) found that gmail `messages` is the ONLY stream
- * that keeps two pointers over one ordered space. The others are:
+ * that keeps two pointers over one ordered space — hence exactly one variant
+ * below. The others are:
  *
  *   - single-watermark (github, reddit, notion, spotify, strava, venmo, oura,
  *     imessage, signal, chatgpt, twitter_archive) — one pointer cannot form a
@@ -53,10 +81,10 @@
  *   - gmail `attachments` — a backfill FLOOR (`backfilled_through_uid`) with
  *     no ceiling and no forward pointer. One-sided, so no band exists.
  *
- * Registering any of those would produce a check that fires on correct
- * behavior, which is worse than no check. The registry below is therefore
- * deliberately narrow and explicit rather than shape-sniffing: a heuristic
- * that guessed "two numbers in a cursor = a band" would fire on
+ * Declaring any of those would produce a check that fires on correct
+ * behavior, which is worse than no check. The variant table below is
+ * therefore deliberately narrow and explicit rather than shape-sniffing: a
+ * heuristic that guessed "two numbers in a cursor = a band" would fire on
  * `pacing_interval_ms`/`pacing_recorded_at_ms` and on gmail's own
  * `uidnext`/`highest_modseq`, none of which bracket a band.
  *
@@ -86,27 +114,41 @@
  */
 
 /**
- * One registered two-pointer band: where to read the ceiling of the
- * historical walk, where to read the resume point of the forward walk, and
- * (optionally) where each records the epoch that makes them comparable.
+ * The closed set of cursor shapes a manifest may declare via a stream's
+ * `cursor_shape`. Closed on purpose: an unrecognized value selects no variant
+ * and the check stays silent, so a manifest can never invent a band shape the
+ * RI has not reasoned about.
+ */
+export const CURSOR_BAND_SHAPES = ["imap_uid_band"] as const;
+export type CursorBandShape = (typeof CURSOR_BAND_SHAPES)[number];
+
+/** Is this manifest-declared value a cursor shape this RI understands? */
+export function isCursorBandShape(value: unknown): value is CursorBandShape {
+  return typeof value === "string" && (CURSOR_BAND_SHAPES as readonly string[]).includes(value);
+}
+
+/**
+ * One RI-owned band variant: where to read the ceiling of the historical
+ * walk, where to read the resume point of the forward walk, and (optionally)
+ * where each records the epoch that makes them comparable.
  *
- * Paths are read against the stream's persisted cursor object.
+ * These paths are RI knowledge about a PROTOCOL (IMAP), not about any
+ * connector — see the module doc on why the manifest selects a variant rather
+ * than supplying one. Paths are read against the stream's persisted cursor.
  */
 export interface CursorBandSpec {
   /** Dotted path to the epoch guarding the ceiling, when the space has one. */
   readonly ceilingEpochPath?: readonly string[];
   /** Dotted path to the frozen ceiling of the historical/backfill walk. */
   readonly ceilingPath: readonly string[];
-  /** Connector id exactly as persisted in `connector_state.connector_id`. */
-  readonly connectorId: string;
-  /** Human-readable note on why this stream forms a band; surfaced in reports. */
+  /** Human-readable note on why this shape forms a band; surfaced in reports. */
   readonly note: string;
   /** Dotted path to the epoch guarding the resume pointer. */
   readonly resumeEpochPath?: readonly string[];
   /** Dotted path to the point the forward walk resumes from. */
   readonly resumePath: readonly string[];
-  /** Stream name exactly as persisted in `connector_state.stream`. */
-  readonly stream: string;
+  /** The declared shape this variant implements. */
+  readonly shape: CursorBandShape;
 }
 
 /**
@@ -136,22 +178,21 @@ export interface CursorBandVerdict {
 }
 
 /**
- * The registry of streams that genuinely keep two pointers over one ordered
- * space. Deliberately explicit; see the module doc for why every other live
- * cursor shape is excluded rather than heuristically matched.
+ * The RI-owned variant table, keyed by declared shape. Deliberately explicit;
+ * see the module doc for why every other live cursor shape is excluded rather
+ * than heuristically matched.
  */
 export const CURSOR_BAND_SPECS: readonly CursorBandSpec[] = [
   {
     ceilingEpochPath: ["backfill", "uidvalidity"],
     ceilingPath: ["backfill", "target_uid"],
-    connectorId: "gmail",
     note:
       "IMAP UID space: `backfill.target_uid` freezes the historical walk's ceiling while " +
       "`all_mail.forward_uidnext` advances only when a run happens. Mail arriving during " +
       "downtime lands above the frozen ceiling and below the resumed watermark.",
     resumeEpochPath: ["all_mail", "uidvalidity"],
     resumePath: ["all_mail", "forward_uidnext"],
-    stream: "messages",
+    shape: "imap_uid_band",
   },
 ];
 
@@ -176,9 +217,16 @@ function readInteger(cursor: unknown, path: readonly string[]): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 }
 
-/** Find the registered band for a (connector, stream) pair, if any. */
-export function findCursorBandSpec(connectorId: string, stream: string): CursorBandSpec | null {
-  return CURSOR_BAND_SPECS.find((spec) => spec.connectorId === connectorId && spec.stream === stream) ?? null;
+/**
+ * Select the RI-owned variant for a manifest-declared shape, if the RI
+ * recognizes it. An undeclared or unrecognized shape selects nothing, and the
+ * caller reports `not_registered` (silence) rather than guessing.
+ */
+export function findCursorBandSpec(declaredShape: unknown): CursorBandSpec | null {
+  if (!isCursorBandShape(declaredShape)) {
+    return null;
+  }
+  return CURSOR_BAND_SPECS.find((spec) => spec.shape === declaredShape) ?? null;
 }
 
 const SILENT: Omit<CursorBandVerdict, "reason"> = {
@@ -196,11 +244,11 @@ const SILENT: Omit<CursorBandVerdict, "reason"> = {
  * STATE commit.
  */
 export function evaluateCursorBand(args: {
-  readonly connectorId: string;
   readonly cursor: unknown;
-  readonly stream: string;
+  /** The stream's manifest-declared `cursor_shape`, if it declared one. */
+  readonly declaredShape: unknown;
 }): CursorBandVerdict {
-  const spec = findCursorBandSpec(args.connectorId, args.stream);
+  const spec = findCursorBandSpec(args.declaredShape);
   if (!spec) {
     return { ...SILENT, reason: "not_registered" };
   }

@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Per-connector declared-reason-token registry, keyed by canonical connector
- * id — the ONE place the RS-side runtime (`connector-gap-bounding.ts`'s
- * `boundConnectorErrorMessage`) looks up which >=24-char snake_case tokens a
- * connector's own thrown-error vocabulary is allowed to keep verbatim
- * through `stderr-redact.ts`'s `LONG_OPAQUE_RE` entropy heuristic.
+ * Declared-reason-token lookup — the ONE place the RS-side runtime
+ * (`connector-gap-bounding.ts`'s `boundConnectorErrorMessage`) reads which
+ * >=24-char snake_case tokens a connector's own thrown-error vocabulary is
+ * allowed to keep verbatim through `stderr-redact.ts`'s `LONG_OPAQUE_RE`
+ * entropy heuristic.
  *
  * Why this exists: `runtime/stderr-redact.ts`'s `declaredReasonTokens`
  * mechanism (added for a 2026-08-18 HEB incident —
@@ -19,41 +19,77 @@
  * Failed to fetch`, the eaten token being `venmo_probe_transport_error` (27
  * chars) — a categorical, PII-free fault-class name, not a secret.
  *
- * Each entry imports its token set from the connector's OWN module (e.g.
- * `VENMO_DECLARED_REASON_TOKENS` from `src/auto-login/venmo.ts`, the module
- * that actually throws these) rather than re-typing the strings here — a
- * hand-copied list would silently drift from the connector's real thrown
- * vocabulary the first time a throw site changed. Only connectors that
- * actually need it are registered; every connector NOT listed here gets
- * exactly today's `boundConnectorErrorMessage` behavior (byte-identical — an
- * absent entry is treated as an empty set).
+ * WHY THIS IS A MANIFEST READ AND NOT A REGISTRY
+ * ----------------------------------------------
+ * Which fault-class names a connector throws is a CONNECTOR FACT, so the
+ * connector declares it, in the one place connectors already declare their
+ * facts to the RI: `capabilities.declared_reason_tokens` in the manifest.
  *
- * Imports from `src/auto-login/venmo.ts` directly rather than
- * `connectors/venmo/index.ts` (the connector's CLI entry point) — the latter
- * is a heavier module graph (browser-runtime wiring, `runConnector`
- * bootstrap) this RS-side server has no reason to pull in, and re-exporting
- * a value through it would be a barrel-file re-export this repo's Biome
- * config (`noBarrelFile`) already rejects.
+ * This module previously held a hardcoded `Map` keyed by connector id whose
+ * one entry imported `VENMO_DECLARED_REASON_TOKENS` straight out of
+ * `packages/polyfill-connectors/src/auto-login/venmo.ts`. That is a literal
+ * connector identity plus a direct cross-package import of connector code
+ * into RI production source — both of which the zero-connector-knowledge
+ * conformance guard forbids, and rightly: the RI would need a code change to
+ * support the next connector that needs this.
  *
- * Scope: this registry currently covers only Venmo, the connector this fix
- * was written for. HEB has the same defect class (its own
- * `heb_verification_code_not_provided`/etc. tokens are also >=24 chars) but
- * is not yet registered — a follow-up, not silently included here.
+ * The token list is now read generically off whatever manifest the run
+ * resolved. The RI never learns a connector name. A connector that declares
+ * nothing gets `undefined` and therefore exactly today's
+ * `boundConnectorErrorMessage` behavior, byte-identical — an absent
+ * declaration is treated as an empty set, same as before.
+ *
+ * SAFETY: the >=24-char/snake_case shape is enforced at manifest REGISTRATION
+ * time by `server/connector-manifest-validation.ts`'s
+ * `validateDeclaredReasonTokensCapability`, not here. A declared token is an
+ * instruction to skip redaction, so an unvalidated one would let a connector
+ * declare a string matching its own live credential and have the runtime
+ * print that credential into a durable event. Rejecting the manifest is the
+ * correct place to stop that: it fails before the connector can ever run.
+ * This function deliberately does not re-validate — a token that reached a
+ * registered manifest already passed that gate, and a second, weaker copy of
+ * the rule here would be the thing that drifts.
  */
-
-import { VENMO_DECLARED_REASON_TOKENS } from "../../packages/polyfill-connectors/src/auto-login/venmo.ts";
-
-const DECLARED_REASON_TOKENS_BY_CONNECTOR_ID: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ["venmo", VENMO_DECLARED_REASON_TOKENS],
-]);
 
 /**
- * Look up the declared reason tokens for a canonical connector id. Returns
- * `undefined` (not an empty Set) for an unregistered connector, matching
- * `StderrRedactionOptions.declaredReasonTokens`'s own optional shape so a
- * caller can spread this straight into `redactStderrTail`'s options without
- * an extra "is this empty" branch.
+ * The manifest shape this lookup needs: nothing but the declared tokens.
+ *
+ * The index signature keeps this structurally compatible with the callers'
+ * fuller `ConnectorManifest` types without importing one — this module reads
+ * a single optional field and should not couple itself to the whole manifest
+ * interface to do it.
  */
-export function declaredReasonTokensFor(connectorId: string): ReadonlySet<string> | undefined {
-  return DECLARED_REASON_TOKENS_BY_CONNECTOR_ID.get(connectorId);
+interface DeclaredReasonTokensManifest {
+  readonly capabilities?: { readonly declared_reason_tokens?: unknown } | null;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Read the declared reason tokens off a resolved connector manifest.
+ *
+ * Returns `undefined` (not an empty Set) when the manifest declares none,
+ * matching `StderrRedactionOptions.declaredReasonTokens`'s own optional shape
+ * so a caller can spread this straight into `redactStderrTail`'s options
+ * without an extra "is this empty" branch.
+ *
+ * Non-string and empty entries are skipped rather than throwing: this runs on
+ * the terminal-error path, where throwing would replace the operator's real
+ * failure with a manifest complaint. Registration already rejected those
+ * shapes, so reaching one here means the manifest was bypassed, and the safe
+ * answer is to redact more, never less.
+ */
+export function declaredReasonTokensFor(
+  manifest: DeclaredReasonTokensManifest | null | undefined
+): ReadonlySet<string> | undefined {
+  const declared = manifest?.capabilities?.declared_reason_tokens;
+  if (!Array.isArray(declared)) {
+    return;
+  }
+  const tokens = new Set<string>();
+  for (const token of declared) {
+    if (typeof token === "string" && token.length > 0) {
+      tokens.add(token);
+    }
+  }
+  return tokens.size > 0 ? tokens : undefined;
 }
