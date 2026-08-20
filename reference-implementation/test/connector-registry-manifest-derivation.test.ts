@@ -142,7 +142,7 @@ test("the generator throws (does not silently drop the claim) when a manifest de
       capabilities: {
         proven: { local_collector: true },
       },
-      connector_id: `https://registry.pdpp.org/connectors/${probeConnectorKey}`,
+      connector_id: `https://registry.pdpp.dev/connectors/${probeConnectorKey}`,
       connector_key: probeConnectorKey,
       display_name: "Omission Probe (test fixture, not a real connector)",
       protocol_version: "0.1.0",
@@ -291,7 +291,7 @@ test("counterweight: a custom third-party connector_id, unknown to every generat
   // canonicalConnectorKey must fail closed for this id in URL-shaped form:
   // a third party cannot get its own registry-URL-shaped connector_id
   // silently promoted into the first-party allowlist.
-  assert.equal(canonicalConnectorKey(`https://registry.pdpp.org/connectors/${thirdPartyId}`), null);
+  assert.equal(canonicalConnectorKey(`https://registry.pdpp.dev/connectors/${thirdPartyId}`), null);
   // But a bare custom connector_key (not URL-shaped) is still a syntactically
   // valid key a custom manifest may declare — the fail-closed behavior only
   // applies to the registry-URL namespace, not to bare custom keys.
@@ -300,7 +300,7 @@ test("counterweight: a custom third-party connector_id, unknown to every generat
 
 test("cli/commands/seed.ts: seedableConnectorsFromManifests intersects manifest presence with the seed connector's own SUPPORTED_SEED_CONNECTOR_KEYS export, not manifest presence alone", () => {
   const manifests = [
-    { connector_id: "https://registry.pdpp.org/connectors/acme", connector_key: "acme" },
+    { connector_id: "https://registry.pdpp.dev/connectors/acme", connector_key: "acme" },
     // connector_key present, no top-level connector_id — the shape a custom
     // manifest without a registry URL can still declare (canonicalConnectorKey
     // fails closed on bare, non-URL-shaped connector_id values it doesn't

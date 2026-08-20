@@ -144,7 +144,7 @@ test("introspection contract declares confidential caller authentication failure
         code: "context.authentication_failed",
         message: "Introspection client authentication failed",
         request_id: "req_introspection_auth",
-        type: "https://pdpp.org/errors/context.authentication_failed",
+        type: "https://pdpp.dev/errors/context.authentication_failed",
       },
     },
     status: 401,

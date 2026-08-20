@@ -87,7 +87,7 @@ test("terminal run commit resolves authorization before receipt lookup and passe
       authorized = true;
       return Promise.resolve({
         connectorInstance: { connectorInstanceId: "cin-1" },
-        sourceInstance: { connectorId: "https://registry.pdpp.org/connectors/codex" },
+        sourceInstance: { connectorId: "https://registry.pdpp.dev/connectors/codex" },
       });
     },
   });
@@ -212,7 +212,7 @@ test("SQLite route operation composes authorization with 201, exact response-los
           resolved = true;
           return Promise.resolve({
             connectorInstance: { connectorInstanceId: "cin-1" },
-            sourceInstance: { connectorId: "https://registry.pdpp.org/connectors/codex" },
+            sourceInstance: { connectorId: "https://registry.pdpp.dev/connectors/codex" },
           });
         },
       });

@@ -155,12 +155,12 @@ never carries owner-specific instance IDs. A request stream may carry
 
 ```json
 {
-  "type": "https://pdpp.org/data-access",
+  "type": "https://pdpp.dev/data-access",
   "source": {
     "kind": "connector",
     "id": "https://sources.example/records/github"
   },
-  "purpose_code": "https://pdpp.org/purpose/research",
+  "purpose_code": "https://pdpp.dev/purpose/research",
   "purpose_description": "Research",
   "access_mode": "continuous",
   "retention": { "max_duration": "P30D", "on_expiry": "delete" },
@@ -219,7 +219,7 @@ it to RFC 9396 `invalid_authorization_details`.
   "source_declaration": { "version": "2026-08-10" },
   "subject": { "id": "owner-1" },
   "client": { "client_id": "app-1" },
-  "purpose_code": "https://pdpp.org/purpose/research",
+  "purpose_code": "https://pdpp.dev/purpose/research",
   "purpose_description": "Research",
   "access_mode": "continuous",
   "streams": [

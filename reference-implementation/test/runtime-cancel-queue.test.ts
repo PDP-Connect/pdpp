@@ -16,7 +16,7 @@ import { closeDb, initDb } from "../server/db.ts";
 
 const STREAM = "items";
 const MANIFEST = {
-  connector_id: "https://registry.pdpp.org/connectors/cancel-queue-regression",
+  connector_id: "https://registry.pdpp.dev/connectors/cancel-queue-regression",
   runtime_requirements: {},
   streams: [
     {

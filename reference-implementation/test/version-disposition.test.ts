@@ -271,7 +271,7 @@ test("the five dispositions are exactly the documented set", () => {
 
 test("normalizeConnectorId strips registry-URL and local-device forms", () => {
   assert.equal(normalizeConnectorId("github"), "github");
-  assert.equal(normalizeConnectorId("https://registry.pdpp.org/connectors/github"), "github");
+  assert.equal(normalizeConnectorId("https://registry.pdpp.dev/connectors/github"), "github");
   assert.equal(normalizeConnectorId("local-device:claude-code"), "claude-code");
   assert.equal(normalizeConnectorId(null), null);
 });

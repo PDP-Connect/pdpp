@@ -38,7 +38,7 @@ function claudeCodeManifest(connectorId: string, displayName: string) {
     capabilities: { human_interaction: [] },
     connector_id: connectorId,
     display_name: displayName,
-    manifest_uri: connectorId.startsWith("http") ? connectorId : "https://registry.pdpp.org/connectors/claude-code",
+    manifest_uri: connectorId.startsWith("http") ? connectorId : "https://registry.pdpp.dev/connectors/claude-code",
     protocol_version: "0.1.0",
     streams: [
       {
