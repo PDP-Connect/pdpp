@@ -142,8 +142,8 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
-| timeline_points | checkpoint_window | manual_as_of | — | true | — | — |
-| timeline_segments | checkpoint_window | manual_as_of | — | false | — | — |
+| timeline_points | snapshot_import_receipt | manual_as_of | — | true | — | — |
+| timeline_segments | snapshot_import_receipt | manual_as_of | — | false | — | — |
 
 ## polyfill/google-maps-data-portability
 
@@ -272,6 +272,15 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
 | orders | checkpoint_window | manual_as_of | — | true | — | — |
+
+## polyfill/signal
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| messages | snapshot_import_receipt | manual_as_of | — | true | — | — |
+| conversations | snapshot_import_receipt | manual_as_of | — | false | — | — |
+| reactions | parent_detail_accounting | manual_as_of | — | false | — | — |
+| attachments | parent_detail_accounting | manual_as_of | — | false | — | — |
 
 ## polyfill/slack
 
