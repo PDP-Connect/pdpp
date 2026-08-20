@@ -154,6 +154,36 @@ function requireSteamResponse(value: unknown): Record<string, unknown> {
   return requireSteamObject(envelope.response, "response");
 }
 
+/**
+ * Bind a Steam-declared inventory total to the coverage denominator.
+ *
+ * `GetOwnedGames` reports `game_count` and `GetRecentlyPlayedGames` reports
+ * `total_count` alongside the array they serve. Both calls are unpaginated, so
+ * without this check the denominator would be the length of whatever array
+ * arrived — a silently truncated response would read as fully covered. Using
+ * the source's own count makes a short array a visible coverage shortfall
+ * instead of an invisible one (the same posture Jellyfin takes with
+ * `TotalRecordCount`).
+ *
+ * Absent is tolerated: the field is optional in the wire contract and a missing
+ * total simply falls back to the served length. A malformed or impossible total
+ * fails closed, because a nonsense denominator is worse than no denominator.
+ */
+function steamDeclaredTotal(value: unknown, field: string, servedLength: number): number {
+  if (value === undefined || value === null) {
+    return servedLength;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`steam_response_malformed: ${field} must be a nonnegative integer`);
+  }
+  if (value < servedLength) {
+    throw new Error(
+      `steam_response_malformed: ${field} (${value}) is less than the served item count (${servedLength})`
+    );
+  }
+  return value;
+}
+
 // ─── HTTP helpers ─────────────────────────────────────────────────────────
 
 type ProgressFn = (
@@ -483,6 +513,9 @@ async function collectOwnedGames(
   );
   const response = requireSteamResponse(gamesRes);
   const games = requireSteamArray<SteamOwnedGame>(response.games, "response.games");
+  // Steam's own inventory size for this account. Load-bearing as the coverage
+  // denominator below so a truncated `games` array cannot read as complete.
+  const declaredTotal = steamDeclaredTotal(response.game_count, "response.game_count", games.length);
   await deps.progress("Fetched owned games", { stream: "owned_games", count: games.length });
 
   const gamesCursor = openFingerprintCursor((newState.owned_games as unknown) ?? {});
@@ -503,7 +536,9 @@ async function collectOwnedGames(
       stateStream: "owned_games",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: coverage.considered,
+      // Source-declared total, not the served array length: if Steam says it
+      // owns N games and served fewer, this reads partial rather than complete.
+      considered: declaredTotal,
       covered: coverage.covered,
     }
   );
@@ -533,9 +568,10 @@ async function collectRecentlyPlayed(
   // empty; a present non-array is still a real protocol violation and still
   // throws.
   const recentGames =
-    response.games === undefined
-      ? []
-      : requireSteamArray<SteamRecentlyPlayed>(response.games, "response.games");
+    response.games === undefined ? [] : requireSteamArray<SteamRecentlyPlayed>(response.games, "response.games");
+  // Steam reports `total_count` even for the empty case, so it is the honest
+  // denominator for this window's inventory.
+  const declaredTotal = steamDeclaredTotal(response.total_count, "response.total_count", recentGames.length);
   await deps.progress("Fetched recently played games", {
     stream: "recently_played_games",
     count: recentGames.length,
@@ -559,7 +595,8 @@ async function collectRecentlyPlayed(
       stateStream: "recently_played_games",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: coverage.considered,
+      // Source-declared total, not the served array length.
+      considered: declaredTotal,
       covered: coverage.covered,
     }
   );
