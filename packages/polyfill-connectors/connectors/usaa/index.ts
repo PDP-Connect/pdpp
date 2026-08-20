@@ -82,6 +82,7 @@ import {
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
 import { computeStatementCoverage, type StatementCoverageRow } from "./statement-coverage.ts";
 import { fileUrlForPath, hydrateStatementPdfs, parsePdfStatement } from "./statement-pdfs.ts";
+import { buildReconciliationDiagnostics } from "./statement-reconciliation.ts";
 import type {
   BillingKv,
   DashboardAccount,
@@ -2530,6 +2531,12 @@ interface PdfParseCounters {
   parsedStatements: number;
   pdfTxnCount: number;
   unknownTemplates: number;
+  /** Periods whose transactions failed to sum to USAA's own printed
+   *  beginning/ending balance delta. Counted separately from
+   *  `unknownTemplates` because a template we DID match but could not
+   *  reconcile is a stronger, more specific finding than one we never
+   *  matched at all. */
+  unreconciledStatements: number;
 }
 
 async function processPdfStatementRow(
@@ -2548,12 +2555,29 @@ async function processPdfStatementRow(
   const acct = row.account_id ? accountById.get(row.account_id) : null;
   const accountName = acct?.name ?? row.account_reference ?? null;
   try {
-    const { txns, parseMeta } = await parsePdfStatement({
+    const { txns, parseMeta, reconciliation } = await parsePdfStatement({
       buffer: ok.buffer,
       accountId: row.account_id || row.account_reference || "unknown",
       accountName,
       period,
     });
+    // The completeness anchor: USAA's own printed period totals say what
+    // this period's transactions must sum to. Report a failed reconciliation
+    // BEFORE the empty-parse early return below, because "the balance moved
+    // but we parsed nothing" is exactly the case that must not slip out as a
+    // bare template-unknown notice. `unavailable` is silent by design — a
+    // credit-card statement prints no such summary and has no anchor to
+    // fail.
+    if (reconciliation.status === "mismatched") {
+      counters.unreconciledStatements += 1;
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "transactions",
+        reason: "statement_unreconciled",
+        message: `Statement period at row ${row.rowIndex + 1} does not reconcile against its own printed balances`,
+        diagnostics: buildReconciliationDiagnostics(row.id, reconciliation),
+      });
+    }
     if (!txns.length) {
       counters.unknownTemplates += 1;
       await deps.emit({
@@ -2601,7 +2625,12 @@ async function emitPdfStatementTransactions(
       .filter((a): a is DashboardAccount & { account_id_raw: string } => Boolean(a.account_id_raw))
       .map((a) => [a.account_id_raw, a])
   );
-  const counters: PdfParseCounters = { pdfTxnCount: 0, parsedStatements: 0, unknownTemplates: 0 };
+  const counters: PdfParseCounters = {
+    pdfTxnCount: 0,
+    parsedStatements: 0,
+    unknownTemplates: 0,
+    unreconciledStatements: 0,
+  };
   for (const row of indexRows) {
     const ok = hydrationSuccess(hydrationResults.get(row.rowIndex));
     if (!ok) {
@@ -2612,7 +2641,7 @@ async function emitPdfStatementTransactions(
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `PDF parse complete: ${counters.pdfTxnCount} transaction(s) across ${counters.parsedStatements} statement(s) (${counters.unknownTemplates} unknown templates)`,
+    message: `PDF parse complete: ${counters.pdfTxnCount} transaction(s) across ${counters.parsedStatements} statement(s) (${counters.unknownTemplates} unknown templates, ${counters.unreconciledStatements} unreconciled)`,
   });
 }
 

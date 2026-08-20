@@ -54,6 +54,7 @@ import {
   sha256Hex,
   yearMonthFromDate,
 } from "./parsers.ts";
+import { reconcileStatementPeriod, type StatementReconciliation } from "./statement-reconciliation.ts";
 import type {
   DownloadFail,
   DownloadFailReason,
@@ -793,10 +794,22 @@ export async function parsePdfStatement({
   accountId: string;
   accountName: string | null;
   period: string | null;
-}): Promise<{ txns: StatementTxnRecord[]; parseMeta: ParseMeta }> {
+}): Promise<{
+  txns: StatementTxnRecord[];
+  parseMeta: ParseMeta;
+  reconciliation: StatementReconciliation;
+}> {
   const text = await extractPdfText(buffer);
   const closing = resolveClosing(text, period);
   const { chosen, best } = runEraParsers(text, closing);
+
+  // The completeness anchor. Computed here because this is the only place
+  // that holds BOTH the statement text (USAA's printed period totals) and
+  // the transactions parsed from it. It is deliberately computed even when
+  // no parser matched: a period whose balance moved but which yielded zero
+  // transactions is precisely the failure worth catching, and returning
+  // early without checking would hide it.
+  const reconciliation = reconcileStatementPeriod(text, best);
 
   if (!best.length) {
     return {
@@ -805,6 +818,7 @@ export async function parsePdfStatement({
         era: "unknown",
         year: closing.closingYear,
       },
+      reconciliation,
     };
   }
 
@@ -816,6 +830,7 @@ export async function parsePdfStatement({
       year: closing.closingYear,
       closingMonth: closing.closingMonth,
     },
+    reconciliation,
   };
 }
 
