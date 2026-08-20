@@ -668,12 +668,25 @@ test("chooseActivity: a since-only scope closes at the deterministic run date", 
   assert.deepEqual(choice.dateRange, { from: "2026-05-01", to: "2026-08-13" });
 });
 
-test("chooseActivity: cursor max_seen_date → since_last_statement", () => {
+test("chooseActivity: FRESH cursor max_seen_date → since_last_statement", () => {
+  const state: TransactionsStateShape = {
+    per_account: { ID: { max_seen_date: "2026-08-01" } },
+  };
+  const choice = chooseActivity(new Map(), state, "transactions", "ID", "2026-08-13T12:00:00Z");
+  assert.equal(choice.activity, "since_last_statement");
+});
+
+test("chooseActivity: STALE cursor max_seen_date → bounded date_range", () => {
+  // This case previously asserted `since_last_statement`, which was the
+  // defect: a cursor 165 days behind the run date cannot be reached by
+  // Chase's "Since last statement" window (~30 days), so every scheduled
+  // run skipped the intervening period and still reported success.
   const state: TransactionsStateShape = {
     per_account: { ID: { max_seen_date: "2026-03-01" } },
   };
   const choice = chooseActivity(new Map(), state, "transactions", "ID", "2026-08-13T12:00:00Z");
-  assert.equal(choice.activity, "since_last_statement");
+  assert.equal(choice.activity, "date_range");
+  assert.deepEqual(choice.dateRange, { from: "2026-03-01", to: "2026-08-13" });
 });
 
 test("chooseActivity: no hints → all (bootstrap)", () => {

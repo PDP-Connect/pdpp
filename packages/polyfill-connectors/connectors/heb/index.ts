@@ -35,6 +35,7 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { type OrderItemTally, summarizeItemCounts } from "./item-count-anchor.ts";
 import {
   buildOrderItemRecord,
   buildOrderRecord,
@@ -462,6 +463,11 @@ export interface EmitDeps extends HydrationDeps {
   emit: BrowserCollectContext["emit"];
   emitRecord: BrowserCollectContext["emitRecord"];
   emittedAt: string;
+  /** Per-order declared-vs-collected item counts, accumulated across the run
+   *  and rolled up into the `order_items` completeness anchor. Optional so
+   *  existing callers and tests that do not exercise the anchor need no
+   *  change. */
+  itemCountTallies?: OrderItemTally[] | undefined;
   orderItemsCoverage: OrderItemsCoverage | undefined;
   ordersCoverage: OrdersCoverage | undefined;
   ordersFingerprintCursor: FingerprintCursor | undefined;
@@ -746,6 +752,18 @@ async function emitOrderAndItems(
         buildOrderItemRecord(listOrder.orderId, orderDate, item, itemIndex, deps.emittedAt)
       );
     }
+    // Completeness anchor: H-E-B's own list card declared how many items
+    // this order has. Recording the pair here — declared (list page) vs
+    // collected (detail page) — lets the run compare two independent source
+    // surfaces instead of trusting the detail page alone. Only orders whose
+    // detail actually hydrated are tallied; a gapped order is already
+    // reported as a DETAIL_GAP and must not also be counted as an item
+    // shortfall.
+    deps.itemCountTallies?.push({
+      orderId: listOrder.orderId,
+      declaredItemCount: listOrder.itemCount,
+      collectedItemCount: detail.items.length,
+    });
   }
 }
 
@@ -1088,6 +1106,9 @@ if (isMainModule(import.meta.url)) {
       // `orders` list-stream coverage is only meaningful when `orders` itself
       // is in scope — mirrors the `wantsItems`-gated accumulator above.
       const ordersCoverage = wantsOrders ? newOrdersCoverage() : undefined;
+      // Declared-vs-collected item tallies for the `order_items` anchor.
+      // Only meaningful when items are in scope.
+      const itemCountTallies: OrderItemTally[] | undefined = wantsItems ? [] : undefined;
 
       const flags: RunFlags = {
         detailAttempts: 0,
@@ -1100,6 +1121,7 @@ if (isMainModule(import.meta.url)) {
         emit,
         emitRecord,
         emittedAt,
+        itemCountTallies,
         orderItemsCoverage,
         ordersCoverage,
         ordersFingerprintCursor,
@@ -1143,6 +1165,31 @@ if (isMainModule(import.meta.url)) {
 
       if (orderItemsCoverage) {
         await emitOrderItemsCoverage(deps, orderItemsCoverage);
+      }
+      // The `order_items` completeness anchor: every hydrated order's item
+      // count as H-E-B declared it on the list card, against what the detail
+      // page actually yielded. Reported only when the provider's own numbers
+      // say something is missing — a run where every order reconciles needs
+      // no notice, and an order with no declared count is silently
+      // unanchored rather than falsely clean.
+      if (itemCountTallies && itemCountTallies.length > 0) {
+        const summary = summarizeItemCounts(itemCountTallies);
+        if (summary.short > 0) {
+          await emit({
+            type: "SKIP_RESULT",
+            stream: "order_items",
+            reason: "item_count_short",
+            message: "Some orders hold fewer items than H-E-B says they contain",
+            diagnostics: {
+              short_orders: summary.short,
+              complete_orders: summary.complete,
+              unanchored_orders: summary.unavailable,
+              declared_items: summary.declaredItems,
+              collected_items: summary.collectedItems,
+              short_order_ids: summary.shortOrderIds,
+            },
+          });
+        }
       }
       // Same honesty posture as order_items: emit once the forward scan
       // completes, including the zero-considered steady-state case, so the

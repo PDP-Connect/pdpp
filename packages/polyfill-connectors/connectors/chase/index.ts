@@ -90,6 +90,7 @@ import {
   parseDashboardAccountsDom,
   parseDateDelivered,
   parseStatementsListDom,
+  prunePerAccountCursors,
   resolveAccountIdForRow,
   sha256Hex,
   shortHash,
@@ -2702,7 +2703,36 @@ if (isMainModule(import.meta.url)) {
 
         const accounts = await collectChaseAccountInventory({ capture, emit, page });
         if (accounts.length === 0) {
+          // Discovery found nothing. That is how a failed or blocked
+          // dashboard scrape presents, so the per-account cursors are
+          // deliberately left untouched — pruning here would erase every
+          // saved position and force a full re-download of every account.
           return; // runtime emits DONE succeeded
+        }
+
+        // Prune per-account cursors for accounts discovery no longer
+        // returns. An orphaned cursor is indistinguishable from a live one,
+        // so without this an account that vanished from discovery is
+        // skipped silently, forever, with no gap emitted. Safe here because
+        // discovery is known non-empty.
+        const { dropped: droppedAccountCursors } = prunePerAccountCursors(
+          deps.maxSeenByAccount,
+          new Set(accounts.map((a) => a.internal_id))
+        );
+        if (droppedAccountCursors.length > 0) {
+          // Surfaced, not swallowed: this may be a closed account (benign)
+          // or a discovery regression (not benign), and the connector does
+          // not guess which.
+          await emit({
+            type: "SKIP_RESULT",
+            stream: "transactions",
+            reason: "account_no_longer_discovered",
+            message: "An account with a saved position is no longer listed on the dashboard",
+            diagnostics: { dropped_account_count: droppedAccountCursors.length },
+          });
+          for (const accountId of droppedAccountCursors) {
+            delete deps.maxSeenByAccount[accountId];
+          }
         }
 
         // Snapshot the dashboard overview DOM now while the page is still on
@@ -2796,8 +2826,10 @@ if (isMainModule(import.meta.url)) {
       }
 
       // Emit STATE for incremental resumption. The per_account cursor drives
-      // the next run's chooseActivity() — when max_seen_date is present we'll
-      // use "since_last_statement" instead of re-downloading all transactions.
+      // the next run's chooseActivity() — when max_seen_date is present and
+      // still FRESH we'll use "since_last_statement" instead of
+      // re-downloading all transactions; a stale cursor falls back to a
+      // bounded date_range export that actually reaches back to it.
       await emitTransactionsStateIfAny(deps);
     },
   });
