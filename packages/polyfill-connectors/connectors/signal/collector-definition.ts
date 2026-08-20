@@ -31,7 +31,7 @@
  * reason (see imessage/collector-definition.ts's module doc).
  */
 
-import type { LocalCollectorDefinition } from "../../src/collector-definition.ts";
+import type { LocalCollectorDefinition } from "@pdpp/connector-protocol/collector-definition";
 
 export const SIGNAL_DEFAULT_STREAMS = ["messages", "conversations", "reactions", "attachments"] as const;
 
