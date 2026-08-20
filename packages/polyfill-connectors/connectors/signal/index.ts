@@ -127,7 +127,12 @@ import { mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { type CollectContext, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import {
+  buildDetailCoverageMessage,
+  type CollectContext,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   makeReferenceBlobUploader,
@@ -147,6 +152,21 @@ import { validateRecord } from "./schemas.ts";
 
 const PROGRESS_INTERVAL_ROWS = 10_000;
 const ATTACHMENT_PROGRESS_INTERVAL = 25;
+/**
+ * Cap on ids listed in the unreachable-backfill diagnostic. The full count
+ * is always reported; only the id sample is bounded, so a large hole stays
+ * legible without unbounded diagnostic growth. Mirrors slack's
+ * `MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC`.
+ */
+const MAX_UNREACHABLE_IDS_IN_DIAGNOSTIC = 50;
+/**
+ * Cap on the durable emitted-id cursor. A Signal Desktop replica is a
+ * bounded local store (this owner's is ~4.7k messages), so this holds the
+ * whole history for realistic accounts while still refusing to grow without
+ * limit. When it binds, the backfill check reports "cannot prove" rather
+ * than a clean bill — see `mergeEmittedIds`.
+ */
+const MAX_EMITTED_ID_CURSOR = 200_000;
 
 // Conservative default cap for local attachment reads, matching imessage's
 // / Gmail's documented-default pattern (25 MiB). Operators can raise/lower
@@ -381,10 +401,202 @@ function conversationsSelect(): string {
   `;
 }
 
+/**
+ * Validate a source-measured row total: must be a finite, non-negative
+ * integer. Fail closed — a missing or malformed count is NOT zero and NOT
+ * "complete". Mirrors jellyfin's `validateTotalRecordCount` discipline
+ * (connectors/jellyfin/index.ts), minus the monotonicity rule: Signal
+ * Desktop legitimately DELETES rows (disappearing messages expire, the
+ * owner deletes a thread), so a decreasing total here is ordinary source
+ * behavior rather than the provider-side anomaly it is for Jellyfin.
+ */
+export function validateSourceTotal(value: unknown, label: string): number {
+  if (typeof value !== "number") {
+    throw new Error(`signal_source_total_not_number: ${label}`);
+  }
+  if (!Number.isFinite(value)) {
+    throw new Error(`signal_source_total_not_finite: ${label}`);
+  }
+  if (!Number.isInteger(value)) {
+    throw new Error(`signal_source_total_not_integer: ${label}`);
+  }
+  if (value < 0) {
+    throw new Error(`signal_source_total_negative: ${label}`);
+  }
+  return value;
+}
+
+/**
+ * The `messages` completeness anchor: `SELECT COUNT(*)` over Signal
+ * Desktop's own `messages` table, measured at the SOURCE boundary (the
+ * decrypted database) and independent of what this run enumerated or
+ * emitted.
+ *
+ * This is a genuine external anchor — it is the source's own count, not a
+ * number this connector derived from its own output. It is what makes the
+ * `messages` stream's `considered` an objectively-measured denominator
+ * rather than a tautology.
+ *
+ * CEILING, stated honestly: Signal Desktop is a linked-device REPLICA, not
+ * the account of record. Messages that Signal Desktop never received (sent
+ * before this device was linked, or expired before it synced) are absent
+ * from this table and therefore absent from this denominator too. This
+ * anchor proves "we hold everything the local replica holds"; it cannot
+ * prove "we hold everything the Signal account ever had." No local anchor
+ * can, and this connector does not claim otherwise.
+ *
+ * Fails closed: a query error or a malformed count throws rather than
+ * defaulting to zero, because an unmeasurable boundary is not an empty one.
+ */
+function countSourceMessages(db: DatabaseSync): number {
+  let row: unknown;
+  try {
+    row = db.prepare("SELECT COUNT(*) AS total FROM messages").get();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`signal_source_total_query_failed: messages: ${msg}`, { cause: err });
+  }
+  const total = (row as { total?: unknown } | undefined)?.total;
+  return validateSourceTotal(typeof total === "bigint" ? Number(total) : total, "messages");
+}
+
+/**
+ * Read the durable emitted-id cursor tolerantly. A missing, malformed, or
+ * legacy (pre-cursor) value yields an EMPTY set, which is safe: an empty
+ * prior set combined with a `since` of 0 (the only state a cold start can
+ * be in) puts nothing below the watermark, so no false gap can be reported.
+ * A legacy cursor that DOES carry `last_sent_at_ms` but no `emitted_ids`
+ * would report every below-watermark id as unreachable on its first
+ * post-deploy run — see `readPriorEmittedIds`'s caller, which suppresses
+ * the finding in exactly that case.
+ */
+export function parseEmittedIds(value: unknown): Set<string> {
+  if (!Array.isArray(value)) {
+    return new Set();
+  }
+  const out = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry === "string" && entry !== "") {
+      out.add(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * Merge the prior emitted-id set with this run's, newest-last, bounded.
+ *
+ * The bound matters: this set is a durable cursor, and an unbounded one
+ * grows without limit on a large account. Keeping the NEWEST ids is the
+ * right truncation because the check only ever asks about ids at or below
+ * the watermark — and the watermark advances, so the oldest ids are the
+ * ones least likely to be re-offered by a backfill. When truncation is in
+ * force the check degrades to "cannot prove", never to a false clean bill:
+ * `reconcileMessageAnchor`'s caller reports the truncation explicitly.
+ */
+export function mergeEmittedIds(prior: ReadonlySet<string>, current: readonly string[]): string[] {
+  const merged = [...prior, ...current];
+  return merged.length > MAX_EMITTED_ID_CURSOR ? merged.slice(merged.length - MAX_EMITTED_ID_CURSOR) : merged;
+}
+
 interface QueriedMessageRows {
+  /** Ids this run actually emitted, for the durable emitted-id cursor. */
+  emittedIds: string[];
   latestMs: number;
   reactionSourceRows: Array<{ id: string; json: string | null }>;
   skippedNullDate: number;
+  /** Rows this run's cursor window enumerated (the in-window denominator). */
+  windowConsidered: number;
+  /** Rows this run's cursor window accounted for (emitted or deliberately skipped). */
+  windowCovered: number;
+}
+
+/**
+ * How this run's cursor window relates to the source's own holdings.
+ *
+ * `sourceTotal` is the objective anchor (every row Signal Desktop holds),
+ * reported as a stream-level fact and NOT substituted for the per-window
+ * `considered`: `isHealthyBoundedContinuation`
+ * (reference-implementation/server/continuation-proof.ts) admits a bounded
+ * window only when `considered === covered`, so folding a stream-level
+ * total into the window denominator would pin every incremental run to a
+ * permanent false `partial`.
+ *
+ * `unreachableIds` is the load-bearing part: source ids sitting at-or-below
+ * the cursor watermark that this connector has NOT previously emitted. A
+ * forward-only `sent_at > ?` filter can never revisit them.
+ *
+ * WHY A SET, NOT A COUNT. A scalar comparison cannot work here, in both
+ * directions:
+ *
+ *   - `sourceTotal - belowWatermark` is identically the in-window row count
+ *     when both are measured from the same database in the same instant.
+ *     It is a tautology: it cannot fire, not even on the backfill hole it
+ *     would be written to catch. (Verified numerically against the live
+ *     4,739-row database before this design was chosen.)
+ *   - Counts also conflate "missing upstream", "surplus", and "duplicated".
+ *     PDPP is a preservation product: it deliberately RETAINS records the
+ *     source later deletes, so held-but-absent-upstream is expected correct
+ *     behavior, never a defect. A two-way count check flags successful
+ *     preservation as loss — backwards.
+ *
+ * A set difference distinguishes the three cases. Only `upstream-present
+ * AND never-emitted` is a real gap; `held-but-gone-upstream` is preservation
+ * working and is deliberately not reported here.
+ */
+interface MessageAnchorReconciliation {
+  belowWatermark: number;
+  sourceTotal: number;
+  unreachableIds: string[];
+}
+
+/**
+ * Reconcile the source's own rows against the cursor watermark and the set
+ * of ids prior runs already emitted.
+ *
+ * Every input is measured at the SOURCE boundary (the decrypted database)
+ * except `priorEmittedIds`, which is this connector's own durable cursor.
+ * Fails closed: a malformed count or an unreadable query throws rather than
+ * defaulting to "complete".
+ *
+ * Deletion-safe by construction: it only ever asks "which source ids have
+ * we never emitted", never "do our holdings match the source count". A row
+ * deleted from Signal Desktop simply stops appearing in the source set; it
+ * produces no finding.
+ */
+function reconcileMessageAnchor(
+  db: DatabaseSync,
+  since: number,
+  priorEmittedIds: ReadonlySet<string>
+): MessageAnchorReconciliation {
+  const sourceTotal = countSourceMessages(db);
+  let rows: unknown[];
+  try {
+    rows = db
+      .prepare("SELECT id AS id FROM messages WHERE sent_at IS NOT NULL AND sent_at <= ?")
+      .all(since) as unknown[];
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`signal_source_total_query_failed: messages_below_watermark: ${msg}`, { cause: err });
+  }
+  const belowWatermark = validateSourceTotal(rows.length, "messages_below_watermark");
+  if (belowWatermark > sourceTotal) {
+    throw new Error(
+      `signal_source_total_inconsistent: below-watermark ${String(belowWatermark)} exceeds source total ${String(sourceTotal)}`
+    );
+  }
+  // A cold start (no prior cursor) has emitted nothing yet, so every
+  // below-watermark id would look "unreachable". But a cold start has
+  // `since === 0`, which puts nothing below the watermark — the set is
+  // empty and no false finding is possible.
+  const unreachableIds: string[] = [];
+  for (const row of rows) {
+    const { id } = row as { id?: unknown };
+    if (typeof id === "string" && !priorEmittedIds.has(id)) {
+      unreachableIds.push(id);
+    }
+  }
+  return { belowWatermark, sourceTotal, unreachableIds };
 }
 
 /**
@@ -428,6 +640,13 @@ async function emitMessageRowsAndReactions({
   const { latestMs, rows } = queryMessageRows(db, since);
   let itemOrdinal = 0;
   let skippedNullDate = 0;
+  // Measured at the enumeration site from the rows the source handed back —
+  // never aliased to the emitted count. A row skipped for an unusable date
+  // raises `windowConsidered` without raising `windowCovered`, so it reads
+  // `partial` exactly as it should.
+  const windowConsidered = rows.length;
+  let windowCovered = 0;
+  const emittedIds: string[] = [];
   const reactionSourceRows: Array<{ id: string; json: string | null }> = [];
   for (const { built, raw } of rows) {
     itemOrdinal += 1;
@@ -440,6 +659,8 @@ async function emitMessageRowsAndReactions({
       continue;
     }
     await emitRecord("messages", built.record);
+    windowCovered += 1;
+    emittedIds.push(raw.id);
     if (emitReactions) {
       reactionSourceRows.push({ id: raw.id, json: raw.json });
     }
@@ -447,7 +668,7 @@ async function emitMessageRowsAndReactions({
       await progress(`Signal phase=emit pass=emit stream=messages item=${itemOrdinal}`, { stream: "messages" });
     }
   }
-  return { latestMs, reactionSourceRows, skippedNullDate };
+  return { emittedIds, latestMs, reactionSourceRows, skippedNullDate, windowConsidered, windowCovered };
 }
 
 async function emitReactionRowsFromMessages(
@@ -832,6 +1053,86 @@ async function collectAttachments(ctx: CollectContext): Promise<void> {
 }
 
 /**
+ * Emit the `messages` completeness evidence for one run: the in-window
+ * coverage declaration plus, when the source holds rows the forward-only
+ * cursor will never revisit, an explicit gap.
+ *
+ * Two facts, deliberately kept separate:
+ *
+ *  1. DETAIL_COVERAGE carries the WINDOW's own `considered`/`covered` —
+ *     rows this run enumerated vs rows it accounted for. It must NOT carry
+ *     the stream-level source total: `isHealthyBoundedContinuation`
+ *     (reference-implementation/server/continuation-proof.ts) admits a
+ *     bounded window only when `considered === covered`, so substituting a
+ *     stream-level total would pin every incremental run to a permanent
+ *     false `partial`.
+ *
+ *  2. The backfill hole is reported as a SET difference: source ids at or
+ *     below the watermark that no prior run ever emitted. A forward-only
+ *     `sent_at > ?` filter can never revisit those rows, so without this
+ *     evidence a re-link backfill carrying older `sent_at` values would be
+ *     permanently invisible.
+ *
+ *     Deliberately one-directional. Ids this connector holds that are GONE
+ *     from Signal Desktop are NOT reported: PDPP retains records the source
+ *     deletes, so held-but-absent-upstream is preservation working as
+ *     intended, not a gap. Only upstream-present-and-never-emitted counts.
+ */
+async function emitMessageAnchorEvidence(
+  emit: CollectContext["emit"],
+  anchor: MessageAnchorReconciliation,
+  result: QueriedMessageRows,
+  since: number,
+  proveBackfill: boolean
+): Promise<void> {
+  if (!proveBackfill) {
+    // A legacy cursor (watermark, no emitted-id set) cannot distinguish
+    // "already emitted" from "newly backfilled". Say so plainly rather than
+    // reporting either a false gap or an unearned clean bill.
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "backfill_check_unproven_legacy_cursor",
+      message:
+        "Below-watermark backfill could not be checked this run: the messages cursor predates the emitted-id set. " +
+        "This run seeds that set; the next run checks properly.",
+      diagnostics: { source_total: anchor.sourceTotal, below_watermark: anchor.belowWatermark },
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
+    });
+  } else if (anchor.unreachableIds.length > 0) {
+    const sample = anchor.unreachableIds.slice(0, MAX_UNREACHABLE_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "source_rows_below_watermark_unreachable",
+      message:
+        `Signal Desktop holds ${String(anchor.unreachableIds.length)} message(s) at or below the cursor watermark that this ` +
+        "connector has never emitted — a backfill carrying older sent_at values. The forward-only sent_at cursor cannot " +
+        "revisit them; re-run with collection_mode=full_refresh to recover them.",
+      diagnostics: {
+        source_total: anchor.sourceTotal,
+        below_watermark: anchor.belowWatermark,
+        unreachable_count: anchor.unreachableIds.length,
+        unreachable_ids: sample,
+        truncated: sample.length < anchor.unreachableIds.length,
+        watermark_sent_at_ms: since,
+      },
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
+    });
+  }
+  await emit(
+    buildDetailCoverageMessage({
+      stream: "messages",
+      stateStream: "messages",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: result.windowConsidered,
+      covered: result.windowCovered,
+    })
+  );
+}
+
+/**
  * Runs the messages/reactions pass against an already-open exported
  * database: derives both streams from the same row scan (reactions live
  * inside each message's own json blob, not a standalone table — see
@@ -845,16 +1146,27 @@ async function collectMessagesAndReactions({
   ctx,
   emitMessages,
   emitReactions,
+  priorEmittedIds,
+  proveBackfill,
   since,
 }: {
   ctx: CollectContext;
   db: DatabaseSync;
   emitMessages: boolean;
   emitReactions: boolean;
+  priorEmittedIds: ReadonlySet<string>;
+  /** False on a legacy cursor with no emitted-id set — see the caller. */
+  proveBackfill: boolean;
   since: number;
 }): Promise<void> {
   const { emit, emitRecord, progress } = ctx;
   await progress("Signal phase=index pass=index stream=messages querying rows", { stream: "messages" });
+
+  // Measured BEFORE the emit pass, at the source boundary, so the anchor
+  // cannot be contaminated by anything this run emitted. Throws on a
+  // malformed or unreadable count — an unmeasurable boundary is not an
+  // empty one.
+  const anchor = reconcileMessageAnchor(db, since, priorEmittedIds);
 
   let result: QueriedMessageRows;
   try {
@@ -882,7 +1194,19 @@ async function collectMessagesAndReactions({
         message: `Skipped ${result.skippedNullDate} message(s) with a missing or unusable sent_at/received_at_ms; they cannot be placed on the sent_at cursor without fabricating a timestamp.`,
       });
     }
-    await emit({ type: "STATE", stream: "messages", cursor: { last_sent_at_ms: result.latestMs } });
+    await emitMessageAnchorEvidence(emit, anchor, result, since, proveBackfill);
+    await emit({
+      type: "STATE",
+      stream: "messages",
+      cursor: {
+        last_sent_at_ms: result.latestMs,
+        // Union of what prior runs emitted and what this run emitted. This
+        // is what makes the backfill check a SET comparison rather than a
+        // count: without it there is no way to tell a below-watermark row
+        // we already have from one a re-link just introduced.
+        emitted_ids: mergeEmittedIds(priorEmittedIds, result.emittedIds),
+      },
+    });
   }
 
   if (emitReactions) {
@@ -914,9 +1238,24 @@ async function collectMessagesConversationsReactions(ctx: CollectContext): Promi
   }
   await withExportedDatabase(async (db) => {
     if (emitMessages || emitReactions) {
-      const messagesState = (state.messages ?? {}) as { last_sent_at_ms?: number };
+      const messagesState = (state.messages ?? {}) as { emitted_ids?: unknown; last_sent_at_ms?: number };
       const since = parseCursorMs(messagesState.last_sent_at_ms ?? 0);
-      await collectMessagesAndReactions({ ctx, db, emitMessages, emitReactions, since });
+      const priorEmittedIds = parseEmittedIds(messagesState.emitted_ids);
+      // A legacy cursor carries a watermark but no emitted-id set. Every
+      // below-watermark id would then look "never emitted" — a false gap
+      // for rows prior runs genuinely did emit. Treat that first
+      // post-deploy run as unproven (skip the check, seed the set) rather
+      // than alarming. The run after it has a real set and checks properly.
+      const hasEmittedIdCursor = Array.isArray(messagesState.emitted_ids);
+      await collectMessagesAndReactions({
+        ctx,
+        db,
+        emitMessages,
+        emitReactions,
+        priorEmittedIds,
+        proveBackfill: since === 0 || hasEmittedIdCursor,
+        since,
+      });
     }
     if (emitConversationsStream) {
       await collectConversations(db, ctx);
