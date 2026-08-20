@@ -124,7 +124,7 @@
     "@pdpp/brand": "workspace:*",
     "@pdpp/list-envelope": "workspace:*",
     "@semantic-release/exec": "^7.1.0",
-    "@types/better-sqlite3": "^7.6.13",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.2.0",
     "conventional-changelog-conventionalcommits": "^10.3.0",
     "lefthook": "^2.1.10",
