@@ -7,6 +7,7 @@ import {
   appendNewChildren,
   classifyListingStatus,
   commentRecord,
+  dedupeByFullname,
   domainOf,
   isoFromUnix,
   isTopLevelComment,
@@ -372,6 +373,78 @@ test("appendNewChildren: stops once an item is at or below cursor", () => {
   assert.equal(stop, true, "must signal stop when crossing cursor");
   assert.equal(out.length, 1, "only items strictly newer than cursor emit");
   assert.equal(out[0]?.data.name, "t3_a");
+});
+
+// ─── Action-ordered listings must not stop on created_utc ───────────────
+//
+// Regression guard for the observed defect: `upvoted` held a stored cursor of
+// 2026-04-28 while the account's real upvote history reached back to 2011.
+// Upvoting one old post puts an old `created_utc` at rank 1, and the
+// created-based stop then halted the walk on item one, freezing the stream.
+
+test("appendNewChildren: action-ordered listing does not stop on an old item at the top", () => {
+  const out: RedditChild[] = [];
+  // Rank 1 is a 2015 post the owner upvoted TODAY — far below the cursor.
+  // A created-ordered stop would halt here and lose the two newer items.
+  const children: RedditChild[] = [
+    { kind: "t3", data: { name: "t3_old", created_utc: 100 } },
+    { kind: "t3", data: { name: "t3_mid", created_utc: 5000 } },
+    { kind: "t3", data: { name: "t3_new", created_utc: 9000 } },
+  ];
+  const stop = appendNewChildren(children, 4000, out, "action");
+  assert.equal(stop, false, "action-ordered listings must keep paging");
+  assert.equal(out.length, 3, "every child must be kept regardless of created_utc");
+  assert.deepEqual(
+    out.map((c) => c.data.name),
+    ["t3_old", "t3_mid", "t3_new"]
+  );
+});
+
+test("appendNewChildren: created-ordered listing still stops at the cursor", () => {
+  // The incremental optimization must survive for submitted/comments, where
+  // created_utc IS the sort key. Losing this would make every run a full walk.
+  const out: RedditChild[] = [];
+  const children: RedditChild[] = [
+    { kind: "t3", data: { name: "t3_a", created_utc: 300 } },
+    { kind: "t3", data: { name: "t3_b", created_utc: 200 } },
+  ];
+  const stop = appendNewChildren(children, 200, out, "created");
+  assert.equal(stop, true, "created-ordered listings must stop at the cursor");
+  assert.equal(out.length, 1);
+});
+
+test("appendNewChildren: defaults to created-ordered when no order is given", () => {
+  // Guards the default parameter: an omitted order must be the SAFE-for-
+  // submitted/comments behavior, and callers must opt IN to the full walk.
+  const out: RedditChild[] = [];
+  const children: RedditChild[] = [{ kind: "t3", data: { name: "t3_a", created_utc: 100 } }];
+  assert.equal(appendNewChildren(children, 200, out), true);
+  assert.equal(out.length, 0);
+});
+
+test("dedupeByFullname: collapses repeat sightings, keeping first-seen order", () => {
+  const children: RedditChild[] = [
+    { kind: "t3", data: { name: "t3_a", created_utc: 300 } },
+    { kind: "t1", data: { name: "t1_b", created_utc: 200 } },
+    { kind: "t3", data: { name: "t3_a", created_utc: 300 } },
+  ];
+  const out = dedupeByFullname(children);
+  assert.equal(out.length, 2, "a repeated fullname must collapse to one item");
+  assert.deepEqual(
+    out.map((c) => c.data.name),
+    ["t3_a", "t1_b"],
+    "first-seen order must be preserved"
+  );
+});
+
+test("dedupeByFullname: keeps children lacking a fullname rather than collapsing them", () => {
+  // Two distinct nameless children must NOT collapse into one — treating a
+  // missing name as a single shared identity would silently drop real data.
+  const children: RedditChild[] = [
+    { kind: "t3", data: { created_utc: 300 } },
+    { kind: "t3", data: { created_utc: 200 } },
+  ];
+  assert.equal(dedupeByFullname(children).length, 2);
 });
 
 test("maxCreatedEpoch: returns max across batch, clamped to current", () => {

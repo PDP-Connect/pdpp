@@ -327,16 +327,66 @@ for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
       delay: NO_DELAY,
     });
 
-    assert.deepEqual(
-      secondHarness.emitted.map((record) => record.data.id),
-      [stream.name === "comments" ? `t1_${stream.name}new` : `t3_${stream.name}new`],
-      `${stream.name}: a restart must not re-emit the cursor boundary`
-    );
+    const prefix = stream.name === "comments" ? "t1_" : "t3_";
+    const emittedIds = secondHarness.emitted.map((record) => record.data.id);
+    if (stream.order === "action") {
+      // Action-ordered listings (saved/upvoted/downvoted/hidden) are sorted by
+      // when the OWNER acted, not by created_utc, so an item below the cursor
+      // says nothing about what follows it. These streams must walk the whole
+      // listing and re-see the boundary item; suppressing it is exactly the
+      // defect that froze `upvoted` at a 2026-04-28 cursor while real history
+      // ran back to 2011. Re-emitting is safe — records are keyed by fullname.
+      assert.deepEqual(
+        emittedIds,
+        [`${prefix}${stream.name}new`, `${prefix}${stream.name}old`],
+        `${stream.name}: an action-ordered restart must walk past the cursor boundary`
+      );
+    } else {
+      assert.deepEqual(
+        emittedIds,
+        [`${prefix}${stream.name}new`],
+        `${stream.name}: a created-ordered restart must not re-emit the cursor boundary`
+      );
+    }
     const secondState = secondHarness.protocolMessages.find((message) => message.type === "STATE");
     assert.ok(secondState && secondState.type === "STATE");
     assert.deepEqual(secondState.cursor, { last_created_utc: 300 });
   });
 }
+
+// A restart on an action-ordered stream must recover history BELOW the stored
+// cursor — the real-world shape of the defect, where `upvoted`'s cursor sat at
+// a 2026 timestamp and every older upvote had become unreachable.
+test("collectStream: action-ordered restart recovers items far below the cursor", async () => {
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "upvoted");
+  assert.ok(stream);
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch, calls } = makeScriptedFetch({
+    [stream.endpoint]: [
+      // Rank 1 is a 2011-era post upvoted moments ago, far below the cursor.
+      okResult(listing([makePost("t3_upvotedancient", 100)], "t3_upvotedancient")),
+      okResult(listing([makePost("t3_upvotedolder", 90)], null)),
+    ],
+  });
+
+  await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: { upvoted: { last_created_utc: 1_777_366_297 } },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+  });
+
+  assert.equal(calls.length, 2, "must page past an old item instead of halting on it");
+  assert.deepEqual(
+    harness.emitted.map((r) => r.data.id),
+    ["t3_upvotedancient", "t3_upvotedolder"],
+    "history below the cursor must be recovered, not skipped"
+  );
+});
 
 // ─── Invariant 4: multi-page pagination threads the 'after' cursor ──────
 
@@ -1419,7 +1469,6 @@ test("collectAllStreams: one valid + one invalid child emits DETAIL_COVERAGE wit
   assert.equal(harness.emitted.length, 1, "runtime emits only valid record");
   assert.equal(harness.skipped.length, 1, "runtime SKIP_RESULT logs invalid record");
 });
-
 
 // ─── Invariant 12: the collect path's in-page fetch is same-origin ────────
 //

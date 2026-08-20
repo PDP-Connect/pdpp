@@ -25,9 +25,14 @@
  * connector over the public API — they capture preference signal
  * (upvoted/downvoted history) no third party can see.
  *
- * Pagination: opaque `after` cursor, newest-first. Incremental sync stops
- * once we cross the earliest `created_utc` from the prior run — same
- * pattern the original API-based connector used.
+ * Pagination: opaque `after` cursor. The stop rule is per-stream, because
+ * Reddit does not order every listing the same way:
+ *   submitted/comments  — ordered by the item's own `created_utc`, so an
+ *     incremental run stops once it crosses the prior run's high-water mark.
+ *   saved/upvoted/downvoted/hidden — ordered by OWNER ACTION time. An old
+ *     post upvoted today sits at rank 1 with an old `created_utc`, so the
+ *     created-based stop is invalid here: these walk the full listing and
+ *     dedupe by fullname. See `RedditListingOrder` in parsers.ts.
  *
  * Rate limit: Reddit's logged-in web JSON allows ~100 req/min before 429.
  * We page at limit=100 and use a conservative 500ms politeDelay between
@@ -72,10 +77,12 @@ import {
   appendNewChildren,
   classifyListingStatus,
   commentRecord,
+  dedupeByFullname,
   MAX_PAGES,
   maxCreatedEpoch,
   nextAfter,
   pagePath,
+  type RedditListingOrder,
   savedRecord,
   sinceFromState,
   submittedRecord,
@@ -313,7 +320,8 @@ export async function paginate(
   progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
   streamName?: string,
   onAuthFailed?: RedditReauthFn,
-  repairBudget: ReturnType<typeof createRepairBudget> = createRepairBudget()
+  repairBudget: ReturnType<typeof createRepairBudget> = createRepairBudget(),
+  order: RedditListingOrder = "created"
 ): Promise<RedditChild[]> {
   const all: RedditChild[] = [];
   let after: string | null = null;
@@ -359,7 +367,7 @@ export async function paginate(
     if (children.length === 0) {
       break;
     }
-    if (appendNewChildren(children, sinceEpochUtc, all)) {
+    if (appendNewChildren(children, sinceEpochUtc, all, order)) {
       break;
     }
 
@@ -370,7 +378,13 @@ export async function paginate(
     await delay(PAGE_DELAY_MS);
   }
 
-  return all;
+  // `action`-ordered streams walk the whole listing every run, so the same
+  // item recurs across runs and (rarely) within one walk when Reddit shifts
+  // items between pages mid-walk. Dedupe by fullname before the caller counts
+  // `considered`/`covered`, so coverage reflects distinct items rather than
+  // repeat sightings. `created`-ordered streams stop at the cursor and are
+  // already distinct, so this is a no-op for them.
+  return order === "action" ? dedupeByFullname(all) : all;
 }
 
 // ─── Stream runner ──────────────────────────────────────────────────────
@@ -381,6 +395,10 @@ export async function paginate(
 export interface RedditStreamConfig {
   endpoint: string;
   name: string;
+  /** How Reddit sorts this listing. Drives the pagination stop rule — see
+   *  {@link RedditListingOrder}. Omitted means `created` (authorship
+   *  timeline), the only ordering for which an early stop is sound. */
+  order?: RedditListingOrder;
   progressMessage: string;
   toRecord: (c: RedditChild) => RecordData;
 }
@@ -425,7 +443,8 @@ export async function collectStream(args: CollectStreamArgs): Promise<CollectStr
     progress,
     stream.name,
     onAuthFailed,
-    repairBudget
+    repairBudget,
+    stream.order ?? "created"
   );
 
   const latestEpoch = maxCreatedEpoch(items, sinceEpoch ?? 0);
@@ -475,27 +494,35 @@ export function buildStreamTable(userPath: string, emittedAt: string): RedditStr
       progressMessage: "Fetching comments",
       toRecord: (c) => commentRecord(c.data, emittedAt),
     },
+    // The four streams below are ordered by OWNER ACTION time, not by the
+    // item's `created_utc` — acting on an old item puts an old `created_utc`
+    // at the top of the listing. They must walk the full listing and dedupe;
+    // see `RedditListingOrder`.
     {
       name: "saved",
       endpoint: `${userPath}/saved.json`,
+      order: "action",
       progressMessage: "Fetching saved items",
       toRecord: (c) => savedRecord(c, emittedAt),
     },
     {
       name: "upvoted",
       endpoint: `${userPath}/upvoted.json`,
+      order: "action",
       progressMessage: "Fetching upvoted items",
       toRecord: (c) => voteRecord(c, emittedAt),
     },
     {
       name: "downvoted",
       endpoint: `${userPath}/downvoted.json`,
+      order: "action",
       progressMessage: "Fetching downvoted items",
       toRecord: (c) => voteRecord(c, emittedAt),
     },
     {
       name: "hidden",
       endpoint: `${userPath}/hidden.json`,
+      order: "action",
       progressMessage: "Fetching hidden items",
       toRecord: (c) => voteRecord(c, emittedAt),
     },
