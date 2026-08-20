@@ -373,6 +373,15 @@ test("collectGroupMessages: cold start (no prior cursor) walks backward, clean p
       considered: 3,
       failed: false,
       nextCursors: { "group-1": "m1", "group-2": "m3" },
+      // The `group()` fixture declares `messages_count: 10` but the stubbed
+      // pages supply only 2 and 1 messages, so the provider-count anchor
+      // correctly reports both groups short. This is the anchor doing its
+      // job against the fixture's own numbers, not a regression.
+      shortfalls: [
+        { groupId: "group-1", providerCount: 10, walked: 2 },
+        { groupId: "group-2", providerCount: 10, walked: 1 },
+      ],
+      unanchoredGroupIds: [],
     });
     assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 3);
   } finally {
@@ -474,7 +483,7 @@ test("collectGroupMessages: genuine zero groups reports failed: false, considere
 
     assert.deepEqual(
       outcome,
-      { considered: 0, failed: false, nextCursors: {} },
+      { considered: 0, failed: false, nextCursors: {}, shortfalls: [], unanchoredGroupIds: [] },
       "no groups means no messages — a proven-empty walk"
     );
     assert.equal(emitted.length, 0);
