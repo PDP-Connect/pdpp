@@ -2,12 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { execFileSync } from "node:child_process";
-import { chmod, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = path.join(packageRoot, "dist");
+const workspaceRoot = path.resolve(packageRoot, "..");
+
+/**
+ * Packages this build consumes as ordinary built workspace dependencies
+ * (engine-split slice 2) rather than vendoring their `.ts` source into this
+ * package's own `tsc` invocation. Each has its own `build` script producing
+ * `dist/` + `.d.ts` (see package.json's `build` script, which builds these
+ * first); this copies that already-built, already-tested output into the
+ * exact relative-path location `src/runner.ts`'s
+ * `../../<package>/src/...` imports resolve to at tsc-compile time, so
+ * `rewriteRelativeImportExtensions` produces working `.js`-suffixed
+ * relative imports with no further path surgery here.
+ */
+const BUILT_WORKSPACE_DEPENDENCIES = ["collector-runtime", "connector-protocol"];
 
 const shortShaPattern = /^[0-9a-f]{7,40}$/;
 const testFilePattern = /(^|\/).+\.test\.js$/;
@@ -34,14 +48,129 @@ const declarationKeep = new Set(
     "connector-protocol/src/safe-emit.d.ts",
     "connector-protocol/src/safe-text-preview.d.ts",
     "connector-protocol/src/scope-filters.d.ts",
+    // @pdpp/reference-contract/common, vendored directly by tsconfig.build.json
+    // (not copied from a separate build like collector-runtime/connector-protocol
+    // — see that file's comment). Transitional: once reference-contract
+    // publishes, this becomes an ordinary published dependency instead of a
+    // vendored copy.
+    "reference-contract/src/common/canonical.d.ts",
+    "reference-contract/src/common/index.d.ts",
+    "reference-contract/src/common/json-schema.d.ts",
+    "reference-contract/src/common/terminal-run-commit.d.ts",
   ].map((entry) => path.normalize(entry))
 );
 
+/**
+ * Bare-specifier imports this published tarball cannot resolve as real
+ * `node_modules` packages (see `rewriteCrossPackageBareSpecifiers` below):
+ * `@pdpp/collector-runtime` and `@pdpp/connector-protocol` (each optionally
+ * with a `/<subpath>`, e.g. `@pdpp/connector-protocol/http-retry`), and
+ * `@pdpp/reference-contract/common` (the one subpath `local-device-client.ts`
+ * imports for `canonicalTerminalRunCommitEnvelope`).
+ *
+ * These specifiers are CORRECT for every other in-repo consumer, which
+ * resolves them through the workspace's own `node_modules` — this is a real
+ * dependency relationship between packages, not vendoring. But this
+ * published tarball ships none of the three as an installable `node_modules`
+ * entry (see `validate-package.ts`'s `@pdpp/*`-dependency ban), and the
+ * bare-specifier files themselves are vendored throughout the tree (copied
+ * `collector-runtime`/`connector-protocol` dist output, plus every vendored
+ * `polyfill-connectors` connector and runtime file that imports either
+ * package directly), not confined to one directory. `resolveVendoredTarget`
+ * below computes the right relative path from EACH file's own location.
+ */
+const CROSS_PACKAGE_BARE_SPECIFIER_PATTERNS: readonly { packageDir: string; pattern: RegExp }[] = [
+  { packageDir: "collector-runtime", pattern: /(["'])@pdpp\/collector-runtime(\/[^"']+)?\1/g },
+  { packageDir: "connector-protocol", pattern: /(["'])@pdpp\/connector-protocol(\/[^"']+)?\1/g },
+  { packageDir: "reference-contract", pattern: /(["'])@pdpp\/reference-contract\/common\1/g },
+];
+
+/** Relative path (no extension) from a vendored file's own directory to a rewritten bare specifier's target module. */
+function resolveVendoredTarget(fileDir: string, packageDir: string, subpath: string | undefined): string {
+  let targetFile: string;
+  if (packageDir === "reference-contract") {
+    targetFile = path.join(distRoot, packageDir, "src", "common", "index");
+  } else if (subpath) {
+    targetFile = path.join(distRoot, packageDir, "src", subpath);
+  } else {
+    targetFile = path.join(distRoot, packageDir, "src", "index");
+  }
+  const relative = path.relative(fileDir, targetFile);
+  return relative.startsWith(".") ? relative : `./${relative}`;
+}
+
+await copyBuiltWorkspaceDependencies();
 await rewriteDeclarations(distRoot);
 await replaceBrowserLauncherWithPublishedGuard();
 await rm(path.join(distRoot, ".tsbuildinfo"), { force: true });
 await chmod(path.join(distRoot, "local-collector", "bin", "pdpp-local-collector.js"), 0o755);
 await stampBuildInfo();
+
+/**
+ * Copy each built workspace dependency's own `dist/*.{js,d.ts}` into this
+ * package's `dist/<package>/src/` — the path `src/runner.ts`'s relative
+ * imports resolve to. This package's `tsc` invocation no longer compiles
+ * `@pdpp/collector-runtime`/`@pdpp/connector-protocol`'s `.ts` source (see
+ * tsconfig.build.json); it consumes their independently built output, which
+ * `package.json`'s `build` script builds first.
+ *
+ * After copying, every vendored file in the whole `dist/` tree — the copied
+ * packages themselves, plus every vendored `polyfill-connectors` connector
+ * and runtime file that imports either package directly — gets its
+ * unresolvable cross-package bare specifiers rewritten to the relative path
+ * the vendored copy actually lands at (see
+ * `CROSS_PACKAGE_BARE_SPECIFIER_PATTERNS`'s doc comment).
+ */
+async function copyBuiltWorkspaceDependencies(): Promise<void> {
+  for (const dependency of BUILT_WORKSPACE_DEPENDENCIES) {
+    const sourceDist = path.join(workspaceRoot, dependency, "dist");
+    const targetDir = path.join(distRoot, dependency, "src");
+    // biome-ignore lint/performance/noAwaitInLoops: Two short-lived directory copies; sequencing keeps failures attributable to the dependency that produced them.
+    await cp(sourceDist, targetDir, { recursive: true });
+  }
+  await rewriteCrossPackageBareSpecifiers(distRoot);
+}
+
+async function rewriteCrossPackageBareSpecifiers(dir: string): Promise<void> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const dirs: string[] = [];
+  const files: Promise<void>[] = [];
+
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      dirs.push(full);
+      continue;
+    }
+    if (!(entry.name.endsWith(".js") || entry.name.endsWith(".d.ts"))) {
+      continue;
+    }
+    files.push(
+      readFile(full, "utf8").then(async (text) => {
+        // `.js` files need their FINAL `.js` extension here (nothing else
+        // rewrites them). `.d.ts` files need a bare `.ts` extension here —
+        // `rewriteDeclarations`'s own `tsImportPattern` pass, run right
+        // after this function returns, rewrites every kept declaration's
+        // `.ts`-suffixed relative specifiers to `.js` in one generic pass;
+        // emitting `.js` here would make that pass double-rewrite to `.d.js`.
+        const isDeclaration = entry.name.endsWith(".d.ts");
+        let rewritten = text;
+        for (const { packageDir, pattern } of CROSS_PACKAGE_BARE_SPECIFIER_PATTERNS) {
+          rewritten = rewritten.replace(
+            pattern,
+            (_match, quote: string, subpath: string | undefined) =>
+              `${quote}${resolveVendoredTarget(dir, packageDir, subpath)}.${isDeclaration ? "ts" : "js"}${quote}`
+          );
+        }
+        if (rewritten !== text) {
+          await writeFile(full, rewritten);
+        }
+      })
+    );
+  }
+
+  await Promise.all([...files, ...dirs.map((d) => rewriteCrossPackageBareSpecifiers(d))]);
+}
 
 /**
  * Overwrite the compiled `collector-build-info.js` with the real build identity.

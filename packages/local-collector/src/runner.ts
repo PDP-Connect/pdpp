@@ -42,13 +42,12 @@
 import { existsSync } from "node:fs";
 import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import type { LocalCollectorDefinition } from "../../connector-protocol/src/collector-definition.ts";
 import {
   COLLECTOR_RUNTIME_CAPABILITIES as POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES,
   COLLECTOR_PROTOCOL_VERSION as PROTOCOL_VERSION,
   type RuntimeCapabilityProfile,
 } from "../../collector-runtime/src/index.ts";
+import type { LocalCollectorDefinition } from "../../connector-protocol/src/collector-definition.ts";
 
 // biome-ignore lint/performance/noBarrelFile: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export {
