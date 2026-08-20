@@ -82,11 +82,19 @@ async function closeServer(server: ClosableServer): Promise<void> {
 }
 
 async function registerManifest(asUrl: string, connectorManifest: Record<string, unknown>): Promise<void> {
-  await fetchJson(`${asUrl}/connectors`, {
+  const resp = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(connectorManifest),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
+  // Assert rather than ignore: a rejected manifest leaves the connector
+  // unregistered, and the ingest POST below then 404s instead of reaching the
+  // fault hook — which reads as a redaction failure rather than the setup
+  // error it actually is.
+  assert.ok(
+    resp.status >= 200 && resp.status < 300,
+    `manifest registration must succeed, got ${String(resp.status)}: ${JSON.stringify(resp.body)}`
+  );
 }
 
 interface DeviceAuthorizationBody {
@@ -127,12 +135,14 @@ function manifest(connectorId: string) {
   return {
     connector_id: connectorId,
     display_name: "Server Log Probe Connector",
+    manifest_uri: `https://sources.example/${connectorId}`,
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: false },
         semantics: "append_only",
       },
     ],
