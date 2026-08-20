@@ -866,6 +866,45 @@ export async function emitMessagesPass(
   return { considered: metas.length, covered: count };
 }
 
+/**
+ * Disclose the mailbox-wide inventory total against this run's walk boundary.
+ *
+ * Gmail's `messages` DETAIL_COVERAGE is deliberately PER-PAGE: the runtime's
+ * `isHealthyBoundedContinuation` admits a bounded page only when
+ * `considered === covered` on same-page facts, so the page denominator must
+ * stay the page. Overwriting it with the mailbox-wide `EXISTS` would make every
+ * run of a 140k-message mailbox read `partial` forever and would break the
+ * continuation contract outright — a wrong denominator, not a better one.
+ *
+ * The honest place for the provider total is therefore a SEPARATE fact: the
+ * server-declared inventory size, plus how much of the UID space this
+ * connector's two cursors have actually claimed. `EXISTS` is validated
+ * fail-closed in `validateExistsTotal` before this point, so a missing or
+ * malformed total has already thrown and can never reach here as a silent
+ * "complete". What this adds is visibility: the number the provider asserts,
+ * next to the boundary we have walked to.
+ */
+async function emitAllMailInventoryDisclosure(
+  emitFn: (msg: EmittedMessage) => Promise<void>,
+  session: AllMailSession,
+  historicalCursor: MessagesBackfillCursor,
+  forwardFloorUid: number
+): Promise<void> {
+  const backfilledThroughUid = historicalCursor.backfilled_through_uid ?? 0;
+  await emitFn({
+    type: "PROGRESS",
+    stream: "messages",
+    message: `All Mail reports ${session.existsTotal} messages; historical walk is through UID ${backfilledThroughUid} of ${forwardFloorUid}`,
+    all_mail_inventory: {
+      all_mail_exists: session.existsTotal,
+      backfilled_through_uid: backfilledThroughUid,
+      forward_floor_uid: forwardFloorUid,
+      historical_backfill_complete: historicalCursor.completed_at !== null,
+      uidvalidity: session.uidvalidityNum,
+    },
+  });
+}
+
 /** Record a bounded terminal outcome so a poison UID cannot replay forever. */
 async function emitHistoricalMessageSkip(deps: PerMessageDeps, uid: number | undefined): Promise<void> {
   await deps.emitProtocol({
@@ -1113,13 +1152,55 @@ async function findAllMailbox(client: ImapFlow): Promise<ListResponse | null> {
 
 interface AllMailSession {
   attachmentBackfill: AttachmentAllMailCursor;
+  /**
+   * IMAP `EXISTS` for All Mail: the server's own count of the messages in the
+   * mailbox, taken from the SELECT this run already performed. This is the
+   * only mailbox-wide inventory total Gmail hands us, and it is measured at
+   * the provider boundary — before a single UID is walked and independently
+   * of what any pass emits.
+   */
+  existsTotal: number;
   fullResync: boolean;
   highestModseqCursor: number | string | null;
   messagesBackfill: MessagesBackfillCursor;
+  priorExistsTotal: number | undefined;
   priorModseq: number | string | null | undefined;
   priorUidnext: number;
   uidnext: number | undefined;
   uidvalidityNum: number;
+}
+
+/**
+ * Validate the IMAP `EXISTS` count for All Mail and bind it as the mailbox's
+ * inventory total. Fail closed on missing/malformed, mirroring Jellyfin's
+ * `validateTotalRecordCount`: a silently absent total that reads as success is
+ * precisely the bug this contract exists to prevent.
+ *
+ * `priorTotal` is compared only WITHIN a UIDVALIDITY epoch (the caller passes
+ * `undefined` across a re-key). A decrease inside one epoch is real deletion or
+ * a server bug and must throw rather than pass quietly. Across a re-key the UID
+ * space was rebuilt, so a different count is expected and is not loss.
+ */
+function validateExistsTotal(value: unknown, priorTotal: number | undefined): number {
+  if (value === undefined || value === null) {
+    throw new Error("gmail_all_mail_exists_missing: SELECT reported no EXISTS for All Mail");
+  }
+  if (typeof value !== "number") {
+    throw new Error("gmail_all_mail_exists_not_number");
+  }
+  if (!Number.isFinite(value)) {
+    throw new Error("gmail_all_mail_exists_not_finite");
+  }
+  if (!Number.isInteger(value)) {
+    throw new Error("gmail_all_mail_exists_not_integer");
+  }
+  if (value < 0) {
+    throw new Error("gmail_all_mail_exists_negative");
+  }
+  if (priorTotal !== undefined && value < priorTotal) {
+    throw new Error(`gmail_all_mail_exists_decreased: ${value} < ${priorTotal}`);
+  }
+  return value;
 }
 
 /**
@@ -1148,6 +1229,15 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
   const priorAttachmentAllMail: AttachmentAllMailCursor = attachmentsState.all_mail ?? {};
   const priorMessagesBackfill: MessagesBackfillCursor = messagesState.backfill ?? {};
   const priorUidvalidity = priorAllMail.uidvalidity;
+  // Only compare EXISTS against a prior recorded in the SAME UID epoch. A
+  // UIDVALIDITY change means the mailbox was re-keyed, so the old count
+  // describes a different UID space and a lower new count is not loss —
+  // exactly the re-key-vs-deletion distinction the messages cursor already
+  // draws above. Comparing across the boundary would turn every legitimate
+  // re-key into a spurious throw.
+  const priorExistsTotal =
+    priorUidvalidity === uidvalidityNum && typeof priorAllMail.exists === "number" ? priorAllMail.exists : undefined;
+  const existsTotal = validateExistsTotal(mailbox.exists, priorExistsTotal);
   const attachmentBackfill =
     priorAttachmentAllMail.uidvalidity === uidvalidityNum
       ? priorAttachmentAllMail
@@ -1157,6 +1247,8 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
         };
   return {
     attachmentBackfill,
+    existsTotal,
+    priorExistsTotal,
     messagesBackfill:
       priorMessagesBackfill.uidvalidity === uidvalidityNum
         ? priorMessagesBackfill
@@ -3420,6 +3512,7 @@ export async function runAllMailPasses(
     stream: "messages",
     message: `Collected ${metas.length} headers; beginning body pass`,
   });
+  await emitAllMailInventoryDisclosure(emit, session, historicalCursor, forwardFloorUid);
   const perMessageDeps: PerMessageDeps = {
     ...(attachmentCoverage ? { attachmentCoverage } : {}),
     emitProtocol: emit,
@@ -3564,6 +3657,9 @@ export async function runAllMailPasses(
         uidnext: nextUidnext,
         forward_uidnext: nextForwardUidnext,
         highest_modseq: session.highestModseqCursor ?? null,
+        // Carry the mailbox's own EXISTS forward so the next run in this epoch
+        // can prove the inventory did not shrink underneath us.
+        exists: session.existsTotal,
       },
       ...(nextMessagesBackfill ? { backfill: nextMessagesBackfill } : {}),
     },

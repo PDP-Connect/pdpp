@@ -1893,6 +1893,10 @@ test("runAllMailPasses: scheduled runs advance historical pages while forwarding
     const first = await run({});
     assert.deepEqual(fetchRanges, ["1:500"]);
     assert.deepEqual(first.all_mail, {
+      // The mailbox's own EXISTS count rides along so the next run in this
+      // epoch can prove the inventory did not shrink (see
+      // all-mail-inventory.test.ts).
+      exists: 1200,
       forward_uidnext: 1201,
       highest_modseq: null,
       uidnext: 501,
@@ -2647,6 +2651,8 @@ test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attac
     recoveredAttachmentGapIds: new Set<string>(),
     session: {
       attachmentBackfill: { backfilled_through_uid: 250, uidvalidity: 123 },
+      existsTotal: 600,
+      priorExistsTotal: undefined,
       fullResync: false,
       highestModseqCursor: null,
       messagesBackfill: { uidvalidity: 123, backfilled_through_uid: 0, completed_at: null },
@@ -2839,6 +2845,8 @@ test("runAttachmentBackfillAndRecoveryPass: recoveryOnly=true recovers served ga
     recoveryOnly: true,
     session: {
       attachmentBackfill: { backfilled_through_uid: 250, uidvalidity: 123 },
+      existsTotal: 600,
+      priorExistsTotal: undefined,
       fullResync: false,
       highestModseqCursor: null,
       messagesBackfill: { uidvalidity: 123, backfilled_through_uid: 0, completed_at: null },

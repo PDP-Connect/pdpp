@@ -46,7 +46,29 @@ export interface InteractionMessage {
   type: "INTERACTION";
 }
 
+/**
+ * The mailbox-wide inventory total the IMAP server declared, reported next to
+ * how far this connector's historical walk has actually reached. Carried on
+ * PROGRESS rather than folded into `messages` DETAIL_COVERAGE because that
+ * coverage fact is per-page by contract (the runtime admits a bounded
+ * continuation only on same-page `considered === covered`), so the mailbox
+ * total would be the wrong denominator there.
+ */
+export interface AllMailInventoryProgress {
+  /** IMAP `EXISTS` for All Mail: the server's own count of messages present. */
+  all_mail_exists: number;
+  /** Highest UID the historical backfill has admitted so far. */
+  backfilled_through_uid: number;
+  /** Whether the historical walk has reached its ceiling. */
+  historical_backfill_complete: boolean;
+  /** The UID the forward walk resumes at, i.e. the historical walk's ceiling. */
+  forward_floor_uid: number;
+  /** The UID epoch these numbers describe. Counts are comparable only within one. */
+  uidvalidity: number;
+}
+
 export interface ProgressMessage {
+  all_mail_inventory?: AllMailInventoryProgress;
   attachment_hydration_failure_outcome?: AttachmentHydrationFailureOutcomeProgress;
   attachment_recovery_outcome?: AttachmentRecoveryOutcomeProgress;
   count?: number;
@@ -138,6 +160,15 @@ export interface BlobRef {
 }
 
 export interface AllMailCursor {
+  /**
+   * The IMAP `EXISTS` count this mailbox reported on the run that wrote this
+   * cursor — the server's own inventory size for All Mail. Persisted so the
+   * next run can detect a DECREASE within the same UIDVALIDITY epoch, which is
+   * deletion or a server bug rather than normal growth. Meaningful only
+   * alongside the `uidvalidity` in this same cursor: across a re-key the UID
+   * space was rebuilt and the counts are not comparable.
+   */
+  exists?: number;
   /** Forward/new-mail watermark. Kept separate from the historical boundary. */
   forward_uidnext?: number;
   highest_modseq?: number | string | null;
