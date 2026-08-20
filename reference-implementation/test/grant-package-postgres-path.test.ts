@@ -287,7 +287,7 @@ async function seedPackageInstance(connectorId: string): Promise<void> {
 }
 
 async function registerConnector(asUrl: string, name: string): Promise<Manifest> {
-  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${name}.json`), "utf8")) as Manifest;
+  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `fixtures/seed-manifests/${name}.json`), "utf8")) as Manifest;
   const canonical = canonicalConnectorKeyFromManifest(raw);
   const manifest: Manifest = !canonical || canonical === raw.connector_id ? raw : { ...raw, connector_id: canonical };
   const { status } = await fetchJson(`${asUrl}/connectors`, {

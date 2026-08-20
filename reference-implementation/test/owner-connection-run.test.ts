@@ -287,7 +287,7 @@ interface ReferenceManifest {
 }
 
 function loadReferenceManifest(name: string): ReferenceManifest {
-  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests", `${name}.json`), "utf8"));
+  return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests", `${name}.json`), "utf8"));
 }
 
 // canonicalConnectorKey returns string | null for arbitrary `unknown`

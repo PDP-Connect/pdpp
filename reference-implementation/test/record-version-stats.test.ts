@@ -85,12 +85,12 @@ async function withReviewedCompactionResidueFixture<T>(fn: () => T | Promise<T>)
 // reconcile.ts registers into the DB catalog at runtime (see
 // defaultPolyfillManifestsDir in polyfill-manifest-reconcile.ts), so it is
 // the one production getConnectorManifest actually resolves for a real
-// connection. reference-implementation/manifests/ is a SEPARATE, older
+// connection. reference-implementation/fixtures/seed-manifests/ is a SEPARATE, older
 // "reference fixture" set used only by `pdpp seed`'s demo connectors
 // (defaultReferenceFixturesDir) and must not shadow the real manifest here.
 const MANIFEST_ROOTS_FOR_TEST = [
   fileURLToPath(new URL("../../packages/polyfill-connectors/manifests", import.meta.url)),
-  fileURLToPath(new URL("../manifests", import.meta.url)),
+  fileURLToPath(new URL("../fixtures/seed-manifests", import.meta.url)),
 ];
 
 // biome-ignore lint/suspicious/useAwait: localized test double preserves the real resolver's async contract.

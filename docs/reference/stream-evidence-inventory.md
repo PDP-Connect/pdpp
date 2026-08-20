@@ -2,7 +2,7 @@
 
 Generated artifact. Do not hand-edit — run `pnpm stream-evidence:inventory` to regenerate, and `pnpm stream-evidence:check` to verify it is current.
 
-One row per declared manifest stream, across `packages/polyfill-connectors/manifests/*.json` and `reference-implementation/manifests/*.json`. `required` defaults to `true` when the manifest does not declare it. This inventory records declared strategy, not observed runtime proof — see `openspec/changes/define-stream-coverage-freshness-evidence/specs/reference-connection-health/spec.md` for how the runtime derives per-stream coverage from these strategies plus observed collection facts.
+One row per declared manifest stream, across `packages/polyfill-connectors/manifests/*.json` and `reference-implementation/fixtures/seed-manifests/*.json`. `required` defaults to `true` when the manifest does not declare it. This inventory records declared strategy, not observed runtime proof — see `openspec/changes/define-stream-coverage-freshness-evidence/specs/reference-connection-health/spec.md` for how the runtime derives per-stream coverage from these strategies plus observed collection facts.
 
 ## polyfill/amazon
 

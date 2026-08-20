@@ -32,7 +32,10 @@ export const MANAGED_WORKFLOW_PATHS = [
 // the gate's scripts are wired) — a change to the gate itself must exercise
 // the gate, so it cannot be weakened without proving the weakened version
 // still passes ci:mode:test and the connector-conformance run.
-export const CONNECTOR_SURFACE_PATH_PREFIXES = ["packages/polyfill-connectors/", "reference-implementation/manifests/"];
+export const CONNECTOR_SURFACE_PATH_PREFIXES = [
+  "packages/polyfill-connectors/",
+  "reference-implementation/fixtures/seed-manifests/",
+];
 
 // The specific, fast, deterministic tests that catch a scaffolded/dishonest
 // connector manifest — not the full polyfill-connectors package suite (which

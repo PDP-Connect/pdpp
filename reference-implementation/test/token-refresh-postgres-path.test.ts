@@ -135,7 +135,7 @@ interface ConnectorManifest {
 }
 
 async function registerConnector(asUrl: string, name: string): Promise<ConnectorManifest> {
-  const raw: ConnectorManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${name}.json`), "utf8"));
+  const raw: ConnectorManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `fixtures/seed-manifests/${name}.json`), "utf8"));
   const { status } = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(raw),
     headers: { "Content-Type": "application/json" },

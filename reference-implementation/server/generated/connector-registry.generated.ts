@@ -4,7 +4,7 @@
 // GENERATED FILE — do not hand-edit. Produced by
 // reference-implementation/scripts/generate-connector-registry.ts from the
 // shipped connector manifests (packages/polyfill-connectors/manifests/,
-// reference-implementation/manifests/) and
+// reference-implementation/fixtures/seed-manifests/) and
 // @pdpp/polyfill-connectors's LOCAL_COLLECTOR_DEFINITIONS. Regenerate with
 // `pnpm --filter pdpp-reference-implementation run generate:connector-registry`.
 // scripts/check-generated-artifacts.ts fails CI if this file drifts from

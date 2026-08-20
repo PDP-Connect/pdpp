@@ -432,7 +432,7 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as TestManifest;
 
   try {
@@ -451,7 +451,7 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
 
 async function withNativeHarness(fn: (ctx: NativeHarnessContext) => Promise<void>) {
   const nativeManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8")
   ) as TestManifest;
   const server = await startServer({
     asPort: 0,
@@ -884,7 +884,7 @@ interface AuthGateScenario {
 async function withMalformedPolyfillClientGrant(fn: (ctx: MalformedPolyfillClientContext) => Promise<void>) {
   const { dbPath, cleanup } = createTempDbPath();
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as TestManifest;
   let server = await startServer({
     asPort: 0,
@@ -1197,7 +1197,7 @@ test("PDPP CLI smoke", async (t) => {
 
   await t.test("auth introspect preserves grant_invalid client context", async () => {
     const { dbPath, cleanup } = createTempDbPath();
-    const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8"));
+    const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
     let server = await startServer({
       asPort: 0,
       dbPath,
@@ -2121,7 +2121,7 @@ test("PDPP CLI smoke", async (t) => {
   });
 
   await t.test("inspect manifest handles native provider manifests and normalizes primary_key display", async () => {
-    const manifestPath = join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json");
+    const manifestPath = join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json");
     const result = await runCli(["inspect", "manifest", manifestPath, "--format", "json"]);
     assert.ok(result.json, "expected CLI --format json output to parse");
 
@@ -7920,7 +7920,7 @@ rl.on('line', (line) => {
     "client auth-gate grant_invalid failures still surface request and reference trace ids on stderr",
     async () => {
       const { dbPath, cleanup } = createTempDbPath();
-      const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8"));
+      const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
       let server = await startServer({
         asPort: 0,
         dbPath,
@@ -8105,7 +8105,7 @@ rl.on('line', (line) => {
     for await (const scenario of scenarios) {
       const { dbPath, cleanup } = createTempDbPath();
       const nativeManifest = JSON.parse(
-        readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8")
+        readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8")
       ) as TestManifest;
       let server = await startServer({
         asPort: 0,
@@ -8231,7 +8231,7 @@ rl.on('line', (line) => {
       for await (const scenario of scenarios) {
         const { dbPath, cleanup } = createTempDbPath();
         const nativeManifest = JSON.parse(
-          readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8")
+          readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8")
         ) as TestManifest;
         let server = await startServer({
           asPort: 0,
@@ -8338,7 +8338,7 @@ rl.on('line', (line) => {
     "auth-gate record-list failures preserve limit and changes_since through CLI grant timeline and trace readers",
     async () => {
       const { dbPath, cleanup } = createTempDbPath();
-      const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8"));
+      const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
       let server = await startServer({
         asPort: 0,
         dbPath,

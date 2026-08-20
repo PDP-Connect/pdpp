@@ -88,7 +88,7 @@ async function withHarness(
   fn: (ctx: { asUrl: string; spotifyManifest: SpotifyManifest }) => Promise<void>
 ): Promise<void> {
   const spotifyManifest = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   ) as SpotifyManifest;
   const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
   const asUrl = `http://localhost:${server.asPort}`;

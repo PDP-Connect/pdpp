@@ -69,7 +69,7 @@ const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 // in sync without importing any list out of version-disposition.ts (which no
 // longer exports one — compaction_class now lives on the manifest itself).
 const MANIFEST_ROOTS_FOR_TEST = [
-  path.resolve(__dirname, "..", "manifests"),
+  path.resolve(__dirname, "..", "fixtures", "seed-manifests"),
   path.resolve(__dirname, "..", "..", "packages", "polyfill-connectors", "manifests"),
 ];
 

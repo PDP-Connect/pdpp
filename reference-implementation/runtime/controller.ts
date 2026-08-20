@@ -104,7 +104,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
-const REFERENCE_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "manifests");
+const REFERENCE_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "fixtures", "seed-manifests");
 const SEED_CONNECTOR_PATH = join(REFERENCE_IMPL_DIR, "connectors", "seed", "index.ts");
 const POLYFILL_ROOT = join(REFERENCE_IMPL_DIR, "..", "packages", "polyfill-connectors");
 const POLYFILL_MANIFESTS_DIR = join(POLYFILL_ROOT, "manifests");
@@ -1372,7 +1372,7 @@ function loadPolyfillManifestFingerprints(): Map<string, ManifestFingerprint> {
 // Resolve the connector-implementation path for a controller-managed run.
 //
 // Why this is non-trivial: the reference fixture manifests in
-// reference-implementation/manifests/ and the shipped polyfill manifests in
+// reference-implementation/fixtures/seed-manifests/ and the shipped polyfill manifests in
 // packages/polyfill-connectors/manifests/ can share a `connector_id`
 // (for example, GitHub). The reference fixture is served by the seed
 // connector at reference-implementation/connectors/seed/index.ts, while

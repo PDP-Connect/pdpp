@@ -135,7 +135,7 @@ async function issueOwnerToken(asUrl: string, subjectId = "owner_local"): Promis
 
 async function registerSpotify(asUrl: string): Promise<{ connector_id: string }> {
   const manifest: { connector_id: string } = JSON.parse(
-    readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
   );
   const resp = await fetch(`${asUrl}/connectors`, {
     body: JSON.stringify(manifest),
