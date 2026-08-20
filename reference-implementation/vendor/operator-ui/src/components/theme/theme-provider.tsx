@@ -5,8 +5,8 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome does not resolve this package's conditional exports; TypeScript does.
 import { ThemeProvider as NextThemesProvider, useTheme as useNextTheme } from "next-themes";
-import type { ReactNode } from "react";
-import type { ResolvedTheme, ThemeChoice } from "./theme-state.ts";
+import { type ReactNode, useEffect } from "react";
+import { type ResolvedTheme, THEME_KEY, type ThemeChoice } from "./theme-state.ts";
 
 interface ThemeContextValue {
   /** What is actually painted right now. */
@@ -25,9 +25,24 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       enableSystem
       storageKey="pdpp-theme"
     >
+      <ThemeCookieBridge />
       {children}
     </NextThemesProvider>
   );
+}
+
+/** Keep server-rendered reference pages on the same theme as the console. */
+function ThemeCookieBridge() {
+  const { theme } = useNextTheme();
+
+  useEffect(() => {
+    const choice: ThemeChoice = theme === "dark" || theme === "light" || theme === "system" ? theme : "system";
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    // biome-ignore lint/suspicious/noDocumentCookie: this non-sensitive preference must reach the server-rendered reference pages
+    document.cookie = `${THEME_KEY}=${encodeURIComponent(choice)}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
+  }, [theme]);
+
+  return null;
 }
 
 /**
