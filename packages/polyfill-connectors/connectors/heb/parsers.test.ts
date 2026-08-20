@@ -609,6 +609,35 @@ test("isIncapsulaBlocked is false for a normal populated page", () => {
   assert.equal(isIncapsulaBlocked(fixture("orders-list.html")), false);
 });
 
+// Captured live from /my-account/order-history on 2026-08-20, served with
+// HTTP 200. The iframe-only heuristic returned false here, so the block fell
+// through to the zero-order branch and was reported as `selector_drift` —
+// sending every retry at a selector rewrite when the real fault was bot
+// protection. Verbatim shape (ids scrubbed); the run that exposed it saw
+// any_card=4, order_cards=0.
+const IMPERVA_INCIDENT_PAGE = `<html><body>{ "incidentId" : "000000000000000000-000000000000000000", "hostName" : "www.heb.com", "errorCode" : "15", "description" : "This page could not load. It looks like you may be using a web browser version that we do not support." }</body></html>`;
+
+test("isIncapsulaBlocked detects Imperva's iframe-free JSON incident report served with HTTP 200", () => {
+  assert.equal(isIncapsulaBlocked(IMPERVA_INCIDENT_PAGE), true);
+});
+
+// `classifyEmptyListPage` (connectors/heb/index.ts) branches on this flag
+// BEFORE it reaches the selector-drift check, so proving the flag here is what
+// makes the block win over `selector_drift`. That ordering is asserted in
+// index.test.ts, which owns the classifier.
+test("an Imperva incident report sets the block flag the classifier branches on first", () => {
+  const diag = diagnoseEmptyListPage(IMPERVA_INCIDENT_PAGE, "https://www.heb.com/my-account/order-history");
+  assert.equal(diag.incapsula_block, true);
+  assert.equal(diag.order_cards, 0);
+});
+
+test("isIncapsulaBlocked does not fire on a real page that merely mentions incidentId", () => {
+  // H-E-B's own API error envelopes use `errorCode`; only Imperva's report
+  // carries the incidentId+hostName pair, and a real page is never this small.
+  const realPage = `<html><body><h3>Order history</h3><div data-testid="order-list">${"x".repeat(5000)}<span>"errorCode" : "15"</span></div></body></html>`;
+  assert.equal(isIncapsulaBlocked(realPage), false);
+});
+
 test("isIncapsulaBlocked is false for a legitimate empty terminal page (has h3/breadcrumb/testid)", () => {
   assert.equal(isIncapsulaBlocked(fixture("orders-list-empty.html")), false);
 });

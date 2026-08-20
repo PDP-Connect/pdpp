@@ -661,8 +661,39 @@ export function parseOrderDetailDom(html: string): OrderDetail | null {
 // block/challenge renders as an empty shell — no h3, no breadcrumb nav, no
 // [data-testid], document.body.children.length <= 2, and at least one iframe.
 // `_Incapsula_Resource` alone (present on every page) must NOT count as a block.
+//
+// Imperva also serves a SECOND, iframe-less block shape: a ~650-byte document
+// whose entire body is a JSON incident report — `{"incidentId": "...",
+// "hostName": "www.heb.com", "errorCode": "15", "description": "This page
+// could not load..."}` — returned with HTTP **200**, not 403. Observed live
+// against /my-account/order-history on 2026-08-20.
+//
+// That shape defeated the iframe-only detector: `hasIframe` is false, so a
+// block fell through to the zero-order classification and was reported as
+// `selector_drift` ("4 cards on the page, 0 matching") — a markup-drift
+// diagnosis for what is really bot protection. The recovery for those two is
+// opposite (rewrite a selector vs. back off and re-establish trust), so the
+// misclassification sent every retry down the wrong path.
+//
+// Matched structurally on the incident-report field set rather than on the
+// prose, which is localized and has changed before. `errorCode` alone is too
+// generic to key on: H-E-B's own API errors use that name too, so require the
+// `incidentId` + `hostName` pair that only Imperva's report carries.
+const IMPERVA_INCIDENT_ID_RE = /"incidentId"\s*:/;
+const IMPERVA_HOST_NAME_RE = /"hostName"\s*:/;
+const IMPERVA_INCIDENT_MAX_BYTES = 4000;
+
+function isImpervaIncidentReport(html: string): boolean {
+  if (html.length > IMPERVA_INCIDENT_MAX_BYTES) {
+    return false;
+  }
+  return IMPERVA_INCIDENT_ID_RE.test(html) && IMPERVA_HOST_NAME_RE.test(html);
+}
 
 export function isIncapsulaBlocked(html: string): boolean {
+  if (isImpervaIncidentReport(html)) {
+    return true;
+  }
   const { document } = parseHTML(html);
   const { body } = document;
   if (!body) {
