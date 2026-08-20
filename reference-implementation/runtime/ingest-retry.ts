@@ -150,18 +150,52 @@ export const INGEST_SATURATED_FAILURE_REASON = "ingest_endpoint_saturated";
  * a live failure is classified from typed fields, never from prose that a
  * proxy or connector could have folded an unrelated "503" into.
  *
- * 5xx is the systemic-failure class the RS contract assigns to
- * `ingest_batch_storage_error`. 408 (request timeout) and 429 (rate limited)
- * are included for the same reason the device path includes them: both are
- * explicit, standard "this attempt, not this content" signals. Every 4xx
- * outside those two — and every other status — is NOT retryable, so a
- * content rejection stays fatal on its first response.
+ * 503 is the ONLY status this loop retries, plus 408. That is not a narrowing
+ * of the RS contract, it IS the RS contract: every ingest failure the server
+ * classifies as retryable backpressure answers 503 —
+ * `connector_instance_busy`, `ingest_batch_storage_error`, and `run_terminal`
+ * (`routes/ref-error-status.ts`). 408 (request timeout) is included for the
+ * same reason the device path includes it: an explicit, standard "this
+ * attempt, not this content" signal.
+ *
+ * A BARE 500 IS NOT RETRIED. Retrying the whole 5xx band swept in a class the
+ * server never means as backpressure: the one RS code that maps to 500 is
+ * `connector_instance_store_required`, a configuration defect that no amount
+ * of waiting clears. `ref-device-exporters.ts` names the distinction directly
+ * — it returns "a typed 503 with Retry-After instead of the misleading untyped
+ * 500". Burning the retry budget on a 500 only delays an honest terminal
+ * failure and, worse, hides it: the run reports `ingest_endpoint_saturated`
+ * ("we waited and it stayed busy") for what is really a misconfigured store.
+ * 502/504 are likewise left out — an intermediary's own fault is not the
+ * server telling us to retry.
+ *
+ * 429 IS ALSO DELIBERATELY EXCLUDED, for a different reason than 500: not
+ * "the server does not mean retry" but "this is not the layer that should".
+ * A 503 here is writer-admission contention
+ * (`connector_instance_busy`) — local, sub-second, and genuinely cleared by
+ * waiting a few hundred milliseconds, which is exactly what this runtime's
+ * 4-attempt / ~3.5s budget buys. A 429 is SOURCE PRESSURE from the upstream
+ * provider, measured in minutes to hours, and retry ownership for it belongs
+ * to the SCHEDULER, not this runtime:
+ *
+ *   - `server/stores/terminal-gap-classifier.ts:20` states the rule directly:
+ *     429 is explicitly transient, must NEVER terminalize a gap, and arms the
+ *     source-pressure cooldown instead.
+ *   - `scheduler-source-pressure-cooldown.ts` owns that cooldown, backs off up
+ *     to `DEFAULT_MAX_COOLDOWN_MS` (6 hours), and persists it ACROSS runs.
+ *
+ * Absorbing a 429 here actively destroys runs. This loop burns its whole ~3.5s
+ * budget against a limit that will not lift in 3.5s, then fails terminally as
+ * `INGEST_SATURATED_FAILURE_REASON` — so the scheduler never observes the
+ * `rate_limit_error` it keys on, never arms the cooldown, and never retries.
+ * Letting the 429 through on its first response surfaces it intact to the
+ * layer that can actually wait it out.
+ *
+ * The 429 -> `rate_limit_error` mappings in `routes/ref-error-status.ts` and
+ * `ingest-failures.ts` are load-bearing for that handoff and must stay.
  */
 export function isRetryableIngestStatus(status: number): boolean {
-  if (status === 408 || status === 429) {
-    return true;
-  }
-  return status >= 500 && status < 600;
+  return status === 408 || status === 503;
 }
 
 /**
