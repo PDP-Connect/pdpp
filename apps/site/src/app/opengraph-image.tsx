@@ -10,18 +10,12 @@ export const contentType = "image/png";
 
 // Social card for the public site. Reused as both the Open Graph and Twitter
 // `summary_large_image` image via the metadata file convention. next/og renders
-// via satori, which doesn't support oklch(), so the brand tokens are converted
-// to sRGB hex (same conversions as apple-icon.tsx):
-//   oklch(0.52 0.11 45)    → #a05533  (human / copper)
-//   oklch(0.58 0.18 253)   → #2c73d9  (protocol / blue)
-//   oklch(0.985 0.005 85)  → #fbfaf5  (counter / paper)
-//   oklch(0.98 0.008 75)   → #f8f6f0  (stage / paper-warm)
+// via satori, which doesn't support oklch(), so colors are expressed as hex.
 // The card states the protocol's core promise in one frame: eight fields enter,
 // four come back — the "one screenshot" of field projection.
-const COPPER = "#a05533";
-const BLUE = "#2c73d9";
+const DEEP_BLUE = "#1d4f8f";
+const WHITE = "#ffffff";
 const PAPER = "#f8f6f0";
-const PAPER_LIGHT = "#fbfaf5";
 const INK = "#1a1714";
 const MUTED = "#6f655a";
 
@@ -29,7 +23,7 @@ function Chip({ label, color, struck }: { label: string; color: string; struck?:
   return (
     <div
       style={{
-        background: struck ? "rgba(111,101,90,0.10)" : "rgba(44,115,217,0.12)",
+        background: struck ? "rgba(111,101,90,0.10)" : "rgba(29,79,143,0.12)",
         borderRadius: 10,
         color,
         display: "flex",
@@ -51,7 +45,7 @@ export default function OpengraphImage() {
       style={{
         background: PAPER,
         backgroundImage:
-          "radial-gradient(circle at 12% 16%, rgba(160,85,51,0.10), transparent 38%), radial-gradient(circle at 90% 6%, rgba(44,115,217,0.12), transparent 36%)",
+          "radial-gradient(circle at 12% 16%, rgba(160,85,51,0.10), transparent 38%), radial-gradient(circle at 90% 6%, rgba(29,79,143,0.12), transparent 36%)",
         display: "flex",
         flexDirection: "column",
         height: "100%",
@@ -62,13 +56,14 @@ export default function OpengraphImage() {
     >
       {/* Wordmark */}
       <div style={{ alignItems: "center", display: "flex", gap: 18 }}>
-        <svg aria-label="PDPP split P mark" height="56" role="img" viewBox="0 0 200 200" width="56">
-          <path d="M 40 30 L 40 170 L 60 170 L 60 116 L 100 116 Q 105 116 105 110 L 105 30 Z" fill={COPPER} />
-          <path
-            d="M 105 30 L 105 110 Q 105 116 100 116 L 60 116 L 60 170 L 80 170 L 80 136 L 125 136 Q 155 136 155 103 Q 155 30 105 30 Z"
-            fill={BLUE}
-          />
-          <circle cx="105" cy="73" fill={PAPER_LIGHT} r="18" />
+        <svg aria-label="PDPP single P mark" height="56" role="img" viewBox="0 0 56 56" width="56">
+          <rect fill={DEEP_BLUE} height="56" rx="13.15" width="56" />
+          <g transform="translate(15.46 -1.61) scale(0.3178)">
+            <path
+              d="M60 30C65.3043 30 70.3919 32.1067 74.1426 35.8574C77.8933 39.6081 80 44.6957 80 50V110C80 115.304 77.8933 120.392 74.1426 124.143C70.3919 127.893 65.3043 130 60 130H20V160H0V30H60ZM20 50V110H60V50H20Z"
+              fill={WHITE}
+            />
+          </g>
         </svg>
         <div style={{ color: INK, display: "flex", fontSize: 30, fontWeight: 700, letterSpacing: -0.5 }}>PDPP</div>
         <div style={{ color: MUTED, display: "flex", fontFamily: "monospace", fontSize: 22 }}>
@@ -92,12 +87,12 @@ export default function OpengraphImage() {
       <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 18 }}>
         <div style={{ color: MUTED, display: "flex", fontFamily: "monospace", fontSize: 22 }}>8 fields</div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Chip color={BLUE} label="employer" />
-          <Chip color={BLUE} label="pay_period" />
+          <Chip color={DEEP_BLUE} label="employer" />
+          <Chip color={DEEP_BLUE} label="pay_period" />
           <Chip color={MUTED} label="home_address" struck />
           <Chip color={MUTED} label="tax_id" struck />
         </div>
-        <div style={{ color: BLUE, display: "flex", fontSize: 28 }}>→ 4 returned</div>
+        <div style={{ color: DEEP_BLUE, display: "flex", fontSize: 28 }}>→ 4 returned</div>
       </div>
     </div>,
     { ...size }

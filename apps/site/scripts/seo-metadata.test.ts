@@ -6,6 +6,7 @@ import { test } from "node:test";
 import robots from "@/app/robots.ts";
 import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
 import { buildSitemap, type DocPageRef } from "@/lib/sitemap-entries.ts";
+import { MAINTAINER_DOC_SLUGS, maintainersRoute } from "@/lib/spec-nav-slugs.ts";
 
 // SEO/GEO standard MUST #1.5: robots.txt must agree with the approved access
 // policy. MUST #4.3: a sitemap must contain only canonical, indexable URLs.
@@ -28,7 +29,16 @@ test("robots.txt allows the public site and blocks non-canonical surfaces", () =
   assert.equal(rules.allow, "/");
 
   const disallow = Array.isArray(rules.disallow) ? rules.disallow : [rules.disallow];
-  for (const path of ["/design", "/palette", "/sandbox", "/specification/README"]) {
+  for (const path of [
+    "/design",
+    "/palette",
+    "/sandbox",
+    "/specification/README",
+    maintainersRoute,
+    // Disallowing only the index left the documents it links crawlable, so a
+    // crawler that never saw the index still indexed all of them.
+    ...MAINTAINER_DOC_SLUGS.map((slug) => `/specification/${slug}`),
+  ]) {
     assert.ok(disallow.includes(path), `robots.txt must disallow ${path}`);
   }
 });
@@ -37,7 +47,14 @@ const FIXTURE_PAGES: DocPageRef[] = [
   { path: "index.mdx", url: "/specification" },
   { path: "README.md", url: "/specification/README" },
   { path: "spec-core.md", url: "/specification/spec-core" },
-  { path: "spec-deferred.md", url: "/specification/spec-deferred" },
+  { path: "spec-discovery-and-trust.md", url: "/specification/spec-discovery-and-trust" },
+  // Every maintainer document, not just a sample. These were absent from the
+  // fixture, which is why the suite stayed green while they leaked into the
+  // live sitemap.
+  ...MAINTAINER_DOC_SLUGS.map((slug) => ({
+    path: `${slug}.md`,
+    url: `/specification/${slug}`,
+  })),
 ];
 
 test("sitemap contains only canonical URLs, each exactly once", () => {
@@ -54,10 +71,17 @@ test("sitemap contains only canonical URLs, each exactly once", () => {
   }
 });
 
-test("sitemap excludes contributor-facing authoring notes", () => {
+test("sitemap excludes contributor-facing authoring notes and every maintainer document", () => {
   const urls = buildSitemap(SITE_ORIGIN, FIXTURE_PAGES, "2026-04-06").map((entry) => entry.url);
 
   assert.ok(!urls.includes(`${SITE_ORIGIN}/specification/README`), "README.md is authoring notes, not a spec page");
+  assert.ok(!urls.includes(`${SITE_ORIGIN}${maintainersRoute}`), "/maintainers is unlisted, not a canonical page");
+  for (const slug of MAINTAINER_DOC_SLUGS) {
+    assert.ok(
+      !urls.includes(`${SITE_ORIGIN}/specification/${slug}`),
+      `${slug} is unlisted and noindex; listing it in the sitemap invites crawlers straight to it`
+    );
+  }
 });
 
 test("sitemap includes the front door, nav destinations, and every real doc page exactly once", () => {
@@ -68,7 +92,9 @@ test("sitemap includes the front door, nav destinations, and every real doc page
   assert.ok(urls.includes(`${SITE_ORIGIN}/participate`));
   assert.ok(urls.includes(`${SITE_ORIGIN}/specification`), "the docs index itself must be listed exactly once");
   assert.ok(urls.includes(`${SITE_ORIGIN}/specification/spec-core`));
-  assert.ok(urls.includes(`${SITE_ORIGIN}/specification/spec-deferred`));
+  // A normative companion specification: unlisting the maintainer documents
+  // must not take the specification set itself out of the sitemap.
+  assert.ok(urls.includes(`${SITE_ORIGIN}/specification/spec-discovery-and-trust`));
 });
 
 test("sitemap stamps doc pages with the declared spec date, not a build timestamp", () => {

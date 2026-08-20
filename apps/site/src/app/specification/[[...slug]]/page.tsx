@@ -12,6 +12,7 @@ import { getMDXComponents } from "@/components/mdx.tsx";
 import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
 import { Text } from "@/components/pdpp-concept/text.tsx";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
+import { MAINTAINER_DOC_SLUGS } from "@/lib/spec-nav-slugs.ts";
 
 interface DocsPageProps {
   params: Promise<{
@@ -66,13 +67,12 @@ export default async function Page({ params }: DocsPageProps) {
       className="pdpp-docs-page"
       footer={rootFooterItems ? { items: rootFooterItems } : undefined}
       full={page.data.full}
-      // The in-page table of contents lives in the LEFT rail, under "Contents",
-      // exactly as the concept states it — so fumadocs' own right-hand TOC
-      // column is turned off rather than left to render a second copy of the
-      // same list. The popover (the narrow-viewport affordance) stays: below
-      // the width the rail unmounts at, it is the only way to reach the
-      // headings. `toc` is still passed because the popover reads it.
-      tableOfContent={{ enabled: false }}
+      // The left rail lists DOCUMENTS (the spec's sibling files), not this
+      // page's own headings — it has no per-page section nav. Fumadocs' own
+      // right-hand TOC column supplies that, restyled in specification.css to
+      // sit as its own column distinct from the rail. The popover (the
+      // narrow-viewport affordance) stays: below the width the rail unmounts
+      // at, it is the only way to reach the headings.
       toc={toc}
     >
       <div className="pdpp-docs-hero">
@@ -134,14 +134,26 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   // without changing the docs source tree that other in-flight work depends
   // on (SEO/GEO standard MUST #1.5: robots directives must match the approved
   // access policy; this page was never meant to be a public spec page).
+  //
+  // The maintainer documents — guides, design rationale, architectural context,
+  // deferred concerns, open questions and the superseded Data Query API — are
+  // noindex'd so they stay reachable by URL but never rank against the
+  // specification. They are listed only on /maintainers, which is itself
+  // unlinked and noindex.
+  //
+  // Noindexing an index page while leaving the documents it links fully
+  // indexable is the defect this avoids: the pages meant to be off the public
+  // surface stayed crawlable and ranked, reachable from search even though
+  // nothing in the rail pointed at them.
   const isInternalNotesPage = page.path === "README.md";
+  const isMaintainerDoc = MAINTAINER_DOC_SLUGS.some((slug) => page.path === `${slug}.md`);
   const canonicalUrl = isRootSlug ? "/specification" : page.url;
 
   return {
     alternates: { canonical: canonicalUrl },
     description: page.data.description,
     openGraph: { url: canonicalUrl },
-    robots: isInternalNotesPage ? { follow: false, index: false } : undefined,
+    robots: isInternalNotesPage || isMaintainerDoc ? { follow: false, index: false } : undefined,
     title: page.data.title,
   };
 }

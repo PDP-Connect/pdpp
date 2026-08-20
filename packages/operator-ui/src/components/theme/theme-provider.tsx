@@ -19,7 +19,7 @@ interface ThemeContextValue {
 export function ThemeProvider({ children }: { children: ReactNode }) {
   return (
     <NextThemesProvider
-      attribute="data-theme"
+      attribute={["data-theme", "class"]}
       defaultTheme="system"
       disableTransitionOnChange
       enableSystem

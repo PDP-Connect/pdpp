@@ -798,7 +798,7 @@ test("batch consent gate: staged batch remains source-bounded in storage", async
     assert.equal("connector_id" in firstStoredEntry.source_declaration_snapshot.declaration, false);
     assert.equal("version" in firstStoredEntry.source_declaration_snapshot.declaration, false);
     const collectionExtension =
-      firstStoredEntry.source_declaration_snapshot.declaration.extensions?.["https://pdpp.org/profile/collection"];
+      firstStoredEntry.source_declaration_snapshot.declaration.extensions?.["https://pdpp.dev/profile/collection"];
     assert.ok(collectionExtension);
     assert.deepEqual(collectionExtension.connector, { id: spotify.manifest_uri, version: spotify.version });
     assert.equal(firstStoredEntry.source_declaration_snapshot.declaration.streams[0]?.name, "top_artists");

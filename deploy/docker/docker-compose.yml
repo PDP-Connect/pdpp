@@ -15,7 +15,10 @@
 # services) — do not start here if you only want to run a node.
 services:
   core:
-    image: ${PDPP_CORE_IMAGE:-ghcr.io/pdp-connect/pdpp/core:main}
+    # The released channel: moves only on a successful release, and always
+    # resolves to the same image as that release's version tag. Override with
+    # PDPP_CORE_IMAGE to pin an immutable tag (core:1.5.1, core:sha-<rev>).
+    image: ${PDPP_CORE_IMAGE:-ghcr.io/pdp-connect/pdpp/core:latest}
     restart: unless-stopped
     environment:
       # The single public origin this node advertises in its OAuth metadata.

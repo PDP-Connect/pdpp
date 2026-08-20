@@ -10,7 +10,7 @@ The selected template uses one application service plus a Postgres plugin.
 
 | Service | Source | Public networking | Healthcheck path |
 |---|---|---:|---|
-| `core` | `ghcr.io/pdp-connect/pdpp/core:<version-tag>` | enabled | Railway default with browser connectors; externally probe `/.well-known/oauth-authorization-server` |
+| `core` | `ghcr.io/pdp-connect/pdpp/core:latest` (or a pinned `<version-tag>`) | enabled | Railway default with browser connectors; externally probe `/.well-known/oauth-authorization-server` |
 | `Postgres` | Railway plugin | disabled | n/a |
 
 The `core` image is built from the root `Dockerfile` target `core`. It runs:
@@ -26,10 +26,20 @@ to boot reliably, and Railway turns that `PORT` into an extra required deploy
 prompt. The one-service image preserves one public origin and private AS/RS
 listeners without asking the deploying operator for topology constants.
 
-Pin a concrete version tag, never `latest` or a moving tag, so the template is
-reproducible.
+Choose the image reference by intent:
 
-Current published tag: `sha-6581820`.
+- `ghcr.io/pdp-connect/pdpp/core:latest` — the moving public image path. It
+  advances only when a release succeeds, and it always resolves to the same
+  manifest as that release's own version tag. This is what a template should
+  name when operators deployed from it should track releases.
+- `ghcr.io/pdp-connect/pdpp/core:<version-tag>` — a concrete immutable tag
+  (for example `core:1.5.1`, or `core:sha-<rev>` for a specific commit build).
+  Pin one, never a moving tag, when a given template revision must be
+  byte-for-byte reproducible, and when debugging against one exact image.
+
+Do not copy a version tag out of this document into a live deploy without
+checking it first: the tags named in the historical record below are no longer
+published. Resolve the current set from GHCR, or use `:latest`.
 
 Current published template:
 
@@ -114,7 +124,9 @@ stay under the Railway volume mount path.
 
 1. Create a source Railway project.
 2. Add the `core` service from Docker Image
-   `ghcr.io/pdp-connect/pdpp/core:<version-tag>`.
+   `ghcr.io/pdp-connect/pdpp/core:latest`, or a pinned
+   `ghcr.io/pdp-connect/pdpp/core:<version-tag>` if this revision must be
+   reproducible.
 3. Add a Railway Postgres plugin.
 4. Configure variables exactly as listed above.
 5. Generate a public domain for `core`.
@@ -157,7 +169,9 @@ only after the real template code has been installed and scratch-verified.
 
 ### Template-code replacement checklist
 
-- [x] `pnpm railway:ghcr-public --tag sha-6581820` exits `0`.
+- [x] `pnpm railway:ghcr-public --tag <version-tag>` exits `0` for the tag the
+      template actually names. (Passed at publication time against the
+      then-current tag; rerun for the tag of any future template revision.)
 - [x] The published template deploys a fresh scratch project.
 - [x] The chosen surface's button URL uses `pdpp-core-template-source` and keeps
       `?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core`.

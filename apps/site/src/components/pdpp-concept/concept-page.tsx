@@ -30,7 +30,19 @@ export function PdppConceptPage({ children, home = false, className }: ConceptPa
         "grid grid-cols-[minmax(0,1fr)] items-start",
         "lg:has-[>[data-slot=pdpp-concept-rail]]:grid-cols-[var(--spacing-rail)_minmax(0,1fr)]",
         "lg:has-[>[data-slot=pdpp-concept-rail]]:gap-x-gutter",
-        // Short pages (home / 404): trim doc bottom pad
+        // Short pages (home / 404): trim doc bottom pad.
+        //
+        // The shell is min-h-dvh and <main> is `grow`, so on a window taller
+        // than the content main absorbs the surplus — but the hero cannot use
+        // it, and it became an empty band under the CTAs: 136px at 1440x900
+        // growing to 540px (39% of the viewport) at 1440x1400, larger than any
+        // of seven reference landing pages at that size (Deno 1%, MCP 3%,
+        // Tailscale 6%, Stripe 7%, Kubernetes 11%, Let's Encrypt 20%, Vercel
+        // 30%). items-center distributes that surplus above AND below the hero
+        // instead of dumping all of it underneath. grow-0 was tried first and
+        // reverted: it stops main growing, which fixes the band but strands the
+        // footer 404px above the bottom of a tall window.
+        home && "items-center",
         home &&
           "**:data-[slot=pdpp-concept-doc]:pt-7! **:data-[slot=pdpp-concept-doc]:pb-5! max-md:**:data-[slot=pdpp-concept-doc]:pt-0!",
         className

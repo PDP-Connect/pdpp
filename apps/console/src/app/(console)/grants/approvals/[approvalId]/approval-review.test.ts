@@ -46,7 +46,7 @@ function artifact(overrides: Partial<SingleConsentApprovalArtifact> = {}): Singl
     },
     expires_at: "2026-08-11T12:10:00.000Z",
     client_claims: { commitments: ["Use only for concert recommendations"] },
-    purpose_code: "https://pdpp.org/purpose/ai_training",
+    purpose_code: "https://pdpp.dev/purpose/ai_training",
     purpose_description: "Train a concert-ranking model.",
     resolved_streams: [
       {
@@ -146,7 +146,7 @@ test("batch review is explicit and non-actionable in the console", () => {
             access_mode: "continuous",
             client_claims: { commitments: ["Only use this approved source for batch recommendations"] },
             index: 0,
-            purpose_code: "https://pdpp.org/purpose/ai_training",
+            purpose_code: "https://pdpp.dev/purpose/ai_training",
             purpose_description: "Train a concert-ranking model.",
             resolved_streams: artifact().resolved_streams,
             retention: { max_duration: "P30D" },

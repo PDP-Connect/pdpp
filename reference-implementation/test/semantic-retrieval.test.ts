@@ -1664,7 +1664,7 @@ test("semantic index metadata isolates instances and client search fans in acros
       access_mode: "continuous",
       client_id: "longview",
       connector_id: MANIFEST_A.connector_id,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "semantic instance fan-in test",
       streams: [
         {

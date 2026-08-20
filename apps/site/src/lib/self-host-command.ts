@@ -85,8 +85,15 @@ export type MethodId = "docker" | "compose" | "fly" | "railway";
  * The browser-capable image every method names. Since #79 this is `core`:
  * one image that serves the console, the MCP endpoint and the browser-backed
  * connectors, so there is no `-browser` variant to choose between.
+ *
+ * WHY `:latest` AND NOT `:main`. `:main` tracks the default branch, so a
+ * reader pasting this command got whatever last merged — unreleased code, on
+ * the page that is supposed to be the safe way in. `:latest` moves only when
+ * a release succeeds, and the release pipeline promotes it by copying the
+ * manifest already published under that release's immutable version tag, so
+ * `:latest` and that version tag are always the same bytes.
  */
-const BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
+const BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:latest";
 
 /**
  * The neutral public artifact name. Not `railway-core` (a
@@ -95,7 +102,7 @@ const BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
  * or copy exposes a platform-specific artifact name") and not a platform
  * name.
  */
-const CORE_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
+const CORE_IMAGE = "ghcr.io/pdp-connect/pdpp/core:latest";
 
 /**
  * Raw URL rather than a release asset. `releases/latest/download/...` 404s:
@@ -139,7 +146,7 @@ function dockerCommand(choices: SelfHostChoices): CommandSegment[] {
   if (!choices.semanticSearch) {
     segments.push({ text: "  -e PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0 \\\n" });
   }
-  segments.push({ emphasis: true, text: CORE_IMAGE });
+  segments.push({ text: "  " }, { emphasis: true, text: CORE_IMAGE });
   return segments;
 }
 
@@ -199,11 +206,22 @@ export interface BuiltCommand {
  * or typed by the deployer into Railway's own form. So this tab cannot honour
  * the choices above, and it says so rather than pretending a click is a shell
  * line or silently discarding what the reader picked.
+ *
+ * WHAT THE TEMPLATE ACTUALLY ASKS FOR. Per deploy/railway/template.md's
+ * publish checklist, the published template's only required app-level prompt
+ * is `core.PDPP_OWNER_PASSWORD` — a single password field. The public
+ * address (`PDPP_REFERENCE_ORIGIN`), the database connection, and the
+ * encryption key are all template-generated (`${{core.RAILWAY_PUBLIC_DOMAIN}}`,
+ * `${{Postgres.DATABASE_URL}}`, `${{ secret(64) }}`), not fields the deployer
+ * fills in. So the sentence must not claim the reader configures reachability;
+ * it should say what they actually see: one password prompt, with the rest
+ * wired automatically.
  */
 function railwayCommand(): BuiltCommand {
   return {
     segments: null,
-    unavailable: "Railway asks for these settings on its own deploy form, and gives the node a public address.",
+    unavailable:
+      "Railway deploys this from a template: click through and set one password, and Railway generates the database, the encryption key, and the public address for you.",
     unavailableHref: RAILWAY_TEMPLATE_URL,
     unavailableLinkLabel: "Open the template",
   };
@@ -238,11 +256,23 @@ function railwayCommand(): BuiltCommand {
  * Core head 5e158736a). Fly needs an app, a Postgres attachment and secrets
  * set before the first deploy, which is more than one copyable line.
  */
+/**
+ * WHAT FLY ACTUALLY REQUIRES. deploy/flyio/README.md's selected path IS one
+ * `fly launch` command that creates the app, attaches Postgres, and sets the
+ * owner-password secret in a single shot — so the old "takes more setup than
+ * fits in one command" line was wrong about the shape of the work. What it
+ * cannot skip is an account prerequisite: per that README, a Fly
+ * organization needs a payment method on file before the final release step
+ * will succeed at all ("This functionality is disabled for trial
+ * organizations"), and the command itself carries app-naming and region
+ * flags this page's choices do not drive. That account step, not command
+ * length, is why this tab links to the runbook instead of generating a line.
+ */
 function flyCommand(): BuiltCommand {
   return {
     segments: null,
     unavailable:
-      "Fly.io takes more setup than fits in one command here: an app, a Postgres attachment, and secrets set before the first deploy.",
+      "Fly.io runs from one fly launch command once your account has a payment method on file, which Fly requires before it will finish creating the app.",
     unavailableHref: repoBlobUrl("deploy/flyio/README.md"),
     unavailableLinkLabel: "Read the runbook",
   };

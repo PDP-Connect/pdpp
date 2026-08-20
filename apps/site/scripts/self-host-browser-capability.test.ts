@@ -44,12 +44,20 @@ import {
 // the `-browser` pairing is gone. The merged compose reads PDPP_CORE_IMAGE
 // (PDPP_REFERENCE_ORIGIN keeps its name; only the image variable moved).
 //
-// The assertions therefore invert: every command must now NAME `core:main`,
-// and the artifacts that must never appear are the ones that do not exist —
-// `core-browser` (never published) and the superseded `reference` pairing.
+// The assertions therefore invert: every command must now NAME the public
+// `core` image, and the artifacts that must never appear are the ones that do
+// not exist — `core-browser` (never published) and the superseded `reference`
+// pairing.
+//
+// UPDATED: the named tag is `core:latest`, not `core:main`. `:main` tracks the
+// default branch, so onboarding copy pinned to it hands readers unreleased
+// code. `:latest` moves only on a successful release, and the release pipeline
+// promotes it by copying the manifest already published under that release's
+// immutable version tag (see .github/workflows/semantic-release.yml,
+// promote-release-images), so the two always resolve to the same bytes.
 
 const BROWSER_IMAGE = "core";
-const CORE_BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
+const CORE_BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:latest";
 // Hoisted: these are compiled once rather than per assertion.
 const IMAGE_OVERRIDE_RE = /PDPP_CORE_IMAGE=\S*?pdpp\/core(:|\s|$)/;
 const REPO_RELATIVE_COMPOSE_RE = /-f\s+deploy\/docker/;
@@ -166,10 +174,10 @@ test("no command reachable from METHODS names an artifact that is not published 
 // until CORE_PUBLISHED flips — that is the mechanism the whole page's honesty
 // depends on, so it gets its own direct assertion rather than only being
 // implied by the artifact-name check above.
-test("the docker method is reachable now that core:main is published", () => {
+test("the docker method is reachable now that the core image is published", () => {
   assert.ok(
     METHODS.some((entry) => entry.id === "docker"),
-    "docker should be in the tab list: core:main is published and browser-capable since #79 (2f0a62ae5)"
+    "docker should be in the tab list: core is published and browser-capable since #79 (2f0a62ae5)"
   );
 });
 
