@@ -743,7 +743,7 @@ async function emitAttachmentRecords(
   exportOrdinal: number,
   exportTotal: number,
   emit: EmitEvent
-): Promise<{ emitted: number; processed: number }> {
+): Promise<{ covered: number; emitted: number; processed: number }> {
   let emitted = 0;
   let skipped = 0;
   for (let index = 0; index < attachments.length; index += 1) {
@@ -780,7 +780,11 @@ async function emitAttachmentRecords(
       message: `${skipped} media file(s) in WhatsApp export ${exportOrdinal} of ${exportTotal} exceeded the archive read policy and were not imported.`,
     });
   }
-  return { emitted, processed: attachments.length };
+  // `covered` excludes media the read policy dropped. The runtime's coverage
+  // contract is explicit that a weighed-but-dropped item belongs to neither the
+  // collected nor the covered count, so counting the raw discovered length here
+  // would report a chat with skipped media as fully covered.
+  return { covered: attachments.length - skipped, emitted, processed: attachments.length };
 }
 
 function openWhatsAppCursors(state: Record<string, unknown>): WhatsAppCursors {
@@ -1025,8 +1029,9 @@ async function emitParsedExport(
   progress: EmitProgress,
   exportOrdinal: number,
   exportTotal: number
-): Promise<{ attachments: number; messages: number; records: number }> {
+): Promise<{ attachments: number; attachmentsCovered: number; messages: number; records: number }> {
   let records = 0;
+  let attachmentsCovered = 0;
   if (requested.has("chats")) {
     await emitChatRecord(summary, cursors.chats, emitRecord);
     records += 1;
@@ -1068,6 +1073,7 @@ async function emitParsedExport(
         emit
       );
       records += attachmentSummary.emitted;
+      attachmentsCovered += attachmentSummary.covered;
     }
   }
 
@@ -1077,7 +1083,12 @@ async function emitParsedExport(
     total: exportTotal,
     type: "PROGRESS",
   });
-  return { attachments: source.attachments.length, messages: summary.messageCount, records };
+  return {
+    attachments: source.attachments.length,
+    attachmentsCovered,
+    messages: summary.messageCount,
+    records,
+  };
 }
 
 function pruneRequestedCursors(requested: RequestedStreams, cursors: WhatsAppCursors): void {
@@ -1181,6 +1192,7 @@ runConnector({
 
     let importedExports = 0;
     let totalAttachments = 0;
+    let totalAttachmentsCovered = 0;
     let totalMessages = 0;
     let totalRecords = 0;
     for (let index = 0; index < files.length; index += 1) {
@@ -1239,6 +1251,7 @@ runConnector({
         );
         importedExports += 1;
         totalAttachments += emitSummary.attachments;
+        totalAttachmentsCovered += emitSummary.attachmentsCovered;
         totalMessages += emitSummary.messages;
         totalRecords += emitSummary.records;
       } finally {
@@ -1293,7 +1306,9 @@ runConnector({
           requiredKeys: [],
           hydratedKeys: [],
           considered: totalAttachments,
-          covered: totalAttachments,
+          // Media dropped by the bounded-read policy is discovered but not
+          // collected, so it must not inflate `covered` into a false complete.
+          covered: totalAttachmentsCovered,
         })
       );
     }
