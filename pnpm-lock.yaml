@@ -1975,7 +1975,7 @@ packages:
     engines: {node: '>=24'}
 
   '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.1.tgz':
-    resolution: {integrity: sha512-90OO8/HPXf4m7LiU8Tw1goJlzxgWsnhOa5ypI4rmCGBdyQHSUCMQ9H75gpq1lQ93VkQz8no2Z3FLb5pX1RPKUQ==, tarball: file:vendor/pdpp-collector-runtime-0.0.1.tgz}
+    resolution: {integrity: sha512-r8wGrqsjE2fpwVLswAn6GyX2CO1uTBWA9iueICfUrAmpnUopTWBWB9XS2MSwVfPRPbDVvKVEC2tPWltS3LU9Iw==, tarball: file:vendor/pdpp-collector-runtime-0.0.1.tgz}
     version: 0.0.1
     engines: {node: '>=22.14.0'}
 
