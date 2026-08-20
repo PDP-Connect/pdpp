@@ -1036,7 +1036,10 @@ export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([
   "google_calendar.events",
   "google_contacts.people",
   "google_contacts.contact_groups",
-  "google_maps.timeline_points",
+  // google_maps.timeline_points is no longer listed: it now declares
+  // `required: false` (matching its sibling timeline_segments), so it is not
+  // a required stream and this allowlist — which only tracks UNEXERCISED
+  // REQUIRED streams — must not claim it.
   "google_maps_data_portability.archive_jobs",
   // Google Takeout (REAL_UNLISTED_CONNECTORS): export-file snapshot-import
   // receipts, no driver yet.
