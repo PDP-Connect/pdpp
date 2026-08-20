@@ -139,13 +139,17 @@ function describeFailedRunResult(result: RunConnectorResult): RunConnectorError 
   return {
     checkpoint_summary: result.checkpoint_summary || null,
     connector_error: result.connector_error || null,
-    // Same fix as buildSuccessOrFailureRecord below: prefer the runtime's own
-    // concise failure_message over the coarse terminal_reason bucket (which
-    // this previously only forwarded for one specific reason,
-    // connector_protocol_violation) so a retried-then-exhausted run's
-    // eventual run_history row also gets a real failure_reason instead of
-    // null.
-    failure_reason: result.failure_message || result.terminal_reason || null,
+    // `failure_reason` and `terminal_reason` are two SEPARATE classification
+    // channels, not a value and its fallback. `shouldRetryRunFailure` checks
+    // each against its own set — `NON_RETRYABLE_FAILURE_REASONS` and
+    // `NON_RETRYABLE_TERMINAL_REASONS` (scheduler-retry-classifier.ts:60,71)
+    // — so folding a terminal reason into this field feeds it to a set that
+    // was never meant to see it and silently changes retry classification.
+    // `connector_protocol_violation` is forwarded because it is a member of
+    // BOTH vocabularies; nothing else is.
+    failure_reason:
+      result.failure_message ||
+      (result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null),
     known_gaps: result.known_gaps || null,
     message: result.message || "unknown",
     records_emitted: result.records_emitted ?? 0,
@@ -428,10 +432,16 @@ function buildSuccessOrFailureRecord({
     // on record and `connector_error_json` as the only other evidence. The
     // runtime always computes a concise, run-specific failure_message (e.g.
     // "Run exceeded a connector assistance timeout.") and already emits it on
-    // the terminal spine event; this was simply never read here. Falls back
-    // to terminal_reason so a failure with no distinct message still records
-    // something better than null.
-    failureReason: result.failure_message || result.terminal_reason || null,
+    // the terminal spine event; this was simply never read here.
+    //
+    // Deliberately does NOT fall back to `terminal_reason`. The two are
+    // independent columns that callers read side by side — a run whose only
+    // classification is its terminal bucket records `failureReason: null` and
+    // `terminalReason: <bucket>`, and collapsing them would make the pair
+    // report the same fact twice while erasing "there was no distinct
+    // message." See `describeFailedRunResult` above for why the same
+    // collapse is additionally unsafe on the retry-classification path.
+    failureReason: result.failure_message || null,
     knownGaps: result.known_gaps || [],
     recordsEmitted: result.records_emitted || 0,
     reportedRecordsEmitted: result.reported_records_emitted ?? null,
