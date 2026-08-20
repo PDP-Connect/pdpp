@@ -1074,7 +1074,11 @@ test("ensureVenmoSession: a captcha blocking the password screen hands off to th
       /CAPTCHA|verification challenge/i,
       "the owner must be told what is actually blocking the sign-in"
     );
-    assert.doesNotMatch(manual[0]?.message ?? "", /test-password/, "the saved password must never reach the owner copy");
+    assert.doesNotMatch(
+      manual[0]?.message ?? "",
+      /test-password/,
+      "the saved password must never reach the owner copy"
+    );
     assert.deepEqual(
       requests.filter((req): boolean => req.kind === "otp"),
       [],

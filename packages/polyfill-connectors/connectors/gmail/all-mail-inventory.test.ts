@@ -73,8 +73,8 @@ function makeMsg(uid: number): FetchMessageObject {
 }
 
 interface RunOutcome {
-  messages: Record<string, unknown>[];
   inventory: Record<string, unknown> | undefined;
+  messages: Record<string, unknown>[];
   state: Record<string, unknown> | undefined;
 }
 
@@ -225,8 +225,9 @@ test("gmail all mail: a growing mailbox within one UID epoch is normal and does 
   };
   const { inventory } = await runPass({ exists: 1200 }, priorState);
 
+  assert.ok(inventory, "a run must disclose the mailbox total the server handed it");
   assert.equal(
-    (inventory?.all_mail_inventory as { all_mail_exists: number }).all_mail_exists,
+    (inventory.all_mail_inventory as { all_mail_exists: number }).all_mail_exists,
     1200,
     "new mail is the expected case and must not be mistaken for corruption"
   );
@@ -243,12 +244,13 @@ test("gmail all mail: a UIDVALIDITY re-key does not read a lower count as loss",
   };
   const { inventory } = await runPass({ exists: 1200 }, priorState);
 
+  assert.ok(inventory, "a run must disclose the mailbox total the server handed it");
   assert.equal(
-    (inventory?.all_mail_inventory as { all_mail_exists: number }).all_mail_exists,
+    (inventory.all_mail_inventory as { all_mail_exists: number }).all_mail_exists,
     1200,
     "a re-key must read as a new epoch, never as a 2800-message loss"
   );
-  assert.equal((inventory?.all_mail_inventory as { uidvalidity: number }).uidvalidity, 123);
+  assert.equal((inventory.all_mail_inventory as { uidvalidity: number }).uidvalidity, 123);
 });
 
 test("gmail all mail: the messages page coverage denominator stays per-page", async () => {

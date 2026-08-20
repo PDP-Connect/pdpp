@@ -28,7 +28,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
-import { type StreamDeps, processConversationDetail } from "./index.ts";
+import { processConversationDetail, type StreamDeps } from "./index.ts";
 import { buildConversationRecord, type ConversationDetail } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type { ChatGptFetchResult, ChatGptNode, ConversationListItem } from "./types.ts";
@@ -47,10 +47,11 @@ function makeHarness(requested: readonly string[] = ["conversations", "messages"
   };
   // SKIP_RESULT is a protocol message, not a schema rejection, so the gaps this
   // contract emits live in protocolMessages.
-  const skips = (): Array<Record<string, unknown>> =>
-    harness.protocolMessages.filter((m) => (m as { type?: string }).type === "SKIP_RESULT") as unknown as Array<
-      Record<string, unknown>
-    >;
+  const skips = (): Record<string, unknown>[] =>
+    harness.protocolMessages.filter((m) => (m as { type?: string }).type === "SKIP_RESULT") as unknown as Record<
+      string,
+      unknown
+    >[];
   return { deps, emitted: harness.emitted, messages: harness.protocolMessages, skips };
 }
 
@@ -121,7 +122,13 @@ async function run(mapping: Record<string, ChatGptNode>, currentNode: string) {
   const harness = makeHarness();
   const detail: ChatGptFetchResult = {
     status: 200,
-    json: { title: "Hello world", create_time: 1_700_000_000, update_time: 1_700_000_100, mapping, current_node: currentNode },
+    json: {
+      title: "Hello world",
+      create_time: 1_700_000_000,
+      update_time: 1_700_000_100,
+      mapping,
+      current_node: currentNode,
+    },
   };
   await processConversationDetail(harness.deps, makeConvo(currentNode), detail, emitConversation(harness.deps));
   return harness;
@@ -160,7 +167,11 @@ test("chatgpt branch: the tautological count check would have passed this trunca
 
   assert.equal(declared, 1, "the declared count shrank to match the truncation");
   assert.equal(emittedOnBranch, 1, "so declared == emitted and the counts agree");
-  assert.equal(skips().some((s) => s.reason === "branch_truncated"), true, "only the structural check catches it");
+  assert.equal(
+    skips().some((s) => s.reason === "branch_truncated"),
+    true,
+    "only the structural check catches it"
+  );
 });
 
 test("chatgpt branch: a current_node absent from the mapping is surfaced", async () => {

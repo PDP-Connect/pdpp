@@ -196,7 +196,10 @@ function makePageWithVisibleOtpAndLiveSessionAfterBrowserCompletion({
   const logout = makeLocator();
   const empty = makeLocator({ count: 0, visible: false });
   const nav = makeNavigation();
-  const fake: Pick<Page, "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"> = {
+  const fake: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
     evaluate(): ReturnType<Page["evaluate"]> {
       return Promise.resolve({ status: savedJsonStatus });
     },

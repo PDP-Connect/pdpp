@@ -2074,7 +2074,7 @@ async function emitBranchReconciliation(
   // Measured at the payload boundary, independently of what was emitted: does
   // the graph contain the tip it claims to be on?
   if (!mapping[currentNode]) {
-    deps.emit({
+    await deps.emit({
       type: "SKIP_RESULT",
       stream: "messages",
       reason: "branch_tip_missing",
@@ -2092,7 +2092,7 @@ async function emitBranchReconciliation(
   // branch continues in the provider's data but not in ours.
   const danglingParent = findDanglingBranchParent(mapping, currentNode);
   if (danglingParent !== null) {
-    deps.emit({
+    await deps.emit({
       type: "SKIP_RESULT",
       stream: "messages",
       reason: "branch_truncated",
