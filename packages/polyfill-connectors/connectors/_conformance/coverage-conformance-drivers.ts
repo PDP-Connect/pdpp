@@ -50,6 +50,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EmittedMessage } from "@pdpp/connector-protocol";
+import { REDDIT_JSON_ORIGIN } from "../../src/auto-login/reddit.ts";
 import type { CollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit, type RecordingEmit } from "../../src/test-harness.ts";
 
@@ -169,6 +170,13 @@ function createMockRedditPage(fetchPath: (path: string) => Promise<{ status: num
       const { path } = args as { path: string };
       return fetchPath(path);
     },
+    // `redditFetch` calls `ensureRedditJsonOrigin` before every listing fetch,
+    // which reads `page.url()` and navigates when the origin is wrong. A mock
+    // without these reports the page as off-origin, so the fetch short-circuits
+    // to `status: 0` (`reddit_http_0`) and never reaches `evaluate` above.
+    // Same shape as reddit's own `createMockPageForFetch` oracle mock.
+    goto: (): Promise<null> => Promise.resolve(null),
+    url: (): string => `${REDDIT_JSON_ORIGIN}/`,
   };
 }
 
