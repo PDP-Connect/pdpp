@@ -31,10 +31,10 @@
     "@pdpp/collector-runtime": "file:../../vendor/pdpp-collector-runtime-0.0.1.tgz",
     "@pdpp/connector-protocol": "file:../../vendor/pdpp-connector-protocol-0.0.1.tgz",
     "@pdpp/reference-contract": "workspace:*",
-    "@streamparser/json": "^0.0.23",
+    "@streamparser/json": "^0.0.25",
     "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",
-    "imapflow": "^1.6.6",
+    "imapflow": "^1.7.1",
     "linkedom": "^0.18.13",
     "ofx-js": "^1.1.1",
     "p-queue": "^9.3.3",
@@ -48,9 +48,9 @@
   },
   "devDependencies": {
     "@babel/parser": "7.29.2",
-    "@biomejs/biome": "2.5.7",
+    "@biomejs/biome": "2.5.8",
     "@types/better-sqlite3": "^7.6.13",
     "@types/ws": "^8.18.1",
-    "ultracite": "7.10.2"
+    "ultracite": "7.10.5"
   }
 }
