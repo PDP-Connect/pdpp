@@ -128,7 +128,7 @@
     "@types/node": "^26.2.0",
     "conventional-changelog-conventionalcommits": "^10.3.0",
     "lefthook": "^2.1.10",
-    "patchright": "1.61.1",
+    "patchright": "1.62.1",
     "pdpp-reference-implementation": "workspace:*",
     "semantic-release": "^25.0.9",
     "tsx": "^4.23.12",

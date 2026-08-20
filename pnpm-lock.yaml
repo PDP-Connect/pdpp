@@ -42,8 +42,8 @@ importers:
         specifier: ^2.1.10
         version: 2.1.10
       patchright:
-        specifier: 1.61.1
-        version: 1.61.1
+        specifier: 1.62.1
+        version: 1.62.1
       pdpp-reference-implementation:
         specifier: workspace:*
         version: link:reference-implementation
@@ -476,8 +476,8 @@ importers:
         specifier: ^8.0.0
         version: 8.0.0
       patchright:
-        specifier: 1.61.1
-        version: 1.61.1
+        specifier: 1.62.1
+        version: 1.62.1
       pdf-parse:
         specifier: ^2.4.5
         version: 2.4.5
@@ -561,8 +561,8 @@ importers:
         specifier: 2.5.0
         version: 2.5.0
       patchright:
-        specifier: 1.61.1
-        version: 1.61.1
+        specifier: 1.62.1
+        version: 1.62.1
       pg:
         specifier: ^8.23.0
         version: 8.23.0
@@ -589,8 +589,8 @@ importers:
         specifier: 2.5.8
         version: 2.5.8
       '@types/pg':
-        specifier: 8.21.0
-        version: 8.21.0
+        specifier: 8.23.1
+        version: 8.23.1
       jsdom:
         specifier: ^30.0.1
         version: 30.0.1(@noble/hashes@1.8.0)
@@ -2635,8 +2635,8 @@ packages:
   '@types/normalize-package-data@2.4.4':
     resolution: {integrity: sha512-37i+OaWTh9qeK4LSHPsyRC7NahnGotNuZvjLSgcPzblpHB3rrCJxAOgI5gCdKm7coonsaX1Of0ILiTcnZjbfxA==}
 
-  '@types/pg@8.21.0':
-    resolution: {integrity: sha512-AYdtudzabjLZgVgRZmAnU8bAnVUXzuJX2IYHeSIiIHm68olD+LgQYCGWdtcNYnP0uq9c4S4NibVG3Ni7VbKW7Q==}
+  '@types/pg@8.23.1':
+    resolution: {integrity: sha512-fKVHpikPdg4GKks3JuLEhvwSyvwzF23hnabPy6DD8ljVbC7+6J5dQzdv4arV6jqq57djnMgs1HKBxX4P8aBI3A==}
 
   '@types/react-dom@19.2.4':
     resolution: {integrity: sha512-Bsc+QHgp+P/F02XDzNCY9jnZNCUuLki36KT7VKrTXXLdHf+vHMNZnW1rVu5DNW/rCK+fya3DATySbLM4yhtKUw==}
@@ -5470,14 +5470,14 @@ packages:
     resolution: {integrity: sha512-CiyeOxFT/JZyN5m0z9PfXw4SCBJ6Sygz1Dpl0wqjlhDEGGBP1GnsUVEL0p63hoG1fcj3fHynXi9NYO4nWOL+qQ==}
     engines: {node: '>= 0.8'}
 
-  patchright-core@1.61.1:
-    resolution: {integrity: sha512-d6Ju67DE6OzqlEX3WPvUX2SLEs6iMY1WERit//mpsrT98VHcztaUo0CBw2Lpxq25VdufVEiWEdcc0HnLwdiq6A==}
-    engines: {node: '>=18'}
+  patchright-core@1.62.1:
+    resolution: {integrity: sha512-zsrggmh1oAxk/NT+vLifVWatPjZXVloXHQksIZApoovAUgeJkmP35a0BfSzePDKGJTrl9zfzr19JIJTZdiMX0A==}
+    engines: {node: '>=20'}
     hasBin: true
 
-  patchright@1.61.1:
-    resolution: {integrity: sha512-kZWNZ2tunsBMTBWtARFVWaNvB739GOybTlIPLT91eyx0YERjtUjESawomwO0hnOh6jt1L3Sru0PK62ylYOfqQw==}
-    engines: {node: '>=18'}
+  patchright@1.62.1:
+    resolution: {integrity: sha512-Q+Ng49ic7wzKLlOLxuy485TcE0Yx1GUyRXA0ua7lT3fCBRcMk1JIGmUKsiUPtGOeWkqI0KNI04zjUm1erq153g==}
+    engines: {node: '>=20'}
     hasBin: true
 
   path-browserify@1.0.1:
@@ -8694,7 +8694,7 @@ snapshots:
 
   '@types/normalize-package-data@2.4.4': {}
 
-  '@types/pg@8.21.0':
+  '@types/pg@8.23.1':
     dependencies:
       '@types/node': 26.2.0
       pg-protocol: 1.16.0
@@ -11618,11 +11618,11 @@ snapshots:
 
   parseurl@1.3.3: {}
 
-  patchright-core@1.61.1: {}
+  patchright-core@1.62.1: {}
 
-  patchright@1.61.1:
+  patchright@1.62.1:
     dependencies:
-      patchright-core: 1.61.1
+      patchright-core: 1.62.1
     optionalDependencies:
       fsevents: 2.3.2
 
