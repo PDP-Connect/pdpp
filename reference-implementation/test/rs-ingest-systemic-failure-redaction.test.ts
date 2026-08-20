@@ -56,6 +56,15 @@ function withoutOwnerPassword(t: TestContext): void {
   });
 }
 
+// Deliberately NOT credential-shaped, despite this file's name. The fix under
+// test is not a pattern-based redactor: `RecordsIngestSystemicFailureError`'s
+// message is a fixed, bounded template that never interpolates the underlying
+// failure's text, so NOTHING here matches this marker against a credential
+// pattern — every assertion below is a plain `includes` check. The marker only
+// has to be distinctive enough to find, which means reshaping it cannot weaken
+// the proof. The earlier live-Stripe-key shape made GitHub's push protection
+// block every push of this branch; a scanner matches shape and cannot tell a
+// canary from a real key.
 const SECRET_MARKER = "canary_DoNotLeakThisRecordSecretMarker9f3a";
 const PUBLIC_MESSAGE = "Ingest failed due to a transient storage error; retry later.";
 
