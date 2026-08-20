@@ -142,7 +142,7 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
-| timeline_points | snapshot_import_receipt | manual_as_of | — | true | — | — |
+| timeline_points | snapshot_import_receipt | manual_as_of | — | false | — | — |
 | timeline_segments | snapshot_import_receipt | manual_as_of | — | false | — | — |
 
 ## polyfill/google-maps-data-portability
