@@ -2,6 +2,8 @@
 
 This guide is for first-party connector manifests. Keep it open while adding or reviewing a connector.
 
+To run and prove out a connector's `collect()` behavior locally — the `connector-dev`/`scenario-record`/`scenario-verify` loop — see [`connector-verification-workflow.md`](./connector-verification-workflow.md).
+
 The goal is not "valid JSON." The goal is an honest, useful record surface: clients can search what should be searched, filter what should be filtered, group what should be grouped, display records without guessing, and ask for bounded follow-up reads before full fetch/export.
 
 ## Required Review
