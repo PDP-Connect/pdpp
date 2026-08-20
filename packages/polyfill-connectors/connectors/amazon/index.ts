@@ -1038,10 +1038,51 @@ export async function emitOrderAndItems(
     }
   }
   if (deps.wantsItems) {
-    for (const merged of mergeOrderItems(listOrder, detail)) {
-      await deps.emitRecord("order_items", buildOrderItemRecord(listOrder.orderId, orderDate, merged));
+    const merged = mergeOrderItems(listOrder, detail);
+    for (const item of merged) {
+      await deps.emitRecord("order_items", buildOrderItemRecord(listOrder.orderId, orderDate, item));
     }
+    await emitItemCountReconciliation(deps, listOrder, detail, merged.length);
   }
+}
+
+/**
+ * Reconcile the items we emitted against the count the order page asserted, and
+ * report a shortfall rather than letting it pass.
+ *
+ * The denominator is measured at the parse boundary — `detail.items` is what
+ * the order-detail page listed, counted before the merge and independently of
+ * what `mergeOrderItems` decided to emit. Deduplication across the two surfaces
+ * means the merged list should never be SHORTER than the detail page's own
+ * list; if it is, an item the page showed us did not survive into a record.
+ *
+ * Only runs when a detail page was actually fetched. Without it there is no
+ * assertion to reconcile against — `resolveItemCount` reports null for exactly
+ * that case, and inventing a denominator from the list card would fabricate a
+ * shortfall on every 3+ item order (the list card renders no item titles once
+ * Amazon collapses them behind "+N more items").
+ */
+async function emitItemCountReconciliation(
+  deps: EmitDeps,
+  listOrder: ListPageOrder,
+  detail: OrderDetail | null,
+  emittedItemCount: number
+): Promise<void> {
+  const declared = detail?.items?.length;
+  if (declared === undefined || emittedItemCount >= declared) {
+    return;
+  }
+  await deps.emit({
+    type: "SKIP_RESULT",
+    stream: "order_items",
+    reason: "item_count_shortfall",
+    message: `order ${listOrder.orderId} listed ${declared} items on its detail page but only ${emittedItemCount} became records`,
+    diagnostics: {
+      order_id: listOrder.orderId,
+      declared_item_count: declared,
+      emitted_item_count: emittedItemCount,
+    },
+  });
 }
 
 /**

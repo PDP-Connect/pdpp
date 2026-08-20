@@ -523,7 +523,9 @@ test("buildOrderRecord: both list + detail present — detail wins for enrichmen
   assert.equal(rec.delivery_status, "Arriving tomorrow");
   assert.equal(rec.recipient_name, "Fictional Person");
   assert.equal(rec.payment_method_summary, "Visa ending in 1234");
-  // item_count = max(list.items.length, detail.items.length) = max(1, 2) = 2.
+  // Both surfaces saw items, so the larger count wins: max(1, 2) = 2. The
+  // zero case is where the two surfaces stop being interchangeable — see
+  // item-count-honesty.test.ts.
   assert.equal(rec.item_count, 2);
   assert.equal(rec.fetched_at, "2024-01-20T00:00:00Z");
 });

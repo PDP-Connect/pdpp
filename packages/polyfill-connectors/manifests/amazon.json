@@ -115,7 +115,7 @@
             "type": "boolean"
           },
           "item_count": {
-            "type": "integer"
+            "type": ["integer", "null"]
           },
           "fetched_at": {
             "type": "string",
