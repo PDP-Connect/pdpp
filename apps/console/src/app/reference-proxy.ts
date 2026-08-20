@@ -1,6 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { existsSync } from "node:fs";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -17,6 +19,7 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 const TRAILING_COLON_RE = /:$/;
+const STARTUP_RETRY_AFTER_SECONDS = "2";
 
 interface CatchAllRouteContext {
   params: Promise<{
@@ -61,6 +64,77 @@ function buildResponseHeaders(headers: Headers): Headers {
   return nextHeaders;
 }
 
+function referenceHasStarted(): boolean {
+  const readyFile = process.env.PDPP_REFERENCE_READY_FILE?.trim();
+  return !readyFile || existsSync(readyFile);
+}
+
+function acceptsHtml(request: Request): boolean {
+  return request.headers.get("accept")?.toLowerCase().includes("text/html") ?? false;
+}
+
+function startupPage(target: ReferenceTarget): Response {
+  const service = target === "as" ? "owner sign-in" : "data service";
+  const body = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta http-equiv="refresh" content="2" />
+<title>PDPP is starting</title>
+<style>
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; background: Canvas; color: CanvasText; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 1.5rem; }
+main { width: min(32rem, 100%); }
+h1 { font-size: 1.5rem; margin: 0 0 .75rem; }
+p { line-height: 1.5; color: color-mix(in srgb, CanvasText 72%, Canvas); }
+</style>
+</head>
+<body><main aria-live="polite">
+<p>PDPP</p>
+<h1>Starting up</h1>
+<p>The ${service} is warming up. This page will retry automatically.</p>
+</main></body>
+</html>`;
+  return new Response(body, {
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "text/html; charset=utf-8",
+      "retry-after": STARTUP_RETRY_AFTER_SECONDS,
+    },
+    status: 503,
+  });
+}
+
+function unavailableResponse(request: Request, target: ReferenceTarget, error: unknown): Response {
+  if (!referenceHasStarted()) {
+    return acceptsHtml(request)
+      ? startupPage(target)
+      : Response.json(
+          {
+            error: {
+              code: "reference_starting",
+              message: "PDPP is still starting. Retry shortly.",
+            },
+          },
+          {
+            headers: { "retry-after": STARTUP_RETRY_AFTER_SECONDS },
+            status: 503,
+          }
+        );
+  }
+  return Response.json(
+    {
+      error: {
+        code: "reference_unreachable",
+        detail: error instanceof Error ? error.message : String(error),
+        message: `Cannot reach PDPP ${target.toUpperCase()} service.`,
+      },
+    },
+    { status: 502 }
+  );
+}
+
 function targetUrl(target: ReferenceTarget, path: readonly string[], requestUrl: URL): URL {
   const base = new URL(referenceBaseUrl(target));
   const encodedPath = path.map((part) => encodeURIComponent(part)).join("/");
@@ -90,16 +164,7 @@ export async function proxyReferenceRequest(
       statusText: upstream.statusText,
     });
   } catch (error) {
-    return Response.json(
-      {
-        error: {
-          code: "reference_unreachable",
-          detail: error instanceof Error ? error.message : String(error),
-          message: `Cannot reach PDPP ${target.toUpperCase()} service.`,
-        },
-      },
-      { status: 502 }
-    );
+    return unavailableResponse(request, target, error);
   }
 }
 
