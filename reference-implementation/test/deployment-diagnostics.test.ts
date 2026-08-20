@@ -113,7 +113,7 @@ function manifestWithoutSemantic() {
 function fixtureProviderAuthManifest(overrides: { readonly redirectUriAlias?: string } = {}) {
   return {
     manifest: {
-      connector_id: "https://test.pdpp.org/connectors/fixture-oauth-provider",
+      connector_id: "https://test.pdpp.dev/connectors/fixture-oauth-provider",
       display_name: "Fixture OAuth Provider",
       capabilities: {
         auth: {
@@ -206,7 +206,7 @@ test("buildEnvironmentReport applies the name-pattern redaction heuristic to a m
     [
       {
         manifest: {
-          connector_id: "https://test.pdpp.org/connectors/fixture-oauth-provider-2",
+          connector_id: "https://test.pdpp.dev/connectors/fixture-oauth-provider-2",
           capabilities: {
             auth: {
               deployment_config: [
@@ -233,7 +233,7 @@ test("buildEnvironmentReport deduplicates the same env_alias declared by two man
       fixtureProviderAuthManifest(),
       {
         manifest: {
-          connector_id: "https://test.pdpp.org/connectors/fixture-oauth-sibling",
+          connector_id: "https://test.pdpp.dev/connectors/fixture-oauth-sibling",
           capabilities: {
             auth: { deployment_config: [{ logical_key: "client_id", secret: false, env_alias: "FIXTURE_PROVIDER_CLIENT_ID" }] },
           },

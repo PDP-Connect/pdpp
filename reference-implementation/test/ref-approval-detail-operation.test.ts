@@ -34,7 +34,7 @@ function detail(): RefApprovalConsentDetail {
     },
     kind: "consent",
     object: "approval_review",
-    purpose: { code: "https://pdpp.org/purpose/personalization", description: "Suggest concerts." },
+    purpose: { code: "https://pdpp.dev/purpose/personalization", description: "Suggest concerts." },
     retention: { period: "P30D" },
     source: { id: "spotify", kind: "connector" },
     streams: [

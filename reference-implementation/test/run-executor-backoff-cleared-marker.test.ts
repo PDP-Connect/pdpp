@@ -45,7 +45,7 @@ import type {
 } from "../runtime/scheduler-domain-types.ts";
 import { closeDb, initDb } from "../server/db.ts";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/backoff-cleared-marker";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/backoff-cleared-marker";
 const CONNECTOR_INSTANCE_ID = "cin_backoff_cleared_marker";
 
 const MANIFEST = { streams: [{ name: "items" }] };

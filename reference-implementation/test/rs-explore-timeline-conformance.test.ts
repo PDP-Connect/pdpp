@@ -655,7 +655,7 @@ if (POSTGRES_URL) {
 const SEM_SUFFIX = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 const SEM_CONNECTOR_ID = `explore-sem-${SEM_SUFFIX}`;
 const SEM_CONNECTOR_KEY = `explore-sem-${SEM_SUFFIX}`;
-const SEM_MANIFEST_URI = `https://test.pdpp.org/connectors/explore-sem-${SEM_SUFFIX}`;
+const SEM_MANIFEST_URI = `https://test.pdpp.dev/connectors/explore-sem-${SEM_SUFFIX}`;
 const SEM_INSTANCE_ID = `explore_sem_cin_${SEM_SUFFIX}`;
 const SEM_STREAM = "conversations";
 
