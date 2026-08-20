@@ -49,7 +49,14 @@ const OWNER = "owner_local";
 const CONNECTOR_ID = "record-corpus-independence-proof";
 const SECRET = "record-corpus-independence-secret-must-never-leak";
 const CONNECTION_COUNT = 5; // fixed, small, well within one bounded page — this test is about CORPUS size, not fleet size.
-const SQLITE_RECORDS_INDEX = /USING INDEX idx_records_(lookup|version)/;
+// Any `connector_instance_id`-leading index on `records` satisfies this — the
+// property under test is "the count is index-driven, not a full scan", not
+// which specific index the planner picks. Matches `USING INDEX` and `USING
+// COVERING INDEX` alike: a covering index is strictly better here (it answers
+// the count without touching the table at all), so a regex that accepted only
+// the former would reject an improvement. `idx_records_canonical_count`
+// (connector_instance_id, deleted, stream, emitted_at) is the current pick.
+const SQLITE_RECORDS_INDEX = /USING (?:COVERING )?INDEX idx_records_(lookup|version|canonical_count)/;
 const SQLITE_RECORDS_FULL_SCAN = /SCAN records\b(?!.*USING)/;
 const POSTGRES_RECORDS_SEQ_SCAN = /Seq Scan on records\b/;
 const SMALL_RECORD_COUNT_PER_CONNECTION = 3;
