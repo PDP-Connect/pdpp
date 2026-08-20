@@ -662,6 +662,7 @@
     "pdf_template_unknown": "We don't recognize the format of this statement yet",
     "scrape_failed": "We couldn't read the page contents",
     "selectors_pending": "Support for this part of the connector isn't complete yet",
-    "session_dead_reauth_failed": "Your sign-in expired and we couldn't refresh it"
+    "session_dead_reauth_failed": "Your sign-in expired and we couldn't refresh it",
+    "statement_unreconciled": "A statement's transactions don't add up to its printed balances"
   }
 }

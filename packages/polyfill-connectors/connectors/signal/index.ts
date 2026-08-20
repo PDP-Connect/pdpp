@@ -527,7 +527,7 @@ interface QueriedMessageRows {
  * total into the window denominator would pin every incremental run to a
  * permanent false `partial`.
  *
- * `unreachableIds` is the load-bearing part: source ids sitting at-or-below
+ * `unreachableCount` is the load-bearing part: source ids sitting at-or-below
  * the cursor watermark that this connector has NOT previously emitted. A
  * forward-only `sent_at > ?` filter can never revisit them.
  *
@@ -552,7 +552,18 @@ interface QueriedMessageRows {
 interface MessageAnchorReconciliation {
   belowWatermark: number;
   sourceTotal: number;
-  unreachableIds: string[];
+  /**
+   * How many below-watermark source ids were never emitted. This is the full
+   * count, independent of how many ids `unreachableIdSample` retained.
+   */
+  unreachableCount: number;
+  /**
+   * At most `MAX_UNREACHABLE_IDS_IN_DIAGNOSTIC` ids, kept for the diagnostic.
+   * The full id list is deliberately NOT materialized: the below-watermark
+   * row set is unbounded (it grows with the whole Signal history), while the
+   * only consumers are a count and a capped sample.
+   */
+  unreachableIdSample: string[];
 }
 
 /**
@@ -575,33 +586,44 @@ function reconcileMessageAnchor(
   priorEmittedIds: ReadonlySet<string>
 ): MessageAnchorReconciliation {
   const sourceTotal = countSourceMessages(db);
-  let rows: unknown[];
+  // Streamed with `iterate()`, not `.all()`: the below-watermark set is
+  // bounded only by the size of the owner's whole Signal history, and the
+  // two facts derived from it (a count, and a capped id sample) both fold
+  // row-by-row. Materializing the full list would put the entire message
+  // history in memory to compute a number.
+  //
+  // A cold start (no prior cursor) has emitted nothing yet, so every
+  // below-watermark id would look "unreachable". But a cold start has
+  // `since === 0`, which puts nothing below the watermark — the set is
+  // empty and no false finding is possible.
+  let belowWatermarkRows = 0;
+  let unreachableCount = 0;
+  const unreachableIdSample: string[] = [];
   try {
-    rows = db
+    const iter = db
       .prepare("SELECT id AS id FROM messages WHERE sent_at IS NOT NULL AND sent_at <= ?")
-      .all(since) as unknown[];
+      .iterate(since) as IterableIterator<{ id?: unknown }>;
+    for (const row of iter) {
+      belowWatermarkRows += 1;
+      const { id } = row;
+      if (typeof id === "string" && !priorEmittedIds.has(id)) {
+        unreachableCount += 1;
+        if (unreachableIdSample.length < MAX_UNREACHABLE_IDS_IN_DIAGNOSTIC) {
+          unreachableIdSample.push(id);
+        }
+      }
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`signal_source_total_query_failed: messages_below_watermark: ${msg}`, { cause: err });
   }
-  const belowWatermark = validateSourceTotal(rows.length, "messages_below_watermark");
+  const belowWatermark = validateSourceTotal(belowWatermarkRows, "messages_below_watermark");
   if (belowWatermark > sourceTotal) {
     throw new Error(
       `signal_source_total_inconsistent: below-watermark ${String(belowWatermark)} exceeds source total ${String(sourceTotal)}`
     );
   }
-  // A cold start (no prior cursor) has emitted nothing yet, so every
-  // below-watermark id would look "unreachable". But a cold start has
-  // `since === 0`, which puts nothing below the watermark — the set is
-  // empty and no false finding is possible.
-  const unreachableIds: string[] = [];
-  for (const row of rows) {
-    const { id } = row as { id?: unknown };
-    if (typeof id === "string" && !priorEmittedIds.has(id)) {
-      unreachableIds.push(id);
-    }
-  }
-  return { belowWatermark, sourceTotal, unreachableIds };
+  return { belowWatermark, sourceTotal, unreachableCount, unreachableIdSample };
 }
 
 /**
@@ -1104,22 +1126,22 @@ async function emitMessageAnchorEvidence(
       diagnostics: { source_total: anchor.sourceTotal, below_watermark: anchor.belowWatermark },
       recovery_hint: { action: "retry_by_runtime", retryable: true },
     });
-  } else if (anchor.unreachableIds.length > 0) {
-    const sample = anchor.unreachableIds.slice(0, MAX_UNREACHABLE_IDS_IN_DIAGNOSTIC);
+  } else if (anchor.unreachableCount > 0) {
+    const sample = anchor.unreachableIdSample;
     await emit({
       type: "SKIP_RESULT",
       stream: "messages",
       reason: "source_rows_below_watermark_unreachable",
       message:
-        `Signal Desktop holds ${String(anchor.unreachableIds.length)} message(s) at or below the cursor watermark that this ` +
+        `Signal Desktop holds ${String(anchor.unreachableCount)} message(s) at or below the cursor watermark that this ` +
         "connector has never emitted — a backfill carrying older sent_at values. The forward-only sent_at cursor cannot " +
         "revisit them; re-run with collection_mode=full_refresh to recover them.",
       diagnostics: {
         source_total: anchor.sourceTotal,
         below_watermark: anchor.belowWatermark,
-        unreachable_count: anchor.unreachableIds.length,
+        unreachable_count: anchor.unreachableCount,
         unreachable_ids: sample,
-        truncated: sample.length < anchor.unreachableIds.length,
+        truncated: sample.length < anchor.unreachableCount,
         watermark_sent_at_ms: since,
       },
       recovery_hint: { action: "retry_by_runtime", retryable: true },

@@ -1,8 +1,8 @@
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.org/connectors/signal",
+  "connector_id": "https://registry.pdpp.dev/connectors/signal",
   "connector_key": "signal",
-  "manifest_uri": "https://registry.pdpp.org/connectors/signal",
+  "manifest_uri": "https://registry.pdpp.dev/connectors/signal",
   "version": "0.1.0",
   "display_name": "Signal Desktop",
   "runtime_requirements": {
@@ -287,7 +287,9 @@
     }
   ],
   "reason_display_messages": {
+    "backfill_check_unproven_legacy_cursor": "We couldn't check for older messages this run; the next run will check properly",
     "message_date_unusable": "We skipped a message with a date we couldn't read",
-    "no_attachments_exported": "sigtop found no attachments to export for this account"
+    "no_attachments_exported": "sigtop found no attachments to export for this account",
+    "source_rows_below_watermark_unreachable": "Signal has older messages we haven't saved — run a full refresh to collect them"
   }
 }

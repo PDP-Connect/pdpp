@@ -280,5 +280,8 @@
         { "name": "contact_groups" }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "group_inventory_short": "Your address book has contact groups we couldn't save"
+  }
 }

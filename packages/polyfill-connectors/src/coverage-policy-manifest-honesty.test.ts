@@ -269,7 +269,11 @@ const KNOWN_MISSING_REQUIRED = new Map([
   // field. It is separately grantable and optional, so a body failure must
   // not fail the whole connector run.
   ["gmail.attachments", "3883a623c52d9879"],
-  ["google_maps.timeline_points", "8bb6f3a0b2f01651"],
+  // google_maps.timeline_points left this map by declaring `required: false`
+  // explicitly (the encouraged shrink path) when its `coverage_strategy`
+  // moved to `snapshot_import_receipt`, matching its already-explicit
+  // sibling `timeline_segments`. A Timeline export can contain points
+  // without segments or vice versa, so neither is load-bearing.
   ["google_maps_data_portability.archive_jobs", "1bdf641fe46f4606"],
   ["google_takeout.location_history", "4541b67d9dca3a75"],
   ["google_takeout.youtube_watch_history", "a457e03d943b3122"],

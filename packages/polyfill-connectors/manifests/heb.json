@@ -320,6 +320,7 @@
   ],
   "reason_display_messages": {
     "empty_page_before_max_page": "We hit an empty page of orders before we expected to, so we stopped to check rather than assume we were done",
+    "item_count_short": "Some orders hold fewer items than H-E-B says they contain",
     "list_page_navigation_failed": "We couldn't load a page of your H-E-B order history and didn't want to assume that meant the end",
     "list_page_shape_check_failed": "The page didn't look like we expected",
     "pagination_exhausted": "We reached the end of the available pages",

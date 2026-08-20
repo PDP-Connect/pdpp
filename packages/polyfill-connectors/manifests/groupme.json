@@ -437,5 +437,9 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "scheduled_window"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "group_message_count_unanchored": "GroupMe didn't report a message count for some groups, so we can't confirm their history is complete",
+    "provider_reports_more_messages_than_walked": "GroupMe reports more messages than we collected, so some group history may be missing"
+  }
 }
