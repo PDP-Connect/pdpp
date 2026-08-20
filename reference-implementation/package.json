@@ -57,7 +57,7 @@
     "verify": "pnpm typecheck && pnpm check"
   },
   "dependencies": {
-    "@fastify/formbody": "^8.0.2",
+    "@fastify/formbody": "^9.0.0",
     "@huggingface/transformers": "^4.2.0",
     "@pdpp/collector-runtime": "file:../vendor/pdpp-collector-runtime-0.0.1.tgz",
     "@pdpp/connector-protocol": "file:../vendor/pdpp-connector-protocol-0.0.1.tgz",
