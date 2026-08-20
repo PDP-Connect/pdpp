@@ -94,7 +94,7 @@ neko-specific input seam). Default: **defer** to stay inside the 1–2h box.
    is a behavior change — STOP, flag it, do not proceed).
 3. `pnpm --filter <console> types:check` green.
 4. Full console test suite green.
-5. Committed as `tnunamak@gmail.com`, one lane per commit, message states which local code
+5. Committed as `maintainers@example.com`, one lane per commit, message states which local code
    was deleted and which RS primitive replaced it.
 
 ### Hard stops (escalate, do not improvise)
