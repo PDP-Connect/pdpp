@@ -133,7 +133,7 @@ import {
   type RecordData,
   runConnector,
 } from "../../src/connector-runtime.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
+import { isMainModule } from "@pdpp/connector-protocol";
 import {
   makeReferenceBlobUploader,
   type ReferenceBlobRef,

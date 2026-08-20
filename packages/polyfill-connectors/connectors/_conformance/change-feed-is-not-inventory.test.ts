@@ -53,7 +53,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
+import type { EmittedMessage } from "@pdpp/connector-protocol";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import { buildVCard, startFakeCardDavServer } from "../apple_contacts/test-carddav-server.ts";
 
