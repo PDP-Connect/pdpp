@@ -43,14 +43,14 @@ function manifestFor(connectorId: string) {
         name: "items",
         primary_key: ["id"],
         query: { search: { lexical_fields: ["subject"] } },
-        selection: { fields: true, resources: true },
         schema: {
           properties: { id: { type: "string" }, subject: { type: "string" } },
           required: ["id", "subject"],
           type: "object",
-          },
-          semantics: "mutable_state",
         },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
+      },
     ],
     version: "0.1.0",
   };

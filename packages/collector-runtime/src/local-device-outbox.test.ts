@@ -153,7 +153,9 @@ test("schema v3 migration preserves pending v2 work and accepts terminal run com
 
   const migrated = new DatabaseSync(path, { readOnly: true });
   try {
-    const version = migrated.prepare("PRAGMA user_version").get() as { user_version: number };
+    const version = migrated.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
     assert.equal(version.user_version, 3);
   } finally {
     migrated.close();
@@ -173,7 +175,9 @@ test("an old v2 binary uses the production version fence to refuse a v3 outbox",
 
   const db = new DatabaseSync(path, { readOnly: true });
   try {
-    const version = db.prepare("PRAGMA user_version").get() as { user_version: number };
+    const version = db.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
     assert.throws(() => assertSupportedOutboxSchemaVersion(version.user_version, 2), /newer than supported version 2/);
   } finally {
     db.close();
@@ -230,7 +234,9 @@ test("schema v3 migration failure rolls back, closes, and reopens with v2 bytes 
   __setOutboxMigrationV3FaultHookForTest(null);
 
   const unchanged = new DatabaseSync(path, { readOnly: true });
-  const version = unchanged.prepare("PRAGMA user_version").get() as { user_version: number };
+  const version = unchanged.prepare("PRAGMA user_version").get() as {
+    user_version: number;
+  };
   const row = unchanged.prepare("SELECT * FROM local_device_outbox WHERE id = ?").get("pending-v2-fault") as Record<
     string,
     unknown
@@ -255,12 +261,15 @@ test("schema v3 migration failure rolls back, closes, and reopens with v2 bytes 
 
 test("LocalDeviceOutbox claims ready work with holder, epoch, and lease deadline", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
-  const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => now,
+    path: await tempOutboxPath(),
+  });
   try {
     outbox.enqueue({
       id: "src-1:checkpoint:1",
       kind: "checkpoint",
-      payload: { stream: "messages", state: "cursor-1" },
+      payload: { state: "cursor-1", stream: "messages" },
       sourceInstanceId: "src-1",
     });
     outbox.enqueue({
@@ -337,7 +346,10 @@ test("LocalDeviceOutbox can exclude checkpoint rows while batch-claiming ready w
 
 test("LocalDeviceOutbox recovers expired leases and fences stale acknowledgements", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
-  const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => now,
+    path: await tempOutboxPath(),
+  });
   try {
     outbox.enqueue({
       id: "src-1:record_batch:1",
@@ -350,16 +362,28 @@ test("LocalDeviceOutbox recovers expired leases and fences stale acknowledgement
 
     now = new Date("2026-05-19T12:00:02.000Z");
     assert.equal(outbox.recoverExpiredLeases(), 1);
-    const secondClaim = outbox.claimReady({ holder: "worker-b", leaseMs: 60_000 });
+    const secondClaim = outbox.claimReady({
+      holder: "worker-b",
+      leaseMs: 60_000,
+    });
     assert.equal(secondClaim[0]?.lease_holder, "worker-b");
     assert.equal(secondClaim[0]?.lease_epoch, 2);
 
     assert.throws(
-      () => outbox.acknowledge({ holder: "worker-a", id: "src-1:record_batch:1", leaseEpoch: 1 }),
+      () =>
+        outbox.acknowledge({
+          holder: "worker-a",
+          id: "src-1:record_batch:1",
+          leaseEpoch: 1,
+        }),
       /lease not current/
     );
 
-    outbox.acknowledge({ holder: "worker-b", id: "src-1:record_batch:1", leaseEpoch: 2 });
+    outbox.acknowledge({
+      holder: "worker-b",
+      id: "src-1:record_batch:1",
+      leaseEpoch: 2,
+    });
     const item = outbox.get("src-1:record_batch:1");
     assert.equal(item?.status, "succeeded");
     assert.equal(item?.acknowledged_at, "2026-05-19T12:00:02.000Z");
@@ -370,7 +394,10 @@ test("LocalDeviceOutbox recovers expired leases and fences stale acknowledgement
 
 test("LocalDeviceOutbox handles retry and dead-letter transitions", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
-  const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => now,
+    path: await tempOutboxPath(),
+  });
   try {
     outbox.enqueue({
       id: "src-1:blob_upload:1",
@@ -396,7 +423,10 @@ test("LocalDeviceOutbox handles retry and dead-letter transitions", async () => 
     assert.equal(outbox.claimReady({ holder: "worker-a", leaseMs: 60_000 }).length, 0);
 
     now = new Date("2026-05-19T12:00:16.000Z");
-    const [retryClaim] = outbox.claimReady({ holder: "worker-a", leaseMs: 60_000 });
+    const [retryClaim] = outbox.claimReady({
+      holder: "worker-a",
+      leaseMs: 60_000,
+    });
     assert.ok(retryClaim);
     outbox.deadLetter({
       error: "parse failure",
@@ -432,7 +462,11 @@ test("LocalDeviceOutbox requeues dead letters by source, kind, and limit", async
         payload: { id, secret: "not surfaced" },
         sourceInstanceId,
       });
-      const [claim] = outbox.claimReady({ holder: "worker-a", leaseMs: 60_000, sourceInstanceId });
+      const [claim] = outbox.claimReady({
+        holder: "worker-a",
+        leaseMs: 60_000,
+        sourceInstanceId,
+      });
       assert.ok(claim);
       outbox.deadLetter({
         error: "terminal",
@@ -491,7 +525,11 @@ test("LocalDeviceOutbox requeues dead letters by redacted error class", async ()
         payload: { id },
         sourceInstanceId,
       });
-      const [claim] = outbox.claimReady({ holder: "worker-a", leaseMs: 60_000, sourceInstanceId });
+      const [claim] = outbox.claimReady({
+        holder: "worker-a",
+        leaseMs: 60_000,
+        sourceInstanceId,
+      });
       assert.ok(claim);
       outbox.deadLetter({
         error,
@@ -545,9 +583,18 @@ test("LocalDeviceOutbox deletes only succeeded rows by id", async () => {
       payload: { reason: "policy_budget" },
       sourceInstanceId: "src-1",
     });
-    const [claim] = outbox.claimReady({ holder: "worker-a", leaseMs: 60_000, limit: 1, sourceInstanceId: "src-1" });
+    const [claim] = outbox.claimReady({
+      holder: "worker-a",
+      leaseMs: 60_000,
+      limit: 1,
+      sourceInstanceId: "src-1",
+    });
     assert.ok(claim);
-    outbox.acknowledge({ holder: "worker-a", id: claim.id, leaseEpoch: claim.lease_epoch });
+    outbox.acknowledge({
+      holder: "worker-a",
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+    });
     const otherId = claim.id === "src-1:gap:succeeded" ? "src-1:gap:ready" : "src-1:gap:succeeded";
 
     assert.equal(outbox.deleteSucceeded(claim.id), true);
@@ -561,7 +608,10 @@ test("LocalDeviceOutbox deletes only succeeded rows by id", async () => {
 
 test("LocalDeviceOutbox rejects lease transitions after expiry even before recovery", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
-  const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => now,
+    path: await tempOutboxPath(),
+  });
   try {
     outbox.enqueue({
       id: "src-1:record_batch:1",
@@ -574,7 +624,12 @@ test("LocalDeviceOutbox rejects lease transitions after expiry even before recov
 
     now = new Date("2026-05-19T12:00:02.000Z");
     assert.throws(
-      () => outbox.acknowledge({ holder: "worker-a", id: claim.id, leaseEpoch: claim.lease_epoch }),
+      () =>
+        outbox.acknowledge({
+          holder: "worker-a",
+          id: claim.id,
+          leaseEpoch: claim.lease_epoch,
+        }),
       /lease not current/
     );
     assert.throws(
@@ -607,7 +662,10 @@ test("LocalDeviceOutbox rejects lease transitions after expiry even before recov
 
 test("LocalDeviceOutbox renews only the current unexpired lease holder", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
-  const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => now,
+    path: await tempOutboxPath(),
+  });
   try {
     outbox.enqueue({
       id: "src-1:record_batch:1",
@@ -654,7 +712,10 @@ test("LocalDeviceOutbox renews only the current unexpired lease holder", async (
 
 test("LocalDeviceOutbox can recover expired leases by source instance", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
-  const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => now,
+    path: await tempOutboxPath(),
+  });
   try {
     for (const sourceInstanceId of ["src-1", "src-2"]) {
       outbox.enqueue({
@@ -663,7 +724,11 @@ test("LocalDeviceOutbox can recover expired leases by source instance", async ()
         payload: { records: [] },
         sourceInstanceId,
       });
-      outbox.claimReady({ holder: "worker-a", leaseMs: 1000, sourceInstanceId });
+      outbox.claimReady({
+        holder: "worker-a",
+        leaseMs: 1000,
+        sourceInstanceId,
+      });
     }
 
     now = new Date("2026-05-19T12:00:02.000Z");
@@ -677,7 +742,10 @@ test("LocalDeviceOutbox can recover expired leases by source instance", async ()
 
 test("LocalDeviceOutbox.summary aggregates large queues with one SQL pass", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
-  const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => now,
+    path: await tempOutboxPath(),
+  });
   try {
     const sourceInstanceId = "src-bulk";
     const futureBackoff = new Date("2026-05-19T13:00:00.000Z");
@@ -691,7 +759,11 @@ test("LocalDeviceOutbox.summary aggregates large queues with one SQL pass", asyn
     }
     // 50 of them get pushed into "retrying" (status=ready, next_attempt_at in the future)
     for (let index = 0; index < 50; index += 1) {
-      const [claim] = outbox.claimReady({ holder: "worker-bulk", leaseMs: 60_000, sourceInstanceId });
+      const [claim] = outbox.claimReady({
+        holder: "worker-bulk",
+        leaseMs: 60_000,
+        sourceInstanceId,
+      });
       assert.ok(claim);
       outbox.failRetryable({
         error: "503",
@@ -703,9 +775,17 @@ test("LocalDeviceOutbox.summary aggregates large queues with one SQL pass", asyn
     }
     // 20 succeed.
     for (let index = 0; index < 20; index += 1) {
-      const [claim] = outbox.claimReady({ holder: "worker-bulk", leaseMs: 60_000, sourceInstanceId });
+      const [claim] = outbox.claimReady({
+        holder: "worker-bulk",
+        leaseMs: 60_000,
+        sourceInstanceId,
+      });
       assert.ok(claim);
-      outbox.acknowledge({ holder: "worker-bulk", id: claim.id, leaseEpoch: claim.lease_epoch });
+      outbox.acknowledge({
+        holder: "worker-bulk",
+        id: claim.id,
+        leaseEpoch: claim.lease_epoch,
+      });
     }
     // 5 currently leased; advance clock so 3 of them become stale.
     const longLease: { id: string; epoch: number }[] = [];
@@ -793,7 +873,11 @@ test("LocalDeviceOutbox.summary: a row that fails once then a fresh row is enque
       payload: { records: [{ key: "m-failed" }] },
       sourceInstanceId,
     });
-    const [claim] = outbox.claimReady({ holder: "w1", leaseMs: 60_000, sourceInstanceId });
+    const [claim] = outbox.claimReady({
+      holder: "w1",
+      leaseMs: 60_000,
+      sourceInstanceId,
+    });
     assert.ok(claim);
     outbox.failRetryable({
       error: "503",
@@ -825,9 +909,24 @@ test("LocalDeviceOutbox.summary: a row that fails once then a fresh row is enque
 test("LocalDeviceOutbox.summary scopes by source instance without scanning others", async () => {
   const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
   try {
-    outbox.enqueue({ id: "src-a:r:1", kind: "record_batch", payload: { x: 1 }, sourceInstanceId: "src-a" });
-    outbox.enqueue({ id: "src-a:r:2", kind: "record_batch", payload: { x: 2 }, sourceInstanceId: "src-a" });
-    outbox.enqueue({ id: "src-b:r:1", kind: "record_batch", payload: { x: 3 }, sourceInstanceId: "src-b" });
+    outbox.enqueue({
+      id: "src-a:r:1",
+      kind: "record_batch",
+      payload: { x: 1 },
+      sourceInstanceId: "src-a",
+    });
+    outbox.enqueue({
+      id: "src-a:r:2",
+      kind: "record_batch",
+      payload: { x: 2 },
+      sourceInstanceId: "src-a",
+    });
+    outbox.enqueue({
+      id: "src-b:r:1",
+      kind: "record_batch",
+      payload: { x: 3 },
+      sourceInstanceId: "src-b",
+    });
     assert.equal(outbox.summary({ sourceInstanceId: "src-a" }).total, 2);
     assert.equal(outbox.summary({ sourceInstanceId: "src-b" }).total, 1);
     assert.equal(outbox.summary().total, 3);
@@ -842,13 +941,19 @@ test("LocalDeviceOutbox exposes payload-light production queries for large retai
     outbox.enqueue({
       id: "src-a:batch:1",
       kind: "record_batch",
-      payload: { batchSeq: 41, records: [{ key: "a", value: "x".repeat(10_000) }] },
+      payload: {
+        batchSeq: 41,
+        records: [{ key: "a", value: "x".repeat(10_000) }],
+      },
       sourceInstanceId: "src-a",
     });
     outbox.enqueue({
       id: "src-a:batch:2",
       kind: "record_batch",
-      payload: { batchSeq: 42, records: [{ key: "b", value: "y".repeat(10_000) }] },
+      payload: {
+        batchSeq: 42,
+        records: [{ key: "b", value: "y".repeat(10_000) }],
+      },
       sourceInstanceId: "src-a",
     });
     outbox.enqueue({
@@ -864,13 +969,27 @@ test("LocalDeviceOutbox exposes payload-light production queries for large retai
       sourceInstanceId: "src-b",
     });
 
-    const [first] = outbox.claimReady({ holder: "worker-a", leaseMs: 60_000, sourceInstanceId: "src-a" });
+    const [first] = outbox.claimReady({
+      holder: "worker-a",
+      leaseMs: 60_000,
+      sourceInstanceId: "src-a",
+    });
     assert.ok(first);
-    outbox.acknowledge({ holder: "worker-a", id: first.id, leaseEpoch: first.lease_epoch });
+    outbox.acknowledge({
+      holder: "worker-a",
+      id: first.id,
+      leaseEpoch: first.lease_epoch,
+    });
 
     assert.equal(outbox.maxRecordBatchSeq({ sourceInstanceId: "src-a" }), 42);
     assert.equal(outbox.countOpenGaps({ sourceInstanceId: "src-a" }), 1);
-    assert.equal(outbox.hasNonSucceededWork({ excludeKinds: ["gap"], sourceInstanceId: "src-a" }), true);
+    assert.equal(
+      outbox.hasNonSucceededWork({
+        excludeKinds: ["gap"],
+        sourceInstanceId: "src-a",
+      }),
+      true
+    );
     assert.equal(
       outbox.hasNonSucceededPredecessor({
         beforeInsertOrder: Number.MAX_SAFE_INTEGER,
@@ -881,7 +1000,11 @@ test("LocalDeviceOutbox exposes payload-light production queries for large retai
     );
     assert.deepEqual(
       outbox
-        .listByKind({ kind: "gap", sourceInstanceId: "src-a", statuses: ["ready", "leased"] })
+        .listByKind({
+          kind: "gap",
+          sourceInstanceId: "src-a",
+          statuses: ["ready", "leased"],
+        })
         .map((item) => item.id),
       ["src-a:gap:1"]
     );
@@ -949,7 +1072,11 @@ test("LocalDeviceOutbox preserves gap rows durably with source-instance scoping 
 
     // Dead-letter transition is reachable when terminal (e.g. malformed gap).
     now = new Date("2026-05-19T12:01:01.000Z");
-    const reclaimed = outbox.claimReady({ holder: "worker-a", leaseMs: 30_000, sourceInstanceId: "src-1" });
+    const reclaimed = outbox.claimReady({
+      holder: "worker-a",
+      leaseMs: 30_000,
+      sourceInstanceId: "src-1",
+    });
     const [reclaim] = reclaimed;
     assert.ok(reclaim, "expected reclaim of the gap row");
     assert.equal(reclaim.kind, "gap");
@@ -1006,13 +1133,29 @@ test("LocalDeviceOutbox.deadLetterErrorSummary groups by redacted error class wi
       ["src-1:record_batch:5", "ENOENT: no such file /home/user/.local/state/pdpp/x.sqlite"],
     ];
     for (const [id, error] of rows) {
-      outbox.enqueue({ id, kind: "record_batch", payload: { id }, sourceInstanceId: "src-1" });
-      const [claim] = outbox.claimReady({ holder: "w", leaseMs: 60_000, sourceInstanceId: "src-1" });
+      outbox.enqueue({
+        id,
+        kind: "record_batch",
+        payload: { id },
+        sourceInstanceId: "src-1",
+      });
+      const [claim] = outbox.claimReady({
+        holder: "w",
+        leaseMs: 60_000,
+        sourceInstanceId: "src-1",
+      });
       assert.ok(claim);
-      outbox.deadLetter({ error, holder: "w", id: claim.id, leaseEpoch: claim.lease_epoch });
+      outbox.deadLetter({
+        error,
+        holder: "w",
+        id: claim.id,
+        leaseEpoch: claim.lease_epoch,
+      });
     }
 
-    const summary = outbox.deadLetterErrorSummary({ sourceInstanceId: "src-1" });
+    const summary = outbox.deadLetterErrorSummary({
+      sourceInstanceId: "src-1",
+    });
     assert.equal(summary.dead_letter_count, 5);
     assert.equal(summary.null_error_count, 0);
     // Most common class first, with its count collapsed across the 3 rows.
@@ -1031,8 +1174,15 @@ test("LocalDeviceOutbox.deadLetterErrorSummary groups by redacted error class wi
 test("LocalDeviceOutbox.deadLetterErrorSummary is empty on a clean outbox", async () => {
   const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
   try {
-    outbox.enqueue({ id: "src-1:record_batch:1", kind: "record_batch", payload: { k: 1 }, sourceInstanceId: "src-1" });
-    const summary = outbox.deadLetterErrorSummary({ sourceInstanceId: "src-1" });
+    outbox.enqueue({
+      id: "src-1:record_batch:1",
+      kind: "record_batch",
+      payload: { k: 1 },
+      sourceInstanceId: "src-1",
+    });
+    const summary = outbox.deadLetterErrorSummary({
+      sourceInstanceId: "src-1",
+    });
     assert.equal(summary.dead_letter_count, 0);
     assert.equal(summary.null_error_count, 0);
     assert.deepEqual(summary.top_classes, []);
@@ -1079,17 +1229,43 @@ test("hasObservedStream / countRecordBatches detect coverage records across stat
       },
       sourceInstanceId: "src-1",
     });
-    const [claim] = outbox.claimReady({ holder: "w", leaseMs: 60_000, sourceInstanceId: "src-1" });
+    const [claim] = outbox.claimReady({
+      holder: "w",
+      leaseMs: 60_000,
+      sourceInstanceId: "src-1",
+    });
     assert.ok(claim);
-    outbox.acknowledge({ holder: "w", id: claim.id, leaseEpoch: claim.lease_epoch });
+    outbox.acknowledge({
+      holder: "w",
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+    });
 
     // Coverage observation survives a clean drain (succeeded rows are retained).
-    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "coverage_diagnostics" }), true);
-    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "messages" }), false);
+    assert.equal(
+      outbox.hasObservedStream({
+        sourceInstanceId: "src-1",
+        stream: "coverage_diagnostics",
+      }),
+      true
+    );
+    assert.equal(
+      outbox.hasObservedStream({
+        sourceInstanceId: "src-1",
+        stream: "messages",
+      }),
+      false
+    );
     assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-1" }), 1);
 
     // Isolation: a different source instance sees none of this.
-    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-2", stream: "coverage_diagnostics" }), false);
+    assert.equal(
+      outbox.hasObservedStream({
+        sourceInstanceId: "src-2",
+        stream: "coverage_diagnostics",
+      }),
+      false
+    );
     assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-2" }), 0);
 
     // A coverage record that only ever dead-lettered must NOT count, and a
@@ -1097,13 +1273,30 @@ test("hasObservedStream / countRecordBatches detect coverage records across stat
     outbox.enqueue({
       id: "rb-dl",
       kind: "record_batch",
-      payload: { records: [{ data: { id: "c-2" }, stream: "coverage_diagnostics" }] },
+      payload: {
+        records: [{ data: { id: "c-2" }, stream: "coverage_diagnostics" }],
+      },
       sourceInstanceId: "src-3",
     });
-    const [dlClaim] = outbox.claimReady({ holder: "w", leaseMs: 60_000, sourceInstanceId: "src-3" });
+    const [dlClaim] = outbox.claimReady({
+      holder: "w",
+      leaseMs: 60_000,
+      sourceInstanceId: "src-3",
+    });
     assert.ok(dlClaim);
-    outbox.deadLetter({ error: "terminal", holder: "w", id: dlClaim.id, leaseEpoch: dlClaim.lease_epoch });
-    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-3", stream: "coverage_diagnostics" }), false);
+    outbox.deadLetter({
+      error: "terminal",
+      holder: "w",
+      id: dlClaim.id,
+      leaseEpoch: dlClaim.lease_epoch,
+    });
+    assert.equal(
+      outbox.hasObservedStream({
+        sourceInstanceId: "src-3",
+        stream: "coverage_diagnostics",
+      }),
+      false
+    );
     assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-3" }), 0);
   } finally {
     outbox.close();
@@ -1146,8 +1339,20 @@ test("enqueue maintains the observed-stream index so coverage detection never re
 
   const reopened = new LocalDeviceOutbox({ path });
   try {
-    assert.equal(reopened.hasObservedStream({ sourceInstanceId: "src-1", stream: "coverage_diagnostics" }), true);
-    assert.equal(reopened.hasObservedStream({ sourceInstanceId: "src-1", stream: "messages" }), false);
+    assert.equal(
+      reopened.hasObservedStream({
+        sourceInstanceId: "src-1",
+        stream: "coverage_diagnostics",
+      }),
+      true
+    );
+    assert.equal(
+      reopened.hasObservedStream({
+        sourceInstanceId: "src-1",
+        stream: "messages",
+      }),
+      false
+    );
   } finally {
     reopened.close();
   }
@@ -1157,7 +1362,12 @@ test("a record_batch carrying no records is indexed (sentinel) and never treated
   const path = await tempOutboxPath();
   const outbox = new LocalDeviceOutbox({ path });
   try {
-    outbox.enqueue({ id: "rb-empty", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-1" });
+    outbox.enqueue({
+      id: "rb-empty",
+      kind: "record_batch",
+      payload: { records: [] },
+      sourceInstanceId: "src-1",
+    });
   } finally {
     outbox.close();
   }
@@ -1177,18 +1387,46 @@ test("hasObservedStream backfills a legacy (pre-index) outbox within budget and 
   // Build a legacy v1 outbox (no observed-stream index table) directly.
   seedLegacyV1Outbox(path, [
     { id: "legacy-1", sourceInstanceId: "src-1", streams: ["sessions"] },
-    { id: "legacy-2", sourceInstanceId: "src-1", streams: ["coverage_diagnostics"] },
+    {
+      id: "legacy-2",
+      sourceInstanceId: "src-1",
+      streams: ["coverage_diagnostics"],
+    },
     { id: "legacy-3", sourceInstanceId: "src-2", streams: ["messages"] },
   ]);
 
   const outbox = new LocalDeviceOutbox({ path });
   try {
     // The schema upgrade backfilled the index from the legacy rows.
-    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "coverage_diagnostics" }), true);
-    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "sessions" }), true);
-    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "messages" }), false);
+    assert.equal(
+      outbox.hasObservedStream({
+        sourceInstanceId: "src-1",
+        stream: "coverage_diagnostics",
+      }),
+      true
+    );
+    assert.equal(
+      outbox.hasObservedStream({
+        sourceInstanceId: "src-1",
+        stream: "sessions",
+      }),
+      true
+    );
+    assert.equal(
+      outbox.hasObservedStream({
+        sourceInstanceId: "src-1",
+        stream: "messages",
+      }),
+      false
+    );
     // Source isolation survives the migration.
-    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-2", stream: "coverage_diagnostics" }), false);
+    assert.equal(
+      outbox.hasObservedStream({
+        sourceInstanceId: "src-2",
+        stream: "coverage_diagnostics",
+      }),
+      false
+    );
     assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-1" }), 2);
   } finally {
     outbox.close();
@@ -1215,7 +1453,13 @@ test("hasObservedStream is bounded on a giant legacy outbox: over-budget unindex
     // The queried stream was never present, and the unindexed backlog exceeds
     // the budget, so the probe reports "unknown" instead of a false negative
     // from a partial scan.
-    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-big", stream: "coverage_diagnostics" }), null);
+    assert.equal(
+      outbox.hasObservedStream({
+        sourceInstanceId: "src-big",
+        stream: "coverage_diagnostics",
+      }),
+      null
+    );
   } finally {
     outbox.close();
   }
@@ -1225,12 +1469,36 @@ test("countRecordBatches reads indexed status/kind columns only and ignores dead
   const path = await tempOutboxPath();
   const outbox = new LocalDeviceOutbox({ path });
   try {
-    outbox.enqueue({ id: "rb-a", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-1" });
-    outbox.enqueue({ id: "rb-b", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-1" });
-    outbox.enqueue({ id: "cp-1", kind: "checkpoint", payload: { state: 1 }, sourceInstanceId: "src-1" });
-    const [claim] = outbox.claimReady({ holder: "w", leaseMs: 60_000, sourceInstanceId: "src-1" });
+    outbox.enqueue({
+      id: "rb-a",
+      kind: "record_batch",
+      payload: { records: [] },
+      sourceInstanceId: "src-1",
+    });
+    outbox.enqueue({
+      id: "rb-b",
+      kind: "record_batch",
+      payload: { records: [] },
+      sourceInstanceId: "src-1",
+    });
+    outbox.enqueue({
+      id: "cp-1",
+      kind: "checkpoint",
+      payload: { state: 1 },
+      sourceInstanceId: "src-1",
+    });
+    const [claim] = outbox.claimReady({
+      holder: "w",
+      leaseMs: 60_000,
+      sourceInstanceId: "src-1",
+    });
     assert.ok(claim);
-    outbox.deadLetter({ error: "terminal", holder: "w", id: claim.id, leaseEpoch: claim.lease_epoch });
+    outbox.deadLetter({
+      error: "terminal",
+      holder: "w",
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+    });
     // One of the two record batches dead-lettered; the checkpoint never counts.
     assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-1" }), 1);
   } finally {
@@ -1291,7 +1559,11 @@ test("compact reclaims the freelist a prune leaves behind (file shrinks) and pre
 
     // Prune all but the most-recent 100. The file does NOT shrink: deleted rows
     // become freelist pages (auto_vacuum=NONE), which is the whole motivation.
-    const pruned = outbox.pruneSent({ dryRun: false, keepCount: 100, sourceInstanceId });
+    const pruned = outbox.pruneSent({
+      dryRun: false,
+      keepCount: 100,
+      sourceInstanceId,
+    });
     assert.equal(pruned.pruned, 3900);
     const sizeAfterPrune = statSync(path).size;
     assert.equal(sizeAfterPrune, sizeFull, "prune alone must NOT shrink the file (auto_vacuum=NONE)");
@@ -1319,7 +1591,10 @@ test("compact preserves unsent (ready/leased/dead-letter) rows — VACUUM is los
   const path = await tempOutboxPath();
   const sourceInstanceId = "src-compact-unsent";
   const holder = "holder-compact";
-  const outbox = new LocalDeviceOutbox({ clock: () => new Date("2026-06-04T00:00:00.000Z"), path });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => new Date("2026-06-04T00:00:00.000Z"),
+    path,
+  });
   try {
     // Fat succeeded rows to create a freelist, then prune them.
     seedFatSucceededRows(path, sourceInstanceId, 1000);
@@ -1328,13 +1603,33 @@ test("compact preserves unsent (ready/leased/dead-letter) rows — VACUUM is los
     reopened.close();
 
     // Live unsent work that must survive the rebuild.
-    outbox.enqueue({ id: "u:ready", kind: "record_batch", payload: { records: [] }, sourceInstanceId });
-    outbox.enqueue({ id: "u:dead", kind: "record_batch", payload: { records: [] }, sourceInstanceId });
-    const claimed = outbox.claimReady({ holder, leaseMs: 600_000, limit: 2, sourceInstanceId });
+    outbox.enqueue({
+      id: "u:ready",
+      kind: "record_batch",
+      payload: { records: [] },
+      sourceInstanceId,
+    });
+    outbox.enqueue({
+      id: "u:dead",
+      kind: "record_batch",
+      payload: { records: [] },
+      sourceInstanceId,
+    });
+    const claimed = outbox.claimReady({
+      holder,
+      leaseMs: 600_000,
+      limit: 2,
+      sourceInstanceId,
+    });
     const dead = claimed.find((item) => item.id === "u:dead");
     const ready = claimed.find((item) => item.id === "u:ready");
     assert.ok(dead && ready);
-    outbox.deadLetter({ error: "terminal", holder, id: dead.id, leaseEpoch: dead.lease_epoch });
+    outbox.deadLetter({
+      error: "terminal",
+      holder,
+      id: dead.id,
+      leaseEpoch: dead.lease_epoch,
+    });
     // Leave u:ready leased (in flight) so a leased row is present at compact time.
 
     assert.ok(outbox.countNonSucceeded() >= 2, "ready/leased/dead-letter rows are counted as non-succeeded");
@@ -1355,16 +1650,42 @@ test("compact preserves unsent (ready/leased/dead-letter) rows — VACUUM is los
 
 test("countNonSucceeded counts ready/leased/dead-letter across all sources, ignoring succeeded", async () => {
   const path = await tempOutboxPath();
-  const outbox = new LocalDeviceOutbox({ clock: () => new Date("2026-06-04T00:00:00.000Z"), path });
+  const outbox = new LocalDeviceOutbox({
+    clock: () => new Date("2026-06-04T00:00:00.000Z"),
+    path,
+  });
   try {
     // One succeeded row on src-a (does not count).
-    outbox.enqueue({ id: "a:sent", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-a" });
-    const [sent] = outbox.claimReady({ holder: "w", leaseMs: 600_000, sourceInstanceId: "src-a" });
+    outbox.enqueue({
+      id: "a:sent",
+      kind: "record_batch",
+      payload: { records: [] },
+      sourceInstanceId: "src-a",
+    });
+    const [sent] = outbox.claimReady({
+      holder: "w",
+      leaseMs: 600_000,
+      sourceInstanceId: "src-a",
+    });
     assert.ok(sent);
-    outbox.acknowledge({ holder: "w", id: sent.id, leaseEpoch: sent.lease_epoch });
+    outbox.acknowledge({
+      holder: "w",
+      id: sent.id,
+      leaseEpoch: sent.lease_epoch,
+    });
     // Ready rows on two different sources (both count).
-    outbox.enqueue({ id: "a:ready", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-a" });
-    outbox.enqueue({ id: "b:ready", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-b" });
+    outbox.enqueue({
+      id: "a:ready",
+      kind: "record_batch",
+      payload: { records: [] },
+      sourceInstanceId: "src-a",
+    });
+    outbox.enqueue({
+      id: "b:ready",
+      kind: "record_batch",
+      payload: { records: [] },
+      sourceInstanceId: "src-b",
+    });
 
     assert.equal(outbox.countNonSucceeded(), 2, "both ready rows count; the succeeded row does not");
   } finally {
@@ -1377,7 +1698,12 @@ test("compact on an already-tight file reclaims ~nothing and keeps every row", a
   const sourceInstanceId = "src-tight";
   const outbox = new LocalDeviceOutbox({ path });
   try {
-    outbox.enqueue({ id: "keep-1", kind: "record_batch", payload: { records: [] }, sourceInstanceId });
+    outbox.enqueue({
+      id: "keep-1",
+      kind: "record_batch",
+      payload: { records: [] },
+      sourceInstanceId,
+    });
     const before = outbox.pageStats();
     const result = outbox.compact();
     // Nothing was deleted, so there is no meaningful freelist to reclaim.
@@ -1402,7 +1728,11 @@ async function tempOutboxPath(): Promise<string> {
  */
 function seedLegacyV1Outbox(
   path: string,
-  rows: ReadonlyArray<{ id: string; sourceInstanceId: string; streams: readonly string[] }>
+  rows: ReadonlyArray<{
+    id: string;
+    sourceInstanceId: string;
+    streams: readonly string[];
+  }>
 ): void {
   const db = new DatabaseSync(path);
   try {
@@ -1435,7 +1765,10 @@ function seedLegacyV1Outbox(
     const stamp = "2026-05-19T12:00:00.000Z";
     for (const row of rows) {
       const payload = JSON.stringify({
-        records: row.streams.map((stream, index) => ({ data: { id: `${stream}-${index}` }, stream })),
+        records: row.streams.map((stream, index) => ({
+          data: { id: `${stream}-${index}` },
+          stream,
+        })),
       });
       insert.run(row.id, row.sourceInstanceId, payload, stamp, stamp, stamp);
     }
@@ -1490,7 +1823,11 @@ test("pruneSent deletes a backlog larger than SQLite's per-statement variable li
   const outbox = new LocalDeviceOutbox({ path });
   try {
     assert.equal(outbox.summary({ sourceInstanceId }).succeeded, total);
-    const result = outbox.pruneSent({ dryRun: false, keepCount: 0, sourceInstanceId });
+    const result = outbox.pruneSent({
+      dryRun: false,
+      keepCount: 0,
+      sourceInstanceId,
+    });
     assert.equal(result.matched, total);
     assert.equal(result.pruned, total);
     assert.equal(outbox.summary({ sourceInstanceId }).succeeded, 0);

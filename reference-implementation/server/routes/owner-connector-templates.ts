@@ -95,8 +95,8 @@ export interface MountOwnerConnectorTemplatesContext {
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   resolveResource: (req: unknown) => string;
-  uatExposeUnlistedConnectors?: boolean;
   uatConnectorAllowlist?: ReadonlySet<string>;
+  uatExposeUnlistedConnectors?: boolean;
 }
 
 function stripTrailingSlash(value: string): string {

@@ -17,19 +17,23 @@ const declarationKeep = new Set(
   [
     "local-collector/src/errors.d.ts",
     "local-collector/src/runner.d.ts",
-    "polyfill-connectors/src/collector-build-info.d.ts",
-    "polyfill-connectors/src/collector-protocol.d.ts",
-    "polyfill-connectors/src/collector-runner.d.ts",
-    "polyfill-connectors/src/connector-runtime-protocol.d.ts",
-    "polyfill-connectors/src/is-main-module.d.ts",
-    "polyfill-connectors/src/local-device-client.d.ts",
-    "polyfill-connectors/src/local-device-envelope.d.ts",
-    "polyfill-connectors/src/local-device-outbox.d.ts",
-    "polyfill-connectors/src/local-device-queue.d.ts",
-    "polyfill-connectors/src/runner/index.d.ts",
-    "polyfill-connectors/src/runtime-capabilities.d.ts",
-    "polyfill-connectors/src/safe-emit.d.ts",
-    "polyfill-connectors/src/scope-filters.d.ts",
+    "collector-runtime/src/collector-build-info.d.ts",
+    "collector-runtime/src/collector-protocol.d.ts",
+    "collector-runtime/src/collector-runner.d.ts",
+    "collector-runtime/src/index.d.ts",
+    "collector-runtime/src/local-device-client.d.ts",
+    "collector-runtime/src/local-device-envelope.d.ts",
+    "collector-runtime/src/local-device-outbox.d.ts",
+    "collector-runtime/src/local-device-queue.d.ts",
+    "collector-runtime/src/runtime-capabilities.d.ts",
+    "connector-protocol/src/collector-definition.d.ts",
+    "connector-protocol/src/connector-runtime-protocol.d.ts",
+    "connector-protocol/src/index.d.ts",
+    "connector-protocol/src/is-main-module.d.ts",
+    "connector-protocol/src/pdpp-safe-text.d.ts",
+    "connector-protocol/src/safe-emit.d.ts",
+    "connector-protocol/src/safe-text-preview.d.ts",
+    "connector-protocol/src/scope-filters.d.ts",
   ].map((entry) => path.normalize(entry))
 );
 
@@ -53,7 +57,7 @@ await stampBuildInfo();
  * a short SHA, and an ISO timestamp are written — never a path, branch, or token.
  */
 async function stampBuildInfo(): Promise<void> {
-  const compiled = path.join(distRoot, "polyfill-connectors", "src", "collector-build-info.js");
+  const compiled = path.join(distRoot, "collector-runtime", "src", "collector-build-info.js");
   const version = await resolvePackageVersion();
   const revision = resolveBuildRevision();
   const builtAt = resolveBuildTimestamp();

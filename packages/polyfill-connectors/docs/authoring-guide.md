@@ -186,7 +186,7 @@ evidence; do not fabricate a `considered` denominator you cannot substantiate.
 Every connector's `index.ts` guards its bootstrap:
 
 ```ts
-import { isMainModule } from "../../src/is-main-module.ts";
+import { isMainModule } from "@pdpp/connector-protocol";
 
 if (isMainModule(import.meta.url)) {
   runConnector({ ... });

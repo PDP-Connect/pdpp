@@ -4,9 +4,13 @@
 /**
  * Typed errors emitted by `@pdpp/local-collector`.
  *
- * These mirror the contracts already exported from the runner slice in
- * `@pdpp/polyfill-connectors`. They are re-exported here so npm consumers
- * can import them without depending on the private monorepo package.
+ * These mirror the contracts already exported from `@pdpp/collector-runtime`.
+ * They are re-exported here so npm consumers can import them without
+ * depending on the private monorepo package.
+ *
+ * Relative import (not the `@pdpp/collector-runtime` package specifier):
+ * see `runner.ts`'s module doc for why — this package's build vendors
+ * collector-runtime's source directly into its own `dist/` tree.
  *
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §1.
  */
@@ -16,7 +20,7 @@ export {
   CollectorStateReadError,
   RUNTIME_CAPABILITY_MISMATCH_CODE,
   RuntimeCapabilityMismatchError,
-} from "../../polyfill-connectors/src/runner/index.ts";
+} from "../../collector-runtime/src/index.ts";
 
 /**
  * The published `pdpp-local-collector` bin rejects `--command <bin>` unless

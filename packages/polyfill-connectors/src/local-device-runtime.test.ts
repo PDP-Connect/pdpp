@@ -6,8 +6,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { IngestBatchRequest } from "./local-device-client.ts";
-import { LocalDeviceQueue } from "./local-device-queue.ts";
+import { type IngestBatchRequest, LocalDeviceQueue } from "@pdpp/collector-runtime";
 import {
   AMAZON_CONNECTOR_ID,
   // biome-ignore lint/suspicious/noDeprecatedImports: this test exists specifically to cover the deprecated back-compat shim while it's still supported

@@ -32,7 +32,11 @@ test("a newer terminal skip cannot inherit an older valid continuation", () => {
 test("a malformed newest continuation fails closed instead of falling back", () => {
   const gaps = [
     { continuation: CONTINUATION, kind: "skip_result", stream: "messages" },
-    { continuation: { ...CONTINUATION, remaining: false }, kind: "skip_result", stream: "messages" },
+    {
+      continuation: { ...CONTINUATION, remaining: false },
+      kind: "skip_result",
+      stream: "messages",
+    },
   ];
 
   assert.equal(selectAuthoritativeSkip(gaps, "messages"), gaps[1]);

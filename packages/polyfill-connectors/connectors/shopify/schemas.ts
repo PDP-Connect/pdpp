@@ -22,8 +22,8 @@
  * scaffold, not a fixture-proven schema.
  */
 
+import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
 import { z } from "zod";
-import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Module-scoped regexes (Biome useTopLevelRegex).

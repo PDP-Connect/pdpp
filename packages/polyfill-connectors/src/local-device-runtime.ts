@@ -6,15 +6,17 @@ import { randomUUID } from "node:crypto";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { buildAgentVersion } from "./collector-build-info.ts";
-import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
-import { type EnrollmentExchangeResponse, LocalDeviceClient } from "./local-device-client.ts";
 import {
-  buildLocalDeviceIngestBatchRequest,
   buildLocalDeviceRecordEnvelope,
+  type EnrollmentExchangeResponse,
+  LocalDeviceClient,
+  LocalDeviceQueue,
+  type LocalDeviceQueueItem,
   type LocalDeviceRecordEnvelope,
-} from "./local-device-envelope.ts";
-import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queue.ts";
+} from "@pdpp/collector-runtime";
+import { buildAgentVersion } from "@pdpp/collector-runtime/collector-build-info";
+import { buildLocalDeviceIngestBatchRequest } from "@pdpp/collector-runtime/local-device-envelope";
+import type { EmittedMessage, StartMessage, StreamScope } from "@pdpp/connector-protocol";
 
 /**
  * Stream name a connector's per-store proof claims (e.g. `collected`) ride

@@ -23,8 +23,8 @@
  * name can take, so it can never collide with a real stream's cursor.
  */
 
-import { collectionScopeFingerprint, normalizeCollectionScope } from "@pdpp/reference-contract/evidence";
 import type { CollectionScope } from "@pdpp/reference-contract/evidence";
+import { collectionScopeFingerprint, normalizeCollectionScope } from "@pdpp/reference-contract/evidence";
 
 /**
  * Reserved `connector_state.stream` key holding the connection's declared
@@ -140,8 +140,10 @@ export function scopeChangeInvalidatesProof(
   previous: CollectionScope | null | undefined,
   next: CollectionScope | null | undefined
 ): boolean {
-  return collectionScopeFingerprint(normalizeCollectionScope(previous)) !==
-    collectionScopeFingerprint(normalizeCollectionScope(next));
+  return (
+    collectionScopeFingerprint(normalizeCollectionScope(previous)) !==
+    collectionScopeFingerprint(normalizeCollectionScope(next))
+  );
 }
 
 /**

@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5's built-in Node module registry does not yet recognize node:sqlite; Node's own resolver and tsc both resolve it (same pre-existing gap as packages/polyfill-connectors/src/local-device-outbox.ts and its sibling test files).
+// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5's built-in Node module registry does not yet recognize node:sqlite; Node's own resolver and tsc both resolve it (same pre-existing gap as packages/collector-runtime/src/local-device-outbox.ts and its sibling test files).
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import {
@@ -247,7 +247,7 @@ test("local collector package no longer ships the temporary legacy JSON queue mi
     "../tsconfig.build.json",
     "../scripts/postbuild.ts",
     "../src/runner.ts",
-    "../../polyfill-connectors/src/runner/index.ts",
+    "../../collector-runtime/src/index.ts",
   ];
 
   for (const file of files) {

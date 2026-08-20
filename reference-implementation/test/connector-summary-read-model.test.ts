@@ -92,7 +92,6 @@ function seedInstanceSqlite({
     );
 }
 
-
 // Seed the maintained retained_size_stream rows directly — that projection is
 // the canonical source the connector-summary rebuild reads for record counts.
 // Seeding it directly isolates this module from the full ingest + lexical
@@ -363,10 +362,6 @@ test("rebuild keeps connections with zero records as honest empty evidence", () 
     assert.equal(row.dirty, false);
     assert.equal(row.state, "fresh");
   }));
-
-
-
-
 
 test("rebuild materializes revoked lifecycle evidence without dropping the row", () =>
   withTempDb(async () => {
@@ -675,8 +670,6 @@ test("Postgres connector-summary evidence reaches the same rebuild/dirty/reconci
     await closePostgresStorage();
   }
 });
-
-
 
 async function seedRetainedSizeStreamPostgres(
   instanceId: string,

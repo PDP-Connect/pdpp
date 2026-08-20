@@ -17,9 +17,9 @@
  *     for the +1-for-ellipsis bound; equivalent invariant to pdppSafeText.
  */
 
+import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
+import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "@pdpp/connector-protocol/safe-text-preview";
 import { z } from "zod";
-import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
-import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "../../src/safe-text-preview.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Module-scoped regexes (Biome useTopLevelRegex).

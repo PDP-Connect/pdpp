@@ -41,6 +41,8 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@pdpp/collector-runtime": "workspace:*",
+    "@pdpp/connector-protocol": "workspace:*",
     "conventional-changelog-conventionalcommits": "^10.2.1"
   },
   "keywords": [

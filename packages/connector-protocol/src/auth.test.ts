@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { resolveAuth } from "./auth.ts";
-import type { InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
+import type { InteractionRequest, InteractionResponse } from "./connector-runtime-protocol.ts";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -25,5 +25,7 @@ test("env auth alias arrays return the primary credential name", async () => {
     }
   );
 
-  assert.deepEqual(credentials, { YNAB_PERSONAL_ACCESS_TOKEN: "pat-from-docs" });
+  assert.deepEqual(credentials, {
+    YNAB_PERSONAL_ACCESS_TOKEN: "pat-from-docs",
+  });
 });

@@ -6,7 +6,6 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
-    "./runner": "./src/runner/index.ts",
     "./collectors": "./src/collector-registry.ts",
     "./manifests": "./src/manifest-registry.ts",
     "./reason-display-messages": "./src/reason-display-messages.ts",
@@ -29,6 +28,8 @@
     "verify": "pnpm typecheck && pnpm check && pnpm check:noAwaitInLoops-conformance && pnpm check:noUnnecessaryConditions-expiry"
   },
   "dependencies": {
+    "@pdpp/collector-runtime": "workspace:*",
+    "@pdpp/connector-protocol": "workspace:*",
     "@pdpp/reference-contract": "workspace:*",
     "@streamparser/json": "^0.0.23",
     "better-sqlite3": "^13.0.3",

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -21,6 +22,7 @@
  * honors that header and uses a conservative provider-local pacing profile.
  */
 
+import { isMainModule } from "@pdpp/connector-protocol";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   type CollectContext,
@@ -28,7 +30,6 @@ import {
   emitDetailCoverage,
   runConnector,
 } from "../../src/connector-runtime.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { spotifyPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 

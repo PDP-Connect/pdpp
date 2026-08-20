@@ -28,7 +28,7 @@
  * makes that class of drift impossible rather than merely tested against.
  *
  * `static-secret-injection.ts` ships inside the publishable
- * `@pdpp/local-collector` runner slice (see `src/runner/index.ts`), so it must
+ * `@pdpp/local-collector` runner slice (see `@pdpp/collector-runtime`), so it must
  * stay free of `node:fs` / directory scanning at import time on an owner's
  * machine — this generator does the manifest read once, at build/CI time, and
  * bakes the result into a plain data literal the runtime module imports. The

@@ -135,7 +135,11 @@ test("every shipped first-party manifest passes the live registration validator"
       failures.push(`${filename}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  assert.deepEqual(failures, [], `shipped manifests rejected by the live registration validator:\n${failures.join("\n")}`);
+  assert.deepEqual(
+    failures,
+    [],
+    `shipped manifests rejected by the live registration validator:\n${failures.join("\n")}`
+  );
 });
 
 test(

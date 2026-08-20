@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -20,6 +21,13 @@
  * conversation. Incremental via update_time cursor.
  */
 
+import { isMainModule } from "@pdpp/connector-protocol";
+import {
+  RetryExhaustedError,
+  retryAfterMsFromHeaders,
+  retryHttp,
+  TerminalHttpStatusError,
+} from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
 import {
   type AdaptiveLane,
@@ -50,13 +58,6 @@ import {
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
-import {
-  RetryExhaustedError,
-  retryAfterMsFromHeaders,
-  retryHttp,
-  TerminalHttpStatusError,
-} from "../../src/http-retry.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import {
   type ProviderBudgetCircuitTransition,
   ProviderBudgetController,

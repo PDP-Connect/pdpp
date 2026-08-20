@@ -141,12 +141,12 @@ export function emitTombstones({ emit, stream, priorIds, currentIds, emittedAt }
   for (const id of priorIds || []) {
     if (!currentIds.has(id)) {
       emit({
-        type: "RECORD",
-        stream,
-        key: id,
         data: { id },
         emitted_at: emittedAt,
+        key: id,
         op: "delete",
+        stream,
+        type: "RECORD",
       });
       count += 1;
     }
@@ -175,6 +175,6 @@ export async function requireCredentialsOrAsk({
   sendInteraction,
 }: RequireCredentialsOrAskArgs): Promise<Credentials> {
   const { resolveAuth } = await import("./auth.ts");
-  const ctx: AuthStrategyContext = { sendInteraction, connectorName };
+  const ctx: AuthStrategyContext = { connectorName, sendInteraction };
   return resolveAuth({ kind: "env", required }, ctx);
 }

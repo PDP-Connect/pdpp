@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { deriveStreamCoverageCondition } from "../server/connector-coverage-policy.ts";
-import { readCollectionFactsFromTerminalData } from "../server/runtime-collection-facts.ts";
 import type { RuntimeCollectionFact } from "../server/ref-control.ts";
+import { readCollectionFactsFromTerminalData } from "../server/runtime-collection-facts.ts";
 
 function fact(overrides: Partial<RuntimeCollectionFact> = {}): RuntimeCollectionFact {
   return {
@@ -29,24 +29,24 @@ test("terminal collection fact round-trips continuation through the active parse
         {
           checkpoint: "committed",
           collected: 2,
+          collection_scope: "uidvalidity:1",
           considered: 2,
           covered: 2,
           pending_detail_gaps: 0,
-          stream: "messages",
-          collection_scope: "uidvalidity:1",
           skipped: {
-            reason: "historical_backfill_pending",
-            recovery_action: "retry_by_runtime",
             continuation: {
               boundary: "uidvalidity:1",
               considered: 2,
               covered: 2,
               owner: "runtime",
               remaining: true,
-              slice_start: 1,
               slice_end: 2,
+              slice_start: 1,
             },
+            reason: "historical_backfill_pending",
+            recovery_action: "retry_by_runtime",
           },
+          stream: "messages",
         },
       ],
     },
@@ -61,15 +61,23 @@ test("terminal collection fact round-trips continuation through the active parse
 test("active parser drops malformed continuation evidence", () => {
   const parsed = readCollectionFactsFromTerminalData({
     collection_facts: {
-      streams: [{
-        stream: "messages",
-        considered: 2,
-        covered: 2,
-        skipped: {
-          reason: "historical_backfill_pending",
-          continuation: { boundary: "uidvalidity:1", owner: "runtime", remaining: true, slice_start: -1, slice_end: 2 },
+      streams: [
+        {
+          considered: 2,
+          covered: 2,
+          skipped: {
+            continuation: {
+              boundary: "uidvalidity:1",
+              owner: "runtime",
+              remaining: true,
+              slice_end: 2,
+              slice_start: -1,
+            },
+            reason: "historical_backfill_pending",
+          },
+          stream: "messages",
         },
-      }],
+      ],
     },
   });
   assert.equal(parsed?.streams[0]?.skipped?.continuation, undefined);
@@ -153,9 +161,9 @@ test("a retryable continuation with a proven page is complete coverage with back
   assert.equal(
     deriveStreamCoverageCondition(
       fact({
+        collection_scope: "uidvalidity:1",
         considered: 100,
         covered: 100,
-        collection_scope: "uidvalidity:1",
         skipped: {
           continuation: {
             boundary: "uidvalidity:1",
@@ -163,8 +171,8 @@ test("a retryable continuation with a proven page is complete coverage with back
             covered: 100,
             owner: "runtime",
             remaining: true,
-            slice_start: 1,
             slice_end: 100,
+            slice_start: 1,
           },
           reason: "opaque",
           recovery_action: "retry_by_runtime",
@@ -188,10 +196,9 @@ test("an ordinary retryable skip stays non-green despite a complete denominator"
 
 test("a stalled continuation without progress stays non-green", () => {
   assert.equal(
-    deriveStreamCoverageCondition(
-      fact({ skipped: { reason: "opaque", recovery_action: "retry_by_runtime" } }),
-      { coverage_strategy: "parent_detail_accounting" }
-    ),
+    deriveStreamCoverageCondition(fact({ skipped: { reason: "opaque", recovery_action: "retry_by_runtime" } }), {
+      coverage_strategy: "parent_detail_accounting",
+    }),
     "retryable_gap"
   );
 });
@@ -210,8 +217,8 @@ test("a continuation measured outside the declared boundary stays non-green", ()
             covered: 100,
             owner: "runtime",
             remaining: true,
-            slice_start: 1,
             slice_end: 100,
+            slice_start: 1,
           },
           reason: "opaque",
           recovery_action: "retry_by_runtime",

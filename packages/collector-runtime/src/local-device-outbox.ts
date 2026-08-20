@@ -825,7 +825,11 @@ export class LocalDeviceOutbox {
     this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     const after = this.#readPageStats();
     const reclaimedPages = Math.max(0, before.pageCount - after.pageCount);
-    return { after, before, reclaimedBytes: reclaimedPages * before.pageSizeBytes };
+    return {
+      after,
+      before,
+      reclaimedBytes: reclaimedPages * before.pageSizeBytes,
+    };
   }
 
   #readPageStats(): LocalDeviceOutboxPageStats {
@@ -1512,7 +1516,10 @@ function assertOneChange(changes: number, message: string): void {
   }
 }
 
-function deadLetterWhere(input: LocalDeviceOutboxRequeueDeadLettersInput): { clauses: string[]; params: string[] } {
+function deadLetterWhere(input: LocalDeviceOutboxRequeueDeadLettersInput): {
+  clauses: string[];
+  params: string[];
+} {
   const clauses = ["status = 'dead_letter'"];
   const params: string[] = [];
   if (input.sourceInstanceId) {

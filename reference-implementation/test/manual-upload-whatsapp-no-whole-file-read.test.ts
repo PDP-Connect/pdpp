@@ -450,137 +450,129 @@ function largeWhatsAppBodyStream(targetBytes: number): Readable {
   });
 }
 
-test(
-  "manual-upload-final-redteam-0810 #1: production validation-preview never calls fs/promises.readFile on the staged artifact path",
-  {
-    skip: MODULE_MOCKS_AVAILABLE
-      ? false
-      : "requires --experimental-test-module-mocks (npm run test:whatsapp-no-whole-file-read)",
-  },
-  async () => {
-    await withServer(async ({ asUrl }) => {
-      await registerConnector(asUrl, "whatsapp");
-      const cookie = await login(asUrl);
+test("manual-upload-final-redteam-0810 #1: production validation-preview never calls fs/promises.readFile on the staged artifact path", {
+  skip: MODULE_MOCKS_AVAILABLE
+    ? false
+    : "requires --experimental-test-module-mocks (npm run test:whatsapp-no-whole-file-read)",
+}, async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, "whatsapp");
+    const cookie = await login(asUrl);
 
-      const body = [
-        "[6/5/24, 9:15:22 AM] Alice: Hello",
-        "[6/5/24, 9:16:00 AM] Bob: <attached: IMG-20240605-WA0001.jpg>",
-      ].join("\n");
+    const body = [
+      "[6/5/24, 9:15:22 AM] Alice: Hello",
+      "[6/5/24, 9:16:00 AM] Bob: <attached: IMG-20240605-WA0001.jpg>",
+    ].join("\n");
 
-      const callsBefore = readFileCallArgs.length;
+    const callsBefore = readFileCallArgs.length;
 
-      const url = new URL(`${asUrl}/_ref/connectors/whatsapp/manual-upload-validation-preview`);
-      url.searchParams.set("file_name", "WhatsApp Chat - Alice.txt");
-      const resp = await fetch(url, {
-        body,
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/vnd.pdpp.manual-upload",
-          Cookie: cookie,
-        },
+    const url = new URL(`${asUrl}/_ref/connectors/whatsapp/manual-upload-validation-preview`);
+    url.searchParams.set("file_name", "WhatsApp Chat - Alice.txt");
+    const resp = await fetch(url, {
+      body,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/vnd.pdpp.manual-upload",
+        Cookie: cookie,
+      },
+      method: "POST",
+    });
+    const preview = (await resp.json()) as { validation?: { status?: string } };
+    assert.equal(resp.status, 200, JSON.stringify(preview));
+    assert.equal(preview.validation?.status, "valid");
+
+    const callsDuringThisPreview = readFileCallArgs.slice(callsBefore);
+    const readFileCallsOnStagedContent = callsDuringThisPreview.filter(([pathArg]) => {
+      const pathStr = String(pathArg);
+      return pathStr.includes("_staging") || pathStr.toLowerCase().includes("whatsapp chat");
+    });
+    assert.deepEqual(
+      readFileCallsOnStagedContent,
+      [],
+      `expected zero readFile() calls against the previewed WhatsApp artifact's own path, found: ${JSON.stringify(readFileCallsOnStagedContent)}`
+    );
+  });
+});
+
+test("manual-upload-final-redteam-0810 #1: outcome proof, a 150 MiB validation-preview upload does not raise server external memory anywhere near the file size", {
+  skip: typeof global.gc === "function" ? false : "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)",
+}, async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, "whatsapp");
+    const cookie = await login(asUrl);
+    const port = Number(new URL(asUrl).port);
+
+    const targetBytes = 150 * 1024 * 1024;
+    const bodyStream = largeWhatsAppBodyStream(targetBytes);
+
+    global.gc?.();
+    const before = process.memoryUsage();
+
+    const previewResp = await httpRequestStream(
+      {
+        headers: { Accept: "application/json", "Content-Type": "application/vnd.pdpp.manual-upload", Cookie: cookie },
+        hostname: "localhost",
         method: "POST",
-      });
-      const preview = (await resp.json()) as { validation?: { status?: string } };
-      assert.equal(resp.status, 200, JSON.stringify(preview));
-      assert.equal(preview.validation?.status, "valid");
+        path: `/_ref/connectors/whatsapp/manual-upload-validation-preview?file_name=${encodeURIComponent("WhatsApp Chat - PreviewDelta.txt")}`,
+        port,
+      },
+      bodyStream
+    );
+    const preview = JSON.parse(previewResp.body) as { validation?: { status?: string } };
+    assert.equal(previewResp.status, 200, JSON.stringify(preview));
+    assert.equal(preview.validation?.status, "valid");
 
-      const callsDuringThisPreview = readFileCallArgs.slice(callsBefore);
-      const readFileCallsOnStagedContent = callsDuringThisPreview.filter(([pathArg]) => {
-        const pathStr = String(pathArg);
-        return pathStr.includes("_staging") || pathStr.toLowerCase().includes("whatsapp chat");
-      });
-      assert.deepEqual(
-        readFileCallsOnStagedContent,
-        [],
-        `expected zero readFile() calls against the previewed WhatsApp artifact's own path, found: ${JSON.stringify(readFileCallsOnStagedContent)}`
-      );
-    });
-  }
-);
+    global.gc?.();
+    const after = process.memoryUsage();
+    const externalGrowthBytes = after.external - before.external;
 
-test(
-  "manual-upload-final-redteam-0810 #1: outcome proof, a 150 MiB validation-preview upload does not raise server external memory anywhere near the file size",
-  { skip: typeof global.gc === "function" ? false : "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)" },
-  async () => {
-    await withServer(async ({ asUrl }) => {
-      await registerConnector(asUrl, "whatsapp");
-      const cookie = await login(asUrl);
-      const port = Number(new URL(asUrl).port);
+    assert.ok(
+      externalGrowthBytes < 100 * 1024 * 1024,
+      `expected server external (Buffer/ArrayBuffer) memory to grow by well under the 150 MiB file size, grew by ${String(
+        Math.round(externalGrowthBytes / 1024 / 1024)
+      )} MiB -- validation-preview may be buffering the whole artifact`
+    );
+  });
+});
 
-      const targetBytes = 150 * 1024 * 1024;
-      const bodyStream = largeWhatsAppBodyStream(targetBytes);
+test("manual-upload-final-redteam-0810 #1: outcome proof, a 150 MiB legacy manual-upload-draft-connection upload does not raise server external memory anywhere near the file size", {
+  skip: typeof global.gc === "function" ? false : "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)",
+}, async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, "whatsapp");
+    const cookie = await login(asUrl);
+    const port = Number(new URL(asUrl).port);
 
-      global.gc?.();
-      const before = process.memoryUsage();
+    const targetBytes = 150 * 1024 * 1024;
+    const bodyStream = largeWhatsAppBodyStream(targetBytes);
 
-      const previewResp = await httpRequestStream(
-        {
-          headers: { Accept: "application/json", "Content-Type": "application/vnd.pdpp.manual-upload", Cookie: cookie },
-          hostname: "localhost",
-          method: "POST",
-          path: `/_ref/connectors/whatsapp/manual-upload-validation-preview?file_name=${encodeURIComponent("WhatsApp Chat - PreviewDelta.txt")}`,
-          port,
-        },
-        bodyStream
-      );
-      const preview = JSON.parse(previewResp.body) as { validation?: { status?: string } };
-      assert.equal(previewResp.status, 200, JSON.stringify(preview));
-      assert.equal(preview.validation?.status, "valid");
+    global.gc?.();
+    const before = process.memoryUsage();
 
-      global.gc?.();
-      const after = process.memoryUsage();
-      const externalGrowthBytes = after.external - before.external;
+    const createResp = await httpRequestStream(
+      {
+        headers: { Accept: "application/json", "Content-Type": "application/vnd.pdpp.manual-upload", Cookie: cookie },
+        hostname: "localhost",
+        method: "POST",
+        path: `/_ref/connectors/whatsapp/manual-upload-draft-connection?file_name=${encodeURIComponent("WhatsApp Chat - CreateDelta.txt")}`,
+        port,
+      },
+      bodyStream
+    );
+    const created = JSON.parse(createResp.body) as { validation?: { status?: string }; connection_id?: string };
+    assert.equal(createResp.status, 201, JSON.stringify(created));
+    assert.equal(created.validation?.status, "valid");
+    assert.ok(created.connection_id, "expected a connection_id");
 
-      assert.ok(
-        externalGrowthBytes < 100 * 1024 * 1024,
-        `expected server external (Buffer/ArrayBuffer) memory to grow by well under the 150 MiB file size, grew by ${String(
-          Math.round(externalGrowthBytes / 1024 / 1024)
-        )} MiB -- validation-preview may be buffering the whole artifact`
-      );
-    });
-  }
-);
+    global.gc?.();
+    const after = process.memoryUsage();
+    const externalGrowthBytes = after.external - before.external;
 
-test(
-  "manual-upload-final-redteam-0810 #1: outcome proof, a 150 MiB legacy manual-upload-draft-connection upload does not raise server external memory anywhere near the file size",
-  { skip: typeof global.gc === "function" ? false : "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)" },
-  async () => {
-    await withServer(async ({ asUrl }) => {
-      await registerConnector(asUrl, "whatsapp");
-      const cookie = await login(asUrl);
-      const port = Number(new URL(asUrl).port);
-
-      const targetBytes = 150 * 1024 * 1024;
-      const bodyStream = largeWhatsAppBodyStream(targetBytes);
-
-      global.gc?.();
-      const before = process.memoryUsage();
-
-      const createResp = await httpRequestStream(
-        {
-          headers: { Accept: "application/json", "Content-Type": "application/vnd.pdpp.manual-upload", Cookie: cookie },
-          hostname: "localhost",
-          method: "POST",
-          path: `/_ref/connectors/whatsapp/manual-upload-draft-connection?file_name=${encodeURIComponent("WhatsApp Chat - CreateDelta.txt")}`,
-          port,
-        },
-        bodyStream
-      );
-      const created = JSON.parse(createResp.body) as { validation?: { status?: string }; connection_id?: string };
-      assert.equal(createResp.status, 201, JSON.stringify(created));
-      assert.equal(created.validation?.status, "valid");
-      assert.ok(created.connection_id, "expected a connection_id");
-
-      global.gc?.();
-      const after = process.memoryUsage();
-      const externalGrowthBytes = after.external - before.external;
-
-      assert.ok(
-        externalGrowthBytes < 100 * 1024 * 1024,
-        `expected server external (Buffer/ArrayBuffer) memory to grow by well under the 150 MiB file size, grew by ${String(
-          Math.round(externalGrowthBytes / 1024 / 1024)
-        )} MiB -- manual-upload-draft-connection may be buffering the whole artifact`
-      );
-    });
-  }
-);
+    assert.ok(
+      externalGrowthBytes < 100 * 1024 * 1024,
+      `expected server external (Buffer/ArrayBuffer) memory to grow by well under the 150 MiB file size, grew by ${String(
+        Math.round(externalGrowthBytes / 1024 / 1024)
+      )} MiB -- manual-upload-draft-connection may be buffering the whole artifact`
+    );
+  });
+});

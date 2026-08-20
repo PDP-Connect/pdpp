@@ -37,8 +37,8 @@ test("retryHttp: respects Retry-After before retrying a recoverable response", a
     maxDelayMs: 10_000,
     maxRetryAfterMs: 60_000,
     request: () => ({
-      status: statuses.shift() ?? 200,
       headers: { "retry-after": "7" },
+      status: statuses.shift() ?? 200,
     }),
     sleep: (ms) => {
       sleeps.push(ms);
@@ -89,7 +89,15 @@ test("retryHttp: default retryable set includes 408 and all 5xx", async () => {
 });
 
 test("retryHttp: caps jittered exponential delay after applying jitter", () => {
-  assert.equal(jitteredExponentialDelayMs({ attempt: 10, baseDelayMs: 1000, maxDelayMs: 5000, random: () => 1 }), 5000);
+  assert.equal(
+    jitteredExponentialDelayMs({
+      attempt: 10,
+      baseDelayMs: 1000,
+      maxDelayMs: 5000,
+      random: () => 1,
+    }),
+    5000
+  );
 });
 
 test("retryHttp: caps large Retry-After values", async () => {
@@ -102,8 +110,8 @@ test("retryHttp: caps large Retry-After values", async () => {
     maxDelayMs: 10_000,
     maxRetryAfterMs: 30_000,
     request: () => ({
-      status: statuses.shift() ?? 200,
       headers: { "retry-after": "120" },
+      status: statuses.shift() ?? 200,
     }),
     sleep: (ms) => {
       sleeps.push(ms);
@@ -214,7 +222,12 @@ test("retryHttp: throws when retry budget is exhausted", async () => {
 
 test("retryHttp: shouldKeepRetrying can stop early before exhausting the budget", async () => {
   const sleeps: number[] = [];
-  const seen: Array<{ attempt: number; maxAttempts: number; retryAfterMs: number | null; status: number }> = [];
+  const seen: Array<{
+    attempt: number;
+    maxAttempts: number;
+    retryAfterMs: number | null;
+    status: number;
+  }> = [];
   let calls = 0;
 
   // A bare-429 source-pressure policy: keep retrying for the first two attempts,
@@ -231,7 +244,12 @@ test("retryHttp: shouldKeepRetrying can stop early before exhausting the budget"
         return { status: 429 };
       },
       shouldKeepRetrying: ({ attempt, maxAttempts, response, retryAfterMs }) => {
-        seen.push({ attempt, maxAttempts, retryAfterMs, status: response.status });
+        seen.push({
+          attempt,
+          maxAttempts,
+          retryAfterMs,
+          status: response.status,
+        });
         return attempt < 3;
       },
       sleep: (ms) => {
@@ -271,7 +289,10 @@ test("retryHttp: shouldKeepRetrying sees the parsed Retry-After so policy can ke
     maxAttempts: 12,
     maxDelayMs: 10_000,
     maxRetryAfterMs: 60_000,
-    request: () => ({ status: statuses.shift() ?? 200, headers: { "retry-after": "5" } }),
+    request: () => ({
+      headers: { "retry-after": "5" },
+      status: statuses.shift() ?? 200,
+    }),
     shouldKeepRetrying: ({ retryAfterMs }) => {
       seenRetryAfter.push(retryAfterMs);
       // Policy: a 429 WITH Retry-After is an honest bounded wait — keep retrying.
@@ -298,7 +319,9 @@ test("retryHttp: shouldKeepRetrying sees the parsed Retry-After so policy can ke
 
 test("describeThrownTransportError: unwraps fetch's contentless TypeError to the real transport fault", () => {
   const err = new TypeError("fetch failed");
-  err.cause = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+  err.cause = Object.assign(new Error("read ECONNRESET"), {
+    code: "ECONNRESET",
+  });
   const described = describeThrownTransportError(err);
   assert.match(described, /fetch failed/, "the outer message is kept for continuity");
   assert.match(described, /ECONNRESET/, "the real transport fault must survive — it is the whole diagnostic");
@@ -311,7 +334,9 @@ test("describeThrownTransportError: appends a cause code the message does not al
   assert.equal(describeThrownTransportError(err), "fetch failed: getaddrinfo ENOTFOUND api.example.com");
 
   const timeout = new TypeError("fetch failed");
-  timeout.cause = Object.assign(new Error("Headers Timeout Error"), { code: "UND_ERR_HEADERS_TIMEOUT" });
+  timeout.cause = Object.assign(new Error("Headers Timeout Error"), {
+    code: "UND_ERR_HEADERS_TIMEOUT",
+  });
   assert.match(describeThrownTransportError(timeout), /UND_ERR_HEADERS_TIMEOUT/);
 });
 
@@ -326,7 +351,9 @@ test("describeThrownTransportError: bounds a pathological cause and passes non-E
 
 test("retryHttp: a thrown transport error carries its cause into the exhaustion message", async () => {
   const boom = new TypeError("fetch failed");
-  boom.cause = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+  boom.cause = Object.assign(new Error("read ECONNRESET"), {
+    code: "ECONNRESET",
+  });
   await assert.rejects(
     retryHttp({
       baseDelayMs: 1,
@@ -439,7 +466,9 @@ test("describeThrownTransportError: redacts BEFORE bounding, so no secret surviv
 
 test("describeThrownTransportError: a redacted-to-empty link is dropped rather than emitting stray colons", () => {
   const err = new Error("https://example.com/only-a-url");
-  err.cause = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+  err.cause = Object.assign(new Error("read ECONNRESET"), {
+    code: "ECONNRESET",
+  });
   const described = describeThrownTransportError(err);
   assert.doesNotMatch(described, /example\.com/);
   assert.doesNotMatch(described, /::/, "no empty segments left behind by redaction");

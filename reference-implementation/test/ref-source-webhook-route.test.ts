@@ -18,9 +18,9 @@ import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
 } from "../server/stores/connector-instance-store.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
-import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 type TestServer = Awaited<ReturnType<typeof startServer>>;
 type JsonObject = Record<string, unknown>;

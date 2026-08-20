@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildCollectorStartMessage } from "../src/collector-runner.ts";
+import { buildCollectorStartMessage } from "@pdpp/collector-runtime";
 import { buildConnectorSpec, parseArgs, scopedDefaultQueuePath } from "./collector-runner.ts";
 
 // These tests pin the START wire for stream backfill:

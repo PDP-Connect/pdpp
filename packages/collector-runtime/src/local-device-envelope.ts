@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import type { EmittedMessage, RecordData } from "./connector-runtime-protocol.ts";
+import type { EmittedMessage, RecordData } from "@pdpp/connector-protocol";
 
 export interface LocalDeviceRecordEnvelope {
   batch_id: string;

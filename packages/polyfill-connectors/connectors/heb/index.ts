@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -20,6 +21,7 @@
  * or challenge completion.
  */
 
+import { isMainModule } from "@pdpp/connector-protocol";
 import pRetry from "p-retry";
 import type { Page } from "playwright";
 import { ensureHebSession, probeHebSession } from "../../src/auto-login/heb.ts";
@@ -33,7 +35,6 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildOrderItemRecord,
   buildOrderRecord,

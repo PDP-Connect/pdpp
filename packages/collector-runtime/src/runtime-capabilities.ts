@@ -40,8 +40,8 @@ export interface RuntimeCapabilityProfile {
  * profile to `evaluatePlacement`.
  */
 export const PROVIDER_RUNTIME_CAPABILITIES: RuntimeCapabilityProfile = {
-  id: "provider",
   bindings: new Set<RuntimeBindingName>(["network", "filesystem"]),
+  id: "provider",
 };
 
 /**
@@ -52,8 +52,8 @@ export const PROVIDER_RUNTIME_CAPABILITIES: RuntimeCapabilityProfile = {
  * see local-device-style sources (Codex CLI, Claude Code, iMessage).
  */
 export const COLLECTOR_RUNTIME_CAPABILITIES: RuntimeCapabilityProfile = {
-  id: "collector",
   bindings: new Set<RuntimeBindingName>(["network", "browser", "filesystem", "local_device"]),
+  id: "collector",
 };
 
 export interface ConnectorRuntimeRequirements {
@@ -111,10 +111,10 @@ export function evaluatePlacement(
     return { kind: "ok", satisfied };
   }
   return {
+    connectorId: connector.connector_id,
     kind: "missing_capability",
     missing,
     runtime: runtime.id,
-    connectorId: connector.connector_id,
   };
 }
 
@@ -162,7 +162,7 @@ export function assertPlacementOrThrow(
   }
   throw new RuntimeCapabilityMismatchError({
     connectorId: decision.connectorId,
-    runtime: decision.runtime,
     missing: decision.missing,
+    runtime: decision.runtime,
   });
 }

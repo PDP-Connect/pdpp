@@ -12,7 +12,10 @@ import { LocalDeviceQueue } from "./local-device-queue.ts";
 test("LocalDeviceQueue persists batches and dequeues in source-instance batch order", async () => {
   let nowMs = Date.parse("2026-04-30T12:00:00.000Z");
   const queuePath = await tempQueuePath();
-  const queue = new LocalDeviceQueue({ clock: () => new Date(nowMs), path: queuePath });
+  const queue = new LocalDeviceQueue({
+    clock: () => new Date(nowMs),
+    path: queuePath,
+  });
 
   await queue.enqueue({
     batchId: "source-b-2",
@@ -33,7 +36,10 @@ test("LocalDeviceQueue persists batches and dequeues in source-instance batch or
     sourceInstanceId: "source-a",
   });
 
-  const reloaded = new LocalDeviceQueue({ clock: () => new Date(nowMs), path: queuePath });
+  const reloaded = new LocalDeviceQueue({
+    clock: () => new Date(nowMs),
+    path: queuePath,
+  });
   assert.equal((await reloaded.dequeueReady())?.batch_id, "source-a-1");
   assert.equal((await reloaded.dequeueReady())?.batch_id, "source-b-2");
   await reloaded.markSent("source-a-1");

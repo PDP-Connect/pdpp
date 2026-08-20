@@ -84,7 +84,11 @@ export class LocalDeviceQueue {
   }
 
   async markSent(batchId: string): Promise<void> {
-    await this.#updateItem(batchId, (item, now) => ({ ...item, status: "sent", updated_at: now }));
+    await this.#updateItem(batchId, (item, now) => ({
+      ...item,
+      status: "sent",
+      updated_at: now,
+    }));
   }
 
   async markRetry(batchId: string, error: string): Promise<void> {

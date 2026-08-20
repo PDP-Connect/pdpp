@@ -242,6 +242,40 @@
       "include": ["packages/local-collector/test/*.test.ts"]
     },
     {
+      "id": "collector-runtime",
+      "cwd": ".",
+      "loader": "node-test",
+      "authority_argument": null,
+      "execution": "direct",
+      "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
+      "command": [
+        "node",
+        "--test",
+        "--import",
+        "tsx",
+        "--test-reporter",
+        "scripts/test-accounting/node-reporter.ts"
+      ],
+      "include": ["packages/collector-runtime/src/**/*.test.ts"]
+    },
+    {
+      "id": "connector-protocol",
+      "cwd": ".",
+      "loader": "node-test",
+      "authority_argument": null,
+      "execution": "direct",
+      "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
+      "command": [
+        "node",
+        "--test",
+        "--import",
+        "tsx",
+        "--test-reporter",
+        "scripts/test-accounting/node-reporter.ts"
+      ],
+      "include": ["packages/connector-protocol/src/**/*.test.ts"]
+    },
+    {
       "id": "polyfill-connectors",
       "cwd": ".",
       "loader": "node-test",

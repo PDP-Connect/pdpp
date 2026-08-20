@@ -3,9 +3,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
+import {
+  cooldownProfileForConnector,
+  DEFAULT_COOLDOWN_PROFILE,
+} from "../runtime/scheduler-source-pressure-cooldown.ts";
 import { closeDb, initDb } from "../server/db.ts";
-import { cooldownProfileForConnector, DEFAULT_COOLDOWN_PROFILE } from "../runtime/scheduler-source-pressure-cooldown.ts";
 
 // Mutation-killing complement for cooldownProfileForConnector's CONNECTOR-ID
 // KEY PARSING — the projection that maps a decorated connector id onto a
@@ -47,7 +49,11 @@ test(
     // manifest registered for any base, every shape falls back identically —
     // proving the split runs (no throw / no divergent shape) regardless of
     // decoration.
-    assert.deepEqual(await cooldownProfileForConnector("chatgpt@acct-1"), DEFAULT_COOLDOWN_PROFILE, "@-suffix stripped");
+    assert.deepEqual(
+      await cooldownProfileForConnector("chatgpt@acct-1"),
+      DEFAULT_COOLDOWN_PROFILE,
+      "@-suffix stripped"
+    );
     assert.deepEqual(
       await cooldownProfileForConnector("chatgpt:instance@acct-1"),
       DEFAULT_COOLDOWN_PROFILE,

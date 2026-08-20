@@ -20,8 +20,8 @@
  * Keep ID schemas permissive.
  */
 
+import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
 import { z } from "zod";
-import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
 // Text-field classification (docs/reference/binary-content-invariant-design-brief.md §4.4):

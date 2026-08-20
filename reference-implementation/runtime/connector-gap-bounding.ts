@@ -39,7 +39,7 @@ import {
   projectRuntimeSkip,
   type RuntimeContinuationFact,
   selectAuthoritativeSkip,
-} from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { isNullish } from "../lib/nullish.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 
@@ -877,9 +877,7 @@ function classifyKnownGapSeverity({
 // ── KNOWN GAP BUILDER ─────────────────────────────────────────────────────────
 
 interface BuildKnownGapInput {
-  continuation?:
-    | import("../../packages/polyfill-connectors/src/connector-runtime-protocol.ts").RuntimeContinuationFact
-    | null;
+  continuation?: RuntimeContinuationFact | null;
   diagnostics?: unknown;
   explicitSelection?: boolean;
   interactionKind?: string | null;

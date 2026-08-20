@@ -24,6 +24,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isMainModule } from "@pdpp/connector-protocol";
 import type { BrowserContext, Locator, Page } from "playwright";
 import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
 import {
@@ -52,7 +53,6 @@ import {
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { isMainModule } from "../../src/is-main-module.ts";
 import { readPlaywrightDownloadBufferDetailed } from "../../src/playwright-download.ts";
 import { statementFingerprintExcludeKeys } from "../../src/statement-content-fingerprint.ts";
 import {

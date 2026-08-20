@@ -175,7 +175,9 @@ test("terminal journey: configure Google app once -> add Calendar + Contacts -> 
     const list = await fetchJson(`${asUrl}/_ref/provider-app-config`, { headers: { Cookie: OPEN_SESSION_COOKIE } });
     assert.equal(list.status, 200);
     assert.equal(list.body.object, "provider_app_config_list");
-    const group = list.body.groups.find((g: { identity_group: string }) => g.identity_group === "shared-google-oauth-app");
+    const group = list.body.groups.find(
+      (g: { identity_group: string }) => g.identity_group === "shared-google-oauth-app"
+    );
     assert.ok(group, "shared-google-oauth-app group must be discoverable without prior knowledge of its token");
     assert.equal(group.provider_identity_label, "Shared Google OAuth App");
     const logicalKeys = group.logical_keys.map((f: { logical_key: string }) => f.logical_key).sort();

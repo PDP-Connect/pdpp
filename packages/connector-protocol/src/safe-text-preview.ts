@@ -123,8 +123,8 @@ function checkStringForForbidden(value: string): ForbiddenCheckResult {
     const codeUnit = value.charCodeAt(i);
     if (isForbiddenCodePoint(codeUnit)) {
       return {
-        isSafe: false,
         firstOffendingIndex: i,
+        isSafe: false,
         offendingCodeUnit: codeUnit,
       };
     }
@@ -140,11 +140,13 @@ type DecodeBufferResult = { success: true; text: string } | { success: false; re
 function decodeBuffer(buf: Buffer | Uint8Array): DecodeBufferResult {
   // Prefer Buffer.isUtf8 if available (Node 19+).
   // Use type assertion since this function is available in Node 19+ but not in older TS type definitions.
-  const bufferWithUtf8 = Buffer as typeof Buffer & { isUtf8?: (buf: Buffer) => boolean };
+  const bufferWithUtf8 = Buffer as typeof Buffer & {
+    isUtf8?: (buf: Buffer) => boolean;
+  };
   const { isUtf8 } = bufferWithUtf8;
   if (typeof isUtf8 === "function" && buf instanceof Buffer) {
     if (!isUtf8(buf)) {
-      return { success: false, reason: "invalid UTF-8 sequence in buffer" };
+      return { reason: "invalid UTF-8 sequence in buffer", success: false };
     }
     return { success: true, text: buf.toString("utf-8") };
   }
@@ -155,7 +157,7 @@ function decodeBuffer(buf: Buffer | Uint8Array): DecodeBufferResult {
     const text = decoder.decode(buf);
     return { success: true, text };
   } catch {
-    return { success: false, reason: "invalid UTF-8 sequence in buffer" };
+    return { reason: "invalid UTF-8 sequence in buffer", success: false };
   }
 }
 
@@ -214,10 +216,10 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
   if (value === null || value === undefined) {
     return {
       kind: "empty",
-      preview: null,
-      truncated: false,
       originalLength: 0,
+      preview: null,
       reason: null,
+      truncated: false,
     };
   }
 
@@ -230,10 +232,10 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
     if (!decoded.success) {
       return {
         kind: "binary",
-        preview: null,
-        truncated: false,
         originalLength,
+        preview: null,
         reason: decoded.reason || "invalid UTF-8",
+        truncated: false,
       };
     }
     ({ text } = decoded);
@@ -243,10 +245,10 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
     if (!decoded.success) {
       return {
         kind: "binary",
-        preview: null,
-        truncated: false,
         originalLength,
+        preview: null,
         reason: decoded.reason || "invalid UTF-8",
+        truncated: false,
       };
     }
     ({ text } = decoded);
@@ -254,10 +256,10 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
     // Any other type (number, object, etc.) → empty.
     return {
       kind: "empty",
-      preview: null,
-      truncated: false,
       originalLength: 0,
+      preview: null,
       reason: null,
+      truncated: false,
     };
   }
 
@@ -265,10 +267,10 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
   if (text === "") {
     return {
       kind: "empty",
-      preview: null,
-      truncated: false,
       originalLength: 0,
+      preview: null,
       reason: null,
+      truncated: false,
     };
   }
 
@@ -283,10 +285,10 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
         : `U+${codeUnit.toString(16).toUpperCase().padStart(4, "0")} at offset ${offendingIndex}`;
     return {
       kind: "binary",
-      preview: null,
-      truncated: false,
       originalLength,
+      preview: null,
       reason,
+      truncated: false,
     };
   }
 
@@ -294,9 +296,9 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
   const truncated = truncateString(text, maxChars);
   return {
     kind: "text",
-    preview: truncated.result,
-    truncated: truncated.wasTruncated,
     originalLength,
+    preview: truncated.result,
     reason: null,
+    truncated: truncated.wasTruncated,
   };
 }

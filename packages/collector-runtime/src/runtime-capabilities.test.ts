@@ -21,7 +21,7 @@ const apiConnector = {
 const browserConnector = {
   connector_id: "usaa",
   runtime_requirements: {
-    bindings: { network: { required: true }, browser: { required: true } },
+    bindings: { browser: { required: true }, network: { required: true } },
   },
 };
 
@@ -33,7 +33,10 @@ const codexConnector = {
 const localDeviceConnector = {
   connector_id: "imessage",
   runtime_requirements: {
-    bindings: { filesystem: { required: true }, local_device: { required: true } },
+    bindings: {
+      filesystem: { required: true },
+      local_device: { required: true },
+    },
   },
 };
 
@@ -122,7 +125,7 @@ test("assertPlacementOrThrow does not name optional bindings as missing", () => 
   const optional = {
     connector_id: "soft-browser",
     runtime_requirements: {
-      bindings: { network: { required: true }, browser: { required: false } },
+      bindings: { browser: { required: false }, network: { required: true } },
     },
   };
   const satisfied = assertPlacementOrThrow(optional, PROVIDER_RUNTIME_CAPABILITIES);

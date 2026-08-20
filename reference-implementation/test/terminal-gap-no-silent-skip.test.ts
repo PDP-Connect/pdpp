@@ -214,12 +214,7 @@ test(
       await store.markGapStatus(gap.gap_id, "in_progress");
     }
 
-    const outcome = await maybeTerminateGap(
-      store as MaybeTerminateGapStore,
-      gap.gap_id,
-      { status: 404 },
-      policy
-    );
+    const outcome = await maybeTerminateGap(store as MaybeTerminateGapStore, gap.gap_id, { status: 404 }, policy);
     assert.equal(
       outcome.terminated,
       true,

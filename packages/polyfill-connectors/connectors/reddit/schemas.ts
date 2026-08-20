@@ -13,8 +13,8 @@
  * where DOM scraping risks semantic leakage.
  */
 
+import { pdppSafeText } from "@pdpp/connector-protocol/pdpp-safe-text";
 import { z } from "zod";
-import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 import { TEXT_MAX_CHARS } from "./parsers.ts";
 
