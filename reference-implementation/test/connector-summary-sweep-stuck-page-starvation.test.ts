@@ -105,8 +105,27 @@ const MAX_ROUNDS = 12;
  * events, two orders of magnitude below this backlog). Seeded inside one
  * `writeTransaction` (below) — one row per autocommit at this volume is
  * itself the bottleneck, not the sweep under test.
+ *
+ * RECALIBRATED from 100_000 (2026-08-20). `aa8019f1d` added a general
+ * `(connector_instance_id, event_seq)` index on `spine_events`, which is what
+ * the fold's own batch read plans against. That made the read fast enough
+ * that a 100k backlog no longer saturates a `ROUND_MS` round, so the
+ * FAIL-BEFORE case below stopped reproducing — it failed at round 1 because
+ * the walk finished early and left the acceleration tranche real time, not
+ * because starvation had been fixed. That commit disclosed this and left the
+ * calibration to be redone here rather than guessed at.
+ *
+ * The starvation precondition is a RATIO between per-page fold cost and
+ * `ROUND_MS`, so restoring it means restoring the cost side. Measured on the
+ * recalibration host: 200k still does not starve, 300k does — 400k sits ~33%
+ * above that threshold. Note the margin is one-sided in the safe direction:
+ * a SLOWER host (CI) makes the fold more expensive per round and starvation
+ * easier to reproduce, so this bound does not get tighter on slower hardware.
+ * `ROUND_MS` was deliberately NOT lowered instead: shrinking the round below
+ * ~10ms makes it comparable to scheduler jitter, which would turn a real
+ * structural property into a timing race.
  */
-const STUCK_BACKLOG_EVENT_COUNT = 100_000;
+const STUCK_BACKLOG_EVENT_COUNT = 400_000;
 
 function withTempDb(fn: () => Promise<void>) {
   return async () => {
@@ -144,7 +163,8 @@ let sqliteEventSeq = 0;
  * A large terminal-event backlog for one connection — the "fold-heavy page"
  * shape from the live incident. Wrapped in one `writeTransaction`: at this
  * row count, one autocommit per insert is itself the bottleneck (~40+
- * seconds for 100k rows), independent of anything this suite tests.
+ * seconds for 100k rows, and this suite now seeds several times that),
+ * independent of anything this suite tests.
  */
 function seedTerminalEventBacklog(connectorInstanceId: string, count: number): void {
   writeTransaction(() => {
@@ -356,11 +376,22 @@ test(
     // its cooperative work completes on a contended host. Assert the actual
     // invariant directly instead of turning runner throughput into a false
     // correctness condition.
-    assert.equal(
-      firstDiscoveryByRound[1],
-      "acceleration_dirty_ids",
-      `round 2 must give acceleration first opportunity; observed ${firstDiscoveryByRound.join(", ")}`
-    );
+    //
+    // Round 2 only exists if round 1 did not already converge. Since
+    // `aa8019f1d` indexed `spine_events` by instance for every event type,
+    // the acceleration tranche's discovery is fast enough that round 1
+    // frequently converges outright and the loop breaks — leaving no round 2
+    // to observe. Converging in a SINGLE round is a strictly stronger result
+    // than converging in two, so requiring a second round here would fail the
+    // test for being too fast. Assert alternation only when round 2 actually
+    // ran; `convergedAtRound` above is the invariant that always holds.
+    if (firstDiscoveryByRound.length > 1) {
+      assert.equal(
+        firstDiscoveryByRound[1],
+        "acceleration_dirty_ids",
+        `round 2 must give acceleration first opportunity; observed ${firstDiscoveryByRound.join(", ")}`
+      );
+    }
   })
 );
 
