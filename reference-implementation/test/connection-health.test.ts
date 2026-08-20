@@ -647,6 +647,12 @@ test("surface: active unrejected credentials do not turn non-definitive auth tex
 });
 
 test("conditions: credential diagnostics redact token-shaped source details", () => {
+  // Assembled at runtime, not reshaped. `SECRET_CONDITION_PATTERN`
+  // (runtime/connection-health.ts) matches the literal prefix `ghp_`, so this
+  // value must keep its PAT shape or it would stop tripping the filter this
+  // test exists to prove. Joining the parts preserves the exact bytes while
+  // leaving no credential-shaped literal for GitHub's push-protection scanner,
+  // which blocks on shape and cannot distinguish a canary from a real token.
   const secret = ["ghp", "abcdefghijklmnopqrstuvwxyz123456"].join("_");
   const snap = computeConnectionHealth(
     input({

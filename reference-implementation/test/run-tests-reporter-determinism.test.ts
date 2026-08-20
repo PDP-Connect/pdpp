@@ -82,6 +82,19 @@ interface SensitiveFailureCase {
   stderrChunks?: string[];
 }
 
+// Assembled at runtime, not reshaped. `GITHUB_PAT_PATTERN` in
+// scripts/test-accounting/node-reporter.ts is
+// `\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b`, so both
+// the `ghp_` prefix and the >=20-char tail are what make this case exercise
+// the bare-PAT rule at all. A canary reshaped to stop looking like a PAT would
+// no longer be redacted, and the assertion that the marker is absent from the
+// reporter output would pass for the wrong reason. Joining the parts preserves
+// the exact bytes while leaving no credential-shaped literal in the source:
+// GitHub's push protection matches on shape and cannot tell a canary from a
+// real token, so a literal here blocks the entire push.
+const PAT_SHAPED_MARKER = ["ghp", "markerpatvalueabcdefghijklmnop"].join("_");
+const GITHUB_PAT_LONG_FORM_MARKER = ["github", "pat", "markerpatvalueabcdefghijk"].join("_");
+
 const SENSITIVE_FAILURE_CASES: readonly SensitiveFailureCase[] = [
   { marker: "marker-bearer-credential", payload: "Authorization: Bearer marker-bearer-credential" },
   { marker: "marker-basic-credential", payload: "Authorization: Basic marker-basic-credential" },
@@ -120,8 +133,8 @@ const SENSITIVE_FAILURE_CASES: readonly SensitiveFailureCase[] = [
   { marker: "marker-json-api-key", payload: '{"api_key":"marker-json-api-key"}' },
   { marker: "marker-cookie", payload: "Cookie: session=marker-cookie; theme=retained" },
   { marker: "marker-set-cookie", payload: "Set-Cookie: session=marker-set-cookie; HttpOnly" },
-  { marker: ["ghp", "markerpatvalueabcdefghijklmnop"].join("_"), payload: ["ghp", "markerpatvalueabcdefghijklmnop"].join("_") },
-  { marker: ["github", "pat", "markerpatvalueabcdefghijk"].join("_"), payload: ["github", "pat", "markerpatvalueabcdefghijk"].join("_") },
+  { marker: PAT_SHAPED_MARKER, payload: PAT_SHAPED_MARKER },
+  { marker: GITHUB_PAT_LONG_FORM_MARKER, payload: GITHUB_PAT_LONG_FORM_MARKER },
   { marker: "marker-url-userinfo", payload: "postgres://alice:marker-url-userinfo@example.test/db" },
   { marker: "marker-empty-user-dsn", payload: "postgres://:marker-empty-user-dsn@example.test/db" },
   { marker: "marker-redis-empty-user", payload: "redis://:marker-redis-empty-user@example.test/0" },

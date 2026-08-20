@@ -60,6 +60,15 @@ test("secrets are still redacted even when a declaration set is supplied", () =>
   // The declaration set must not become a hole. None of these is declared, so
   // each must redact exactly as before.
   const secrets = [
+    // These two are ASSEMBLED AT RUNTIME rather than written as literals, and
+    // the shape is the point: `LONG_OPAQUE_RE` (`\b[A-Za-z0-9_-]{24,}\b`)
+    // decides by LENGTH and character class, so a canary that stopped looking
+    // like a credential would stop exercising the rule under test and the
+    // assertion would prove nothing. Reshaping them is therefore not available
+    // here. Splitting them keeps the exact bytes the redactor sees while
+    // leaving no credential-shaped literal in the source for GitHub's secret
+    // scanner to match — it blocks a push on shape alone and cannot tell a
+    // canary from a real key.
     ["sk", "live", "51HxYzAbCdEfGhIjKlMnOp"].join("_"),
     ["ghp", "16CharactersXXXXXXXXXXXXXXXXXXXX"].join("_"),
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",

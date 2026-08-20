@@ -278,6 +278,13 @@ test("rs.records.ingest does not halt on a failing line; subsequent lines still 
 // ── Systemic/retryable classification (RecordsIngestSystemicFailureError) ──
 
 test("RecordsIngestSystemicFailureError carries ONLY fixed, public-safe fields — no field retains the underlying classified failure's own text", async () => {
+  // Deliberately NOT credential-shaped. The property under test is
+  // STRUCTURAL, not pattern-based: the assertion below enumerates the error's
+  // own keys and checks the serialized form with `includes`, proving the class
+  // never carries the underlying failure's text at all. Nothing here matches
+  // this string against a credential pattern, so its shape is irrelevant and
+  // only its distinctiveness matters. It previously looked like a live Stripe
+  // key, which made GitHub's push protection block the whole branch.
   const secretMarker = "canary_StructuralAssertionMarkerMustNeverSurvive";
   await assert.rejects(
     () =>

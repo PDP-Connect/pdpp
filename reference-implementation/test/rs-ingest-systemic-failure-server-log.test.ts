@@ -37,6 +37,14 @@ function withoutOwnerPassword(t: TestContext): void {
   });
 }
 
+// Deliberately NOT credential-shaped. This marker only has to be distinctive
+// enough to find in a log line and prove it never reaches the HTTP body — the
+// assertions below are plain `includes` checks and never parse it. An earlier
+// value was shaped like a live Stripe key, which is a better story but made
+// every push of this file trip GitHub's secret scanner: a pattern matcher
+// cannot tell a canary from a real key, so it blocked the whole push. The
+// redaction contract itself is owned by
+// `rs-ingest-systemic-failure-redaction.test.ts`, not by this string's shape.
 const SECRET_MARKER = "canary_ServerLogOnlyMarkerNeverInHttpBody";
 
 async function fetchJson(

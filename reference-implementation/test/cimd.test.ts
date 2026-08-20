@@ -336,6 +336,14 @@ test("fetchCimdDocument omits escaped JSON-key credentials from transport events
 });
 
 test("fetchCimdDocument omits bare PAT-shaped credentials from transport events", async () => {
+  // Assembled at runtime rather than reshaped. The event builder is a
+  // structural allowlist (`transportErrorDetail` keeps only code/name and
+  // never copies `.message`), so today this marker's shape is incidental — but
+  // the case this test names is "PAT-shaped", and a marker that no longer
+  // looks like a PAT would silently stop testing that case if the taxonomy
+  // ever grows a message-bearing field. Keeping the bytes and splitting the
+  // literal costs nothing and leaves GitHub's push-protection scanner, which
+  // matches on shape alone, with nothing to block.
   const marker = ["ghp", "gatepatcredentialvalue"].join("_");
   const event = await captureCredentialTransportFailure(transportFailure(marker, "UND_ERR_CONNECT"));
   assert.equal(JSON.stringify(event).includes(marker), false);
