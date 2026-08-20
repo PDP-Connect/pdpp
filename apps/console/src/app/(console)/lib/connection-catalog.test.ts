@@ -63,8 +63,8 @@ test("generic catalog tier code contains no connector names", async () => {
 
 test("development and unavailable entries cannot become runnable add offers", () => {
   const catalog = buildConnectorCatalog([
-    { connector_id: "https://registry.pdpp.org/connectors/development", connector_key: "development", capabilities: { public_listing: { tier: "development" } } },
-    { connector_id: "https://registry.pdpp.org/connectors/supported", connector_key: "supported", capabilities: { public_listing: { tier: "supported" } }, runtime_requirements: { bindings: { network: {} } } },
+    { connector_id: "https://registry.pdpp.dev/connectors/development", connector_key: "development", capabilities: { public_listing: { tier: "development" } } },
+    { connector_id: "https://registry.pdpp.dev/connectors/supported", connector_key: "supported", capabilities: { public_listing: { tier: "supported" } }, runtime_requirements: { bindings: { network: {} } } },
   ]);
   const development = catalog.find((entry) => entry.connectorKey === "development");
   assert.ok(development);
