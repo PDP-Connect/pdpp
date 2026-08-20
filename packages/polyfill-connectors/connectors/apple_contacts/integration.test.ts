@@ -667,3 +667,77 @@ test("apple_contacts integration: an enumerated member whose body never arrives 
     await server.close();
   }
 });
+
+test("apple_contacts integration: an iCloud group vCard becomes a group, not a phantom contact", async () => {
+  // The defect this closes: iCloud stores each group as its own vCard
+  // resource marked `X-ADDRESSBOOKSERVER-KIND:group`, but the connector read
+  // only the vCard-standard CATEGORIES property. So the group's own resource
+  // was emitted AS A CONTACT — a phantom whose display_name is the group's
+  // name, counted as a covered contact — while `contact_groups`, a REQUIRED
+  // stream, stayed empty. The fake server could not synthesize this shape
+  // until now, which is why the whole suite passed while the connector was
+  // blind.
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    server.contacts.set("alice", {
+      uid: "alice",
+      href: "/addressbooks/owner/card/alice.vcf",
+      vcard: buildVCard({ uid: "alice", fn: "Alice Example" }),
+    });
+    server.contacts.set("bob", {
+      uid: "bob",
+      href: "/addressbooks/owner/card/bob.vcf",
+      vcard: buildVCard({ uid: "bob", fn: "Bob Example" }),
+    });
+    server.contacts.set("family-group", {
+      uid: "family-group",
+      href: "/addressbooks/owner/card/family-group.vcf",
+      vcard: buildVCard({ uid: "family-group", fn: "Family", groupMemberUids: ["alice", "bob"] }),
+    });
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded");
+
+    const contacts = recordsOf(result.messages, "contacts");
+    const contactNames = contacts.map((c) => String(c.display_name)).sort((a, b) => a.localeCompare(b));
+    assert.deepEqual(contactNames, ["Alice Example", "Bob Example"]);
+    assert.equal(
+      contacts.some((c) => c.display_name === "Family"),
+      false,
+      "the group vCard leaked into the contacts stream as a phantom contact"
+    );
+
+    // The group the connector was previously blind to must now be a record,
+    // with the membership the SERVER stated rather than one inferred from
+    // contact bodies.
+    const groups = recordsOf(result.messages, "contact_groups");
+    assert.deepEqual(
+      groups.map((g) => g.name),
+      ["Family"]
+    );
+    const memberUids = groups[0]?.member_uids as string[] | undefined;
+    assert.ok(memberUids);
+    assert.deepEqual(
+      [...memberUids].sort((a, b) => a.localeCompare(b)),
+      ["alice", "bob"]
+    );
+
+    // The group resource must leave the contacts denominator too: counting
+    // it as considered-but-not-covered would manufacture a permanent
+    // shortfall out of correct behaviour.
+    const contactsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(contactsCoverage.considered, 2);
+    assert.equal(contactsCoverage.covered, 2);
+  } finally {
+    await server.close();
+  }
+});

@@ -64,6 +64,13 @@ import {
   discoverCardDav,
   nativeFetchAdapter,
 } from "./discovery.ts";
+import {
+  type GroupAnchor,
+  groupAnchorVerdict,
+  groupMemberUids,
+  isGroupVCard,
+  partitionVCards,
+} from "./group-vcards.ts";
 import { validateRecord } from "./schemas.ts";
 import { categoriesOf, type ParsedVCard, parseVCards } from "./vcard.ts";
 
@@ -235,18 +242,47 @@ export function groupRecord(bookUrl: string, name: string, memberUids: string[])
   };
 }
 
-/** Derive group-membership records from every contact's CATEGORIES field.
- *  This is CardDAV/vCard-standard (RFC 6350 §6.7.1), unlike Apple's
- *  proprietary group-vCard mechanism, which is unconfirmed for iCloud. */
+/**
+ * Derive group-membership records from BOTH mechanisms a CardDAV server may
+ * use.
+ *
+ *  1. Apple's group vCards — a resource in the collection carrying
+ *     `X-ADDRESSBOOKSERVER-KIND:group` and `X-ADDRESSBOOKSERVER-MEMBER`
+ *     lines. This is how iCloud actually stores groups.
+ *  2. The vCard-standard `CATEGORIES` property on each contact
+ *     (RFC 6350 §6.7.1).
+ *
+ * Only (2) was previously read. For an iCloud account that meant
+ * `contact_groups` — a manifest-REQUIRED stream — could never emit a record
+ * no matter how many groups the account had, and the resulting zero was
+ * indistinguishable from a genuinely empty address book.
+ *
+ * A group vCard wins over a same-named CATEGORIES group: the server's own
+ * membership list is authoritative over one inferred from contact bodies.
+ */
 export function deriveGroups(bookUrl: string, cards: ReadonlyArray<{ card: ParsedVCard; uid: string }>): RecordData[] {
+  const { contacts, groups } = partitionVCards(cards);
+
   const membersByGroup = new Map<string, string[]>();
-  for (const { card, uid } of cards) {
+  for (const { card, uid } of contacts) {
     for (const category of categoriesOf(card)) {
       const members = membersByGroup.get(category) ?? [];
       members.push(uid);
       membersByGroup.set(category, members);
     }
   }
+
+  // Apple group vCards are authoritative; they overwrite a CATEGORIES-derived
+  // entry of the same name rather than merging into it, so a group's
+  // membership is never half server-stated and half inferred.
+  for (const { card } of groups) {
+    const name = card.fn?.trim();
+    if (!name) {
+      continue;
+    }
+    membersByGroup.set(name, groupMemberUids(card));
+  }
+
   return [...membersByGroup.entries()].map(([name, members]) => groupRecord(bookUrl, name, members));
 }
 
@@ -320,10 +356,18 @@ async function emitContactGroupsIfRequested(args: {
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   requested: Map<string, unknown>;
   seenCards: Array<{ card: ParsedVCard; uid: string }>;
-}): Promise<number> {
+}): Promise<{ emitted: number; anchor: GroupAnchor }> {
   const { bookUrl, boundaryEstablished, emit, emitRecord, requested, seenCards } = args;
+  const { contacts, groups } = partitionVCards(seenCards);
+  const derivedCategoryGroups = new Set(contacts.flatMap(({ card }) => categoriesOf(card))).size;
+  const anchor: GroupAnchor = {
+    serverGroupVCards: groups.length,
+    derivedCategoryGroups,
+    emitted: 0,
+    boundaryEstablished,
+  };
   if (!(requested.has("contact_groups") && boundaryEstablished)) {
-    return 0;
+    return { emitted: 0, anchor };
   }
 
   let groupsEmitted = 0;
@@ -332,7 +376,7 @@ async function emitContactGroupsIfRequested(args: {
     groupsEmitted += 1;
   }
   await emit({ type: "STATE", stream: "contact_groups", cursor: { fetched_at: nowIso() } });
-  return groupsEmitted;
+  return { emitted: groupsEmitted, anchor: { ...anchor, emitted: groupsEmitted } };
 }
 
 /**
@@ -415,6 +459,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   contactsConsidered: number;
   contactsCovered: number;
   covered: boolean;
+  groupAnchor: GroupAnchor;
   groupsEmitted: number;
   groupsBoundaryEstablished: boolean;
   hadUnparseableResource: boolean;
@@ -495,10 +540,20 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
       return;
     }
     const record = contactRecord(book.url, resource, card);
-    if (requested.has("contacts") && entityCursor.shouldEmit(record)) {
+    // A group vCard is a real resource in this collection, so the
+    // enumeration returns it alongside people. Emitting it as a contact
+    // creates a phantom whose `display_name` is the group's name and which
+    // counts as a covered contact. It is still SEEN (it belongs in
+    // `seenCards`, where the group derivation and the group anchor both
+    // read it), and it still counts as enumerated — it simply is not a
+    // person, so it must not enter the `contacts` stream.
+    const isGroup = isGroupVCard(card);
+    if (!isGroup && requested.has("contacts") && entityCursor.shouldEmit(record)) {
       await emitRecord("contacts", record);
     }
-    contactCount += 1;
+    if (!isGroup) {
+      contactCount += 1;
+    }
     seenCards.push({ card, uid: String(record.id) });
   };
 
@@ -582,13 +637,23 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   // after the source enumeration and derivation complete successfully;
   // this lets a genuine zero-group result prove coverage without turning a
   // failed or unattempted scan into proof.
-  const groupsEmitted = await emitContactGroupsIfRequested({
+  const { emitted: groupsEmitted, anchor: groupAnchor } = await emitContactGroupsIfRequested({
     bookUrl: book.url,
     boundaryEstablished: groupsBoundaryEstablished,
     emit,
     emitRecord,
     requested,
     seenCards: groupCards,
+  });
+
+  // The `contact_groups` completeness anchor. The verdict is RETURNED rather
+  // than emitted here: this scope's `emit` is deliberately narrowed to STATE
+  // messages, and widening it just to report a finding would erode a
+  // boundary that is doing useful work. The caller owns the full emit.
+  await progress("Group inventory checked against the enumerated collection", {
+    stream: "contact_groups",
+    count: groupsEmitted,
+    total: Math.max(groupAnchor.serverGroupVCards, groupsEmitted),
   });
 
   const contactsState =
@@ -613,14 +678,21 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   // address book still proves considered === covered === 0). When one or
   // more resources failed to parse, considered > covered, so the caller
   // reads a real partial instead of a fabricated complete.
+  //
+  // Group vCards are enumerated resources that are deliberately NOT
+  // contacts, so they must leave the contacts denominator too — otherwise
+  // excluding them from `contactsCovered` alone would manufacture a
+  // permanent considered > covered shortfall out of correct behaviour. They
+  // are accounted for by the `contact_groups` anchor above instead.
   return {
     contactsBoundaryEstablished,
-    contactsConsidered: resourcesEnumerated,
+    contactsConsidered: resourcesEnumerated - groupAnchor.serverGroupVCards,
     contactsCovered: contactCount,
     hadUnparseableResource: unparseableResources > 0,
     covered: bookCovered,
     groupsEmitted,
     groupsBoundaryEstablished,
+    groupAnchor,
   };
 }
 
@@ -701,6 +773,7 @@ if (isMainModule(import.meta.url)) {
           contactsConsidered: bookContactsConsidered,
           contactsCovered: bookContactsCovered,
           covered: bookCovered,
+          groupAnchor,
           groupsEmitted,
           groupsBoundaryEstablished: bookGroupsBoundaryEstablished,
           hadUnparseableResource,
@@ -720,9 +793,29 @@ if (isMainModule(import.meta.url)) {
         if (bookCovered) {
           covered += 1;
         }
+        // The completeness anchor for this book's groups. `short` is the
+        // case the connector was previously blind to: the server enumerated
+        // group vCards that never became records. It is reported as a
+        // SKIP_RESULT here, where the full `emit` is in scope.
+        const groupVerdict = groupAnchorVerdict(groupAnchor);
+        if (groupVerdict.status === "short") {
+          await emit({
+            type: "SKIP_RESULT",
+            stream: "contact_groups",
+            reason: "group_inventory_short",
+            message: "The address book holds groups this run did not record",
+            diagnostics: {
+              considered: groupVerdict.considered,
+              covered: groupVerdict.covered,
+              missing: groupVerdict.missing,
+            },
+          });
+        }
         // deriveGroups has no drop/filter path: every derived group is
         // unconditionally emitted, so considered === covered === the exact
         // count emitted for this book (including a genuine zero-group book).
+        // The anchor above is what checks that claim against the server's
+        // own enumeration rather than trusting it.
         groupsConsidered += groupsEmitted;
         groupsBoundaryEstablished = groupsBoundaryEstablished && bookGroupsBoundaryEstablished;
         contactsBoundaryEstablished = contactsBoundaryEstablished && bookContactsBoundaryEstablished;

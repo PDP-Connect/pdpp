@@ -435,6 +435,12 @@ export function buildVCard(fields: {
   categories?: string[];
   email?: string;
   fn: string;
+  /** Member UIDs. Presence makes this a group vCard in Apple's wire shape
+   *  (`X-ADDRESSBOOKSERVER-KIND:group`), which is how iCloud actually stores
+   *  groups. Without this the fixture could only synthesize CATEGORIES, so a
+   *  connector blind to group vCards still passed every test — the fixture
+   *  gap that let the `contact_groups` defect hide. */
+  groupMemberUids?: string[];
   photo?: { base64: string; mediaType: string };
   uid: string;
 }): string {
@@ -444,6 +450,12 @@ export function buildVCard(fields: {
   }
   if (fields.categories?.length) {
     lines.push(`CATEGORIES:${fields.categories.join(",")}`);
+  }
+  if (fields.groupMemberUids) {
+    lines.push("X-ADDRESSBOOKSERVER-KIND:group");
+    for (const member of fields.groupMemberUids) {
+      lines.push(`X-ADDRESSBOOKSERVER-MEMBER:urn:uuid:${member}`);
+    }
   }
   if (fields.photo) {
     lines.push(`PHOTO;ENCODING=b;TYPE=${fields.photo.mediaType.toUpperCase()}:${fields.photo.base64}`);
