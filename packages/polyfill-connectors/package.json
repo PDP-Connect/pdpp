@@ -28,8 +28,8 @@
     "verify": "pnpm typecheck && pnpm check && pnpm check:noAwaitInLoops-conformance && pnpm check:noUnnecessaryConditions-expiry"
   },
   "dependencies": {
-    "@pdpp/collector-runtime": "workspace:*",
-    "@pdpp/connector-protocol": "workspace:*",
+    "@pdpp/collector-runtime": "file:../../vendor/pdpp-collector-runtime-0.0.1.tgz",
+    "@pdpp/connector-protocol": "file:../../vendor/pdpp-connector-protocol-0.0.1.tgz",
     "@pdpp/reference-contract": "workspace:*",
     "@streamparser/json": "^0.0.23",
     "better-sqlite3": "^13.0.3",

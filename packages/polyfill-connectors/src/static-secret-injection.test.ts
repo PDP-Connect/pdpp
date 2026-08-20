@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { runCollectorConnector } from "@pdpp/collector-runtime";
+import { resolveExecutionRoot } from "./execution-root.ts";
 import {
   buildConnectionScopedSecretEnv,
   isStaticSecretCaptureOptional,
@@ -62,7 +63,10 @@ test("steam injection sets the API key secret and Steam ID setup field", () => {
   const env = buildConnectionScopedSecretEnv(
     "steam",
     { secret: "synthetic-steam-api-key", credentialKind: "api_key" },
-    { kind: "static_secret_draft", setup_fields: { steamid: "76500000000000000" } }
+    {
+      kind: "static_secret_draft",
+      setup_fields: { steamid: "76500000000000000" },
+    }
   );
   assert.deepEqual(env, {
     STEAM_API_KEY: "synthetic-steam-api-key",
@@ -74,10 +78,16 @@ test("jellyfin injection sets the username+password secrets and base URL setup f
   const env = buildConnectionScopedSecretEnv(
     "jellyfin",
     {
-      secret: JSON.stringify({ username: "alice", password: "synthetic-password" }),
+      secret: JSON.stringify({
+        username: "alice",
+        password: "synthetic-password",
+      }),
       credentialKind: "username_password",
     },
-    { kind: "static_secret_draft", setup_fields: { base_url: "https://jellyfin.example.com" } }
+    {
+      kind: "static_secret_draft",
+      setup_fields: { base_url: "https://jellyfin.example.com" },
+    }
   );
   assert.deepEqual(env, {
     JELLYFIN_USERNAME: "alice",
@@ -89,10 +99,16 @@ test("jellyfin injection sets the username+password secrets and base URL setup f
 test("jellyfin injection sets only the api_key secret when username/password are absent (secondary path)", () => {
   const env = buildConnectionScopedSecretEnv(
     "jellyfin",
-    { secret: JSON.stringify({ secret: "synthetic-jellyfin-api-key" }), credentialKind: "username_password" },
+    {
+      secret: JSON.stringify({ secret: "synthetic-jellyfin-api-key" }),
+      credentialKind: "username_password",
+    },
     {
       kind: "static_secret_draft",
-      setup_fields: { base_url: "https://jellyfin.example.com", jellyfin_user_id: "alice" },
+      setup_fields: {
+        base_url: "https://jellyfin.example.com",
+        jellyfin_user_id: "alice",
+      },
     }
   );
   assert.deepEqual(env, {
@@ -105,8 +121,14 @@ test("jellyfin injection sets only the api_key secret when username/password are
 test("apple_contacts injection sets the app-specific password and both Apple ID aliases", () => {
   const env = buildConnectionScopedSecretEnv(
     "apple_contacts",
-    { secret: "synthetic-app-specific-password", credentialKind: "app_password" },
-    { kind: "static_secret_draft", setup_fields: { account_email: "owner@icloud.com" } }
+    {
+      secret: "synthetic-app-specific-password",
+      credentialKind: "app_password",
+    },
+    {
+      kind: "static_secret_draft",
+      setup_fields: { account_email: "owner@icloud.com" },
+    }
   );
   assert.deepEqual(env, {
     APPLE_APP_SPECIFIC_PASSWORD: "synthetic-app-specific-password",
@@ -126,12 +148,19 @@ test("groupme injection sets the access token secret", () => {
 test("steam/apple_contacts/groupme registry env vars match their connector manifests", () => {
   const cases = [
     { connectorId: "steam", secretField: "secret", setupFields: ["steamid"] },
-    { connectorId: "apple_contacts", secretField: "secret", setupFields: ["account_email"] },
+    {
+      connectorId: "apple_contacts",
+      secretField: "secret",
+      setupFields: ["account_email"],
+    },
     { connectorId: "groupme", secretField: "secret", setupFields: [] },
   ];
   for (const { connectorId, secretField, setupFields } of cases) {
     const manifest = JSON.parse(readFileSync(new URL(`../manifests/${connectorId}.json`, import.meta.url), "utf8"));
-    const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[] }>;
+    const fields = manifest.setup.credential_capture.fields as Array<{
+      name: string;
+      env: string[];
+    }>;
     const secretDescriptorField = fields.find((field) => field.name === secretField);
     const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY[connectorId];
     assert.ok(descriptor, `registry must include ${connectorId}`);
@@ -149,7 +178,10 @@ test("steam/apple_contacts/groupme registry env vars match their connector manif
 
 test("jellyfin registry secret-bundle and setup-field env vars match its connector manifest", () => {
   const manifest = JSON.parse(readFileSync(new URL("../manifests/jellyfin.json", import.meta.url), "utf8"));
-  const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[] }>;
+  const fields = manifest.setup.credential_capture.fields as Array<{
+    name: string;
+    env: string[];
+  }>;
   const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY.jellyfin;
   assert.ok(descriptor, "registry must include jellyfin");
   assert.equal(
@@ -188,19 +220,31 @@ test("browser username/password connectors inject their stored credential bundle
   const cases = [
     {
       connectorId: "amazon",
-      expected: { AMAZON_PASSWORD: "synthetic-password", AMAZON_USERNAME: "owner@example.com" },
+      expected: {
+        AMAZON_PASSWORD: "synthetic-password",
+        AMAZON_USERNAME: "owner@example.com",
+      },
     },
     {
       connectorId: "chase",
-      expected: { CHASE_PASSWORD: "synthetic-password", CHASE_USERNAME: "owner@example.com" },
+      expected: {
+        CHASE_PASSWORD: "synthetic-password",
+        CHASE_USERNAME: "owner@example.com",
+      },
     },
     {
       connectorId: "heb",
-      expected: { HEB_PASSWORD: "synthetic-password", HEB_USERNAME: "owner@example.com" },
+      expected: {
+        HEB_PASSWORD: "synthetic-password",
+        HEB_USERNAME: "owner@example.com",
+      },
     },
     {
       connectorId: "usaa",
-      expected: { USAA_PASSWORD: "synthetic-password", USAA_USERNAME: "owner@example.com" },
+      expected: {
+        USAA_PASSWORD: "synthetic-password",
+        USAA_USERNAME: "owner@example.com",
+      },
     },
   ];
   for (const { connectorId, expected } of cases) {
@@ -392,7 +436,11 @@ test("venmo injection sets nothing for a fully empty bundle, never throwing (bro
 
 test("venmo registry secret-bundle env vars match its connector manifest — fields stay required, only the block-level capture is optional", () => {
   const manifest = JSON.parse(readFileSync(new URL("../manifests/venmo.json", import.meta.url), "utf8"));
-  const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[]; required: boolean }>;
+  const fields = manifest.setup.credential_capture.fields as Array<{
+    name: string;
+    env: string[];
+    required: boolean;
+  }>;
   const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY.venmo;
   assert.ok(descriptor, "registry must include venmo");
   assert.equal(
@@ -422,14 +470,21 @@ test("venmo registry secret-bundle env vars match its connector manifest — fie
 
 test("sealed bundle injection refuses invalid and incomplete recovered bundles", () => {
   assert.throws(
-    () => buildConnectionScopedSecretEnv("slack", { credentialKind: "secret_bundle", secret: "not json" }),
+    () =>
+      buildConnectionScopedSecretEnv("slack", {
+        credentialKind: "secret_bundle",
+        secret: "not json",
+      }),
     (err) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_invalid"
   );
   assert.throws(
     () =>
       buildConnectionScopedSecretEnv("slack", {
         credentialKind: "secret_bundle",
-        secret: JSON.stringify({ slack_workspace: "T12345", slack_token: "xoxc-synthetic-token" }),
+        secret: JSON.stringify({
+          slack_workspace: "T12345",
+          slack_token: "xoxc-synthetic-token",
+        }),
       }),
     (err) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_field_missing"
   );
@@ -451,7 +506,11 @@ test("two connections for one connector build two distinct, non-colliding fragme
 
 test("injection refuses unknown connectors instead of inventing env vars", () => {
   assert.throws(
-    () => buildConnectionScopedSecretEnv("claude-code", { secret: "x", credentialKind: "app_password" }),
+    () =>
+      buildConnectionScopedSecretEnv("claude-code", {
+        secret: "x",
+        credentialKind: "app_password",
+      }),
     (err) => err instanceof StaticSecretInjectionError && err.code === "not_a_static_secret_connector"
   );
 });
@@ -470,7 +529,10 @@ test("injection refuses a credential kind that does not match the connector", ()
 test("injection refuses an empty recovered secret", () => {
   assert.throws(
     () =>
-      buildConnectionScopedSecretEnv("gmail", { secret: "", credentialKind: "app_password" } as RecoveredStaticSecret),
+      buildConnectionScopedSecretEnv("gmail", {
+        secret: "",
+        credentialKind: "app_password",
+      } as RecoveredStaticSecret),
     (err) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_invalid"
   );
 });
@@ -650,13 +712,20 @@ test("two gmail connections run with distinct injected secrets, scoped per run, 
         },
         deviceId: "device-1",
         deviceToken: "device-token",
+        executionRoot: resolveExecutionRoot({ args: [echo] }),
         queuePath: await tempQueuePath(),
         sourceInstanceId,
       });
     };
 
-    await runConnection("cin_personal", { secret: "personal-mailbox-secret", credentialKind: "app_password" });
-    await runConnection("cin_work", { secret: "work-mailbox-secret", credentialKind: "app_password" });
+    await runConnection("cin_personal", {
+      secret: "personal-mailbox-secret",
+      credentialKind: "app_password",
+    });
+    await runConnection("cin_work", {
+      secret: "work-mailbox-secret",
+      credentialKind: "app_password",
+    });
 
     assert.deepEqual(
       harness.ingestedSecrets.sort((a, b) => {

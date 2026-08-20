@@ -28,6 +28,7 @@ import { test } from "node:test";
 import { COLLECTION_SCOPE_STATE_KEY, hashCanonicalJson, runCollectorConnector } from "@pdpp/collector-runtime";
 import type { TerminalRunCommitRequest } from "@pdpp/collector-runtime/local-device-client";
 import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
+import { resolveExecutionRoot } from "./execution-root.ts";
 
 const CONNECTORS_DIR = join(import.meta.dirname, "..", "connectors");
 const SINCE = "2026-06-01T00:00:00.000Z";
@@ -63,7 +64,10 @@ async function seedClaudeCode(): Promise<ConnectorFixture> {
   await writeFile(join(outOfRangeDir, "session.jsonl"), '{"broken PDPP_SENTINEL_MUST_NOT_BE_READ\n', "utf8");
   return {
     connector: "claude_code",
-    env: { CLAUDE_CODE_HOME: claudeHome, CLAUDE_CODE_PROJECTS_DIR: projectsDir },
+    env: {
+      CLAUDE_CODE_HOME: claudeHome,
+      CLAUDE_CODE_PROJECTS_DIR: projectsDir,
+    },
     streams: ["sessions", "messages", "coverage_diagnostics"],
     timeScopableStreams: ["sessions", "messages"],
   };
@@ -79,7 +83,11 @@ async function seedCodex(): Promise<ConnectorFixture> {
   await writeFile(
     join(newDir, "rollout-2026-07-01T00-00-00-sess2026.jsonl"),
     `${JSON.stringify({
-      payload: { cwd: "/home/u/p", id: "33333333-3333-4333-8333-333333333333", timestamp: "2026-07-01T00:00:00.000Z" },
+      payload: {
+        cwd: "/home/u/p",
+        id: "33333333-3333-4333-8333-333333333333",
+        timestamp: "2026-07-01T00:00:00.000Z",
+      },
       type: "session_meta",
     })}\n`,
     "utf8"
@@ -144,7 +152,10 @@ async function startRunHarness(initialState: Record<string, unknown> = {}): Prom
       }
       if (url.endsWith("/state")) {
         if (req.method === "PUT" && parsed && typeof parsed.state === "object" && parsed.state) {
-          persisted = { ...persisted, ...(parsed.state as Record<string, unknown>) };
+          persisted = {
+            ...persisted,
+            ...(parsed.state as Record<string, unknown>),
+          };
         }
         send(200, {
           connector_instance_id: "connector-instance-1",
@@ -175,7 +186,12 @@ async function startRunHarness(initialState: Record<string, unknown> = {}): Prom
 }
 
 function scopeState(since: string): Record<string, unknown> {
-  return { [COLLECTION_SCOPE_STATE_KEY]: { declared_at: "2026-08-01T00:00:00.000Z", scope: { since } } };
+  return {
+    [COLLECTION_SCOPE_STATE_KEY]: {
+      declared_at: "2026-08-01T00:00:00.000Z",
+      scope: { since },
+    },
+  };
 }
 
 async function tempQueuePath(): Promise<string> {
@@ -188,21 +204,27 @@ async function runFixture(
   harness: RunHarness,
   overrides: { abortSignal?: AbortSignal; queuePath?: string } = {}
 ): Promise<Awaited<ReturnType<typeof runCollectorConnector>>> {
+  const args = ["--import", "tsx", join(CONNECTORS_DIR, fixture.connector, "index.ts")];
   return runCollectorConnector({
     ...(overrides.abortSignal ? { abortSignal: overrides.abortSignal } : {}),
     baseUrl: harness.url,
     connector: {
-      args: ["--import", "tsx", join(CONNECTORS_DIR, fixture.connector, "index.ts")],
+      args,
       command: process.execPath,
       connector_id: fixture.connector,
       enforcesSourceRoots: true,
-      env: { ...fixture.env, PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1", PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" },
+      env: {
+        ...fixture.env,
+        PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+      },
       runtime_requirements: { bindings: {} },
       streams: fixture.streams,
       timeScopableStreams: fixture.timeScopableStreams,
     },
     deviceId: "device-1",
     deviceToken: "device-token",
+    executionRoot: resolveExecutionRoot({ args }),
     queuePath: overrides.queuePath ?? (await tempQueuePath()),
     sourceInstanceId: "src-1",
   });
@@ -283,7 +305,12 @@ for (const connectorId of ["claude_code", "codex"] as const) {
     try {
       const controller = new AbortController();
       controller.abort();
-      await assert.rejects(() => runFixture(fixture, firstHarness, { abortSignal: controller.signal, queuePath }));
+      await assert.rejects(() =>
+        runFixture(fixture, firstHarness, {
+          abortSignal: controller.signal,
+          queuePath,
+        })
+      );
       assert.equal(firstHarness.terminalPosts.length, 0);
     } finally {
       await firstHarness.close();
@@ -304,7 +331,9 @@ for (const connectorId of ["claude_code", "codex"] as const) {
         1,
         "resuming after an interruption must reach exactly one committed coverage claim, not a duplicate"
       );
-      const post = secondHarness.terminalPosts[0] as { collection_boundary?: string };
+      const post = secondHarness.terminalPosts[0] as {
+        collection_boundary?: string;
+      };
       assert.equal(post.collection_boundary, `since=${SINCE}`);
 
       // Idempotency: running a THIRD time against the already-complete,
@@ -312,7 +341,9 @@ for (const connectorId of ["claude_code", "codex"] as const) {
       // the collector's own per-file cursors fast-skip unchanged sources, and
       // the runner must not re-fire a terminal-collection claim from a lane
       // that already committed one under the same boundary.
-      const thirdResult = await runFixture(fixture, secondHarness, { queuePath });
+      const thirdResult = await runFixture(fixture, secondHarness, {
+        queuePath,
+      });
       assert.equal(thirdResult.done?.status, "succeeded");
       assert.equal(
         secondHarness.terminalPosts.length,

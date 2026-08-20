@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { runCollectorConnector } from "@pdpp/collector-runtime";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
+import { resolveExecutionRoot } from "../../src/execution-root.ts";
 import { scanLocalJsonl } from "../../src/local-jsonl-cursor.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 
@@ -35,7 +36,12 @@ function transcriptLine(id: string, timestamp: string, extra: Record<string, unk
   });
 }
 
-async function makeSource(): Promise<{ claudeHome: string; projects: string; top: string; subagent: string }> {
+async function makeSource(): Promise<{
+  claudeHome: string;
+  projects: string;
+  top: string;
+  subagent: string;
+}> {
   const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-incremental-"));
   const projects = join(claudeHome, "projects");
   const project = join(projects, "-tmp-incremental");
@@ -72,9 +78,16 @@ async function run(input: {
     allowFailedDone: true,
     cwd: join(import.meta.dirname, "../.."),
     entrypoint: "connectors/claude_code/index.ts",
-    env: { CLAUDE_CODE_HOME: input.claudeHome, CLAUDE_CODE_PROJECTS_DIR: input.projects },
+    env: {
+      CLAUDE_CODE_HOME: input.claudeHome,
+      CLAUDE_CODE_PROJECTS_DIR: input.projects,
+    },
     start: {
-      scope: { streams: (input.streams ?? ["sessions", "messages"]).map((name) => ({ name })) },
+      scope: {
+        streams: (input.streams ?? ["sessions", "messages"]).map((name) => ({
+          name,
+        })),
+      },
       ...(input.state ? { state: input.state } : {}),
       type: "START",
     },
@@ -107,7 +120,10 @@ async function scanLines(path: string, prior?: Awaited<ReturnType<typeof scanLoc
 test("M1: unchanged rich cursor fast-skips without a transcript replay", async () => {
   const source = await makeSource();
   const first = await run(source);
-  const second = await run({ ...source, state: { messages: first.states.messages, sessions: first.states.sessions } });
+  const second = await run({
+    ...source,
+    state: { messages: first.states.messages, sessions: first.states.sessions },
+  });
   assert.equal(second.records.length, 0);
 });
 
@@ -115,7 +131,10 @@ test("M2: an mtime-only touch verifies the prefix and emits no transcript record
   const source = await makeSource();
   const first = await run(source);
   await utimes(source.top, new Date(Date.now() + 20_000), new Date(Date.now() + 20_000));
-  const touched = await run({ ...source, state: { messages: first.states.messages, sessions: first.states.sessions } });
+  const touched = await run({
+    ...source,
+    state: { messages: first.states.messages, sessions: first.states.sessions },
+  });
   assert.equal(touched.records.length, 0);
 });
 
@@ -195,7 +214,9 @@ test("M9: malformed LF-terminated JSON is skipped while its physical boundary ad
     state: { messages: first.states.messages, sessions: first.states.sessions },
   });
   assert.equal(malformed.records.length, 0);
-  const child = malformed.states.messages as { file_cursors: Record<string, { committed_offset_bytes: number }> };
+  const child = malformed.states.messages as {
+    file_cursors: Record<string, { committed_offset_bytes: number }>;
+  };
   assert.equal(
     child.file_cursors[source.top]?.committed_offset_bytes,
     (await (await import("node:fs/promises")).stat(source.top)).size
@@ -241,7 +262,11 @@ test("M12: rewriting one of two contributors rebuilds the aggregate to the clean
   });
   const full = await run({ ...source, streams: ["sessions"] });
   assert.deepEqual(
-    (incremental.states.sessions as { session_aggregates: Record<string, unknown> }).session_aggregates,
+    (
+      incremental.states.sessions as {
+        session_aggregates: Record<string, unknown>;
+      }
+    ).session_aggregates,
     (full.states.sessions as { session_aggregates: Record<string, unknown> }).session_aggregates
   );
 });
@@ -251,7 +276,10 @@ test("M13: a new contributor for an existing session folds into the existing agg
   const first = await run(source);
   const later = join(source.projects, "-tmp-incremental", SESSION_ID, "subagents", "later.jsonl");
   await writeFile(later, `${transcriptLine("sub-later", "2026-07-21T00:05:00Z")}\n`);
-  const changed = await run({ ...source, state: { messages: first.states.messages, sessions: first.states.sessions } });
+  const changed = await run({
+    ...source,
+    state: { messages: first.states.messages, sessions: first.states.sessions },
+  });
   assert.equal(changed.records.find((record) => record.stream === "sessions")?.data.message_count, 3);
 });
 
@@ -279,8 +307,12 @@ test("M17: matching legacy mtimes establish rich state without transcript replay
   const migrated = await run({
     ...source,
     state: {
-      messages: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } },
-      sessions: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } },
+      messages: {
+        file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime },
+      },
+      sessions: {
+        file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime },
+      },
     },
   });
   assert.equal(migrated.records.length, 0);
@@ -348,7 +380,10 @@ test("M17 live legacy shape: 11,378 mtime entries baseline matching sources whil
   }
   const noOp = await run({
     ...source,
-    state: { messages: migrated.states.messages, sessions: migrated.states.sessions },
+    state: {
+      messages: migrated.states.messages,
+      sessions: migrated.states.sessions,
+    },
   });
   assert.equal(noOp.records.length, 0, "the v1 checkpoint makes the next run a no-op");
 });
@@ -361,7 +396,9 @@ test("M18/B: stale messages evidence replays even when sessions evidence is curr
     ...source,
     state: {
       messages: { file_mtimes: { [source.top]: 0, [source.subagent]: 0 } },
-      sessions: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } },
+      sessions: {
+        file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime },
+      },
     },
   });
   assert.equal(replayed.records.filter((record) => record.stream === "messages").length, 2);
@@ -373,7 +410,11 @@ test("M17/A: sessions-only legacy evidence never baselines messages", async () =
   const subMtime = (await (await import("node:fs/promises")).stat(source.subagent)).mtimeMs;
   const migrated = await run({
     ...source,
-    state: { sessions: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } } },
+    state: {
+      sessions: {
+        file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime },
+      },
+    },
   });
   assert.equal(
     migrated.records.filter((record) => record.stream === "messages").length,
@@ -388,7 +429,11 @@ test("M17/C: messages-only legacy evidence never baselines sessions", async () =
   const subMtime = (await (await import("node:fs/promises")).stat(source.subagent)).mtimeMs;
   const migrated = await run({
     ...source,
-    state: { messages: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } } },
+    state: {
+      messages: {
+        file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime },
+      },
+    },
   });
   assert.equal(
     migrated.records.filter((record) => record.stream === "sessions").length,
@@ -404,7 +449,10 @@ test("M16: restarting from the pre-STATE cursor replays a stable logical key", a
     source.top,
     `${await readFile(source.top, "utf8")}${transcriptLine("top-2", "2026-07-21T00:02:00Z")}\n`
   );
-  const prior = { messages: first.states.messages, sessions: first.states.sessions };
+  const prior = {
+    messages: first.states.messages,
+    sessions: first.states.sessions,
+  };
   const interruptedAttempt = await run({ ...source, state: prior });
   const restart = await run({ ...source, state: prior });
   assert.deepEqual(
@@ -416,7 +464,10 @@ test("M16: restarting from the pre-STATE cursor replays a stable logical key", a
 test("rich state contains neither transcript content nor child-key ledgers", async () => {
   const source = await makeSource();
   const result = await run(source);
-  const state = JSON.stringify({ messages: result.states.messages, sessions: result.states.sessions });
+  const state = JSON.stringify({
+    messages: result.states.messages,
+    sessions: result.states.sessions,
+  });
   assert.equal(state.includes("top-1"), false);
   assert.equal(state.includes("sub-1"), false);
   assert.equal(state.includes("x".repeat(70_000)), false);
@@ -431,7 +482,10 @@ test("M21: device-token changes do not alter rich cursor behavior", async () => 
   try {
     const second = await run({
       ...source,
-      state: { messages: first.states.messages, sessions: first.states.sessions },
+      state: {
+        messages: first.states.messages,
+        sessions: first.states.sessions,
+      },
     });
     assert.equal(second.records.length, 0);
   } finally {
@@ -446,7 +500,11 @@ test("M21: device-token changes do not alter rich cursor behavior", async () => 
 test("M22: sessions backfill independently without advancing the child cursor", async () => {
   const source = await makeSource();
   const first = await run(source);
-  const sessionOnly = await run({ ...source, state: { messages: first.states.messages }, streams: ["sessions"] });
+  const sessionOnly = await run({
+    ...source,
+    state: { messages: first.states.messages },
+    streams: ["sessions"],
+  });
   assert.ok(sessionOnly.states.sessions);
   assert.equal(sessionOnly.states.messages, undefined);
 });
@@ -458,12 +516,18 @@ test("M23: fixed-seed append, rewrite, truncate, and rotation fold equals a clea
     source.top,
     `${await readFile(source.top, "utf8")}${transcriptLine("top-2", "2026-07-21T00:02:00Z")}\n`
   );
-  const append = await run({ ...source, state: { messages: first.states.messages, sessions: first.states.sessions } });
+  const append = await run({
+    ...source,
+    state: { messages: first.states.messages, sessions: first.states.sessions },
+  });
   await truncate(source.subagent, 0);
   await writeFile(source.subagent, `${transcriptLine("sub-new", "2026-07-21T00:03:00Z")}\n`);
   const truncated = await run({
     ...source,
-    state: { messages: append.states.messages, sessions: append.states.sessions },
+    state: {
+      messages: append.states.messages,
+      sessions: append.states.sessions,
+    },
   });
   const replacement = `${source.subagent}.replacement`;
   await writeFile(
@@ -473,11 +537,18 @@ test("M23: fixed-seed append, rewrite, truncate, and rotation fold equals a clea
   await rename(replacement, source.subagent);
   const incremental = await run({
     ...source,
-    state: { messages: truncated.states.messages, sessions: truncated.states.sessions },
+    state: {
+      messages: truncated.states.messages,
+      sessions: truncated.states.sessions,
+    },
   });
   const full = await run({ ...source, streams: ["sessions"] });
   assert.deepEqual(
-    (incremental.states.sessions as { session_aggregates: Record<string, unknown> }).session_aggregates,
+    (
+      incremental.states.sessions as {
+        session_aggregates: Record<string, unknown>;
+      }
+    ).session_aggregates,
     (full.states.sessions as { session_aggregates: Record<string, unknown> }).session_aggregates
   );
 });
@@ -486,7 +557,10 @@ test("incremental touch and append preserve parent-first session aggregation", a
   const source = await makeSource();
   const first = await run(source);
   assert.equal(first.records.filter((record) => record.stream === "messages").length, 2);
-  const state = { messages: first.states.messages, sessions: first.states.sessions };
+  const state = {
+    messages: first.states.messages,
+    sessions: first.states.sessions,
+  };
 
   const touchedAt = new Date(Date.now() + 20_000);
   await utimes(source.top, touchedAt, touchedAt);
@@ -499,7 +573,10 @@ test("incremental touch and append preserve parent-first session aggregation", a
   );
   const appended = await run({
     ...source,
-    state: { messages: touched.states.messages, sessions: touched.states.sessions },
+    state: {
+      messages: touched.states.messages,
+      sessions: touched.states.sessions,
+    },
   });
   const messages = appended.records.filter((record) => record.stream === "messages");
   assert.deepEqual(
@@ -512,7 +589,11 @@ test("incremental touch and append preserve parent-first session aggregation", a
   assert.equal(session?.data.message_count, 3, "M11/M13: aggregate keeps unchanged subagent plus top-level tail");
   assert.equal(session?.data.last_event_at, "2026-07-21T00:02:00.000Z");
 
-  const sessionOnly = await run({ ...source, state: { messages: appended.states.messages }, streams: ["sessions"] });
+  const sessionOnly = await run({
+    ...source,
+    state: { messages: appended.states.messages },
+    streams: ["sessions"],
+  });
   assert.equal(
     sessionOnly.records.filter((record) => record.stream === "sessions").length,
     1,
@@ -524,7 +605,10 @@ test("incremental touch and append preserve parent-first session aggregation", a
 test("source mutations, partial tails, and malformed terminated lines retain physical cursor safety", async () => {
   const source = await makeSource();
   const first = await run(source);
-  const state = { messages: first.states.messages, sessions: first.states.sessions };
+  const state = {
+    messages: first.states.messages,
+    sessions: first.states.sessions,
+  };
   const original = await readFile(source.top, "utf8");
   await writeFile(source.top, `${original.replace("x", "y")}${transcriptLine("top-2", "2026-07-21T00:02:00Z")}\n`);
   const rewritten = await run({ ...source, state });
@@ -545,7 +629,10 @@ test("source mutations, partial tails, and malformed terminated lines retain phy
   );
   const partial = await run({
     ...source,
-    state: { messages: rewritten.states.messages, sessions: rewritten.states.sessions },
+    state: {
+      messages: rewritten.states.messages,
+      sessions: rewritten.states.sessions,
+    },
   });
   assert.equal(partial.records.length, 0, "M8: unterminated JSONL does not emit");
   await writeFile(
@@ -554,7 +641,10 @@ test("source mutations, partial tails, and malformed terminated lines retain phy
   );
   const completed = await run({
     ...source,
-    state: { messages: partial.states.messages, sessions: partial.states.sessions },
+    state: {
+      messages: partial.states.messages,
+      sessions: partial.states.sessions,
+    },
   });
   assert.deepEqual(
     completed.records.filter((record) => record.stream === "messages").map((record) => record.data.id),
@@ -566,7 +656,10 @@ test("source mutations, partial tails, and malformed terminated lines retain phy
   await writeFile(source.subagent, `${transcriptLine("sub-new", "2026-07-21T00:04:00Z")}\n`);
   const truncated = await run({
     ...source,
-    state: { messages: completed.states.messages, sessions: completed.states.sessions },
+    state: {
+      messages: completed.states.messages,
+      sessions: completed.states.sessions,
+    },
   });
   assert.ok(
     truncated.records.some((record) => record.stream === "messages" && record.data.id === IDS["sub-new"]),
@@ -580,7 +673,10 @@ test("source mutations, partial tails, and malformed terminated lines retain phy
   await rename(replacement, source.subagent);
   const rotated = await run({
     ...source,
-    state: { messages: truncated.states.messages, sessions: truncated.states.sessions },
+    state: {
+      messages: truncated.states.messages,
+      sessions: truncated.states.sessions,
+    },
   });
   assert.deepEqual(
     rotated.records.filter((record) => record.stream === "messages").map((record) => record.data.id),
@@ -594,8 +690,12 @@ test("legacy baseline migration writes bounded private rich state", async () => 
   const topMtime = (await (await import("node:fs/promises")).stat(source.top)).mtimeMs;
   const subMtime = (await (await import("node:fs/promises")).stat(source.subagent)).mtimeMs;
   const legacyState = {
-    messages: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } },
-    sessions: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } },
+    messages: {
+      file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime },
+    },
+    sessions: {
+      file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime },
+    },
   };
   const migrated = await run({ ...source, state: legacyState });
   assert.equal(migrated.records.length, 0, "M17: matching legacy mtimes baseline without replay");
@@ -626,11 +726,17 @@ test("M20: ten thousand child rows retain constant per-file cursor state", async
   const topMtime = (await (await import("node:fs/promises")).stat(source.top)).mtimeMs;
   const subMtime = (await (await import("node:fs/promises")).stat(source.subagent)).mtimeMs;
   const state = {
-    messages: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } },
-    sessions: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } },
+    messages: {
+      file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime },
+    },
+    sessions: {
+      file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime },
+    },
   };
   const migrated = await run({ ...source, state });
-  const child = migrated.states.messages as { file_cursors?: Record<string, unknown> };
+  const child = migrated.states.messages as {
+    file_cursors?: Record<string, unknown>;
+  };
   assert.equal(Object.keys(child.file_cursors ?? {}).length, 2);
   assert.ok(JSON.stringify(child).length < 2000, "child STATE is O(files), not O(child records)");
 });
@@ -644,16 +750,21 @@ test("M19: corrupt rich session cursor rebuilds every contributor instead of dou
   const topCursor = sessions.file_cursors[source.top];
   assert.ok(topCursor);
   topCursor.committed_prefix_sha256 = "not-a-sha256";
-  const repaired = await run({ ...source, state: { messages: first.states.messages, sessions } });
+  const repaired = await run({
+    ...source,
+    state: { messages: first.states.messages, sessions },
+  });
   assert.equal(
     repaired.records.filter((record) => record.stream === "sessions").length,
     0,
     "same fold is not re-emitted"
   );
   assert.equal(
-    (repaired.states.sessions as { session_aggregates: Record<string, { message_count: number }> }).session_aggregates[
-      SESSION_ID
-    ]?.message_count,
+    (
+      repaired.states.sessions as {
+        session_aggregates: Record<string, { message_count: number }>;
+      }
+    ).session_aggregates[SESSION_ID]?.message_count,
     2
   );
 });
@@ -661,13 +772,20 @@ test("M19: corrupt rich session cursor rebuilds every contributor instead of dou
 test("partial rich session cursor state rebuilds all current contributors", async () => {
   const source = await makeSource();
   const first = await run(source);
-  const sessions = structuredClone(first.states.sessions) as { file_cursors: Record<string, unknown> };
+  const sessions = structuredClone(first.states.sessions) as {
+    file_cursors: Record<string, unknown>;
+  };
   delete sessions.file_cursors[source.subagent];
-  const repaired = await run({ ...source, state: { messages: first.states.messages, sessions } });
+  const repaired = await run({
+    ...source,
+    state: { messages: first.states.messages, sessions },
+  });
   assert.equal(
-    (repaired.states.sessions as { session_aggregates: Record<string, { message_count: number }> }).session_aggregates[
-      SESSION_ID
-    ]?.message_count,
+    (
+      repaired.states.sessions as {
+        session_aggregates: Record<string, { message_count: number }>;
+      }
+    ).session_aggregates[SESSION_ID]?.message_count,
     2
   );
 });
@@ -691,7 +809,10 @@ test("M14: removed sources are pruned from rich and dual-written mtime state", a
   const source = await makeSource();
   const first = await run(source);
   await (await import("node:fs/promises")).rm(source.subagent);
-  const second = await run({ ...source, state: { messages: first.states.messages, sessions: first.states.sessions } });
+  const second = await run({
+    ...source,
+    state: { messages: first.states.messages, sessions: first.states.sessions },
+  });
   for (const stream of ["messages", "sessions"] as const) {
     const cursor = second.states[stream] as {
       file_cursors: Record<string, unknown>;
@@ -712,9 +833,14 @@ test("tool-result mtime state skips unchanged attachments and prunes deleted pat
   ]) {
     const source = await makeAttachmentSource();
     const first = await run({ ...source, streams });
-    const state = { messages: first.states.messages, sessions: first.states.sessions };
+    const state = {
+      messages: first.states.messages,
+      sessions: first.states.sessions,
+    };
     for (const stream of streams.includes("sessions") ? ["sessions", "messages"] : ["messages"]) {
-      const cursor = first.states[stream] as { file_mtimes: Record<string, number> };
+      const cursor = first.states[stream] as {
+        file_mtimes: Record<string, number>;
+      };
       assert.ok(cursor.file_mtimes[source.toolResult] !== undefined, `${stream} retains current tool-result mtime`);
     }
     const second = await run({ ...source, state, streams });
@@ -726,11 +852,16 @@ test("tool-result mtime state skips unchanged attachments and prunes deleted pat
     await rm(source.toolResult);
     const third = await run({
       ...source,
-      state: { messages: second.states.messages, sessions: second.states.sessions },
+      state: {
+        messages: second.states.messages,
+        sessions: second.states.sessions,
+      },
       streams,
     });
     for (const stream of streams.includes("sessions") ? ["sessions", "messages"] : ["messages"]) {
-      const cursor = third.states[stream] as { file_mtimes: Record<string, number> };
+      const cursor = third.states[stream] as {
+        file_mtimes: Record<string, number>;
+      };
       assert.equal(cursor.file_mtimes[source.toolResult], undefined, `${stream} prunes deleted tool-result path`);
     }
   }
@@ -759,7 +890,10 @@ test("M24: Claude mtime touch queues no transcript records while advancing its d
       if (request.method === "GET") {
         response.end(JSON.stringify({ state: persistedState }));
       } else {
-        persistedState = { ...persistedState, ...(body?.state as Record<string, unknown>) };
+        persistedState = {
+          ...persistedState,
+          ...(body?.state as Record<string, unknown>),
+        };
         statePuts += 1;
         response.end(JSON.stringify({ state: persistedState }));
       }
@@ -788,12 +922,18 @@ test("M24: Claude mtime touch queues no transcript records while advancing its d
       args: ["connectors/claude_code/index.ts"],
       command: "tsx",
       connector_id: "claude_code",
-      env: { CLAUDE_CODE_HOME: source.claudeHome, CLAUDE_CODE_PROJECTS_DIR: source.projects },
+      env: {
+        CLAUDE_CODE_HOME: source.claudeHome,
+        CLAUDE_CODE_PROJECTS_DIR: source.projects,
+      },
       runtime_requirements: { bindings: {} },
       streams: ["sessions", "messages"],
     },
     deviceId: "device-test",
     deviceToken: "test-token",
+    executionRoot: resolveExecutionRoot({
+      args: ["connectors/claude_code/index.ts"],
+    }),
     queuePath,
     sourceInstanceId: "claude-mtime-touch",
   } as const;

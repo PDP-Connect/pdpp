@@ -5,13 +5,19 @@ branches:
   - name: main
 tagFormat: "v${version}"
 preset: "conventionalcommits"
-# @pdpp/cli, @pdpp/local-collector, and @pdpp/mcp-server publish from a single
+# @pdpp/cli, @pdpp/mcp-server, and @pdpp/read-core publish from a single
 # shared version stream. To keep the release-notes per-package readable, we
 # define typed sections per Conventional Commit scope so e.g.
-# `feat(local-collector): ...` lands under "Features (@pdpp/local-collector)"
-# and `feat(cli): ...` lands under "Features (@pdpp/cli)", with commits
-# that don't carry a recognised scope falling back to the generic sections.
+# `feat(cli): ...` lands under "Features (@pdpp/cli)", with commits that
+# don't carry a recognised scope falling back to the generic sections.
 # See openspec/changes/publish-pdpp-local-collector/design.md §5.
+#
+# @pdpp/local-collector left this shared stream when its package moved to
+# the data-connect repo: release and publishing responsibility for it now
+# travels with the package, not with this monorepo. The local-collector
+# scope sections below are kept only so historical commits (made while it
+# still published from here) still parse into a readable section instead
+# of falling back to a generic one.
 plugins:
   - - "@semantic-release/commit-analyzer"
     - preset: conventionalcommits
@@ -153,8 +159,6 @@ plugins:
             effect: hidden
   - - "@semantic-release/npm"
     - pkgRoot: "packages/cli"
-  - - "@semantic-release/npm"
-    - pkgRoot: "packages/local-collector"
   - - "@semantic-release/npm"
     - pkgRoot: "packages/mcp-server"
   - - "@semantic-release/npm"

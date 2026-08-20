@@ -35,6 +35,7 @@ import {
 import { buildTerminalCollectionFacts } from "@pdpp/collector-runtime/collector-runner";
 import type { TerminalRunCommitRequest } from "@pdpp/collector-runtime/local-device-client";
 import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
+import { resolveExecutionRoot } from "./execution-root.ts";
 
 const SINCE = "2026-06-01T00:00:00.000Z";
 /** Mirrors the claude_code/codex manifest split: 3 timed streams, the rest not. */
@@ -88,7 +89,10 @@ async function startScopeHarness(priorState: Record<string, unknown>): Promise<S
       }
       if (url.endsWith("/state")) {
         if (req.method === "PUT" && parsed && typeof parsed.state === "object" && parsed.state) {
-          persisted = { ...persisted, ...(parsed.state as Record<string, unknown>) };
+          persisted = {
+            ...persisted,
+            ...(parsed.state as Record<string, unknown>),
+          };
         }
         send(200, {
           connector_instance_id: "connector-instance-1",
@@ -175,7 +179,12 @@ async function writeScopeFixture(input: { truncate?: boolean }): Promise<string>
 }
 
 function scopeState(since: string): Record<string, unknown> {
-  return { [COLLECTION_SCOPE_STATE_KEY]: { declared_at: "2026-08-01T00:00:00.000Z", scope: { since } } };
+  return {
+    [COLLECTION_SCOPE_STATE_KEY]: {
+      declared_at: "2026-08-01T00:00:00.000Z",
+      scope: { since },
+    },
+  };
 }
 
 async function tempQueuePath(): Promise<string> {
@@ -187,7 +196,9 @@ async function runScoped(input: {
   harness: ScopeHarness;
   truncate?: boolean;
 }): Promise<Awaited<ReturnType<typeof runCollectorConnector>> | null> {
-  const fixture = await writeScopeFixture({ ...(input.truncate ? { truncate: true } : {}) });
+  const fixture = await writeScopeFixture({
+    ...(input.truncate ? { truncate: true } : {}),
+  });
   try {
     return await runCollectorConnector({
       baseUrl: input.harness.url,
@@ -201,6 +212,7 @@ async function runScoped(input: {
       },
       deviceId: "device-1",
       deviceToken: "device-token",
+      executionRoot: resolveExecutionRoot({ args: [fixture] }),
       queuePath: await tempQueuePath(),
       sourceInstanceId: "src-1",
     });
@@ -256,7 +268,9 @@ test("the reserved scope entry is never handed to the connector as a stream curs
 });
 
 test("scope is read from the same state payload the collector already fetches", () => {
-  assert.deepEqual(readCollectionScopeFromState(scopeState(SINCE)), { since: SINCE });
+  assert.deepEqual(readCollectionScopeFromState(scopeState(SINCE)), {
+    since: SINCE,
+  });
   assert.equal(readCollectionScopeFromState({}), null, "a connection that declared nothing runs unscoped");
 });
 
@@ -337,9 +351,7 @@ test("(d) evidence measured under one boundary stops describing a changed one", 
 });
 
 test("the runner's fingerprint matches the contract's, so server and collector agree", async () => {
-  const { collectionScopeFingerprint: contractFingerprint } = await import(
-    "../../reference-contract/src/evidence/collection-scope.ts"
-  );
+  const { collectionScopeFingerprint: contractFingerprint } = await import("@pdpp/reference-contract/evidence");
   for (const scope of [
     null,
     { since: SINCE },
@@ -382,7 +394,11 @@ test("a supplied root cannot produce scoped:true for a connector that does not e
   const supported = buildTerminalCollectionFacts(coverage, {}, ["proj-a"], true, ["photos"]);
   assert.equal((supported.find((fact) => fact.stream === "photos") as { scoped?: boolean }).scoped, true);
   assert.equal(
-    (supported.find((fact) => fact.stream === "coverage_diagnostics") as { scoped?: boolean }).scoped,
+    (
+      supported.find((fact) => fact.stream === "coverage_diagnostics") as {
+        scoped?: boolean;
+      }
+    ).scoped,
     false,
     "diagnostics is represented but is not falsely claimed as root-scoped"
   );
