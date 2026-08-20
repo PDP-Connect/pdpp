@@ -17,51 +17,85 @@
  * wired only into `run-logger.ts` (internal scheduler/executor logging) —
  * never into `boundConnectorErrorMessage`, the function that actually
  * redacts `connector_error_json.message` before it reaches a durable spine
- * event. This suite proves that gap is now closed for Venmo specifically,
- * via `runtime/declared-reason-tokens.ts`'s per-connector registry.
+ * event. This suite proves that gap is closed.
+ *
+ * WHAT THIS FILE TESTS, AND WHAT IT DOES NOT
+ * ------------------------------------------
+ * These are RI-side tests, so they exercise the RI's side of the contract:
+ * given a manifest that declares tokens, does redaction honor them, and does
+ * a manifest that declares none stay byte-identical to prior behavior. The
+ * manifests below are SYNTHETIC — the RI must work for any connector, so
+ * pinning these tests to a real connector's file would re-import exactly the
+ * connector knowledge this seam exists to remove.
+ *
+ * The DRIFT check — that Venmo's real manifest array still equals the
+ * `VENMO_DECLARED_REASON_TOKENS` constant its throw sites actually use —
+ * lives connector-side, next to the source of truth, in
+ * `packages/polyfill-connectors/src/auto-login/venmo-declared-reason-tokens-manifest.test.ts`.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { VENMO_DECLARED_REASON_TOKENS } from "../../packages/polyfill-connectors/src/auto-login/venmo.ts";
 import { boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
 import { declaredReasonTokensFor } from "../runtime/declared-reason-tokens.ts";
 
-test("regression: the production defect reproduced — without declared tokens, venmo_probe_transport_error is eaten", () => {
-  const raw = "venmo_session_failed: venmo_probe_transport_error: Failed to fetch";
-  assert.equal(boundConnectorErrorMessage(raw), "venmo_session_failed: [REDACTED]: Failed to fetch");
+/**
+ * A synthetic token of the same length class as the real production one (31
+ * chars vs `venmo_probe_transport_error`'s 27) — both well over the 24-char
+ * threshold where `LONG_OPAQUE_RE` starts eating.
+ *
+ * The `fake_session_failed:` prefix in the fixtures below is deliberately 19
+ * chars, mirroring the real `venmo_session_failed:`. It has to stay under 24
+ * or LONG_OPAQUE_RE redacts the PREFIX too, and these assertions would then
+ * be pinning two redactions while claiming to pin one.
+ */
+const DECLARED_TOKEN = "synthetic_probe_transport_error";
+const manifestDeclaring = (tokens: readonly string[]) => ({
+  capabilities: { declared_reason_tokens: tokens },
 });
 
-test("fix: boundConnectorErrorMessage with venmo's declared tokens preserves the real cause", () => {
-  const raw = "venmo_session_failed: venmo_probe_transport_error: Failed to fetch";
-  const declared = declaredReasonTokensFor("venmo");
-  assert.ok(declared, "venmo must be registered in declared-reason-tokens.ts");
+test("regression: the production defect reproduced — without declared tokens, a >=24-char reason code is eaten", () => {
+  const raw = `fake_session_failed: ${DECLARED_TOKEN}: Failed to fetch`;
+  assert.equal(boundConnectorErrorMessage(raw), "fake_session_failed: [REDACTED]: Failed to fetch");
+});
+
+test("fix: boundConnectorErrorMessage with manifest-declared tokens preserves the real cause", () => {
+  const raw = `fake_session_failed: ${DECLARED_TOKEN}: Failed to fetch`;
+  const declared = declaredReasonTokensFor(manifestDeclaring([DECLARED_TOKEN]));
+  assert.ok(declared, "a manifest declaring tokens must resolve a non-empty set");
   assert.equal(boundConnectorErrorMessage(raw, declared), raw, "the declared token must survive verbatim");
 });
 
-test("declaredReasonTokensFor('venmo') matches the connector's OWN exported vocabulary, not a hand-copied string", () => {
-  // Provenance, not spelling (see stderr-redact.ts's module doc): the
-  // registry must import the connector's real constant, so a future rename
-  // of a Venmo throw site cannot silently desync the two.
-  assert.deepEqual(declaredReasonTokensFor("venmo"), VENMO_DECLARED_REASON_TOKENS);
+test("declaredReasonTokensFor reads the manifest generically, with no connector id anywhere", () => {
+  const declared = declaredReasonTokensFor(manifestDeclaring([DECLARED_TOKEN, "another_declared_reason_token_x"]));
+  assert.deepEqual(declared, new Set([DECLARED_TOKEN, "another_declared_reason_token_x"]));
 });
 
-test("declaredReasonTokensFor returns undefined for an unregistered connector — byte-identical prior behavior", () => {
-  assert.equal(declaredReasonTokensFor("chase"), undefined);
-  assert.equal(declaredReasonTokensFor("nonexistent_connector"), undefined);
+test("declaredReasonTokensFor returns undefined when nothing is declared — byte-identical prior behavior", () => {
+  assert.equal(declaredReasonTokensFor(undefined), undefined);
+  assert.equal(declaredReasonTokensFor(null), undefined);
+  assert.equal(declaredReasonTokensFor({}), undefined);
+  assert.equal(declaredReasonTokensFor({ capabilities: {} }), undefined);
+  assert.equal(declaredReasonTokensFor(manifestDeclaring([])), undefined);
   // And boundConnectorErrorMessage with no declared set still redacts exactly
-  // as before for a connector this registry doesn't cover.
-  const raw = "chase_session_failed: some_twenty_four_plus_char_token";
-  assert.equal(boundConnectorErrorMessage(raw, declaredReasonTokensFor("chase")), boundConnectorErrorMessage(raw));
+  // as before for a connector that declares nothing.
+  const raw = "fake_session_failed: some_twenty_four_plus_char_token";
+  assert.equal(boundConnectorErrorMessage(raw, declaredReasonTokensFor({})), boundConnectorErrorMessage(raw));
+});
+
+test("declaredReasonTokensFor skips non-string and empty entries rather than throwing on the terminal path", () => {
+  const declared = declaredReasonTokensFor({
+    capabilities: { declared_reason_tokens: [DECLARED_TOKEN, "", 42, null, { nested: true }] },
+  });
+  assert.deepEqual(declared, new Set([DECLARED_TOKEN]));
+  assert.equal(declaredReasonTokensFor({ capabilities: { declared_reason_tokens: "not_an_array" } }), undefined);
 });
 
 const SECRET_MUST_NOT_SURVIVE_RE = /SECRETVALUEXXXXXXXXXXXXX/;
 
 test("secrets embedded alongside a declared token are still redacted — the allowlist cannot become a hole", () => {
-  const declared = declaredReasonTokensFor("venmo");
-  const [sampleToken] = VENMO_DECLARED_REASON_TOKENS;
-  assert.ok(sampleToken);
-  const hostile = `venmo_session_failed: ${sampleToken}: token=SECRETVALUEXXXXXXXXXXXXX`;
+  const declared = declaredReasonTokensFor(manifestDeclaring([DECLARED_TOKEN]));
+  const hostile = `fake_session_failed: ${DECLARED_TOKEN}: token=SECRETVALUEXXXXXXXXXXXXX`;
   const result = boundConnectorErrorMessage(hostile, declared);
   assert.ok(result);
   assert.doesNotMatch(
@@ -69,15 +103,5 @@ test("secrets embedded alongside a declared token are still redacted — the all
     SECRET_MUST_NOT_SURVIVE_RE,
     "a real secret must not survive just because a declared token is nearby"
   );
-  assert.ok(result.includes(sampleToken), "the declared token itself still survives");
-});
-
-test("every one of venmo's declared reason tokens is >=24 chars — the exact length class that motivated this fix", () => {
-  // Disclosed counterweight: if a future refactor shortens these below 24
-  // chars, they'd survive LONG_OPAQUE_RE unaided and this registry entry
-  // becomes a no-op, not a regression — this test documents that boundary,
-  // it does not assert the registry is the ONLY thing keeping them legible.
-  for (const token of VENMO_DECLARED_REASON_TOKENS) {
-    assert.ok(token.length >= 24, `expected ${token} to be >=24 chars (got ${token.length})`);
-  }
+  assert.ok(result.includes(DECLARED_TOKEN), "the declared token itself still survives");
 });

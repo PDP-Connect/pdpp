@@ -47,6 +47,12 @@
   },
   "capabilities": {
     "human_interaction": ["manual_action", "otp"],
+    "declared_reason_tokens": [
+      "venmo_probe_transport_error",
+      "venmo_post_submit_probe_transport_error",
+      "venmo_origin_navigation_failed",
+      "venmo_password_screen_timeout"
+    ],
     "refresh_policy": {
       "recommended_mode": "manual",
       "recommended_interval_seconds": 21600,
