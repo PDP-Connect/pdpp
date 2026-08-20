@@ -31,8 +31,8 @@ const CHATGPT_RE = /ChatGPT/;
 const CLAUDE_AI_RE = /Claude\.ai/;
 const HEADLESS_MCP_DEVICE_CODE_RE = /some clients use the device-code flow/;
 const HEADLESS_MCP_CLIENT_TOKEN_RE = /That flow returns a scoped client token/;
-const PDPP_CLI_CONNECT_RE = /npx -y @pdpp\/cli connect/;
 const AGENT_ENTRYPOINT_RE = /\/llms\.txt/;
+const PDPP_CLI_COMMAND_RE = /pdppCliCommand/;
 const OWNER_AGENT_LINK_RE = /href="\/deployment\/tokens"/;
 const OWNER_TOKEN_ENV_VAR_RE = /bearer-token-env-var|Authorization: Bearer|PDPP_OWNER|owner bearer token/;
 const PROFILE_VOCABULARY_RE = /\b(core|events|full)\s+profile\b|\bprofile\s+(core|events|full)\b/i;
@@ -91,9 +91,9 @@ test("connect page has no owner source-setup vocabulary", async () => {
   assert.doesNotMatch(src, SOURCE_FORBIDDEN_NORMAL_COPY_RE);
 });
 
-test("connect page also exposes CLI and instructions entrypoints", async () => {
+test("connect page exposes instructions without advertising an unavailable CLI flow", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, PDPP_CLI_CONNECT_RE);
+  assert.doesNotMatch(src, PDPP_CLI_COMMAND_RE);
   assert.match(src, AGENT_ENTRYPOINT_RE);
 });
 

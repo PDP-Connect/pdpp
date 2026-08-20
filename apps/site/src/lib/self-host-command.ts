@@ -133,8 +133,11 @@ function originFor(choices: SelfHostChoices): string {
  * same way `composeCommand` threads them into `.env`.
  */
 function dockerCommand(choices: SelfHostChoices): CommandSegment[] {
+  const publishedPort = choices.access === "public" ? "3000:3000" : "127.0.0.1:3000:3000";
   const segments: CommandSegment[] = [
-    { text: "docker run -d --name pdpp -p 3000:3000 \\\n  -v pdpp_data:/var/lib/pdpp \\\n" },
+    {
+      text: `docker run -d --name pdpp --restart unless-stopped -p ${publishedPort} \\\n  -v pdpp_data:/var/lib/pdpp \\\n`,
+    },
   ];
   if (choices.access === "public") {
     segments.push(
@@ -146,7 +149,7 @@ function dockerCommand(choices: SelfHostChoices): CommandSegment[] {
   if (!choices.semanticSearch) {
     segments.push({ text: "  -e PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0 \\\n" });
   }
-  segments.push({ text: "  " }, { emphasis: true, text: CORE_IMAGE });
+  segments.push({ text: "  " }, { emphasis: true, text: CORE_IMAGE }, { text: " && docker logs -f pdpp" });
   return segments;
 }
 
@@ -166,8 +169,11 @@ function composeCommand(choices: SelfHostChoices): CommandSegment[] {
     { emphasis: true, text: COMPOSE_URL },
     {
       text:
-        "\nprintf 'PDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n' \\\n" +
-        '  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env\n' +
+        "\numask 077\n" +
+        'PDPP_OWNER_PASSWORD="$(openssl rand -base64 24)"\n' +
+        'PDPP_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"\n' +
+        "printf 'PDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n' \\\n" +
+        '  "$PDPP_OWNER_PASSWORD" "$PDPP_CREDENTIAL_ENCRYPTION_KEY" > .env\n' +
         // PDPP_CORE_IMAGE since #79 (2f0a62ae5). Only the image variable was
         // renamed there; PDPP_REFERENCE_ORIGIN below is still what the merged
         // compose reads, so it deliberately keeps its name.
@@ -184,7 +190,9 @@ function composeCommand(choices: SelfHostChoices): CommandSegment[] {
   if (!choices.semanticSearch) {
     segments.push({ text: "echo PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0 >> .env\n" });
   }
-  segments.push({ text: "docker compose up -d" });
+  segments.push({
+    text: 'docker compose up -d && printf "\\nPDPP is running at http://localhost:3000/\\nOwner password: %s\\n\\nKeep this password with the .env file.\\n" "$PDPP_OWNER_PASSWORD"',
+  });
   return segments;
 }
 

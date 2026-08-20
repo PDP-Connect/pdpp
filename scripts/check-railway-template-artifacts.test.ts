@@ -25,6 +25,9 @@ const CMD_CORE_SUPERVISOR_PATTERN = /CMD \["node", "--import", "tsx", "\/app\/de
 const EXPOSE_3000_PATTERN = /\nEXPOSE 3000\n/;
 const LOOPBACK_7662_PATTERN = /127\.0\.0\.1:7662/;
 const LOOPBACK_7663_PATTERN = /127\.0\.0\.1:7663/;
+const REFERENCE_READY_FILE_PATTERN = /PDPP_REFERENCE_READY_FILE/;
+const CONSOLE_REFERENCE_READY_FILE_PATTERN = /const consoleEnv = \{[\s\S]*?PDPP_REFERENCE_READY_FILE: readyFile/;
+const REFERENCE_READINESS_PUBLISH_PATTERN = /reference services ready/;
 const APP_REFERENCE_INDEX_PATTERN = /\/app\/reference-implementation\/server\/index\.ts/;
 const CONSOLE_SERVER_JS_PATTERN = /\/console\/apps\/console\/server\.js/;
 const REFERENCE_ORIGIN_LOCALHOST_PATTERN = /PDPP_REFERENCE_ORIGIN=http:\/\/localhost:3000/;
@@ -120,6 +123,9 @@ test("Railway core image runs console plus loopback reference AS/RS", () => {
   assert.match(dockerfile, EXPOSE_3000_PATTERN);
   assert.match(supervisor, LOOPBACK_7662_PATTERN);
   assert.match(supervisor, LOOPBACK_7663_PATTERN);
+  assert.match(supervisor, REFERENCE_READY_FILE_PATTERN);
+  assert.match(supervisor, CONSOLE_REFERENCE_READY_FILE_PATTERN);
+  assert.match(supervisor, REFERENCE_READINESS_PUBLISH_PATTERN);
   assert.match(supervisor, APP_REFERENCE_INDEX_PATTERN);
   assert.match(supervisor, CONSOLE_SERVER_JS_PATTERN);
 });
