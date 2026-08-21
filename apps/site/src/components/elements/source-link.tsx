@@ -1,8 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { GITHUB_REPO_URL } from "@/lib/site-facts.ts";
 
 const GITHUB_BLOB_BASE = `${GITHUB_REPO_URL}/blob/main`;
 const GITHUB_TREE_BASE = `${GITHUB_REPO_URL}/tree/main`;

@@ -14,9 +14,9 @@ import {
   PopoverPositioner,
   PopoverTrigger,
 } from "@/components/ui/popover.tsx";
+import { conceptColorSchemeNames, primitiveConceptColorSchemeName } from "@/generated/generated-color-scheme-names.ts";
 import { cn } from "@/lib/utils.ts";
 import { Button } from "./button.tsx";
-import { conceptColorSchemeNames, primitiveConceptColorSchemeName } from "./generated-color-scheme-names.ts";
 
 const SCHEME_QUERY_KEY = "scheme";
 const SCHEME_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
@@ -62,13 +62,13 @@ export function ColorSchemeMenu() {
     const root = document.documentElement;
 
     if (activeScheme === primitiveConceptColorSchemeName) {
-      delete root.dataset.pdppConceptScheme;
+      delete root.dataset.pdppEditorialScheme;
     } else {
-      root.dataset.pdppConceptScheme = activeScheme;
+      root.dataset.pdppEditorialScheme = activeScheme;
     }
 
     return () => {
-      delete root.dataset.pdppConceptScheme;
+      delete root.dataset.pdppEditorialScheme;
     };
   }, [activeScheme]);
 

@@ -28,7 +28,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const COMPONENT_PATH = new URL("../src/components/reference-app.tsx", import.meta.url);
+const COMPONENT_PATH = new URL("../src/components/sections/reference-app.tsx", import.meta.url);
 const BRAND_MOTION_PATH = new URL("../../../packages/pdpp-brand/styles/tokens/motion.css", import.meta.url);
 
 const MATCH_MEDIA_REDUCED_MOTION_RE = /matchMedia\(\s*["']\(prefers-reduced-motion: reduce\)["']\s*\)/;

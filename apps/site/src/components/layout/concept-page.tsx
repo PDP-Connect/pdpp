@@ -7,8 +7,6 @@ import { cn } from "@/lib/utils.ts";
 interface ConceptPageProps {
   children: ReactNode;
   className?: string;
-  /** Short-page doc bottom pad (20px). */
-  home?: boolean;
 }
 
 interface ConceptDocProps {
@@ -19,8 +17,13 @@ interface ConceptDocProps {
 /**
  * Editorial `<main>` chrome: `container` + `max-w-page`, optional rail grid.
  * Compose with direct children `PdppRail` then `PdppConceptDoc` — see rail.tsx.
+ *
+ * Short pages (front door, 404) do not use this directly — they use
+ * `PdppConceptFrontPage`, an explicit variant below that composes the same
+ * `<main>` chrome with a different vertical-centering and doc-padding
+ * treatment. See that variant's doc comment for why the treatment differs.
  */
-export function PdppConceptPage({ children, home = false, className }: ConceptPageProps) {
+export function PdppConceptPage({ children, className }: ConceptPageProps) {
   return (
     <main
       className={cn(
@@ -28,10 +31,35 @@ export function PdppConceptPage({ children, home = false, className }: ConceptPa
         "container max-w-page shrink-0 grow basis-auto",
         // Default: one track; lg+ with PdppRail: rail | doc
         "grid grid-cols-[minmax(0,1fr)] items-start",
-        "lg:has-[>[data-slot=pdpp-concept-rail]]:grid-cols-[var(--spacing-rail)_minmax(0,1fr)]",
-        "lg:has-[>[data-slot=pdpp-concept-rail]]:gap-x-gutter",
-        // Short pages (home / 404): trim doc bottom pad.
-        //
+        "lg:has-[>[data-slot=pdpp-editorial-rail]]:grid-cols-[var(--spacing-rail)_minmax(0,1fr)]",
+        "lg:has-[>[data-slot=pdpp-editorial-rail]]:gap-x-gutter",
+        className
+      )}
+      data-slot="pdpp-editorial-page"
+    >
+      {children}
+    </main>
+  );
+}
+
+/**
+ * Explicit short-page variant: same `<main>` chrome as `PdppConceptPage`,
+ * plus the vertical-centering and trimmed doc padding that only the front
+ * door (`/`) and 404 need. Never railed — both callers pass a single
+ * `PdppConceptDoc` child, never `PdppRail`.
+ *
+ * Was a `home?: boolean` prop on `PdppConceptPage` switching this treatment
+ * on and off (architecture-avoid-boolean-props). Split into its own module
+ * instead of a variant prop: the two treatments differ enough (an extra
+ * layout axis plus a padding override reaching into the child) that folding
+ * them back into one interface would just move the boolean into the name.
+ */
+export function PdppConceptFrontPage({ children, className }: ConceptPageProps) {
+  return (
+    <main
+      className={cn(
+        "container max-w-page shrink-0 grow basis-auto",
+        "grid grid-cols-[minmax(0,1fr)]",
         // The shell is min-h-dvh and <main> is `grow`, so on a window taller
         // than the content main absorbs the surplus — but the hero cannot use
         // it, and it became an empty band under the CTAs: 136px at 1440x900
@@ -42,12 +70,11 @@ export function PdppConceptPage({ children, home = false, className }: ConceptPa
         // instead of dumping all of it underneath. grow-0 was tried first and
         // reverted: it stops main growing, which fixes the band but strands the
         // footer 404px above the bottom of a tall window.
-        home && "items-center",
-        home &&
-          "**:data-[slot=pdpp-concept-doc]:pt-7! **:data-[slot=pdpp-concept-doc]:pb-5! max-md:**:data-[slot=pdpp-concept-doc]:pt-0!",
+        "items-center",
+        "**:data-[slot=pdpp-editorial-doc]:pt-7! **:data-[slot=pdpp-editorial-doc]:pb-5! max-md:**:data-[slot=pdpp-editorial-doc]:pt-0!",
         className
       )}
-      data-slot="pdpp-concept-page"
+      data-slot="pdpp-editorial-page"
     >
       {children}
     </main>
@@ -66,11 +93,11 @@ export function PdppConceptDoc({ children, className }: ConceptDocProps) {
         "min-w-0 max-w-full pt-[calc(var(--spacing-section-gap)/1.5)] pb-[calc(var(--spacing-section-gap)*1.25)]",
         // max-lg
         "max-md:pt-0 max-lg:pt-[calc(var(--spacing-section-gap)/3)] max-lg:pb-[calc(var(--spacing-section-gap)*0.75)]",
-        "[&_[data-slot=pdpp-concept-text]_a]:link-prose",
+        "[&_[data-slot=pdpp-editorial-text]_a]:link-prose",
         "[&_a:not([class])]:link-prose",
         className
       )}
-      data-slot="pdpp-concept-doc"
+      data-slot="pdpp-editorial-doc"
     >
       {children}
     </article>

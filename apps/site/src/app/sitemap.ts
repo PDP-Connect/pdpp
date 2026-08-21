@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { MetadataRoute } from "next";
-import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
-import { SPEC_STATUS } from "@/components/pdpp-concept/spec-status.ts";
 import { source } from "@/lib/docs-source.ts";
+import { SITE_ORIGIN } from "@/lib/site-facts.ts";
 import { buildSitemap } from "@/lib/sitemap-entries.ts";
+import { SPEC_STATUS } from "@/lib/spec-status.ts";
 
 // The URL-building/filtering logic lives in sitemap-entries.ts, which is pure
 // and unit-tested (scripts/seo-metadata.test.ts). This file only supplies the

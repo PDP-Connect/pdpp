@@ -12,6 +12,7 @@ import {
   PUBLIC_URL_PLACEHOLDER,
   type SelfHostChoices,
 } from "@/lib/self-host-command.ts";
+import { copyStatusText, useCopyToClipboard } from "@/lib/use-copy-to-clipboard.ts";
 
 const STORAGE_KEY = "pdpp-command-tab";
 const SELF_MANAGED_METHODS = METHODS.filter(
@@ -55,11 +56,10 @@ function ProviderCard({ method }: { method: "fly" | "railway" }) {
   );
 }
 
-export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
+export function PdppCommandBuilder() {
   const [method, setMethod] = useState<SelfManagedMethod>("docker");
   const [choices, setChoices] = useState<SelfHostChoices>(defaultChoices);
-  const [copied, setCopied] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const { copy: copyToClipboard, status: copyState } = useCopyToClipboard();
   const urlInputId = useId();
   const commandPanelId = useId();
   const accessDescriptionId = useId();
@@ -72,17 +72,6 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
     }
   }, []);
 
-  useEffect(() => {
-    if (!(copied || failed)) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      setCopied(false);
-      setFailed(false);
-    }, 2000);
-    return () => clearTimeout(timer);
-  }, [copied, failed]);
-
   const built = buildCommand(method, choices);
 
   function select(id: SelfManagedMethod) {
@@ -90,32 +79,17 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
     window.localStorage.setItem(STORAGE_KEY, id);
   }
 
-  async function copy() {
+  function copy() {
     if (!built.segments) {
       return;
     }
-    setCopied(false);
-    setFailed(false);
-    try {
-      await navigator.clipboard.writeText(commandText(built.segments));
-      setCopied(true);
-    } catch {
-      setFailed(true);
-    }
+    copyToClipboard(commandText(built.segments));
   }
 
-  let copyLabel = "Copy";
-  let copyStatus = "";
-  if (copied) {
-    copyLabel = "Copied";
-    copyStatus = "Command copied to clipboard.";
-  } else if (failed) {
-    copyLabel = "Copy failed";
-    copyStatus = "Copy failed.";
-  }
+  const { announcement: copyStatus, label: copyLabel } = copyStatusText(copyState);
 
   return (
-    <div className={compact ? "pdpp-cmd pdpp-cmd--compact" : "pdpp-cmd"}>
+    <div className="pdpp-cmd">
       <section aria-labelledby="pdpp-cmd-self-managed-title" className="pdpp-cmd__flow">
         <div className="pdpp-cmd__flow-heading">
           <h3 id="pdpp-cmd-self-managed-title">Run it yourself</h3>
@@ -142,7 +116,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
 
         <div className="pdpp-cmd__config">
           <fieldset aria-describedby={accessDescriptionId} className="pdpp-cmd__choice">
-            <legend className="pdpp-visually-hidden">Where will you use PDPP?</legend>
+            <legend className="sr-only">Where will you use PDPP?</legend>
             <div className="pdpp-cmd__choice-heading">
               <span className="pdpp-cmd__choice-label">Where will you use PDPP?</span>
               <span className="pdpp-cmd__choice-help" id={accessDescriptionId}>
@@ -186,7 +160,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
           </div>
 
           <fieldset aria-describedby={searchDescriptionId} className="pdpp-cmd__choice">
-            <legend className="pdpp-visually-hidden">Choose a search mode</legend>
+            <legend className="sr-only">Choose a search mode</legend>
             <div className="pdpp-cmd__choice-heading">
               <span className="pdpp-cmd__choice-label">Choose a search mode</span>
               <span className="pdpp-cmd__choice-help" id={searchDescriptionId}>
@@ -238,7 +212,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
             {copyLabel}
           </span>
         </button>
-        <span aria-live="polite" className="pdpp-visually-hidden" role="status">
+        <span aria-live="polite" className="sr-only" role="status">
           {copyStatus}
         </span>
       </section>

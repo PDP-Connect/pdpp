@@ -3,14 +3,15 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { PdppCommandBuilder } from "@/components/pdpp-concept/command-tabs.tsx";
-import { PdppConceptDocHeader } from "@/components/pdpp-concept/concept-doc-header.tsx";
-import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
-import { PdppConceptSection } from "@/components/pdpp-concept/concept-section.tsx";
-import { GithubIcon } from "@/components/pdpp-concept/icons.tsx";
-import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
-import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
-import { Text } from "@/components/pdpp-concept/text.tsx";
+import { GithubIcon } from "@/components/elements/icons.tsx";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
+import { PdppRail } from "@/components/layout/rail.tsx";
+import { PdppCommandBuilder } from "@/components/sections/command-tabs.tsx";
+import { PdppConceptDocHeader } from "@/components/sections/concept-doc-header.tsx";
+import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
+import { PdppRuledList, PdppRuledListItem } from "@/components/sections/ruled-list.tsx";
+import { Text } from "@/components/typography/text.tsx";
+import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/lib/site-facts.ts";
 
 const SELF_HOST_TOC = [
   { href: "#run", label: "Run it" },
@@ -113,18 +114,18 @@ export default function ReferencePage() {
         </PdppConceptSection>
 
         <PdppConceptSection id="features" sectionIndex="02" title="What you get">
-          <ul className="pdpp-features">
+          <PdppRuledList>
             {features.map((feature) => (
-              <li key={feature.title}>
+              <PdppRuledListItem key={feature.title}>
                 <Text as="span" color="foreground" size="body" weight="semi">
                   {feature.title}.
                 </Text>{" "}
                 <Text as="span" color="foreground" size="body">
                   {feature.body}
                 </Text>
-              </li>
+              </PdppRuledListItem>
             ))}
-          </ul>
+          </PdppRuledList>
           <Text size="callout">
             Data that only lives on your machine, like Claude Code or Codex history, is ingested by the{" "}
             <a href={GITHUB_LOCAL_COLLECTOR} rel="noopener noreferrer" target="_blank">
@@ -169,7 +170,7 @@ export default function ReferencePage() {
                 <th scope="col">Name</th>
                 <th scope="col">Type</th>
                 <th scope="col">
-                  <span className="pdpp-visually-hidden">Link</span>
+                  <span className="sr-only">Link</span>
                 </th>
               </tr>
             </thead>

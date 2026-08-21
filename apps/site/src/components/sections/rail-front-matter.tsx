@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ReactNode } from "react";
-import { pdppRailLabelClassName } from "@/components/pdpp-concept/rail-section-label.tsx";
-import { GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
+import { pdppRailLabelClassName } from "@/components/sections/rail-section-label.tsx";
+import { GITHUB_REPO_URL } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 
 export interface PdppRailFrontMatterProps {

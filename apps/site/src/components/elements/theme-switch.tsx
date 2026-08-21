@@ -6,7 +6,7 @@
 import { useTheme } from "@pdpp/operator-ui/components/theme/theme-provider";
 import { Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { ResolvedTheme } from "@/components/theme/theme-state.ts";
+import type { ResolvedTheme } from "@/lib/theme-state.ts";
 import { cn } from "@/lib/utils.ts";
 
 // Concept-native theme control. Drives the SAME ThemeProvider/cookie as the

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ReactNode } from "react";
-import { Text } from "@/components/pdpp-concept/text.tsx";
+import { Text } from "@/components/typography/text.tsx";
 import { cn } from "@/lib/utils.ts";
 
 export interface PdppConceptSectionProps {
@@ -33,7 +33,7 @@ export function PdppConceptSection({ children, className, id, sectionIndex, titl
         "max-[720px]:mt-10",
         className
       )}
-      data-slot="pdpp-concept-section"
+      data-slot="pdpp-editorial-section"
       id={id}
     >
       <Text as="h2" sectionIndex={sectionIndex} size="title">

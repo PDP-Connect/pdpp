@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Deprecated editorial palette utilities → shadcn semantic slots.
- * Aliases derive from the semantic tokens (never from --pdpp-concept-*), so
+ * Aliases derive from the semantic tokens (never from --pdpp-editorial-*), so
  * dark theme and ?scheme= follow primitive → tokens/semantic.css rebind.
  * Delete each line when grep for the legacy util hits zero.
  *

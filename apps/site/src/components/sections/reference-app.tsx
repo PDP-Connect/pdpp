@@ -5,15 +5,15 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LongviewWordmark } from "@/components/longview-wordmark.tsx";
-import type { ConnectorCardProps } from "@/components/pdpp/connector-card.tsx";
-import { ConnectorCard } from "@/components/pdpp/connector-card.tsx";
-import { ConsentCard } from "@/components/pdpp/consent-card.tsx";
-import type { GrantInspectorProps } from "@/components/pdpp/grant-inspector.tsx";
-import { GrantInspector } from "@/components/pdpp/grant-inspector.tsx";
-import { StreamInventory } from "@/components/pdpp/stream-inventory.tsx";
-import { ReferenceHeroProof } from "@/components/reference-hero-proof.tsx";
-import { SiteHeader } from "@/components/site-header.tsx";
+import { LongviewWordmark } from "@/components/elements/longview-wordmark.tsx";
+import { SiteHeader } from "@/components/layout/site-header.tsx";
+import type { ConnectorCardProps } from "@/components/sections/connector-card.tsx";
+import { ConnectorCard } from "@/components/sections/connector-card.tsx";
+import { ConsentCard } from "@/components/sections/consent-card.tsx";
+import type { GrantInspectorProps } from "@/components/sections/grant-inspector.tsx";
+import { GrantInspector } from "@/components/sections/grant-inspector.tsx";
+import { ReferenceHeroProof } from "@/components/sections/reference-hero-proof.tsx";
+import { StreamInventory } from "@/components/sections/stream-inventory.tsx";
 import {
   LONGVIEW_CLIENT_ID,
   LONGVIEW_CLIENT_NAME,
@@ -942,17 +942,24 @@ function CollectionConvergence() {
 
 // ─── Section shells ─────────────────────────────────────────────────────────
 
-// Standard section: text left, component right on large screens
-function Section({
+// Shared section shell: border color from surface, headline/narrative copy,
+// optional detail panel, revealed children. The two exported variants below
+// each own one layout mode — narrow (stacked) or two-column (side by side) —
+// so callers state which they want instead of passing a `wide` flag through.
+function SectionShell({
   config,
   children,
   detail,
-  wide,
+  containerClassName,
+  bodyClassName,
+  childrenClassName,
 }: {
   config: SectionConfig;
   children: React.ReactNode;
   detail?: React.ReactNode;
-  wide?: boolean;
+  containerClassName: string;
+  bodyClassName: string;
+  childrenClassName: string;
 }) {
   let borderColor = "var(--border)";
   if (config.surface === "human") {
@@ -967,8 +974,8 @@ function Section({
       id={config.id}
       style={{ borderLeft: `2px solid ${borderColor}`, order: SECTION_DISPLAY_ORDER[config.id] }}
     >
-      <div className={`${wide ? "max-w-5xl" : "max-w-3xl"} mx-auto w-full px-6 md:px-12`}>
-        <div className={wide ? "grid grid-cols-1 items-start gap-12 lg:grid-cols-2" : ""}>
+      <div className={containerClassName}>
+        <div className={bodyClassName}>
           <Reveal>
             <div
               className="mb-3 font-mono text-xs uppercase tracking-widest"
@@ -991,11 +998,57 @@ function Section({
             {detail && <div className="mt-4">{detail}</div>}
           </Reveal>
           <Reveal delay={150}>
-            <div className={wide ? "" : "mt-8"}>{children}</div>
+            <div className={childrenClassName}>{children}</div>
           </Reveal>
         </div>
       </div>
     </section>
+  );
+}
+
+// Narrow section: text stacked above its content, capped at a reading-width column.
+function Section({
+  config,
+  children,
+  detail,
+}: {
+  config: SectionConfig;
+  children: React.ReactNode;
+  detail?: React.ReactNode;
+}) {
+  return (
+    <SectionShell
+      bodyClassName=""
+      childrenClassName="mt-8"
+      config={config}
+      containerClassName="max-w-3xl mx-auto w-full px-6 md:px-12"
+      detail={detail}
+    >
+      {children}
+    </SectionShell>
+  );
+}
+
+// Two-column section: text left, content right on large screens.
+function TwoColumnSection({
+  config,
+  children,
+  detail,
+}: {
+  config: SectionConfig;
+  children: React.ReactNode;
+  detail?: React.ReactNode;
+}) {
+  return (
+    <SectionShell
+      bodyClassName="grid grid-cols-1 items-start gap-12 lg:grid-cols-2"
+      childrenClassName=""
+      config={config}
+      containerClassName="max-w-5xl mx-auto w-full px-6 md:px-12"
+      detail={detail}
+    >
+      {children}
+    </SectionShell>
   );
 }
 
@@ -1414,7 +1467,7 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
       {/* Visual order comes from SECTION_DISPLAY_ORDER so the narrative can be iterated
           without rewriting each section block every pass. */}
       <div className="flex flex-col">
-        {/* Ingest — wide layout: text left, card right */}
+        {/* Ingest — narrow layout: text stacked above the card */}
         <Section
           config={SECTION_CONTENT[0]}
           detail={
@@ -1545,8 +1598,8 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
           </div>
         </Section>
 
-        {/* Inventory — wide layout */}
-        <Section
+        {/* Inventory — two-column layout */}
+        <TwoColumnSection
           config={SECTION_CONTENT[1]}
           detail={
             <DetailPanel label="See a record" spec="§4 Record Model">
@@ -1587,7 +1640,6 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
               </p>
             </DetailPanel>
           }
-          wide
         >
           <StreamInventory
             connectorName={INVENTORY_SPECIMEN.connectorName}
@@ -1602,10 +1654,10 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
                 INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.semantics || "append_only",
             }))}
           />
-        </Section>
+        </TwoColumnSection>
 
-        {/* Request — wide layout */}
-        <Section
+        {/* Request — two-column layout */}
+        <TwoColumnSection
           config={SECTION_CONTENT[2]}
           detail={
             <DetailPanel label="See the HTTP request" spec="§6 Selection Request">
@@ -1659,7 +1711,6 @@ Content-Type: application/json
               </p>
             </DetailPanel>
           }
-          wide
         >
           <div className="w-full overflow-hidden rounded-xl" data-surface="protocol">
             <div className="px-5 pt-5 pb-4">
@@ -1725,7 +1776,7 @@ Content-Type: application/json
               </div>
             </div>
           </div>
-        </Section>
+        </TwoColumnSection>
 
         {/* Consent — THE featured moment */}
         <FeaturedSection
@@ -1853,7 +1904,7 @@ Content-Type: application/json
           />
         </FeaturedSection>
 
-        {/* Grant — wide layout */}
+        {/* Grant — narrow layout */}
         <Section
           config={SECTION_CONTENT[4]}
           detail={
@@ -2017,7 +2068,7 @@ PDPP-Version: 0.1.0
           )}
         </FeaturedSection>
 
-        {/* Sync — wide */}
+        {/* Sync — narrow */}
         <Section
           config={SECTION_CONTENT[6]}
           detail={
@@ -2148,8 +2199,8 @@ Authorization: Bearer <client_token>
           )}
         </Section>
 
-        {/* Revoke — wide */}
-        <Section
+        {/* Revoke — two-column */}
+        <TwoColumnSection
           config={SECTION_CONTENT[7]}
           detail={
             <DetailPanel label="See the revocation flow" spec="§7.5 Revocation">
@@ -2180,7 +2231,6 @@ RS sees revocation within max(token_exp, 60s)`}
               </p>
             </DetailPanel>
           }
-          wide
         >
           {protocol.phase === "revoked" ? (
             <OutcomeCard
@@ -2191,10 +2241,10 @@ RS sees revocation within max(token_exp, 60s)`}
           ) : (
             <GrantInspector {...grantProps} onRevoke={protocol.phase === "granted" ? handleRevoke : undefined} />
           )}
-        </Section>
+        </TwoColumnSection>
 
-        {/* Export — wide */}
-        <Section
+        {/* Export — two-column */}
+        <TwoColumnSection
           config={SECTION_CONTENT[8]}
           detail={
             <DetailPanel label="See the token exchange" spec="§8.3 Owner Tokens">
@@ -2224,7 +2274,6 @@ Authorization: Bearer <owner_token>
               </div>
             </DetailPanel>
           }
-          wide
         >
           <div className="flex w-full flex-col gap-4">
             <div className="w-full overflow-hidden rounded-xl px-5 py-6" data-surface="human">
@@ -2278,7 +2327,7 @@ Authorization: Bearer <owner_token>
               );
             })()}
           </div>
-        </Section>
+        </TwoColumnSection>
 
         {/* ── Separator ── */}
         <div className="mx-auto max-w-2xl px-6 md:px-12" style={{ order: 75 }}>

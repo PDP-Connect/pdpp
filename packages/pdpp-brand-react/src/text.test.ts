@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Type-ladder contract: textVariants.size ↔ @pdpp/brand tokens/semantic.css (1:1).
-// Sole owner for that assertion — do not duplicate in pdpp-concept/text.test.ts.
+// Sole owner for that assertion — do not duplicate in apps/site/src/components/typography/text.test.ts.
 // @see docs/design-system/styling-in-apps.md § Enforcement (tests)
 
 import assert from "node:assert/strict";

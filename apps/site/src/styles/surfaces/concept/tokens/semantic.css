@@ -2,12 +2,12 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Tailwind bridge for the concept register. primitive.css owns runtime palette
- * (--pdpp-concept-* + dark). This file owns layout @theme keys (static chrome)
+ * (--pdpp-editorial-* + dark). This file owns layout @theme keys (static chrome)
  * and palette/type rebinds under [data-surface="concept"] — never parallel
  * palette @theme aliases.
  *
  * Layout (page width, rail, pad, …) is NOT runtime — declare values directly
- * in @theme below, not as --pdpp-concept-* primitives. No comments inside
+ * in @theme below, not as --pdpp-editorial-* primitives. No comments inside
  * @theme / [data-surface="concept"] blocks — TW IntelliSense false `{ expected`
  * cascade; notes in this header only.
  *
@@ -32,7 +32,7 @@
  *
  * Editorial values differ from brand's product values by intent, not by
  * accident: fluid clamp() rungs and a looser 1.65 body leading. Concept-only
- * Text packaging (deck, stamp chip, callout) lives in pdpp-concept/text-variants.ts.
+ * Text packaging (deck, stamp chip, callout) lives in typography/text-variants.ts.
  *
  * FLUID CLAMPS (layout @theme + type rungs below): linear 375px→1240px viewport,
  * 16px root — clamp(min, calc(intercept_rem + slope_vw * 1vw), max) with
@@ -67,26 +67,26 @@
 [data-surface="concept"] {
   --container-measure: 600px;
 
-  --background: var(--pdpp-concept-paper);
-  --foreground: var(--pdpp-concept-ink);
-  --muted-foreground: var(--pdpp-concept-ink-soft);
-  --foreground-faint: var(--pdpp-concept-ink-faint);
-  --card: var(--pdpp-concept-paper-deep);
-  --card-foreground: var(--pdpp-concept-ink);
-  --secondary: var(--pdpp-concept-paper-panel);
-  --secondary-foreground: var(--pdpp-concept-ink);
-  --primary: var(--pdpp-concept-teal);
-  --primary-foreground: var(--pdpp-concept-onteal-deep);
-  --primary-emphasis: var(--pdpp-concept-teal-deep);
-  --primary-wash: var(--pdpp-concept-teal-wash);
-  --primary-on-wash: var(--pdpp-concept-teal-on-wash);
-  --on-primary-emphasis: var(--pdpp-concept-onteal-deep);
-  --on-primary-emphasis-soft: var(--pdpp-concept-onteal-deep-soft);
-  --on-primary-emphasis-label: var(--pdpp-concept-onteal-deep-label);
-  --on-primary-emphasis-wash: var(--pdpp-concept-onteal-deep-wash);
+  --background: var(--pdpp-editorial-paper);
+  --foreground: var(--pdpp-editorial-ink);
+  --muted-foreground: var(--pdpp-editorial-ink-soft);
+  --foreground-faint: var(--pdpp-editorial-ink-faint);
+  --card: var(--pdpp-editorial-paper-deep);
+  --card-foreground: var(--pdpp-editorial-ink);
+  --secondary: var(--pdpp-editorial-paper-panel);
+  --secondary-foreground: var(--pdpp-editorial-ink);
+  --primary: var(--pdpp-editorial-teal);
+  --primary-foreground: var(--pdpp-editorial-onteal-deep);
+  --primary-emphasis: var(--pdpp-editorial-teal-deep);
+  --primary-wash: var(--pdpp-editorial-teal-wash);
+  --primary-on-wash: var(--pdpp-editorial-teal-on-wash);
+  --on-primary-emphasis: var(--pdpp-editorial-onteal-deep);
+  --on-primary-emphasis-soft: var(--pdpp-editorial-onteal-deep-soft);
+  --on-primary-emphasis-label: var(--pdpp-editorial-onteal-deep-label);
+  --on-primary-emphasis-wash: var(--pdpp-editorial-onteal-deep-wash);
   --border: color-mix(in srgb, var(--foreground) 18%, var(--background));
   --border-subtle: color-mix(in srgb, var(--foreground) 10%, var(--background));
-  --ring: var(--pdpp-concept-teal);
+  --ring: var(--pdpp-editorial-teal);
 
   --text-eyebrow: 11px;
   --text-eyebrow--line-height: 1.3;

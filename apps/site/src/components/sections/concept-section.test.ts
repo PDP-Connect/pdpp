@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PdppConceptSection } from "./concept-section.tsx";
 
-const SECTION_ANCHOR_RE = /<section[^>]*data-slot="pdpp-concept-section"[^>]*id="run"/;
+const SECTION_ANCHOR_RE = /<section[^>]*data-slot="pdpp-editorial-section"[^>]*id="run"/;
 const SECTION_INDEX_RE = /<span aria-hidden="true"[^>]*data-slot="pdpp-section-index"[^>]*>02<\/span>Features/;
 const FIRST_SECTION_RHYTHM_RE = /first-of-type:mt-10/;
 

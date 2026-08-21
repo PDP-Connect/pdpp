@@ -311,7 +311,7 @@ test("no command or copy exposes a platform-specific artifact name", () => {
 // The standing instruction is that outcomes are exposed and mechanism is not.
 // These names leaking into the UI is the failure mode that instruction guards.
 test("the builder never exposes implementation detail as a reader-facing choice", () => {
-  const builder = readFileSync(join(import.meta.dirname, "../src/components/pdpp-concept/command-tabs.tsx"), "utf8");
+  const builder = readFileSync(join(import.meta.dirname, "../src/components/sections/command-tabs.tsx"), "utf8");
   const visible = builder
     .split("\n")
     .filter((line) => {

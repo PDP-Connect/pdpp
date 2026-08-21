@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { LongviewWordmark } from "@/components/longview-wordmark.tsx";
+import { LongviewWordmark } from "@/components/elements/longview-wordmark.tsx";
 import { LONGVIEW_PURPOSE_DESCRIPTION } from "@/lib/longview-world.ts";
 
 export function ReferenceHeroProof() {

@@ -19,7 +19,7 @@ interface ConceptSchemeAnchors {
 
 /**
  * Scheme baked into `primitive.css` (resolved 14-token palette). When no
- * `?scheme=` is set, the menu clears `data-pdpp-concept-scheme` so primitive
+ * `?scheme=` is set, the menu clears `data-pdpp-editorial-scheme` so primitive
  * values apply.
  */
 export const primitiveConceptSchemeName = "azure" as const;
@@ -33,7 +33,7 @@ export const defaultConceptSchemeName: string | null = null;
 
 /**
  * Add experimental schemes here. Generated CSS is inert until the matching
- * `data-pdpp-concept-scheme` value is set on <html> — except for
+ * `data-pdpp-editorial-scheme` value is set on <html> — except for
  * `defaultConceptSchemeName` above, which is also emitted unqualified.
  */
 export const conceptSchemes: ConceptScheme[] = [
@@ -117,7 +117,7 @@ export const conceptColorTokenNames = [
 export type ConceptColorTokenName = (typeof conceptColorTokenNames)[number];
 
 export function resolveConceptScheme(anchors: ConceptSchemeAnchors): Record<ConceptColorTokenName, string> {
-  const book = new DesignBook("pdpp-concept-colors");
+  const book = new DesignBook("pdpp-editorial-colors");
   const values = book.addScope("values");
   values.set("paper", color(anchors.paper));
   values.set("ink", color(anchors.ink));

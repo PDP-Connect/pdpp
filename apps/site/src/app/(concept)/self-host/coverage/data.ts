@@ -5,7 +5,7 @@ import "server-only";
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
+import { repoBlobUrl } from "@/lib/site-facts.ts";
 
 export type CoverageCategory =
   | "Protocol flow"

@@ -4,6 +4,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import type React from "react";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
+import { Text } from "@/components/typography/text.tsx";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { cn } from "@/lib/utils.ts";
 import { type CoverageState, type CoverageStatus, coverageRows, coverageSummary } from "./data.ts";
@@ -41,7 +43,7 @@ const summaryItems = [
 
 export default function ReferenceCoveragePage() {
   return (
-    <main className="relative overflow-hidden">
+    <PdppConceptPage className="relative overflow-hidden">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 top-0 h-[26rem]"
@@ -50,15 +52,19 @@ export default function ReferenceCoveragePage() {
             "radial-gradient(circle at 18% 18%, oklch(0.58 0.172 253.7 / 0.14), transparent 32%), radial-gradient(circle at 78% 6%, oklch(0.72 0.11 45 / 0.13), transparent 34%)",
         }}
       />
-      <div className="relative mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:py-14">
+      <PdppConceptDoc className="relative">
         <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_24rem]">
           <div>
-            <div className="pdpp-eyebrow text-muted-foreground">Reference implementation / Coverage honesty</div>
-            <h1 className="pdpp-display mt-3 max-w-4xl text-foreground">Coverage matrix</h1>
-            <p className="pdpp-body-lg mt-5 max-w-3xl text-muted-foreground">
+            <Text color="muted" family="sans" size="eyebrow">
+              Reference implementation / Coverage honesty
+            </Text>
+            <Text as="h1" className="mt-3 max-w-4xl" size="display">
+              Coverage matrix
+            </Text>
+            <Text className="mt-5 max-w-3xl" color="muted" size="lede">
               This matrix is a manually seeded public artifact. It distinguishes protocol specification, docs,
               executable reference behavior, tests, demonstration surfaces, and intentionally deferred scope.
-            </p>
+            </Text>
             <div className="mt-7 flex flex-wrap gap-2.5">
               <Link className={buttonVariants({ variant: "default", size: "lg" })} href="/self-host">
                 Reference explainer
@@ -73,16 +79,22 @@ export default function ReferenceCoveragePage() {
           </div>
 
           <aside className="rounded-2xl border bg-card/80 p-4 shadow-sm backdrop-blur">
-            <div className="pdpp-eyebrow text-muted-foreground">Static check</div>
-            <p className="pdpp-caption mt-2 text-muted-foreground">
+            <Text color="muted" family="sans" size="eyebrow">
+              Static check
+            </Text>
+            <Text className="mt-2" color="muted" size="small">
               The data module validates evidence paths at import time. A row marked implemented, tested, or demonstrated
               must carry supporting links to docs, tests, routes, or source artifacts.
-            </p>
+            </Text>
             <div className="mt-5 grid grid-cols-2 gap-2">
               {summaryItems.map((item) => (
                 <div className="rounded-xl border bg-background/70 p-3" key={item.label}>
-                  <div className="pdpp-caption text-muted-foreground">{item.label}</div>
-                  <div className="pdpp-title mt-1 text-foreground">{item.value}</div>
+                  <Text color="muted" family="sans" size="small">
+                    {item.label}
+                  </Text>
+                  <Text className="mt-1" family="sans" size="body" weight="semi">
+                    {item.value}
+                  </Text>
                 </div>
               ))}
             </div>
@@ -109,13 +121,22 @@ export default function ReferenceCoveragePage() {
                 {coverageRows.map((row) => (
                   <tr className="border-b last:border-b-0" key={row.concept}>
                     <td className="max-w-[18rem] p-4 align-top">
-                      <div className="pdpp-title text-foreground">{row.concept}</div>
-                      <p className="pdpp-caption mt-2 text-muted-foreground">{row.notes}</p>
+                      <Text family="sans" size="body" weight="semi">
+                        {row.concept}
+                      </Text>
+                      <Text className="mt-2" color="muted" size="small">
+                        {row.notes}
+                      </Text>
                     </td>
                     <td className="p-4 align-top">
-                      <span className="pdpp-caption rounded-full border bg-background/70 px-2.5 py-1 text-muted-foreground">
+                      <Text
+                        as="span"
+                        className="rounded-full border bg-background/70 px-2.5 py-1"
+                        color="muted"
+                        size="small"
+                      >
                         {row.category}
-                      </span>
+                      </Text>
                     </td>
                     <StateCell state={row.specified} />
                     <StateCell state={row.documented} />
@@ -140,71 +161,77 @@ export default function ReferenceCoveragePage() {
             </table>
           </div>
         </section>
-      </div>
-    </main>
+      </PdppConceptDoc>
+    </PdppConceptPage>
   );
 }
 
 function HeaderCell({ children }: { children: React.ReactNode }) {
-  return <th className="pdpp-caption whitespace-nowrap p-4 font-medium text-muted-foreground">{children}</th>;
+  return (
+    <th className="whitespace-nowrap p-4">
+      <Text as="span" color="muted" family="sans" size="small" weight="medium">
+        {children}
+      </Text>
+    </th>
+  );
 }
 
 function StateCell({ state }: { state: CoverageState }) {
   return (
     <td className="p-4 align-top">
-      <span
+      <Text
+        as="span"
         className={cn(
-          "pdpp-caption rounded-full border px-2.5 py-1",
-          state === "yes" &&
-            "border-[color:oklch(0.62_0.13_145/0.35)] bg-[color:oklch(0.62_0.13_145/0.12)] text-foreground",
-          state === "partial" &&
-            "border-[color:oklch(0.72_0.11_45/0.35)] bg-[color:oklch(0.72_0.11_45/0.13)] text-foreground",
-          state === "no" && "border-border bg-muted/40 text-muted-foreground",
-          state === "not-applicable" && "border-dashed bg-background/60 text-muted-foreground"
+          "rounded-full border px-2.5 py-1",
+          state === "yes" && "border-[color:oklch(0.62_0.13_145/0.35)] bg-[color:oklch(0.62_0.13_145/0.12)]",
+          state === "partial" && "border-[color:oklch(0.72_0.11_45/0.35)] bg-[color:oklch(0.72_0.11_45/0.13)]",
+          state === "no" && "border-border bg-muted/40",
+          state === "not-applicable" && "border-dashed bg-background/60"
         )}
+        color={state === "no" || state === "not-applicable" ? "muted" : "foreground"}
+        size="small"
       >
         {stateLabel[state]}
-      </span>
+      </Text>
     </td>
   );
 }
 
 function StatusPill({ status }: { status: CoverageStatus }) {
   return (
-    <span
+    <Text
+      as="span"
       className={cn(
-        "pdpp-caption rounded-full border px-2.5 py-1",
-        status === "implemented" &&
-          "border-[color:oklch(0.62_0.13_145/0.35)] bg-[color:oklch(0.62_0.13_145/0.12)] text-foreground",
-        status === "partial" &&
-          "border-[color:oklch(0.58_0.172_253.7/0.35)] bg-[color:oklch(0.58_0.172_253.7/0.12)] text-foreground",
-        status === "deferred" &&
-          "border-[color:oklch(0.72_0.11_45/0.35)] bg-[color:oklch(0.72_0.11_45/0.13)] text-foreground",
-        status === "planned" && "border-dashed bg-background/60 text-muted-foreground",
-        status === "reference-only" && "border-border bg-muted/45 text-foreground"
+        "rounded-full border px-2.5 py-1",
+        status === "implemented" && "border-[color:oklch(0.62_0.13_145/0.35)] bg-[color:oklch(0.62_0.13_145/0.12)]",
+        status === "partial" && "border-[color:oklch(0.58_0.172_253.7/0.35)] bg-[color:oklch(0.58_0.172_253.7/0.12)]",
+        status === "deferred" && "border-[color:oklch(0.72_0.11_45/0.35)] bg-[color:oklch(0.72_0.11_45/0.13)]",
+        status === "planned" && "border-dashed bg-background/60",
+        status === "reference-only" && "border-border bg-muted/45"
       )}
+      color={status === "planned" ? "muted" : "foreground"}
+      size="small"
     >
       {statusLabel[status]}
-    </span>
+    </Text>
   );
 }
 
 function EvidenceLink({ href, children }: { href: string; children: React.ReactNode }) {
   const external = href.startsWith("http");
-  const className =
-    "pdpp-caption text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground";
+  const className = "underline decoration-border underline-offset-4 hover:decoration-foreground";
 
   if (external) {
     return (
-      <a className={className} href={href}>
+      <Text as="a" className={className} href={href} size="small">
         {children}
-      </a>
+      </Text>
     );
   }
 
   return (
-    <Link className={className} href={href}>
+    <Text as={Link} className={className} href={href} size="small">
       {children}
-    </Link>
+    </Text>
   );
 }

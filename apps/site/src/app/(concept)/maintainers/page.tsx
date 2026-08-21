@@ -3,11 +3,12 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { PdppConceptDocHeader } from "@/components/pdpp-concept/concept-doc-header.tsx";
-import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
-import { PdppConceptSection } from "@/components/pdpp-concept/concept-section.tsx";
-import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
-import { Text } from "@/components/pdpp-concept/text.tsx";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
+import { PdppRail } from "@/components/layout/rail.tsx";
+import { PdppConceptDocHeader } from "@/components/sections/concept-doc-header.tsx";
+import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
+import { PdppRuledList, PdppRuledListItem } from "@/components/sections/ruled-list.tsx";
+import { Text } from "@/components/typography/text.tsx";
 import { docsRoute, maintainersRoute } from "@/lib/spec-nav-slugs.ts";
 
 // The unlisted index for everything that is NOT the specification.
@@ -40,9 +41,9 @@ const MAINTAINERS_TOC = [
 ] as const;
 
 interface DocEntry {
+  readonly body: string;
   readonly slug: string;
   readonly title: string;
-  readonly body: string;
 }
 
 // Grouped by the question a maintainer arrives with — why is it this way, what
@@ -101,23 +102,22 @@ const OPEN_DOCS: readonly DocEntry[] = [
   },
 ];
 
-// Reuses .pdpp-features (self-host's "What you get") rather than adding a
-// class: same shape — a ruled list of title-then-description rows — and
-// components.css states the intention to shrink, not grow, its BEM register.
+// Reuses PdppRuledList (self-host's "What you get") rather than a one-off
+// list: same shape — a ruled list of title-then-description rows.
 function DocList({ docs }: { docs: readonly DocEntry[] }) {
   return (
-    <ul className="pdpp-features">
+    <PdppRuledList>
       {docs.map((doc) => (
-        <li key={doc.slug}>
+        <PdppRuledListItem key={doc.slug}>
           <Link className="link-prose" href={`${docsRoute}/${doc.slug}`}>
             {doc.title}
           </Link>{" "}
           <Text as="span" color="foreground" size="body">
             {doc.body}
           </Text>
-        </li>
+        </PdppRuledListItem>
       ))}
-    </ul>
+    </PdppRuledList>
   );
 }
 

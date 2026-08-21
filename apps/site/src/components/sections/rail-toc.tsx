@@ -4,7 +4,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { PdppRailSectionLabel } from "@/components/pdpp-concept/rail-section-label.tsx";
+import { PdppRailSectionLabel } from "@/components/sections/rail-section-label.tsx";
 import { cn } from "@/lib/utils.ts";
 
 export interface PdppRailTocItem {
@@ -58,7 +58,7 @@ export function PdppRailToc({ toc }: PdppRailTocProps) {
   }, []);
 
   return (
-    <div className="pt-4" data-slot="pdpp-concept-rail-toc">
+    <div className="pt-4" data-slot="pdpp-editorial-rail-toc">
       <PdppRailSectionLabel>Contents</PdppRailSectionLabel>
       <nav aria-label="Table of contents">
         <ol className="m-0 list-none p-0 font-sans text-[13px]">

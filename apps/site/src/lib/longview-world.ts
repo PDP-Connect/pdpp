@@ -1,10 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import type { ConnectorCardProps } from "@/components/pdpp/connector-card.tsx";
-import type { ConsentCardProps } from "@/components/pdpp/consent-card.tsx";
-import type { GrantInspectorProps } from "@/components/pdpp/grant-inspector.tsx";
-import type { StreamInventoryProps } from "@/components/pdpp/stream-inventory.tsx";
+import type { ConnectorCardProps } from "@/components/sections/connector-card.tsx";
+import type { ConsentCardProps } from "@/components/sections/consent-card.tsx";
+import type { GrantInspectorProps } from "@/components/sections/grant-inspector.tsx";
+import type { StreamInventoryProps } from "@/components/sections/stream-inventory.tsx";
 
 export const LONGVIEW_CLIENT_NAME = "Longview";
 export const LONGVIEW_CLIENT_MONOGRAM = "LV";

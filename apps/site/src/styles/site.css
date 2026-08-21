@@ -6,6 +6,18 @@
  * Route and component surfaces import their own stylesheets.
  */
 
+/* CSS layer priority is fixed by the order layer NAMES are first declared,
+   document-wide, across every stylesheet — not per file, and not by @import
+   position within a file. This file loads first (via app/layout.tsx, which
+   every route renders through), so this statement is what actually fixes
+   the order; without it the order was only an accident of Tailwind's own
+   internal @import sequence inside brand/styles.css. `properties` and
+   `theme`/`base`/`components`/`utilities` are Tailwind v4's own layer names
+   (see @pdpp/brand/styles.css -> @import "tailwindcss"); declaring them
+   again here is a no-op for Tailwind's own layers and exists only to make
+   the order a stated fact instead of an implicit side effect. */
+@layer properties, theme, base, components, utilities;
+
 @import "@pdpp/brand/styles.css";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
@@ -14,3 +26,48 @@
 @source "../../../../packages/operator-ui/src/**/*.{ts,tsx}";
 /* Same for brand-react: `Text`'s variant classes are class strings in that package. */
 @source "../../../../packages/pdpp-brand-react/src/**/*.{ts,tsx}";
+
+/* This build's utilities layer is redundant for anything the concept
+   surface's own Tailwind entrypoint (concept/index.css, under
+   src/styles/) already emits from concept-exclusive files, because that
+   entrypoint's stylesheet always loads AFTER this one on every concept
+   route (see (concept)/layout.tsx, not-found.tsx, specification/layout.tsx)
+   — this build's copy of a shared unconditional utility like `.flex` never
+   wins the cascade there anyway. Concept-exclusive routes and the component
+   files ONLY those routes render are excluded here so each unconditional
+   utility is emitted by exactly one of the two builds: this one owns every
+   route except the three that opt into the concept entrypoint, and that
+   entrypoint (scoped the mirror way, see that file) owns those three. Files
+   still imported by a non-concept route (e.g. components/ui/*,
+   providers/site-providers.tsx used by the root layout on every route) are
+   deliberately NOT excluded here — they must stay in both builds' scans.
+   See scripts/site-surface-ownership.test.ts for the pinned two-build
+   architecture this preserves. */
+@source not "../app/(concept)";
+@source not "../app/not-found.tsx";
+@source not "../app/specification";
+@source not "../components/layout/concept-page.tsx";
+@source not "../components/layout/concept-shell.tsx";
+@source not "../components/layout/footer.tsx";
+@source not "../components/layout/masthead.tsx";
+@source not "../components/layout/rail.tsx";
+@source not "../components/sections/command-tabs.tsx";
+@source not "../components/sections/concept-doc-header.tsx";
+@source not "../components/sections/concept-section.tsx";
+@source not "../components/sections/front-door.tsx";
+@source not "../components/sections/hero-water-data.ts";
+@source not "../components/sections/hero-water-still.tsx";
+@source not "../components/sections/rail-front-matter.tsx";
+@source not "../components/sections/rail-section-label.tsx";
+@source not "../components/sections/rail-toc.tsx";
+@source not "../components/sections/ruled-list.tsx";
+@source not "../components/specification";
+@source not "../components/mdx";
+@source not "../components/typography";
+@source not "../components/elements/button.tsx";
+@source not "../components/elements/color-scheme-menu.tsx";
+@source not "../components/elements/icons.tsx";
+@source not "../components/elements/terminal.tsx";
+@source not "../components/elements/theme-switch.tsx";
+@source not "../components/ui/popover.tsx";
+@source not "../components/ai/page-actions.tsx";

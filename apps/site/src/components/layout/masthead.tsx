@@ -9,9 +9,9 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { publicSiteNav } from "@/lib/public-site-nav.ts";
 import { cn } from "@/lib/utils.ts";
-import { SearchIcon, WordmarkIcon } from "./icons.tsx";
-import { Text } from "./text.tsx";
-import { PdppThemeSwitch } from "./theme-switch.tsx";
+import { SearchIcon, WordmarkIcon } from "../elements/icons.tsx";
+import { PdppThemeSwitch } from "../elements/theme-switch.tsx";
+import { Text } from "../typography/text.tsx";
 
 // Search lives in the global nav, not on any page. The owner's finding was that
 // a page-level search box is furniture on a front door and mis-sized on the spec
@@ -152,7 +152,7 @@ export function PdppConceptMasthead() {
       </Text>
       <header
         className={cn("sticky top-0 z-20 bg-background", pathname !== "/" && "border-b")}
-        data-slot="pdpp-concept-masthead"
+        data-slot="pdpp-editorial-masthead"
         ref={headerRef}
       >
         <div

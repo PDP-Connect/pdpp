@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils.ts";
 
 /*
  * Editorial CTAs built from the Base UI primitive and shadcn semantic tokens.
- * Kept under pdpp-concept, not @/components/ui (that re-exports operator brand).
+ * Kept in the editorial surface, not @/components/ui (that re-exports operator brand).
  * `!` beats [data-surface="concept"] a color/underline.
  */
 const buttonVariants = cva(
@@ -60,7 +60,7 @@ function Button({
   return (
     <ButtonPrimitive
       className={cn(buttonVariants({ variant }), className)}
-      data-slot="pdpp-concept-button"
+      data-slot="pdpp-editorial-button"
       {...props}
     />
   );

@@ -29,8 +29,8 @@
      below the point where the measure is already the full column width —
      outdenting there would push the table under the rails. */
   --table-outset: 0px;
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-paper);
+  color: var(--pdpp-editorial-ink);
+  background: var(--pdpp-editorial-paper);
 }
 
 /* ─── Fumadocs layout grid ───────────────────────────────────────────────── */
@@ -87,28 +87,40 @@
      docs-only widening would move the masthead between pages again. */
 }
 
-/* Fumadocs ships `#nd-toc` with its own `max-xl:hidden` utility, but the
-   concept surface compiles Tailwind in a SEPARATE build from fumadocs' own
-   preset (see concept/index.css), and that build's own unconditional
-   `.flex{display:flex}` chunk loads AFTER fumadocs' — same specificity, later
-   in the cascade, so it silently wins over the media-scoped `max-xl:hidden`
-   at every width, and `#nd-toc` never actually collapses below 1280px (it
-   renders `display:flex` at zero width instead). Force it here instead: this
-   file is unlayered plain CSS, which always outranks a `@layer utilities`
-   rule regardless of source order, so this is not itself racing the same bug. */
-@media (max-width: 1279.98px) {
-  [data-pdpp-doc-theme] #nd-toc {
-    display: none;
-  }
-}
+/* #nd-toc's collapse below 1280px no longer needs a plain-CSS override here.
+   Root cause (see the removed history in git blame): fumadocs ships #nd-toc
+   with both an unconditional `flex` and its own conditional `max-xl:hidden`
+   (fumadocs-ui/layouts/docs/page/slots/toc.js). The concept surface's own
+   Tailwind build (surfaces/concept/index.css) previously scanned this app's
+   whole source tree unrestricted, which is where it got its copy of
+   `max-xl:hidden` — but only ever by accident, riding along with whatever
+   unrelated site file happened to also contain that literal string. Once
+   that build's scan was scoped to concept-exclusive files only
+   (site.css/concept/index.css), fumadocs' own classes had to be registered
+   on purpose: concept/index.css now `@source`s fumadocs-ui's compiled dist
+   directly, the same way site.css `@source`s operator-ui and brand-react.
+   With that, `max-xl:hidden` lives in the SAME stylesheet as concept's own
+   `.flex{display:flex}`, in Tailwind's own variant-after-base declaration
+   order — so it wins on source order within one file, not on a `<link>`
+   load-order race between two separate stylesheets. Verified with
+   scripts/style-differ.mjs's --assert-display mode (NOT its default box/
+   style diff, which drops zero-box elements before reading their style and
+   so cannot observe a `display: none` claim — see the comment on
+   isCollapsed) against a main baseline and this branch's build: #nd-toc's
+   computed `display` is `none` at 1279px and `flex` at 1280px and 1281px on
+   BOTH sides — the collapse behavior this override used to force is
+   unchanged. Re-run with:
+     node scripts/style-differ.mjs --baseline <main-url> --candidate <this-branch-url> \
+       --routes /specification \
+       --assert-display "#nd-toc:1279:900:none,#nd-toc:1280:900:flex,#nd-toc:1281:900:flex" */
 
 [data-pdpp-doc-theme] #nd-subnav {
   height: 3rem;
-  background: var(--pdpp-concept-paper);
+  background: var(--pdpp-editorial-paper);
   border-color: color-mix(
     in srgb,
-    var(--pdpp-concept-ink) 18%,
-    var(--pdpp-concept-paper)
+    var(--pdpp-editorial-ink) 18%,
+    var(--pdpp-editorial-paper)
   );
 }
 
@@ -131,7 +143,7 @@
 
 [data-pdpp-doc-theme] #nd-page {
   font-family: var(--font-serif);
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
 }
 
 [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
@@ -224,7 +236,7 @@
 [data-pdpp-doc-theme] #nd-toc {
   padding-top: 6.5rem;
   font-family: var(--font-sans);
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 
 /* The TOC link rung itself is styled further down, after the prose/action
@@ -233,15 +245,15 @@
 
 [data-pdpp-doc-theme] #nd-toc a.data-\[active\=true\],
 [data-pdpp-doc-theme] #nd-toc [data-active="true"] {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
 }
 
 [data-pdpp-doc-theme] [data-toc-popover] header {
-  background: var(--pdpp-concept-paper);
+  background: var(--pdpp-editorial-paper);
   border-bottom-color: color-mix(
     in srgb,
-    var(--pdpp-concept-ink) 18%,
-    var(--pdpp-concept-paper)
+    var(--pdpp-editorial-ink) 18%,
+    var(--pdpp-editorial-paper)
   );
 }
 
@@ -286,7 +298,9 @@
   }
 }
 
-[data-pdpp-doc-theme] .pdpp-docs-hero__content [data-slot="pdpp-concept-text"] {
+[data-pdpp-doc-theme]
+  .pdpp-docs-hero__content
+  [data-slot="pdpp-editorial-text"] {
   margin: 0;
 }
 
@@ -296,18 +310,13 @@
   }
 }
 
-[data-pdpp-doc-theme] .pdpp-docs-hero__content h1,
-[data-pdpp-doc-theme] #nd-page h1 {
-  font-family: var(--font-serif);
-}
-
 [data-pdpp-doc-theme] .pdpp-docs-description {
   max-width: 56ch;
   margin-bottom: 0;
   font-family: var(--font-serif);
   font-size: clamp(0.96rem, 1.8vw, 1.05rem);
   line-height: 1.7;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-actions {
@@ -318,7 +327,11 @@
   padding-top: 1rem;
   margin-top: 1.25rem;
   border-top: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+    color-mix(
+      in srgb,
+      var(--pdpp-editorial-ink) 18%,
+      var(--pdpp-editorial-paper)
+    );
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-actions a,
@@ -409,17 +422,17 @@
   }
 }
 
+/* Type (font-size/line-height) moved onto the `Text` ladder — see mdx.tsx
+   (h1-h4/p/li/blockquote) and text-variants.ts. This rule keeps only the
+   fumadocs `.prose` color-token bridge and the ink color for non-Text prose
+   chrome (e.g. Fumadocs-owned nodes this file doesn't wrap in `Text`). */
 [data-pdpp-doc-theme] .pdpp-docs-body.prose {
-  --tw-prose-body: var(--pdpp-concept-ink);
-  font-size: 17px;
-  line-height: 1.65;
-  color: var(--pdpp-concept-ink);
+  --tw-prose-body: var(--pdpp-editorial-ink);
+  color: var(--pdpp-editorial-ink);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body :where(h2, h3, h4) {
-  font-family: var(--font-serif);
-  color: var(--pdpp-concept-ink);
-  letter-spacing: normal;
+  color: var(--pdpp-editorial-ink);
 }
 
 /* Generated specification headings are fragment targets for Fumadocs' TOC.
@@ -453,8 +466,6 @@
 [data-pdpp-doc-theme] .pdpp-docs-body h2 {
   margin-top: 3.25rem;
   margin-bottom: 1rem;
-  font-size: clamp(1.45rem, 2vw, 1.82rem);
-  line-height: 1.08;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body > h2:first-child,
@@ -470,18 +481,6 @@
 [data-pdpp-doc-theme] .pdpp-docs-body h3 {
   margin-top: 2rem;
   margin-bottom: 0.75rem;
-  font-size: 1.12rem;
-  line-height: 1.2;
-}
-
-[data-pdpp-doc-theme] .pdpp-docs-body p,
-[data-pdpp-doc-theme] .pdpp-docs-body li {
-  color: var(--pdpp-concept-ink);
-}
-
-[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(strong) {
-  font-weight: 700;
-  color: inherit;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body li {
@@ -489,32 +488,46 @@
   margin-bottom: 6px;
 }
 
+/* `Text`'s own base class carries `[&_strong]:font-medium` (500) — the site-
+   wide default, but currently unused/unverified on any shipped marketing
+   page (no <strong> ships on /, /self-host, /participate, /maintainers as of
+   this writing). The spec leans on <strong> functionally, as inline
+   mini-headers inside list items (see spec-core.md's protocol-surface list),
+   and measured in a browser, font-medium reads as barely distinguishable
+   from the surrounding 400 body weight at the serif lede rung — a real
+   legibility loss, not just a metric delta. Restated here as a scoped
+   exception rather than changing `Text`'s shared base class for every future
+   caller sitewide off a single, untested surface. */
+[data-pdpp-doc-theme] .pdpp-docs-body :where(strong) {
+  font-weight: 700;
+}
+
 [data-pdpp-doc-theme] .pdpp-docs-body a {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
   text-decoration-thickness: 1px;
   text-underline-offset: 0.18em;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body a:hover,
 [data-pdpp-doc-theme] .pdpp-docs-body a:focus-visible {
-  color: var(--pdpp-concept-teal-deep);
+  color: var(--pdpp-editorial-teal-deep);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body blockquote {
   padding: 1rem 1.1rem;
   margin: 1.75rem 0;
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-teal-wash);
-  border-left: 2px solid var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-ink);
+  background: var(--pdpp-editorial-teal-wash);
+  border-left: 2px solid var(--pdpp-editorial-teal);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
   padding: 12px 16px;
   margin: 20px 0;
   font-size: 15.5px;
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-teal-wash);
-  border-left: 2px solid var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-ink);
+  background: var(--pdpp-editorial-teal-wash);
+  border-left: 2px solid var(--pdpp-editorial-teal);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note strong {
@@ -553,12 +566,12 @@
   font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1.7;
-  color: var(--pdpp-concept-onteal-deep) !important;
-  background: var(--pdpp-concept-teal-deep) !important;
-  border: 1px solid var(--pdpp-concept-teal-deep) !important;
+  color: var(--pdpp-editorial-onteal-deep) !important;
+  background: var(--pdpp-editorial-teal-deep) !important;
+  border: 1px solid var(--pdpp-editorial-teal-deep) !important;
   border-radius: 0 !important;
   box-shadow: 1px 1px 0
-    color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
+    color-mix(in srgb, var(--pdpp-editorial-ink) 22%, transparent);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose :where(figure.shiki) {
@@ -663,7 +676,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose :where(td) {
-  color: var(--pdpp-concept-ink) !important;
+  color: var(--pdpp-editorial-ink) !important;
   border-inline-start: none !important;
 }
 
@@ -674,7 +687,7 @@
 [data-pdpp-doc-theme] .pdpp-docs-body tbody,
 [data-pdpp-doc-theme] .pdpp-docs-body tr,
 [data-pdpp-doc-theme] .pdpp-docs-body td {
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
   background: transparent;
 }
 
@@ -682,7 +695,7 @@
   font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 600;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -697,7 +710,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body thead th {
-  border-bottom: 1px solid var(--pdpp-concept-ink-faint);
+  border-bottom: 1px solid var(--pdpp-editorial-ink-faint);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body th:first-child,
@@ -785,13 +798,13 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"]:hover {
-  background: var(--pdpp-concept-teal-wash);
+  background: var(--pdpp-editorial-teal-wash);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"] h3 {
   font-family: var(--font-sans);
   font-weight: 600;
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-editorial-ink);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body + div a {
@@ -801,7 +814,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body + div a:hover {
-  background: var(--pdpp-concept-teal-wash);
+  background: var(--pdpp-editorial-teal-wash);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body + div a p {
@@ -821,7 +834,7 @@
 [data-pdpp-doc-theme] #nd-toc a {
   font-size: 13px;
   line-height: 1.35;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
 }
 
 /* Deferred from the TOC block above so it follows the prose h3 rules. */
@@ -874,7 +887,7 @@
 }
 
 [data-pdpp-doc-theme] #nd-sidebar [data-active="true"] {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
   background: none;
 }
 
@@ -906,38 +919,38 @@
   margin-bottom: 9px;
   font-size: 13px;
   line-height: 1.35;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-editorial-ink-soft);
   text-decoration: none;
   background: none;
   border-radius: 0;
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__doc:hover {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
   background: none;
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__doc[data-active="true"] {
   font-weight: 500;
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
   background: none;
-  box-shadow: -9px 0 0 -6px var(--pdpp-concept-teal);
+  box-shadow: -9px 0 0 -6px var(--pdpp-editorial-teal);
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__rule {
   margin: 32px 0 20px;
   border: 0;
   border-top: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 14%, transparent);
+    color-mix(in srgb, var(--pdpp-editorial-ink) 14%, transparent);
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__doc[data-supporting="true"] {
   font-size: 12px;
-  color: var(--pdpp-concept-ink-faint);
+  color: var(--pdpp-editorial-ink-faint);
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__doc[data-supporting="true"]:hover,
 [data-pdpp-doc-theme]
   .pdpp-rail__doc[data-supporting="true"][data-active="true"] {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-editorial-teal);
 }

@@ -10,6 +10,59 @@
 @import "./tokens/index.css";
 @import "./components.css";
 
+/* This build exists so concept-exclusive @theme keys (--container-page,
+   --spacing-rail, etc. — see tokens/semantic.css) resolve to utilities that
+   site.css's build can never generate, since that file's Tailwind pass has
+   no visibility into this one's @theme additions. Scanning root/sandbox-only
+   files here would only ever re-emit utilities site.css already owns for
+   those routes — this build never even loads there (see design/layout.tsx,
+   sandbox/layout.tsx, dashboard has no concept import). Excluding them keeps
+   each unconditional utility emitted by exactly one of the two builds,
+   mirroring the exclusion list in site.css. Files a non-concept route also
+   renders (components/ui/button.tsx, elements/theme-toggle.tsx,
+   providers/site-providers.tsx used by the root layout on every route) are
+   deliberately NOT excluded — they must stay in both builds' scans. See
+   scripts/site-surface-ownership.test.ts for the pinned two-build
+   architecture this preserves. */
+@source not "../../../app/dashboard";
+@source not "../../../app/design";
+@source not "../../../app/sandbox";
+@source not "../../../app/palette";
+@source not "../../../components/elements/artifact-link.tsx";
+@source not "../../../components/elements/longview-wordmark.tsx";
+@source not "../../../components/elements/pdpp-logo.tsx";
+@source not "../../../components/elements/source-link.tsx";
+@source not "../../../components/layout/prose-page.tsx";
+@source not "../../../components/layout/site-header.tsx";
+@source not "../../../components/sections/connector-card.tsx";
+@source not "../../../components/sections/consent-card.tsx";
+@source not "../../../components/sections/grant-inspector.tsx";
+@source not "../../../components/sections/hero.tsx";
+@source not "../../../components/sections/reference-app.tsx";
+@source not "../../../components/sections/reference-hero-proof.tsx";
+@source not "../../../components/sections/spec-citation.tsx";
+@source not "../../../components/sections/stream-inventory.tsx";
+@source not "../../../components/ui/badge.tsx";
+@source not "../../../components/ui/card.tsx";
+@source not "../../../components/ui/input.tsx";
+@source not "../../../components/ui/select.tsx";
+@source not "../../../components/ui/textarea.tsx";
+@source not "../../../components/ui/timestamp.tsx";
+
+/* Fumadocs' compiled components render on /specification (SpecificationShell
+   wraps fumadocs' own DocsLayout), and its own dist JS carries classes
+   (`md:hidden`, `lg:flex`, `animate-fd-*`, `fd-*` color utilities…) this
+   build must generate. Tailwind's default detection never scans
+   node_modules, so those classes need an explicit @source here — the same
+   as operator-ui and brand-react get in site.css for the equivalent reason.
+   Before this line existed, this build got those classes only by accident,
+   because it scanned root/sandbox-only files (kitchen-sink pages like
+   design/page.tsx use nearly the whole utility set as literal strings) that
+   are correctly excluded above; removing that accidental supply without
+   this explicit one silently dropped `display:none` on #nd-subnav and
+   #nd-toc below their breakpoints. */
+@source "../../../../node_modules/fumadocs-ui/dist/**/*.js";
+
 /* Theme-only: makes brand's @theme (fonts, the eight type rungs, shadcn colors)
    resolvable for `@apply` here without re-emitting brand's CSS — site.css
    already emits it. Without this, `@apply font-serif text-foreground` in

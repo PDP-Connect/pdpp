@@ -1,10 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { PdppRailToc, type PdppRailTocItem } from "@/components/pdpp-concept/rail-toc.tsx";
+import { PdppRailToc, type PdppRailTocItem } from "@/components/sections/rail-toc.tsx";
 import { cn } from "@/lib/utils.ts";
 
-export type { PdppRailTocItem } from "@/components/pdpp-concept/rail-toc.tsx";
+export type { PdppRailTocItem } from "@/components/sections/rail-toc.tsx";
 
 export interface PdppRailProps {
   toc: readonly PdppRailTocItem[];
@@ -33,7 +33,7 @@ export function PdppRail({ toc }: PdppRailProps) {
         "focus-within:[&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--foreground)_28%,transparent)]",
         "[&::-webkit-scrollbar-thumb:hover]:bg-[color-mix(in_srgb,var(--foreground)_45%,transparent)]"
       )}
-      data-slot="pdpp-concept-rail"
+      data-slot="pdpp-editorial-rail"
     >
       <PdppRailToc toc={toc} />
     </aside>
