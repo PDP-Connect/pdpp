@@ -49,12 +49,45 @@
  * `runBoundedSummaryEvidenceSweep`'s own ordering comment for the full
  * argument.
  *
- * This file proves, with a REAL fold-heavy backlog (not a simulated clock
- * jump — the whole point is that cooperative overshoot is real, not a
- * modeling artifact):
+ * HOW THE STARVATION PRECONDITION IS ESTABLISHED (rewritten 2026-08-21).
+ * Earlier revisions of this file tried to make page 1 saturate the round by
+ * seeding a very large real backlog and racing it against a small real
+ * `ROUND_MS`. That approach is structurally incapable of working, and its
+ * repeated recalibration (100k -> 400k) was chasing a number that cannot be
+ * made to hold:
+ *
+ *   The fold is capped by EVENT COUNT, not by backlog size.
+ *   `drainTerminalFactEvents` returns as soon as `eventsProcessed >=
+ *   maxEvents` (`BOUNDED_FOLD_MAX_EVENTS`, 500 by default), regardless of
+ *   how many events remain unfolded. A 100k backlog and a 400k backlog
+ *   therefore perform the SAME 500-event fold per round — measured: ~20ms
+ *   at 100k and ~50-90ms at 400k, where the entire difference is index-seek
+ *   depth, not folding work. Raising the backlog does not raise the round's
+ *   cost to any bound; it only nudges a wall-clock measurement around the
+ *   `ROUND_MS` threshold until the machine's speed decides the verdict.
+ *   That is precisely a timing race, and it is what made this test ambient-
+ *   red: it began passing/failing on fold cost the code never promised.
+ *
+ * The property under test was never "a big backlog is slow." It is: WHEN the
+ * walk consumes the round, acceleration gets no turn. "The walk consumes the
+ * round" is the PRECONDITION, not the thing being measured — so it is
+ * established deterministically, via the same injected sweep clock the
+ * sibling deadline tests already use (`connector-summary-sweep-no-late-
+ * start.test.ts`, `connector-summary-dirty-priority-attempted-fairness.
+ * test.ts`): the walk's own page-discovery seam advances the clock past the
+ * round's deadline, modelling a genuinely fold-heavy page exactly.
+ *
+ * This is not a weaker test — it is a strictly stronger one. Cooperative
+ * overshoot is real, and modelling it with a controlled clock asserts the
+ * ORDERING invariant on every host instead of only on hosts slow enough for
+ * a 500-event fold to cross 50ms. A modest real backlog is still seeded, so
+ * page 1 genuinely reports `incomplete` from real unfolded history rather
+ * than from the clock alone.
+ *
+ * This file proves:
  *   1. FAIL-BEFORE: with `firstTranche` fixed at `"walk"` every round (the
  *      pre-fix call shape), a fresh dirty row on a later page starves across
- *      several rounds while page 1's backlog keeps the walk saturated.
+ *      several rounds while page 1's fold keeps the walk saturated.
  *   2. FIX / discriminator (1): alternating `firstTranche` converges the
  *      SAME fresh dirty row within a small, bounded number of rounds, even
  *      though page 1 remains genuinely stuck throughout.
@@ -75,6 +108,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { writeTransaction } from "../lib/db.ts";
 import {
+  __testOnlySetSweepClock,
   __testOnlySetSweepDiscoveryHook,
   getConnectorSummaryEvidence,
   markConnectorSummaryEvidenceDirty,
@@ -86,46 +120,104 @@ import { closeDb, getDb, initDb } from "../server/db.ts";
 const NOW = "2026-08-12T00:00:00.000Z";
 const PAGE_SIZE = 25;
 /**
- * Deliberately tight per-round budget: page 1's own real minimum cost — one
- * batch read against a genuinely large backlog plus classifying 25 rows —
- * must exceed the ENTIRE round on its own for this reproduction to be
- * honest. A budget with real slack left over (verified empirically: 400ms
- * left enough time for BOTH tranches to run every round regardless of
- * ordering, which would silently defeat the fail-before case) does not
- * exercise the actual defect. This is a ratio to real per-page cost, not a
- * literal match to production's 2000ms (proven correct separately by the
- * default wiring in `connector-maintenance-sweep.ts`/`server/index.ts`).
+ * The round's pass-admission budget. Its absolute value no longer decides
+ * anything: the fold-heavy page's cost is modelled by advancing the injected
+ * sweep clock (see `createClock`/`saturateWalkPage`), so this is simply the
+ * budget the clock is advanced past — not a wall-clock threshold real work
+ * has to beat. Kept at a production-plausible order of magnitude for
+ * readability.
  */
 const ROUND_MS = 50;
 /** A human-scale-interval bound: several rounds, never "eventually, unbounded". */
 const MAX_ROUNDS = 12;
 /**
- * Large enough that page 1's fold cannot converge within MAX_ROUNDS at its
- * default per-round event cap (~500 events/round; 12 rounds is ~6,000
- * events, two orders of magnitude below this backlog). Seeded inside one
- * `writeTransaction` (below) — one row per autocommit at this volume is
- * itself the bottleneck, not the sweep under test.
+ * A real, but deliberately MODEST, unfolded backlog for page 1.
  *
- * RECALIBRATED from 100_000 (2026-08-20). `aa8019f1d` added a general
- * `(connector_instance_id, event_seq)` index on `spine_events`, which is what
- * the fold's own batch read plans against. That made the read fast enough
- * that a 100k backlog no longer saturates a `ROUND_MS` round, so the
- * FAIL-BEFORE case below stopped reproducing — it failed at round 1 because
- * the walk finished early and left the acceleration tranche real time, not
- * because starvation had been fixed. That commit disclosed this and left the
- * calibration to be redone here rather than guessed at.
+ * Its job is only to make page 1 genuinely report `incomplete` from real
+ * unfolded terminal history — the fold's own event cap (500/round) means
+ * `MAX_ROUNDS` rounds fold at most ~6,000 events, so 20,000 keeps page 1
+ * honestly unconverged for the whole scenario with a 3x margin.
  *
- * The starvation precondition is a RATIO between per-page fold cost and
- * `ROUND_MS`, so restoring it means restoring the cost side. Measured on the
- * recalibration host: 200k still does not starve, 300k does — 400k sits ~33%
- * above that threshold. Note the margin is one-sided in the safe direction:
- * a SLOWER host (CI) makes the fold more expensive per round and starvation
- * easier to reproduce, so this bound does not get tighter on slower hardware.
- * `ROUND_MS` was deliberately NOT lowered instead: shrinking the round below
- * ~10ms makes it comparable to scheduler jitter, which would turn a real
- * structural property into a timing race.
+ * It is deliberately NOT sized to make the fold slow. See this file's header:
+ * the fold is event-capped, so backlog size cannot control per-round cost,
+ * and the previous 100_000 -> 400_000 escalation was calibrating a quantity
+ * that does not have the effect it was assumed to have. Shrinking this back
+ * to 20k removes ~15s of pure seed time per seeding test with no loss of
+ * coverage, because saturation is now established by the clock, not by bulk.
  */
-const STUCK_BACKLOG_EVENT_COUNT = 400_000;
+const STUCK_BACKLOG_EVENT_COUNT = 20_000;
+
+/**
+ * A controllable clock, matching `connector-summary-sweep-no-late-start.
+ * test.ts`'s own harness. Tests advance it explicitly; nothing here sleeps,
+ * so deadline behavior is deterministic under any machine load.
+ *
+ * IMPORTANT — it starts from the REAL `Date.now()` and only ever runs
+ * FORWARD from there. The injected clock (`sweepNow`) governs only the
+ * sweep's own tranche/page admission seams; the inner
+ * `observeConnectorSummaryEvidence` fold and repair phases deliberately read
+ * the real `Date.now()` against the same deadline value. Seeding this clock
+ * at an arbitrary small number (as the pure "did work start at all" tests
+ * can afford to) would put the round's deadline trillions of milliseconds in
+ * the real clock's past, so EVERY inner phase would refuse to start and the
+ * scenario would degenerate into "nothing ever runs" — which passes a
+ * starvation assertion for entirely the wrong reason. Anchoring to real time
+ * keeps both clocks in the same frame, so advancing this one models elapsed
+ * work rather than teleporting out of the deadline's domain.
+ */
+function createClock() {
+  let now = Date.now();
+  return {
+    advance(ms: number) {
+      now += ms;
+    },
+    read: () => now,
+  };
+}
+
+/**
+ * Models the live incident's fold-heavy page 1 deterministically: after the
+ * walk's page has genuinely been admitted and observed, the round's clock is
+ * advanced past its deadline, so the walk has consumed the round by the time
+ * it returns — exactly what a page whose own fold reaches the deadline does,
+ * without depending on real fold work being slower than a wall-clock
+ * threshold.
+ *
+ * The advance fires on the NEXT seam rather than on `walk_page_ids` itself,
+ * because `walk_page_ids` fires BEFORE the walk re-checks admission for its
+ * own page. Advancing there would prevent page 1's fold from ever beginning,
+ * making page 1 "never ran" rather than "ran and was heavy" — a different
+ * (and vacuous) scenario. Here page 1 does real folding work every round,
+ * and is then charged for having taken the round.
+ *
+ * Only the WALK is charged, so the acceleration tranche never pays for the
+ * walk's overshoot. That asymmetry is the point: the scenario is "the walk
+ * saturates the round," and charging acceleration too would model both
+ * tranches being slow, under which no ordering could help and the test would
+ * prove nothing.
+ *
+ * Returns a per-round harness. `observedPoints` records tranche order (the
+ * first entry is which tranche got first opportunity); `chargeWalkPage` is
+ * passed as `onPageConverged`, which the walk calls right after its page's
+ * observe — the exact "page finished, and it took the whole round" seam.
+ */
+function saturateWalkPage(clock: ReturnType<typeof createClock>) {
+  const observedPoints: string[] = [];
+  __testOnlySetSweepDiscoveryHook((point) => {
+    observedPoints.push(point);
+  });
+  return {
+    chargeWalkPage(): Promise<void> {
+      // `onPageConverged` is shared by both tranches, so charge only when
+      // this call came from the walk's page.
+      if (observedPoints.includes("walk_page_ids")) {
+        clock.advance(ROUND_MS * 2);
+      }
+      return Promise.resolve();
+    },
+    observedPoints,
+  };
+}
 
 function withTempDb(fn: () => Promise<void>) {
   return async () => {
@@ -134,6 +226,8 @@ function withTempDb(fn: () => Promise<void>) {
       initDb(join(dir, "pdpp.sqlite"));
       await fn();
     } finally {
+      __testOnlySetSweepDiscoveryHook(null);
+      __testOnlySetSweepClock(null);
       closeDb();
       rmSync(dir, { force: true, recursive: true });
     }
@@ -304,16 +398,24 @@ test(
     const { discriminatorId } = await seedStuckFleet();
     const runId = await dirtyDiscriminator(discriminatorId);
 
+    const clock = createClock();
+    __testOnlySetSweepClock(clock.read);
+
     let cursor: string | null = null;
     for (let round = 1; round <= MAX_ROUNDS; round += 1) {
+      const { chargeWalkPage } = saturateWalkPage(clock);
       // biome-ignore lint/performance/noAwaitInLoops: each round must observe the prior round's durable cursor and evidence state.
       const result = await runBoundedSummaryEvidenceSweep({
         afterId: cursor,
         firstTranche: "walk",
         maxDurationMs: ROUND_MS,
+        onPageConverged: chargeWalkPage,
         pageSize: PAGE_SIZE,
       });
       cursor = result.resumeAfterId;
+      // A fresh round gets a fresh budget: advance past the round the walk
+      // just consumed, exactly as the real scheduler's next tick would.
+      clock.advance(ROUND_MS);
       assert.equal(
         isCurrentWithRun(discriminatorId, runId),
         false,
@@ -340,23 +442,30 @@ test(
     const { discriminatorId } = await seedStuckFleet();
     const runId = await dirtyDiscriminator(discriminatorId);
 
+    // The SAME saturated page 1 as the fail-before case — only `firstTranche`
+    // differs between the two tests. That is what makes this a discriminator
+    // rather than a second, easier scenario.
+    const clock = createClock();
+    __testOnlySetSweepClock(clock.read);
+
     let cursor: string | null = null;
     let firstTranche: "walk" | "acceleration" = "walk";
     let convergedAtRound = -1;
     const firstDiscoveryByRound: string[] = [];
     try {
       for (let round = 1; round <= MAX_ROUNDS; round += 1) {
-        const discoveryOrder: string[] = [];
-        __testOnlySetSweepDiscoveryHook((point) => discoveryOrder.push(point));
+        const { chargeWalkPage, observedPoints } = saturateWalkPage(clock);
         // biome-ignore lint/performance/noAwaitInLoops: each round must observe the prior round's durable cursor and evidence state.
         const result = await runBoundedSummaryEvidenceSweep({
           afterId: cursor,
           firstTranche,
           maxDurationMs: ROUND_MS,
+          onPageConverged: chargeWalkPage,
           pageSize: PAGE_SIZE,
         });
-        firstDiscoveryByRound.push(discoveryOrder[0] ?? "none");
+        firstDiscoveryByRound.push(observedPoints[0] ?? "none");
         cursor = result.resumeAfterId;
+        clock.advance(ROUND_MS);
         firstTranche = firstTranche === "walk" ? "acceleration" : "walk";
         if (isCurrentWithRun(discriminatorId, runId)) {
           convergedAtRound = round;
@@ -372,26 +481,32 @@ test(
       `the freshly-dirtied discriminator must converge within ${MAX_ROUNDS} bounded rounds once firstTranche ` +
         "alternates — it did not converge, meaning alternation failed to give acceleration first opportunity"
     );
-    // Alternation structurally bounds when a tranche STARTS, not how quickly
-    // its cooperative work completes on a contended host. Assert the actual
-    // invariant directly instead of turning runner throughput into a false
-    // correctness condition.
+    // With page 1's saturation now deterministic, round 1 (walk-first)
+    // CANNOT converge the discriminator — the walk consumes the round exactly
+    // as in the fail-before case. So convergence must happen on round 2, the
+    // first round alternation hands acceleration the opening, and the 2-round
+    // starvation bound is asserted as the exact number it claims to be
+    // rather than as "somewhere within twelve."
     //
-    // Round 2 only exists if round 1 did not already converge. Since
-    // `aa8019f1d` indexed `spine_events` by instance for every event type,
-    // the acceleration tranche's discovery is fast enough that round 1
-    // frequently converges outright and the loop breaks — leaving no round 2
-    // to observe. Converging in a SINGLE round is a strictly stronger result
-    // than converging in two, so requiring a second round here would fail the
-    // test for being too fast. Assert alternation only when round 2 actually
-    // ran; `convergedAtRound` above is the invariant that always holds.
-    if (firstDiscoveryByRound.length > 1) {
-      assert.equal(
-        firstDiscoveryByRound[1],
-        "acceleration_dirty_ids",
-        `round 2 must give acceleration first opportunity; observed ${firstDiscoveryByRound.join(", ")}`
-      );
-    }
+    // An earlier revision could only assert this conditionally, because a
+    // fast host sometimes converged in round 1 — which was itself a symptom
+    // of the wall-clock precondition failing to hold, not a stronger result.
+    assert.equal(
+      convergedAtRound,
+      2,
+      `alternation's bound is ONE round of denied first opportunity, so the discriminator must converge on round 2 ` +
+        `exactly; converged at ${convergedAtRound}`
+    );
+    assert.equal(
+      firstDiscoveryByRound[0],
+      "walk_page_ids",
+      `round 1 must give the walk first opportunity; observed ${firstDiscoveryByRound.join(", ")}`
+    );
+    assert.equal(
+      firstDiscoveryByRound[1],
+      "acceleration_dirty_ids",
+      `round 2 must give acceleration first opportunity; observed ${firstDiscoveryByRound.join(", ")}`
+    );
   })
 );
 
