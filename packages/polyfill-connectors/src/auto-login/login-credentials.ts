@@ -97,20 +97,23 @@ export interface LoginCredentialFields {
   readonly username: readonly string[];
 }
 
+/**
+ * First aliased name whose value is present and non-blank.
+ *
+ * Written as `find` rather than a loop with a trailing `return undefined`
+ * because two enabled rules disagree about that trailing statement: Biome's
+ * `noUselessUndefined` rejects the explicit `return undefined`, and
+ * TypeScript's `noImplicitReturns` rejects its absence. Satisfying one fails
+ * the other, and `verify` runs both. `find` has a single exit, so neither rule
+ * has anything to object to and neither needs suppressing.
+ */
 function firstNonEmpty(
   credentials: Readonly<Record<string, string | undefined>>,
   names: readonly string[]
 ): string | undefined {
-  for (const name of names) {
-    const value = credentials[name];
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value;
-    }
-  }
-  // No configured field carried a usable value. Returning explicitly keeps
-  // `noImplicitReturns` satisfied and states the "no credential" case as a
-  // real branch rather than an implicit fall-through.
-  return undefined;
+  return names
+    .map((name) => credentials[name])
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
 }
 
 /**
