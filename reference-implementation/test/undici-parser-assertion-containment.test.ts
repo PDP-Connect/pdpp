@@ -12,6 +12,8 @@ import { isVendoredUndiciParserAssertion } from "../runtime/undici-parser-errors
 const CONTAINED_PATTERN = /CONTAINED/;
 const SURVIVED_ONCE_PATTERN = /SURVIVED contained=1/;
 const FATAL_PATTERN = /FATAL/;
+const ESCAPED_PATTERN = /ESCAPED/;
+const SURVIVED_PATTERN = /SURVIVED contained=/;
 
 // Regression coverage for the vendored-undici parser assertion that killed
 // the whole reference process in production:
@@ -230,4 +232,93 @@ test("host still dies on an unrelated uncaught error", async () => {
   const outcome = await runGuardChild("new TypeError('unrelated programmer bug')");
   assert.match(outcome.stdout, FATAL_PATTERN, "unrelated errors must stay fatal");
   assert.equal(outcome.code, 1, "unrelated uncaught errors must still be fatal");
+});
+
+// ─── 3. Real-fault oracle ────────────────────────────────────────────────────
+//
+// The layers above use a synthesized error. This one induces the ACTUAL
+// vendored-undici fault in a child process and proves the guard contains it,
+// so the classifier stays anchored to the real thing rather than to a fixture
+// that could drift away from it.
+//
+// The shape, established by reproducing the crash on Node 24.19.0:
+//   - server responds `Connection: close` (so `shouldKeepAlive` is false,
+//     which is what routes socket end into `Parser.finish`);
+//   - body is large enough to overflow the 64 KiB stream highWaterMark so
+//     llhttp pauses (ERROR.PAUSED), but small enough that the client socket
+//     buffer fully drains — 'end' does not fire while bytes sit unread;
+//   - the client reads exactly one chunk and then stops, which is the
+//     consumer backpressure that leaves the parser paused;
+//   - the server then sends FIN.
+//
+// If a future Node release fixes the upstream assert, this test still
+// passes: no fault is raised and the child exits cleanly having contained
+// nothing. It fails only if the fault occurs AND escapes the guard.
+
+/** Body size inside the measured crash window (131072 – ~192000 bytes). */
+const PAUSED_BODY_BYTES = 131_072;
+
+function realFaultChildSource(guardImportHref: string): string {
+  return [
+    'import net from "node:net";',
+    `import { isVendoredUndiciParserAssertion } from "${guardImportHref}";`,
+    "const server = net.createServer((sock) => {",
+    '  sock.on("error", () => {});',
+    "  let sent = false;",
+    '  sock.on("data", () => {',
+    "    if (sent) { return; }",
+    "    sent = true;",
+    '    sock.write("HTTP/1.1 200 OK\\r\\nConnection: close\\r\\n\\r\\n");',
+    `    sock.write(Buffer.alloc(${PAUSED_BODY_BYTES}, 0x61));`,
+    "    setTimeout(() => { try { sock.end(); } catch { /* already closed */ } }, 500);",
+    "  });",
+    "});",
+    'await new Promise((r) => server.listen(0, "127.0.0.1", r));',
+    "const { port } = server.address();",
+    "let contained = 0;",
+    'process.on("uncaughtException", (err) => {',
+    "  if (isVendoredUndiciParserAssertion(err)) {",
+    "    contained += 1;",
+    "    return;",
+    "  }",
+    '  process.stdout.write("ESCAPED\\n");',
+    "  process.exit(9);",
+    "});",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: this string IS child source; the placeholder must reach the child verbatim.
+    "const resp = await fetch(`http://127.0.0.1:${port}/`);",
+    "const reader = resp.body.getReader();",
+    "await reader.read();",
+    "await new Promise((r) => setTimeout(r, 2500));",
+    'process.stdout.write("SURVIVED contained=" + contained + "\\n");',
+    "process.exit(0);",
+    "",
+  ].join("\n");
+}
+
+test("host survives the REAL vendored undici parser fault", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-undici-real-"));
+  const script = join(dir, "real-fault-child.ts");
+  writeFileSync(
+    script,
+    realFaultChildSource(new URL("../runtime/undici-parser-errors.ts", import.meta.url).href),
+    "utf8"
+  );
+
+  const outcome = await new Promise<GuardChildOutcome>((resolve) => {
+    const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.resume();
+    child.on("close", (code) => {
+      rmSync(dir, { force: true, recursive: true });
+      resolve({ code, stdout });
+    });
+  });
+
+  assert.doesNotMatch(outcome.stdout, ESCAPED_PATTERN, "the real fault must not escape the guard");
+  assert.match(outcome.stdout, SURVIVED_PATTERN, "child must reach its own clean exit");
+  assert.equal(outcome.code, 0, "process must survive the real vendored undici fault");
 });
