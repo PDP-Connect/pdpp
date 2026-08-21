@@ -316,6 +316,67 @@ test("apple_contacts integration: an unchanged incremental sync re-enumerates th
   }
 });
 
+test("apple_contacts integration: a full_refresh run re-enumerates and proves contacts coverage despite a stored sync token", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    server.contacts.set("erin", {
+      uid: "erin",
+      href: "/addressbooks/owner/card/erin.vcf",
+      vcard: buildVCard({ uid: "erin", fn: "Erin Example", categories: ["Friends"] }),
+    });
+    server.contacts.set("frank", {
+      uid: "frank",
+      href: "/addressbooks/owner/card/frank.vcf",
+      vcard: buildVCard({ uid: "frank", fn: "Frank Example" }),
+    });
+
+    const first = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+    const firstState = first.messages.findLast(
+      (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "contacts"
+    );
+    assert.ok(firstState);
+
+    // Same stored-token starting point as the quiet-incremental test above —
+    // which asserts this run emits NO contacts coverage. The only difference
+    // here is the owner-requested `collection_mode: "full_refresh"`, so this
+    // pins the bypass itself rather than any change in the source data.
+    const refreshed = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: { ...startMessage({ contacts: firstState.cursor }), collection_mode: "full_refresh" },
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const contactsCoverage = refreshed.messages.find(
+      (m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts"
+    );
+    assert.ok(
+      contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE",
+      "a full_refresh run must re-establish the contacts boundary and claim coverage"
+    );
+    // The claim must be the real inventory (both contacts), not a `considered: 0`
+    // artifact of a change feed — that distinction is the whole point.
+    assert.equal(contactsCoverage.considered, 2);
+    assert.equal(contactsCoverage.covered, 2);
+
+    // The refreshed run must still write a usable token forward, so the next
+    // ordinary run can resume incrementally rather than re-walking forever.
+    const refreshedState = refreshed.messages.findLast(
+      (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "contacts"
+    );
+    assert.ok(refreshedState);
+    const bookState = Object.values(refreshedState.cursor as Record<string, { sync_token?: string }>)[0];
+    assert.ok(bookState?.sync_token, "a full_refresh run must still persist a sync token for the next run");
+  } finally {
+    await server.close();
+  }
+});
+
 test("apple_contacts integration: incremental group requests re-enumerate a genuine empty inventory", async () => {
   const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
   try {
