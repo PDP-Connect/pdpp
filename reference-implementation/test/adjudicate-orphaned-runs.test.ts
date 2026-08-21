@@ -145,7 +145,18 @@ function row(over: Partial<Parameters<typeof summarizePlan>[0][number]>) {
 
 // Database integration
 
-const dbTest = POSTGRES_URL ? test : test.skip;
+/**
+ * These cases drive the real repair script against a real PostgreSQL server,
+ * so they are inert without one. Declare the skip with an explicit REASON
+ * rather than a bare `test.skip`: `scripts/test-accounting/receipt.ts` fails
+ * the suite on any skip it cannot attribute, so that a silently-disabled test
+ * can never masquerade as coverage.
+ */
+const SKIP_REASON = "PDPP_TEST_POSTGRES_URL unset";
+const dbTest: typeof test = POSTGRES_URL
+  ? test
+  : (((name: string, fn: Parameters<typeof test>[1]) =>
+      test(name, { skip: SKIP_REASON }, fn as never)) as unknown as typeof test);
 
 async function withSchema<T>(fn: (pool: pg.Pool, schema: string) => Promise<T>): Promise<T> {
   const schema = `aor_test_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
