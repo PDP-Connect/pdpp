@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { BrowserContext, Locator, Page } from "playwright";
 import { REDDIT_RETRYABLE_PATTERN, redditEnsureSession } from "../../connectors/reddit/index.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import type { CaptureSession } from "../fixture-capture.ts";
 import { establishSession, type SessionEstablishArgs } from "../session-establish.ts";
 import { ensureRedditSession } from "./reddit.ts";
 
@@ -43,6 +44,35 @@ function makePageWithoutLoginInputs(): Page {
     locator(_selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
       return emptyLocator as Locator;
     },
+  };
+  return fake as Page;
+}
+
+/**
+ * Login page with no expected inputs, that ALSO carries `title()`/
+ * `content()` evidence of a provider block/interstitial — models the real
+ * heb/reddit incidents: the page a browser connector actually landed on
+ * after the expected login inputs failed to render. `emptyLocator` mirrors
+ * `makePageWithoutLoginInputs` (every CSS/role locator finds nothing, so
+ * `detectCloudflareChallenge` reports no signals for this fixture).
+ */
+function makePageWithoutLoginInputsButWithContent(opts: { content?: string; title?: string }): Page {
+  const emptyLocator: Pick<Locator, "count" | "first" | "waitFor"> = {
+    count: (): Promise<number> => Promise.resolve(0),
+    first(): Locator {
+      return emptyLocator as Locator;
+    },
+    waitFor: (): Promise<void> => Promise.reject(new Error("Timeout waiting for locator")),
+  };
+  const fake: Pick<Page, "content" | "goto" | "locator" | "title"> = {
+    content: (): Promise<string> => Promise.resolve(opts.content ?? ""),
+    goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    locator(_selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+      return emptyLocator as Locator;
+    },
+    title: (): Promise<string> => Promise.resolve(opts.title ?? ""),
   };
   return fake as Page;
 }
@@ -329,6 +359,192 @@ test("ensureRedditSession emits manual_action when login inputs are blocked", as
     assert.equal(requests[0]?.kind, "manual_action");
     assert.ok(requests[0]?.request_id?.startsWith("int_"));
     assert.match(requests[0]?.message ?? "", /Cloudflare challenge/u);
+  });
+});
+
+// Regression: real observed run against reddit.com — the login page served
+// Reddit's own "You've been blocked by network security" interstitial, which
+// is NOT Cloudflare (detectCloudflareChallenge correctly finds no Cloudflare
+// signals for it). Before this fix, the CLI printed the generic "page may
+// have changed" message despite the captured page proving the specific
+// cause. The message must name the detected condition, not guess why.
+test("ensureRedditSession names a non-Cloudflare provider block (network-security interstitial) instead of the generic fallback", async () => {
+  await withRedditCredentials(async () => {
+    const requests: InteractionRequest[] = [];
+    const page = makePageWithoutLoginInputsButWithContent({
+      title: "You've been blocked by network security",
+    });
+
+    await assert.rejects(
+      ensureRedditSession({
+        context: makeContext(),
+        page,
+        sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
+          requests.push(req);
+          return Promise.resolve({
+            request_id: req.request_id ?? "test_interaction",
+            status: "success",
+            type: "INTERACTION_RESPONSE",
+          });
+        },
+      }),
+      /reddit_login_unexpected_ui/u
+    );
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.kind, "manual_action");
+    const message = requests[0]?.message ?? "";
+    // Names what the evidence shows...
+    assert.match(message, /provider block\/interstitial/i);
+    assert.match(message, /network_security_block_heading/);
+    // ...and does NOT claim it's Cloudflare (a different, wrong diagnosis)
+    // or fall back to the generic "page may have changed" guess.
+    assert.doesNotMatch(message, /Cloudflare challenge confirmed/);
+    assert.doesNotMatch(message, /the page may have changed/i);
+    // Never speculates about WHY (IP reputation / fingerprint / rate limit).
+    assert.doesNotMatch(message, /IP reputation|fingerprint|rate limit/i);
+  });
+});
+
+test("ensureRedditSession names an Imperva/Incapsula block body and cites the captured DOM artifact path", async () => {
+  await withRedditCredentials(async () => {
+    const requests: InteractionRequest[] = [];
+    const capturedLabels: string[] = [];
+    const fakeCapture: CaptureSession = {
+      baseDir: "/tmp/fixtures/reddit/raw/test-run",
+      captureDom: (_page, label): Promise<void> => {
+        capturedLabels.push(label);
+        return Promise.resolve();
+      },
+      captureHttp: (): void => undefined,
+      finalize: (): void => undefined,
+      keepOnSuccess: true,
+      markSucceeded: (): void => undefined,
+      recordRecord: (): void => undefined,
+      runId: "test-run",
+    };
+    const page = makePageWithoutLoginInputsButWithContent({
+      content:
+        '<html><body><pre>{"errorCode":"15","errorDescription":"Incapsula incident ID: 123456789012345678-987654321098765432","incidentId":"123456789012345678-987654321098765432","proxyId":"abcdef12"}</pre></body></html>',
+    });
+
+    await assert.rejects(
+      ensureRedditSession({
+        capture: fakeCapture,
+        context: makeContext(),
+        page,
+        sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
+          requests.push(req);
+          return Promise.resolve({
+            request_id: req.request_id ?? "test_interaction",
+            status: "success",
+            type: "INTERACTION_RESPONSE",
+          });
+        },
+      }),
+      /reddit_login_unexpected_ui/u
+    );
+
+    assert.equal(requests.length, 1);
+    const message = requests[0]?.message ?? "";
+    assert.match(message, /provider block\/interstitial/i);
+    assert.match(message, /imperva_incapsula_json_error/);
+    assert.ok(
+      capturedLabels.includes("reddit-login-blocked"),
+      `expected a capture call for the blocked page, got labels: ${capturedLabels.join(", ")}`
+    );
+    assert.match(message, /\/tmp\/fixtures\/reddit\/raw\/test-run\/dom\/reddit-login-blocked\.html/);
+  });
+});
+
+// NEGATIVE control: an ordinary page that just happens to have no matching
+// login inputs (e.g. a genuine UI change) must NOT be misclassified as a
+// provider block — the generic fallback must still fire.
+test("ensureRedditSession keeps the generic fallback for an ordinary (non-block) page with unexpected UI", async () => {
+  await withRedditCredentials(async () => {
+    const requests: InteractionRequest[] = [];
+    const page = makePageWithoutLoginInputsButWithContent({
+      title: "Reddit - Dive into anything",
+      content: "<html><body><main><h1>Welcome</h1><p>Nothing to see here.</p></main></body></html>",
+    });
+
+    await assert.rejects(
+      ensureRedditSession({
+        context: makeContext(),
+        page,
+        sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
+          requests.push(req);
+          return Promise.resolve({
+            request_id: req.request_id ?? "test_interaction",
+            status: "success",
+            type: "INTERACTION_RESPONSE",
+          });
+        },
+      }),
+      /reddit_login_unexpected_ui/u
+    );
+
+    assert.equal(requests.length, 1);
+    const message = requests[0]?.message ?? "";
+    assert.match(message, /the page may have changed/i);
+    assert.doesNotMatch(message, /provider block\/interstitial/i);
+    assert.doesNotMatch(message, /Cloudflare challenge confirmed/);
+  });
+});
+
+// A real Cloudflare challenge must still classify as Cloudflare, not as the
+// new provider-block condition — the two detectors are deliberately
+// disjoint (detectCloudflareChallenge owns Cloudflare; the new detector is
+// explicitly for non-Cloudflare provider blocks) and Cloudflare's message
+// takes priority in loginBlockedMessage.
+test("ensureRedditSession still classifies a Cloudflare challenge as Cloudflare, not as the new provider-block condition", async () => {
+  await withRedditCredentials(async () => {
+    const requests: InteractionRequest[] = [];
+    const cfLocator: Pick<Locator, "count" | "first" | "waitFor"> = {
+      count: (): Promise<number> => Promise.resolve(1),
+      first(): Locator {
+        return cfLocator as Locator;
+      },
+      waitFor: (): Promise<void> => Promise.reject(new Error("Timeout waiting for locator")),
+    };
+    const emptyLocator: Pick<Locator, "count" | "first" | "waitFor"> = {
+      count: (): Promise<number> => Promise.resolve(0),
+      first(): Locator {
+        return emptyLocator as Locator;
+      },
+      waitFor: (): Promise<void> => Promise.reject(new Error("Timeout waiting for locator")),
+    };
+    const page: Pick<Page, "content" | "goto" | "locator" | "title"> = {
+      content: (): Promise<string> => Promise.resolve("<html><body></body></html>"),
+      goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+        return Promise.resolve(null);
+      },
+      locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+        return selector.includes("challenge-platform") ? (cfLocator as Locator) : (emptyLocator as Locator);
+      },
+      title: (): Promise<string> => Promise.resolve("Just a moment..."),
+    };
+
+    await assert.rejects(
+      ensureRedditSession({
+        context: makeContext(),
+        page: page as Page,
+        sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
+          requests.push(req);
+          return Promise.resolve({
+            request_id: req.request_id ?? "test_interaction",
+            status: "success",
+            type: "INTERACTION_RESPONSE",
+          });
+        },
+      }),
+      /reddit_login_unexpected_ui/u
+    );
+
+    assert.equal(requests.length, 1);
+    const message = requests[0]?.message ?? "";
+    assert.match(message, /Cloudflare challenge confirmed/);
+    assert.doesNotMatch(message, /provider block\/interstitial/i);
   });
 });
 

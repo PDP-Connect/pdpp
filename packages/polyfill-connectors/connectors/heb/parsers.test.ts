@@ -618,6 +618,26 @@ test("isIncapsulaBlocked is false for an iframe-free shallow page (no false posi
   assert.equal(isIncapsulaBlocked(html), false);
 });
 
+// Regression: live run against https://www.heb.com/my-account/your-orders
+// returned an Imperva/Incapsula JSON block body (errorCode: "15" plus
+// incident/proxy IDs) instead of a login form. The original empty-shell +
+// iframe heuristic requires an iframe, which a bare JSON error body never
+// has, so it silently fell through to "unknown" and the CLI printed a
+// generic message despite the captured evidence showing an Imperva block.
+test("isIncapsulaBlocked detects the Imperva JSON block body (errorCode + incidentId), which has no iframe", () => {
+  assert.equal(isIncapsulaBlocked(fixture("incapsula-json-block.html")), true);
+});
+
+test("isIncapsulaBlocked JSON predicate requires BOTH errorCode and an incident/proxy id — errorCode alone does not fire (avoids false positive on an unrelated API error body)", () => {
+  const html = '<html><body><pre>{"errorCode":"42","message":"not found"}</pre></body></html>';
+  assert.equal(isIncapsulaBlocked(html), false);
+});
+
+test("isIncapsulaBlocked JSON predicate does not fire on a normal page that happens to mention errorCode in prose", () => {
+  const html = "<html><body><p>See the errorCode field in the API docs for details.</p></body></html>";
+  assert.equal(isIncapsulaBlocked(html), false);
+});
+
 // ─── Session probe (deep check) ──────────────────────────────────────────
 
 test("looksLoggedOut is true for a sign-in URL", () => {

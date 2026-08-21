@@ -43,6 +43,7 @@ const VERIFICATION_CODE_RE = /\b(verification code|security code|one[- ]time cod
 const CAPTCHA_RE = /\b(captcha|verify you are human|security check)\b/i;
 const AUTHENTICATED_ORDERS_EVIDENCE_RE = /data-qe-id="orderResults"|data-testid="no-orders-message"/i;
 const LOGIN_FORM_SELECTOR = "form";
+const HANDOFF_DOM_LABEL = "heb-manual-handoff";
 
 export type HebAuthSurface =
   | "live"
@@ -218,7 +219,16 @@ function hasAuthenticatedOrdersEvidence(html: string): boolean {
   return AUTHENTICATED_ORDERS_EVIDENCE_RE.test(html);
 }
 
-function manualLoginMessage(surface: Exclude<HebAuthSurface, "live">): string {
+/**
+ * `domArtifactPath`, when present, is cited only for `incapsula` — the
+ * surface a deterministic body-shape predicate (`isIncapsulaBlocked`)
+ * actually confirmed from captured evidence. The other surfaces already name
+ * a real DOM signal (a passkey/verification-code/CAPTCHA marker or a unique
+ * login form) without needing a separate artifact citation in the message
+ * text; adding one here would be evidence-pointing for a case that isn't the
+ * one this fix addresses.
+ */
+function manualLoginMessage(surface: Exclude<HebAuthSurface, "live">, domArtifactPath?: string): string {
   switch (surface) {
     case "login_form":
       return "H-E-B did not finish signing in automatically. Complete the sign-in form in the secure browser, then continue. PDPP will re-check the session afterward.";
@@ -228,8 +238,10 @@ function manualLoginMessage(surface: Exclude<HebAuthSurface, "live">): string {
       return "H-E-B is asking for a verification code. Enter it in the secure browser, then continue. PDPP will re-check the session afterward.";
     case "captcha":
       return "H-E-B is showing a CAPTCHA. Complete it in the secure browser, then continue. PDPP will re-check the session afterward.";
-    case "incapsula":
-      return "H-E-B is showing an Imperva Incapsula challenge. Complete it in the secure browser, then continue. PDPP will re-check the session afterward.";
+    case "incapsula": {
+      const artifact = domArtifactPath ? ` Captured page: ${domArtifactPath}.` : "";
+      return `H-E-B is showing an Imperva Incapsula block/challenge (evidence: the captured page body matches Incapsula's block shape).${artifact} Complete it in the secure browser, then continue. PDPP will re-check the session afterward.`;
+    }
     default:
       return "H-E-B did not render the expected login form. Open the secure browser, sign in there, then continue. PDPP will re-check the session afterward.";
   }
@@ -364,10 +376,22 @@ async function handOffToOwner({
 }: Pick<EnsureHebSessionArgs, "capture" | "page" | "sendInteraction"> & {
   readonly surface: Exclude<HebAuthSurface, "live">;
 }): Promise<boolean> {
+  // Capture the exact page BEFORE building the message, so an incapsula-
+  // surface message can cite a real artifact path instead of an assumed
+  // one — the evidence bundle and the claim about it must describe the
+  // same capture. Only the incapsula surface uses the path (see
+  // manualLoginMessage's doc comment); capturing unconditionally here for
+  // every surface keeps this one call site simple and matches this file's
+  // existing best-effort, never-block-the-handoff capture doctrine.
+  if (capture) {
+    await capture.captureDom(page, HANDOFF_DOM_LABEL).catch((): undefined => undefined);
+  }
+  const domArtifactPath =
+    capture && surface === "incapsula" ? `${capture.baseDir}/dom/${HANDOFF_DOM_LABEL}.html` : undefined;
   await manualAction(
     {
       ...(capture ? { capture } : {}),
-      message: manualLoginMessage(surface),
+      message: manualLoginMessage(surface, domArtifactPath),
       page,
       reason: "login",
       timeoutSeconds: 1800,

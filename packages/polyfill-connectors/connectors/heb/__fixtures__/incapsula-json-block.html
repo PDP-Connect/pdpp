@@ -1,0 +1,19 @@
+<!--
+  SYNTHETIC fixture, not a live capture, but the SHAPE is real-observed:
+  the connector-verification package's task notes describe a live run
+  against https://www.heb.com/my-account/your-orders returning an
+  Imperva/Incapsula bot-mitigation page as a raw JSON body — errorCode: "15"
+  plus incident/proxy IDs — instead of a login form or the empty-shell/
+  iframe challenge widget the original isIncapsulaBlocked heuristic covers.
+
+  Playwright's page.content() wraps a non-HTML (JSON) response body in a
+  synthetic <html><body><pre>...</pre></body></html> shell, matching how a
+  real browser renders a raw JSON response — the JSON text itself still
+  appears verbatim inside content(). This fixture models exactly that
+  wrapped shape.
+-->
+<!DOCTYPE html>
+<html>
+<head></head>
+<body><pre>{"errorCode":"15","errorDescription":"Incapsula incident ID: 123456789012345678-987654321098765432","incidentId":"123456789012345678-987654321098765432","proxyId":"abcdef12"}</pre></body>
+</html>
