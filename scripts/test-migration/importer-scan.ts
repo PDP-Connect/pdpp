@@ -158,7 +158,36 @@ function staticImportExportSpecifier(typed: BabelNodeWithLoc): RawSpecifierOccur
   return globalThis.undefined;
 }
 
-function dynamicCallSpecifier(typed: BabelNodeWithLoc): RawSpecifierOccurrence | undefined {
+/** Dynamic `import(...)` parses as its own `ImportExpression` node (its
+ * argument is `.source`, not a `CallExpression`'s first argument) —
+ * @babel/parser has never modeled dynamic import as a call with an
+ * `Import` pseudo-callee; that legacy shape belongs to older non-Babel
+ * parsers. */
+function dynamicImportSpecifier(typed: BabelNodeWithLoc): RawSpecifierOccurrence | undefined {
+  if (typed.type !== "ImportExpression") {
+    return;
+  }
+  const { source } = typed as { source?: { type?: string; value?: unknown } };
+  const resolved = stringOrTemplateStaticValue(source);
+  if (resolved) {
+    return {
+      form: "dynamic-import",
+      value: resolved.value,
+      line: typed.loc.start.line,
+      unresolvable: resolved.unresolvable,
+    };
+  }
+  if (source) {
+    // A computed/non-literal argument (e.g. a variable) — cannot be
+    // statically resolved. Reported as unresolvable rather than dropped: a
+    // caller with a renamed file in scope must see this as UNKNOWN, not as
+    // silence.
+    return { form: "dynamic-import", value: "<computed>", line: typed.loc.start.line, unresolvable: true };
+  }
+  return globalThis.undefined;
+}
+
+function requireCallSpecifier(typed: BabelNodeWithLoc): RawSpecifierOccurrence | undefined {
   if (typed.type !== "CallExpression") {
     return;
   }
@@ -166,22 +195,19 @@ function dynamicCallSpecifier(typed: BabelNodeWithLoc): RawSpecifierOccurrence |
     arguments?: unknown[];
     callee?: { name?: string; type?: string };
   };
-  const isDynamicImport = callee?.type === "Import";
-  const isRequireCall = callee?.type === "Identifier" && callee.name === "require";
-  if (!(isDynamicImport || isRequireCall)) {
+  if (!(callee?.type === "Identifier" && callee.name === "require")) {
     return;
   }
-  const form: SpecifierForm = isDynamicImport ? "dynamic-import" : "require";
   const resolved = stringOrTemplateStaticValue(args[0] as { type?: string; value?: unknown } | undefined);
   if (resolved) {
-    return { form, value: resolved.value, line: typed.loc.start.line, unresolvable: resolved.unresolvable };
+    return { form: "require", value: resolved.value, line: typed.loc.start.line, unresolvable: resolved.unresolvable };
   }
   if (args.length > 0) {
     // A computed/non-literal argument (e.g. a variable) — cannot be
     // statically resolved. Reported as unresolvable rather than dropped: a
     // caller with a renamed file in scope must see this as UNKNOWN, not as
     // silence.
-    return { form, value: "<computed>", line: typed.loc.start.line, unresolvable: true };
+    return { form: "require", value: "<computed>", line: typed.loc.start.line, unresolvable: true };
   }
   return globalThis.undefined;
 }
@@ -192,7 +218,8 @@ function collectSpecifierOccurrences(sourceText: string, fileName: string): RawS
   const found: RawSpecifierOccurrence[] = [];
   walkBabelAst(ast.program, (node) => {
     const typed = node as BabelNodeWithLoc;
-    const occurrence = staticImportExportSpecifier(typed) ?? dynamicCallSpecifier(typed);
+    const occurrence =
+      staticImportExportSpecifier(typed) ?? dynamicImportSpecifier(typed) ?? requireCallSpecifier(typed);
     if (occurrence) {
       found.push(occurrence);
     }

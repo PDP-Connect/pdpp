@@ -959,17 +959,38 @@ export function scanFileDataLoads(
     return true;
   }
 
-  /** require(...) / dynamic import(...) reaching a sibling JSON/YAML resource. Returns true if this call site was handled. */
-  function checkRequireOrDynamicImport(node: Node, callee: Node, enclosingFunctionName: string | null): boolean {
-    const isRequire = node.type === "CallExpression" && isIdentifier(callee, "require");
-    const isDynamicImport = node.type === "CallExpression" && callee.type === "Import";
-    if (!(isRequire || isDynamicImport)) {
+  /** require(...) reaching a sibling JSON/YAML resource. Returns true if this call site was handled. */
+  function checkRequireCall(node: Node, callee: Node, enclosingFunctionName: string | null): boolean {
+    if (!(node.type === "CallExpression" && isIdentifier(callee, "require"))) {
       return false;
     }
     const [first] = nodeArrayField(node, "arguments");
     if (!first) {
       return true;
     }
+    return checkResolvedImportLikeSource(node, first, enclosingFunctionName);
+  }
+
+  /** Dynamic `import(...)` (a Babel `ImportExpression` node, not a `CallExpression` —
+   * unlike `require(...)`, `@babel/parser` has never modeled dynamic import as a call
+   * with an `Import` pseudo-callee; that legacy shape belongs to older non-Babel
+   * parsers) reaching a sibling JSON/YAML resource. Returns true if this call site
+   * was handled. */
+  function checkDynamicImportExpression(node: Node, enclosingFunctionName: string | null): boolean {
+    if (node.type !== "ImportExpression") {
+      return false;
+    }
+    const source = nodeField(node, "source");
+    if (!source) {
+      return true;
+    }
+    return checkResolvedImportLikeSource(node, source, enclosingFunctionName);
+  }
+
+  /** Shared resolution/classification tail for `require(...)`'s and dynamic
+   * `import(...)`'s first argument/`source`. Always returns true (the call site was
+   * handled) — callers only reach this once they've confirmed the node shape matches. */
+  function checkResolvedImportLikeSource(node: Node, first: Node, enclosingFunctionName: string | null): boolean {
     const siteKey = `${relPath}:${lineOf(node)}`;
     if (SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
       return true;
@@ -1087,16 +1108,21 @@ export function scanFileDataLoads(
   }
 
   walk(program, (node, parent, ancestors) => {
+    const enclosingFunctionName = enclosingFunctionNameOf(ancestors);
+
+    if (node.type === "ImportExpression") {
+      checkDynamicImportExpression(node, enclosingFunctionName);
+      return;
+    }
     if (node.type !== "CallExpression" && node.type !== "NewExpression") {
       return;
     }
     const callee = node.callee as Node;
-    const enclosingFunctionName = enclosingFunctionNameOf(ancestors);
 
     if (checkProhibitedEvasionMechanism(node, callee)) {
       return;
     }
-    if (checkRequireOrDynamicImport(node, callee, enclosingFunctionName)) {
+    if (checkRequireCall(node, callee, enclosingFunctionName)) {
       return;
     }
     if (checkReadFileCall(node, callee, parent, enclosingFunctionName)) {

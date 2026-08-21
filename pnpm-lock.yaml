@@ -498,8 +498,8 @@ importers:
         version: 4.4.3
     devDependencies:
       '@babel/parser':
-        specifier: 7.29.2
-        version: 7.29.2
+        specifier: 8.0.4
+        version: 8.0.4
       '@biomejs/biome':
         specifier: 2.5.8
         version: 2.5.8
@@ -586,8 +586,8 @@ importers:
         version: 3.6.7
     devDependencies:
       '@babel/parser':
-        specifier: 7.29.2
-        version: 7.29.2
+        specifier: 8.0.4
+        version: 8.0.4
       '@biomejs/biome':
         specifier: 2.5.8
         version: 2.5.8
@@ -8789,7 +8789,7 @@ snapshots:
 
   '@vue/compiler-sfc@2.7.16':
     dependencies:
-      '@babel/parser': 7.29.2
+      '@babel/parser': 7.29.8
       postcss: 8.5.26
       source-map: 0.6.1
     optionalDependencies:

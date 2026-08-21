@@ -47,7 +47,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@babel/parser": "7.29.2",
+    "@babel/parser": "8.0.4",
     "@biomejs/biome": "2.5.8",
     "@types/better-sqlite3": "^9.6.0",
     "@types/ws": "^8.18.1",
