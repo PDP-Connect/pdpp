@@ -4377,7 +4377,7 @@ test("redactEmailForProgress: single-character local-part is fully masked", () =
 
 test("redactEmailForProgress: output never contains the full address or local-part", () => {
   for (const address of [
-    "the owner.nunamaker@gmail.com",
+    "the.owner.sample@example.com",
     "first.last+tag@corp.example.co.uk",
     'weird"@"local@host.example', // quoted local-part embedding an @
   ]) {
