@@ -118,7 +118,6 @@
         "required": ["id", "name", "fetched_at"]
       },
       "primary_key": ["id"],
-      "cursor_field": null,
       "required": true,
       "selection": {
         "fields": true,
@@ -191,7 +190,6 @@
         "required": ["id", "name", "library_id", "played", "play_count"]
       },
       "primary_key": ["id"],
-      "cursor_field": null,
       "consent_time_field": "last_played_date",
       "required": true,
       "selection": {
