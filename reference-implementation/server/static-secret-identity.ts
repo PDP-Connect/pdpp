@@ -222,7 +222,14 @@ function collectStaticSecretSetupFields(
 // legacy carve-out; every pipeline-shaped active row is subject to the
 // fail-closed rule below, whether or not `activateDraft` has yet rewritten
 // its binding `kind` from `static_secret_draft` to `static_secret`.
-const STATIC_SECRET_PIPELINE_BINDING_KINDS = new Set(["static_secret", "static_secret_draft"]);
+//
+// `historical_archive` is included so a recovered row that still carries a
+// credential + durable `verified_identity` from before it was paused gets the
+// SAME fail-closed retarget protection as any other static-secret row — this
+// binding kind is never rewritten away by the archive-reconnect capture path
+// (see `ref-static-secret-credentials.ts`'s `isPausedHistoricalArchiveTarget`),
+// so without this it would be silently exempt from the mismatch guard below.
+const STATIC_SECRET_PIPELINE_BINDING_KINDS = new Set(["static_secret", "static_secret_draft", "historical_archive"]);
 
 export function isStaticSecretPipelineBinding(sourceBinding: unknown): boolean {
   const kind = objectRecord(sourceBinding)?.kind;
@@ -271,8 +278,12 @@ export function assertStaticSecretActiveCredentialReplacementAllowed(input: {
   sourceBinding: unknown;
   status: string;
 }): void {
+  // `paused` is admitted alongside `active` so a recovered historical-archive
+  // row carrying a residual credential + durable identity (from before it was
+  // paused) gets the identical fail-closed check — a paused row is not
+  // exempt from proving sameness just because it is not currently active.
   if (
-    input.status !== "active" ||
+    (input.status !== "active" && input.status !== "paused") ||
     !isStaticSecretPipelineBinding(input.sourceBinding) ||
     !input.hasExistingCredential
   ) {

@@ -2587,7 +2587,7 @@ export function createPostgresConnectorInstanceStore() {
              WHERE connector_instance_id = $4
                AND owner_subject_id = $5
                AND connector_id = $6
-               AND status IN ('active', 'draft')`,
+               AND status IN ('active', 'draft', 'paused')`,
             [sourceBindingKey, stableJson(sourceBinding), updatedAt, connectorInstanceId, ownerSubjectId, connectorId]
           );
           if (result.rowCount) {

@@ -17,6 +17,7 @@ import {
   primaryOwnerActionRemediation,
   primaryRequiredAction,
   projectSourceActionability,
+  RESUME_PAUSED_CTA_LABEL,
   SETUP_IN_PROGRESS_CTA_LABEL,
   SOURCE_WORK_GROUP_COPY,
   sourceAttentionHeadline,
@@ -830,6 +831,7 @@ test("source actionability groups a Needs refresh connection under review, never
 // ─── Recovery-state grouping (connector-neutral recovery governor UI tranche) ──
 
 const RECOVERY_CHECKING_RE = /checking/i;
+const RESUME_COPY_RE = /resume/i;
 const SOURCE_DETAILS_RE = /Open source details/;
 const RECOVERY_SYNCING_RE = /syncing details/i;
 const RECOVERY_CATCHING_UP_RE = /catching up/i;
@@ -1025,4 +1027,57 @@ test("recovery grouping: an inactive backlog routes to NAMED recovery before the
   assert.doesNotMatch(row.statusLabel, RECOVERY_CHECKING_RE);
   assert.doesNotMatch(row.what, RECOVERY_CHECKING_RE);
   assert.match(`${row.statusLabel} ${row.what}`, RECOVERY_CATCHING_UP_RE);
+});
+
+// --- Paused: a first-class, owner-reversible lifecycle state ----------------
+// Pause stops collection without giving anything up. These pin the two
+// properties that make it usable: the owner can SEE it, and can get back out.
+
+test("a paused source renders the Paused status rather than its pre-pause verdict", () => {
+  const actionability = projectSourceActionability(
+    connector({
+      // A healthy-looking verdict from before the pause must not win: it
+      // describes collection that has stopped.
+      rendered_verdict: verdict({ pill: { label: "Healthy", tone: "green" } }),
+      status: "paused",
+    })
+  );
+
+  assert.equal(actionability.paused, true);
+  assert.equal(actionability.renderedStatus.kind, "paused");
+  assert.equal(actionability.renderedStatus.label, "Paused");
+  assert.equal(actionability.renderedStatus.tone, "muted");
+});
+
+test("a paused source outranks an in-flight run flag and never renders as Syncing", () => {
+  const flag = deriveRenderedSourceStatus(verdict(), false, false, null, true, true);
+
+  assert.equal(flag.kind, "paused", "paused must outrank running");
+  assert.equal(flag.label, "Paused");
+});
+
+test("a revoked source outranks paused, so the durable state always wins", () => {
+  const actionability = projectSourceActionability(connector({ revoked_at: "2026-08-01T00:00:00Z", status: "paused" }));
+
+  assert.equal(actionability.revoked, true);
+  assert.equal(actionability.paused, false, "revoked must suppress paused, never both at once");
+  assert.equal(actionability.renderedStatus.kind, "revoked");
+});
+
+test("a paused source offers Resume as an available action, not as owner-blocking work", () => {
+  const summary = connector({ source_work: "needs_owner", status: "paused" });
+  const groups = sourceWorkFromConnectors([summary]);
+
+  // Visible, so collection is never silently stopped with no way back...
+  assert.equal(groups.review.length, 1);
+  const [row] = groups.review;
+  assert.ok(row);
+  assert.equal(row.actionLabel, RESUME_PAUSED_CTA_LABEL);
+  assert.equal(row.statusLabel, "is paused");
+  assert.match(row.what, RESUME_COPY_RE);
+  // ...but never counted against the "needs you" headline: the owner chose
+  // this state and is not blocking anything. Note the server said
+  // `needs_owner` here; the lifecycle check must still win.
+  assert.equal(groups.needsOwner.length, 0);
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 0);
 });

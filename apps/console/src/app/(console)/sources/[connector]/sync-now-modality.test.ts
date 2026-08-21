@@ -219,7 +219,12 @@ test("detail Sync now acknowledges accepted starts without stale optimistic runn
 // action's real contract (`schedule_attached_and_enabled`). Without this
 // guard, `reattach_schedule` silently mis-wires to `runConnectorNowAction`
 // via the fallthrough branch, a dead end for the schedule itself.
-const REATTACH_SCHEDULE_IMPORT = /import \{ resumeConnectorScheduleAction \} from "\.\/actions\.ts";/;
+// Asserts the action is imported from `./actions.ts`, without pinning it as
+// the SOLE named import: the detail page also imports the connection
+// pause/resume actions from the same module. The binding that matters here is
+// `resumeConnectorScheduleAction` (schedule-resume), which is a different
+// action from `resumeConnectionAction` (connection-resume).
+const REATTACH_SCHEDULE_IMPORT = /import \{[^}]*\bresumeConnectorScheduleAction\b[^}]*\} from "\.\/actions\.ts";/;
 const REATTACH_SCHEDULE_BRANCH_GUARD = /if \(action\.kind === "reattach_schedule"\)/;
 const REATTACH_SCHEDULE_FORM_ACTION = /<form action=\{resumeConnectorScheduleAction\}>/;
 const REATTACH_SCHEDULE_CONNECTOR_ID_INPUT = /<input name="connector_id" type="hidden" value=\{connectorId\} \/>/;

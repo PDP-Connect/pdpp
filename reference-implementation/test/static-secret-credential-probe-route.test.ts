@@ -26,6 +26,7 @@ import { CREDENTIAL_ENCRYPTION_KEY_ENV } from "../server/stores/credential-encry
 
 const REGEXP_1 = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
 const REGEXP_2 = /Google rejected this app password/;
+const RUN_ID_PATTERN = /^run_/;
 
 const OWNER_PASSWORD = "static-secret-probe-owner-password";
 const OWNER_SUBJECT_ID = "owner_local";
@@ -1003,6 +1004,357 @@ test("resubmitting the same claimed identity via a matching probe with a differe
         ownerSubjectId: OWNER_SUBJECT_ID,
       });
       assert.equal(secret.secret, GOOD_SECRET, "a rejected retarget must not rotate the stored credential");
+    });
+  });
+});
+
+// Recovered historical-archive rows land as `status: 'paused'` with no
+// surviving credential (see pdpp-production-connection-recovery). Before this
+// fix, the capture route's `allowStatuses: ['active', 'draft']` gate rejected
+// every paused target with `connector_instance_inactive` (400) — an owner
+// could never re-seal a credential onto the connector_instance_id the
+// recovery preserved. `paused` is now admitted; a successful capture on a
+// historical-archive row preserves that identity and automatically resumes
+// the same row before starting its normal first sync. Other paused bindings do
+// not receive that side effect (covered by the guard test below).
+// Seeds a paused, historical_archive-bound connector instance — the shape a
+// recovered historical-archive row lands in per
+// pdpp-production-connection-recovery-2026-08-15.md. Shared by the capture
+// auto-resume+sync tests below.
+async function seedPausedHistoricalArchiveConnection({
+  connectorId,
+  connectorInstanceId,
+  displayName,
+}: {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName: string;
+}) {
+  const instanceStore = createSqliteConnectorInstanceStore();
+  await instanceStore.upsert({
+    connectorId,
+    connectorInstanceId,
+    createdAt: "2026-06-10T18:00:00.000Z",
+    displayName,
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: {
+      kind: "historical_archive",
+      original_connector_instance_id: connectorInstanceId,
+      recovery_reason: "connector_instances row missing; restored from record evidence",
+    },
+    sourceBindingKey: `historical_archive_${connectorInstanceId}`,
+    sourceKind: "account",
+    status: "paused",
+    updatedAt: "2026-06-10T18:00:00.000Z",
+  });
+  return instanceStore;
+}
+
+// Uses the synthetic no-probe manifest (ynab identity, no setup block) for
+// the resume+first-sync tests below rather than a real network-touching
+// connector (e.g. gmail's real IMAP collector): `controller.runNow` in these
+// tests actually launches a run, and a real live collector attempting a
+// network connection against a synthetic secret can leave a lingering
+// timer/socket past the test's server teardown. The synthetic manifest has
+// no live transport, so the launched run fails fast on a missing/invalid
+// collector implementation without leaking a handle — sufficient to prove
+// the wiring (resume + `runNow` is called, honestly reflected in the
+// response) without asserting anything about that run's real outcome.
+test("a paused historical-archive connection is resumed and its first sync starts after credential capture", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl, proberCalls }) => {
+      const manifest = syntheticNoProbeStaticSecretManifest();
+      await registerManifest(asUrl, manifest);
+      const cookie = await login(asUrl);
+      const connectionId = "cin_paused_archive_recovery";
+      const instanceStore = await seedPausedHistoricalArchiveConnection({
+        connectorId: manifest.connector_key,
+        connectorInstanceId: connectionId,
+        displayName: "YNAB - recovered@example.com",
+      });
+
+      const { status, body } = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "personal_access_token");
+
+      assert.equal(status, 201);
+      assert.equal(body.object, "static_secret_credential_capture");
+      assert.equal(credentialOf(body).present, true);
+      assert.equal(proberCalls.length, 1);
+
+      const credentialStore = createSqliteConnectorInstanceCredentialStore();
+      const meta = await credentialStore.getMetadata(connectionId);
+      assert.ok(meta, "the re-sealed credential must be stored");
+      assert.equal(meta.credentialKind, "personal_access_token");
+
+      // The connector_instance_id and every non-credential fact about the row
+      // are preserved — this is establishment onto the recovered row, never a
+      // duplicate connection.
+      const instance = await instanceStore.get(connectionId);
+      assert.ok(instance, "the original connector_instance_id must still resolve");
+      assert.equal(instance.connectorInstanceId, connectionId);
+      assert.equal(instance.status, "active", "a paused historical-archive row must be resumed after capture");
+      assert.equal(instance.displayName, "YNAB - recovered@example.com");
+
+      // No duplicate row was created by the resume+sync chain.
+      const rowCount = getDb()
+        .prepare("SELECT COUNT(*) AS count FROM connector_instances WHERE connector_id = ?")
+        .get(manifest.connector_key) as { count: number };
+      assert.equal(rowCount.count, 1, "resume+first-sync must not create a second connector_instance row");
+
+      // The response is honest about the automatic resume+sync.
+      const archiveReconnect = body.archive_reconnect as { status?: string; run_id?: string } | null;
+      assert.ok(archiveReconnect, "expected an archive_reconnect summary in the response");
+      assert.equal(archiveReconnect?.status, "resumed");
+      assert.match(archiveReconnect?.run_id ?? "", RUN_ID_PATTERN);
+    });
+  });
+});
+
+test("a probed identity capture persists onto a paused historical-archive row (store-layer status gate admits paused)", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl, proberCalls }) => {
+      // `github` has a synchronous deterministic probe (identity always
+      // "octocat" in the test double) and NO real network transport in this
+      // harness — safe to drive through the actual probed-identity claim path
+      // (`claimProbedStaticSecretIdentity` -> `store.updateStaticSecretBinding`)
+      // without the gmail/live-collector lingering-handle risk.
+      await registerConnector(asUrl, "github");
+      const cookie = await login(asUrl);
+      const connectionId = "cin_paused_archive_probed_identity";
+      const instanceStore = createSqliteConnectorInstanceStore();
+      await instanceStore.upsert({
+        connectorId: "github",
+        connectorInstanceId: connectionId,
+        createdAt: "2026-06-10T18:00:00.000Z",
+        displayName: "GitHub - recovered",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+        sourceBinding: {
+          kind: "historical_archive",
+          original_connector_instance_id: connectionId,
+          recovery_reason: "connector_instances row missing; restored from record evidence",
+        },
+        sourceBindingKey: `historical_archive_${connectionId}`,
+        sourceKind: "account",
+        status: "paused",
+        updatedAt: "2026-06-10T18:00:00.000Z",
+      });
+
+      const { status, body } = await capture(asUrl, cookie, connectionId, GOOD_PAT, "personal_access_token");
+
+      assert.equal(
+        status,
+        201,
+        `expected the probed-identity capture to succeed, got ${status}: ${JSON.stringify(body)}`
+      );
+      assert.equal(proberCalls.length, 1, "the github probe must actually run against this paused row");
+      assert.equal(identityOf(body).account_identity, "octocat");
+
+      // The store-layer fix under test: `updateStaticSecretBinding`'s SQL
+      // (both the SQLite query file and the Postgres mirror) previously
+      // matched only `status IN ('active', 'draft')`, so this UPDATE would
+      // silently affect zero rows on a `paused` target — the route would
+      // still report success (the credential store write is separate) while
+      // the durable `verified_identity` claim was NEVER actually persisted.
+      // Prove it lands: read the row back directly and assert the binding
+      // was written, not silently dropped.
+      const instance = await instanceStore.get(connectionId);
+      assert.ok(instance, "the connector_instance_id must still resolve");
+      const binding = instance?.sourceBinding as { kind?: string; verified_identity?: string };
+      assert.equal(
+        binding.verified_identity,
+        "octocat",
+        "the probed identity must be persisted onto the paused row's binding"
+      );
+      assert.equal(
+        binding.kind,
+        "historical_archive",
+        "the binding kind must survive the setup-fields/identity write untouched"
+      );
+      assert.equal(instance?.status, "active", "capture on a recovered row must also resume it (requirement #2)");
+    });
+  });
+});
+
+test("a paused historical-archive row with a residual verified identity refuses a mismatched credential replacement", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      // Simulates a row that was ACTIVE and verified before it was paused by
+      // archive recovery (e.g. the connector_instances row was rebuilt from
+      // record evidence but the credential row survived) — it already carries
+      // a durable `verified_identity` + stored credential. The fail-closed
+      // active-credential-replacement guard
+      // (`assertStaticSecretActiveCredentialReplacementAllowed`) previously
+      // fired ONLY for `status === "active"` and only recognized
+      // `static_secret`/`static_secret_draft` binding kinds — a paused
+      // `historical_archive` row hit NEITHER condition and was completely
+      // unguarded, meaning an attacker (or a wrong capture) could silently
+      // retarget the row to a different account's identity. This proves the
+      // widened guard now rejects it exactly like an active row would.
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const instanceStore = createSqliteConnectorInstanceStore();
+      const credentialStore = createSqliteConnectorInstanceCredentialStore();
+
+      // Establish a real, probe-verified identity + credential the normal
+      // way (draft -> capture), so the residual credential/binding this test
+      // exercises is produced by the actual code path, not hand-written.
+      const draft = await createDraft(asUrl, cookie, "gmail", { account_email: "recovered@example.com" });
+      const draftConnectionId = requireString(draft.body.connection_id, "recovered draft connection id");
+      const established = await capture(asUrl, cookie, draftConnectionId, GOOD_SECRET, "app_password");
+      assert.equal(established.status, 201, "establishing the residual credential must succeed");
+      await instanceStore.activateDraft(draftConnectionId, { now: "2026-06-10T18:00:00.000Z" });
+      const before = await credentialStore.getMetadata(draftConnectionId);
+      assert.ok(before?.fingerprint, "the residual credential must be present before the retarget attempt");
+
+      // Rebind the row's kind to `historical_archive` and its status to
+      // `paused` in place (same connector_instance_id) — simulating archive
+      // recovery having rebuilt this row from record evidence while its
+      // credential row survived intact. `connectionId` is reassigned to the
+      // real established id so the capture below targets the actual row.
+      const established_instance = await instanceStore.get(draftConnectionId);
+      const activeBinding = established_instance?.sourceBinding as { verified_identity?: string };
+      await instanceStore.updateStaticSecretBinding({
+        connectorId: "gmail",
+        connectorInstanceId: draftConnectionId,
+        ownerSubjectId: OWNER_SUBJECT_ID,
+        sourceBinding: {
+          kind: "historical_archive",
+          original_connector_instance_id: draftConnectionId,
+          recovery_reason: "connector_instances row missing; restored from record evidence",
+          verified_identity: activeBinding.verified_identity,
+        },
+        sourceBindingKey: `historical_archive_${draftConnectionId}`,
+        updatedAt: "2026-06-10T19:00:00.000Z",
+      });
+      instanceStore.updateStatus(draftConnectionId, { status: "paused", updatedAt: "2026-06-10T19:00:00.000Z" });
+
+      // A capture claiming a DIFFERENT account's identity must be refused —
+      // never silently accepted just because the row is paused, not active.
+      const retargeted = await capture(asUrl, cookie, draftConnectionId, ALTERNATE_SECRET, "app_password", {
+        account_email: "someone-else@example.com",
+      });
+
+      assert.equal(retargeted.status, 409);
+      assert.equal(errorOf(retargeted.body).code, "static_secret_identity_mismatch");
+      const after = await credentialStore.getMetadata(draftConnectionId);
+      assert.equal(
+        after?.fingerprint,
+        before.fingerprint,
+        "a rejected retarget must not rotate the residual credential"
+      );
+      const instance = await instanceStore.get(draftConnectionId);
+      assert.equal(instance?.status, "paused", "a rejected retarget must not resume the row");
+      const binding = instance?.sourceBinding as { verified_identity?: string };
+      assert.equal(
+        binding.verified_identity,
+        "recovered@example.com",
+        "the durable identity must be unchanged by the rejected attempt"
+      );
+    });
+  });
+});
+
+// A non-archive paused row must never take the ARCHIVE-RECONNECT chain
+// (resume + auto-trigger a first sync, reported as `archive_reconnect`). It is
+// still resumed by the ordinary "fix and resume" credential-capture flip
+// (`resumePausedConnectionAfterCredentialCapture`) — saving a working
+// credential onto a paused connection is exactly the owner action that
+// unblocks it. The distinction under test is which MECHANISM ran, so this
+// pins `archive_reconnect: null` (no synthesized run) while the row itself
+// legitimately returns to `active`.
+test("credential capture on a paused row that is NOT historical_archive never runs the archive-reconnect chain", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      const manifest = syntheticNoProbeStaticSecretManifest();
+      await registerManifest(asUrl, manifest);
+      const cookie = await login(asUrl);
+      const connectionId = "cin_paused_other_binding";
+      const instanceStore = createSqliteConnectorInstanceStore();
+      await instanceStore.upsert({
+        connectorId: manifest.connector_key,
+        connectorInstanceId: connectionId,
+        createdAt: "2026-06-10T18:00:00.000Z",
+        displayName: "YNAB - paused for another reason",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+        sourceBinding: { account_hint: "paused@example.com" },
+        sourceBindingKey: connectionId,
+        sourceKind: "account",
+        status: "paused",
+        updatedAt: "2026-06-10T18:00:00.000Z",
+      });
+
+      const { status, body } = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "personal_access_token");
+
+      assert.equal(status, 201);
+      assert.equal(
+        body.archive_reconnect,
+        null,
+        "a non-historical_archive paused row must never take the archive-reconnect resume+sync chain"
+      );
+      const instance = await instanceStore.get(connectionId);
+      assert.equal(
+        instance?.status,
+        "active",
+        "the ordinary fix-and-resume capture flip still applies: a repaired credential unblocks the connection"
+      );
+    });
+  });
+});
+
+test("credential capture on an active connection never triggers the archive-reconnect resume+sync chain", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      const manifest = syntheticNoProbeStaticSecretManifest();
+      await registerManifest(asUrl, manifest);
+      const cookie = await login(asUrl);
+      const connectionId = "cin_active_rotation_no_auto_resume";
+      await seedActiveStaticSecretConnection({
+        connectorId: manifest.connector_key,
+        connectorInstanceId: connectionId,
+        displayName: "YNAB - already active",
+      });
+
+      const { status, body } = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "personal_access_token");
+
+      assert.equal(status, 201, "an active connection with no prior credential takes the establishment path");
+      assert.equal(
+        body.archive_reconnect,
+        null,
+        "the normal active-credential path is unaffected by the archive-reconnect hook"
+      );
+    });
+  });
+});
+
+test("a revoked connection still refuses credential capture (paused admission does not widen to revoked)", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      const gmail = loadManifest("gmail");
+      await registerManifest(asUrl, gmail);
+      const cookie = await login(asUrl);
+      const connectionId = "cin_revoked_capture_refused";
+      const instanceStore = createSqliteConnectorInstanceStore();
+      await instanceStore.upsert({
+        connectorId: gmail.connector_key,
+        connectorInstanceId: connectionId,
+        createdAt: "2026-06-10T18:00:00.000Z",
+        displayName: "Gmail - revoked@example.com",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+        revokedAt: "2026-06-11T00:00:00.000Z",
+        sourceBinding: { account_hint: "revoked@example.com" },
+        sourceBindingKey: connectionId,
+        sourceKind: "account",
+        status: "revoked",
+        updatedAt: "2026-06-11T00:00:00.000Z",
+      });
+
+      const { status, body } = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "app_password", {
+        account_email: GMAIL_ADDRESS,
+      });
+
+      assert.equal(status, 400);
+      assert.equal(errorOf(body).code, "connector_instance_inactive");
+      const credentialStore = createSqliteConnectorInstanceCredentialStore();
+      assert.equal(await credentialStore.getMetadata(connectionId), null);
     });
   });
 });

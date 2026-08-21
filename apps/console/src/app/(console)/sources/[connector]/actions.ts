@@ -10,9 +10,11 @@ import {
   deleteConnection,
   deleteConnectionSchedule,
   deleteConnectorSchedule,
+  pauseConnection,
   pauseConnectionSchedule,
   pauseConnectorSchedule,
   reactivateConnection,
+  resumeConnection,
   resumeConnectionSchedule,
   resumeConnectorSchedule,
   revokeConnection,
@@ -173,6 +175,89 @@ export async function deleteConnectorScheduleAction(formData: FormData) {
   } catch (err) {
     error = errorMessage(err);
   }
+  redirect(connectorHref(routeId, message, error));
+}
+
+/**
+ * Owner-pause an active connection from the console. Re-verifies the owner
+ * session, then calls the shared owner-session
+ * `POST /_ref/connections/:id/pause` route. Pause stops future collection and
+ * gives up nothing: records, grants, schedule, and the stored sign-in are all
+ * retained, and `resumeConnectionAction` is the one-click way back.
+ *
+ * Deliberately NOT a danger-zone action and deliberately NOT confirmed: unlike
+ * revoke (ends the account relationship) and delete (erases records), pause is
+ * fully reversible from the same page, so a confirmation ceremony would be
+ * friction without a risk to guard. It redirects back to the operator-controls
+ * anchor rather than the connections list, because the owner stays on this
+ * connection to resume it later.
+ *
+ * The `not_active` typed outcome is messaged in place rather than thrown.
+ */
+export async function pauseConnectionAction(formData: FormData) {
+  const connectionId = asString(formData.get("connection_id"));
+  const routeId = connectionId;
+  await requireDashboardAccess(connectorHref(routeId));
+  if (!connectionId) {
+    redirect(connectorHref(routeId, undefined, "This connection has no addressable id to pause."));
+  }
+
+  let message: string | undefined;
+  let error: string | undefined;
+  try {
+    const result = await pauseConnection(connectionId);
+    if (result.status === "paused") {
+      message = "Collection paused. Your records, schedule, and sign-in are kept — resume whenever you're ready.";
+    } else if (result.status === "not_active") {
+      message = "This connection wasn't collecting — no change was made.";
+    } else {
+      error = "Connection not found. It may have been deleted.";
+    }
+  } catch (err) {
+    error = errorMessage(err);
+  }
+
+  revalidatePath("/sources");
+  revalidatePath(`/sources/${encodeURIComponent(routeId)}`);
+  redirect(connectorHref(routeId, message, error));
+}
+
+/**
+ * Owner-resume a paused connection from the console. The inverse of
+ * `pauseConnectionAction`: re-verifies the owner session, then calls the
+ * shared owner-session `POST /_ref/connections/:id/resume` route. Flips the
+ * connection back to active so scheduled and manual runs land again;
+ * already-collected records, grants, and schedule are preserved. Credential
+ * freshness is handled on the next collection run.
+ *
+ * The `not_paused` typed outcome (connection was already active) is messaged
+ * in place rather than thrown.
+ */
+export async function resumeConnectionAction(formData: FormData) {
+  const connectionId = asString(formData.get("connection_id"));
+  const routeId = connectionId;
+  await requireDashboardAccess(connectorHref(routeId));
+  if (!connectionId) {
+    redirect(connectorHref(routeId, undefined, "This connection has no addressable id to resume."));
+  }
+
+  let message: string | undefined;
+  let error: string | undefined;
+  try {
+    const result = await resumeConnection(connectionId);
+    if (result.status === "resumed") {
+      message = "Collection resumed. This source will collect again on its next run.";
+    } else if (result.status === "not_paused") {
+      message = "This connection was already collecting — no change was made.";
+    } else {
+      error = "Connection not found. It may have been deleted.";
+    }
+  } catch (err) {
+    error = errorMessage(err);
+  }
+
+  revalidatePath("/sources");
+  revalidatePath(`/sources/${encodeURIComponent(routeId)}`);
   redirect(connectorHref(routeId, message, error));
 }
 
