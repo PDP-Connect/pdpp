@@ -34,8 +34,9 @@ We are **migrating** marketing/concept UI off hand-rolled `.pdpp-*` BEM in
 
 **Do (site concept work):**
 
-- Put page structure in a component (`PdppConceptPage` = `container max-w-page` + grid/rail/`home`). The route-group
-  shell owns shared chrome; route callers do not sprinkle `pdpp-page` / `pdpp-frontdoor__*`.
+- Put page structure in a component (`PdppConceptPage` = `container max-w-page` + grid/rail; short pages use the
+  explicit `PdppConceptFrontPage` variant instead of a `home` boolean — see architecture-avoid-boolean-props). The
+  route-group shell owns shared chrome; route callers do not sprinkle `pdpp-page` / `pdpp-frontdoor__*`.
 - Prefer TW + concept tokens. Extend `apps/site/src/styles/surfaces/concept/tokens/` when a token is missing — do not
   invent parallel BEM.
 - Delete the matching `.pdpp-*` rule from `styles/surfaces/concept/components.css` when the call site no longer needs it
@@ -128,7 +129,7 @@ in step with those `@theme` files.
 
 ```tsx
 // good
-className={cn("container max-w-page", home && "[&_[data-slot=pdpp-editorial-doc]]:pb-5!", className)}
+className={cn("container max-w-page", "[&_[data-slot=pdpp-editorial-doc]]:pb-5!", className)}
 
 // bad
 className={["container", "max-w-page", className].filter(Boolean).join(" ")}
@@ -142,23 +143,24 @@ Long `cn(...)` strings are unreadable as one blob. **Split by concern**, one str
 
 ```tsx
 className={cn(
-  // Page measure: brand container (pad/center) + concept max width; flex child
+  // Page measure: brand container (pad/center) + concept max width; flex child of [data-surface="concept"]
   "container max-w-page shrink-0 grow basis-auto",
-  // Default single-column track
+  // Default: one track; lg+ with PdppRail: rail | doc
   "grid grid-cols-[minmax(0,1fr)] items-start",
-  // Rail split / mobile collapse
-  "has-[>.pdpp-rail]:grid-cols-[…]",
-  "has-[>.pdpp-rail]:[&_[data-slot=pdpp-editorial-doc]]:col-[3]",
-  "max-[720px]:grid-cols-[minmax(0,1fr)] max-[720px]:has-[>.pdpp-rail]:grid-cols-[minmax(0,1fr)]",
-  // Short pages
-  home && "[&_[data-slot=pdpp-editorial-doc]]:pb-5!",
+  "lg:has-[>[data-slot=pdpp-editorial-rail]]:grid-cols-[var(--spacing-rail)_minmax(0,1fr)]",
+  "lg:has-[>[data-slot=pdpp-editorial-rail]]:gap-x-gutter",
   className,
 )}
 ```
 
+Short pages (front door, 404) do not toggle a state flag on this component — they call the explicit
+`PdppConceptFrontPage` variant instead, which composes the same `<main>` chrome with its own always-applied
+vertical-centering and doc-padding classes. See [`concept-page.tsx`](../../apps/site/src/components/layout/concept-page.tsx).
+
 Rules of thumb:
 
-- Group: measure/container · grid · `has-` / responsive · state (`home`, open, …) · `className` last.
+- Group: measure/container · grid · `has-` / responsive · `className` last. Prefer an explicit variant component
+  over a boolean state flag when two treatments diverge enough (architecture-avoid-boolean-props).
 - Comment says **why / what**, not a restatement of the class names.
 - Do not smash unrelated utilities onto one line to “save vertical space.”
 - Biome may reorder classes *within* a string; it should not flatten your groups. Keep the group breaks.

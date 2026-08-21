@@ -17,8 +17,8 @@ Full guide: [docs/design-system/styling-in-apps.md](../../docs/design-system/sty
 - **Concept vs brand:** concept routes (`[data-surface="concept"]`) use shadcn semantic utils (`text-foreground`, `bg-background`, `text-primary`, …) with palette values rebound from `--pdpp-editorial-*` in `tokens/primitive.css` → `tokens/semantic.css` `[data-surface="concept"]`. Layout (`max-w-page`, …) and fonts (`--font-serif/sans/mono`) use **brand `@theme`** — no `--pdpp-editorial-*` copies. Legacy `text-ink` / `bg-paper` aliases remain in `tokens/compat-palette.css` until migrated. Sandbox / product UI uses `@pdpp/brand` as-is. Do not merge concept tokens into brand.
 - **CSS ownership:** `styles/site.css` composes site styles;
   `styles/surfaces/concept/{index.css,components.css,tokens/**}` owns the concept surface;
-  `styles/surfaces/specification.css` owns specification overrides; `components/docs/prose-page.css` is imported only by
-  `ProsePage`.
+  `styles/surfaces/specification.css` owns specification overrides; `components/layout/prose-page.css` is imported only by
+  `components/layout/prose-page.tsx` (`ProsePage` and `VerbatimProsePage`).
 - **Concept type stack:** brand `@theme` → `@pdpp/brand-react` `text-variants.ts` (shadcn color utils) →
   `[data-surface="concept"]` rebinds `--foreground`/`--primary`/… → concept facade pins defaults + concept-only
   colors + sectionIndex. **token owns metrics · CVA owns voice · packaging does not re-emit the rung.** Size ⊥
