@@ -95,14 +95,20 @@ export async function seedRun(
 ): Promise<void> {
   const connectorId = run.connectorId ?? "test_connector";
   const startedAt = "2026-08-21T00:00:00.000Z";
+  // `attempt` is written explicitly rather than left to a column default:
+  // it is NOT NULL, and older databases in the fleet carry the column
+  // without the `DEFAULT 1` that newer ones have. Depending on the default
+  // makes the helper pass or fail based on the age of the database it runs
+  // against, which is the kind of environment-shaped flake that wastes a
+  // debugging session.
   const sql =
     backend.name === "postgres"
       ? `INSERT INTO run_history
-           (run_id, connector_instance_id, connector_id, source_json, status, started_at, owner_epoch, records_emitted)
-         VALUES ($1, $2, $3, '{}'::jsonb, $4, $5, $6, 7)`
+           (run_id, connector_instance_id, connector_id, source_json, status, started_at, owner_epoch, records_emitted, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, $4, $5, $6, 7, 1)`
       : `INSERT INTO run_history
-           (run_id, connector_instance_id, connector_id, source_json, status, started_at, owner_epoch, records_emitted)
-         VALUES (?, ?, ?, '{}', ?, ?, ?, 7)`;
+           (run_id, connector_instance_id, connector_id, source_json, status, started_at, owner_epoch, records_emitted, attempt)
+         VALUES (?, ?, ?, '{}', ?, ?, ?, 7, 1)`;
   await backend.exec(sql, [run.runId, run.connectorInstanceId, connectorId, run.status, startedAt, run.ownerEpoch]);
 }
 

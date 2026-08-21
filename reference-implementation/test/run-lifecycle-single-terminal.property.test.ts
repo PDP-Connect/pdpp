@@ -85,8 +85,8 @@ async function schedulerAppend(
   const sql =
     backend.name === "postgres"
       ? `INSERT INTO run_history
-           (connector_instance_id, connector_id, source_json, status, records_emitted, run_id, started_at, scheduler_managed)
-         VALUES ($1, 'test_connector', '{}'::jsonb, $2, $3, $4, '2026-08-21T00:00:00.000Z', true)
+           (connector_instance_id, connector_id, source_json, status, records_emitted, run_id, started_at, scheduler_managed, attempt)
+         VALUES ($1, 'test_connector', '{}'::jsonb, $2, $3, $4, '2026-08-21T00:00:00.000Z', true, 1)
          ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
            status = CASE WHEN run_history.status = 'running' THEN excluded.status ELSE run_history.status END,
            records_emitted = CASE
@@ -94,8 +94,8 @@ async function schedulerAppend(
              ELSE run_history.records_emitted
            END`
       : `INSERT INTO run_history
-           (connector_instance_id, connector_id, source_json, status, records_emitted, run_id, started_at, scheduler_managed)
-         VALUES (?, 'test_connector', '{}', ?, ?, ?, '2026-08-21T00:00:00.000Z', 1)
+           (connector_instance_id, connector_id, source_json, status, records_emitted, run_id, started_at, scheduler_managed, attempt)
+         VALUES (?, 'test_connector', '{}', ?, ?, ?, '2026-08-21T00:00:00.000Z', 1, 1)
          ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
            status = CASE WHEN run_history.status = 'running' THEN excluded.status ELSE run_history.status END,
            records_emitted = CASE
