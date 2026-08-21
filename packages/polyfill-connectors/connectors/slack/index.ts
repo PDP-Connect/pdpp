@@ -279,6 +279,73 @@ export function unprovenChannelIds(inventory: ReadonlySet<string>, finalized: Re
   return [...inventory].filter((id) => !finalized.has(id)).sort((a, b) => a.localeCompare(b));
 }
 
+/** Per-channel membership facts needed to classify an unproven channel. */
+export interface ChannelReachability {
+  isArchived: boolean;
+  isMember: boolean;
+}
+
+/**
+ * Split unproven channels by whether this run could ever have walked them.
+ *
+ * `archive` runs with `-member-only` by default (SLACK_MEMBER_ONLY, see
+ * `buildArchiveArgs`), so slackdump only ever requests history for channels
+ * the account is a MEMBER of. A channel the account has left — or one Slack
+ * has archived — is therefore not a walk that came up short; it is a walk
+ * that was never in scope. Reporting the two together produced this owner's
+ * "114 channel(s) have unproven history" against an archive that had in fact
+ * finished every channel it was allowed to request: 99 of those 114 are
+ * non-member and 95 are archived.
+ *
+ * `outOfScope` — not a member (nothing to retry: joining is an owner action,
+ * and re-running changes nothing), or archived.
+ * `inScope` — a member of a live channel whose history slackdump still did
+ * not finish. This is the only genuinely unexplained bucket, and the only
+ * one a re-archive can close.
+ *
+ * A channel missing from `reachability` is treated as IN scope: absent
+ * evidence must never silently downgrade a gap into "explained".
+ */
+export function partitionUnprovenChannels(
+  unproven: readonly string[],
+  reachability: ReadonlyMap<string, ChannelReachability>
+): { inScope: string[]; outOfScope: string[] } {
+  const inScope: string[] = [];
+  const outOfScope: string[] = [];
+  for (const id of unproven) {
+    const facts = reachability.get(id);
+    if (facts && (!facts.isMember || facts.isArchived)) {
+      outOfScope.push(id);
+    } else {
+      inScope.push(id);
+    }
+  }
+  return { inScope, outOfScope };
+}
+
+/**
+ * Membership/archived facts for every channel in the archive inventory, read
+ * from the newest CHUNK per channel (same latest-row join
+ * `currentDmMpimChannelIds` uses, so a stale early chunk cannot win).
+ */
+function archiveChannelReachability(db: DatabaseSync): Map<string, ChannelReachability> {
+  const rows = safeAll<ChannelRow>(
+    db,
+    `
+    SELECT c.ID AS id, c.DATA AS data
+    FROM CHANNEL c
+    JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM CHANNEL GROUP BY ID) m
+      ON m.ID = c.ID AND m.mx = c.CHUNK_ID
+  `
+  );
+  const out = new Map<string, ChannelReachability>();
+  for (const r of rows) {
+    const d = parseBlob(r.data);
+    out.set(r.id, { isArchived: d.is_archived === true, isMember: d.is_member === true });
+  }
+  return out;
+}
+
 async function emitMissingChannelDiagnostic(
   emit: CollectContext["emit"],
   missingChannelIds: readonly string[]
@@ -338,27 +405,57 @@ async function emitUnprovenChannelDiagnostic(
   if (unproven.length === 0) {
     return;
   }
-  const visibleIds = unproven.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
-  await emit({
-    type: "SKIP_RESULT",
-    stream: "messages",
-    reason: "channel_history_not_finalized",
-    message:
-      `Slack archive lists ${String(inventory.size)} channels but slackdump proved a finished message walk for only ` +
-      `${String(finalized.size)}; ${String(unproven.length)} channel(s) have unproven history. Their messages may be ` +
-      "absent or partial. A full re-archive is required to close this.",
-    diagnostics: {
-      inventory_count: inventory.size,
-      finalized_count: finalized.size,
-      unproven_count: unproven.length,
-      unproven_channel_ids: visibleIds,
-      truncated: visibleIds.length < unproven.length,
-    },
-    recovery_hint: {
-      action: "retry_by_runtime",
-      retryable: true,
-    },
-  });
+  const { inScope, outOfScope } = partitionUnprovenChannels(unproven, archiveChannelReachability(db));
+  if (inScope.length > 0) {
+    const visibleIds = inScope.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "channel_history_not_finalized",
+      message:
+        `Slack archive lists ${String(inventory.size)} channels but slackdump proved a finished message walk for only ` +
+        `${String(finalized.size)}; ${String(inScope.length)} joined, unarchived channel(s) have unproven history. ` +
+        "Their messages may be absent or partial. A full re-archive is required to close this.",
+      diagnostics: {
+        inventory_count: inventory.size,
+        finalized_count: finalized.size,
+        unproven_count: inScope.length,
+        unproven_channel_ids: visibleIds,
+        truncated: visibleIds.length < inScope.length,
+      },
+      recovery_hint: {
+        action: "retry_by_runtime",
+        retryable: true,
+      },
+    });
+  }
+  if (outOfScope.length > 0) {
+    const visibleIds = outOfScope.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "channel_history_out_of_member_scope",
+      message:
+        `${String(outOfScope.length)} channel(s) in the Slack inventory were never walked because this account is not ` +
+        "a member or the channel is archived. Member-only archiving never requests their history, so their messages " +
+        "are absent by configuration, not lost. Joining a channel (or disabling member-only archiving) is required " +
+        "to collect these.",
+      diagnostics: {
+        inventory_count: inventory.size,
+        finalized_count: finalized.size,
+        out_of_scope_count: outOfScope.length,
+        out_of_scope_channel_ids: visibleIds,
+        truncated: visibleIds.length < outOfScope.length,
+      },
+      recovery_hint: {
+        // `not_retriable` (not a free-form token) — RECOVERY_ACTIONS is a closed
+        // set in the runtime's gap normalizer; an unrecognized action is
+        // silently replaced by a regex guess over the reason/message text.
+        action: "not_retriable",
+        retryable: false,
+      },
+    });
+  }
 }
 
 function selectCommittedChannelLastTs(
