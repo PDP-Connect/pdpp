@@ -408,10 +408,10 @@ test(
         actor_id: "chatgpt",
         actor_type: "runtime",
         data: {
-          reason: "controller_restarted",
+          reason: "controller_terminated_before_run_finished",
           source: { id: "chatgpt", kind: "connector" },
         },
-        event_type: "run.failed",
+        event_type: "run.abandoned",
         object_id: "run_terminal_attention",
         object_type: "run",
         run_id: "run_terminal_attention",

@@ -279,9 +279,10 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
 
     async simulateRestart() {
       // Constructing a fresh controller against the same DB triggers
-      // `reconcileAbandonedControllerRuns`, which reads from
-      // `schedulerStore.listActiveRuns()` and clears each record after
-      // emitting `run.failed`.
+      // `releaseAbandonedControllerRunClaims`, which reads from
+      // `schedulerStore.listActiveRuns()` and clears each record. It
+      // writes no terminal event: `reconcileOrphanedRunsAtBoot` owns
+      // that, from the spine.
       // biome-ignore lint/complexity/noVoid: expression intentionally discards a test-only value
       void createController({
         // biome-ignore lint/suspicious/noEmptyBlockStatements: skipped test callback is intentionally empty

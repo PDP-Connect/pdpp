@@ -263,12 +263,14 @@ export function createSqliteConnectorStateSchedulerDriver() {
     },
 
     async simulateRestart() {
-      // A fresh controller invokes `reconcileAbandonedControllerRuns`
+      // A fresh controller invokes `releaseAbandonedControllerRunClaims`
       // at construction time against the same db (the module-scoped
       // sqlite handle is preserved). This mirrors the production
       // restart sequence: the prior process leaves rows behind in
       // `controller_active_runs`; the new process boots a controller
-      // and reconciliation drains them.
+      // and releases those stale claims. The runs' terminal state is
+      // adjudicated separately, from the spine, by
+      // `reconcileOrphanedRunsAtBoot`.
       controller = createController({
         // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
         logger: { error: () => {}, warn: () => {} },
