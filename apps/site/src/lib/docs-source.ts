@@ -56,9 +56,6 @@ export function getSpecNavTree(): PageTree.Root {
   const byUrl = itemsByUrl(full);
   return {
     ...full,
-    children: [
-      { $id: "spec-rail-primary", name: "Specification", type: "separator" },
-      ...pick(byUrl, PRIMARY_SLUGS),
-    ],
+    children: [{ $id: "spec-rail-primary", name: "Specification", type: "separator" }, ...pick(byUrl, PRIMARY_SLUGS)],
   };
 }

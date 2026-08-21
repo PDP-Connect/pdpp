@@ -28,10 +28,7 @@ export interface DocPageRef {
 //   and their own noindex all keep out. Derived from MAINTAINER_DOC_SLUGS
 //   rather than repeated, so the rail and the sitemap cannot disagree about
 //   what is unlisted.
-const NON_CANONICAL_DOC_PATHS = new Set([
-  "README.md",
-  ...MAINTAINER_DOC_SLUGS.map((slug) => `${slug}.md`),
-]);
+const NON_CANONICAL_DOC_PATHS = new Set(["README.md", ...MAINTAINER_DOC_SLUGS.map((slug) => `${slug}.md`)]);
 
 // SEO/GEO standard MUST #4.3: a sitemap must contain only canonical,
 // indexable URLs, and `lastmod` must represent the last substantive change to
