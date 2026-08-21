@@ -7719,8 +7719,9 @@ export async function startServer(opts: ServerOpts = {}) {
   // revisit them; terminalize them once at boot, same shape as the
   // orphaned-run reconciliation above. Not gated behind the polyfill-
   // manifest-reconcile enable/disable switch below -- this sweep only
-  // touches this process's own DB rows by staleness, never overwrites
-  // manifests, so it's safe to always run.
+  // touches rows left behind by a PRIOR incarnation (their owner_epoch is
+  // not the epoch stamped above), never overwrites manifests, so it's safe
+  // to always run.
   const abandonedUploads = await reconcileAbandonedManualUploadArtifactsAtBoot({
     createRequestManualUploadArtifactStore,
   } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0]);
