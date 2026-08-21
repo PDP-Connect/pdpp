@@ -78,6 +78,7 @@ interface SpineTimelineEvent {
 
 interface SpineTimelineBody {
   data: SpineTimelineEvent[];
+  terminal_status?: string | null;
 }
 
 interface ErrorBody {
@@ -281,8 +282,19 @@ async function waitForRunTerminal(asUrl: string, runId: string, timeoutMs = 5000
       `${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`
     );
     if (status === 200 && body && Array.isArray(body.data)) {
+      // `terminal_status` is the window-independent answer, resolved from the
+      // run's most-recent terminal event rather than from this page. It is
+      // the right thing to poll: a boot-time abandon is written with its own
+      // trace id, so it does not appear in a trace-scoped event page even
+      // though the run is genuinely terminal.
+      if (body.terminal_status) {
+        return body;
+      }
       const terminal = body.data.find(
-        (event) => event.event_type === "run.completed" || event.event_type === "run.failed"
+        (event) =>
+          event.event_type === "run.completed" ||
+          event.event_type === "run.failed" ||
+          event.event_type === "run.abandoned"
       );
       if (terminal) {
         return body;
@@ -1004,14 +1016,19 @@ test("controller startup reconciles abandoned controller-managed runs after rest
         data: {
           bindings: { filesystem: {}, interactive: {}, network: {} },
           // Synthetic "prior incarnation" stamp — this test seeds the
-          // pre-crash state of an abandoned run. The boot-epoch fields
-          // satisfy the spine-layer stamping requirement; their *value*
-          // doesn't matter for this test (it exercises the older
-          // scheduler_run_history reconciler, not the boot-epoch one).
+          // pre-crash state of an interrupted run.
+          //
+          // `boot_epoch` differs from the epoch the restarted server will
+          // mint, which is what makes this an orphan. `controller_id` is
+          // deliberately left unset: a legacy/unstamped owner COALESCEs to
+          // the booting controller's own id, so the successor claims it
+          // under the single-controller assumption. Pinning a foreign
+          // controller_id here would instead exercise multi-controller
+          // isolation (covered in boot-orphan-reconciliation.test.ts) and
+          // the run would correctly never be adjudicated.
           boot_epoch: "prior-incarnation-epoch",
           collection_mode: "incremental",
           connector_instance_id: SPOTIFY_INSTANCE_ID,
-          controller_id: "prior-incarnation",
           persist_state: true,
           scope: { streams: [{ name: "top_tracks" }] },
           scope_streams: ["top_tracks"],
@@ -1092,9 +1109,25 @@ test("controller startup reconciles abandoned controller-managed runs after rest
     const asUrl = `http://localhost:${server.asPort}`;
 
     const timeline = await waitForRunTerminal(asUrl, runId);
-    const failed = timeline.data.find((event) => event.event_type === "run.failed");
-    assert.ok(failed, "startup reconciliation should append run.failed");
-    assert.equal(failed.data?.reason, "controller_restarted");
+    // A run interrupted by a restart is adjudicated `abandoned`, not `failed`.
+    // Nothing observed a failure -- only the absence of a report from a
+    // process that is gone. The two states have different remedies, so the
+    // spine must not claim the stronger one.
+    assert.equal(timeline.terminal_status, "abandoned");
+
+    const abandoned = getDb()
+      .prepare("SELECT data_json FROM spine_events WHERE event_type = 'run.abandoned' AND run_id = ?")
+      .get(runId) as { data_json: string } | undefined;
+    assert.ok(abandoned, "startup reconciliation should append run.abandoned");
+    assert.equal(
+      (JSON.parse(abandoned.data_json) as { reason: string }).reason,
+      "controller_terminated_before_run_finished"
+    );
+
+    const failedRow = getDb()
+      .prepare("SELECT COUNT(*) AS count FROM spine_events WHERE event_type = 'run.failed' AND run_id = ?")
+      .get(runId) as CountRow;
+    assert.equal(failedRow.count, 0, "an interrupted run must never be recorded as a failure");
 
     const attentionRow = await waitForAttentionLifecycle("att_restart_orphan", "cancelled");
     assert.equal(
@@ -1108,8 +1141,8 @@ test("controller startup reconciles abandoned controller-managed runs after rest
     const entry = connectors.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry, "configured spotify connection should still be listed after restart");
     assert.equal(entry.last_run?.run_id, runId);
-    assert.equal(entry.last_run?.status, "failed");
-    assert.equal(entry.last_run?.terminal_reason, "controller_restarted");
+    assert.equal(entry.last_run?.status, "abandoned");
+    assert.equal(entry.last_run?.terminal_reason, "controller_terminated_before_run_finished");
 
     const remainingRows = getDb().prepare("SELECT COUNT(*) AS count FROM controller_active_runs").get() as CountRow;
     assert.equal(remainingRows.count, 0, "reconciliation should clear stale controller_active_runs rows");
