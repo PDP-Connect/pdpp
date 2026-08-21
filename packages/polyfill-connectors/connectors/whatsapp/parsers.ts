@@ -138,6 +138,9 @@ export interface WhatsAppChatSummary {
   /** Best-effort reconciliation lookup key — see deriveChatIdentityKey. */
   identityKey: string;
   lastSentAt: string | null;
+  /** Non-blank lines dropped into no message at all — the `messages`
+   *  coverage shortfall channel. See RawWhatsAppLineReader.linesUnaccounted. */
+  linesUnaccounted: number;
   messageCount: number;
   /** Fixed-size UNIFORM RANDOM sample of message content fingerprints
    *  (reservoir sampling, not fixed-stride) — see scanWhatsAppChatIdentity's
@@ -571,6 +574,14 @@ class RawWhatsAppLineReader {
   private current: RawWhatsAppMessage | null = null;
   private readonly onMessage: (message: RawWhatsAppMessage) => void;
   readonly participants = new Set<string>();
+  /**
+   * Non-blank lines this reader weighed but could account for in NO message:
+   * they neither started one (no valid timestamp) nor folded into one (no
+   * message open yet). Export preambles are the common real case. Counting
+   * them is what lets the `messages` coverage claim report a shortfall
+   * instead of restating its own numerator -- see `pushLine`'s else-branch.
+   */
+  linesUnaccounted = 0;
 
   constructor(onMessage: (message: RawWhatsAppMessage) => void) {
     this.onMessage = onMessage;
@@ -593,6 +604,12 @@ class RawWhatsAppLineReader {
       this.current = { author, content: match[4] || "", has_attachment: false, sent_at: sentAt };
     } else if (this.current && line.trim()) {
       this.current.content += `\n${line}`;
+    } else if (line.trim()) {
+      // Weighed, but belongs to no message: no message is open to fold it
+      // into. The text is genuinely dropped here, so it must be accounted
+      // rather than silently vanish from both sides of the coverage claim.
+      // (A blank line is structure, not data, and is correctly ignored.)
+      this.linesUnaccounted += 1;
     }
   }
 
@@ -708,7 +725,7 @@ class ChatIdentityAccumulator {
     this.fingerprintSampler.push(messageContentFingerprint(message, occurrenceIndex));
   };
 
-  toSummary(filename: string, participants: readonly string[]): WhatsAppChatSummary {
+  toSummary(filename: string, participants: readonly string[], linesUnaccounted: number): WhatsAppChatSummary {
     const identityKey = deriveChatIdentityKey(participants);
     return {
       attachmentMessageCount: this.attachmentMessageCount,
@@ -716,6 +733,7 @@ class ChatIdentityAccumulator {
       firstSentAt: this.firstSentAt,
       identityKey,
       lastSentAt: this.lastSentAt,
+      linesUnaccounted,
       messageCount: this.messageCount,
       messageFingerprintSample: this.fingerprintSampler.toArray(),
       participants: [...participants],
@@ -748,7 +766,7 @@ export function scanWhatsAppChatIdentity(filename: string, lines: Iterable<strin
     reader.pushLine(line);
   }
   reader.finish();
-  return accumulator.toSummary(filename, [...reader.participants]);
+  return accumulator.toSummary(filename, [...reader.participants], reader.linesUnaccounted);
 }
 
 /**
@@ -767,7 +785,7 @@ export async function scanWhatsAppChatIdentityStream(
     reader.pushLine(line);
   }
   reader.finish();
-  return accumulator.toSummary(filename, [...reader.participants]);
+  return accumulator.toSummary(filename, [...reader.participants], reader.linesUnaccounted);
 }
 
 /**

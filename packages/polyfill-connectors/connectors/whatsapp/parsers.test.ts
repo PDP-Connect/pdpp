@@ -434,3 +434,51 @@ test("bounded-memory oracle: streamWhatsAppChatMessagesAsync awaits each emissio
     }
   }
 });
+
+/**
+ * Coverage honesty for the `messages` stream, the same contract
+ * `attachment-coverage-honesty.test.ts` already holds the `attachments`
+ * stream to: a line the reader WEIGHED but could not account for must be
+ * counted, so `considered` can exceed `covered`.
+ *
+ * `RawWhatsAppLineReader.pushLine` has exactly one silent-drop path. A
+ * non-blank line that neither starts a message (no valid timestamp) nor
+ * folds into one (no message open yet) is discarded entirely -- it enters
+ * neither `messageCount` nor any other counter. Blank lines are structural,
+ * not data, and are correctly ignored.
+ *
+ * Without `linesUnaccounted`, `index.ts` emits `considered === covered ===
+ * totalMessages` for `messages`, two spellings of one variable that cannot
+ * disagree, so agreement proves nothing. This counter is the channel that
+ * makes agreement evidence, mirroring `google_maps`' `pointsUnaccounted`.
+ */
+test("scanWhatsAppChatIdentity: a non-blank line dropped before any message is counted as unaccounted", () => {
+  const summary = scanWhatsAppChatIdentity(
+    "WhatsApp Chat with Alice.txt",
+    splitWhatsAppChatLines(
+      [
+        "Messages and calls are end-to-end encrypted.",
+        "",
+        "[6/5/24, 9:15:22 AM] Alice: real message",
+        "a continuation line folds in and is NOT unaccounted",
+      ].join("\n")
+    )
+  );
+
+  assert.equal(summary.messageCount, 1, "one real message");
+  assert.equal(
+    summary.linesUnaccounted,
+    1,
+    "the pre-message preamble line was weighed and dropped, so it must be accounted -- a blank line and a folded continuation line must not be"
+  );
+});
+
+test("scanWhatsAppChatIdentity: a fully-parsed export reports zero unaccounted lines", () => {
+  const summary = scanWhatsAppChatIdentity(
+    "WhatsApp Chat with Alice.txt",
+    splitWhatsAppChatLines(["[6/5/24, 9:15:22 AM] Alice: hello", "[6/5/24, 9:16:00 AM] Bob: hi", ""].join("\n"))
+  );
+
+  assert.equal(summary.messageCount, 2);
+  assert.equal(summary.linesUnaccounted, 0, "nothing was dropped, so coverage may read complete");
+});

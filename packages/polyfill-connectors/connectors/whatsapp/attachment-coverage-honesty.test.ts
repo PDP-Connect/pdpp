@@ -183,3 +183,89 @@ test("WhatsApp attachments - a fully readable export still proves full coverage"
     await rm(importRoot, { force: true, recursive: true });
   }
 });
+
+/**
+ * The same weighed-but-dropped contract, applied to the `messages` stream.
+ *
+ * `messages` previously passed `totalMessages` as BOTH `considered` and
+ * `covered` — one variable spelled two ways, structurally unable to disagree,
+ * so their agreement carried no information. A line the reader drops into no
+ * message at all (`linesUnaccounted`, parsers.ts) is the shortfall channel
+ * that makes the claim falsifiable, mirroring `google_maps`'
+ * `pointsUnaccounted`.
+ *
+ * This drives the REAL connector subprocess and asserts on the emitted
+ * DETAIL_COVERAGE, so it fails if `index.ts` stops adding the drop counter
+ * into `considered` — which the parser-level unit tests alone cannot catch.
+ */
+function messagesCoverage(
+  messages: readonly EmittedMessage[]
+): Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> | undefined {
+  return messages
+    .filter(
+      (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => message.type === "DETAIL_COVERAGE"
+    )
+    .find((message) => message.stream === "messages");
+}
+
+async function runImportForMessagesCoverage(
+  importRoot: string
+): Promise<Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> | undefined> {
+  const result = await runConnectorProtocolSubprocess({
+    cwd: PACKAGE_ROOT,
+    entrypoint: WHATSAPP_ENTRYPOINT,
+    env: {
+      PDPP_OWNER_TOKEN: "",
+      PDPP_RS_URL: "",
+      RS_URL: "",
+      TZ: "America/Chicago",
+      WHATSAPP_EXPORT_DIR: importRoot,
+    },
+    start: {
+      scope: { streams: [{ name: "chats" }, { name: "messages" }, { name: "attachments" }] },
+      type: "START",
+    },
+  });
+  return messagesCoverage(result.messages);
+}
+
+test("WhatsApp messages - a line dropped into no message reads as a coverage shortfall", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-msgdrop-"));
+  try {
+    const stagedDir = join(importRoot, "artifact_msgdrop");
+    await mkdir(stagedDir, { recursive: true });
+    // A preamble line precedes the first timestamped message, so it can neither
+    // start a message nor fold into one. Two real messages follow.
+    await writeFile(
+      join(stagedDir, "WhatsApp Chat - Alice.txt"),
+      ["Messages and calls are end-to-end encrypted.", CHAT_EXPORT].join("\n")
+    );
+
+    const coverage = await runImportForMessagesCoverage(importRoot);
+
+    assert.equal(coverage?.covered, 3, "the three real messages were collected");
+    assert.equal(coverage?.considered, 4, "the dropped preamble line must be weighed into considered");
+    assert.ok(
+      (coverage?.covered ?? 0) < (coverage?.considered ?? 0),
+      "an export with an unaccounted line must not report full message coverage"
+    );
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("WhatsApp messages - a cleanly parsed export still proves full coverage", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-msgclean-"));
+  try {
+    const stagedDir = join(importRoot, "artifact_msgclean");
+    await mkdir(stagedDir, { recursive: true });
+    await writeFile(join(stagedDir, "WhatsApp Chat - Alice.txt"), CHAT_EXPORT);
+
+    const coverage = await runImportForMessagesCoverage(importRoot);
+
+    assert.equal(coverage?.covered, 3);
+    assert.equal(coverage?.considered, 3, "nothing was dropped, so coverage may read complete");
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});

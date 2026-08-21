@@ -1194,6 +1194,7 @@ runConnector({
     let totalAttachments = 0;
     let totalAttachmentsCovered = 0;
     let totalMessages = 0;
+    let totalMessageLinesUnaccounted = 0;
     let totalRecords = 0;
     for (let index = 0; index < files.length; index += 1) {
       const f = files[index];
@@ -1253,6 +1254,7 @@ runConnector({
         totalAttachments += emitSummary.attachments;
         totalAttachmentsCovered += emitSummary.attachmentsCovered;
         totalMessages += emitSummary.messages;
+        totalMessageLinesUnaccounted += chatSummary.linesUnaccounted;
         totalRecords += emitSummary.records;
       } finally {
         // Every attachment's data() has now been read (or skipped) by
@@ -1285,6 +1287,14 @@ runConnector({
     // `totalMessages` is the parsed message count summed across exports
     // (`parsed.messages.length`), not the emitted count — every parsed message
     // is either emitted or suppressed as unchanged by the fingerprint cursor.
+    //
+    // `considered` adds the lines the reader weighed but could account for in
+    // no message (`linesUnaccounted`, parsers.ts). Passing `totalMessages` as
+    // BOTH sides would restate the numerator as its own denominator: two
+    // spellings of one variable, incapable of disagreeing, so their agreement
+    // would prove nothing. Adding the drop counter gives this claim a real
+    // failure mode — exactly what `google_maps` does with `pointsUnaccounted`
+    // — so `covered === considered` becomes evidence rather than a tautology.
     if (requested.has("messages")) {
       await emit(
         buildDetailCoverageMessage({
@@ -1292,7 +1302,7 @@ runConnector({
           stateStream: "messages",
           requiredKeys: [],
           hydratedKeys: [],
-          considered: totalMessages,
+          considered: totalMessages + totalMessageLinesUnaccounted,
           covered: totalMessages,
         })
       );
