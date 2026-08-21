@@ -330,7 +330,7 @@ test("contrast: a REQUIRED stream's failure is NOT caught by runOptionalStream a
   const deps: StreamDeps = {
     db,
     emit: () => Promise.resolve(),
-    emitRecord: () => Promise.reject(new Error("emitRecord_boom")),
+    emitRecord: (): Promise<void> => Promise.reject(new Error("emitRecord_boom")),
     emittedAt: "2026-07-10T00:00:00.000Z",
     fingerprintCursors: new Map(),
     progress: () => Promise.resolve(),
