@@ -99,6 +99,10 @@ export interface ConnectorSubprocessOptions {
    *  memory proof. */
   peakRssPollIntervalMs?: number;
   start: {
+    /** Mirrors the real runtime's START `collection_mode` field, so a test can
+     *  exercise the owner-triggered full-refresh bypass end to end rather than
+     *  reaching past the wire to construct a CollectContext by hand. */
+    collection_mode?: "full_refresh" | "incremental";
     /** Currently-pending detail gaps to replay on START, mirroring the real runtime's `detail_gaps` field. */
     detail_gaps?: readonly DetailGapStartEntry[];
     scope: { streams: Array<{ name: string; resources?: string[]; time_range?: { since?: string; until?: string } }> };
