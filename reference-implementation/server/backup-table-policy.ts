@@ -119,6 +119,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Active run rows represent in-flight work and must be reconciled by startup/runtime recovery.",
   },
+  controller_identity: {
+    classification: "backup_required",
+    reason:
+      "The identity that decides which orphaned runs a boot may adjudicate. It must restore with the runs it adjudicates, because both readings of a missing row are wrong: a restore that reseeds from the host name reproduces the defect this table fixes, and one that adopts an unrelated id adjudicates runs it does not own.",
+  },
   dataset_summary_projection: {
     classification: "backup_required",
     reason: "Dataset summary rows are projections rebuilt from retained records.",
