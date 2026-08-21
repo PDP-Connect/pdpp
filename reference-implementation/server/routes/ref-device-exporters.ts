@@ -2571,10 +2571,14 @@ async function processDeviceIngestBatch(
         sourceInstanceId,
       });
     }
+    // Hoisted so the catch boundary below can report how far the durable
+    // prefix had advanced when the attempt failed — the single fact that
+    // distinguishes a batch stuck with work remaining from one stranded
+    // with every record already durable.
+    const start = reservation.durablePrefixCount ?? 0;
     try {
       const storageTarget = referenceLocalDeviceStorageTarget(ctx, connectorId, connectorInstanceId);
       const attemptDeadline = performance.now() + batchAttemptDeadlineMs();
-      const start = reservation.durablePrefixCount ?? 0;
       const durableVersionByInputIndex = new Map<number, number>();
       for (let inputIndex = start; inputIndex < records.length; inputIndex += 1) {
         const record = records[inputIndex];
@@ -2626,14 +2630,37 @@ async function processDeviceIngestBatch(
       }
       await maybeDeviceIngestPhaseFault("after-durable-phase");
 
+      // From here on every record is durable, so all that remains is derived
+      // repair/publish plus the reservation's status transition.
+      //
+      // The deadline still bounds THIS phase on an attempt that arrived with
+      // durable work to do (`start < records.length`): abandoning it is safe
+      // and cheap, because the prefix cursor it just advanced means the retry
+      // resumes strictly closer to done.
+      //
+      // It must NOT bound a RESUMED attempt that arrived already fully
+      // durable (`start === records.length`). Such an attempt has nothing
+      // left to abandon — it re-runs the same final-plan repair and embedding
+      // publish every time — so aborting it strands the reservation
+      // `processing` with a FULL durable prefix in exactly the state it
+      // started in. Nothing reaps such a row, so the collector retried the
+      // identical batch, blew the identical deadline, and 503'd again,
+      // forever: a self-sustaining livelock that wedged ~45% of live batches
+      // (one row reached 1058 attempts over ~8 hours). Letting the resumed
+      // attempt run to `completeProcessingBatch` is what makes an
+      // already-durable reservation self-heal, including rows wedged by an
+      // earlier build. See `runFullPrefixDeadlineOracle`.
+      const resumedFullyDurable = start >= records.length;
+      const settleDeadline = resumedFullyDurable ? Number.POSITIVE_INFINITY : attemptDeadline;
+
       const finalPlan = finalDeviceRecordPlan(records, connectorInstanceId);
-      assertBatchAttemptBefore(attemptDeadline);
+      assertBatchAttemptBefore(settleDeadline);
       // No `coordinatorOwnership` passthrough here either: `prepareDeviceFinalRecords`
       // acquires its own fresh fence ONLY when it actually has repair work to
       // do (a retry whose durable prefix already covered some final keys) —
       // see its own short-circuit for the common first-attempt case.
       const preparedFinalPlan = await ctx.prepareDeviceFinalRecords(storageTarget, finalPlan, attemptContext, start);
-      assertBatchAttemptBefore(attemptDeadline);
+      assertBatchAttemptBefore(settleDeadline);
       // A repaired (retry-repaired) entry already carries its own fresh
       // `version` from `prepareDeviceFinalRecords`'s reread. A fresh
       // (non-repaired) entry's version comes from THIS attempt's own durable
@@ -2668,7 +2695,7 @@ async function processDeviceIngestBatch(
           authoritativeFinalPlan,
           finalIndexPlanConcurrency(),
           async ({ record, inputIndex, version }) => {
-            assertBatchAttemptBefore(attemptDeadline);
+            assertBatchAttemptBefore(settleDeadline);
             if (typeof version !== "number") {
               // No durable version could be resolved for this key (e.g. it was
               // never actually written this attempt and has no repair reread
@@ -2680,11 +2707,14 @@ async function processDeviceIngestBatch(
               attemptContext,
               deviceFinalInputIndex: inputIndex,
             });
-            assertBatchAttemptBefore(attemptDeadline);
+            assertBatchAttemptBefore(settleDeadline);
           }
         );
       });
-      assertBatchAttemptBefore(attemptDeadline);
+      // Deliberately NO deadline check between the last publish and
+      // `completeProcessingBatch`: once the publish loop is done the only
+      // remaining step is the status transition, and throwing there would
+      // strand a fully-durable reservation for no benefit.
       const response = {
         accepted_record_count: records.length,
         batch_id: batchId,
@@ -2714,11 +2744,27 @@ async function processDeviceIngestBatch(
       });
       await maybeDeviceIngestPhaseFault("after-accepted-commit");
       res.status(201).json(response);
-    } catch {
+    } catch (err) {
+      // Server-log-only diagnosability, mirroring the ingest-rejection
+      // contract proven by rs-ingest-systemic-failure-server-log.test.ts.
+      // The collector's 503 envelope is a fixed, bounded template by design
+      // (see the redaction rationale below), which previously left the real
+      // cause of a stuck device batch visible NOWHERE: no client detail, no
+      // server line. That silence is how a livelock wedging ~45% of live
+      // batches ran for hours with 219 ingest POSTs in 12 minutes and not a
+      // single error/warn line to point at it. Identifiers only — never
+      // record content.
+      const cause = err as { code?: unknown; message?: unknown } | null;
+      console.error(
+        `[device-ingest] batch attempt failed device_id=${deviceId} batch_id=${batchId} ` +
+          `connector_instance_id=${connectorInstanceId} batch_seq=${batchSeq} record_count=${records.length} ` +
+          `durable_prefix_start=${start} code=${String(cause?.code ?? "unknown")}: ${String(cause?.message ?? "unknown")}`
+      );
       // Once a processing reservation exists, no storage/index/model/SQL
       // diagnostic is safe to expose to a collector. The reservation remains
       // sticky and the fixed retry envelope lets the next attempt resume it.
-      // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
+      // Deliberately NO `cause`: the real error is already on the server log
+      // above, and attaching it here would risk it reaching the collector.
       throw safeDeviceIngestAttemptError();
     }
   });
