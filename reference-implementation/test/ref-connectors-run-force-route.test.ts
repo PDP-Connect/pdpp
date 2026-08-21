@@ -586,25 +586,31 @@ test("run routes do not full-refresh unless the body value is exactly true", asy
   // missing body, or an explicit false must all leave the run incremental.
   // A full refresh re-walks the whole source, so widening this parse would
   // silently turn every ordinary `Sync now` into a full re-enumeration.
-  for (const body of [null, {}, { full_refresh: "true" }, { full_refresh: 1 }, { full_refresh: false }]) {
-    const harness = buildHarness(mountRefConnectionRun);
-    await harness.invoke({ body, params: { connectorInstanceId: "cin_apple_contacts" } });
-    const [firstCall] = harness.calls.runNow;
-    assert.ok(firstCall);
-    assert.equal(firstCall.options.fullRefresh, false, `body ${JSON.stringify(body)} must not force a full refresh`);
-  }
+  const bodies = [null, {}, { full_refresh: "true" }, { full_refresh: 1 }, { full_refresh: false }];
 
-  for (const body of [null, {}, { full_refresh: "true" }, { full_refresh: 1 }, { full_refresh: false }]) {
-    const ownerHarness = buildOwnerHarness();
-    await ownerHarness.invoke({ body });
-    const [firstOwnerCall] = ownerHarness.calls.runNow;
-    assert.ok(firstOwnerCall);
-    assert.equal(
-      firstOwnerCall.options.fullRefresh,
-      false,
-      `owner body ${JSON.stringify(body)} must not force a full refresh`
-    );
-  }
+  await Promise.all(
+    bodies.map(async (body) => {
+      const harness = buildHarness(mountRefConnectionRun);
+      await harness.invoke({ body, params: { connectorInstanceId: "cin_apple_contacts" } });
+      const [firstCall] = harness.calls.runNow;
+      assert.ok(firstCall);
+      assert.equal(firstCall.options.fullRefresh, false, `body ${JSON.stringify(body)} must not force a full refresh`);
+    })
+  );
+
+  await Promise.all(
+    bodies.map(async (body) => {
+      const ownerHarness = buildOwnerHarness();
+      await ownerHarness.invoke({ body });
+      const [firstOwnerCall] = ownerHarness.calls.runNow;
+      assert.ok(firstOwnerCall);
+      assert.equal(
+        firstOwnerCall.options.fullRefresh,
+        false,
+        `owner body ${JSON.stringify(body)} must not force a full refresh`
+      );
+    })
+  );
 });
 
 test("a full-refresh request is independent of the provider-pressure force override", async () => {
