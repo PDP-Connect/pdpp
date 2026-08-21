@@ -55,12 +55,78 @@
  * Usage:
  *   pnpm exec tsx bin/scenario-record.ts <connector> [--runs 1|2] [--out <path>]
  *     [--answer <id-or-index>=<value>]... [--answers <json-file>] [--persist-otp]
- *     [--streams <name,name,...>] [--timeout <seconds>]
+ *     [--streams <name,name,...>] [--timeout <seconds>] [--record-har]
  *
  * Example (the real developer flow — live capture against your own account):
  *   pnpm exec tsx bin/scenario-record.ts oura
  *   pnpm exec tsx bin/scenario-record.ts oura --runs 1 --out /tmp/oura-run1.json
  *   pnpm exec tsx bin/scenario-record.ts ynab --streams transactions,accounts
+ *   pnpm exec tsx bin/scenario-record.ts chatgpt --record-har
+ *
+ * ─── `--record-har` (browser-driven connectors) ───────────────────────────
+ *
+ * The fetch-preload capture above (`writeRecordPreload`) patches
+ * `globalThis.fetch` INSIDE the connector's Node process. A browser-driven
+ * connector's traffic never touches that process's fetch/http/net — it
+ * originates inside a separate Chromium the connector drives via
+ * `src/browser-launch.ts` — so the fetch preload structurally cannot see it.
+ * `--record-har` closes that gap at the NETWORK layer (not DOM/rrweb —
+ * chosen to match this harness's existing recorded request/response shape):
+ * it sets `PDPP_SCENARIO_HAR_RECORD_PATH`/`PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH`
+ * (browser-launch.ts) on the spawned subprocess's env for each run, which
+ * `acquireBrowserForConnector` reads and turns into Playwright's `recordHar`
+ * option plus a `context.storageState()` snapshot at context-close time. Off
+ * by default; a normal fetch-only connector run is completely unaffected —
+ * see browser-launch.ts's `AcquireIsolatedBrowserOptions.harRecording` doc
+ * comment for the "byte-identical launch options when omitted" guarantee.
+ *
+ * A run that actually produces a usable HAR (nonzero entries) + storageState
+ * gets `run.environment.network` stamped `driver: "recorded-browser"`
+ * (format.ts's `ScenarioBrowserNetworkDriver`) with `har_path`/
+ * `storage_state_path` written NEXT TO the scenario JSON (same directory,
+ * relative filenames — `<scenario-basename>.run<N>.har` /
+ * `.run<N>.storage-state.json`) and `har_entry_count` stamped from the HAR
+ * this recorder actually wrote. A fetch-only connector run with
+ * `--record-har` passed (harmless no-op: it never launches a browser, so it
+ * never produces a HAR) — or any run where recording was requested but a
+ * crash/SIGKILL left no usable HAR — keeps the TRUE `recorded-http` driver
+ * instead: this recorder NEVER claims `recorded-browser` just because the
+ * flag was passed (see `resolveRunEnvironment`'s doc comment). The capture
+ * INSTANT is the SAME `run.clock.fixed_now` every run already stamps
+ * (pre-existing, driver-neutral) — no separate/parallel clock mechanism.
+ *
+ * SECRET HYGIENE: browser-launch.ts's `release()` redacts the HAR in place
+ * before this CLI ever reads it — Cookie/Set-Cookie/Authorization/
+ * x-csrf-token/x-xsrf-token headers and HAR `cookies[]` entries (both
+ * request and response sides) are stripped (name kept, value replaced), and
+ * form-encoded POST bodies whose field names look like credentials
+ * (password/secret/token/otp/pin) are blanked — see browser-launch.ts's
+ * "HAR secret-hygiene pass" module section for the exact posture, which
+ * matches (does not invent a parallel philosophy from) this file's existing
+ * `isCredentialsPrompt`/`isOtpPrompt` redaction for Collection Profile
+ * INTERACTION prompts. Response/request BODY CONTENT is NOT redacted (a HAR
+ * body is an opaque blob with unknown shape — this harness cannot safely
+ * apply per-field redaction to it the way it does for the fetch-preload's
+ * structured JSON capture), and the storageState file is DELIBERATELY
+ * UNREDACTED (a session cookie's value IS the credential replay needs to
+ * stay logged in — see `AcquireIsolatedBrowserOptions.storageStateRecording`'s
+ * doc comment). Both files are `capture.privacy_class: "local-only"`
+ * territory, same as the scenario JSON itself — never committed or shared
+ * without a manual scrub pass. `main()` prints exactly what was and was not
+ * redacted after every `--record-har` run (`printBrowserCaptureSummary`).
+ *
+ * NO AUTOMATIC RE-RECORD: this flag only ever runs on an explicit human
+ * invocation of this CLI. There is no timer, interval, or staleness-driven
+ * re-capture anywhere in this file or in browser-launch.ts — the VCR
+ * `re_record_interval` failure mode (a cassette silently re-recorded on a
+ * schedule, quietly changing what a "PASS" means) has no equivalent here.
+ *
+ * KNOWN GAP, VERIFIED UNEXERCISED: `recordHar` does not capture WebSocket/
+ * EventSource/SSE frames, and a browser download's body can bypass HAR
+ * capture entirely (Playwright's HAR machinery is HTTP request/response
+ * only). Checked against the connector fleet as of this change: zero of the
+ * 45 connectors use either surface — a documented boundary, not a defect
+ * discovered by a failing capture.
  *
  * ─── `--timeout <seconds>` (inactivity watchdog) ──────────────────────────
  *
@@ -136,12 +202,22 @@
  */
 
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hashCanonicalJson } from "@pdpp/collector-runtime";
 import type { InteractionResponse } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { config as dotenvConfig } from "dotenv";
+import { fileFlushOutcome, HAR_RECORD_PATH_ENV, STORAGE_STATE_RECORD_PATH_ENV } from "../src/browser-launch.ts";
 import { handleInteraction, type InteractionMessage } from "../src/interaction-handler.ts";
 import {
   CONNECTORS_DIR,
@@ -556,6 +632,12 @@ export interface CliArgs {
    *  `bin/scenario-record.ts`'s `toScenarioUserInteraction`/`isOtpPrompt` doc
    *  comments and format.ts's `ScenarioUserInteraction` doc comment. */
   persistOtp: boolean;
+  /** `--record-har` — opt-in browser-driven capture (see this file's
+   *  "Browser-driven HAR capture" section). OFF by default: a normal
+   *  (fetch-preload-only) recording run never touches
+   *  `PDPP_SCENARIO_HAR_RECORD_PATH`/`PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH`
+   *  and produces no `.har`/`.storage-state.json` sibling files. */
+  recordHar: boolean;
   runs: 1 | 2;
   /** `--streams a,b,c` — mirrors `bin/connector-dev.ts`'s `--streams`
    *  exactly; see this file's module docstring. */
@@ -569,7 +651,7 @@ export interface CliArgs {
 function usageAndExit(code: number): never {
   process.stderr.write(
     "Usage: scenario-record <connector> [--runs 1|2] [--out <path>] [--answer <id-or-index>=<value>] " +
-      "[--answers <json-file>] [--persist-otp] [--streams <name,name,...>] [--timeout <seconds>]\n"
+      "[--answers <json-file>] [--persist-otp] [--streams <name,name,...>] [--timeout <seconds>] [--record-har]\n"
   );
   process.stderr.write(`Known connectors: ${KNOWN_CONNECTOR_NAMES.join(", ")}\n`);
   process.exit(code);
@@ -582,6 +664,7 @@ interface MutableArgs {
   entrypoint: string | undefined;
   out: string | undefined;
   persistOtp: boolean;
+  recordHar: boolean;
   runs: 1 | 2;
   streams: string[] | undefined;
   timeoutSeconds: number;
@@ -639,6 +722,7 @@ function consumeRunsFlag(argv: readonly string[], i: number, into: MutableArgs):
 }
 
 const POSITIVE_INTEGER_RE = /^\d+$/;
+const JSON_EXTENSION_RE = /\.json$/;
 
 /** Consumes `--timeout <seconds>` at `argv[i]` — must be a positive integer
  *  (the inactivity watchdog window in seconds; see this file's "Inactivity
@@ -697,6 +781,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     answers: [],
     answersFile: undefined,
     persistOtp: false,
+    recordHar: false,
     streams: undefined,
     timeoutSeconds: DEFAULT_INACTIVITY_WINDOW_SECONDS,
   };
@@ -720,6 +805,10 @@ export function parseArgs(argv: readonly string[]): CliArgs {
       process.stdout.write("persisting OTP verbatim: caller asserts single-use/expired semantics for this provider\n");
       continue;
     }
+    if (arg === "--record-har") {
+      parsed.recordHar = true;
+      continue;
+    }
     if (arg && !arg.startsWith("--") && !parsed.connector) {
       parsed.connector = arg;
       continue;
@@ -734,6 +823,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     runs: parsed.runs,
     answers: parsed.answers,
     persistOtp: parsed.persistOtp,
+    recordHar: parsed.recordHar,
     timeoutSeconds: parsed.timeoutSeconds,
     ...(parsed.out ? { out: parsed.out } : {}),
     ...(parsed.entrypoint ? { entrypoint: parsed.entrypoint } : {}),
@@ -1105,6 +1195,16 @@ function toScenarioUserInteraction(
 function runRecordSubprocess(args: {
   answers: Record<string, string>;
   connectorPath: string;
+  /** When set, requests browser-driven HAR + storageState capture for THIS
+   *  run — see this file's "Browser-driven HAR capture" section. Threaded
+   *  into the subprocess's env as `HAR_RECORD_PATH_ENV`/
+   *  `STORAGE_STATE_RECORD_PATH_ENV` (browser-launch.ts), which
+   *  `acquireBrowserForConnector` reads for any connector that acquires a
+   *  browser context during this run. A fetch-only (non-browser) connector
+   *  simply never reads these vars, so setting them is harmless no-op
+   *  plumbing for that case — no HAR is produced because no browser
+   *  context is ever launched to produce one from. */
+  harRecordPaths?: { harPath: string; storageStatePath: string };
   isTty: boolean;
   /** P2-1: when true, an `otp`-kind prompt's response is persisted
    *  verbatim (the pre-repair default); when false (the new default),
@@ -1129,6 +1229,12 @@ function runRecordSubprocess(args: {
         NODE_OPTIONS: `--import ${preloadPath}`,
         PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: process.env.PATCHRIGHT_SKIP_BROWSER_DOWNLOAD ?? "",
         PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD ?? "",
+        ...(args.harRecordPaths
+          ? {
+              [HAR_RECORD_PATH_ENV]: args.harRecordPaths.harPath,
+              [STORAGE_STATE_RECORD_PATH_ENV]: args.harRecordPaths.storageStatePath,
+            }
+          : {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -1429,7 +1535,8 @@ async function recordOneRun(
   streams: readonly ManifestStream[],
   startState: Record<string, unknown> | null,
   interactionOptions: InteractionOptions,
-  workspace: ScenarioEvidenceWorkspace
+  workspace: ScenarioEvidenceWorkspace,
+  harRecordPaths?: { harPath: string; storageStatePath: string }
 ): Promise<{
   finalState: Record<string, unknown>;
   interactions: ScenarioInteraction[];
@@ -1449,6 +1556,7 @@ async function recordOneRun(
     persistOtp: interactionOptions.persistOtp,
     timeoutSeconds: interactionOptions.timeoutSeconds,
     workspace,
+    ...(harRecordPaths ? { harRecordPaths } : {}),
   });
   const done = result.messages.find((m) => m.type === "DONE");
   const { records, stateMessages } = messagesToRecordsAndState(result.messages);
@@ -1595,9 +1703,135 @@ function summarizeSeededState(finalState: Record<string, unknown>): string {
 }
 
 interface CaptureRunsResult {
+  /** Per-run browser-capture artifacts this invocation produced (only
+   *  populated entries; empty when `--record-har` was not passed). Index
+   *  aligned with `runs` — `browserCaptures[i]` is `runs[i]`'s capture, if
+   *  any. `main()` moves these workspace-scoped temp files to their final
+   *  scenario-relative location once `outPath` is known, then rewrites
+   *  each corresponding `runs[i].environment.network` to point at the
+   *  final relative path — see "Browser-driven HAR capture" in this file's
+   *  module docstring. */
+  browserCaptures: Array<BrowserCaptureArtifact | undefined>;
   complete: boolean;
   normalizerNames: Set<string>;
   runs: ScenarioRun[];
+}
+
+/** One run's HAR + storageState capture, still at its WORKSPACE-scoped temp
+ *  path (not yet moved next to the scenario file — see `finalizeBrowserCapture`).
+ *  `harEntryCount === 0` or `harFlushed === false` means recording was
+ *  requested but produced nothing usable (crash before context.close(), a
+ *  fetch-only connector that never launched a browser, etc.) — that run's
+ *  `environment.network` stays `recorded-http`, never a false
+ *  `recorded-browser` claim. See `resolveRunEnvironment`. */
+interface BrowserCaptureArtifact {
+  harEntryCount: number;
+  harFlushed: boolean;
+  harPath: string;
+  storageStateFlushed: boolean;
+  storageStatePath: string;
+}
+
+/**
+ * Counts HAR entries the same way `browser-har-replay.ts`'s
+ * `countHarEntries` does (duplicated per-file, matching this package's
+ * existing record/verify/replay split-file convention — see e.g.
+ * `computeProtocolViolation`'s sibling in bin/connector-dev.ts). Returns 0
+ * for a missing/unparseable HAR or one with no `log.entries` array, rather
+ * than throwing — this is a best-effort count for the scenario's own
+ * `har_entry_count` field, not a validity gate (browser-har-replay.ts's
+ * `resolveBrowserEvidence` is the actual pre-flight gate on the replay
+ * side).
+ */
+function countHarEntriesForRecord(harPath: string): number {
+  let parsed: { log?: { entries?: unknown[] } };
+  try {
+    parsed = JSON.parse(readFileSync(harPath, "utf8")) as { log?: { entries?: unknown[] } };
+  } catch {
+    return 0;
+  }
+  const entries = parsed.log?.entries;
+  return Array.isArray(entries) ? entries.length : 0;
+}
+
+/**
+ * Requests HAR + storageState recording for ONE run at workspace-scoped
+ * temp paths, runs it, then checks (via `fileFlushOutcome` — the same
+ * nonempty-file honesty check `browser-launch.ts`'s
+ * `HarRecordingOutcome`/`StorageStateRecordingOutcome` use) whether either
+ * artifact actually landed. Called only when `--record-har` was passed;
+ * `undefined` `harRecordPaths` (the normal case) skips all of this and
+ * `recordOneRun` behaves exactly as it did before this feature existed.
+ */
+async function recordOneRunWithOptionalHar(
+  connectorPath: string,
+  streams: readonly ManifestStream[],
+  startState: Record<string, unknown> | null,
+  interactionOptions: InteractionOptions,
+  workspace: ScenarioEvidenceWorkspace,
+  recordHar: boolean,
+  runIndex: number
+): Promise<{
+  browserCapture: BrowserCaptureArtifact | undefined;
+  result: Awaited<ReturnType<typeof recordOneRun>>;
+}> {
+  if (!recordHar) {
+    const result = await recordOneRun(connectorPath, streams, startState, interactionOptions, workspace);
+    return { result, browserCapture: undefined };
+  }
+  const harPath = join(workspace.dir, `run${String(runIndex)}.har`);
+  const storageStatePath = join(workspace.dir, `run${String(runIndex)}.storage-state.json`);
+  const result = await recordOneRun(connectorPath, streams, startState, interactionOptions, workspace, {
+    harPath,
+    storageStatePath,
+  });
+  const [harOutcome, storageStateOutcome] = await Promise.all([
+    fileFlushOutcome(harPath),
+    fileFlushOutcome(storageStatePath),
+  ]);
+  const harEntryCount = harOutcome.flushed ? countHarEntriesForRecord(harPath) : 0;
+  return {
+    result,
+    browserCapture: {
+      harPath,
+      storageStatePath,
+      harFlushed: harOutcome.flushed,
+      storageStateFlushed: storageStateOutcome.flushed,
+      harEntryCount,
+    },
+  };
+}
+
+/**
+ * Resolves ONE run's `environment.network` honestly from what was actually
+ * observed — never a hardcoded `recorded-browser` just because
+ * `--record-har` was passed (mirrors this file's existing
+ * `computeEvidenceClass`'s "mechanical, never a constant" posture). A HAR
+ * that never flushed, or flushed with zero entries (fetch-only connector
+ * that never launched a browser; a crash before `context.close()`), keeps
+ * this run's TRUE driver, `recorded-http` — claiming `recorded-browser`
+ * with no usable HAR would just hand `browser-har-replay.ts`'s
+ * `resolveBrowserEvidence` a guaranteed pre-flight failure instead of an
+ * honest "this run didn't use the browser driver" fact. `harPath`/
+ * `storageStatePath` here are the FINAL scenario-relative filenames (see
+ * `finalizeBrowserCapture`), not the workspace temp paths.
+ */
+function resolveRunEnvironment(
+  capture: BrowserCaptureArtifact | undefined,
+  finalHarPath: string,
+  finalStorageStatePath: string
+): NonNullable<ScenarioRun["environment"]> {
+  if (capture?.harFlushed && capture.harEntryCount > 0 && capture.storageStateFlushed) {
+    return {
+      network: {
+        driver: "recorded-browser",
+        har_path: finalHarPath,
+        storage_state_path: finalStorageStatePath,
+        har_entry_count: capture.harEntryCount,
+      },
+    };
+  }
+  return { network: { driver: "recorded-http" } };
 }
 
 /** Drives run 1 (always) and, when requested and run 1 succeeded, run 2
@@ -1613,21 +1847,33 @@ async function captureRuns(
 ): Promise<CaptureRunsResult> {
   process.stdout.write(`RECORDING ${args.connector} — run 1 (full refresh, state=null)\n`);
   const run1StartedAt = new Date().toISOString();
-  const run1 = await recordOneRun(connectorPath, streams, null, interactionOptions, workspace);
+  const { result: run1, browserCapture: run1Capture } = await recordOneRunWithOptionalHar(
+    connectorPath,
+    streams,
+    null,
+    interactionOptions,
+    workspace,
+    args.recordHar,
+    1
+  );
 
   const runs: ScenarioRun[] = [];
+  const browserCaptures: Array<BrowserCaptureArtifact | undefined> = [];
   let complete = run1.ok;
   const normalizerNames = new Set(run1.normalizerNames);
 
+  // FIX 5 — modality-neutral envelope, resolved honestly per run by
+  // `resolveRunEnvironment` (below) rather than a hardcoded literal. The
+  // FINAL scenario-relative filenames are placeholders here — `main()`
+  // rewrites them once `outPath` (and therefore the scenario's own
+  // directory) is known; see this file's "Browser-driven HAR capture"
+  // module-docstring section.
   runs.push({
     // Stamp the run's actual start time so replay can pin Date.now() to it
     // (see PDPP_SCENARIO_CLOCK_FIXED_NOW_ENV) and wall-clock-dependent
     // request planning stays deterministic across record and replay.
     clock: { fixed_now: run1StartedAt },
-    // FIX 5 — modality-neutral envelope: this recorder only ever captures
-    // over recorded HTTP request/response pairs, so every run it writes
-    // stamps that one driver literal. See format.ts's `ScenarioRunEnvironment`.
-    environment: { network: { driver: "recorded-http" } },
+    environment: resolveRunEnvironment(run1Capture, "run1.har", "run1.storage-state.json"),
     start: { scope: { streams: streams.map((s) => ({ name: s.name })) }, state: null },
     interactions: run1.interactions,
     expected: {
@@ -1637,6 +1883,7 @@ async function captureRuns(
     },
     ...(run1.userInteractions.length > 0 ? { user_interactions: run1.userInteractions } : {}),
   });
+  browserCaptures.push(run1Capture);
 
   if (!run1.ok) {
     process.stderr.write(`FAILED run 1: ${run1.reason ?? "unknown"}\n`);
@@ -1647,13 +1894,21 @@ async function captureRuns(
       `RECORDING ${args.connector} — run 2 (incremental, ${summarizeSeededState(run1.finalState)})\n`
     );
     const run2StartedAt = new Date().toISOString();
-    const run2 = await recordOneRun(connectorPath, streams, run1.finalState, interactionOptions, workspace);
+    const { result: run2, browserCapture: run2Capture } = await recordOneRunWithOptionalHar(
+      connectorPath,
+      streams,
+      run1.finalState,
+      interactionOptions,
+      workspace,
+      args.recordHar,
+      2
+    );
     for (const name of run2.normalizerNames) {
       normalizerNames.add(name);
     }
     runs.push({
       clock: { fixed_now: run2StartedAt },
-      environment: { network: { driver: "recorded-http" } },
+      environment: resolveRunEnvironment(run2Capture, "run2.har", "run2.storage-state.json"),
       start: {
         scope: { streams: streams.map((s) => ({ name: s.name })) },
         state: run1.finalState,
@@ -1667,13 +1922,93 @@ async function captureRuns(
       },
       ...(run2.userInteractions.length > 0 ? { user_interactions: run2.userInteractions } : {}),
     });
+    browserCaptures.push(run2Capture);
     if (!run2.ok) {
       complete = false;
       process.stderr.write(`FAILED run 2: ${run2.reason ?? "unknown"}\n`);
     }
   }
 
-  return { runs, complete, normalizerNames };
+  return { runs, complete, normalizerNames, browserCaptures };
+}
+
+/**
+ * Moves `sourcePath` to `destPath`, tolerating a cross-filesystem move.
+ * `renameSync` is the fast path (same-filesystem, atomic) but throws `EXDEV`
+ * when the two paths are on different filesystems/mounts — a REAL
+ * possibility here, not a theoretical one: `createScenarioEvidenceWorkspace`
+ * (subprocess-fetch-preloads.ts) uses `os.tmpdir()`, which is commonly
+ * tmpfs, while `outPath` (this run's scenario file, default
+ * `runs/<connector>/...` under this package's OWN directory, or an
+ * operator-supplied `--out`) is commonly on a regular disk-backed
+ * filesystem — the exact tmpfs-vs-disk split this host itself exhibits.
+ * Falls back to copy+unlink (not atomic, but correct) only on that specific
+ * error; any OTHER failure (permissions, disk full, etc.) still propagates
+ * — see `finalizeBrowserCaptures`'s doc comment on why this function does
+ * NOT swallow failures generally.
+ */
+function moveFileCrossDeviceSafe(sourcePath: string, destPath: string): void {
+  try {
+    renameSync(sourcePath, destPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "EXDEV") {
+      throw err;
+    }
+    copyFileSync(sourcePath, destPath);
+    unlinkSync(sourcePath);
+  }
+}
+
+/**
+ * Moves each run's workspace-temp HAR/storageState (see
+ * `recordOneRunWithOptionalHar`) to sit NEXT TO the final scenario file,
+ * and rewrites that run's already-stamped `environment.network` (which
+ * `captureRuns` populated with `finalHarPath`/`finalStorageStatePath`
+ * PLACEHOLDER filenames, since `outPath` isn't known until here) to the
+ * real relative filenames. `har_path`/`storage_state_path` MUST be relative
+ * to the scenario file's own directory (format.ts's
+ * `ScenarioBrowserNetworkDriver` doc comment) — both files are written
+ * into `dirname(outPath)`, so a bare filename (no directory component)
+ * satisfies that contract directly.
+ *
+ * Uses `moveFileCrossDeviceSafe` (above) rather than a bare `renameSync` —
+ * see that function's doc comment for why a cross-filesystem move is a real
+ * possibility here, not a theoretical one. Any failure OTHER than `EXDEV`
+ * still propagates uncaught from this function — this is deliberately NOT
+ * wrapped in a try/catch the way `redactHarFileBestEffort` is, because
+ * unlike that function's caller (`release()`, which must never let HAR
+ * bookkeeping crash a browser teardown), a failure moving the HAR here
+ * means this run's `environment.network` is about to claim a `har_path`
+ * that doesn't exist at the claimed location — exactly the failure
+ * `resolveBrowserEvidence`'s pre-flight gate exists to catch, but catching
+ * it HERE instead is strictly better: it fails at record time, immediately,
+ * with a clear cause, instead of at some future replay attempt.
+ *
+ * A run whose `environment.network.driver` is `recorded-http` (no
+ * `browserCapture`, or one that never actually flushed usable HAR/
+ * storageState — see `resolveRunEnvironment`) is left untouched: there is
+ * nothing to move for it.
+ */
+function finalizeBrowserCaptures(
+  runs: ScenarioRun[],
+  browserCaptures: CaptureRunsResult["browserCaptures"],
+  outPath: string
+): void {
+  const scenarioDir = dirname(outPath);
+  const outBaseName = basename(outPath).replace(JSON_EXTENSION_RE, "");
+  runs.forEach((run, index) => {
+    const capture = browserCaptures[index];
+    const network = run.environment?.network;
+    if (!(capture && network && network.driver === "recorded-browser")) {
+      return;
+    }
+    const harFileName = `${outBaseName}.run${String(index + 1)}.har`;
+    const storageStateFileName = `${outBaseName}.run${String(index + 1)}.storage-state.json`;
+    moveFileCrossDeviceSafe(capture.harPath, join(scenarioDir, harFileName));
+    moveFileCrossDeviceSafe(capture.storageStatePath, join(scenarioDir, storageStateFileName));
+    network.har_path = harFileName;
+    network.storage_state_path = storageStateFileName;
+  });
 }
 
 interface BuiltScenario {
@@ -1783,6 +2118,46 @@ function printCaptureSummary(outPath: string, built: BuiltScenario): void {
 }
 
 /**
+ * Prints where each run's HAR/storageState landed (or, honestly, that
+ * `--record-har` produced nothing usable for that run) and exactly what
+ * this recorder redacted from the HAR — the report this task's brief
+ * requires ("print where the HAR landed and what was redacted"). Silent
+ * (prints nothing) when no run declares `recorded-browser` — a normal,
+ * non-`--record-har` invocation's output is unaffected.
+ */
+function printBrowserCaptureSummary(outPath: string, runs: ScenarioRun[]): void {
+  const browserRuns = runs
+    .map((run, index) => ({ run, index }))
+    .filter(({ run }) => run.environment?.network?.driver === "recorded-browser");
+  if (browserRuns.length === 0) {
+    return;
+  }
+  const scenarioDir = dirname(outPath);
+  process.stdout.write("\nbrowser HAR capture:\n");
+  for (const { run, index } of browserRuns) {
+    const network = run.environment?.network;
+    if (network?.driver !== "recorded-browser") {
+      continue;
+    }
+    process.stdout.write(
+      `  run ${String(index + 1)}: HAR=${join(scenarioDir, network.har_path)} ` +
+        `(${String(network.har_entry_count)} entries) storageState=${join(scenarioDir, network.storage_state_path)}\n`
+    );
+  }
+  process.stdout.write(
+    "  redacted from the HAR: Cookie/Set-Cookie headers, Authorization headers, x-csrf-token/x-xsrf-token headers, " +
+      "HAR cookies[] entries (both request and response sides), and form-encoded POST fields whose name looks like a " +
+      "credential (password/secret/token/otp/pin) — header/cookie NAMES are kept, values replaced with a placeholder.\n"
+  );
+  process.stdout.write(
+    "  NOT redacted: response/request BODY content (JSON bodies, non-form POST data) and the storageState file, " +
+      "which is deliberately UNREDACTED (a session cookie's value IS the credential replay needs) — see " +
+      "src/browser-launch.ts's `storageStateRecording` doc comment. Treat both HAR and storageState files as " +
+      "capture.privacy_class: local-only; never share or commit either without a manual scrub pass.\n"
+  );
+}
+
+/**
  * FIX B: writes the final scenario JSON atomically — a tmp file in the SAME
  * directory as `outPath` (so the subsequent rename is on the same
  * filesystem and therefore atomic, not a cross-device copy), mode 0600
@@ -1852,9 +2227,18 @@ async function main(): Promise<void> {
     );
 
     const outPath = args.out ? resolve(args.out) : defaultOutPath(args.connector, capturedAt);
+    // Move any workspace-temp HAR/storageState next to the scenario file and
+    // rewrite each affected run's environment.network to the final
+    // scenario-relative filenames — MUST happen before writeScenarioAtomically
+    // below serializes `built.scenario.runs`, since finalizeBrowserCaptures
+    // mutates those run objects in place (the placeholder filenames
+    // `captureRuns`/`resolveRunEnvironment` stamped are not the real ones
+    // until outPath's directory is known).
+    finalizeBrowserCaptures(built.scenario.runs, captureResult.browserCaptures, outPath);
     writeScenarioAtomically(outPath, `${JSON.stringify(built.scenario, null, 2)}\n`);
 
     printCaptureSummary(outPath, built);
+    printBrowserCaptureSummary(outPath, built.scenario.runs);
 
     if (captureResult.complete) {
       process.stdout.write(
