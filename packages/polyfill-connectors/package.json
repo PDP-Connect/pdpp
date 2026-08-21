@@ -39,7 +39,7 @@
     "ofx-js": "^1.1.1",
     "p-queue": "^9.3.3",
     "p-retry": "^8.0.0",
-    "patchright": "1.61.1",
+    "patchright": "1.62.1",
     "pdf-parse": "^2.4.5",
     "playwright": "^1.62.1",
     "saxes": "^6.0.0",
@@ -48,7 +48,7 @@
   },
   "devDependencies": {
     "@babel/parser": "8.0.4",
-    "@biomejs/biome": "2.5.8",
+    "@biomejs/biome": "2.5.9",
     "@types/better-sqlite3": "^9.6.0",
     "@types/ws": "^8.18.1",
     "ultracite": "7.10.5"
