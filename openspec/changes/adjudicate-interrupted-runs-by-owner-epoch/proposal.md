@@ -85,11 +85,15 @@ None.
   `boundary`, `slice_start`, or `slice_end`. Committing staged cursors under an
   interrupted terminal state would fabricate denominators, so it is out of scope
   until that evidence exists.
-- **The checkpoint-contract / interval-claim design.** A prototype did not
-  survive contact with 2 of 3 connectors: `heb`'s `YYYY-MM-DD` cursor cannot
-  express a within-day position, and `slack` has no `ORDER BY` and records its
-  watermark before the emission guard, so an interval over that input would be a
-  more confident falsehood. Not ready for OpenSpec.
+- **The checkpoint-contract / interval-claim design.** Out of scope here, and
+  now carried by `qualify-connectors-for-incremental-checkpoint-commit`. An
+  earlier draft of this non-goal described the prototype as not surviving
+  contact with 2 of 3 connectors and therefore "not ready for OpenSpec". That
+  reading is corrected: the contract is a **qualification standard**, and a
+  connector failing it is the qualifier working. `slack` is a genuine
+  disqualifier (no ordered scan at any granularity); `heb` fails at fine
+  granularity but qualifies at day granularity under a closed-day rule. See
+  that change for the verdicts and their evidence.
 - **Any Node version change.**
 - **Auto-resume or auto-retry of interrupted runs.** `chase`, `usaa`, `venmo`,
   `heb`, `amazon`, and `reddit` need an interactive human sign-in; adjudication
