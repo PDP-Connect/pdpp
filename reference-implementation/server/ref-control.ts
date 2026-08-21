@@ -112,7 +112,7 @@ import {
   pickMostUrgentLease,
 } from "./browser-surface-selection.ts";
 import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
-import { staticSecretCredentialCaptureFromManifest } from "./connection-setup-plan.ts";
+import { manualUploadSetupFromManifest, staticSecretCredentialCaptureFromManifest } from "./connection-setup-plan.ts";
 import {
   type CoverageEvidenceStrategy,
   deriveStreamCoverageCondition,
@@ -5059,6 +5059,16 @@ export function projectConnectorSummaryConnectionHealth(input: {
    */
   readonly acquisitionComplete?: boolean;
   /**
+   * Whether this connection authenticates to a provider at all. `false` only
+   * for a file-import connector (manifest `setup.modality =
+   * "manual_or_upload"` with no `setup.credential_capture`) — it parses an
+   * artifact the owner supplied and contacts nobody, so it has no credential
+   * to probe. Passed through to `computeConnectionHealth` as
+   * `authentication`; `undefined`/omitted preserves the prior behavior for
+   * every authenticating connector (credentials stay `unknown` until proven).
+   */
+  readonly authenticates?: boolean;
+  /**
    * Durable structured attention records the caller has already filtered
    * to this connection. The projection picks the most urgent
    * health-relevant record via `attention.isHealthRelevant`. When
@@ -5277,6 +5287,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     acquisition: input.acquisitionComplete === true ? { complete: true } : null,
     activity: { active: scheduleEvidence.activeRunId !== null },
     attention,
+    authentication: input.authenticates === false ? { authenticates: false } : null,
     backoff: scheduleEvidence.backoffEvidence.backoff,
     browserSessionRepairCapable: input.browserSessionRepairCapable === true,
     browserSurfaceRepair: input.browserSurfaceRepair ?? null,
@@ -5998,6 +6009,11 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     acquisitionComplete: instance.sourceKind === "manual",
     activeRun: authoritativeActiveRun,
     attentionRecords: attention.records,
+    // A file-import connector contacts no provider, so `CredentialsValid` has
+    // no referent for it and must read `not_applicable`, not an indefinite
+    // `unknown`. Derived from the manifest declaration, never from a missing
+    // credential row.
+    authenticates: connectionAuthenticatesToProvider(manifest),
     browserSessionRepairCapable,
     collectionRate: authoritativeCollectionRate,
     credential,
@@ -6456,6 +6472,25 @@ function connectionHasBrowserSessionRepairCapability(
   manifest: ConnectorManifest
 ): boolean {
   return connectionIsBrowserSessionBound(instance) || manifestRequiresBrowserSessionRepair(manifest);
+}
+
+// Whether this connection authenticates to a provider at all.
+//
+// A file-import connector declares `setup.modality = "manual_or_upload"` and no
+// `setup.credential_capture`: the owner exports an artifact from the provider
+// themselves and uploads it, so PDPP parses a local file and never contacts the
+// provider. It holds no credential and opens no session — there is nothing to
+// probe. Both halves are required. `manual_or_upload` alone is not enough: a
+// connector may accept an upload AND capture a credential for a live path, and
+// that one does authenticate.
+//
+// Read from the manifest, a declaration versioned with the connector, rather
+// than inferred from an absent credential row — "no credential stored" is
+// exactly the state a broken authenticating connection is also in.
+function connectionAuthenticatesToProvider(manifest: ConnectorManifest): boolean {
+  const fileImportOnly =
+    manualUploadSetupFromManifest(manifest) !== null && staticSecretCredentialCaptureFromManifest(manifest) === null;
+  return !fileImportOnly;
 }
 
 // True when THIS connection is bound as static-secret and therefore repairs by
