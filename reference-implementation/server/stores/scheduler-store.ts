@@ -21,8 +21,8 @@
 //     than replacing it.
 //
 // Spine reconciliation, in-memory `activeRuns` projections, and the
-// `wasRunMarkedFailed` accessor stay in the controller. The store is
-// the persistence seam only.
+// `wasRunAdjudicatedAbandoned` accessor stay in the controller. The store
+// is the persistence seam only.
 
 import {
   allowUnboundedReadAcknowledged,

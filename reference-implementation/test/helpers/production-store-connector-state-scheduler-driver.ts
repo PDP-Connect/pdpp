@@ -23,7 +23,7 @@
  * implementations satisfy the harness.
  */
 
-import { getOne, referenceQueries } from "../../lib/db.ts";
+import { clearCurrentBootEpoch } from "../../lib/spine.ts";
 import { createController } from "../../runtime/controller.ts";
 import { registerConnector } from "../../server/auth.ts";
 import { closeDb, initDb } from "../../server/db.ts";
@@ -31,7 +31,13 @@ import { makeDefaultAccountConnectorInstanceId } from "../../server/stores/conne
 import { createSqliteConnectorStateStore } from "../../server/stores/connector-state-store.ts";
 import { createSqliteSchedulerStore } from "../../server/stores/scheduler-store.ts";
 
-import { CONNECTOR_A, CONNECTOR_B } from "./connector-state-scheduler-conformance.ts";
+import {
+  announceHarnessRunStarted,
+  CONNECTOR_A,
+  CONNECTOR_B,
+  runHarnessBootReconciliation,
+  spineHasRunAbandoned,
+} from "./connector-state-scheduler-conformance.ts";
 
 interface StateScope {
   connectorId: string;
@@ -203,9 +209,8 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
       return scheduleRecordToSummary(schedulerStore?.getSchedule(connectorId) as ScheduleRecord | null);
     },
 
-    // biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
     async insertActiveRun(connectorId: string, run: ActiveRunInput) {
-      return schedulerStore?.upsertActiveRun({
+      const admitted = await schedulerStore?.upsertActiveRun({
         connector_id: connectorId,
         connector_instance_id: connectorId,
         run_generation: run.runGeneration ?? 1,
@@ -214,6 +219,13 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
         started_at: run.startedAt,
         trace_id: run.traceId,
       });
+      if (admitted) {
+        // See the sqlite driver: the boot reconciler adjudicates from
+        // `run.started` spine events, not from the flight table, so a run
+        // that exists only as a store record is invisible to it.
+        await announceHarnessRunStarted(connectorId, run);
+      }
+      return admitted;
     },
 
     async listActiveRuns() {
@@ -266,9 +278,12 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
       }
       stateStore = createSqliteConnectorStateStore();
       schedulerStore = createSqliteSchedulerStore();
-      // Controller is needed so `simulateRestart` runs the abandoned-run
-      // reconciliation against the same DB; the controller is configured
-      // with the same scheduler store so it sees the rows the driver wrote.
+      // Establish this incarnation's boot epoch before any run is
+      // announced; the spine refuses an unstamped `run.started`.
+      await runHarnessBootReconciliation();
+      // Controller is needed so `simulateRestart` releases the abandoned
+      // run claims against the same DB; the controller is configured with
+      // the same scheduler store so it sees the rows the driver wrote.
       // biome-ignore lint/complexity/noVoid: expression intentionally discards a test-only value
       void createController({
         // biome-ignore lint/suspicious/noEmptyBlockStatements: skipped test callback is intentionally empty
@@ -282,7 +297,8 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
       // `releaseAbandonedControllerRunClaims`, which reads from
       // `schedulerStore.listActiveRuns()` and clears each record. It
       // writes no terminal event: `reconcileOrphanedRunsAtBoot` owns
-      // that, from the spine.
+      // that, from the spine — so the successor's boot reconciliation
+      // has to actually run, which is the second call below.
       // biome-ignore lint/complexity/noVoid: expression intentionally discards a test-only value
       void createController({
         // biome-ignore lint/suspicious/noEmptyBlockStatements: skipped test callback is intentionally empty
@@ -290,13 +306,17 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
         // biome-ignore lint/style/noNonNullAssertion: test fixture establishes this value before use
         schedulerStore: schedulerStore!,
       });
-      await new Promise((resolve) => setImmediate(resolve));
+      await runHarnessBootReconciliation();
     },
 
     // biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
     async teardown() {
       stateStore = null;
       schedulerStore = null;
+      // The boot epoch lives in a module-scoped singleton; leaving one
+      // behind would stamp the next scenario's runs with a dead
+      // incarnation's identity.
+      clearCurrentBootEpoch();
       closeDb();
     },
 
@@ -333,11 +353,10 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
     },
 
     // biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
-    async wasRunMarkedFailed(runId: string) {
-      // Spine read stays directly on the registered query: the spine is
+    async wasRunAdjudicatedAbandoned(runId: string) {
+      // Spine read stays outside the store seam: the spine is
       // intentionally out of scope for the low-risk store extraction.
-      const row = getOne(referenceQueries.spineCheckRunTerminal, [runId]);
-      return Boolean(row);
+      return spineHasRunAbandoned(runId);
     },
   };
 }
