@@ -471,20 +471,33 @@ function selectCommittedChannelLastTs(
   return out;
 }
 
+/**
+ * Emits a `messages` record only when its channel is inside the run's
+ * resource scope, and REPORTS whether it did.
+ *
+ * The boolean is the whole point. This guard drops rows, and the durable
+ * per-channel cursor must never advance past a row this guard dropped: the
+ * next run asks the archive for `TS > cursor`, so a dropped row that moved
+ * the cursor is unreachable forever. Returning `void` here made that
+ * silent — the caller had no way to distinguish "emitted" from "swallowed"
+ * and so recorded a watermark for both. See `emitMessagesPass`, which
+ * threads this outcome into `channelMaxTs`.
+ */
 async function emitMessageRecordScopedByChannel(deps: {
   channelIds: ReadonlySet<string>;
   emitRecord: CollectContext["emitRecord"];
   record: RecordData;
-}): Promise<void> {
+}): Promise<boolean> {
   if (
     // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
     deps.record.id == null ||
     typeof deps.record.channel_id !== "string" ||
     !deps.channelIds.has(deps.record.channel_id)
   ) {
-    return;
+    return false;
   }
   await deps.emitRecord("messages", deps.record, { skipResourceFilter: true });
+  return true;
 }
 
 interface SlackdumpProgressSnapshot {
@@ -1072,6 +1085,7 @@ function unionStrings(...values: ReadonlyArray<readonly string[]>): string[] {
 function mergeMessagesPassResults(left: MessagesPassResult, right: MessagesPassResult): MessagesPassResult {
   return {
     channelMaxTs: selectCommittedChannelLastTs(left.channelMaxTs, right.channelMaxTs),
+    iteratedChannelMaxTs: selectCommittedChannelLastTs(left.iteratedChannelMaxTs, right.iteratedChannelMaxTs),
     maxMessageTs: selectMaxSlackTs(left.maxMessageTs, right.maxMessageTs),
     considered: left.considered + right.considered,
     covered: left.covered + right.covered,
@@ -1731,19 +1745,53 @@ async function runArchiveOrResume(deps: RunArchiveDeps): Promise<void> {
 // ─── Cross-stream messages pass (sqlite-free, testable) ───────────────
 
 /**
+ * Emits one record, optionally reporting whether it was accepted.
+ *
+ * Resolving `false` means the record was deliberately dropped downstream
+ * and never reached the runtime. Resolving anything else — including no
+ * value at all, which is what every non-filtering caller does — means it
+ * landed.
+ *
+ * The reported outcome exists so that dropping a record is VISIBLE to the
+ * cursor logic. While the drop was silent, the messages pass advanced the
+ * durable watermark past rows it had not emitted, and the next run — which
+ * queries `TS > cursor` — could never fetch them again.
+ *
+ * Written as a union of two Promise types rather than `Promise<boolean |
+ * void>`: it keeps `void` in return position (where it is not the
+ * confusing-union that Biome's noConfusingVoidType rejects) while letting
+ * the many existing `Promise<void>` callbacks satisfy it unchanged.
+ */
+type EmitRecordFn = (stream: string, data: RecordData) => Promise<boolean> | Promise<void>;
+
+/**
  * Subset of the per-stream dependency bag that the unified messages pass
  * actually needs. The sqlite-bound helpers in this file extend this with a
  * `db: DatabaseSync` field; tests can satisfy this narrower interface
  * without opening a DB. Mirrors the gmail/chase/usaa EmitDeps shape.
  */
 export interface MessagesPassDeps {
-  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  /**
+   * Only a record this reports as accepted may advance the emitting
+   * channel's durable cursor. See `EmitRecordFn`.
+   */
+  emitRecord: EmitRecordFn;
   emittedAt: string;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
 }
 
 export interface MessagesPassResult {
+  /**
+   * The DURABLE per-channel cursor contribution: the max Slack ts among
+   * rows this pass actually EMITTED and had accepted, per channel. A row
+   * that was iterated but dropped (out of channel scope, or `messages` not
+   * requested) contributes nothing here, because the next run refetches
+   * strictly above this value — advancing it past an unemitted row makes
+   * that row permanently unreachable.
+   *
+   * Distinct from `iteratedChannelMaxTs`, which is progress reporting only.
+   */
   channelMaxTs: Record<string, string>;
   considered: number;
   /**
@@ -1755,6 +1803,18 @@ export interface MessagesPassResult {
    * produced.
    */
   covered: number;
+  /**
+   * The max Slack ts per channel among rows this pass WALKED, emitted or
+   * not. Observational: safe for progress/diagnostics, never durable.
+   * Kept separate from `channelMaxTs` so neither can be mistaken for the
+   * other at a call site.
+   */
+  iteratedChannelMaxTs: Record<string, string>;
+  /**
+   * Durable global cursor contribution: max Slack ts among EMITTED rows.
+   * Same rule as `channelMaxTs` — it is written to `messages.last_ts`, which
+   * the next run uses as a floor, so an unemitted row must not raise it.
+   */
   maxMessageTs: string | null;
 }
 
@@ -1781,7 +1841,18 @@ function recordChannelMaxTs(channelMaxTs: Record<string, string>, channelId: str
 /**
  * Single-pass co-traversal of pre-loaded MESSAGE rows, emitting into
  * messages, reactions, and message_attachments streams as requested.
- * Tracks maxMessageTs across every row for the post-loop STATE checkpoint.
+ *
+ * Cursor rule (the load-bearing invariant): the DURABLE watermarks
+ * (`maxMessageTs`, `channelMaxTs`) advance only for rows this pass actually
+ * emitted AND had accepted. Rows that were merely walked feed
+ * `iteratedChannelMaxTs`, which is observational only.
+ *
+ * Why the split exists: the archive query the next run issues is
+ * `TS > cursor`. A row that raises the cursor without being emitted is
+ * therefore never fetched again — silent, permanent loss. This pass walks
+ * rows for channels outside the run's scope (a scoped run reads the whole
+ * base archive), so "walked" and "emitted" genuinely differ, and conflating
+ * them lost data rather than merely mis-reporting it.
  *
  * Contract pinned by integration.test.ts:
  *   - Per row, the `messages` record emits BEFORE its reactions and
@@ -1789,11 +1860,11 @@ function recordChannelMaxTs(channelMaxTs: Record<string, string>, channelId: str
  *   - Scope gating is per-stream: disabling one of the three does not
  *     suppress the other two — they share the pass but not the guard.
  *   - When all three are disabled, the loop still runs (rows are iterated)
- *     but emits nothing; maxMessageTs still advances so the STATE
- *     checkpoint is accurate. This is the current pre-decomposition
- *     behavior: the caller guards entry to this function on
+ *     but emits nothing, and the DURABLE watermarks stay put — an
+ *     unemitted row must not be checkpointed as collected. Only
+ *     `iteratedChannelMaxTs` moves. The caller guards entry on
  *     `requested.has("messages" | "reactions" | "message_attachments")`,
- *     so in practice an all-disabled call is a harmless no-op.
+ *     so an all-disabled call is a no-op in practice either way.
  *   - A message with no reactions / no attachments still emits its
  *     messages record; enrichment is additive, not gating.
  *   - This function does not dedupe — dedup happens in `iterateMessageRows`
@@ -1827,6 +1898,7 @@ export async function emitMessagesPass(
   const wantMsgAttachments = deps.requested.has("message_attachments");
 
   const channelMaxTs: Record<string, string> = {};
+  const iteratedChannelMaxTs: Record<string, string> = {};
   let maxMessageTs: string | null = null;
   let considered = 0;
   let covered = 0;
@@ -1842,13 +1914,19 @@ export async function emitMessagesPass(
     }
     const parsed = parseMessageRow(r, nowIso());
     const { ts } = parsed;
-    // Track the max ts seen in this run for the post-loop STATE emit.
-    // Slack ts is a fixed-shape "seconds.micros" string; string compare
-    // matches numeric order because both halves are zero-padded by Slack.
-    maxMessageTs = selectMaxSlackTs(maxMessageTs, ts);
-    recordChannelMaxTs(channelMaxTs, r.CHANNEL_ID, ts);
+    // Observational max: every row we walked, emitted or not. Slack ts is a
+    // fixed-shape "seconds.micros" string; string compare matches numeric
+    // order because both halves are zero-padded by Slack.
+    recordChannelMaxTs(iteratedChannelMaxTs, r.CHANNEL_ID, ts);
     if (wantMessages) {
-      await deps.emitRecord("messages", buildMessageRecord(parsed));
+      // The durable cursor advances HERE and only here — after the emit
+      // resolved and reported acceptance. A `void`-returning emitRecord
+      // (every non-scoping caller) counts as accepted.
+      const accepted = (await deps.emitRecord("messages", buildMessageRecord(parsed))) !== false;
+      if (accepted) {
+        maxMessageTs = selectMaxSlackTs(maxMessageTs, ts);
+        recordChannelMaxTs(channelMaxTs, r.CHANNEL_ID, ts);
+      }
     }
     if (wantReactions) {
       for (const rec of buildReactionRecords(parsed)) {
@@ -1861,7 +1939,7 @@ export async function emitMessagesPass(
       }
     }
   }
-  return { channelMaxTs, covered, maxMessageTs, considered };
+  return { channelMaxTs, covered, iteratedChannelMaxTs, maxMessageTs, considered };
 }
 
 // ─── Per-stream helpers ────────────────────────────────────────────────
@@ -1888,7 +1966,13 @@ export interface StreamDeps {
    * accidentally route here instead of `emitRecord`.
    */
   emit: (msg: Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }>) => Promise<void>;
-  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  /**
+   * Reports whether the record landed — today a `messages` record outside
+   * the run's channel scope is dropped and reports `false`.
+   * `emitMessagesPass` needs that to keep the durable cursor off unemitted
+   * rows. See `EmitRecordFn`.
+   */
+  emitRecord: EmitRecordFn;
   emittedAt: string;
   fingerprintCursors: Map<string, FingerprintCursor>;
   progress: CollectContext["progress"];
@@ -2288,11 +2372,37 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   // (the 6-digit suffix). This is exact and handles all epoch widths correctly.
   const dedupJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
   let dedupWhere = "";
-  if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
-    dedupWhere = "WHERE m.TS > COALESCE(t.last_ts, ?)";
-    params.push(thresholds.legacyLastTs);
-  } else if (channelThresholds.length > 0) {
-    dedupWhere = "WHERE t.last_ts IS NULL OR m.TS > t.last_ts";
+  if (channelThresholds.length > 0) {
+    // A channel with NO row in `thresholds` has never had a cursor
+    // committed for it, so nothing about it has been walked. It therefore
+    // starts from zero (fetch its full history), NOT from the global
+    // `legacyLastTs` floor — which is why `legacyLastTs` is deliberately
+    // NOT consulted on this branch even when it is set.
+    //
+    // The prior shape was `m.TS > COALESCE(t.last_ts, ?)`, which handed an
+    // unwalked channel an unrelated global floor derived from OTHER
+    // channels' progress. Every message in that channel older than the
+    // floor was then permanently unreachable: the query never returns it,
+    // so it is never emitted, so no cursor is ever written for it, so the
+    // next run applies the same floor again. The cursor committed past data
+    // it had never processed — the exact failure this connector's cursor
+    // rule forbids. It suppressed no rows on this owner's archive only
+    // because every channel present there already had a cursor row; that
+    // made it latent, not safe.
+    //
+    // Cost of starting at zero is bounded and one-time: the channel is
+    // walked in full once, after which it has its own row here and rejoins
+    // the incremental path. Correctness is not traded for that.
+    //
+    // `legacyLastTs` still applies on the branch below, where there is no
+    // per-channel map at all: that is a pre-migration cursor covering the
+    // whole workspace uniformly, so it floors every channel legitimately.
+    //
+    // Parenthesized as one clause. SQL binds AND tighter than OR, so a bare
+    // `a IS NULL OR ts > a` composed with `AND <since>` would parse as
+    // `a IS NULL OR (ts > a AND <since>)` — letting an unwalked channel
+    // escape the since boundary entirely.
+    dedupWhere = "WHERE (t.last_ts IS NULL OR m.TS > t.last_ts)";
   } else if (thresholds.legacyLastTs) {
     dedupWhere = "WHERE m.TS > ?";
     params.push(thresholds.legacyLastTs);
@@ -2860,7 +2970,13 @@ export async function runRequestedStreams(
     await runUsersStream(deps);
   }
   // Messages, reactions, message_attachments share one pass for efficiency.
-  let result: MessagesPassResult = { channelMaxTs: {}, covered: 0, maxMessageTs: null, considered: 0 };
+  let result: MessagesPassResult = {
+    channelMaxTs: {},
+    covered: 0,
+    iteratedChannelMaxTs: {},
+    maxMessageTs: null,
+    considered: 0,
+  };
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
     const priorTs = options.allowLegacyMessageCursorFallback === false ? null : (messagesState?.last_ts ?? null);

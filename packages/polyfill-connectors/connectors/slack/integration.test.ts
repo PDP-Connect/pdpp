@@ -354,8 +354,15 @@ test("emitMessagesPass: messages disabled — reactions + attachments still flow
 test("emitMessagesPass: all three streams disabled — no records emit, rows still iterate", async () => {
   // Production caller guards entry on `requested.has("messages" | ...)`,
   // so this is the defense-in-depth contract: if called with none of the
-  // three requested, the loop runs silently. maxMessageTs still advances
-  // so a STATE checkpoint written by the caller stays correct.
+  // three requested, the loop runs silently.
+  //
+  // The DURABLE cursor must NOT advance here. This assertion previously
+  // required the opposite ("ts tracking still advances") on the reasoning
+  // that it kept the caller's STATE checkpoint accurate — but a checkpoint
+  // over rows that were never emitted is precisely what makes them
+  // unreachable on the next run, whose query is `TS > cursor`. Accurate
+  // meant "matches what we collected", and we collected nothing.
+  // The walked ts stays visible via `iteratedChannelMaxTs`.
   const { deps, emitted } = makeHarness({ requested: ["channels"] });
   const row = makeRow(
     {},
@@ -366,7 +373,12 @@ test("emitMessagesPass: all three streams disabled — no records emit, rows sti
   );
   const result = await emitMessagesPass(deps, [row], null);
   assert.equal(emitted.length, 0, "no records emit when no relevant stream requested");
-  assert.equal(result.maxMessageTs, "1700000000.000100", "ts tracking still advances");
+  assert.equal(result.maxMessageTs, null, "an unemitted row must not raise the durable cursor");
+  assert.equal(
+    result.iteratedChannelMaxTs[row.CHANNEL_ID],
+    "1700000000.000100",
+    "the walked ts stays observable for progress reporting"
+  );
 });
 
 // ─── Invariant 4: null/missing enrichment fallback ───────────────────────
