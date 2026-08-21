@@ -22,7 +22,10 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import type { EmittedMessage } from "@pdpp/connector-protocol";
 import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
@@ -54,6 +57,8 @@ import {
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { ListPageOrder } from "./types.ts";
+
+const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__");
 
 type DetailGap = Extract<EmittedMessage, { type: "DETAIL_GAP" }>;
 type DetailGapRecovered = Extract<EmittedMessage, { type: "DETAIL_GAP_RECOVERED" }>;
@@ -1203,6 +1208,88 @@ test("runForwardScan: an empty page whose OWN pagination nav still agrees maxPag
     () => runForwardScan(page, deps, makeRunFlags(), null),
     /heb_empty_list_page_empty_page_before_max_page/,
     "an empty page whose own metadata still resolves a maxPage must classify as empty_page_before_max_page, not absent"
+  );
+});
+
+// ─── Source-authored empty state ──────────────────────────────────────────
+
+test("runForwardScan: H-E-B's real 'No past orders' page completes the scan instead of aborting as selector_drift", async () => {
+  // Fail-before/pass-after oracle for the real defect. `orders-list-no-past-
+  // orders.html` is a live capture (2026-08-21, in-container, connector's own
+  // authenticated profile): a 272 KB served page titled "Your orders |
+  // HEB.com" with no Imperva markers, showing H-E-B's own "No past orders"
+  // empty state.
+  //
+  // Without the empty_state branch this page aborts as `selector_drift`,
+  // because the empty-state component's own CSS-module class names supply all
+  // four `class*="order"` matches (`order_cards: 0, any_card: 4`). That
+  // diagnosis blames H-E-B's markup and sends recovery at a selector rewrite
+  // that cannot succeed. Note this page also has no pagination nav, so it
+  // would otherwise fall to `pagination_metadata_absent` — the assertion below
+  // is that it aborts for NEITHER reason.
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ ordersCoverage, wantsItems: false, wantsOrders: true });
+  const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  const newest = await runForwardScan(page, deps, makeRunFlags(), null);
+
+  assert.equal(newest, null, "an empty history yields no newest order date");
+  // The scan must reach a clean terminal, not throw. Before the fix this call
+  // rejected with heb_empty_list_page_selector_drift.
+  const skips = protocolMessages.filter((m) => m.type === "SKIP_RESULT");
+  assert.deepEqual(
+    skips.map((m) => (m as { reason: string }).reason),
+    [],
+    "a source-reported empty history is proven terminal and must emit no SKIP_RESULT"
+  );
+
+  // Completing the scan is what lets coverage be emitted at all: the throwing
+  // path left the `orders` stream permanently unmeasured. Zero considered /
+  // zero covered is an honest proven-empty claim here, because H-E-B scopes
+  // order history to the ACCOUNT, not the selected store (verified against
+  // stored records: one scrape of a single connection returned orders from
+  // four different H-E-B stores).
+  await emitOrdersCoverage(deps, ordersCoverage);
+  const coverage = findDetailCoverage(protocolMessages);
+  assert.ok(coverage, "the orders stream must still report coverage on an empty run");
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+});
+
+test("runForwardScan: an empty page WITHOUT the empty-state marker still aborts as selector_drift", async () => {
+  // The fail-closed half. Genuine drift — order cards gone but other
+  // `class*="order"` elements still present, and no empty-state component to
+  // vouch for it — must keep aborting exactly as before. This is what stops
+  // the new branch from becoming a blanket "zero orders is fine" escape.
+  const { deps } = makeRecordingDeps({ wantsItems: false });
+  const html = `<html><body><main>
+    <div data-qe-id="orderResults"><div class="OrderCard_wrapper__x1"></div></div>
+  </main></body></html>`;
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  await assert.rejects(
+    () => runForwardScan(page, deps, makeRunFlags(), null),
+    /heb_empty_list_page_selector_drift/,
+    "an empty page with no source-authored empty state is still unproven"
+  );
+});
+
+test("runForwardScan: an Imperva block is never laundered into a proven-empty result", async () => {
+  // Ordering guard. The block check runs before the empty_state check, so a
+  // challenge page can never be reported as a proven-empty history even if a
+  // future block shape were to carry empty-state-looking markup.
+  const { deps } = makeRecordingDeps({ wantsItems: false });
+  const blockWithEmptyStateMarkup = `<html><body>{ "incidentId" : "0-0", "hostName" : "www.heb.com", "errorCode" : "15" }<div data-qe-id="orderResults"><div class="Empty_box__qxVTd"></div></div></body></html>`;
+  const page = makePageStub({
+    content: blockWithEmptyStateMarkup,
+    url: "https://www.heb.com/my-account/your-orders?page=1",
+  });
+
+  await assert.rejects(
+    () => runForwardScan(page, deps, makeRunFlags(), null),
+    /heb_empty_list_page_source_auth_or_challenge/,
+    "bot protection must outrank the empty-state marker"
   );
 });
 

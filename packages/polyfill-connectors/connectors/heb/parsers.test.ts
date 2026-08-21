@@ -23,6 +23,7 @@ import {
   buildOrderItemRecord,
   buildOrderRecord,
   diagnoseEmptyListPage,
+  hasOrdersEmptyState,
   isIncapsulaBlocked,
   looksLoggedOut,
   mergeOrdersListPage,
@@ -645,6 +646,62 @@ test("isIncapsulaBlocked is false for a legitimate empty terminal page (has h3/b
 test("isIncapsulaBlocked is false for an iframe-free shallow page (no false positive from body size alone)", () => {
   const html = "<html><body><p>hi</p></body></html>";
   assert.equal(isIncapsulaBlocked(html), false);
+});
+
+// ─── Source-authored empty state ──────────────────────────────────────────
+// `orders-list-no-past-orders.html` is a real capture, taken in-container on
+// 2026-08-21 with the connector's own authenticated profile. The full page was
+// 272 KB, titled "Your orders | HEB.com", carried zero Imperva markers, and
+// rendered the signed-in header — it is a served page, not a block.
+
+test("hasOrdersEmptyState is true for H-E-B's real 'No past orders' page", () => {
+  assert.equal(hasOrdersEmptyState(fixture("orders-list-no-past-orders.html")), true);
+});
+
+test("hasOrdersEmptyState is false for a populated order list", () => {
+  assert.equal(hasOrdersEmptyState(fixture("orders-list.html")), false);
+  assert.equal(hasOrdersEmptyState(fixture("orders-list-nextdata.html")), false);
+});
+
+test("hasOrdersEmptyState is false for an Incapsula block page", () => {
+  // A block must never be mistaken for a source-authored empty result; the
+  // classifier's ordering depends on this staying false.
+  assert.equal(hasOrdersEmptyState(fixture("incapsula-block.html")), false);
+});
+
+test("hasOrdersEmptyState requires the marker to be INSIDE the order-results container", () => {
+  // The container is present on populated pages too, so nesting is the whole
+  // discriminator. An empty-state component elsewhere on a page whose results
+  // region holds real orders must not read as "no orders".
+  const emptyStateOutsideResults = `<html><body>
+    <div class="Empty_box__qxVTd"><p>No past orders</p></div>
+    <div data-qe-id="orderResults">
+      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
+    </div>
+  </body></html>`;
+  assert.equal(hasOrdersEmptyState(emptyStateOutsideResults), false);
+});
+
+test("hasOrdersEmptyState is false when the order-results container is absent entirely", () => {
+  // A page that never rendered the results region proves nothing about the
+  // history; only the container can speak for it.
+  assert.equal(hasOrdersEmptyState(`<html><body><div class="Empty_box__qxVTd"></div></body></html>`), false);
+});
+
+test("diagnoseEmptyListPage reports the real empty page as empty_state with the drift signature", () => {
+  // This is the exact confusion the empty_state flag exists to resolve: all
+  // four `class*="order"` matches come from the empty-state component's OWN
+  // class names, so counting alone reads `order_cards: 0, any_card: 4` —
+  // indistinguishable from selector drift.
+  const diag = diagnoseEmptyListPage(
+    fixture("orders-list-no-past-orders.html"),
+    "https://www.heb.com/my-account/your-orders?page=1"
+  );
+  assert.equal(diag.empty_state, true);
+  assert.equal(diag.order_cards, 0);
+  assert.equal(diag.any_card, 4, "the empty state's own class names are what made this look like drift");
+  assert.equal(diag.incapsula_block, false, "the captured page was served, not blocked");
+  assert.equal(diag.password_form, false);
 });
 
 // ─── Session probe (deep check) ──────────────────────────────────────────

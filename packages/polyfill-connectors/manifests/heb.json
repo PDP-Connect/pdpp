@@ -330,6 +330,7 @@
     "pagination_metadata_contradictory": "H-E-B gave us conflicting page-count information, so we stopped to avoid missing any orders",
     "selector_drift": "The page layout changed and we couldn't find what we needed",
     "source_auth_or_challenge": "We need you to sign in or pass a verification check to continue",
+    "source_reported_empty": "H-E-B showed us your order history and it has no orders in it",
     "unparseable_order_date": "We skipped some orders because their dates couldn't be read"
   }
 }

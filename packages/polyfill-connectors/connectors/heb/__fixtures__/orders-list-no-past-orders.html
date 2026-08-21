@@ -1,0 +1,25 @@
+<!--
+  REAL capture, scrubbed. The authenticated /my-account/your-orders page as it
+  renders for an account with no orders in H-E-B's retention window, captured
+  in-container on 2026-08-21 with the connector's own profile (272 KB page,
+  title "Your orders | HEB.com", zero Imperva markers, header rendered the
+  signed-in greeting and a Log out link).
+
+  Only the <main> order-results subtree is retained; the surrounding chrome,
+  the account greeting, and the store-context label are dropped as PII. That
+  subtree is what matters: all four `class*="order"` matches that made this
+  page read as `any_card: 4` come from the empty state's OWN CSS-module class
+  names (OrderHistoryPage_headerContainer, OrderHistoryPage_resultsContainer,
+  OrderHistoryPage_messagingContainer, OrderEmpty_orderSvg) -- which is exactly
+  why a genuine empty state was misdiagnosed as selector drift.
+-->
+<!DOCTYPE html>
+<html>
+<head><title>Your orders | HEB.com</title></head>
+<body>
+<main>
+<div class="OrderHistoryPage_headerContainer__tauex"></div>
+<div class="OrderHistoryPage_resultsContainer__JFsOQ" data-qe-id="orderResults"><div class="Row_row__q_fi6"></div><div class="OrderHistoryPage_messagingContainer__i1GS_"><div class="Empty_box__qxVTd"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" class="OrderEmpty_orderSvg__la7m7"><path fill="currentColor" d="M18.504 2.133A1 1 0 0 1 20 3.002v18a1 1 0 0 1-1.496.868l-1.254-.717-1.254.717a1 1 0 0 1-.992 0l-1.254-.717-1.254.717a1 1 0 0 1-.992 0l-1.254-.717-1.254.717a1 1 0 0 1-.992 0l-1.254-.717-1.254.717A1 1 0 0 1 4 21.002v-18a1 1 0 0 1 1.496-.87l1.254.718 1.254-.717a1 1 0 0 1 .992 0l1.254.717 1.254-.717a1 1 0 0 1 .992 0l1.254.717 1.254-.717a1 1 0 0 1 .992 0l1.254.717zM7 15.002a1 1 0 1 0 0 2h10a1 1 0 0 0 0-2zm0-4a1 1 0 1 0 0 2h10a1 1 0 0 0 0-2zm0-4a1 1 0 0 0 0 2h10a1 1 0 0 0 0-2z"></path></svg><p class="Typography_typography__7L34r Typography_colorColdBrew800__wCr6V Typography_fontSizeBase__8CWX0 Typography_lineHeightBase__5Nsp9 Typography_fontWeight400__YbSsO Empty_heading__204GU">No past orders</p><p class="Typography_typography__7L34r Typography_colorColdBrew800__wCr6V Typography_fontSizeBase__8CWX0 Typography_lineHeightBase__5Nsp9 Typography_fontWeight400__YbSsO Empty_helperText__JunQr">Once you place a curbside or delivery order, you’ll find it here.</p><a data-qe-id="startShoppingButton" href="/browse/shop" class="focusVisibleOutline Button_button__ytBI_ Button_default__a3TQR Button_base__gqVu1 Button_brandDefault__tHhU1 Empty_button__Iz9HC" data-component="button"><span class="ButtonLabel_buttonLabel__z680Q" data-component="button-label"><span class="ButtonLabel_buttonText__1w7YM">Start shopping</span></span></a></div></div></div></div></div></div></div>
+</main>
+</body>
+</html>

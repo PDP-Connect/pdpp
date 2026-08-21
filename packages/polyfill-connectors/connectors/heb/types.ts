@@ -91,6 +91,11 @@ export interface OrderItemRecord {
 export interface ListPageDiagnostics {
   any_card: number;
   body_preview: string;
+  /** True when the order-results container renders H-E-B's own "no past
+   *  orders" empty-state component. A source-authored assertion that the
+   *  account's order history is empty, which is different from — and must
+   *  outrank — the structural guesswork the other fields support. */
+  empty_state: boolean;
   incapsula_block: boolean;
   order_cards: number;
   password_form: boolean;
