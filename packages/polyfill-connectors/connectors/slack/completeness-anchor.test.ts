@@ -27,7 +27,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RecordData } from "../../src/connector-runtime.ts";
-import { emitMessagesPass, unprovenChannelIds } from "./index.ts";
+import { emitMessagesPass, partitionUnprovenChannels, unprovenChannelIds } from "./index.ts";
 import type { MessageRow } from "./types.ts";
 
 // ─── unprovenChannelIds: the set difference ──────────────────────────────
@@ -141,4 +141,65 @@ test("emitMessagesPass still emits the record for an unparseable-ts row", async 
   const { deps, emitted } = passDeps();
   await emitMessagesPass(deps, [messageRow("C1", "garbage")], null);
   assert.equal(emitted.length, 1, "the row is preserved even though it is not covered");
+});
+
+// ─── partitionUnprovenChannels: member scope is not a coverage gap ───────
+//
+// `archive` runs with `-member-only` by default (SLACK_MEMBER_ONLY), so
+// slackdump only ever requests history for channels the account belongs to.
+// Live evidence from this owner's archive: 119 inventoried channels, 5 with
+// a finished walk, 114 "unproven" — but 99 of those 114 are channels the
+// account is not a member of and 95 are archived. Only 12 are joined and
+// live. Reporting all 114 as unproven history overstated the gap by ~10x and
+// pointed the owner at a re-archive that provably cannot fix 102 of them.
+
+test("partitionUnprovenChannels puts a non-member channel out of scope", () => {
+  const { inScope, outOfScope } = partitionUnprovenChannels(
+    ["C016HTUEMHD"],
+    new Map([["C016HTUEMHD", { isArchived: false, isMember: false }]])
+  );
+  assert.deepEqual(outOfScope, ["C016HTUEMHD"]);
+  assert.deepEqual(inScope, []);
+});
+
+test("partitionUnprovenChannels puts an archived channel out of scope even when joined", () => {
+  const { inScope, outOfScope } = partitionUnprovenChannels(
+    ["C016S03HPHU"],
+    new Map([["C016S03HPHU", { isArchived: true, isMember: true }]])
+  );
+  assert.deepEqual(outOfScope, ["C016S03HPHU"]);
+  assert.deepEqual(inScope, []);
+});
+
+test("partitionUnprovenChannels keeps a joined, unarchived channel in scope", () => {
+  // The genuinely unexplained bucket — a channel member-only archiving DID
+  // request and slackdump still did not finish.
+  const { inScope, outOfScope } = partitionUnprovenChannels(
+    ["C021ZPKLP7G"],
+    new Map([["C021ZPKLP7G", { isArchived: false, isMember: true }]])
+  );
+  assert.deepEqual(inScope, ["C021ZPKLP7G"]);
+  assert.deepEqual(outOfScope, []);
+});
+
+test("partitionUnprovenChannels treats a channel with NO reachability evidence as in scope", () => {
+  // Absent evidence must never downgrade a gap into "explained" — the same
+  // rule the finalized-set read follows when CHUNK is missing.
+  const { inScope, outOfScope } = partitionUnprovenChannels(["C0UNKNOWN01"], new Map());
+  assert.deepEqual(inScope, ["C0UNKNOWN01"]);
+  assert.deepEqual(outOfScope, []);
+});
+
+test("partitionUnprovenChannels accounts for every unproven channel exactly once", () => {
+  const unproven = ["C0AAA", "C0BBB", "C0CCC", "C0DDD"];
+  const { inScope, outOfScope } = partitionUnprovenChannels(
+    unproven,
+    new Map([
+      ["C0AAA", { isArchived: false, isMember: false }],
+      ["C0BBB", { isArchived: true, isMember: true }],
+      ["C0CCC", { isArchived: false, isMember: true }],
+    ])
+  );
+  assert.equal(inScope.length + outOfScope.length, unproven.length);
+  assert.deepEqual([...inScope, ...outOfScope].sort(), [...unproven].sort());
 });
