@@ -415,26 +415,26 @@ test("a corrected mailbox retry updates and reuses the rejected draft", async ()
     await withServer(async ({ asUrl, proberCalls }) => {
       await registerConnector(asUrl, "gmail");
       const cookie = await login(asUrl);
-      const draft = await createDraft(asUrl, cookie, "gmail", { account_email: "tim@opendatalabs.xzy" });
+      const draft = await createDraft(asUrl, cookie, "gmail", { account_email: "jordan@exanple.com" });
       const connectionId = requireString(draft.body.connection_id, "draft.body.connection_id");
 
       const rejected = await capture(asUrl, cookie, connectionId, BAD_SECRET, "app_password");
       assert.equal(rejected.status, 400);
 
       const retried = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "app_password", {
-        account_email: "tim@opendatalabs.xyz",
+        account_email: "jordan@example.com",
       });
       assert.equal(retried.status, 201);
       assert.equal(retried.body.connection_id, connectionId);
-      assert.equal(identityOf(retried.body).account_identity, "tim@opendatalabs.xyz");
-      assert.equal(proberCalls.at(-1)?.context?.setupFields?.account_email, "tim@opendatalabs.xyz");
+      assert.equal(identityOf(retried.body).account_identity, "jordan@example.com");
+      assert.equal(proberCalls.at(-1)?.context?.setupFields?.account_email, "jordan@example.com");
 
       const instance = await createSqliteConnectorInstanceStore().get(connectionId);
       assert.ok(instance, "expected the original draft to remain present");
       assert.equal(instance.status, "draft");
       const binding = instance.sourceBinding as { kind?: string; setup_fields?: Record<string, string> };
       assert.equal(binding.kind, "static_secret_draft");
-      assert.equal(binding.setup_fields?.account_email, "tim@opendatalabs.xyz");
+      assert.equal(binding.setup_fields?.account_email, "jordan@example.com");
       const retryCount = getDb()
         .prepare("SELECT COUNT(*) AS count FROM connector_instances WHERE connector_id = 'gmail'")
         .get() as { count: number };
