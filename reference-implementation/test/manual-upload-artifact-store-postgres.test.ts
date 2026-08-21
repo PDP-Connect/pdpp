@@ -9,7 +9,7 @@
  * (`reconcileAbandonedManualUploadArtifactsAtBoot`), recent-in-flight/
  * terminal counterweights, and the genuinely-concurrent `claimForSweep`
  * CAS against SQLite only. `createPostgresManualUploadArtifactStore` --
- * its `claimForSweep` atomic UPDATE, `listInFlightOlderThan` staleness
+ * its `claimForSweep` atomic UPDATE, `listInFlightNotOwnedByEpoch` owner
  * scan, and the JSONB insert/update round-trip -- had ZERO test execution
  * anywhere in the repo before this file: parity with the SQLite oracle was
  * provable only by reading the two query-builder call sites side by side,
@@ -44,10 +44,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
-import {
-  MANUAL_UPLOAD_IN_FLIGHT_STALE_MS,
-  reconcileAbandonedManualUploadArtifactsAtBoot,
-} from "../server/routes/ref-manual-upload-draft-connection.ts";
+import { reconcileAbandonedManualUploadArtifactsAtBoot } from "../server/routes/ref-manual-upload-draft-connection.ts";
 import { createPostgresManualUploadArtifactStore } from "../server/stores/manual-upload-artifact-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
@@ -65,6 +62,12 @@ if (RAW_POSTGRES_URL && !POSTGRES_URL) {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLAIM_CHILD_ENTRYPOINT = join(__dirname, "manual-upload-claim-sweep-postgres-child.ts");
 const REPO_ROOT = resolve(__dirname, "..");
+
+/** The epoch of the process running the sweep (this "incarnation"). */
+const CURRENT_EPOCH = "epoch-pg-current-0000-0000-000000000000";
+/** The epoch of the process that crashed: a DIFFERENT incarnation, so every
+ *  in-flight row it left behind is provably orphaned. */
+const PRIOR_EPOCH = "epoch-pg-prior-1111-1111-111111111111";
 
 if (POSTGRES_URL) {
   const CONNECTOR_ID = "manual-upload-pg-test-connector";
@@ -118,25 +121,28 @@ if (POSTGRES_URL) {
     });
   }
 
-  async function rewindUpdatedAt(artifactId: string, updatedAt: string): Promise<void> {
-    await postgresQuery("UPDATE manual_upload_artifacts SET updated_at = $1 WHERE artifact_id = $2", [
-      updatedAt,
-      artifactId,
-    ]);
+  /** Runs the sweep as the CURRENT_EPOCH incarnation against Postgres. */
+  function sweepAsCurrentEpoch(): Promise<{ swept: number }> {
+    return reconcileAbandonedManualUploadArtifactsAtBoot(
+      {
+        createRequestManualUploadArtifactStore: createPostgresManualUploadArtifactStore,
+      } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0],
+      { ownerEpoch: CURRENT_EPOCH }
+    );
   }
 
   test(
-    "[postgres] boot-time sweep terminalizes a stale 'validating' artifact (parity with the SQLite oracle)",
+    "[postgres] boot-time sweep terminalizes an orphaned 'validating' artifact (parity with the SQLite oracle)",
     withPostgresFixture(async () => {
-      const staleUpdatedAt = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS - 60_000).toISOString();
-      await insertArtifact({ artifactId: "mua_pg_stuck_validating", status: "validating" });
-      await rewindUpdatedAt("mua_pg_stuck_validating", staleUpdatedAt);
+      await insertArtifact({
+        artifactId: "mua_pg_stuck_validating",
+        ownerEpoch: PRIOR_EPOCH,
+        status: "validating",
+      });
 
-      const result = await reconcileAbandonedManualUploadArtifactsAtBoot({
-        createRequestManualUploadArtifactStore: createPostgresManualUploadArtifactStore,
-      } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0]);
+      const result = await sweepAsCurrentEpoch();
 
-      assert.equal(result.swept, 1, "expected exactly one stale artifact to be swept");
+      assert.equal(result.swept, 1, "expected exactly one orphaned artifact to be swept");
 
       const store = createPostgresManualUploadArtifactStore();
       const artifact = await store.get("mua_pg_stuck_validating");
@@ -147,15 +153,11 @@ if (POSTGRES_URL) {
   );
 
   test(
-    "[postgres] boot-time sweep terminalizes a stale 'uploaded' artifact too (crashed before validation even started)",
+    "[postgres] boot-time sweep terminalizes an orphaned 'uploaded' artifact too (crashed before validation even started)",
     withPostgresFixture(async () => {
-      const staleUpdatedAt = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS - 60_000).toISOString();
-      await insertArtifact({ artifactId: "mua_pg_stuck_uploaded", status: "uploaded" });
-      await rewindUpdatedAt("mua_pg_stuck_uploaded", staleUpdatedAt);
+      await insertArtifact({ artifactId: "mua_pg_stuck_uploaded", ownerEpoch: PRIOR_EPOCH, status: "uploaded" });
 
-      const result = await reconcileAbandonedManualUploadArtifactsAtBoot({
-        createRequestManualUploadArtifactStore: createPostgresManualUploadArtifactStore,
-      } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0]);
+      const result = await sweepAsCurrentEpoch();
 
       assert.equal(result.swept, 1);
       const store = createPostgresManualUploadArtifactStore();
@@ -165,41 +167,79 @@ if (POSTGRES_URL) {
   );
 
   test(
-    "[postgres] boot-time sweep does NOT touch a RECENT in-flight artifact (still legitimately owned by a live request)",
+    "[postgres] boot-time sweep does NOT touch an in-flight artifact owned by the CURRENT epoch (still legitimately owned by a live request)",
     withPostgresFixture(async () => {
-      // Deliberately recent updated_at (the default insert() stamp) -- a
-      // real request's async validation callback could still be running;
-      // sweeping this out from under it would fail a legitimate,
-      // in-progress upload.
-      await insertArtifact({ artifactId: "mua_pg_still_running", status: "validating" });
+      // Owned by the very process running the sweep -- a real request's
+      // async validation callback could still be running; sweeping this out
+      // from under it would fail a legitimate, in-progress upload, however
+      // long that upload legitimately takes.
+      await insertArtifact({ artifactId: "mua_pg_still_running", ownerEpoch: CURRENT_EPOCH, status: "validating" });
 
-      const result = await reconcileAbandonedManualUploadArtifactsAtBoot({
-        createRequestManualUploadArtifactStore: createPostgresManualUploadArtifactStore,
-      } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0]);
+      const result = await sweepAsCurrentEpoch();
 
-      assert.equal(result.swept, 0, "a recently-updated in-flight artifact must not be swept");
+      assert.equal(result.swept, 0, "an in-flight artifact owned by the current epoch must not be swept");
       const store = createPostgresManualUploadArtifactStore();
       const artifact = await store.get("mua_pg_still_running");
-      assert.equal(artifact?.status, "validating", "recent artifact status must be untouched");
+      assert.equal(artifact?.status, "validating", "live artifact status must be untouched");
+      assert.equal(artifact?.ownerEpoch, CURRENT_EPOCH, "its owner epoch must be untouched too");
     })
   );
 
   test(
-    "[postgres] boot-time sweep does not touch already-terminal artifacts (staged/failed/duplicate), regardless of age",
+    "[postgres] boot-time sweep terminalizes a legacy NULL-owner_epoch in-flight artifact (written before the column existed; no live process claims it)",
     withPostgresFixture(async () => {
-      const staleUpdatedAt = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS - 60_000).toISOString();
+      await insertArtifact({ artifactId: "mua_pg_legacy_null_epoch", ownerEpoch: null, status: "validating" });
+      const store = createPostgresManualUploadArtifactStore();
+      assert.equal(
+        (await store.get("mua_pg_legacy_null_epoch"))?.ownerEpoch,
+        null,
+        "baseline: the seeded legacy row really does have a NULL owner_epoch"
+      );
+
+      const result = await sweepAsCurrentEpoch();
+
+      assert.equal(result.swept, 1, "a NULL owner_epoch row is unowned, so it must be swept");
+      const artifact = await store.get("mua_pg_legacy_null_epoch");
+      assert.equal(artifact?.status, "failed");
+      assert.equal((artifact?.error as { code?: string } | null)?.code, "manual_upload_interrupted");
+    })
+  );
+
+  test(
+    "[postgres] boot-time sweep with NO current epoch treats every in-flight row as unowned (no live owner to protect)",
+    withPostgresFixture(async () => {
+      await insertArtifact({ artifactId: "mua_pg_no_epoch_prior", ownerEpoch: PRIOR_EPOCH, status: "validating" });
+      await insertArtifact({ artifactId: "mua_pg_no_epoch_null", ownerEpoch: null, status: "uploaded" });
+
+      const result = await reconcileAbandonedManualUploadArtifactsAtBoot(
+        {
+          createRequestManualUploadArtifactStore: createPostgresManualUploadArtifactStore,
+        } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0],
+        { ownerEpoch: null }
+      );
+
+      assert.equal(result.swept, 2, "with no current epoch, both in-flight rows qualify");
+      const store = createPostgresManualUploadArtifactStore();
+      assert.equal((await store.get("mua_pg_no_epoch_prior"))?.status, "failed");
+      assert.equal((await store.get("mua_pg_no_epoch_null"))?.status, "failed");
+    })
+  );
+
+  test(
+    "[postgres] boot-time sweep does not touch already-terminal artifacts (staged/failed/duplicate), even when orphaned by a prior epoch",
+    withPostgresFixture(async () => {
       for (const status of ["staged", "failed", "duplicate"] as const) {
         const artifactId = `mua_pg_terminal_${status}`;
-        // biome-ignore lint/performance/noAwaitInLoops: bounded 3-item fixture setup; sequential keeps each artifact's insert+rewind atomic relative to the next.
-        await insertArtifact({ artifactId, status });
-        await rewindUpdatedAt(artifactId, staleUpdatedAt);
+        // Orphaned by epoch, but TERMINAL: status alone must keep each out
+        // of the sweep. Terminal work is finished work; nobody needs to own
+        // it.
+        // biome-ignore lint/performance/noAwaitInLoops: bounded 3-item fixture setup; sequential keeps each artifact's insert atomic relative to the next.
+        await insertArtifact({ artifactId, ownerEpoch: PRIOR_EPOCH, status });
       }
 
-      const result = await reconcileAbandonedManualUploadArtifactsAtBoot({
-        createRequestManualUploadArtifactStore: createPostgresManualUploadArtifactStore,
-      } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0]);
+      const result = await sweepAsCurrentEpoch();
 
-      assert.equal(result.swept, 0, "no already-terminal artifact must ever be swept, regardless of age");
+      assert.equal(result.swept, 0, "no already-terminal artifact must ever be swept, whatever epoch owns it");
       const store = createPostgresManualUploadArtifactStore();
       for (const status of ["staged", "failed", "duplicate"] as const) {
         // biome-ignore lint/performance/noAwaitInLoops: bounded 3-item assertion loop.
@@ -210,72 +250,97 @@ if (POSTGRES_URL) {
   );
 
   test(
-    "[postgres] listInFlightOlderThan returns only in-flight rows older than the cutoff, ordered oldest-first, excluding terminal statuses regardless of age",
+    "[postgres] listInFlightNotOwnedByEpoch returns only in-flight rows not owned by the current epoch, ordered oldest-first, excluding terminal statuses whatever epoch owns them",
     withPostgresFixture(async () => {
-      const veryOld = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS - 120_000).toISOString();
-      const old = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS - 60_000).toISOString();
-      const cutoffIso = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS).toISOString();
+      // Distinct updated_at stamps only fix the ORDER of the result; they no
+      // longer decide membership. Eligibility is entirely the owner epoch.
+      const veryOld = "2026-01-01T00:00:00.000Z";
+      const old = "2026-01-02T00:00:00.000Z";
 
-      await insertArtifact({ artifactId: "mua_pg_scan_old_uploaded", status: "uploaded" });
-      await rewindUpdatedAt("mua_pg_scan_old_uploaded", old);
-      await insertArtifact({ artifactId: "mua_pg_scan_very_old_validating", status: "validating" });
-      await rewindUpdatedAt("mua_pg_scan_very_old_validating", veryOld);
-      await insertArtifact({ artifactId: "mua_pg_scan_recent_validating", status: "validating" });
-      await insertArtifact({ artifactId: "mua_pg_scan_old_staged", status: "staged" });
-      await rewindUpdatedAt("mua_pg_scan_old_staged", veryOld);
+      await insertArtifact({
+        artifactId: "mua_pg_scan_old_uploaded",
+        ownerEpoch: PRIOR_EPOCH,
+        status: "uploaded",
+        updatedAt: old,
+      });
+      await insertArtifact({
+        artifactId: "mua_pg_scan_very_old_validating",
+        ownerEpoch: PRIOR_EPOCH,
+        status: "validating",
+        updatedAt: veryOld,
+      });
+      // Owned by the CURRENT epoch: live, so excluded no matter how old its
+      // updated_at is -- the exact case a wall-clock cutoff got wrong.
+      await insertArtifact({
+        artifactId: "mua_pg_scan_live_validating",
+        ownerEpoch: CURRENT_EPOCH,
+        status: "validating",
+        updatedAt: veryOld,
+      });
+      // Legacy NULL owner: unowned, therefore eligible.
+      await insertArtifact({
+        artifactId: "mua_pg_scan_null_epoch_uploaded",
+        ownerEpoch: null,
+        status: "uploaded",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+      });
+      await insertArtifact({
+        artifactId: "mua_pg_scan_old_staged",
+        ownerEpoch: PRIOR_EPOCH,
+        status: "staged",
+        updatedAt: veryOld,
+      });
 
       const store = createPostgresManualUploadArtifactStore();
-      const stuck = await store.listInFlightOlderThan(cutoffIso);
+      const stuck = await store.listInFlightNotOwnedByEpoch(CURRENT_EPOCH);
       assert.deepEqual(
         stuck.map((row) => row.artifactId),
-        ["mua_pg_scan_very_old_validating", "mua_pg_scan_old_uploaded"],
-        "only the two stale in-flight rows are returned, ordered oldest updated_at first, excluding the terminal staged row despite its age"
+        ["mua_pg_scan_very_old_validating", "mua_pg_scan_old_uploaded", "mua_pg_scan_null_epoch_uploaded"],
+        "only the unowned in-flight rows are returned, ordered oldest updated_at first, excluding both the terminal staged row and the live current-epoch row despite their age"
       );
     })
   );
 
   test(
-    "[postgres] claimForSweep is a compare-and-swap: it wins exactly once for a stale in-flight row and never claims a recent or terminal row",
+    "[postgres] claimForSweep is a compare-and-swap: it wins exactly once for an orphaned in-flight row and never claims a live current-epoch or terminal row",
     withPostgresFixture(async () => {
-      const staleUpdatedAt = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS - 60_000).toISOString();
-      const cutoffIso = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS).toISOString();
       const nowIso = new Date().toISOString();
 
-      await insertArtifact({ artifactId: "mua_pg_claim_stale", status: "validating" });
-      await rewindUpdatedAt("mua_pg_claim_stale", staleUpdatedAt);
-      await insertArtifact({ artifactId: "mua_pg_claim_recent", status: "validating" });
-      await insertArtifact({ artifactId: "mua_pg_claim_terminal", status: "failed" });
-      await rewindUpdatedAt("mua_pg_claim_terminal", staleUpdatedAt);
+      await insertArtifact({ artifactId: "mua_pg_claim_orphan", ownerEpoch: PRIOR_EPOCH, status: "validating" });
+      await insertArtifact({ artifactId: "mua_pg_claim_live", ownerEpoch: CURRENT_EPOCH, status: "validating" });
+      await insertArtifact({ artifactId: "mua_pg_claim_terminal", ownerEpoch: PRIOR_EPOCH, status: "failed" });
 
       const store = createPostgresManualUploadArtifactStore();
 
       assert.equal(
-        await store.claimForSweep("mua_pg_claim_stale", cutoffIso, nowIso),
+        await store.claimForSweep("mua_pg_claim_orphan", CURRENT_EPOCH, nowIso),
         true,
-        "a genuinely stale in-flight row must be claimable"
+        "a genuinely orphaned in-flight row must be claimable"
       );
       assert.equal(
-        await store.claimForSweep("mua_pg_claim_stale", cutoffIso, nowIso),
+        await store.claimForSweep("mua_pg_claim_orphan", CURRENT_EPOCH, nowIso),
         false,
-        "a second claim attempt on the SAME already-claimed row must lose: its updated_at already moved past the cutoff"
+        "a second claim attempt on the SAME already-claimed row must lose: the winning claim stamped it with the current epoch, so it is now owned"
       );
       assert.equal(
-        await store.claimForSweep("mua_pg_claim_recent", cutoffIso, nowIso),
+        await store.claimForSweep("mua_pg_claim_live", CURRENT_EPOCH, nowIso),
         false,
-        "a recently-updated row must never be claimable, even if its status is in-flight"
+        "a row owned by the current epoch must never be claimable, even if its status is in-flight"
       );
       assert.equal(
-        await store.claimForSweep("mua_pg_claim_terminal", cutoffIso, nowIso),
+        await store.claimForSweep("mua_pg_claim_terminal", CURRENT_EPOCH, nowIso),
         false,
-        "a terminal-status row must never be claimable, regardless of age"
+        "a terminal-status row must never be claimable, whatever epoch owns it"
       );
 
-      const claimed = await store.get("mua_pg_claim_stale");
+      const claimed = await store.get("mua_pg_claim_orphan");
       assert.equal(claimed?.status, "validating", "the claim itself only re-stamps status to 'validating'/updated_at");
-      const untouchedRecent = await store.get("mua_pg_claim_recent");
-      assert.equal(untouchedRecent?.status, "validating");
+      assert.equal(claimed?.ownerEpoch, CURRENT_EPOCH, "the winning claim takes ownership by stamping its own epoch");
+      const untouchedLive = await store.get("mua_pg_claim_live");
+      assert.equal(untouchedLive?.status, "validating");
       const untouchedTerminal = await store.get("mua_pg_claim_terminal");
       assert.equal(untouchedTerminal?.status, "failed");
+      assert.equal(untouchedTerminal?.ownerEpoch, PRIOR_EPOCH, "a losing claim must not re-stamp ownership");
     })
   );
 
@@ -339,11 +404,11 @@ if (POSTGRES_URL) {
   // event loop, so ordinary async interleaving could trivially make an
   // unguarded implementation look safe) race claimForSweep on the SAME
   // artifact row. Exactly one must win.
-  function spawnClaimChild(databaseUrl: string, artifactId: string, cutoffIso: string, nowIso: string) {
+  function spawnClaimChild(databaseUrl: string, artifactId: string, currentEpoch: string, nowIso: string) {
     return new Promise<boolean>((resolvePromise, reject) => {
       const child = spawn(
         process.execPath,
-        ["--import", "tsx", CLAIM_CHILD_ENTRYPOINT, databaseUrl, artifactId, cutoffIso, nowIso],
+        ["--import", "tsx", CLAIM_CHILD_ENTRYPOINT, databaseUrl, artifactId, currentEpoch, nowIso],
         { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"] }
       );
       let stdout = "";
@@ -373,22 +438,22 @@ if (POSTGRES_URL) {
   test(
     "[postgres] genuinely concurrent claim: two independent OS processes racing claimForSweep on the SAME artifact against the real Postgres backend -- exactly one wins, never both, never neither",
     withPostgresFixture(async ({ databaseUrl }) => {
-      const staleUpdatedAt = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS - 60_000).toISOString();
-      await insertArtifact({ artifactId: "mua_pg_concurrent_race", status: "validating" });
-      await rewindUpdatedAt("mua_pg_concurrent_race", staleUpdatedAt);
+      await insertArtifact({ artifactId: "mua_pg_concurrent_race", ownerEpoch: PRIOR_EPOCH, status: "validating" });
 
-      const cutoffIso = new Date(Date.now() - MANUAL_UPLOAD_IN_FLIGHT_STALE_MS).toISOString();
       const nowIso = new Date().toISOString();
       const store = createPostgresManualUploadArtifactStore();
 
       // Fire this process's own claim and the child process's claim as
-      // concurrently as this test framework allows -- both target the
-      // exact same artifactId, cutoffIso window, and (nearly) the same
-      // nowIso, against the SAME disposable database via its own
-      // independent pg Pool in the child process.
+      // concurrently as this test framework allows -- both target the exact
+      // same artifactId, claim as the SAME current epoch, and use (nearly)
+      // the same nowIso, against the SAME disposable database via its own
+      // independent pg Pool in the child process. Same epoch on both sides
+      // is the strictest case: the winner's stamp is indistinguishable from
+      // the loser's intended stamp, so only a genuinely atomic
+      // compare-and-swap can separate them.
       const [parentClaimed, childClaimed] = await Promise.all([
-        store.claimForSweep("mua_pg_concurrent_race", cutoffIso, nowIso),
-        spawnClaimChild(databaseUrl, "mua_pg_concurrent_race", cutoffIso, nowIso),
+        store.claimForSweep("mua_pg_concurrent_race", CURRENT_EPOCH, nowIso),
+        spawnClaimChild(databaseUrl, "mua_pg_concurrent_race", CURRENT_EPOCH, nowIso),
       ]);
 
       const claimCount = Number(parentClaimed) + Number(childClaimed);

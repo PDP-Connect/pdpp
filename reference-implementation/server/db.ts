@@ -716,6 +716,12 @@ CREATE TABLE IF NOT EXISTS manual_upload_artifacts (
   error_json            TEXT,
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
+  -- The boot epoch of the process that owns this in-flight upload.
+  -- An artifact stuck at uploaded/validating whose owner_epoch is not the
+  -- current one is provably orphaned: the process that could have finished
+  -- it is gone. NULL means "written before this column existed"; the sweep
+  -- treats those as orphaned too, since no live process claims them.
+  owner_epoch           TEXT,
   FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT,
   FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE SET NULL,
   FOREIGN KEY(acquisition_batch_id) REFERENCES acquisition_batches(batch_id) ON DELETE SET NULL
@@ -5975,6 +5981,10 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheckAccessTokenApiKey(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
+  // Additive and NULL-tolerant: rows written before this column existed read
+  // as NULL, which the sweep treats as orphaned because no live process
+  // claims them. See the column comment on manual_upload_artifacts.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "manual_upload_artifacts", "owner_epoch", "TEXT"));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)

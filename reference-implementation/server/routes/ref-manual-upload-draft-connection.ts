@@ -21,6 +21,7 @@ import {
   validateManualUploadArtifactByKind,
   validateManualUploadArtifactFromFileByKind,
 } from "../../../packages/polyfill-connectors/src/manual-upload-validation.ts";
+import { getCurrentBootEpoch } from "../../lib/spine.ts";
 import {
   type ConnectorManifestLike,
   displayNameForConnector,
@@ -188,6 +189,7 @@ interface ManualUploadArtifact {
   readonly fileName: string;
   readonly fileSizeBytes?: number | null;
   readonly finalPath?: string | null;
+  readonly ownerEpoch?: string | null;
   readonly ownerSubjectId: string;
   readonly stagingPath: string;
   readonly status: "uploaded" | "validating" | "staged" | "duplicate" | "failed";
@@ -196,7 +198,7 @@ interface ManualUploadArtifact {
 }
 
 interface ManualUploadArtifactStore {
-  claimForSweep: (artifactId: string, cutoffIso: string, nowIso: string) => Promise<boolean> | boolean;
+  claimForSweep: (artifactId: string, currentEpoch: string | null, nowIso: string) => Promise<boolean> | boolean;
   get: (artifactId: string) => Promise<ManualUploadArtifact | null> | ManualUploadArtifact | null;
   insert: (record: {
     artifactId: string;
@@ -205,6 +207,7 @@ interface ManualUploadArtifactStore {
     connectorInstanceId?: string | null;
     fileName: string;
     fileSizeBytes: number;
+    ownerEpoch?: string | null;
     ownerSubjectId: string;
     stagingPath: string;
     status?: "uploaded" | "validating" | "staged" | "duplicate" | "failed";
@@ -213,7 +216,9 @@ interface ManualUploadArtifactStore {
     connectorInstanceId: string,
     options?: { limit?: number }
   ) => Promise<ManualUploadArtifact[]> | ManualUploadArtifact[];
-  listInFlightOlderThan: (cutoffIso: string) => Promise<ManualUploadArtifact[]> | ManualUploadArtifact[];
+  listInFlightNotOwnedByEpoch: (
+    currentEpoch: string | null
+  ) => Promise<ManualUploadArtifact[]> | ManualUploadArtifact[];
   update: (
     artifactId: string,
     patch: {
@@ -1511,6 +1516,10 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
           connectorInstanceId: targetConnection?.connectorInstanceId ?? null,
           fileName,
           fileSizeBytes: written.fileSizeBytes,
+          // Stamp this process as the owner: while it is alive the row is
+          // live work, and the boot sweep must never terminalize it. Only a
+          // LATER incarnation (a different epoch) may claim it.
+          ownerEpoch: currentBootEpochId(),
           ownerSubjectId,
           stagingPath,
           status: "uploaded",
@@ -1786,15 +1795,13 @@ function safePathSegment(raw: string): string {
   return segment.length > 0 ? segment : "connector";
 }
 
-/** Below this age, an in-flight artifact is assumed to still be owned by a
- *  live request/setImmediate callback on the CURRENT process -- sweeping it
- *  too eagerly would race a legitimately-still-running validation and fail
- *  it out from under itself. 10 minutes is generous relative to real
- *  upload/validation durations (even a multi-GB streamed upload plus
- *  validation completes in low minutes; see this task's report) while
- *  being short enough that a genuinely abandoned upload from a crashed
- *  process doesn't sit invisible for long. */
-export const MANUAL_UPLOAD_IN_FLIGHT_STALE_MS = 10 * 60 * 1000;
+/** This process's boot epoch, identifying the owner of any in-flight upload
+ *  it starts. Null before the controller singleton stamps an epoch (and in
+ *  tests that never boot one), which the sweep reads as "no live owner to
+ *  protect", making every in-flight row eligible. */
+function currentBootEpochId(): string | null {
+  return getCurrentBootEpoch()?.boot_epoch ?? null;
+}
 
 /**
  * Crash/restart recovery (H5): terminalizes manual-upload artifacts left
@@ -1812,9 +1819,9 @@ export const MANUAL_UPLOAD_IN_FLIGHT_STALE_MS = 10 * 60 * 1000;
  * replay, just a DB row plus a staged file, so a single query + a bounded
  * per-row cleanup loop is the whole mechanism.
  *
- * Multi-process safety: `listInFlightOlderThan` alone is a read, not a
- * lease -- two server processes booting concurrently against the same DB
- * (or one process re-running this sweep) would both list the SAME stale
+ * Multi-process safety: `listInFlightNotOwnedByEpoch` alone is a read, not
+ * a lease -- two server processes booting concurrently against the same DB
+ * (or one process re-running this sweep) would both list the SAME orphaned
  * row and both blindly `update(...)` it, an unconditional write race with
  * no winner/loser distinction (whichever update lands last wins, but both
  * think they own the cleanup, and both would attempt
@@ -1822,16 +1829,32 @@ export const MANUAL_UPLOAD_IN_FLIGHT_STALE_MS = 10 * 60 * 1000;
  * idempotent, but the DOUBLE-CLAIM itself is the actual defect: nothing
  * before this fix prevented it). `claimForSweep` closes this with an
  * atomic compare-and-swap UPDATE (`WHERE artifact_id = ? AND status IN
- * (in-flight) AND updated_at < cutoff`, executed by the SAME primitive
- * every other conditional row transition in this codebase already uses --
- * a WHERE-guarded UPDATE, checked by affected-row-count) that also bumps
- * `updated_at` to now on a win. Only the process whose UPDATE actually
- * matched (returns true) proceeds to terminalize + clean up that row; a
- * process that loses the race (0 rows affected, because a sibling already
- * claimed it and moved updated_at forward) skips it entirely rather than
- * re-terminalizing or re-deleting. Age (`staleMs`) alone never decides
- * ownership -- it only decides which rows are ELIGIBLE to be claimed; the
- * claim itself is what decides who owns the cleanup.
+ * (in-flight) AND owner_epoch is not the current epoch`, executed by the
+ * SAME primitive every other conditional row transition in this codebase
+ * already uses -- a WHERE-guarded UPDATE, checked by affected-row-count)
+ * that also stamps `owner_epoch` to THIS process's epoch on a win. Only
+ * the process whose UPDATE actually matched (returns true) proceeds to
+ * terminalize + clean up that row; a process that loses the race (0 rows
+ * affected, because a sibling already claimed it and stamped its own
+ * epoch) skips it entirely rather than re-terminalizing or re-deleting.
+ * The owner epoch never decides ownership by itself -- it only decides
+ * which rows are ELIGIBLE to be claimed; the claim itself is what decides
+ * who owns the cleanup.
+ *
+ * Why the owner epoch and not a wall-clock age: eligibility has to answer
+ * "can any live process still finish this row?", and a duration is only a
+ * guess at that. A 10-minute cutoff (what this used to use) is wrong in
+ * both directions -- it sweeps a genuinely live upload that merely took
+ * longer than the guess, failing it out from under a running validation,
+ * and it leaves a genuinely dead one sitting non-terminal until the guess
+ * elapses. The epoch is exact rather than approximate: an in-flight
+ * artifact whose `owner_epoch` is not the current one is provably
+ * orphaned, because the process that could have finished it is by
+ * definition gone. Conversely, rows this process creates while it is
+ * running carry the CURRENT epoch and are therefore never swept -- they
+ * are live, and excluding them is the whole point. The old window only
+ * approximated that exclusion. A NULL `owner_epoch` (a row written before
+ * the column existed) is treated as orphaned: no live process claims it.
  *
  * Does NOT sweep orphaned `_staging/` entries that have no DB row at all
  * (a narrower crash window between the file write completing and the DB
@@ -1840,17 +1863,16 @@ export const MANUAL_UPLOAD_IN_FLIGHT_STALE_MS = 10 * 60 * 1000;
  */
 export async function reconcileAbandonedManualUploadArtifactsAtBoot(
   ctx: Pick<MountRefManualUploadDraftConnectionContext, "createRequestManualUploadArtifactStore" | "now">,
-  options: { staleMs?: number } = {}
+  options: { ownerEpoch?: string | null } = {}
 ): Promise<{ swept: number }> {
-  const staleMs = options.staleMs ?? MANUAL_UPLOAD_IN_FLIGHT_STALE_MS;
+  const currentEpoch = options.ownerEpoch === undefined ? currentBootEpochId() : options.ownerEpoch;
   const nowIso = ctx.now ? ctx.now() : new Date().toISOString();
-  const cutoffIso = new Date(new Date(nowIso).getTime() - staleMs).toISOString();
   const artifactStore = ctx.createRequestManualUploadArtifactStore();
-  const stuck = await artifactStore.listInFlightOlderThan(cutoffIso);
+  const stuck = await artifactStore.listInFlightNotOwnedByEpoch(currentEpoch);
   let swept = 0;
   for (const artifact of stuck) {
     // biome-ignore lint/performance/noAwaitInLoops: bounded, infrequent (startup-only) sweep; sequential updates keep each artifact's DB+disk cleanup atomic relative to the next.
-    const claimed = await artifactStore.claimForSweep(artifact.artifactId, cutoffIso, nowIso);
+    const claimed = await artifactStore.claimForSweep(artifact.artifactId, currentEpoch, nowIso);
     if (!claimed) {
       // Lost the race to a concurrent sweeper (another process, or a
       // second boot-time call): that owner is responsible for this row's
