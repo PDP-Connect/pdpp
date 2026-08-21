@@ -1,13 +1,12 @@
 {
   "step": "step-1-run-lifecycle",
-  "description": "D15 Step 1 pre-registration: N restarts with zero adjudication anomalies, race-class property tests green, plus the hand-checked regression baseline measured live on 2026-08-21.",
+  "description": "D15 Step 1 pre-registration for the run-lifecycle state machine: N restarts with zero adjudication anomalies, race-class property tests green, and non-zero transition throughput so a machine that refuses everything cannot pass by being quiet. Registered BEFORE any deploy -- post-hoc success criteria are how 'green' claims died in this program. Also carries the hand-checked regression baseline measured live on 2026-08-21.",
   "container": "pdpp-core-prod-drain",
   "imageRepo": "pdpp-core",
   "imageTag": "canary-step1",
   "dockerfileTarget": "core",
   "nodeBaseImage": "node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03",
   "postgresContainer": "pdpp-postgres-1",
-
   "artifactAssertions": [
     {
       "id": "gmail-done-latch-present",
@@ -15,9 +14,29 @@
       "path": "/app/packages/polyfill-connectors/connectors/gmail/index.ts",
       "pattern": "__resetDoneLatchForTests",
       "minCount": 1
+    },
+    {
+      "id": "run-lifecycle-owner-module-present",
+      "description": "The run-lifecycle owner module must be in the built image. A tag is a label; a grep is evidence. Without this, every metric below could pass against the PREVIOUS image and be read as the state machine behaving well.",
+      "path": "/app/reference-implementation/runtime/run-lifecycle.ts",
+      "pattern": "buildTransitionStatement",
+      "minCount": 1
+    },
+    {
+      "id": "epoch-fence-null-arm-spelled-explicitly",
+      "description": "The CAS null arm must be the explicit `OR owner_epoch IS NULL` spelling, never `IS DISTINCT FROM`, which reduces to `IS NOT NULL` on PostgreSQL and would spare exactly the legacy rows that most need claiming. Asserting the spelling in the shipped bytes is cheaper than diagnosing the reduction in production.",
+      "path": "/app/reference-implementation/runtime/run-lifecycle.ts",
+      "pattern": "owner_epoch IS NULL",
+      "minCount": 1
+    },
+    {
+      "id": "terminal-set-single-declaration-present",
+      "description": "The single terminal-set declaration must be in the image, since the abandoned-run visibility metric below is only meaningful if the consumers are actually deriving from it.",
+      "path": "/app/reference-implementation/runtime/run-lifecycle-states.ts",
+      "pattern": "TERMINAL_RUN_EVENT_TYPES",
+      "minCount": 1
     }
   ],
-
   "checks": [
     {
       "kind": "sql_scalar",
@@ -48,6 +67,55 @@
       "id": "zero-adjudication-anomalies",
       "description": "D15 Step 1: zero adjudication anomalies. A run abandoned by successor adjudication is legal; one abandoned WITHOUT a recorded terminal reason is the anomaly, because it means the transition happened outside the state machine.",
       "sql": "select count(*) from run_history where status='abandoned' and (terminal_reason is null or terminal_reason='') and (started_at)::timestamptz > now() - interval '24 hours'",
+      "predicate": "must_not_increase",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "no-run-holds-two-terminal-events",
+      "description": "D15 6.1: no run may hold two terminal events (F5). Measured by query rather than by log reading, and scoped by the (run_id, connector_instance_id) pair because run_id alone is not unique across connections -- a run_id-only grouping would report false duplicates for two connections that independently minted the same id.",
+      "sql": "select count(*) from (select run_id, connector_instance_id from spine_events where event_type in ('run.completed','run.failed','run.browser_surface_failed','run.cancelled','run.abandoned') and run_id is not null group by run_id, connector_instance_id having count(*) > 1) d",
+      "predicate": "must_not_increase",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "no-started-run-orphaned-outside-newest-epoch",
+      "description": "D15 6.1: every run.started without a terminal event must belong to the newest boot epoch. One that does not is an orphan the boot adjudicator failed to claim, which is the anomaly N restarts are meant to surface. Uses NOT EXISTS on the pair rather than a NOT IN over run_id.",
+      "sql": "select count(*) from run_history h where h.status='running' and h.owner_epoch is not null and h.owner_epoch <> (select max(owner_epoch) from run_history where owner_epoch is not null) and not exists (select 1 from spine_events e where e.run_id=h.run_id and e.event_type in ('run.completed','run.failed','run.browser_surface_failed','run.cancelled','run.abandoned'))",
+      "predicate": "must_stay_zero",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "transition-throughput-is-non-zero",
+      "description": "D15 6.3: a machine that REFUSES everything would satisfy every zero-anomaly metric above while being completely broken. This counts successful terminal transitions in the canary window and requires at least one, so 'quiet' cannot be mistaken for 'healthy'. This is the metric that makes the others meaningful.",
+      "sql": "select count(*) from run_history where completed_at is not null and (completed_at)::timestamptz > now() - interval '1 hour'",
+      "predicate": "must_be_at_least",
+      "bound": 1,
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "no-abandoned-run-invisible-to-the-fold",
+      "description": "D15 6.5: the terminal-set repair, measured on live data. An abandoned run whose spine event carries no connector_instance_id is invisible to the connector-summary fold -- the exact population the omitted run.abandoned literal hid. Must not grow.",
+      "sql": "select count(*) from spine_events where event_type='run.abandoned' and connector_instance_id is null and data_json->>'connector_instance_id' is null and data_json->>'connection_id' is null",
+      "predicate": "must_not_increase",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "no-permanent-wedge",
+      "description": "D15 6.6: zero connector instances wedged non-terminal beyond one scheduling interval (F6). Baseline: the UAT instance previously held 7 of 8 running rows as zombies up to two days old, each already carrying a run.abandoned event. The two-hour bound is what makes this mean 'wedged' rather than 'busy'.",
+      "sql": "select count(*) from run_history where status='running' and (started_at)::timestamptz < now() - interval '2 hours'",
+      "predicate": "must_stay_zero",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "terminal-status-not-revised-after-terminal",
+      "description": "D15 6.5 / F7: a terminal run must never carry a completed_at that post-dates a later status revision. Counts rows whose status is terminal but whose completed_at is null -- the shape a half-applied revision leaves behind, and what the now-fenced scheduler upsert could produce.",
+      "sql": "select count(*) from run_history where status in ('succeeded','failed','surface_failed','cancelled','abandoned') and completed_at is null",
       "predicate": "must_not_increase",
       "blocking": true
     },
