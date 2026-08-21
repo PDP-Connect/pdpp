@@ -307,11 +307,11 @@ export function createSqliteConnectorStateSchedulerDriver() {
 
     // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
     async wasRunMarkedFailed(runId: string) {
-      // `spineCheckRunTerminal` returns truthy for either run.completed
-      // or run.failed. The harness's restart scenario only emits
-      // run.failed (no run.completed is ever produced for these
-      // synthetic runs), so a terminal hit here is sufficient evidence
-      // of the failed branch firing.
+      // `spineCheckRunTerminal` returns truthy for any terminal event.
+      // These synthetic runs never produce a `run.completed`, and claim
+      // release writes no terminal event at all, so a hit here means the
+      // `run.failed` branch fired -- which is exactly what the harness
+      // now asserts must NOT happen.
       const row = getOne(referenceQueries.spineCheckRunTerminal, [runId]);
       return Boolean(row);
     },

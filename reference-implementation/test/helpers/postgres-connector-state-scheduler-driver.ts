@@ -364,24 +364,20 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
     },
 
     async simulateRestart() {
-      // Drain the active-run registry inside one transaction:
-      //   1. snapshot the abandoned rows
-      //   2. delete them
-      //   3. mark each previously-active run id as terminal-failed
-      // Steps (2) and (3) together encode the reconciliation
-      // obligation the harness asserts.
+      // Release the stale claims in one transaction, and write NO terminal
+      // event while doing it. That is the whole obligation the harness
+      // asserts for this path.
+      //
+      // `terminal_failed_runs` stays empty here on purpose. A restart
+      // observes only that a prior process is gone, which is not evidence
+      // that its run failed, and the two states have different remedies.
+      // The run's terminal state is adjudicated separately from the
+      // append-only spine by `reconcileOrphanedRunsAtBoot`, which writes
+      // `run.abandoned`. Marking the run failed here would both make a
+      // claim nothing observed and put a second writer in a race with that
+      // reconciler for one run's terminal event.
       await exec("BEGIN");
       try {
-        const abandoned = await exec("SELECT connector_id, run_id FROM controller_active_runs");
-        for (const row of abandoned.rows) {
-          // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
-          await exec(
-            `INSERT INTO terminal_failed_runs (run_id, connector_id, marked_at)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (run_id) DO NOTHING`,
-            [String(row.run_id), String(row.connector_id), nowIso()]
-          );
-        }
         await exec("DELETE FROM controller_active_runs");
         await exec("COMMIT");
       } catch (err) {
