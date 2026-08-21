@@ -1116,6 +1116,30 @@ CREATE TABLE IF NOT EXISTS connector_schedules (
   updated_at        TEXT NOT NULL
 );
 
+-- The deployment's durable controller identity.
+--
+-- Exactly one row (id = 'singleton'). Written once, on the first boot that
+-- finds the table empty, and read unchanged by every boot after that.
+--
+-- Why this table exists: resolveControllerId used to fall back to
+-- os.hostname(), which under Docker is the container ID and is fresh on
+-- every "docker run". The boot reconciler only adjudicates orphans whose
+-- controller_id matches its own, so after any container replacement it
+-- matched nothing and every orphan from a prior container became permanently
+-- non-terminal. Production accumulated 121 such runs between 2026-05 and
+-- 2026-07 under 106 distinct controller ids.
+--
+-- Identity has to outlive the process to be an identity at all. An env var
+-- would also work, but only for as long as an operator remembers to set it on
+-- every container recreation -- and forgetting is silent, which is exactly how
+-- the original defect went unnoticed for three months. Reading it from the
+-- same database that holds the runs makes the correct value the default.
+CREATE TABLE IF NOT EXISTS controller_identity (
+  id            TEXT PRIMARY KEY,
+  controller_id TEXT NOT NULL,
+  created_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS controller_active_runs (
   connector_instance_id TEXT PRIMARY KEY,
   connector_id  TEXT NOT NULL,
