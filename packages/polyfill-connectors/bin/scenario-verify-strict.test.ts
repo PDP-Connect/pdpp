@@ -40,7 +40,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { hashCanonicalJson } from "@pdpp/collector-runtime";
-import { evaluateClaimEligibility } from "../src/scenario/claims.ts";
+import { buildBrowserStalenessLimitation, evaluateClaimEligibility } from "../src/scenario/claims.ts";
 import type { ConnectorScenario, ScenarioRun } from "../src/scenario/format.ts";
 import { isNamespaceIsolationAvailable } from "../src/scenario/isolation.ts";
 import { messagesToRecordsAndState, type ProtocolMessage } from "../src/scenario/subprocess-fetch-preloads.ts";
@@ -323,6 +323,78 @@ test("validateScenario: rejects an op literal outside 'upsert'|'delete'", () => 
 function structuredCloneRun(run: ScenarioRun): ScenarioRun {
   return JSON.parse(JSON.stringify(run)) as ScenarioRun;
 }
+
+// ─── recorded-browser driver: validateScenario shape checks ───────────────
+
+function browserDriverRun(overrides: {
+  har_entry_count?: unknown;
+  har_path?: unknown;
+  storage_state_path?: unknown;
+}): ScenarioRun {
+  return {
+    environment: {
+      network: {
+        driver: "recorded-browser",
+        har_path: "run-0.har",
+        storage_state_path: "run-0.storage-state.json",
+        har_entry_count: 3,
+        ...overrides,
+      } as never,
+    },
+    start: { scope: { streams: [{ name: "widgets" }] }, state: null },
+    interactions: [],
+    expected: { records: {}, final_state: {} },
+  };
+}
+
+test("validateScenario: a well-formed recorded-browser run passes", () => {
+  const scenario = baseValidScenario();
+  scenario.runs[0] = { ...(scenario.runs[0] as ScenarioRun), ...browserDriverRun({}) };
+  assert.doesNotThrow(() => validateScenario(scenario));
+});
+
+test("validateScenario: rejects a recorded-browser run with empty har_path", () => {
+  const scenario = baseValidScenario();
+  scenario.runs[0] = { ...(scenario.runs[0] as ScenarioRun), ...browserDriverRun({ har_path: "" }) };
+  assertRejects(scenario, "malformed_browser_environment");
+});
+
+test("validateScenario: rejects a recorded-browser run missing har_path", () => {
+  const scenario = baseValidScenario();
+  scenario.runs[0] = { ...(scenario.runs[0] as ScenarioRun), ...browserDriverRun({ har_path: undefined }) };
+  assertRejects(scenario, "malformed_browser_environment");
+});
+
+test("validateScenario: rejects a recorded-browser run with empty storage_state_path", () => {
+  const scenario = baseValidScenario();
+  scenario.runs[0] = { ...(scenario.runs[0] as ScenarioRun), ...browserDriverRun({ storage_state_path: "" }) };
+  assertRejects(scenario, "malformed_browser_environment");
+});
+
+test("validateScenario: rejects a recorded-browser run with a non-integer har_entry_count", () => {
+  const scenario = baseValidScenario();
+  scenario.runs[0] = { ...(scenario.runs[0] as ScenarioRun), ...browserDriverRun({ har_entry_count: 1.5 }) };
+  assertRejects(scenario, "malformed_browser_environment");
+});
+
+test("validateScenario: rejects a recorded-browser run with a negative har_entry_count", () => {
+  const scenario = baseValidScenario();
+  scenario.runs[0] = { ...(scenario.runs[0] as ScenarioRun), ...browserDriverRun({ har_entry_count: -1 }) };
+  assertRejects(scenario, "malformed_browser_environment");
+});
+
+test("validateScenario: a recorded-browser run with har_entry_count: 0 passes shape validation (vacuousness is a claims-layer concern, not a validate.ts rejection)", () => {
+  const scenario = baseValidScenario();
+  scenario.runs[0] = { ...(scenario.runs[0] as ScenarioRun), ...browserDriverRun({ har_entry_count: 0 }) };
+  assert.doesNotThrow(() => validateScenario(scenario));
+});
+
+test("validateScenario: a recorded-http run is unaffected by the new recorded-browser shape check (regression control)", () => {
+  const scenario = baseValidScenario();
+  const run0 = scenario.runs[0] as ScenarioRun;
+  run0.environment = { network: { driver: "recorded-http" } };
+  assert.doesNotThrow(() => validateScenario(scenario));
+});
 
 // ─── FIX 3: digest helpers — pure, filesystem-based ────────────────────────
 
@@ -1247,4 +1319,142 @@ test("negative control: unconsumed recorded interaction still fails verification
   const replay = createReplayFetch(run, []);
   await replay.fetch("https://toy.example/a");
   assert.throws(() => replay.assertAllConsumed(), /seq \[2\]/);
+});
+
+// ─── recorded-browser driver: DRIVER_EVIDENCE_POLICIES + claim eligibility ─
+//
+// Mirrors the recorded-http driver-evidence section immediately above, one
+// for one, for the browser driver added alongside browser-har-replay.ts:
+//   - `driverEvidenceSatisfied("recorded-browser", ...)` mirrors
+//     recorded-http's "at least one recorded interaction" bar with "at
+//     least one run declaring recorded-browser with a positive
+//     har_entry_count" (wire-registry.ts's DRIVER_EVIDENCE_POLICIES).
+//   - `evaluateClaimEligibility` on a recorded-browser scenario NEVER
+//     reaches `recorded_replay` — condition (d)
+//     (`everyRunDeclaresRecordedHttpDriver`) checks the literal
+//     "recorded-http" — a structural cap, not a bug, per claims.ts's module
+//     doc comment ("RECORDED-BROWSER IS STRUCTURALLY CAPPED").
+//   - every earned `diagnostic_replay: PASS` for a recorded-browser
+//     scenario carries `buildBrowserStalenessLimitation(captured_at)` —
+//     unconditionally, not gated on any other condition.
+
+function browserEligibleScenario(harEntryCount = 3): ConnectorScenario {
+  return {
+    format: "pdpp.connector-scenario/1",
+    connector: { id: "toy", captured_with: { declaration_digest: "a".repeat(64), source_digest: "b".repeat(64) } },
+    capture: {
+      captured_at: "2026-08-01T00:00:00.000Z",
+      evidence_class: "non_loopback_contact_observed",
+      privacy_class: "local-only",
+      recorder_version: "test",
+      complete: true,
+    },
+    runs: [
+      {
+        environment: {
+          network: {
+            driver: "recorded-browser",
+            har_path: "run-0.har",
+            storage_state_path: "run-0.storage-state.json",
+            har_entry_count: harEntryCount,
+          },
+        },
+        start: { scope: { streams: [{ name: "widgets" }] }, state: null },
+        interactions: [],
+        expected: {
+          records: {
+            widgets: { count: 1, ids: ["w1"], ops: ["upsert"], record_sha256s: [hashCanonicalJson({ id: "w1" })] },
+          },
+          final_state: {},
+          protocol_trace: [{ kind: "done", status: "succeeded", records_emitted: 1 }],
+        },
+      },
+    ],
+  };
+}
+
+test("driverEvidenceSatisfied: 'recorded-browser' is satisfied when a run declares it with har_entry_count > 0", () => {
+  assert.equal(driverEvidenceSatisfied("recorded-browser", browserEligibleScenario(3)), true);
+});
+
+test("driverEvidenceSatisfied: 'recorded-browser' is NOT satisfied when har_entry_count is 0 (zero recorded HAR entries — vacuous, mirrors recorded-http's zero-interaction case)", () => {
+  assert.equal(driverEvidenceSatisfied("recorded-browser", browserEligibleScenario(0)), false);
+});
+
+test("driverEvidenceSatisfied: 'recorded-browser' is NOT satisfied when no run declares that driver at all", () => {
+  const scenario = eligibleScenario(); // declares "recorded-http", not "recorded-browser"
+  assert.equal(driverEvidenceSatisfied("recorded-browser", scenario), false);
+});
+
+test("evaluateClaimEligibility: a recorded-browser scenario NEVER reaches recorded_replay, even with every other condition eligible", () => {
+  const scenario = browserEligibleScenario(3);
+  const decision = evaluateClaimEligibility({
+    scenario,
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    driverEvidenceSatisfied: driverEvidenceSatisfied("recorded-browser", scenario),
+    isNamespaceIsolationActive: true,
+  });
+  assert.equal(decision.claim, "diagnostic_replay");
+  assert.ok(decision.claim === "diagnostic_replay");
+  // Exactly two limitations: condition (d) fails because the driver
+  // declared is "recorded-browser", not the literal "recorded-http"
+  // everyRunDeclaresRecordedHttpDriver checks — PLUS the mandatory
+  // staleness disclaimer, unconditional whenever any run is browser-driven.
+  assert.deepEqual(decision.limitations, [
+    "non-recorded-http driver - canonical replay is defined only for recorded-http",
+    buildBrowserStalenessLimitation("2026-08-01T00:00:00.000Z"),
+  ]);
+});
+
+test("evaluateClaimEligibility: a recorded-browser scenario with zero HAR entries reports BOTH the browser-specific driver-evidence limitation and the staleness disclaimer", () => {
+  const scenario = browserEligibleScenario(0);
+  const decision = evaluateClaimEligibility({
+    scenario,
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    driverEvidenceSatisfied: driverEvidenceSatisfied("recorded-browser", scenario),
+    isNamespaceIsolationActive: true,
+  });
+  assert.equal(decision.claim, "diagnostic_replay");
+  assert.ok(decision.claim === "diagnostic_replay");
+  assert.deepEqual(decision.limitations, [
+    "non-recorded-http driver - canonical replay is defined only for recorded-http",
+    "no recorded HAR entries - driver evidence for recorded-browser not satisfied",
+    buildBrowserStalenessLimitation("2026-08-01T00:00:00.000Z"),
+  ]);
+});
+
+test("evaluateClaimEligibility: the staleness limitation names the scenario's own capture.captured_at, not a fixed string", () => {
+  const scenario = browserEligibleScenario(3);
+  scenario.capture.captured_at = "2019-01-01T00:00:00.000Z";
+  const decision = evaluateClaimEligibility({
+    scenario,
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    driverEvidenceSatisfied: driverEvidenceSatisfied("recorded-browser", scenario),
+    isNamespaceIsolationActive: true,
+  });
+  assert.ok(decision.claim === "diagnostic_replay");
+  assert.ok(
+    decision.limitations.includes(
+      "recorded-browser: verified against capture of 2019-01-01T00:00:00.000Z; asserts nothing about the live provider"
+    )
+  );
+});
+
+test("evaluateClaimEligibility: a recorded-http scenario NEVER carries the browser staleness limitation (regression control — the disclaimer is browser-only)", () => {
+  const scenario = eligibleScenario();
+  const decision = evaluateClaimEligibility({
+    scenario,
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    isNamespaceIsolationActive: true,
+  });
+  assert.deepEqual(decision, { claim: "recorded_replay" });
+  // The happy-path recorded-http case reaches recorded_replay with ZERO
+  // limitations at all — asserting this explicitly (not just "doesn't
+  // include the browser string") proves the browser-only trigger condition
+  // (anyRunDeclaresBrowserDriver) didn't fire a false positive on an
+  // ordinary recorded-http scenario.
 });

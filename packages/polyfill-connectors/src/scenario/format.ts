@@ -671,18 +671,91 @@ export interface ScenarioRunExpected {
 }
 
 /**
+ * Driver-specific fields for `"recorded-browser"` (the HAR-backed browser
+ * replay driver — src/scenario/browser-har-replay.ts). Added exactly as
+ * `ScenarioRunEnvironment`'s doc comment below anticipated: a new driver
+ * literal plus its own fields, no format version bump.
+ *
+ * SCOPE — DATA MAPPING, NOT CHOREOGRAPHY (read this before treating a
+ * `recorded-browser` PASS as equivalent to `recorded-http`'s): this driver
+ * replays NETWORK TRAFFIC (`routeFromHAR`) into the connector's own browser
+ * context, then proves the connector's DATA MAPPING — recorded responses to
+ * emitted RECORDs — the exact same way `recorded-http` proves it for fetch
+ * traffic. It does NOT replay or verify page choreography (clicks,
+ * navigation timing, DOM state machines): anti-bot JS and timer
+ * nondeterminism make click/navigation sequences non-deterministically
+ * replayable across two separate browser runs, even against the identical
+ * HAR. `claims.ts`/`wire-registry.ts` reflect this: `recorded-browser` can
+ * never earn the canonical `recorded_replay` claim (see
+ * `everyRunDeclaresRecordedHttpDriver` in claims.ts, which checks the
+ * literal `"recorded-http"` and therefore always excludes this driver) —
+ * only the weaker `diagnostic_replay: PASS` with named limitations,
+ * including an explicit staleness disclaimer tying the claim to the HAR's
+ * capture timestamp (never to "the live provider still works this way").
+ *
+ * NOT CAPTURED/REPLAYED BY THIS DRIVER — explicit, not a silent gap:
+ * WebSocket/EventSource/SSE traffic (`recordHar`/`routeFromHAR` do not
+ * capture or replay WebSocket frames at all — Playwright's HAR machinery is
+ * HTTP-request/response only) and browser download events (a download's
+ * body can bypass route interception entirely). Zero of this package's
+ * connectors use either surface as of this driver's introduction, so this
+ * is a documented boundary, not a defect discovered by a failing scenario —
+ * see `browser-har-replay.ts`'s module doc for the same note co-located
+ * with the code that would need to change if that ever stops being true.
+ */
+export interface ScenarioBrowserNetworkDriver {
+  driver: "recorded-browser";
+  /**
+   * Count of distinct HTTP request/response entries the HAR file actually
+   * contains for this run, stamped by the recorder from the HAR it wrote —
+   * NOT re-derived by re-parsing the HAR at replay time (the HAR file is the
+   * evidence; this count is a cheap structural fact ABOUT that evidence, the
+   * browser-driver analogue of `recorded-http`'s
+   * `scenario.runs.some((run) => run.interactions.length > 0)` minimum-
+   * evidence check — see `wire-registry.ts`'s `DRIVER_EVIDENCE_POLICIES`
+   * doc comment). Zero means this run's HAR proves nothing (a scenario file
+   * could be hand-assembled, or capture could have produced an empty HAR),
+   * exactly like a zero-interaction `recorded-http` run.
+   */
+  har_entry_count: number;
+  /** Path to the recorded HAR file, relative to the scenario file's own
+   *  directory (never absolute — a scenario must remain relocatable
+   *  alongside its HAR, the same portability assumption every other
+   *  scenario-relative path in this format makes). */
+  har_path: string;
+  /**
+   * Path to a Playwright `storageState` JSON snapshot (cookies +
+   * localStorage), relative to the scenario file's own directory, captured
+   * from the SAME warm authenticated profile the HAR was recorded against.
+   * REQUIRED, not optional: capture runs against a warm persistent profile,
+   * so a browser connector's own page-side JS decides whether it's
+   * logged-in from real cookie/localStorage state, not from anything this
+   * harness controls. Replaying the HAR into a cold/anonymous context makes
+   * the app's own JS take the login-wall path — every subsequent request the
+   * page issues then misses the HAR (the login-wall page's requests were
+   * never recorded), which surfaces as a confusing cascade of unrelated
+   * `notFound: "abort"` failures instead of a clear, named diagnosis. See
+   * `browser-har-replay.ts`'s `assertStorageStateUsable` for the named
+   * failure this absence (or an unreadable file at this path) produces
+   * instead of that cascade.
+   */
+  storage_state_path: string;
+}
+
+/**
  * ADDITIVE, modality-neutral envelope (one field, not a framework): what
- * transport this run's evidence was captured/replayed over. Today the only
- * driver this tooling implements is `"recorded-http"` (the HTTP request/
- * response capture-and-replay this whole module documents) — a future
- * browser-driven or subprocess-driven capture mode would add its own driver
- * literal here rather than inventing a parallel envelope. `[k: string]:
- * unknown` lets a later driver attach its own driver-specific fields
- * (e.g. a browser driver's viewport/profile info) without another format
- * version bump; `scenario-verify` only ever reads `network.driver`.
+ * transport this run's evidence was captured/replayed over. `"recorded-http"`
+ * is the HTTP request/response capture-and-replay this whole module
+ * documents; `"recorded-browser"` (added alongside this comment — see
+ * `ScenarioBrowserNetworkDriver`'s doc comment for its scope and limits) is
+ * the HAR-backed browser-network replay driver. `[k: string]: unknown` lets
+ * a still-later driver attach its own driver-specific fields without
+ * another format version bump; `scenario-verify` only ever reads
+ * `network.driver` to decide dispatch, then the driver-specific fields once
+ * it knows which one.
  */
 export interface ScenarioRunEnvironment {
-  network?: { driver: "recorded-http" };
+  network?: { driver: "recorded-http" } | ScenarioBrowserNetworkDriver;
   [k: string]: unknown;
 }
 

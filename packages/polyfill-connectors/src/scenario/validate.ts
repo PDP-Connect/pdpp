@@ -252,12 +252,55 @@ function validateExpectationOps(runIndex: number, run: ScenarioRun): void {
   }
 }
 
+/**
+ * Structural shape check for a `"recorded-browser"` run's driver-specific
+ * fields (format.ts's `ScenarioBrowserNetworkDriver`) — `har_path` and
+ * `storage_state_path` non-empty strings, `har_entry_count` a non-negative
+ * integer. This is a SHAPE check only (mirrors this file's module doc
+ * comment: "validates SHAPE only ... does not compare them against the
+ * current tree") — it does not touch the filesystem or check that the
+ * referenced files actually exist/parse; that is
+ * `browser-har-replay.ts`'s `resolveBrowserEvidence`'s job at actual replay
+ * time (this validator has no I/O, matching every other check in this
+ * module). `har_entry_count` is allowed to be 0 here (a structurally valid
+ * but vacuous scenario) — vacuousness is `wire-registry.ts`'s
+ * `DRIVER_EVIDENCE_POLICIES` job to catch (downgrading the claim, not
+ * rejecting the scenario outright), the same division of labor
+ * `validateExpectationOps` above has with the record-content oracle.
+ */
+function validateBrowserNetworkDriver(runIndex: number, run: ScenarioRun): void {
+  const network = run.environment?.network;
+  if (network?.driver !== "recorded-browser") {
+    return;
+  }
+  const { har_path: harPath, storage_state_path: storageStatePath, har_entry_count: harEntryCount } = network;
+  if (typeof harPath !== "string" || harPath.trim().length === 0) {
+    fail(
+      "malformed_browser_environment",
+      `run ${String(runIndex)}: environment.network.har_path is required and must be a non-empty string for driver "recorded-browser"`
+    );
+  }
+  if (typeof storageStatePath !== "string" || storageStatePath.trim().length === 0) {
+    fail(
+      "malformed_browser_environment",
+      `run ${String(runIndex)}: environment.network.storage_state_path is required and must be a non-empty string for driver "recorded-browser"`
+    );
+  }
+  if (typeof harEntryCount !== "number" || !Number.isInteger(harEntryCount) || harEntryCount < 0) {
+    fail(
+      "malformed_browser_environment",
+      `run ${String(runIndex)}: environment.network.har_entry_count is required and must be a non-negative integer for driver "recorded-browser", got ${JSON.stringify(harEntryCount)}`
+    );
+  }
+}
+
 function validateRun(runIndex: number, run: ScenarioRun): void {
   validateSeqSequence(runIndex, "interactions", run.interactions ?? []);
   validateSeqSequence(runIndex, "user_interactions", (run.user_interactions ?? []) as ScenarioUserInteraction[]);
   validateInteractionShapes(runIndex, run);
   validateExpectationLengths(runIndex, run);
   validateExpectationOps(runIndex, run);
+  validateBrowserNetworkDriver(runIndex, run);
 }
 
 /**

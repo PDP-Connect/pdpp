@@ -367,18 +367,66 @@ export function assertValidInteractionMessage(raw: RawInteractionMessage): void 
  * on its own (a scenario with zero interactions trivially has zero
  * unconsumed ones too, so it would pass that check vacuously).
  */
+/**
+ * Scenario shape `driverEvidenceSatisfied`/policy `satisfied` predicates
+ * read from — a structural superset of every driver's evidence surface
+ * (recorded-http's `run.interactions`, recorded-browser's
+ * `run.environment.network.har_entry_count` when that driver is declared).
+ * Every field is read defensively (this is untyped-at-the-boundary JSON, the
+ * same posture every other reader in this module takes) so a policy can
+ * never throw on a scenario shaped for a DIFFERENT driver.
+ */
+interface DriverEvidenceScenario {
+  runs: readonly {
+    environment?: { network?: { driver?: string; har_entry_count?: unknown } };
+    interactions: readonly unknown[];
+  }[];
+}
+
 export interface DriverEvidencePolicy {
   /** Exact string printed under `limitations:` when this driver's minimum
    *  evidence bar is not met — see claims.ts's `ClaimLimitation`. */
   limitation: string;
   /** True when `scenario` carries this driver's minimum evidence bar. */
-  satisfied: (scenario: { runs: readonly { interactions: readonly unknown[] }[] }) => boolean;
+  satisfied: (scenario: DriverEvidenceScenario) => boolean;
+}
+
+/**
+ * `recorded-browser`'s policy (repair wave: browser-driven connector
+ * verification) — satisfied only when at least one run in the scenario
+ * declares `environment.network.driver === "recorded-browser"` AND that
+ * run's `har_entry_count` is a positive integer. Mirrors `recorded-http`'s
+ * "at least one recorded HTTP interaction across ITS RUNS" reasoning exactly
+ * (see `DRIVER_EVIDENCE_POLICIES`'s module doc comment above): declaring the
+ * driver is not the same as having evidence FOR it — a scenario could
+ * declare `recorded-browser` on every run while every run's HAR is actually
+ * empty (a hand-assembled scenario file, or a capture that produced zero
+ * entries), which is exactly the vacuous case this predicate exists to
+ * catch. `har_entry_count` is read directly off the format field
+ * (`ScenarioBrowserNetworkDriver`, format.ts) rather than by re-parsing the
+ * HAR file from disk — this module (and `evaluateClaimEligibility`, its
+ * caller) is a pure function of the scenario's own in-memory shape, exactly
+ * like the recorded-http policy above; verifying the HAR file itself exists
+ * and is readable is `browser-har-replay.ts`'s job at actual replay time,
+ * not this pre-flight evidence-sufficiency check's.
+ */
+function hasPositiveHarEntryCount(harEntryCount: unknown): boolean {
+  return typeof harEntryCount === "number" && Number.isInteger(harEntryCount) && harEntryCount > 0;
 }
 
 export const DRIVER_EVIDENCE_POLICIES: Readonly<Record<string, DriverEvidencePolicy>> = {
   "recorded-http": {
     limitation: "no recorded provider interaction - driver evidence for recorded-http not satisfied",
     satisfied: (scenario) => scenario.runs.some((run) => run.interactions.length > 0),
+  },
+  "recorded-browser": {
+    limitation: "no recorded HAR entries - driver evidence for recorded-browser not satisfied",
+    satisfied: (scenario) =>
+      scenario.runs.some(
+        (run) =>
+          run.environment?.network?.driver === "recorded-browser" &&
+          hasPositiveHarEntryCount(run.environment.network.har_entry_count)
+      ),
   },
 };
 
@@ -391,15 +439,10 @@ export const DRIVER_EVIDENCE_POLICIES: Readonly<Record<string, DriverEvidencePol
  * `assertSupportedEnvironmentDrivers` (bin/scenario-verify.ts) already
  * rejects any driver this build doesn't implement before this function would
  * ever be reached with one, so in practice `driver` here is always
- * `"recorded-http"` or `undefined` (no driver declared on some run, already
- * separately caught by condition (d)).
+ * `"recorded-http"`, `"recorded-browser"`, or `undefined` (no driver
+ * declared on some run, already separately caught by condition (d)).
  */
-export function driverEvidenceSatisfied(
-  driver: string | undefined,
-  scenario: {
-    runs: readonly { interactions: readonly unknown[] }[];
-  }
-): boolean {
+export function driverEvidenceSatisfied(driver: string | undefined, scenario: DriverEvidenceScenario): boolean {
   if (driver === undefined) {
     return false;
   }

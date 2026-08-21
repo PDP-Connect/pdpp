@@ -84,6 +84,11 @@ import { canonicalJson } from "@pdpp/collector-runtime";
 import type { InteractionResponse } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { config as dotenvConfig } from "dotenv";
 import { getConnectorPaths, KNOWN_CONNECTOR_NAMES, readManifest } from "../src/orchestrator.ts";
+import {
+  BrowserReplayEvidenceError,
+  resolveBrowserEvidence,
+  writeBrowserHarReplayPreload,
+} from "../src/scenario/browser-har-replay.ts";
 import { evaluateClaimEligibility } from "../src/scenario/claims.ts";
 import type { ConnectorScenario, ScenarioUserInteraction } from "../src/scenario/format.ts";
 import {
@@ -254,16 +259,18 @@ function assertConnectorIdentity(args: CliArgs, scenario: ConnectorScenario): vo
 /**
  * FIX 5 — modality-neutral envelope. `run.environment.network.driver`
  * (format.ts's `ScenarioRunEnvironment`, additive) names the transport a
- * run's evidence was captured/replayed over; this build implements exactly
- * one driver (`"recorded-http"`, the HTTP request/response capture-and-
- * replay this whole harness is). A run whose environment declares a
- * DIFFERENT driver is a claim this build cannot honor — replaying it as if
- * it were `recorded-http` would silently misrepresent what was actually
- * verified (a future browser- or subprocess-driven capture is not
- * interchangeable with an HTTP-transcript replay). Fails outright, before
- * any subprocess is spawned, same pre-flight tier as identity/digest checks
- * above. A run with NO `environment` (every scenario captured before this
- * field existed, or any future driver that legitimately omits it) is
+ * run's evidence was captured/replayed over; this build implements two
+ * drivers — `"recorded-http"` (the HTTP request/response capture-and-replay
+ * this harness originally was) and `"recorded-browser"` (HAR-backed browser
+ * network replay, browser-har-replay.ts, added for the 29-of-45 connectors
+ * that drive traffic through `page.evaluate(fetch)` where `recorded-http`'s
+ * Node-process fetch/http/net patch structurally cannot see anything). A run
+ * whose environment declares a driver OUTSIDE this set is a claim this build
+ * cannot honor — replaying it as if it were a driver this build implements
+ * would silently misrepresent what was actually verified. Fails outright,
+ * before any subprocess is spawned, same pre-flight tier as identity/digest
+ * checks above. A run with NO `environment` (every scenario captured before
+ * this field existed, or any future driver that legitimately omits it) is
  * unaffected — absence is "no modality claim made", not a claim to reject.
  */
 export class UnsupportedEnvironmentDriverError extends Error {
@@ -273,12 +280,12 @@ export class UnsupportedEnvironmentDriverError extends Error {
   }
 }
 
-const SUPPORTED_NETWORK_DRIVER = "recorded-http";
+const SUPPORTED_NETWORK_DRIVERS: ReadonlySet<string> = new Set(["recorded-http", "recorded-browser"]);
 
 function assertSupportedEnvironmentDrivers(scenario: ConnectorScenario): void {
   scenario.runs.forEach((run, runIndex) => {
     const driver = run.environment?.network?.driver;
-    if (driver !== undefined && driver !== SUPPORTED_NETWORK_DRIVER) {
+    if (driver !== undefined && !SUPPORTED_NETWORK_DRIVERS.has(driver)) {
       throw new UnsupportedEnvironmentDriverError(runIndex, driver);
     }
   });
@@ -847,14 +854,28 @@ export function createInactivityWatchdog(
  * UDS can. When `isolate` is false, this is the pre-existing plain-spawn +
  * TCP-loopback-bridge behavior, unchanged.
  */
+/**
+ * `preloadPath` is now computed by the CALLER (`runCollector`) rather than
+ * always minting a fetch-bridge preload internally — the recorded-browser
+ * driver needs a completely different preload
+ * (`browser-har-replay.ts`'s `writeBrowserHarReplayPreload`, patching
+ * patchright's `launchPersistentContext` instead of `node:http`/`fetch`)
+ * while every other concern in this function — spawn, the inactivity
+ * watchdog, stdout protocol accounting, and scripted-interaction replay —
+ * is completely driver-agnostic and must not be duplicated. `bridgeUrl`/
+ * `udsPath` remain fetch-bridge-specific (unused, and simply omitted from
+ * env, for a browser-driven run — see `runCollector`'s
+ * `browserPreloadPath` branch).
+ */
 function runReplaySubprocess(args: {
-  bridgeUrl: string;
+  bridgeUrl?: string;
   connectorPath: string;
   /** run.clock.fixed_now when the scenario recorded one — pins the
    *  subprocess's Date.now()/new Date() so wall-clock-dependent request
    *  planning replays deterministically. */
   fixedNow?: string;
   isolate: boolean;
+  preloadPath: string;
   startState: Record<string, unknown> | null;
   streamNames: readonly string[];
   /** Inactivity watchdog window, in seconds — `--timeout` or
@@ -866,10 +887,7 @@ function runReplaySubprocess(args: {
   workspace: ScenarioEvidenceWorkspace;
 }): Promise<{ code: number | null; messages: ProtocolMessage[]; stderr: string }> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const preloadPath = writeReplayBridgePreload(args.bridgeUrl, {
-      workspace: args.workspace,
-      ...(args.udsPath === undefined ? {} : { udsSocketPath: args.udsPath }),
-    });
+    const { preloadPath } = args;
     const child = spawnWithNetworkIsolation(process.execPath, ["--import", "tsx", args.connectorPath], {
       cwd: PACKAGE_ROOT,
       env: {
@@ -1169,6 +1187,21 @@ function printStreamCoverageLine(args: CliArgs, scenario: ConnectorScenario): vo
   );
 }
 
+/** Cleans up the evidence workspace and re-throws `stashed` when set — the
+ *  shared tail of `main`'s watchdog-kill and browser-replay-evidence-error
+ *  handling (see their declaration-site comments above `main`). A no-op
+ *  when `stashed` is `undefined` (neither fired). */
+function rethrowStashedPreflightError(
+  workspace: ScenarioEvidenceWorkspace,
+  stashed: WatchdogTimeoutError | BrowserReplayEvidenceError | undefined
+): void {
+  if (!stashed) {
+    return;
+  }
+  cleanupScenarioEvidenceWorkspace(workspace);
+  throw stashed;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const connectorPath = resolveConnectorPath(args);
@@ -1192,12 +1225,15 @@ async function main(): Promise<void> {
 
   process.stdout.write(`VERIFYING ${args.connector} against ${args.scenarioPath}\n`);
   process.stdout.write(`  runs: ${String(scenario.runs.length)}\n`);
-  // FIX 5: prints the declared driver(s) — "recorded-http" for every run
-  // this build's recorder produces, or "(none declared)" for a legacy
-  // scenario with no `environment` field at all on any run.
+  // FIX 5: prints the declared driver(s) — "recorded-http" and/or
+  // "recorded-browser" for every run this build's recorders produce, or
+  // "(none declared)" for a legacy scenario with no `environment` field at
+  // all on any run.
   const declaredDrivers = [
     ...new Set(
-      scenario.runs.map((run) => run.environment?.network?.driver).filter((d): d is "recorded-http" => d !== undefined)
+      scenario.runs
+        .map((run) => run.environment?.network?.driver)
+        .filter((d): d is "recorded-http" | "recorded-browser" => d !== undefined)
     ),
   ];
   process.stdout.write(`  driver: ${declaredDrivers.length > 0 ? declaredDrivers.join(", ") : "(none declared)"}\n`);
@@ -1269,6 +1305,14 @@ async function main(): Promise<void> {
   // `ScenarioValidationError` already takes at that catch site — instead of
   // being buried in the ordinary failure report.
   let watchdogTimeout: WatchdogTimeoutError | undefined;
+  // Mirrors `watchdogTimeout` above exactly, for the same reason: a missing/
+  // unreadable browser-replay evidence file (HAR or storage state) is a
+  // diagnosed pre-flight verdict — not an ordinary per-run replay mismatch —
+  // and `verifyRun` (verify.ts) would otherwise fold it into `replay_mismatch`
+  // just like it folds a watchdog kill. Stashed here, re-thrown after
+  // `verifyScenario` returns so it reaches `main().catch()`'s plain-verdict
+  // handling instead.
+  let browserReplayEvidenceError: BrowserReplayEvidenceError | undefined;
 
   // Emits this run's replay result (records/state/trace) into the collector
   // and the outer `allRunMessages` accumulator. Split out of `runCollector`
@@ -1315,21 +1359,81 @@ async function main(): Promise<void> {
     allRunMessages.push(...(replayResult.messages as unknown as RawTraceMessage[]));
   };
 
+  /**
+   * Runs one run's replay via the recorded-browser driver — no fetch-bridge
+   * server at all (this driver's traffic never touches the connector Node
+   * process's own fetch/http/net; see browser-har-replay.ts's module doc
+   * comment), just `writeBrowserHarReplayPreload`'s patchright-launch patch.
+   * Pre-flight evidence resolution (`resolveBrowserEvidence`) runs BEFORE
+   * any subprocess spawns, same tier as this file's other pre-flight checks
+   * — a `BrowserReplayEvidenceError` here is a diagnosed verdict, not a
+   * crash (see `main().catch()`'s handling below).
+   */
+  const runBrowserCollector = async (
+    runIndex: number,
+    collectorArgs: { emit: RunCollectorEmit; state: unknown }
+  ): Promise<void> => {
+    const run = scenario.runs[runIndex];
+    if (!run) {
+      throw new Error(`scenario replay: run ${String(runIndex)} not found`);
+    }
+    const scenarioDir = dirname(resolve(args.scenarioPath));
+    let evidence: ReturnType<typeof resolveBrowserEvidence>;
+    try {
+      evidence = resolveBrowserEvidence(scenarioDir, run);
+    } catch (err) {
+      if (err instanceof BrowserReplayEvidenceError) {
+        browserReplayEvidenceError = err;
+      }
+      throw err;
+    }
+    const preloadPath = writeBrowserHarReplayPreload(evidence, isolationWorkspace);
+    let result: { code: number | null; messages: ProtocolMessage[]; stderr: string };
+    try {
+      result = await runReplaySubprocess({
+        connectorPath,
+        preloadPath,
+        ...(evidence.fixedNowIso === undefined ? {} : { fixedNow: evidence.fixedNowIso }),
+        startState: isPlainStateRecord(collectorArgs.state) ? collectorArgs.state : null,
+        streamNames: streamNamesFromScenario(scenario, runIndex),
+        timeoutSeconds: args.timeoutSeconds,
+        userInteractions: run.user_interactions ?? [],
+        isolate: isolationCapability.available,
+        workspace: isolationWorkspace,
+      });
+    } catch (err) {
+      if (err instanceof WatchdogTimeoutError) {
+        watchdogTimeout = err;
+      }
+      throw err;
+    }
+    emitReplayResult(runIndex, result, collectorArgs.emit);
+  };
+
   const runCollector = async (
     runIndex: number,
     collectorArgs: { emit: RunCollectorEmit; fetch: typeof fetch; state: unknown }
   ): Promise<void> => {
+    if (scenario.runs[runIndex]?.environment?.network?.driver === "recorded-browser") {
+      await runBrowserCollector(runIndex, collectorArgs);
+      return;
+    }
     const udsPath = isolationCapability.available
       ? join(isolationWorkspace.dir, `bridge-${String(runIndex)}.sock`)
       : undefined;
     const bridge = await startFetchBridgeServer(collectorArgs.fetch, udsPath);
     try {
       const fixedNow = scenario.runs[runIndex]?.clock?.fixed_now;
+      const preloadPath = writeReplayBridgePreload(bridge.url, {
+        workspace: isolationWorkspace,
+        ...(udsPath === undefined ? {} : { udsSocketPath: udsPath }),
+      });
       let result: { code: number | null; messages: ProtocolMessage[]; stderr: string };
       try {
         result = await runReplaySubprocess({
           connectorPath,
           bridgeUrl: bridge.url,
+          preloadPath,
           ...(fixedNow === undefined ? {} : { fixedNow }),
           startState: isPlainStateRecord(collectorArgs.state) ? collectorArgs.state : null,
           streamNames: streamNamesFromScenario(scenario, runIndex),
@@ -1361,14 +1465,16 @@ async function main(): Promise<void> {
     cleanupScenarioEvidenceWorkspace(isolationWorkspace);
     return;
   }
-  // FIX 2: `verifyScenario` swallowed the watchdog kill into an ordinary
-  // per-run `replay_mismatch` failure (see `runCollector`'s doc comment
-  // above) — re-throw it now so it reaches `main().catch()`'s dedicated
-  // plain-verdict handling instead of the normal FAIL report below.
-  if (watchdogTimeout) {
-    cleanupScenarioEvidenceWorkspace(isolationWorkspace);
-    throw watchdogTimeout;
-  }
+  // FIX 2 / browser-replay-evidence: `verifyScenario` swallowed a watchdog
+  // kill OR a missing/unusable browser-replay evidence file into an ordinary
+  // per-run `replay_mismatch` failure (see `runCollector`'s and
+  // `browserReplayEvidenceError`'s declaration-site comments above) —
+  // re-throw whichever fired now so it reaches `main().catch()`'s dedicated
+  // plain-verdict handling instead of the normal FAIL report below. Combined
+  // into one helper (rather than two separate `if` blocks inline in `main`)
+  // purely to keep `main`'s own cognitive complexity under this package's
+  // lint ceiling — behavior is unchanged from two inline checks.
+  rethrowStashedPreflightError(isolationWorkspace, watchdogTimeout ?? browserReplayEvidenceError);
 
   for (let runIndex = 0; runIndex < scenario.runs.length; runIndex += 1) {
     const runFailures = result.failures.filter((f) => f.runIndex === runIndex);
@@ -1633,6 +1739,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     // plain-verdict treatment `ScenarioValidationError` gets just above.
     if (err instanceof WatchdogTimeoutError) {
       process.stderr.write(`${err.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    // Same plain-verdict treatment as ScenarioValidationError/
+    // WatchdogTimeoutError above — see browser-har-replay.ts's
+    // `BrowserReplayEvidenceError` doc comment: a missing/unusable HAR or
+    // storage-state file is a diagnosed pre-flight verdict naming exactly
+    // what's missing, not a crash in this CLI's own code.
+    if (err instanceof BrowserReplayEvidenceError) {
+      process.stderr.write(`[scenario-verify] ${err.message}\n`);
       process.exitCode = 1;
       return;
     }
