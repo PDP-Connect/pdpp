@@ -1977,26 +1977,62 @@ function conditionExpired(expiresAt: string | null, observedAt: string | null): 
   return expiresAtMs <= observedAtMs;
 }
 
+/**
+ * Projection sources that a new run must clear, because no amount of waiting
+ * can.
+ *
+ * `terminal_facts_historical` is emitted by `foldTerminalEventFacts` when
+ * every terminal event on record carries a manifest generation that is not
+ * the connection's current one. The fold is right to refuse it — a
+ * prior-generation event is not proof about the current manifest — but the
+ * consequence is a state that cannot self-heal: the drain re-reads the same
+ * historical events and re-derives the identical verdict forever. Only a
+ * fresh successful run, stamped at the current generation, emits the
+ * evidence that clears it.
+ *
+ * Telling the owner to "wait" here is the one instruction guaranteed not to
+ * work, which is what made several connections read as an unexplained
+ * "Can't collect" indefinitely.
+ */
+const RUN_CLEARABLE_PROJECTION_SOURCES: ReadonlySet<string> = new Set(["terminal_facts_historical"]);
+
 function projectionReliableCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   // This is the canonical projection-reliability composition boundary. Several
   // failed components can share one closed reason code (for example a repair
   // lock failure); retain first-seen order while exposing each cause once.
   const sources = canonicalProjectionUnreliableSources(input.projection?.unreliableSources ?? []);
   if (sources.length > 0) {
+    // "Wait" stays the default, and stays correct whenever ANY source can
+    // still clear on its own — a mixed set is only as stuck as its most
+    // recoverable member. Only an entirely run-clearable set changes advice.
+    const requiresRun = sources.every((source) => RUN_CLEARABLE_PROJECTION_SOURCES.has(source));
     return condition({
-      message: `Projection evidence is unreliable: ${sources.join(", ")}.`,
+      message: requiresRun
+        ? `Projection evidence has not run since the connection's setup changed: ${sources.join(", ")}. A new successful run will restore it.`
+        : `Projection evidence is unreliable: ${sources.join(", ")}.`,
       origin: "read_model",
       reason: CONDITION_REASON.PROJECTION_UNRELIABLE,
       // The first unreliable source is surfaced as the machine-readable
       // reason_code; callers that need the complete set still have the full
       // list in `unreliableSources`/the human-readable `message` below.
       reasonCode: sources[0] ?? null,
-      remediation: {
-        action: "wait",
-        label: "Wait for the reference read model to refresh",
-        retryable: true,
-        target: null,
-      },
+      remediation: requiresRun
+        ? {
+            // Same shape as every other owner-runnable remediation in this
+            // file (see `stale_manual_refresh` and the retryable-gap
+            // coverage condition): the runtime performs the retry, and the
+            // console's Refresh CTA is the owner's way to ask for it now.
+            action: "retry_by_runtime",
+            label: "Run the connector to rebuild its evidence",
+            retryable: true,
+            target: "run",
+          }
+        : {
+            action: "wait",
+            label: "Wait for the reference read model to refresh",
+            retryable: true,
+            target: null,
+          },
       severity: "blocked",
       status: "false",
       type: "ProjectionReliable",
