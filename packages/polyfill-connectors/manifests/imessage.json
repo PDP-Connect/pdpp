@@ -23,15 +23,15 @@
       "rationale": "Hidden from the reference dashboard catalog until an operator proves a local macOS Messages database run on this deployment and explicitly opts it into listing."
     },
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
       "minimum_interval_seconds": 300,
       "maximum_staleness_seconds": 21600,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
-      "background_safe": false,
-      "rationale": "iMessage history is read from the operator's local macOS Messages database. Docker/provider scheduled runs must use a local collector or an explicitly mounted IMESSAGE_DB_PATH."
+      "background_safe": true,
+      "rationale": "iMessage history is read from the operator's local macOS Messages database over a filesystem binding: no network provider, no interactive login, nothing to assist, so unattended refresh is mechanically safe. Whether the database is reachable is a runtime-requirements question (filesystem binding, IMESSAGE_DB_PATH) enforced by the pre-run deployment-readiness gate, not by refresh mode; Docker/provider runs must use a local collector or an explicitly mounted path."
     }
   },
   "streams": [

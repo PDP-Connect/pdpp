@@ -17,8 +17,21 @@ const manifest = JSON.parse(
 ) as Manifest;
 
 test("Jellyfin remains Preview until live version capability is proven", () => {
+  // `public_listing.tier` is what actually withholds Jellyfin from
+  // auto-enrollment and from the dashboard catalog, so it is the assertion
+  // that carries this test's intent.
+  //
+  // This test used to ALSO pin `recommended_mode: "manual"` and
+  // `background_safe: false`. Those encoded "not proven yet" as a claim
+  // about background SAFETY, which is a different fact: Jellyfin is a
+  // self-hosted API-key connector with no interactive login, so there is
+  // nothing about it that makes unattended refresh unsafe. Maturity belongs
+  // to the tier; capability belongs to the refresh policy. Mode is now
+  // derived from capability (reference-implementation/runtime/
+  // refresh-mode-derivation.ts), so pinning it here would re-introduce the
+  // contradiction the derivation exists to prevent.
   assert.equal(manifest.capabilities.public_listing.tier, "preview");
-  assert.equal(manifest.capabilities.refresh_policy.recommended_mode, "manual");
-  assert.equal(manifest.capabilities.refresh_policy.background_safe, false);
-  assert.match(manifest.capabilities.refresh_policy.rationale, /version compatibility.*unproven/i);
+  assert.match(manifest.capabilities.refresh_policy.rationale, /unproven/i);
+  // The unproven-ness must still be stated in owner-readable terms.
+  assert.match(manifest.capabilities.refresh_policy.rationale, /version and credentialed-deployment/i);
 });

@@ -39,15 +39,15 @@
       "rationale": "Real collection logic (query/parse/emit against a live Signal Desktop database via the sigtop sidecar), verified by unit tests and a mocked-subprocess integration test. The sigtop binary itself is now built from pinned source (v0.24.0, ISC) into the Core image and smoke-verified at build time, so the sidecar is proven present and executable on the shipped runtime. Listed as Preview rather than Supported because no repeatable live run against a real Signal account has been recorded yet, and only Linux is exercised. The owner opted this into listing to perform that first real run."
     },
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
       "minimum_interval_seconds": 300,
       "maximum_staleness_seconds": 21600,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
-      "background_safe": false,
-      "rationale": "Signal history is read from the operator's local Signal Desktop database via the sigtop subprocess. Docker/provider scheduled runs must use a local collector or an explicitly mounted Signal Desktop data directory + SIGTOP_BIN."
+      "background_safe": true,
+      "rationale": "Signal history is read from the operator's local Signal Desktop database via the sigtop subprocess: no network provider, no interactive login, nothing to assist, so unattended refresh is mechanically safe. The binding constraints — a filesystem mount plus a live desktop session for the OS keyring that unwraps the SQLCipher key — are runtime requirements enforced by the pre-run deployment-readiness gate, not by refresh mode. No repeatable live run has been recorded, which public_listing.tier:preview records."
     }
   },
   "streams": [

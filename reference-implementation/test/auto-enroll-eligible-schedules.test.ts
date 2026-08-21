@@ -8,14 +8,18 @@
  * proven, env-wired, silently unscheduled" gap for connectors like
  * Notion, Oura, and Strava. The contract under test:
  *
- *   - Eligible-with-env: a manifest that is automatic, background-safe,
- *     listed, proven, and declares `capabilities.auth.required` whose
- *     env names are all populated on `process.env` gets a new enabled
- *     schedule row at the manifest-recommended interval.
+ *   - Eligible-with-env: a manifest that DERIVES automatic (see
+ *     runtime/refresh-mode-derivation.ts), is listed as supported, and
+ *     declares `capabilities.auth.required` whose env names are all
+ *     populated on `process.env` gets a new enabled schedule row at the
+ *     manifest-recommended interval.
  *   - Eligible-without-env: the same manifest with one env name unset
  *     produces no row.
- *   - Ineligible policy: manual / paused / background-unsafe / unproven
- *     produces no row even when env is set.
+ *   - Ineligible policy: a connector whose declared interaction posture
+ *     needs a per-run owner gesture, or an explicit `paused`, or an
+ *     unproven tier, produces no row even when env is set.
+ *   - Derived, not declared: a hand-written `recommended_mode` cannot
+ *     override the facts the connector declares, in either direction.
  *   - Idempotency: a second pass over the same controller is a no-op;
  *     an operator-paused row stays paused.
  *
@@ -34,6 +38,7 @@ import {
 interface TestRefreshPolicy {
   assisted_after_owner_auth?: boolean;
   background_safe: boolean;
+  interaction_posture?: string;
   recommended_interval_seconds?: number;
   recommended_mode: string;
 }
@@ -302,9 +307,32 @@ test("mixed string + alias-array entries each apply their own rule", async () =>
   assert.equal(aliasMissing.enrolled, 0);
 });
 
-test("manual refresh policy is never auto-enrolled even when env is present", async () => {
+test("a connector needing a per-run owner gesture is never auto-enrolled even when env is present", async () => {
+  // The safety property this pass must keep: a connector whose declared
+  // interaction posture requires the owner at every run never gets an
+  // unattended schedule. Mode is derived from that posture, so the posture
+  // is what the test states — an interactive-login connector that has NOT
+  // declared session persistence, i.e. the Chase/USAA shape.
   const controller = createFakeController();
   const m = manifest();
+  m.capabilities.refresh_policy.interaction_posture = "otp_likely";
+  m.capabilities.refresh_policy.background_safe = false;
+  m.capabilities.refresh_policy.recommended_mode = "manual";
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: { WIDGET_TOKEN: "set" },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.skipped_policy, 1);
+  assert.equal(summary.enrolled, 0);
+  assert.equal(controller.schedules.size, 0);
+});
+
+test("a file-import connector is never auto-enrolled even when env is present", async () => {
+  const controller = createFakeController();
+  const m = manifest();
+  m.capabilities.refresh_policy.interaction_posture = "manual_action_likely";
+  m.capabilities.refresh_policy.background_safe = false;
   m.capabilities.refresh_policy.recommended_mode = "manual";
   const summary = await autoEnrollEligibleSchedules({
     controller,
@@ -315,44 +343,29 @@ test("manual refresh policy is never auto-enrolled even when env is present", as
   assert.equal(summary.enrolled, 0);
 });
 
-test("manual-default background-safe policy is still never auto-enrolled even when env is present", async () => {
+test("a hand-written manual mode cannot veto the facts the connector declares", async () => {
+  // The defect this fixes: Amazon/Reddit/H-E-B each declared
+  // background_safe:true (the session persists after first login) and were
+  // still refused a schedule because a hand-written string said "manual".
+  // Mode is derived, so the declared fact wins.
   const controller = createFakeController();
-  const m = manifest({
-    capabilities: {
-      ...manifest().capabilities,
-      refresh_policy: {
-        ...manifest().capabilities.refresh_policy,
-        background_safe: true,
-        recommended_mode: "manual",
-      },
-    },
-  });
+  const m = manifest();
+  m.capabilities.refresh_policy.interaction_posture = "otp_likely";
+  m.capabilities.refresh_policy.background_safe = true;
+  m.capabilities.refresh_policy.recommended_mode = "manual";
   const summary = await autoEnrollEligibleSchedules({
     controller,
     env: { WIDGET_TOKEN: "set" },
     listConnectors: singleManifestList(m),
   });
-  assert.equal(summary.skipped_policy, 1);
-  assert.equal(summary.enrolled, 0);
+  assert.equal(summary.enrolled, 1);
+  assert.equal(summary.skipped_policy, 0);
 });
 
-test("background_safe=false is never auto-enrolled even when env is present", async () => {
+test("recommended_mode=paused is honored as deliberate operator intent", async () => {
   const controller = createFakeController();
   const m = manifest();
-  m.capabilities.refresh_policy.background_safe = false;
-  const summary = await autoEnrollEligibleSchedules({
-    controller,
-    env: { WIDGET_TOKEN: "set" },
-    listConnectors: singleManifestList(m),
-  });
-  assert.equal(summary.skipped_policy, 1);
-  assert.equal(summary.enrolled, 0);
-});
-
-test("assisted_after_owner_auth=true is never auto-enrolled even when env is present", async () => {
-  const controller = createFakeController();
-  const m = manifest();
-  m.capabilities.refresh_policy.assisted_after_owner_auth = true;
+  m.capabilities.refresh_policy.recommended_mode = "paused";
   const summary = await autoEnrollEligibleSchedules({
     controller,
     env: { WIDGET_TOKEN: "set" },
@@ -361,6 +374,42 @@ test("assisted_after_owner_auth=true is never auto-enrolled even when env is pre
   assert.equal(summary.skipped_policy, 1);
   assert.equal(summary.enrolled, 0);
   assert.equal(controller.schedules.size, 0);
+});
+
+test("background_safe=false on a gesture-free connector no longer blocks enrollment", async () => {
+  // Notion/Oura/Strava shape: a pure token connector that used
+  // background_safe:false to mean "unproven". Maturity is the tier gate's
+  // job; with tier=supported there is nothing left to block on.
+  const controller = createFakeController();
+  const m = manifest();
+  m.capabilities.refresh_policy.interaction_posture = "none";
+  m.capabilities.refresh_policy.background_safe = false;
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: { WIDGET_TOKEN: "set" },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 1);
+  assert.equal(summary.skipped_policy, 0);
+});
+
+test("assisted_after_owner_auth=true does not by itself block enrollment", async () => {
+  // It means "a background run may ask for bounded help", which
+  // run-automation-policy.ts projects as automation_mode:"assisted" while
+  // still allowing the run to start. Using it as a hard gate here
+  // contradicted that engine.
+  const controller = createFakeController();
+  const m = manifest();
+  m.capabilities.refresh_policy.interaction_posture = "otp_likely";
+  m.capabilities.refresh_policy.background_safe = true;
+  m.capabilities.refresh_policy.assisted_after_owner_auth = true;
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: { WIDGET_TOKEN: "set" },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 1);
+  assert.equal(summary.skipped_policy, 0);
 });
 
 test('public_listing.tier != "supported" is never auto-enrolled', async () => {
@@ -398,10 +447,13 @@ test("manifest without capabilities.auth.required cannot be auto-enrolled", asyn
     env: { WIDGET_TOKEN: "set" },
     listConnectors: singleManifestList({ ...m, capabilities }),
   });
-  // Categorized as skipped_policy: the manifest does not declare the
-  // gating contract this pass needs. The connector remains visible in
-  // the catalog and the doctor still reports it as NOSCHED.
-  assert.equal(summary.skipped_policy, 1);
+  // Counted apart from skipped_policy: nothing is wrong with this
+  // connector's policy — the pass simply has no env requirement to gate on.
+  // Conflating the two is what made a no-op boot log read as 25 policy
+  // rejections. The connector remains visible in the catalog and the doctor
+  // still reports it as NOSCHED.
+  assert.equal(summary.skipped_no_auth_requirement, 1);
+  assert.equal(summary.skipped_policy, 0);
   assert.equal(summary.enrolled, 0);
 });
 
@@ -472,6 +524,9 @@ test("multiple connectors are evaluated independently in one pass", async () => 
   const noEnv = manifest({ connector_id: "no-env" });
   const manual = manifest({ connector_id: "manual" });
   manual.capabilities.refresh_policy.recommended_mode = "manual";
+  // Declared facts, not the hand-written string, are what derive manual.
+  manual.capabilities.refresh_policy.interaction_posture = "otp_likely";
+  manual.capabilities.refresh_policy.background_safe = false;
   const list = async () => [
     { connector_id: eligible.connector_id, manifest: eligible },
     { connector_id: noEnv.connector_id, manifest: noEnv },
@@ -614,4 +669,43 @@ test("a throwing store probe counts as an error and does not enroll", async () =
   assert.equal(summary.enrolled, 0);
   assert.equal(summary.errors, 1);
   assert.equal(summary.skipped_env, 0);
+});
+
+test("an ineligible connector is never probed for an existing schedule", async () => {
+  // Explains the live boot log {"scanned":25,"enrolled":0,"skipped_policy":25,
+  // "skipped_existing":0} on a deployment that HAS existing schedule rows.
+  // The manifest gate runs BEFORE the existing-schedule probe, so a connector
+  // rejected on policy never reaches getSchedule and never counts toward
+  // skipped_existing. That ordering is deliberate and safe — this pass only
+  // ever ADDS a row, and the cheap pure-manifest check short-circuits before
+  // the per-connector store read — but it does mean skipped_existing counts
+  // "eligible AND already scheduled", not "already scheduled".
+  const probed: string[] = [];
+  const controller = createFakeController();
+  const scheduled = makeFakeSchedule(
+    "ineligible",
+    { enabled: true, interval_seconds: 900 },
+    "2024-01-01T00:00:00.000Z"
+  );
+  controller.schedules.set("ineligible", scheduled);
+  const probingController: AutoEnrollControllerLike = {
+    getSchedule: (connectorId: string) => {
+      probed.push(connectorId);
+      return controller.getSchedule(connectorId);
+    },
+    upsertSchedule: controller.upsertSchedule,
+  };
+  const m = manifest({ connector_id: "ineligible" });
+  m.capabilities.refresh_policy.interaction_posture = "otp_likely";
+  m.capabilities.refresh_policy.background_safe = false;
+  const summary = await autoEnrollEligibleSchedules({
+    controller: probingController,
+    env: { WIDGET_TOKEN: "set" },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.skipped_policy, 1);
+  assert.equal(summary.skipped_existing, 0, "the existing row is not counted because policy rejected first");
+  assert.deepEqual(probed, [], "getSchedule must not be called for a policy-rejected connector");
+  // The pre-existing row is left exactly as the operator left it.
+  assert.equal(controller.schedules.get("ineligible"), scheduled);
 });

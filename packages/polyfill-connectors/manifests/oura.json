@@ -37,15 +37,15 @@
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
       "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
-      "background_safe": false,
-      "rationale": "Oura is unproven pending credentialed live testing; scheduled background runs are deferred until owner validation completes."
+      "background_safe": true,
+      "rationale": "Oura uses a personal access token over HTTPS: no browser, no interactive login, nothing to assist, so unattended refresh is mechanically safe. It remains unproven pending credentialed live testing, which public_listing.tier:development records — auto-enrollment gates on tier, not on refresh mode."
     },
     "public_listing": {
       "tier": "development"

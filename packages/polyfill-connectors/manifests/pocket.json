@@ -16,14 +16,12 @@
     "human_interaction": [],
     "refresh_policy": {
       "recommended_mode": "manual",
-      "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 3600,
-      "maximum_staleness_seconds": 86400,
-      "interaction_posture": "none",
+      "interaction_posture": "manual_action_likely",
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
       "background_safe": false,
-      "rationale": "Pocket upstream API was shut down by Mozilla on 2025-07-08; the connector cannot run regardless of refresh mode."
+      "rationale": "Pocket's upstream API was shut down by Mozilla on 2025-07-08, so no unattended refresh path exists and the connector cannot collect at all; it is retained only so existing records stay readable."
     },
     "public_listing": {
       "tier": "development"

@@ -47,7 +47,8 @@
   "capabilities": {
     "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 7200,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "otp_likely",
@@ -55,7 +56,7 @@
       "bot_detection_sensitivity": "high",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "Amazon remains manual by default because sign-in and anti-bot checks are common, but an owner can explicitly opt into a background schedule after authenticating the connection."
+      "rationale": "Sign-in and anti-bot checks are common on first login, but the session persists in the owner's browser profile afterward, so scheduled refresh reuses it. background_safe:true records that persistence and recommended_mode follows from it. assisted_after_owner_auth:true means a background run may still ask the owner for bounded help when Amazon re-challenges."
     },
     "public_listing": {
       "tier": "supported"

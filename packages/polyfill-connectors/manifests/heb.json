@@ -47,14 +47,16 @@
   "capabilities": {
     "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 7200,
+      "maximum_staleness_seconds": 86400,
       "interaction_posture": "otp_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "H-E-B is fronted by Imperva Incapsula and supports passkeys plus verification codes; manual by default because sign-in and bot challenges are common. Parsers are verified against real logged-in heb.com DOM (order list + order detail). background_safe:true makes background scheduling available once the owner opts in after authenticating; recommended_mode stays manual so it never auto-runs unattended."
+      "rationale": "H-E-B is fronted by Imperva Incapsula and supports passkeys plus verification codes, so first login is owner-present; the session then persists in the browser profile and scheduled refresh reuses it. Parsers are verified against real logged-in heb.com DOM (order list + order detail). assisted_after_owner_auth:true means a background run may ask the owner for bounded help when a bot challenge appears."
     },
     "public_listing": {
       "tier": "supported"

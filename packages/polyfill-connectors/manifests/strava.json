@@ -15,15 +15,15 @@
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
       "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
-      "background_safe": false,
-      "rationale": "Manual refresh is retained while the owner setup path remains unproven."
+      "background_safe": true,
+      "rationale": "Strava uses a bearer access token over HTTPS: no browser, no interactive login, nothing to assist, so unattended refresh is mechanically safe. The owner setup path remains unproven, which public_listing.tier:development records — auto-enrollment gates on tier, not on refresh mode."
     },
     "public_listing": {
       "tier": "development"
