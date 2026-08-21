@@ -139,10 +139,10 @@ import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config as dotenvConfig } from "dotenv";
-import type { InteractionResponse } from "@pdpp/connector-protocol/connector-runtime-protocol";
-import { handleInteraction, type InteractionMessage } from "../src/interaction-handler.ts";
 import { hashCanonicalJson } from "@pdpp/collector-runtime";
+import type { InteractionResponse } from "@pdpp/connector-protocol/connector-runtime-protocol";
+import { config as dotenvConfig } from "dotenv";
+import { handleInteraction, type InteractionMessage } from "../src/interaction-handler.ts";
 import {
   CONNECTORS_DIR,
   getConnectorPaths,

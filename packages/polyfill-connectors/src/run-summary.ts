@@ -186,6 +186,24 @@ function buildDone(messages: readonly EmittedMessage[]): RunSummaryDone {
 }
 
 /**
+ * Widen a stream's observed `emitted_at` window. Records arrive in emission
+ * order per stream but interleave across streams, and `emitted_at` is
+ * connector-supplied, so neither bound can be assumed from arrival position.
+ * Non-string and empty timestamps leave the window untouched.
+ */
+function widenRecordWindow(stream: RunSummaryStream, emittedAt: unknown): void {
+  if (typeof emittedAt !== "string" || !emittedAt) {
+    return;
+  }
+  if (!stream.first_record_at || emittedAt < stream.first_record_at) {
+    stream.first_record_at = emittedAt;
+  }
+  if (!stream.last_record_at || emittedAt > stream.last_record_at) {
+    stream.last_record_at = emittedAt;
+  }
+}
+
+/**
  * Fold a connector's protocol message stream into a `RunSummary`.
  *
  * Edge cases this handles explicitly (see `src/run-summary.test.ts`):
@@ -208,15 +226,7 @@ export function buildRunSummary(messages: readonly EmittedMessage[], meta: RunSu
     if (message.type === "RECORD") {
       const stream = streamFor(message.stream, streams);
       stream.records += 1;
-      const { emitted_at: emittedAt } = message;
-      if (typeof emittedAt === "string" && emittedAt) {
-        if (!stream.first_record_at || emittedAt < stream.first_record_at) {
-          stream.first_record_at = emittedAt;
-        }
-        if (!stream.last_record_at || emittedAt > stream.last_record_at) {
-          stream.last_record_at = emittedAt;
-        }
-      }
+      widenRecordWindow(stream, message.emitted_at);
     } else if (message.type === "STATE") {
       streamFor(message.stream, streams).state_emitted = true;
     } else if (message.type === "SKIP_RESULT") {

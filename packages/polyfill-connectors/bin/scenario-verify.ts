@@ -80,9 +80,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config as dotenvConfig } from "dotenv";
-import type { InteractionResponse } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { canonicalJson } from "@pdpp/collector-runtime";
+import type { InteractionResponse } from "@pdpp/connector-protocol/connector-runtime-protocol";
+import { config as dotenvConfig } from "dotenv";
 import { getConnectorPaths, KNOWN_CONNECTOR_NAMES, readManifest } from "../src/orchestrator.ts";
 import { evaluateClaimEligibility } from "../src/scenario/claims.ts";
 import type { ConnectorScenario, ScenarioUserInteraction } from "../src/scenario/format.ts";

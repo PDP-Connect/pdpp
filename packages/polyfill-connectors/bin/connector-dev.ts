@@ -112,12 +112,16 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stringifyForJsonl } from "@pdpp/connector-protocol";
+import type {
+  EmittedMessage,
+  InteractionResponse,
+  StreamScope,
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { config as dotenvConfig } from "dotenv";
-import type { EmittedMessage, InteractionResponse, StreamScope } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { handleInteraction, type InteractionMessage } from "../src/interaction-handler.ts";
 import { getConnectorPaths, KNOWN_CONNECTOR_NAMES, readManifest } from "../src/orchestrator.ts";
 import { buildRunSummary, type RunSummary } from "../src/run-summary.ts";
-import { stringifyForJsonl } from "@pdpp/connector-protocol";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(__dirname, "..");

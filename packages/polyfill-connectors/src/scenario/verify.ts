@@ -66,9 +66,9 @@
  * `undefined` for those without throwing, exactly as before.
  */
 
+import { hashCanonicalJson } from "@pdpp/collector-runtime";
 import type { EmittedMessage } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { validateRuntimeContinuationFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
-import { hashCanonicalJson } from "@pdpp/collector-runtime";
 import type {
   ConnectorScenario,
   NormalizedTraceEntry,

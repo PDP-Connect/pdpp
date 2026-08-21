@@ -117,7 +117,7 @@ const SECRET_FIELD_RE = /password|secret|token|passphrase|pin\b|api_key/i;
  * they use --answer flags or fail loudly upstream).
  */
 function promptStdinMasked(question: string): Promise<string> {
-  const stdin = process.stdin;
+  const { stdin } = process;
   if (!stdin.isTTY || typeof stdin.setRawMode !== "function") {
     return promptStdin(question);
   }
