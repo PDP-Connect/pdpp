@@ -62,6 +62,7 @@ interface RunNowCall {
   readonly options: {
     connectorInstanceId?: string | null;
     force?: boolean;
+    fullRefresh?: boolean;
     runAdmission?: RunAdmission;
     resources?: Readonly<Record<string, readonly string[]>>;
   };
@@ -395,6 +396,7 @@ test("POST /_ref/connections/:id/run forwards explicit force override to the con
       options: {
         connectorInstanceId: "cin_chatgpt",
         force: true,
+        fullRefresh: false,
         ownerSubjectId: "owner_local",
       },
     },
@@ -418,7 +420,7 @@ test("POST /_ref/connectors/:id/run forwards explicit force override to the cont
   assert.deepEqual(harness.calls.runNow, [
     {
       connectorId: "chatgpt",
-      options: { connectorInstanceId: "cin_chatgpt", force: true, ownerSubjectId: "owner_local" },
+      options: { connectorInstanceId: "cin_chatgpt", force: true, fullRefresh: false, ownerSubjectId: "owner_local" },
     },
   ]);
   const [firstEvent] = harness.calls.emitSpineEvent;
@@ -454,6 +456,7 @@ test("POST /_ref/connections/:id/run uses the typed draft enrollment admission",
       options: {
         connectorInstanceId: "cin_amazon_draft",
         force: false,
+        fullRefresh: false,
         ownerSubjectId: "owner_local",
         runAdmission: "browser_enrollment",
       },
@@ -504,6 +507,7 @@ test("POST /_ref/connections/:id/run forwards scoped stream resources", async ()
       options: {
         connectorInstanceId: "cin_slack",
         force: false,
+        fullRefresh: false,
         ownerSubjectId: "owner_local",
         resources: { messages: ["C07JYF0U8BY"] },
       },
@@ -536,11 +540,92 @@ test("POST /_ref/connections/:id/run accepts explicit setup admission", async ()
       options: {
         connectorInstanceId: "cin_draft",
         force: false,
+        fullRefresh: false,
         ownerSubjectId: "owner_local",
         runAdmission: "setup",
       },
     },
   ]);
+});
+
+test("POST /_ref/connections/:id/run forwards an explicit full-refresh request to the controller", async () => {
+  const harness = buildHarness(mountRefConnectionRun);
+
+  const res = await harness.invoke({
+    body: { full_refresh: true },
+    params: { connectorInstanceId: "cin_apple_contacts" },
+  });
+
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(harness.calls.runNow, [
+    {
+      connectorId: "chatgpt",
+      options: {
+        connectorInstanceId: "cin_apple_contacts",
+        force: false,
+        fullRefresh: true,
+        ownerSubjectId: "owner_local",
+      },
+    },
+  ]);
+});
+
+test("POST /v1/owner/connections/:id/run forwards an explicit full-refresh request to the controller", async () => {
+  const harness = buildOwnerHarness();
+
+  const res = await harness.invoke({ body: { full_refresh: true } });
+
+  assert.equal(res.statusCode, 202);
+  const [firstCall] = harness.calls.runNow;
+  assert.ok(firstCall);
+  assert.equal(firstCall.options.fullRefresh, true);
+});
+
+test("run routes do not full-refresh unless the body value is exactly true", async () => {
+  // Same strict-`true` contract `force` holds: a truthy-looking string, a
+  // missing body, or an explicit false must all leave the run incremental.
+  // A full refresh re-walks the whole source, so widening this parse would
+  // silently turn every ordinary `Sync now` into a full re-enumeration.
+  for (const body of [null, {}, { full_refresh: "true" }, { full_refresh: 1 }, { full_refresh: false }]) {
+    const harness = buildHarness(mountRefConnectionRun);
+    await harness.invoke({ body, params: { connectorInstanceId: "cin_apple_contacts" } });
+    const [firstCall] = harness.calls.runNow;
+    assert.ok(firstCall);
+    assert.equal(firstCall.options.fullRefresh, false, `body ${JSON.stringify(body)} must not force a full refresh`);
+  }
+
+  for (const body of [null, {}, { full_refresh: "true" }, { full_refresh: 1 }, { full_refresh: false }]) {
+    const ownerHarness = buildOwnerHarness();
+    await ownerHarness.invoke({ body });
+    const [firstOwnerCall] = ownerHarness.calls.runNow;
+    assert.ok(firstOwnerCall);
+    assert.equal(
+      firstOwnerCall.options.fullRefresh,
+      false,
+      `owner body ${JSON.stringify(body)} must not force a full refresh`
+    );
+  }
+});
+
+test("a full-refresh request is independent of the provider-pressure force override", async () => {
+  // The two flags answer different questions — `force` is about provider
+  // cooldown, `full_refresh` about how much of the source the run walks — so
+  // neither may imply the other.
+  const refreshOnly = buildHarness(mountRefConnectionRun);
+  await refreshOnly.invoke({ body: { full_refresh: true }, params: { connectorInstanceId: "cin_apple_contacts" } });
+  assert.equal(refreshOnly.calls.runNow[0]?.options.force, false, "full_refresh must not imply force");
+
+  const forceOnly = buildHarness(mountRefConnectionRun);
+  await forceOnly.invoke({ body: { force: true }, params: { connectorInstanceId: "cin_apple_contacts" } });
+  assert.equal(forceOnly.calls.runNow[0]?.options.fullRefresh, false, "force must not imply full_refresh");
+
+  const both = buildHarness(mountRefConnectionRun);
+  await both.invoke({
+    body: { force: true, full_refresh: true },
+    params: { connectorInstanceId: "cin_apple_contacts" },
+  });
+  assert.equal(both.calls.runNow[0]?.options.force, true);
+  assert.equal(both.calls.runNow[0]?.options.fullRefresh, true);
 });
 
 test("POST /_ref/connections/:id/run rejects prototype-polluting resource keys", async () => {
