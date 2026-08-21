@@ -97,6 +97,16 @@ function buildHarness(
     resumeHistoricalArchiveConnectionIfPaused: [],
     runNow: [],
   };
+  // Hoisted out of the object literal below: a typed arrow carrying BOTH a
+  // parameter annotation and a return type cannot sit inside a spread-ternary
+  // without tripping @babel/parser 8's `UnexpectedTypeAnnotation`, which the
+  // canonical-entrypoint ratchet parses this file with. The conditional
+  // *presence* of the key is preserved verbatim below.
+  const resumeHistoricalArchiveConnectionIfPaused = async (input: ResumeHookCall): Promise<boolean> => {
+    calls.resumeHistoricalArchiveConnectionIfPaused.push(input);
+    const resumeHook = harnessOptions.resumeHistoricalArchiveConnectionIfPaused;
+    return resumeHook ? await resumeHook(input) : false;
+  };
   const ctx: MountRefConnectorsContext = {
     canonicalConnectorKey: (value) => value ?? null,
     createRequestConnectorInstanceStore: () => {
@@ -137,15 +147,7 @@ function buildHarness(
       throw err;
     },
     requireOwnerSession: (_req, _res, next) => (typeof next === "function" ? next() : undefined),
-    ...(harnessOptions.resumeHistoricalArchiveConnectionIfPaused
-      ? {
-          resumeHistoricalArchiveConnectionIfPaused: async (input: ResumeHookCall): Promise<boolean> => {
-            calls.resumeHistoricalArchiveConnectionIfPaused.push(input);
-            const resumeHook = harnessOptions.resumeHistoricalArchiveConnectionIfPaused;
-            return resumeHook ? await resumeHook(input) : false;
-          },
-        }
-      : {}),
+    ...(harnessOptions.resumeHistoricalArchiveConnectionIfPaused ? { resumeHistoricalArchiveConnectionIfPaused } : {}),
     resolveOwnerConnectorNamespace(_req, connectorId, options = {}) {
       calls.resolveOwnerConnectorNamespace.push({ connectorId, options });
       if (
