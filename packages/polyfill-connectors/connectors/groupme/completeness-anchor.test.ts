@@ -21,7 +21,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { groupMessageShortfall, providerMessageCount } from "./index.ts";
+import { groupMessageShortfall, partitionGroupMessageShortfalls, providerMessageCount } from "./index.ts";
 
 const GROUP_ID = "1618492";
 
@@ -97,4 +97,61 @@ test("groupMessageShortfall reports a gap for an empty walk against a non-zero c
   const verdict = groupMessageShortfall(group({ messages: { count: 12 } }), 0);
   assert.equal(verdict.kind, "short");
   assert.equal(verdict.kind === "short" ? verdict.shortfall.providerCount : null, 12);
+});
+
+// ─── partitionGroupMessageShortfalls: classify, never subtract ───────────
+//
+// Live evidence from this owner's workspace (run_1787279998931, and an
+// independent un-throttled sweep of all 156 groups): 42 groups report a
+// non-zero `messages.count` yet return HTTP 200 with an empty `messages`
+// array on EVERY documented access path — plain, `limit=1`, `after_id=0`,
+// and 304 on `before_id`/`since_id` anchored at the group's own
+// `last_message_id`. Those 1601 messages are counted by GroupMe and served
+// by nothing, so telling the owner to retry is a false promise. The split
+// exists to say that honestly — never to shrink the gap.
+
+test("partitionGroupMessageShortfalls routes a zero-message walk to withheld", () => {
+  const { partial, withheld } = partitionGroupMessageShortfalls([{ groupId: "2561292", providerCount: 98, walked: 0 }]);
+  assert.equal(withheld.length, 1);
+  assert.equal(partial.length, 0);
+  assert.equal(withheld[0]?.providerCount, 98);
+});
+
+test("partitionGroupMessageShortfalls routes a genuinely partial walk to partial", () => {
+  const { partial, withheld } = partitionGroupMessageShortfalls([
+    { groupId: "1618492", providerCount: 61, walked: 40 },
+  ]);
+  assert.equal(partial.length, 1);
+  assert.equal(withheld.length, 0);
+  assert.equal(partial[0]?.walked, 40);
+});
+
+test("partitionGroupMessageShortfalls preserves every message of the gap across both buckets", () => {
+  // The whole point: classification must not lose a single claimed message.
+  // A withheld group's full providerCount is still missing (walked 0), so the
+  // combined total must equal the pre-split total.
+  const shortfalls = [
+    { groupId: "2561292", providerCount: 98, walked: 0 },
+    { groupId: "4747691", providerCount: 1, walked: 0 },
+    { groupId: "1618492", providerCount: 61, walked: 40 },
+  ];
+  const before = shortfalls.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
+  const { partial, withheld } = partitionGroupMessageShortfalls(shortfalls);
+  const after =
+    partial.reduce((sum, s) => sum + (s.providerCount - s.walked), 0) +
+    withheld.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
+  assert.equal(after, before);
+  assert.equal(partial.length + withheld.length, shortfalls.length);
+});
+
+test("partitionGroupMessageShortfalls keeps a withheld group's messages counted as missing", () => {
+  // A withheld group is NOT explained away: its provider count is the number
+  // of messages still absent from PDPP. Subtracting it to make the books
+  // balance would be exactly the fabricated reconciliation this anchor exists
+  // to prevent.
+  const { withheld } = partitionGroupMessageShortfalls([{ groupId: "2368502", providerCount: 55, walked: 0 }]);
+  assert.equal(
+    withheld.reduce((sum, s) => sum + (s.providerCount - s.walked), 0),
+    55
+  );
 });
