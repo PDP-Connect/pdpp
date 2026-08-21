@@ -377,9 +377,12 @@ test("collectGroupMessages: cold start (no prior cursor) walks backward, clean p
       // pages supply only 2 and 1 messages, so the provider-count anchor
       // correctly reports both groups short. This is the anchor doing its
       // job against the fixture's own numbers, not a regression.
+      // `unprovenBoundary: false` on both: each walk ended on a page the
+      // provider actually served, so the boundary evidence is coherent and
+      // the shortfall is an ordinary one, not an ambiguous empty-page case.
       shortfalls: [
-        { groupId: "group-1", providerCount: 10, walked: 2 },
-        { groupId: "group-2", providerCount: 10, walked: 1 },
+        { groupId: "group-1", providerCount: 10, unprovenBoundary: false, walked: 2 },
+        { groupId: "group-2", providerCount: 10, unprovenBoundary: false, walked: 1 },
       ],
       unanchoredGroupIds: [],
     });
@@ -1259,6 +1262,121 @@ test("collect(): failed direct_chat_messages reports failure while preserving su
       false,
       "the failed stream must not advance its checkpoint"
     );
+  } finally {
+    restore();
+  }
+});
+
+// ─── throttle-blindness: an empty page against a non-zero count ───────────
+//
+// GroupMe answers with HTTP 200 + `messages: []` both when it has nothing to
+// serve and when it is declining to serve content it still counts. Measured
+// live, those two responses are identical apart from `content-length` — same
+// status, same `meta.code`, no `Retry-After`, no rate-limit header — so the
+// status-based retry governor cannot tell them apart.
+//
+// The connector must therefore refuse to claim a PROVEN walk in that case,
+// and must not assert the gap is unrecoverable either. These tests pin both
+// halves at the `collectGroupMessages` boundary.
+
+test("collectGroupMessages: an empty page contradicting its own count marks the boundary unproven", async () => {
+  const restore = stubFetchSequence([
+    { body: { response: [group({ id: "group-1" })] } }, // /groups
+    // The provider counts 10 messages and serves none — the exact live shape.
+    { body: { response: { count: 10, messages: [] } } },
+  ]);
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, false, "nothing errored — only the completeness claim is withheld");
+    assert.equal(outcome.shortfalls.length, 1);
+    assert.equal(
+      outcome.shortfalls[0]?.unprovenBoundary,
+      true,
+      "a self-contradicting empty page must never pass for a proven walk"
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("collectGroupMessages: an empty page whose count AGREES at zero stays a proven walk", async () => {
+  const restore = stubFetchSequence([
+    { body: { response: [group({ id: "group-1", messages_count: 0 })] } }, // /groups
+    // Provider says zero and serves zero: coherent, an ordinary natural end.
+    { body: { response: { count: 0, messages: [] } } },
+  ]);
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, false);
+    assert.deepEqual(outcome.shortfalls, [], "a coherent zero is a real anchor, not a gap");
+  } finally {
+    restore();
+  }
+});
+
+test("collect(): an ambiguous empty page is reported as unexplained AND retryable, never as proven-unrecoverable", async () => {
+  const restore = stubFetchSequence([
+    { body: { response: [group()] } }, // /groups
+    // The contradicting page: provider counts 10, serves none.
+    { body: { response: { count: 10, messages: [] } } },
+    { body: { response: [] } }, // /chats
+  ]);
+  try {
+    const messages: EmittedMessage[] = [];
+    await collect({
+      state: {},
+      requested: new Map<string, StreamScope>([["group_messages", { name: "group_messages" }]]),
+      credentials: { GROUPME_ACCESS_TOKEN: TOKEN },
+      emit: (message: EmittedMessage) => {
+        messages.push(message);
+        return Promise.resolve();
+      },
+      emitRecord: async () => {
+        await Promise.resolve();
+      },
+      progress: async () => {
+        await Promise.resolve();
+      },
+      assist: async () => "",
+      capture: null,
+      completeAssistance: async () => {
+        await Promise.resolve();
+      },
+      detailGaps: [],
+      emittedAt: new Date().toISOString(),
+      requestDetailGapPage: async () => [],
+      scope: { streams: [{ name: "group_messages" }] },
+      sendInteraction: async () => ({}) as never,
+    } satisfies CollectContext);
+
+    const skips = messages.filter(
+      (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+        m.type === "SKIP_RESULT" && m.stream === "group_messages"
+    );
+    const ambiguous = skips.find((s) => s.reason === "provider_served_empty_page_against_its_own_count");
+
+    assert.ok(ambiguous, "the ambiguous gap must be reported under its own reason");
+    // The load-bearing assertion. Claiming `not_retriable` here would assert a
+    // certainty the response cannot support: being throttled produces this
+    // exact same body, so the honest hint leaves the door open.
+    const hint = ambiguous.recovery_hint;
+    assert.ok(typeof hint === "object" && hint !== null, "recovery_hint must be the structured form");
+    assert.equal(hint.action, "retry_by_runtime");
+    assert.equal(hint.retryable, true);
+    assert.equal(
+      skips.some((s) => s.reason === "provider_serves_no_messages_for_group"),
+      false,
+      "the retired proven-unrecoverable verdict must not come back"
+    );
+    // Never subtracted: the counted-but-unserved messages stay reported missing.
+    const diagnostics = ambiguous.diagnostics as { unexplained_message_total?: number } | undefined;
+    assert.equal(diagnostics?.unexplained_message_total, 10);
   } finally {
     restore();
   }
