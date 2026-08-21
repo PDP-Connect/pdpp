@@ -1,3 +1,4 @@
+const TOP_LEVEL_REGEX_PROJECTION_NEEDS_RUN = /has not run since/i;
 const TOP_LEVEL_REGEX_1 = /queued work but stopped checking in/i;
 const TOP_LEVEL_REGEX_2 = /without owner action/i;
 const TOP_LEVEL_REGEX_3 = /dead[- ]letter/i;
@@ -147,6 +148,70 @@ test("unknown: repeated projection reasons are canonicalized in first-seen order
     projection?.message,
     "Projection evidence is unreliable: repair_lock_unavailable, terminal_fold_failed."
   );
+});
+
+test("unknown: a generation-fenced terminal fold does not tell the owner to wait", () => {
+  // Measured on the owner's live instance: 7 of 29 connections sit at
+  // `terminal_facts_state='stale'` with reason `terminal_facts_historical`,
+  // and the correlation with "instance manifest_generation != the newest
+  // terminal event's generation" is exact across all 29 rows (USAA 8 vs 7,
+  // H-E-B 7 vs 6 and 1 vs 0, Gmail 6 vs 3, ...). Two samples 7 minutes
+  // apart were byte-identical and some `computed_at` values were days old,
+  // so this is a TERMINAL state, not projection lag.
+  //
+  // The fold is right to refuse a prior-generation event as proof about the
+  // current manifest. What was wrong is the advice: the generic projection
+  // remediation says "Wait for the reference read model to refresh", which
+  // is the one thing that can never clear this. Only a fresh successful run
+  // stamped at the current generation emits the missing evidence.
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      projection: { unreliableSources: ["terminal_facts_historical"] },
+      run: run(),
+    })
+  );
+  const projection = findCondition(snap, "ProjectionReliable");
+  assert.equal(projection?.status, "false");
+  assert.equal(projection?.reason_code, "terminal_facts_historical");
+  assert.notEqual(
+    projection?.remediation?.action,
+    "wait",
+    "waiting can never clear a generation-fenced fold; only a new run can"
+  );
+  assert.equal(projection?.remediation?.action, "retry_by_runtime");
+  assert.equal(projection?.remediation?.target, "run");
+  assert.match(String(projection?.message), TOP_LEVEL_REGEX_PROJECTION_NEEDS_RUN);
+});
+
+test("unknown: an genuinely transient projection source still says wait", () => {
+  // Behavior preservation: only the generation-fenced reason changes advice.
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      projection: { unreliableSources: ["record_checkpoint_lag"] },
+      run: run(),
+    })
+  );
+  const projection = findCondition(snap, "ProjectionReliable");
+  assert.equal(projection?.remediation?.action, "wait");
+  assert.equal(projection?.remediation?.retryable, true);
+});
+
+test("unknown: a mixed source set keeps wait when any source is transient", () => {
+  // If anything in the set really can clear on its own, "wait" is still
+  // honest advice and must not be downgraded.
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      projection: { unreliableSources: ["terminal_facts_historical", "record_checkpoint_lag"] },
+      run: run(),
+    })
+  );
+  assert.equal(findCondition(snap, "ProjectionReliable")?.remediation?.action, "wait");
 });
 
 test("shared condition reasons expose canonical reason-code constants", () => {
