@@ -206,6 +206,14 @@ export interface TransitionStatementInput {
  *
  * `placeholder` differs only in dialect (`?` vs `$n`); the predicate's shape
  * is identical, which is what keeps the two backends from disagreeing.
+ *
+ * One dialect difference is NOT abstracted away, because pretending it does
+ * not exist is what produced a real defect here: PostgreSQL can reference one
+ * bound parameter twice (`$7` in both the SET and the WHERE), while SQLite's
+ * positional `?` consumes a fresh value per occurrence. Binding the epoch
+ * once and interpolating it twice therefore worked on PostgreSQL and threw
+ * "Too few parameter values were provided" on SQLite. `bind` is called once
+ * per OCCURRENCE in SQL text order for exactly this reason.
  */
 export function buildTransitionStatement(
   input: TransitionStatementInput,
@@ -220,20 +228,23 @@ export function buildTransitionStatement(
   const status = bind(toDurableStatus(input.targetState));
   const completedAt = bind(input.completedAt);
   const terminalReason = bind(input.terminalReason);
+  // Bound per occurrence, in SQL text order: the SET clause writes the
+  // claimant's epoch, the WHERE clause fences on it.
+  const epochForSet = bind(input.ownerEpoch);
   const runId = bind(input.runId);
   const connectorInstanceId = bind(input.connectorInstanceId);
   const expected = bind(toDurableStatus(input.expectedState));
-  const epoch = bind(input.ownerEpoch);
+  const epochForFence = bind(input.ownerEpoch);
 
   const sql = `UPDATE run_history
    SET status = ${status},
        completed_at = ${completedAt},
        terminal_reason = ${terminalReason},
-       owner_epoch = ${epoch}
+       owner_epoch = ${epochForSet}
  WHERE run_id = ${runId}
    AND connector_instance_id = ${connectorInstanceId}
    AND status = ${expected}
-   AND (owner_epoch = ${epoch} OR owner_epoch IS NULL)`;
+   AND (owner_epoch = ${epochForFence} OR owner_epoch IS NULL)`;
 
   return { params, sql };
 }
@@ -280,10 +291,13 @@ export function buildAdjudicationStatement(
   const status = bind(toDurableStatus("abandoned"));
   const completedAt = bind(input.completedAt);
   const terminalReason = bind(input.terminalReason);
+  // Bound per occurrence in SQL text order — see buildTransitionStatement for
+  // why binding once and interpolating twice is a dual-backend defect.
+  const epochForSet = bind(input.myEpoch);
   const runId = bind(input.runId);
   const connectorInstanceId = bind(input.connectorInstanceId);
   const expected = bind(toDurableStatus(input.expectedState));
-  const myEpoch = bind(input.myEpoch);
+  const epochForFence = bind(input.myEpoch);
 
   // `records_emitted` is deliberately absent from the SET list. Records
   // durably ingested before the interruption stay committed; an abandon must
@@ -292,11 +306,11 @@ export function buildAdjudicationStatement(
    SET status = ${status},
        completed_at = ${completedAt},
        terminal_reason = ${terminalReason},
-       owner_epoch = ${myEpoch}
+       owner_epoch = ${epochForSet}
  WHERE run_id = ${runId}
    AND connector_instance_id = ${connectorInstanceId}
    AND status = ${expected}
-   AND (owner_epoch IS NULL OR owner_epoch <> ${myEpoch})`;
+   AND (owner_epoch IS NULL OR owner_epoch <> ${epochForFence})`;
 
   return { params, sql };
 }
