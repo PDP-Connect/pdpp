@@ -3,9 +3,14 @@
 
 /**
  * Reference-server boot pass that enrolls a default enabled schedule for
- * every first-party connector whose manifest is automatic, background-safe,
- * publicly listed with `status: proven`, AND whose declared
- * `capabilities.auth.required` env names are populated in `process.env`.
+ * every first-party connector that DERIVES an automatic refresh mode from
+ * its declared capability facts, is publicly listed as `supported`, AND
+ * whose declared `capabilities.auth.required` env names are populated in
+ * `process.env`.
+ *
+ * The mode is derived, never read from the hand-written `recommended_mode`
+ * string — see `runtime/refresh-mode-derivation.ts` for the rule and why
+ * the hand-written field stopped being trustworthy.
  *
  * Spec: openspec/changes/auto-enroll-eligible-connector-schedules/.
  *
@@ -24,6 +29,7 @@
  */
 
 import type { ConnectorSchedulePatch, ScheduleApi, ScheduleUpsertResult } from "../runtime/controller.ts";
+import { deriveRecommendedMode } from "../runtime/refresh-mode-derivation.ts";
 
 const DEFAULT_INTERVAL_SECONDS = 3600;
 
@@ -72,6 +78,13 @@ export interface AutoEnrollSummary {
   scanned: number;
   skipped_env: number;
   skipped_existing: number;
+  /**
+   * Policy-eligible connectors this pass has no env requirement to gate on,
+   * so it cannot enroll them. Counted apart from `skipped_policy` because
+   * nothing is wrong with these connectors — conflating the two made a
+   * routine no-op boot read as a fleet-wide policy rejection.
+   */
+  skipped_no_auth_requirement: number;
   skipped_policy: number;
 }
 
@@ -83,6 +96,7 @@ const EMPTY_SUMMARY = (): AutoEnrollSummary => ({
   scanned: 0,
   skipped_env: 0,
   skipped_existing: 0,
+  skipped_no_auth_requirement: 0,
   skipped_policy: 0,
 });
 
@@ -106,6 +120,7 @@ function getCapabilities(manifest: unknown): ManifestCapabilities | null {
 interface PolicyFacts {
   readonly assistedAfterOwnerAuth: boolean | null;
   readonly backgroundSafe: boolean | null;
+  readonly interactionPosture: string | null;
   readonly recommendedIntervalSeconds: number | null;
   readonly recommendedMode: string | null;
 }
@@ -116,6 +131,7 @@ function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {
     return {
       assistedAfterOwnerAuth: null,
       backgroundSafe: null,
+      interactionPosture: null,
       recommendedIntervalSeconds: null,
       recommendedMode: null,
     };
@@ -131,6 +147,7 @@ function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {
   return {
     assistedAfterOwnerAuth: assisted,
     backgroundSafe: safe,
+    interactionPosture: typeof p.interaction_posture === "string" ? (p.interaction_posture as string) : null,
     recommendedIntervalSeconds: interval,
     recommendedMode: mode,
   };
@@ -275,16 +292,37 @@ interface PolicyEligibility {
   readonly reason?: string;
 }
 
+/**
+ * Decides whether a connector's declared facts permit an automatic schedule.
+ *
+ * Mode is DERIVED (see runtime/refresh-mode-derivation.ts), not read from the
+ * hand-written `recommended_mode` string, so a manifest cannot opt itself out
+ * of scheduling by contradicting its own interaction posture. An explicit
+ * `recommended_mode: "paused"` is still honored: pausing is a deliberate
+ * operator intent rather than a claim about capability.
+ *
+ * `assisted_after_owner_auth` is deliberately NOT a disqualifier here. It
+ * means "a background run may ask the owner for bounded help", which
+ * runtime/run-automation-policy.ts already handles by projecting
+ * `automation_mode: "assisted"` while still ALLOWING the run to start.
+ * Treating it as a hard gate contradicted that policy engine and was what
+ * kept Amazon, Reddit and H-E-B unscheduled despite each declaring itself
+ * background-safe.
+ */
 function checkPolicyEligibility(caps: ManifestCapabilities): PolicyEligibility {
   const policy = getPolicyFacts(caps);
-  if (policy.recommendedMode !== "automatic") {
-    return { eligible: false, reason: `recommended_mode=${policy.recommendedMode ?? "<missing>"}` };
+  if (policy.recommendedMode === "paused") {
+    return { eligible: false, reason: "recommended_mode=paused" };
   }
-  if (policy.backgroundSafe === false) {
-    return { eligible: false, reason: "background_safe=false" };
-  }
-  if (policy.assistedAfterOwnerAuth === true) {
-    return { eligible: false, reason: "assisted_after_owner_auth=true" };
+  const derivedMode = deriveRecommendedMode({
+    background_safe: policy.backgroundSafe ?? undefined,
+    interaction_posture: policy.interactionPosture ?? undefined,
+  });
+  if (derivedMode !== "automatic") {
+    return {
+      eligible: false,
+      reason: `derived_mode=${derivedMode} (interaction_posture=${policy.interactionPosture ?? "<missing>"}, background_safe=${String(policy.backgroundSafe)})`,
+    };
   }
   const listing = getListingFacts(caps);
   if (listing.tier !== "supported") {
@@ -306,21 +344,39 @@ interface EligibleManifest {
   readonly requirements: readonly string[];
 }
 
-function classifyManifestEligibility(manifest: unknown): EligibleManifest | null {
+/**
+ * Why a manifest was not eligible, so the summary can say which. These are
+ * genuinely different operator situations and previously both landed in
+ * `skipped_policy`, which made a routine no-op boot read like 25 policy
+ * rejections.
+ */
+type ManifestIneligibility =
+  | { readonly kind: "no_auth_requirement" }
+  | { readonly kind: "policy"; readonly reason: string };
+
+type ManifestClassification = EligibleManifest | ManifestIneligibility;
+
+function isEligibleManifest(classification: ManifestClassification): classification is EligibleManifest {
+  return !("kind" in classification);
+}
+
+function classifyManifestEligibility(manifest: unknown): ManifestClassification {
   const caps = getCapabilities(manifest);
   if (!caps) {
-    return null;
+    return { kind: "policy", reason: "manifest declares no capabilities" };
   }
   const policy = checkPolicyEligibility(caps);
   if (!policy.eligible) {
-    return null;
+    return { kind: "policy", reason: policy.reason ?? "ineligible" };
   }
   const requirements = extractEnvRequirement(caps);
   if (!requirements) {
     // Eligibility includes "manifest declares its env requirements".
-    // A proven, automatic connector without auth.required cannot be
-    // auto-enrolled by this pass because we have nothing to gate on.
-    return null;
+    // An automatic, listed connector without auth.required cannot be
+    // auto-enrolled by this pass because we have nothing to gate on. This
+    // is NOT a policy rejection — the connector is perfectly eligible in
+    // policy terms — so it is counted and logged separately.
+    return { kind: "no_auth_requirement" };
   }
   return {
     intervalSeconds: resolveIntervalSeconds(caps),
@@ -366,10 +422,18 @@ async function decideScheduleAttachmentForConnector(args: {
   log: (line: string) => void;
   manifest: unknown;
 }): Promise<AutoEnrollSummaryCounter> {
-  const manifestEligibility = classifyManifestEligibility(args.manifest);
-  if (!manifestEligibility) {
+  const classification = classifyManifestEligibility(args.manifest);
+  if (!isEligibleManifest(classification)) {
+    if (classification.kind === "no_auth_requirement") {
+      args.log(
+        `[auto-enroll] ${args.connectorId} is policy-eligible but declares no capabilities.auth.required; nothing to gate on`
+      );
+      return "skipped_no_auth_requirement";
+    }
+    args.log(`[auto-enroll] ${args.connectorId} not eligible: ${classification.reason}`);
     return "skipped_policy";
   }
+  const manifestEligibility = classification;
   const authGateFailure = await evaluateAuthRequirementGate({
     connectorId: args.connectorId,
     env: args.env,

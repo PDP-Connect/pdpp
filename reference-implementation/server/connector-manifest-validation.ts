@@ -17,6 +17,7 @@ import {
 } from "../../packages/polyfill-connectors/src/static-secret-credential-capture.ts";
 import { canonicalConnectorKey, isConnectorKey } from "./connector-key.ts";
 import { publicListingTierError } from "./public-listing-tier.ts";
+import { refreshPolicyContradictions } from "./refresh-policy-consistency.ts";
 
 // Inline copy — isNonEmptyString is used 30+ times in auth.js so moving it
 // would create a back-edge import; a verbatim 1-liner copy is the cleanest
@@ -724,6 +725,19 @@ function validateRefreshPolicyFields(pol: Record<string, unknown>, code: string)
   validateRefreshPolicyIntervals(pol, code);
   validateRefreshPolicyEnumsAndFlags(pol, code);
   validateRefreshPolicyRecoveryBudgets(pol, code);
+  validateRefreshPolicyInternalConsistency(pol, code);
+}
+
+// Rejects refresh policies whose own fields contradict each other. Every check
+// above this line is per-field and type-only, which is exactly how the shipped
+// corpus drifted into declaring `background_safe: true` alongside
+// `recommended_mode: "manual"`. See server/refresh-policy-consistency.ts for
+// the rule and why each combination is incoherent.
+function validateRefreshPolicyInternalConsistency(pol: Record<string, unknown>, code: string): void {
+  const contradictions = refreshPolicyContradictions(pol);
+  if (contradictions.length > 0) {
+    throw invalidConnectorManifest(`capabilities.refresh_policy is self-contradictory: ${contradictions[0]}`, code);
+  }
 }
 
 export function validateRefreshPolicyCapability(manifest: Record<string, unknown>, code: string): void {
@@ -810,10 +824,7 @@ export function validateDeclaredReasonTokensCapability(manifest: Record<string, 
       );
     }
     if (seen.has(token)) {
-      throw invalidConnectorManifest(
-        `capabilities.declared_reason_tokens contains a duplicate entry: ${token}`,
-        code
-      );
+      throw invalidConnectorManifest(`capabilities.declared_reason_tokens contains a duplicate entry: ${token}`, code);
     }
     seen.add(token);
   }
