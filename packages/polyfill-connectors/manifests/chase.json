@@ -1,8 +1,8 @@
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.dev/connectors/chase",
+  "connector_id": "https://registry.pdpp.org/connectors/chase",
   "connector_key": "chase",
-  "manifest_uri": "https://registry.pdpp.dev/connectors/chase",
+  "manifest_uri": "https://registry.pdpp.org/connectors/chase",
   "version": "0.1.0",
   "display_name": "Chase",
   "runtime_requirements": {
@@ -13,8 +13,7 @@
       "browser": {
         "required": true
       }
-    },
-    "environment_variables": ["CHASE_2FA_METHOD"]
+    }
   },
   "setup": {
     "modality": "static_secret",
@@ -594,7 +593,7 @@
     }
   ],
   "reason_display_messages": {
-    "account_no_longer_discovered": "An account we tracked before is no longer listed on your dashboard",
+    "account_no_longer_discovered": "An account we were tracking is no longer listed on your Chase dashboard",
     "ambiguous_multi_account_overview": "We couldn't tell which account view to use",
     "qfx_download_failed": "We couldn't download the transactions file",
     "qfx_parse_failed": "We couldn't read the transactions file",

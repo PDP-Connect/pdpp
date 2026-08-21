@@ -1,8 +1,8 @@
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.dev/connectors/heb",
+  "connector_id": "https://registry.pdpp.org/connectors/heb",
   "connector_key": "heb",
-  "manifest_uri": "https://registry.pdpp.dev/connectors/heb",
+  "manifest_uri": "https://registry.pdpp.org/connectors/heb",
   "version": "0.2.0",
   "display_name": "H-E-B",
   "runtime_requirements": {
@@ -47,16 +47,14 @@
   "capabilities": {
     "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
-      "recommended_mode": "automatic",
-      "recommended_interval_seconds": 21600,
+      "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
-      "maximum_staleness_seconds": 86400,
       "interaction_posture": "otp_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "H-E-B is fronted by Imperva Incapsula and supports passkeys plus verification codes, so first login is owner-present; the session then persists in the browser profile and scheduled refresh reuses it. Parsers are verified against real logged-in heb.com DOM (order list + order detail). assisted_after_owner_auth:true means a background run may ask the owner for bounded help when a bot challenge appears."
+      "rationale": "H-E-B is fronted by Imperva Incapsula and supports passkeys plus verification codes; manual by default because sign-in and bot challenges are common. Parsers are verified against real logged-in heb.com DOM (order list + order detail). background_safe:true makes background scheduling available once the owner opts in after authenticating; recommended_mode stays manual so it never auto-runs unattended."
     },
     "public_listing": {
       "tier": "supported"
@@ -330,7 +328,6 @@
     "pagination_metadata_contradictory": "H-E-B gave us conflicting page-count information, so we stopped to avoid missing any orders",
     "selector_drift": "The page layout changed and we couldn't find what we needed",
     "source_auth_or_challenge": "We need you to sign in or pass a verification check to continue",
-    "source_reported_empty": "H-E-B showed us your order history and it has no orders in it",
     "unparseable_order_date": "We skipped some orders because their dates couldn't be read"
   }
 }

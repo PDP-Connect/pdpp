@@ -1,8 +1,8 @@
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.dev/connectors/usaa",
+  "connector_id": "https://registry.pdpp.org/connectors/usaa",
   "connector_key": "usaa",
-  "manifest_uri": "https://registry.pdpp.dev/connectors/usaa",
+  "manifest_uri": "https://registry.pdpp.org/connectors/usaa",
   "version": "0.1.0",
   "display_name": "USAA",
   "runtime_requirements": {
@@ -661,8 +661,8 @@
     "pdf_parse_failed": "We couldn't read one of the statement PDFs",
     "pdf_template_unknown": "We don't recognize the format of this statement yet",
     "scrape_failed": "We couldn't read the page contents",
+    "statement_unreconciled": "A statement's transactions don't add up to the balance USAA printed on it",
     "selectors_pending": "Support for this part of the connector isn't complete yet",
-    "session_dead_reauth_failed": "Your sign-in expired and we couldn't refresh it",
-    "statement_unreconciled": "A statement's transactions don't add up to its printed balances"
+    "session_dead_reauth_failed": "Your sign-in expired and we couldn't refresh it"
   }
 }
