@@ -76,7 +76,7 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "@babel/parser": "7.29.2",
+    "@babel/parser": "8.0.4",
     "@biomejs/biome": "2.5.8",
     "@types/pg": "8.21.0",
     "jsdom": "^30.0.1",
