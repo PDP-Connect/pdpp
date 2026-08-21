@@ -211,6 +211,7 @@ import {
   getStreamFromManifest,
   loadConnectorManifests,
 } from "./record-synthesis.ts";
+import { terminalRunEventTypesSqlGroup } from "../../runtime/run-lifecycle-states.ts";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Argument parsing (zero-dep)
@@ -1200,7 +1201,7 @@ async function verifyBinaryContentInvariant(pool: Pool, { json, quiet }: OutputO
       AND NOT EXISTS (
         SELECT 1 FROM spine_events t
         WHERE t.run_id = s.run_id
-          AND t.event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned')
+          AND t.event_type IN ${terminalRunEventTypesSqlGroup()}
       )
     LIMIT 100
   `)

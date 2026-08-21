@@ -100,6 +100,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import pg from "pg";
+import { TERMINAL_RUN_EVENT_TYPE_LIST } from "../../runtime/run-lifecycle-states.ts";
 
 const { Pool } = pg;
 
@@ -119,14 +120,13 @@ export const ABANDONED_AT_BOOT_REASON = "controller_terminated_before_run_finish
 /** The `run_history.status` the generic writer derives for `run.abandoned`. */
 export const ABANDONED_RUN_HISTORY_STATUS = "abandoned";
 
-/** The spine's canonical terminal set. Must match `check-run-terminal.sql`. */
-const TERMINAL_EVENT_TYPES = [
-  "run.completed",
-  "run.failed",
-  "run.browser_surface_failed",
-  "run.cancelled",
-  "run.abandoned",
-] as const;
+/**
+ * The spine's canonical terminal set, derived from the single declaration in
+ * runtime/run-lifecycle-states.ts. This was previously a hand-typed copy whose
+ * comment asked it to "match check-run-terminal.sql" -- the same
+ * sync-by-comment pattern that let nine other copies drift.
+ */
+const TERMINAL_EVENT_TYPES = TERMINAL_RUN_EVENT_TYPE_LIST;
 
 // Identifier helpers
 

@@ -54,9 +54,21 @@ import {
   terminalStateForEventType,
 } from "../runtime/run-lifecycle-states.ts";
 
-const REPO_DIRS = ["server", "lib", "runtime", "operations"];
+const REPO_DIRS = ["server", "lib", "runtime", "operations", "scripts"];
 /** The single declaration site, exempt from the no-second-copy scan. */
 const DECLARATION_MODULE = "runtime/run-lifecycle-states.ts";
+
+/**
+ * `.sql` query artifacts cannot import TypeScript, so they are the one place
+ * the members must still be typed out. They are allowlisted by exact path
+ * rather than by extension, and the case below asserts their contents equal
+ * the declaration -- so they are pinned, not merely excused. A NEW .sql file
+ * with a terminal set fails the scan until it is added here deliberately.
+ */
+const SQL_ARTIFACTS_WITH_TERMINAL_SET: readonly string[] = [
+  "server/queries/spine/check-run-terminal.sql",
+  "server/queries/spine/get-run-terminal-event.sql",
+];
 const SOURCE_ROOT = new URL("..", import.meta.url).pathname;
 
 /**
@@ -82,7 +94,7 @@ function* walkSourceFiles(dir: string): Generator<string> {
     const stats = statSync(full);
     if (stats.isDirectory()) {
       yield* walkSourceFiles(full);
-    } else if (entry.endsWith(".ts") && !entry.includes(".test.")) {
+    } else if ((entry.endsWith(".ts") || entry.endsWith(".sql")) && !entry.includes(".test.")) {
       yield full;
     }
   }
@@ -155,7 +167,7 @@ test("run lifecycle: the terminal set has one declaration", async (t) => {
         // out. Exempting it by exact path (rather than by a general
         // "declaration-looking" heuristic) is what keeps the rule from
         // quietly re-admitting a second copy.
-        if (relative === DECLARATION_MODULE) {
+        if (relative === DECLARATION_MODULE || SQL_ARTIFACTS_WITH_TERMINAL_SET.includes(relative)) {
           continue;
         }
         const contents = readFileSync(file, "utf8");
@@ -170,5 +182,21 @@ test("run lifecycle: the terminal set has one declaration", async (t) => {
       [],
       `hand-typed terminal-set literals found; these must derive from runtime/run-lifecycle-states.ts:\n${offenders.join("\n")}`
     );
+  });
+
+  await t.test("the allowlisted SQL artifacts match the declaration exactly", () => {
+    // A .sql file cannot import the constant, so the allowlist above would be
+    // a hole if it only excused those files. Pin their contents instead: each
+    // must contain every member, so adding a terminal state and forgetting
+    // these fails here rather than silently in production.
+    for (const relative of SQL_ARTIFACTS_WITH_TERMINAL_SET) {
+      const contents = readFileSync(join(SOURCE_ROOT, relative), "utf8");
+      for (const eventType of TERMINAL_RUN_EVENT_TYPE_LIST) {
+        assert.ok(
+          contents.includes(`'${eventType}'`),
+          `${relative} omits ${eventType}; allowlisted SQL must carry the full terminal set`
+        );
+      }
+    }
   });
 });
