@@ -214,12 +214,34 @@ function readResumableEvidenceSweepResult(
  * below answers "is the backlog stuck", which is what an operator needs to
  * go look — not "why", which needs a targeted investigation regardless.
  */
+/*
+ * `prunedComplete` counts as progress ONLY while the backlog is empty.
+ *
+ * Production wedge, 2026-08-21: discovery was cancelled by its per-unit
+ * `statement_timeout` on EVERY pass, so 13 dirty rows never cleared and
+ * fleet health read 3 healthy / 24 for hours. This counter — which exists
+ * precisely to name that condition — never fired once in 6+ hours, because
+ * a cancelled discovery is caught and treated as non-fatal, leaving the
+ * walk to report a covered, converged fleet (28 instances, pageSize 25).
+ * `prunedComplete` was therefore `true` on every pass and reset the counter
+ * to 0 before it could ever reach the threshold. The alert was structurally
+ * unreachable in exactly the scenario it was written for.
+ *
+ * "Covered every page" and "the backlog is draining" are different facts.
+ * Pruning orphans while a non-empty dirty backlog sits untouched is work,
+ * not progress — the same distinction this module already draws for
+ * `repaired > 0`. So a completed prune may only mask a stuck backlog when
+ * there is no backlog to be stuck.
+ */
 function roundMadeProgress(
   currentEligibleBacklog: number,
   previousEligibleBacklog: number,
   prunedComplete: boolean
 ): boolean {
-  return prunedComplete === true || currentEligibleBacklog < previousEligibleBacklog;
+  if (currentEligibleBacklog < previousEligibleBacklog) {
+    return true;
+  }
+  return prunedComplete === true && currentEligibleBacklog === 0;
 }
 
 interface NoProgressTrackingState {
