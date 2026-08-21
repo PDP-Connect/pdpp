@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const SITE_ROOT = fileURLToPath(new URL("../src/", import.meta.url));
+const SOURCE_NOT_RE = /^@source not "([^"]+)";$/gm;
 
 /** Token-ownership probes — hoisted so the regexes compile once per module. */
 const BACKGROUND_REBIND_RE = /--background: var\(--pdpp-editorial-paper\)/;
@@ -86,4 +89,50 @@ test("concept entrypoint owns Tailwind utility generation", async () => {
   assert.doesNotMatch(primitiveCss, CONCEPT_MAX_RE);
   assert.doesNotMatch(primitiveCss, CONCEPT_SERIF_RE);
   assert.doesNotMatch(primitiveCss, CONTAINER_PAGE_RE);
+});
+
+/**
+ * `site.css` and `concept/index.css` each carry a hand-written `@source not`
+ * list — one entrypoint's exclusions are the other's exclusive territory, by
+ * design (see the block comment above each list). Nothing mechanically ties
+ * the two lists together, so a file move/rename/add can silently desync
+ * them: excluded from BOTH builds (renders with zero Tailwind utilities on
+ * whichever route uses it) or excluded from NEITHER (duplicate utility
+ * generation, the exact cascade-order bug this two-build split exists to
+ * prevent). This test is the mechanical tie.
+ */
+function parseSourceNotList(css: string, cssFileUrl: URL): string[] {
+  const cssDir = dirname(fileURLToPath(cssFileUrl));
+  return Array.from(css.matchAll(SOURCE_NOT_RE), ([fullMatch, relativePath]) => {
+    assert.ok(relativePath, `@source not directive matched with no capture group: ${fullMatch}`);
+    return resolve(cssDir, relativePath);
+  });
+}
+
+test("the two Tailwind builds' @source not lists stay disjoint and current", async () => {
+  const siteCssUrl = new URL("../src/styles/site.css", import.meta.url);
+  const conceptCssUrl = new URL("../src/styles/surfaces/concept/index.css", import.meta.url);
+  const [siteCss, conceptCss] = await Promise.all([readFile(siteCssUrl, "utf8"), readFile(conceptCssUrl, "utf8")]);
+
+  const siteExcludes = parseSourceNotList(siteCss, siteCssUrl);
+  const conceptExcludes = parseSourceNotList(conceptCss, conceptCssUrl);
+
+  assert.ok(siteExcludes.length > 0, "site.css should still carry concept-exclusive @source not entries");
+  assert.ok(conceptExcludes.length > 0, "concept/index.css should still carry non-concept @source not entries");
+
+  // Every excluded path must exist on disk — an entry surviving a rename is
+  // exactly the AGENTS.md-style staleness this repo's standing rule forbids.
+  for (const absPath of [...siteExcludes, ...conceptExcludes]) {
+    assert.ok(existsSync(absPath), `@source not path no longer exists on disk: ${absPath}`);
+  }
+
+  // No path may be excluded from BOTH builds — that file would render with
+  // zero Tailwind utilities on whichever route actually imports it.
+  const conceptExcludeSet = new Set(conceptExcludes);
+  const excludedFromBoth = siteExcludes.filter((p) => conceptExcludeSet.has(p));
+  assert.deepEqual(
+    excludedFromBoth,
+    [],
+    `paths excluded from BOTH Tailwind builds (would render with no utilities): ${excludedFromBoth.join(", ")}`
+  );
 });
