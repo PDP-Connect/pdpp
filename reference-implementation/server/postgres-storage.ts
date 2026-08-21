@@ -1925,6 +1925,16 @@ export async function bootstrapPostgresSchema({
         updated_at TEXT NOT NULL
       );
 
+      -- The deployment's durable controller identity; see the matching
+      -- comment in server/db.ts for why it is a table and not an env var.
+      -- Exactly one row (id = 'singleton'), written on the first boot that
+      -- finds it empty and read unchanged by every boot after that.
+      CREATE TABLE IF NOT EXISTS controller_identity (
+        id TEXT PRIMARY KEY,
+        controller_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS controller_active_runs (
         connector_instance_id TEXT PRIMARY KEY,
         connector_id TEXT NOT NULL,

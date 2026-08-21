@@ -26,13 +26,48 @@ import { type BootEpoch, emitSpineEvent, setCurrentBootEpoch } from "./spine.ts"
 export interface BootControllerOpts {
   /** Override for testing; defaults to randomUUID. */
   bootEpoch?: string;
-  /** Override for testing; defaults to PDPP_CONTROLLER_ID || os.hostname(). */
+  /**
+   * Override for testing; otherwise resolved from `PDPP_CONTROLLER_ID`, then
+   * from the durable `controller_identity` row (seeded from the hostname on
+   * first boot). See `resolveControllerId`.
+   */
   controllerId?: string;
   /** Process fingerprint fields. */
   gitSha?: string | null;
 }
 
-function resolveControllerId(opts: BootControllerOpts): string {
+/**
+ * The single row id in `controller_identity`. The table holds one row for
+ * the whole deployment; the constant keeps that intent in the SQL.
+ */
+const CONTROLLER_IDENTITY_ROW_ID = "singleton";
+
+/**
+ * Resolve the identity this deployment uses to claim and adjudicate runs.
+ *
+ * Precedence, and the reason for each step:
+ *
+ *  1. An explicit `opts.controllerId` — tests and multi-controller callers
+ *     that must pin an identity.
+ *  2. `PDPP_CONTROLLER_ID` — the operator override. Kept first among the
+ *     durable options so a genuine multi-controller deployment can still
+ *     partition ownership without touching the database.
+ *  3. The `controller_identity` row — the durable default. Written once, on
+ *     the first boot that finds the table empty, then read back unchanged
+ *     forever.
+ *
+ * Step 3 is the fix for the production defect. The previous fallback was
+ * `os.hostname()`, which under Docker is the container ID and is therefore
+ * fresh on every `docker run`. Because the boot reconciler only adjudicates
+ * orphans whose `controller_id` matches its own, a hostname identity meant
+ * every container replacement started with an empty claim: 121 production
+ * runs from 106 distinct controller ids were left permanently non-terminal.
+ *
+ * `os.hostname()` survives only as the seed for the first row, never as the
+ * live answer. That keeps a fresh deployment's identity readable to a human
+ * without making process-lifetime the identity's lifetime.
+ */
+async function resolveControllerId(opts: BootControllerOpts): Promise<string> {
   if (opts.controllerId && opts.controllerId.length > 0) {
     return opts.controllerId;
   }
@@ -40,7 +75,79 @@ function resolveControllerId(opts: BootControllerOpts): string {
   if (fromEnv && fromEnv.length > 0) {
     return fromEnv;
   }
-  return os.hostname();
+  return await loadOrCreateDurableControllerId();
+}
+
+/**
+ * Read the persisted controller identity, seeding it on first boot.
+ *
+ * The seed is `os.hostname()` so a fresh deployment gets a human-readable
+ * id; what matters is that it is written down once rather than recomputed
+ * per process.
+ *
+ * The INSERT is conditional on the row's absence and the value is re-read
+ * after writing, so two processes racing a first boot converge on whichever
+ * row landed rather than each trusting its own seed.
+ *
+ * If no database is available (SQLite tests that never open one), this falls
+ * back to the hostname. That path cannot strand orphans because without a
+ * database there is no spine to strand them in.
+ */
+async function loadOrCreateDurableControllerId(): Promise<string> {
+  const seed = os.hostname();
+
+  if (isPostgresStorageBackend()) {
+    const existing = await postgresQuery<{ controller_id: string }>(
+      "SELECT controller_id FROM controller_identity WHERE id = $1",
+      [CONTROLLER_IDENTITY_ROW_ID]
+    );
+    const found = existing.rows[0]?.controller_id;
+    if (found) {
+      return found;
+    }
+    await postgresQuery(
+      `INSERT INTO controller_identity (id, controller_id, created_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO NOTHING`,
+      [CONTROLLER_IDENTITY_ROW_ID, seed, new Date().toISOString()]
+    );
+    // Re-read rather than assume the seed won: a concurrent first boot may
+    // have inserted its own, and both processes must agree on one identity.
+    const settled = await postgresQuery<{ controller_id: string }>(
+      "SELECT controller_id FROM controller_identity WHERE id = $1",
+      [CONTROLLER_IDENTITY_ROW_ID]
+    );
+    return settled.rows[0]?.controller_id ?? seed;
+  }
+
+  const db = getDb();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+  if (!db) {
+    return seed;
+  }
+  const raw = db as unknown as {
+    prepare: (sql: string) => {
+      get: (...args: unknown[]) => { controller_id: string } | undefined;
+      run: (...args: unknown[]) => unknown;
+    };
+  };
+  const found = raw
+    .prepare("SELECT controller_id FROM controller_identity WHERE id = ?")
+    .get(CONTROLLER_IDENTITY_ROW_ID)?.controller_id;
+  if (found) {
+    return found;
+  }
+  raw
+    .prepare(
+      `INSERT INTO controller_identity (id, controller_id, created_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT (id) DO NOTHING`
+    )
+    .run(CONTROLLER_IDENTITY_ROW_ID, seed, new Date().toISOString());
+  return (
+    raw.prepare("SELECT controller_id FROM controller_identity WHERE id = ?").get(CONTROLLER_IDENTITY_ROW_ID)
+      ?.controller_id ?? seed
+  );
 }
 
 /**
@@ -93,7 +200,7 @@ async function nextSeqForController(controllerId: string): Promise<number> {
  * it to the orphan reconciler (Stage 6).
  */
 export async function emitControllerBootedAndStashEpoch(opts: BootControllerOpts = {}): Promise<BootEpoch> {
-  const controllerId = resolveControllerId(opts);
+  const controllerId = await resolveControllerId(opts);
   const bootEpoch = opts.bootEpoch && opts.bootEpoch.length > 0 ? opts.bootEpoch : randomUUID();
   const seq = await nextSeqForController(controllerId);
 
