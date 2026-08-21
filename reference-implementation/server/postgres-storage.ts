@@ -2903,6 +2903,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
     await ensurePostgresRecordsCanonicalCountIndex(client, log);
+    await ensurePostgresRecordsInstanceStreamIdIndex(client, log);
     await ensurePostgresConnectorSummarySourceRevisionPrimitive(client);
   } finally {
     try {
@@ -4648,6 +4649,112 @@ async function ensurePostgresRecordsCanonicalCountIndex(
          INCLUDE (emitted_at)`
     );
     log(`[PDPP] Records migration: canonical-count index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  });
+}
+
+/**
+ * Production incident, 2026-08-21: the owner's source-detail page took 44.5s
+ * wall-clock while a Google Maps re-ingest ran concurrently. Two independent
+ * defects compounded; this index closes the larger, and it closes it on BOTH
+ * sides of that incident, which is the part worth stating plainly.
+ *
+ * The keyset-pagination shape `WHERE connector_instance_id = $1 AND stream =
+ * $2 AND deleted = FALSE AND id > $3 ORDER BY id ASC LIMIT $4` had no index
+ * that could serve it. `records`' seven existing indexes all lead with
+ * `connector_instance_id` but none carries `id` as the column immediately
+ * after the equality predicates, so none can satisfy the ORDER BY. The
+ * closest, `idx_pg_records_stream_cursor`, is `(connector_instance_id,
+ * stream, deleted, cursor_value, primary_key_text)` — its fourth column is
+ * `cursor_value`, not `id`. The planner therefore fell back to `records_pkey`
+ * (already `id`-ordered, so the sort is free) and filtered every
+ * non-matching row away one at a time.
+ *
+ * Measured directly against production (READ-ONLY, `EXPLAIN (ANALYZE,
+ * BUFFERS)`) for `cin_12407c1afb78d56848fe0b20`/`messages` — 140,689 live
+ * rows in a 5.61M-row table: 27.4 SECONDS to return 50 rows, `Index Scan
+ * using records_pkey`, `Rows Removed by Filter: 3,031,420`, reading 514,958
+ * buffers from disk (~4 GB against a 512 MB `shared_buffers`). The row count
+ * removed is the whole story: the scan must walk every row with a lower `id`
+ * than the target connection's first row before it can return anything.
+ *
+ * This is NOT only a page-load defect. `postgresSemanticRecordsPage`
+ * (postgres-search.ts) — the coverage-scan SELECT that feeds the semantic
+ * backfill — issues the IDENTICAL query shape with `LIMIT 500`, and live
+ * `pg_stat_activity` sampling during a real re-ingest caught it at 1.2s,
+ * 1.6s, 1.9s, 7.0s, 12.2s, 17.2s, 22.3s and 27.4s on successive pages. So
+ * the "bulk ingest freezes the console" symptom and the "source detail page
+ * is slow" symptom were substantially the same missing index, hit from two
+ * call sites — the bulk pager was not merely competing for resources, it was
+ * itself running multi-second statements for the same reason. Fixing the
+ * index bounds both.
+ *
+ * Verified in a throwaway scratch database (never production DDL), seeded to
+ * production-representative shape — 3,031,420 rows belonging to other
+ * connections occupying the low `id` range, then 140,689 target rows, which
+ * reproduces the exact `Rows Removed by Filter: 3031420` from the live plan:
+ * the `LIMIT 50` page query goes 558ms -> 0.089ms, and the `LIMIT 500` bulk
+ * coverage page goes to 1.4ms, both switching to `Index Scan using
+ * idx_pg_records_instance_stream_id` with all four predicates absorbed into
+ * `Index Cond` and zero rows removed by filter.
+ *
+ * SCOPE, stated honestly: the scratch measurement's absolute numbers are
+ * smaller than production's because the scratch table has narrow rows and a
+ * warm cache; what transfers is the PLAN CHANGE and the elimination of
+ * `Rows Removed by Filter`, not the millisecond figure. The improvement is
+ * proportional to how deep the target connection's rows sit in the `id`
+ * space — a connection whose rows start near `id = 0` was never slow and
+ * gains little. Correspondingly, this index does not help any query that
+ * cannot supply both `connector_instance_id` and `stream` as equalities.
+ *
+ * REDUNDANCY: none. All seven pre-existing `records` indexes show non-zero
+ * `idx_scan` in `pg_stat_user_indexes` on production (lowest:
+ * `idx_pg_records_semantic_time` at 2,208), so nothing is dropped here. This
+ * index is additive — it does not prefix-subsume `idx_pg_records_stream_cursor`
+ * (that one's `cursor_value`/`primary_key_text` tail serves a different
+ * pagination) nor `idx_pg_records_canonical_count` (different column ORDER:
+ * `(instance, deleted, stream)`, plus `INCLUDE (emitted_at)`).
+ *
+ * Built `CONCURRENTLY` for the same reason as
+ * `idx_pg_records_canonical_count` above: `records` holds 5.6M rows / 4.6 GB
+ * on production, and a plain `CREATE INDEX` would hold a table-wide write
+ * lock for the entire build against the owner's live instance.
+ */
+const RECORDS_INSTANCE_STREAM_ID_INDEX_LOCK_ID = "8022352479012003";
+
+async function ensurePostgresRecordsInstanceStreamIdIndex(
+  client: PoolClient,
+  log: StorageLog = NOOP_STORAGE_LOG
+): Promise<void> {
+  await withPostgresAdvisoryLock(client, RECORDS_INSTANCE_STREAM_ID_INDEX_LOCK_ID, async () => {
+    const existing = await client.query(
+      `SELECT ix.indisvalid AS valid
+         FROM pg_class idx
+         JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+         JOIN pg_index ix ON ix.indexrelid = idx.oid
+        WHERE ns.nspname = current_schema()
+          AND idx.relname = 'idx_pg_records_instance_stream_id'
+        LIMIT 1`
+    );
+    if ((existing.rowCount ?? 0) > 0 && existing.rows[0]?.valid === true) {
+      return;
+    }
+    if ((existing.rowCount ?? 0) > 0) {
+      // A previous CONCURRENTLY build was interrupted. Postgres leaves the
+      // index behind marked invalid, and `IF NOT EXISTS` will NOT rebuild it
+      // — so the next boot would silently keep the slow plan forever. Drop
+      // it (also concurrently, so this recovery path takes no write lock
+      // either) and rebuild.
+      log("[PDPP] Records migration: dropping invalid instance/stream/id index before rebuild");
+      await client.query("DROP INDEX CONCURRENTLY IF EXISTS idx_pg_records_instance_stream_id");
+    }
+
+    log("[PDPP] Records migration: building keyset index idx_pg_records_instance_stream_id");
+    const startedAt = Date.now();
+    await client.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_records_instance_stream_id
+         ON records(connector_instance_id, stream, deleted, id)`
+    );
+    log(`[PDPP] Records migration: keyset index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
   });
 }
 
