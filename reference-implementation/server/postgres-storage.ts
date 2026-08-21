@@ -1292,8 +1292,15 @@ export async function bootstrapPostgresSchema({
         validation_json JSONB,
         error_json JSONB,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        owner_epoch TEXT
       );
+      -- The boot epoch of the process that owns this in-flight upload; an
+      -- artifact whose owner_epoch is not the current one is provably
+      -- orphaned. Added via ADD COLUMN IF NOT EXISTS so pre-existing rows
+      -- backfill to NULL, which the sweep also treats as orphaned.
+      ALTER TABLE manual_upload_artifacts
+        ADD COLUMN IF NOT EXISTS owner_epoch TEXT;
       CREATE INDEX IF NOT EXISTS idx_pg_manual_upload_artifacts_connection_created
         ON manual_upload_artifacts(connector_instance_id, created_at DESC);
 

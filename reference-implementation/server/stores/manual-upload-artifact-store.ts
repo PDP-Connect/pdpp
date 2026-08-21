@@ -26,6 +26,7 @@ interface ManualUploadArtifactRow {
   file_name: string;
   file_size_bytes: number | string | null;
   final_path: string | null;
+  owner_epoch: string | null;
   owner_subject_id: string;
   staging_path: string;
   status: string;
@@ -45,6 +46,7 @@ export interface ManualUploadArtifact {
   fileName: string;
   fileSizeBytes: number;
   finalPath: string | null;
+  ownerEpoch: string | null;
   ownerSubjectId: string;
   stagingPath: string;
   status: string;
@@ -65,6 +67,7 @@ export interface ManualUploadArtifactInsert {
   fileSizeBytes?: number | null;
   finalPath?: string | null;
   now?: string;
+  ownerEpoch?: string | null;
   ownerSubjectId: string;
   stagingPath: string;
   status?: string;
@@ -101,6 +104,7 @@ interface NormalizedInsert {
   fileName: string;
   fileSizeBytes: number;
   finalPath: string | null;
+  ownerEpoch: string | null;
   ownerSubjectId: string;
   stagingPath: string;
   status: string;
@@ -122,25 +126,25 @@ interface NormalizedPatch {
 }
 
 /** Statuses that represent in-flight work with no owning process once the
- *  server that started them has restarted -- see listInFlightOlderThan's
- *  doc comment. */
+ *  server that started them has restarted -- see
+ *  listInFlightNotOwnedByEpoch's doc comment. */
 const IN_FLIGHT_STATUSES = ["uploaded", "validating"] as const;
 
 export interface SqliteManualUploadArtifactStore {
-  claimForSweep: (artifactId: string, cutoffIso: string, nowIso: string) => boolean;
+  claimForSweep: (artifactId: string, currentEpoch: string | null, nowIso: string) => boolean;
   get: (artifactId: string) => ManualUploadArtifact | null;
   insert: (record: ManualUploadArtifactInsert) => ManualUploadArtifact | null;
   listByConnection: (connectorInstanceId: string, opts?: ListOptions) => (ManualUploadArtifact | null)[];
-  listInFlightOlderThan: (cutoffIso: string) => ManualUploadArtifact[];
+  listInFlightNotOwnedByEpoch: (currentEpoch: string | null) => ManualUploadArtifact[];
   update: (artifactId: string, patch: ManualUploadArtifactPatch) => ManualUploadArtifact | null;
 }
 
 export interface PostgresManualUploadArtifactStore {
-  claimForSweep: (artifactId: string, cutoffIso: string, nowIso: string) => Promise<boolean>;
+  claimForSweep: (artifactId: string, currentEpoch: string | null, nowIso: string) => Promise<boolean>;
   get: (artifactId: string) => Promise<ManualUploadArtifact | null>;
   insert: (record: ManualUploadArtifactInsert) => Promise<ManualUploadArtifact | null>;
   listByConnection: (connectorInstanceId: string, opts?: ListOptions) => Promise<(ManualUploadArtifact | null)[]>;
-  listInFlightOlderThan: (cutoffIso: string) => Promise<ManualUploadArtifact[]>;
+  listInFlightNotOwnedByEpoch: (currentEpoch: string | null) => Promise<ManualUploadArtifact[]>;
   update: (artifactId: string, patch: ManualUploadArtifactPatch) => Promise<ManualUploadArtifact | null>;
 }
 
@@ -188,6 +192,7 @@ function mapRow(row: ManualUploadArtifactRow | null | undefined): ManualUploadAr
     fileName: row.file_name,
     fileSizeBytes: numberOrNull(row.file_size_bytes) ?? 0,
     finalPath: row.final_path,
+    ownerEpoch: row.owner_epoch ?? null,
     ownerSubjectId: row.owner_subject_id,
     stagingPath: row.staging_path,
     status: row.status,
@@ -220,6 +225,7 @@ function normalizeInsert(record: ManualUploadArtifactInsert): NormalizedInsert {
   normalizedRecord.artifactSha256 ??= null;
   normalizedRecord.status ??= "uploaded";
   normalizedRecord.acquisitionBatchId ??= null;
+  normalizedRecord.ownerEpoch ??= null;
   normalizedRecord.now ??= new Date().toISOString();
   normalizedRecord.createdAt ??= normalizedRecord.now;
   normalizedRecord.updatedAt ??= normalizedRecord.now;
@@ -234,6 +240,7 @@ function normalizeInsert(record: ManualUploadArtifactInsert): NormalizedInsert {
     fileName: normalizedRecord.fileName,
     fileSizeBytes: normalizedRecord.fileSizeBytes,
     finalPath: normalizedRecord.finalPath,
+    ownerEpoch: normalizedRecord.ownerEpoch,
     ownerSubjectId: normalizedRecord.ownerSubjectId,
     stagingPath: normalizedRecord.stagingPath,
     status: normalizedRecord.status,
@@ -259,17 +266,55 @@ function normalizePatch(patch: ManualUploadArtifactPatch): NormalizedPatch {
   };
 }
 
+/** SQL fragment + bound params for "this row is NOT owned by the current
+ *  boot epoch", i.e. no live process can still be working on it.
+ *
+ *  SQLite has no `IS DISTINCT FROM`, and plain `owner_epoch <> ?` evaluates
+ *  to NULL (never true) both when the column is NULL and when the bound
+ *  parameter is NULL -- so each nullable side is spelled out explicitly.
+ *  When `currentEpoch` is null there is no live owner to protect at all, so
+ *  every in-flight row qualifies. */
+function sqliteNotOwnedByEpoch(currentEpoch: string | null): {
+  params: readonly (string | number | null)[];
+  sql: string;
+} {
+  if (currentEpoch === null) {
+    return { params: [], sql: "1 = 1" };
+  }
+  return { params: [currentEpoch], sql: "(owner_epoch IS NULL OR owner_epoch <> ?)" };
+}
+
+/** Postgres counterpart of `sqliteNotOwnedByEpoch`. `IS DISTINCT FROM` is
+ *  null-safe on both sides, so one form covers every case: with a NULL
+ *  parameter it reduces to `owner_epoch IS NOT NULL`, which would wrongly
+ *  spare legacy NULL rows -- hence the same explicit "no current epoch means
+ *  everything qualifies" branch as SQLite. */
+function postgresNotOwnedByEpoch(
+  currentEpoch: string | null,
+  placeholder: string
+): { params: readonly (string | number | null)[]; sql: string } {
+  if (currentEpoch === null) {
+    return { params: [], sql: "TRUE" };
+  }
+  return {
+    params: [currentEpoch],
+    sql: `(owner_epoch IS NULL OR owner_epoch IS DISTINCT FROM ${placeholder})`,
+  };
+}
+
 export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtifactStore {
   return {
-    claimForSweep(artifactId: string, cutoffIso: string, nowIso: string): boolean {
+    claimForSweep(artifactId: string, currentEpoch: string | null, nowIso: string): boolean {
+      const guard = sqliteNotOwnedByEpoch(currentEpoch);
       const result = execDynamicSqlAcknowledged(
         `UPDATE manual_upload_artifacts
             SET status = 'validating',
-                updated_at = ?
+                updated_at = ?,
+                owner_epoch = ?
           WHERE artifact_id = ?
             AND status IN (${IN_FLIGHT_STATUSES.map(() => "?").join(", ")})
-            AND updated_at < ?`,
-        [nowIso, artifactId, ...IN_FLIGHT_STATUSES, cutoffIso]
+            AND ${guard.sql}`,
+        [nowIso, currentEpoch, artifactId, ...IN_FLIGHT_STATUSES, ...guard.params]
       );
       return result.changes > 0;
     },
@@ -283,14 +328,15 @@ export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtif
            artifact_id, owner_subject_id, connector_id, connector_instance_id,
            file_name, staging_path, final_path, file_size_bytes, artifact_sha256,
            status, acquisition_batch_id, validation_json, error_json,
-           created_at, updated_at
+           created_at, updated_at, owner_epoch
          )
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(artifact_id) DO UPDATE SET
            status = excluded.status,
            file_size_bytes = excluded.file_size_bytes,
            artifact_sha256 = excluded.artifact_sha256,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at,
+           owner_epoch = excluded.owner_epoch`,
         [
           row.artifactId,
           row.ownerSubjectId,
@@ -307,6 +353,7 @@ export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtif
           row.errorJson,
           row.createdAt,
           row.updatedAt,
+          row.ownerEpoch,
         ]
       );
       return this.get(row.artifactId);
@@ -327,14 +374,15 @@ export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtif
       return rows.map(mapRow);
     },
 
-    listInFlightOlderThan(cutoffIso: string): ManualUploadArtifact[] {
+    listInFlightNotOwnedByEpoch(currentEpoch: string | null): ManualUploadArtifact[] {
+      const guard = sqliteNotOwnedByEpoch(currentEpoch);
       const rows = sqliteList(
         `SELECT *
            FROM manual_upload_artifacts
           WHERE status IN (${IN_FLIGHT_STATUSES.map(() => "?").join(", ")})
-            AND updated_at < ?
+            AND ${guard.sql}
           ORDER BY updated_at ASC`,
-        [...IN_FLIGHT_STATUSES, cutoffIso]
+        [...IN_FLIGHT_STATUSES, ...guard.params]
       );
       return rows.map(mapRow).filter((row): row is ManualUploadArtifact => row !== null);
     },
@@ -375,16 +423,18 @@ export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtif
 
 export function createPostgresManualUploadArtifactStore(): PostgresManualUploadArtifactStore {
   return {
-    async claimForSweep(artifactId: string, cutoffIso: string, nowIso: string): Promise<boolean> {
-      const placeholders = IN_FLIGHT_STATUSES.map((_, i) => `$${i + 3}`).join(", ");
+    async claimForSweep(artifactId: string, currentEpoch: string | null, nowIso: string): Promise<boolean> {
+      const placeholders = IN_FLIGHT_STATUSES.map((_, i) => `$${i + 4}`).join(", ");
+      const guard = postgresNotOwnedByEpoch(currentEpoch, `$${IN_FLIGHT_STATUSES.length + 4}`);
       const result = await postgresQuery(
         `UPDATE manual_upload_artifacts
             SET status = 'validating',
-                updated_at = $1
-          WHERE artifact_id = $2
+                updated_at = $1,
+                owner_epoch = $2
+          WHERE artifact_id = $3
             AND status IN (${placeholders})
-            AND updated_at < $${IN_FLIGHT_STATUSES.length + 3}`,
-        [nowIso, artifactId, ...IN_FLIGHT_STATUSES, cutoffIso]
+            AND ${guard.sql}`,
+        [nowIso, currentEpoch, artifactId, ...IN_FLIGHT_STATUSES, ...guard.params]
       );
       return (result.rowCount ?? 0) > 0;
     },
@@ -402,14 +452,15 @@ export function createPostgresManualUploadArtifactStore(): PostgresManualUploadA
            artifact_id, owner_subject_id, connector_id, connector_instance_id,
            file_name, staging_path, final_path, file_size_bytes, artifact_sha256,
            status, acquisition_batch_id, validation_json, error_json,
-           created_at, updated_at
+           created_at, updated_at, owner_epoch
          )
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15, $16)
          ON CONFLICT(artifact_id) DO UPDATE SET
            status = EXCLUDED.status,
            file_size_bytes = EXCLUDED.file_size_bytes,
            artifact_sha256 = EXCLUDED.artifact_sha256,
-           updated_at = EXCLUDED.updated_at`,
+           updated_at = EXCLUDED.updated_at,
+           owner_epoch = EXCLUDED.owner_epoch`,
         [
           row.artifactId,
           row.ownerSubjectId,
@@ -426,6 +477,7 @@ export function createPostgresManualUploadArtifactStore(): PostgresManualUploadA
           row.errorJson,
           row.createdAt,
           row.updatedAt,
+          row.ownerEpoch,
         ]
       );
       return await this.get(row.artifactId);
@@ -446,15 +498,16 @@ export function createPostgresManualUploadArtifactStore(): PostgresManualUploadA
       return result.rows.map(mapRow);
     },
 
-    async listInFlightOlderThan(cutoffIso: string): Promise<ManualUploadArtifact[]> {
+    async listInFlightNotOwnedByEpoch(currentEpoch: string | null): Promise<ManualUploadArtifact[]> {
       const placeholders = IN_FLIGHT_STATUSES.map((_, i) => `$${i + 1}`).join(", ");
+      const guard = postgresNotOwnedByEpoch(currentEpoch, `$${IN_FLIGHT_STATUSES.length + 1}`);
       const result = await postgresQuery<ManualUploadArtifactRow>(
         `SELECT *
            FROM manual_upload_artifacts
           WHERE status IN (${placeholders})
-            AND updated_at < $${IN_FLIGHT_STATUSES.length + 1}
+            AND ${guard.sql}
           ORDER BY updated_at ASC`,
-        [...IN_FLIGHT_STATUSES, cutoffIso]
+        [...IN_FLIGHT_STATUSES, ...guard.params]
       );
       return result.rows.map(mapRow).filter((row): row is ManualUploadArtifact => row !== null);
     },
