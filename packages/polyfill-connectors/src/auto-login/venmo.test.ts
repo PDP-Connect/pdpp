@@ -13,6 +13,7 @@ import {
   ensureVenmoOrigin,
   ensureVenmoSession,
   isVenmoFamilyUrl,
+  isVenmoSignInUrl,
   probeVenmoAccount,
   VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR,
   VENMO_PROBE_TRANSPORT_ERROR,
@@ -813,7 +814,11 @@ function makeTwoStepVenmoPage({
     },
     getByRole: (): Locator => roleSubmit,
     goto(url: string): ReturnType<Page["goto"]> {
-      currentUrl = url;
+      // Venmo's real behavior: /login 302s to the identity host, which is where
+      // the sign-in form, the captcha, and the OTP screen all live. A fixture
+      // that parked on the literal requested URL could not tell a handoff that
+      // preserves a live challenge from one that navigates away from it.
+      currentUrl = url === "https://venmo.com/login" ? "https://id.venmo.com/signin?country.x=US" : url;
       return Promise.resolve(null);
     },
     locator(selector: string): Locator {
@@ -1821,4 +1826,245 @@ test("probeVenmoAccount: normal live and dead sessions are unaffected by the bou
 
   const dead = await probeVenmoAccount(makePage({ kind: "dead" }), "pre_submit", { evaluateTimeoutMs: 50 });
   assert.deepEqual(dead, { live: false, ownerId: null });
+});
+
+// ─── Step one carries an UNNAMED password input (production run_1787319714987) ───
+//
+// GROUND TRUTH, from this file's own live CDP reading of `run_1787164654406`
+// (quoted above the two-step fixtures): Venmo's step-one sign-in screen renders
+// BOTH inputs at once —
+//
+//   {t: INPUT, ty: password, n: "",            dis: false, vis: true}
+//   {t: INPUT, ty: email,    n: "login_email",  dis: false, vis: true}
+//
+// The password field is UNNAMED. `makeTwoStepVenmoPage` models the password
+// field as matching `input[name="password"]`, so its step-one screen answers
+// "not visible" to every PASSWORD_SELECTOR read. The real page does not: the
+// unnamed field matches PASSWORD_SELECTOR's third alternative,
+// `input[type="password"]`, on screen ONE.
+//
+// That difference is the whole defect. `fillVenmoPassword` opens with
+//
+//   if (await locatorIsVisible(page.locator(PASSWORD_SELECTOR).first())) {
+//     await passwordIn.fill(password); return null;   // "one-screen form"
+//   }
+//
+// so against the real page it types the password into the step-one form and
+// returns WITHOUT clicking `Next`. `loginWithSavedCredentials` then treats that
+// as "password filled, ready to submit", clicks the only control present
+// (`Next`), and thereby submits the IDENTIFIER alone. Venmo stays on step one,
+// the post-submit probe reads dead, and the run hands off at venmo.ts:1010 with
+// "automated sign-in did not complete" — the post_submit copy — even though no
+// password was ever submitted.
+//
+// This reproduces production `run_1787319714987`: run.started 13:41:55.098,
+// interaction_required 13:42:00.620. Five seconds, because NO bounded wait is
+// ever entered — the password branch short-circuits immediately and every other
+// step is a fast DOM read. The owner's screenshot at handoff showed a pristine
+// "Log in / Enter email, mobile, or username / Next / Sign up" screen, which is
+// exactly step one, consistent with the identifier having been submitted into
+// a form that then re-rendered itself.
+function makeVenmoStepOneWithUnnamedPasswordPage({
+  captchaVisible = false,
+  passwordAppearsAfterNext = true,
+  onGoto,
+}: {
+  captchaVisible?: boolean;
+  onGoto?: (url: string) => void;
+  passwordAppearsAfterNext?: boolean;
+} = {}): {
+  clicks: string[];
+  fillCalls: Record<string, string>;
+  page: Page;
+} {
+  const clicks: string[] = [];
+  const fillCalls: Record<string, string> = {};
+  let onPasswordScreen = false;
+  let probeCount = 0;
+  let currentUrl = "https://id.venmo.com/signin?country.x=US";
+
+  // The unnamed step-one password box. Visible and enabled from the very first
+  // paint — the fact `makeTwoStepVenmoPage` cannot express.
+  const unnamedPassword: Pick<Locator, "click" | "count" | "fill" | "first" | "isEnabled" | "isVisible" | "waitFor"> = {
+    click: (): Promise<void> => Promise.resolve(),
+    count: (): Promise<number> => Promise.resolve(1),
+    fill: (value: string): Promise<void> => {
+      // Records WHICH screen the password was typed on. Typing on step one is
+      // the bug; typing on step two is correct behavior.
+      fillCalls[onPasswordScreen ? "password" : "passwordOnStepOne"] = value;
+      return Promise.resolve();
+    },
+    first(): Locator {
+      return unnamedPassword as Locator;
+    },
+    isEnabled: (): Promise<boolean> => Promise.resolve(true),
+    isVisible: (): Promise<boolean> => Promise.resolve(true),
+    waitFor: (): Promise<void> => Promise.resolve(),
+  };
+
+  const advance = (via: string): void => {
+    clicks.push(via);
+    if (passwordAppearsAfterNext) {
+      onPasswordScreen = true;
+    }
+  };
+
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      probeCount += 1;
+      // Live ONLY once the real password has been submitted on screen two.
+      // Submitting a bare identifier can never produce a live session.
+      return probeCount > 1 && fillCalls.password !== undefined
+        ? { kind: "live", ownerId: "1234567890123456789" }
+        : { kind: "dead" };
+    },
+    getByRole: (): Locator =>
+      makeClickRecordingLocator(() => advance(onPasswordScreen ? "role-submit-password" : "role-submit-identifier")),
+    goto(url: string): ReturnType<Page["goto"]> {
+      onGoto?.(url);
+      currentUrl = url;
+      // A fresh navigation to the login page resets to screen one, exactly as
+      // the real site does.
+      onPasswordScreen = false;
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      if (selector === "body") {
+        return makeLocator({ innerText: "Log in Enter email, mobile, or username Next Sign up" });
+      }
+      if (selector.includes("login_email")) {
+        return makeFillRecordingLocator((value) => {
+          fillCalls.username = value;
+        });
+      }
+      // PASSWORD_SELECTOR is a union; the connector passes it whole. The real
+      // page's unnamed field matches via `input[type="password"]`, so the union
+      // resolves to a VISIBLE locator on screen one.
+      if (selector.includes('input[type="password"]')) {
+        return unnamedPassword as Locator;
+      }
+      if (selector.includes("otp") || selector.includes("code")) {
+        return makeLocator({ count: 0, visible: false });
+      }
+      if (selector === "#btnNext") {
+        return onPasswordScreen
+          ? makeLocator({ count: 0, visible: false })
+          : makeClickRecordingLocator(() => advance("btnNext"));
+      }
+      if (selector === 'button[type="submit"]') {
+        return makeClickRecordingLocator(() => advance("generic-submit"));
+      }
+      if (selector.includes("recaptcha") || selector.includes("paypalobjects")) {
+        return makeLocator({ count: captchaVisible ? 1 : 0, visible: captchaVisible });
+      }
+      return makeLocator({ count: 0, visible: false });
+    },
+    url: (): string => currentUrl,
+    waitForLoadState: (): ReturnType<Page["waitForLoadState"]> => Promise.resolve(),
+    waitForTimeout: (): ReturnType<Page["waitForTimeout"]> => Promise.resolve(),
+  };
+
+  return { clicks, fillCalls, page: page as Page };
+}
+
+test("ensureVenmoSession: step one's UNNAMED password input must not be mistaken for a one-screen form (production run_1787319714987)", async () => {
+  await withVenmoCredentials(async () => {
+    const { fillCalls, page } = makeVenmoStepOneWithUnnamedPasswordPage();
+    const { requests, sendInteraction } = recordingSendInteraction();
+
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
+
+    // The load-bearing assertion: the password must never be typed into screen
+    // one. Before the fix this records `passwordOnStepOne` and the run ends in
+    // an owner handoff having submitted only the identifier.
+    assert.equal(
+      fillCalls.passwordOnStepOne,
+      undefined,
+      "the password must never be typed into the step-one form — only the identifier belongs there"
+    );
+    assert.equal(fillCalls.username, "test-user", "the identifier must still be filled on screen one");
+    assert.equal(fillCalls.password, "test-password", "the password must be typed on screen two, after Next");
+    assert.equal(result.live, true, "a correct two-step sign-in establishes a live session");
+    assert.deepEqual(requests, [], "a sign-in the connector can complete must not involve the owner at all");
+  });
+});
+
+// ─── The handoff must not destroy the screen it asks the owner to act on ────
+//
+// `waitForManualLogin` used to navigate to LOGIN_URL unconditionally, right
+// before handing the page over. That discarded the exact state the owner was
+// being asked to operate on. The captcha handoff is the sharpest case: it says
+// "complete the challenge", then navigates away from the challenge.
+//
+// The navigation still exists for the case it was written for (F2: a fresh run
+// whose page is `about:blank` must not be handed over blank) — see the
+// COUNTERWEIGHT below.
+test("ensureVenmoSession: a captcha handoff preserves the live id.venmo.com challenge instead of navigating away from it", async () => {
+  await withVenmoCredentials(async () => {
+    // `makeTwoStepVenmoPage` is the right fixture here: its step-one screen has
+    // no visible password box, so the flow advances past the identifier, stalls
+    // waiting for screen two, finds the captcha, and takes the `reason:
+    // "captcha"` handoff — the branch under test. Its page sits on
+    // id.venmo.com throughout.
+    const gotoUrls: string[] = [];
+    const { page } = makeTwoStepVenmoPage({
+      captchaVisible: true,
+      passwordAppearsAfterNext: false,
+    });
+    const realGoto = page.goto.bind(page);
+    page.goto = ((url: string, opts?: unknown) => {
+      gotoUrls.push(url);
+      return realGoto(url, opts as never);
+    }) as Page["goto"];
+
+    const { requests, sendInteraction } = recordingSendInteraction();
+
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        passwordScreenTimeoutMs: 20,
+        sendInteraction,
+      }),
+      /venmo_login_incomplete_after_submit/
+    );
+
+    const captchaRequest = requests.find((req): boolean => /CAPTCHA|verification challenge/i.test(req.message ?? ""));
+    assert.ok(captchaRequest, "a rendered captcha must reach the owner");
+    // The load-bearing fact: between rendering the captcha and handing the page
+    // to the owner, nothing re-navigated to the login page. `gotoUrls` before
+    // the handoff is exactly the initial probe's `venmo.com/` plus the sign-in
+    // navigation `loginWithSavedCredentials` makes to reach the form. The
+    // trailing `venmo.com/` is the post-response re-probe establishing the
+    // CORS origin, which necessarily happens AFTER the owner is done.
+    assert.deepEqual(
+      gotoUrls.slice(0, 2),
+      ["https://venmo.com/", "https://venmo.com/login"],
+      "only the initial probe and the sign-in navigation may precede a captcha handoff"
+    );
+    assert.equal(
+      gotoUrls.filter((url): boolean => url === "https://venmo.com/login").length,
+      1,
+      "the captcha screen the owner was asked to solve must not be re-navigated away by the handoff itself"
+    );
+  });
+});
+
+test("isVenmoSignInUrl: only the https identity host counts as a live sign-in screen (COUNTERWEIGHT)", () => {
+  assert.equal(isVenmoSignInUrl("https://id.venmo.com/signin?country.x=US"), true);
+  // Real Venmo, but not a page the owner can sign in from — these must still
+  // be navigated to the login page, which is what keeps F2 true.
+  assert.equal(isVenmoSignInUrl("https://venmo.com/"), false, "the logged-out home page is not a sign-in screen");
+  assert.equal(isVenmoSignInUrl("https://account.venmo.com/"), false);
+  assert.equal(isVenmoSignInUrl("about:blank"), false, "a fresh run's blank page must still be navigated (F2)");
+  assert.equal(isVenmoSignInUrl("http://id.venmo.com/signin"), false, "a downgraded origin is not trusted");
+  assert.equal(isVenmoSignInUrl("https://id.venmo.com.evil.example/signin"), false, "a lookalike host is rejected");
 });
