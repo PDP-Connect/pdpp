@@ -46,6 +46,8 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "PostgreSQL device-ingest conformance: derived repair and canonical records",
   "PostgreSQL device-ingest conformance: device/direct writer collision matrix",
   "PostgreSQL device-ingest conformance: duplicate and newer writer matrix",
+  "PostgreSQL device-ingest conformance: failed batch attempts are logged server-side",
+  "PostgreSQL device-ingest conformance: full durable prefix settles under an expired deadline",
   "PostgreSQL device-ingest conformance: phase fault/resume matrix",
   "PostgreSQL device-ingest conformance: registration/backfill ordering",
   "PostgreSQL device-ingest conformance: simultaneous identity matrix",
