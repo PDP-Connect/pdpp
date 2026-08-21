@@ -322,6 +322,28 @@ export function classifyEmptyListPage(
   if (diag.incapsula_block || diag.password_form) {
     return { action: "abort", reason: "source_auth_or_challenge" };
   }
+  // H-E-B's own empty-state component, rendered inside the order-results
+  // container, is the source asserting the history is empty. Trust it as
+  // terminal proof: it is positive evidence, unlike every check below, which
+  // can only infer emptiness from things being absent.
+  //
+  // Ordering is load-bearing in both directions. It must stay BELOW the
+  // block/auth check, so a challenge page can never be laundered into a proven
+  // empty result. It must stay ABOVE the `selector_drift` check, because a
+  // genuinely empty page trips that check: the empty-state component's own
+  // CSS-module class names match `[class*="order" i]`, producing
+  // `order_cards: 0, any_card: 4` — the drift signature. Before this branch
+  // existed, every zero-order run aborted as `selector_drift`, which reads as
+  // "H-E-B changed their markup" and sends recovery at a selector rewrite that
+  // could never succeed, because the markup is fine and the history is empty.
+  //
+  // Terminal here means "stop paginating, and count this as proven-empty
+  // coverage" — honest because order history is account-wide (verified: a
+  // single scrape of one connection returned orders from four different H-E-B
+  // stores, so the selected store context does not scope what is listed).
+  if (diag.empty_state) {
+    return { action: "terminal", reason: "source_reported_empty" };
+  }
   if (diag.order_cards === 0 && diag.any_card > 0) {
     return { action: "abort", reason: "selector_drift" };
   }
