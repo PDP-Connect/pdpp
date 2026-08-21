@@ -102,13 +102,17 @@
    With that, `max-xl:hidden` lives in the SAME stylesheet as concept's own
    `.flex{display:flex}`, in Tailwind's own variant-after-base declaration
    order — so it wins on source order within one file, not on a `<link>`
-   load-order race between two separate stylesheets. Verified by running
-   scripts/style-differ.mjs against a main baseline and this branch's build:
-   #nd-toc's computed `display` is `none` at 1279px and `flex` at 1280px and
-   1281px on BOTH sides — the collapse behavior this override used to force
-   is unchanged. Re-run with:
+   load-order race between two separate stylesheets. Verified with
+   scripts/style-differ.mjs's --assert-display mode (NOT its default box/
+   style diff, which drops zero-box elements before reading their style and
+   so cannot observe a `display: none` claim — see the comment on
+   isCollapsed) against a main baseline and this branch's build: #nd-toc's
+   computed `display` is `none` at 1279px and `flex` at 1280px and 1281px on
+   BOTH sides — the collapse behavior this override used to force is
+   unchanged. Re-run with:
      node scripts/style-differ.mjs --baseline <main-url> --candidate <this-branch-url> \
-       --routes /specification --viewports "1279:1279:900,1280:1280:900,1281:1281:900" */
+       --routes /specification \
+       --assert-display "#nd-toc:1279:900:none,#nd-toc:1280:900:flex,#nd-toc:1281:900:flex" */
 
 [data-pdpp-doc-theme] #nd-subnav {
   height: 3rem;

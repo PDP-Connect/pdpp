@@ -18,13 +18,23 @@
 //   node scripts/style-differ.mjs --baseline http://localhost:4123 --candidate http://localhost:4124
 //   node scripts/style-differ.mjs --baseline <url> --candidate <url> --routes /,/self-host --out report.json
 //   node scripts/style-differ.mjs --baseline <url> --candidate <url> --routes /specification \
-//     --viewports "1279:1279:900,1280:1280:900,1281:1281:900"
+//     --assert-display "#nd-toc:1279:900:none,#nd-toc:1280:900:flex,#nd-toc:1281:900:flex"
 //
 // The last form is the exact command used to check #nd-toc's computed
 // `display` on both sides of fumadocs' 1280px collapse breakpoint (see the
 // comment above the removed CSS fallback in styles/surfaces/specification.css).
-// Re-run it against a fresh baseline/candidate pair whenever that fallback's
-// removal needs re-proving — the default viewports below do not cover it.
+// --assert-display is a SEPARATE code path from the default box/style diff:
+// the default diff's collapse filter drops any zero-box element before
+// reading its style (correct for box/position comparisons, wrong for a
+// display claim — it would silently pass a selector that matched nothing on
+// either side, which is exactly the state a collapsed element is in).
+// --assert-display never filters on box size, fails loudly if the selector
+// matches no element, and checks BOTH baseline and candidate against the
+// given expected value at that assertion's own width×height — each entry
+// carries its own viewport rather than sharing --viewports, because a
+// breakpoint check inherently expects a DIFFERENT value just above and
+// below the line. Re-run it against a fresh baseline/candidate pair
+// whenever that fallback's removal needs re-proving.
 //
 // This script makes no product change. It is read-only against whatever two
 // servers you point it at.
@@ -106,6 +116,18 @@ const FLAG_HANDLERS = {
   },
   "--exclude": (args, value) => {
     args.exclude = value.split(",").map((entry) => entry.trim());
+  },
+  // Each entry is independent: selector:width:height:expectedDisplay. Not
+  // tied to --viewports — a display assertion is inherently per-width (the
+  // whole point is checking a selector's display AROUND a breakpoint, where
+  // adjacent widths expect DIFFERENT values), so folding it into the
+  // shared --viewports list (one size, many selectors/assertions) would
+  // force every assertion to share the same expected value at every width.
+  "--assert-display": (args, value) => {
+    args.assertDisplay = value.split(",").map((entry) => {
+      const [selector, width, height, expected] = entry.trim().split(":");
+      return { expected, selector, viewport: { height: Number(height), width: Number(width) } };
+    });
   },
 };
 
@@ -216,6 +238,71 @@ async function captureRoute(page, baseUrl, route, viewport, excludeSelectors) {
     properties: COMPUTED_PROPERTIES,
     selectors: KEY_SELECTORS,
   });
+}
+
+// `captureKeyElements`'s `isCollapsed` filter drops any zero-box element —
+// correct for the box/position diff, where a collapsed element's coordinates
+// are meaningless, but WRONG for asserting a display value: it discards the
+// `display: none` case a collapse assertion exists to observe, so a "0
+// diffs" result there proves only that neither side had a non-collapsed
+// element, never that both sides actually show `display: none`. This
+// separate, narrow evaluator exists for exactly that claim: it does NOT
+// filter on box size, and it fails loudly (`exists: false`) instead of
+// silently omitting the element if the selector matches nothing at all.
+// Runs INSIDE the page (passed to page.evaluate, not called from Node).
+function readDisplayAssertion({ selector }) {
+  const el = document.querySelector(selector);
+  if (!el) {
+    return { display: null, exists: false };
+  }
+  return { display: window.getComputedStyle(el).display, exists: true };
+}
+
+async function assertDisplayAtViewport(page, baseUrl, route, viewport, assertion) {
+  await page.setViewportSize({ width: viewport.width, height: viewport.height });
+  await page.goto(new URL(route, baseUrl).toString(), { waitUntil: "networkidle" });
+  return await page.evaluate(readDisplayAssertion, { selector: assertion.selector });
+}
+
+function buildDisplayAssertionTasks(routes, assertions) {
+  const sides = [
+    ["baseline", "baseline"],
+    ["candidate", "candidate"],
+  ];
+  return routes.flatMap((route) =>
+    assertions.flatMap((assertion) => sides.map(([sideName, sideKey]) => ({ assertion, route, sideKey, sideName })))
+  );
+}
+
+function checkDisplayAssertionResult(task, result) {
+  const label = `${task.sideName} ${task.route} @ ${task.assertion.viewport.width}x${task.assertion.viewport.height} ${task.assertion.selector}`;
+  if (!result.exists) {
+    console.log(`FAIL  ${label} — selector matched no element (expected display: ${task.assertion.expected})`);
+    return false;
+  }
+  if (result.display !== task.assertion.expected) {
+    console.log(`FAIL  ${label} — display: "${result.display}", expected "${task.assertion.expected}"`);
+    return false;
+  }
+  console.log(`OK    ${label} — display: "${result.display}"`);
+  return true;
+}
+
+async function runDisplayAssertions(page, args) {
+  const tasks = buildDisplayAssertionTasks(args.routes, args.assertDisplay);
+  const sideUrls = { baseline: args.baseline, candidate: args.candidate };
+  const passResults = await tasks.reduce(async (accPromise, task) => {
+    const acc = await accPromise;
+    const result = await assertDisplayAtViewport(
+      page,
+      sideUrls[task.sideKey],
+      task.route,
+      task.assertion.viewport,
+      task.assertion
+    );
+    return [...acc, checkDisplayAssertionResult(task, result)];
+  }, Promise.resolve([]));
+  return passResults.filter((passed) => !passed).length;
 }
 
 function keyFor(el) {
@@ -354,9 +441,13 @@ async function main() {
 
   const browser = await chromium.launch();
   let results;
+  let displayAssertionFailures = 0;
   try {
     const page = await browser.newPage();
     results = await runTasksSequentially(page, args, excludeSelectors, tasks);
+    if (args.assertDisplay) {
+      displayAssertionFailures = await runDisplayAssertions(page, args);
+    }
   } finally {
     await browser.close();
   }
@@ -365,6 +456,11 @@ async function main() {
   if (args.out) {
     await writeFile(args.out, JSON.stringify(report, null, 2));
     console.log(`\nWrote full report to ${args.out}`);
+  }
+
+  if (displayAssertionFailures > 0) {
+    console.log(`\n${displayAssertionFailures} display assertion(s) failed.`);
+    process.exitCode = 1;
   }
 
   const totalDiffs = results.reduce((sum, result) => sum + result.diffCount, 0);
