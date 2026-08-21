@@ -352,9 +352,7 @@ test("apple_contacts integration: a full_refresh run re-enumerates and proves co
       env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
     });
 
-    const contactsCoverage = refreshed.messages.find(
-      (m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts"
-    );
+    const contactsCoverage = refreshed.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
     assert.ok(
       contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE",
       "a full_refresh run must re-establish the contacts boundary and claim coverage"
@@ -370,7 +368,7 @@ test("apple_contacts integration: a full_refresh run re-enumerates and proves co
       (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "contacts"
     );
     assert.ok(refreshedState);
-    const bookState = Object.values(refreshedState.cursor as Record<string, { sync_token?: string }>)[0];
+    const [bookState] = Object.values(refreshedState.cursor as Record<string, { sync_token?: string }>);
     assert.ok(bookState?.sync_token, "a full_refresh run must still persist a sync token for the next run");
   } finally {
     await server.close();

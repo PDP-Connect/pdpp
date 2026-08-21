@@ -195,6 +195,10 @@ interface ConnectorInstanceRow {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   readonly ownerSubjectId: string;
+  /** The stored `{kind, local_binding_name, device_id, source_instance_id}`
+   *  identity this connection was minted from. Only the first two are stable
+   *  per binding; the device/source ids are per-enrollment. */
+  readonly sourceBinding?: unknown;
   readonly sourceBindingKey?: string | null;
   readonly sourceKind?: string | null;
   readonly status: string;
@@ -1960,6 +1964,144 @@ async function resolveActiveDeviceConnectorInstance(
   return instance;
 }
 
+// Read the stable `local_binding_name` out of a connection's stored
+// source_binding. Only that field (with `kind`) determines which connection an
+// enrollment resolves to — `device_id`/`source_instance_id` in the same object
+// are per-enrollment and deliberately ignored here.
+function connectionLocalBindingName(instance: ConnectorInstanceRow): string | null {
+  const binding = instance.sourceBinding;
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    return null;
+  }
+  const value = (binding as { local_binding_name?: unknown }).local_binding_name;
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+/**
+ * Resolve the binding an enrollment code should carry when the owner minted it
+ * against an EXISTING connection (`connector_instance_id`) rather than naming a
+ * raw `local_binding_name`.
+ *
+ * Why this exists. `connector_instance_id` is a deterministic hash of
+ * `{owner, connector, source_kind, hash({kind, local_binding_name})}`, so an
+ * enrollment lands on a connection purely by reproducing its binding name. That
+ * already makes re-enrollment resume the same connection — but only if the
+ * owner types the same string. The binding name is not shown anywhere, so
+ * getting it wrong silently mints a SECOND connection and forks the source in
+ * two: the original keeps the records and becomes uncollectable, while the new
+ * one collects into an empty history. Losing a device token (write-once by
+ * design, unrecoverable) is exactly when an owner must re-enroll, so the one
+ * moment rebinding is needed is the moment it is most likely to go wrong.
+ *
+ * Addressing the CONNECTION instead removes the guess. The owner names an id
+ * they can see; the server derives the binding from that connection's own
+ * stored `source_binding`. Enrollment then flows down the unchanged, already
+ * tested path and lands on the same connector_instance by construction.
+ *
+ * Authorization. Ownership is verified HERE, at mint time, under the route's
+ * existing owner-session guard — an unknown or foreign connection is 404, the
+ * same non-leaking shape `revoke` uses. The enrolling device never names a
+ * connection; it presents only the code. So a device cannot aim itself at
+ * another connection's data — the target was fixed by the owner before the code
+ * existed.
+ */
+async function resolveEnrollmentTargetConnection(
+  ctx: MountRefDeviceExportersContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  connectorInstanceId: string
+): Promise<{ connectorId: string; localBindingId: string } | null> {
+  const ownerSubjectId = ctx.getOwnerSubjectId(req);
+  const instance = await ctx.createRequestConnectorInstanceStore().get(connectorInstanceId);
+  if (!instance || instance.ownerSubjectId !== ownerSubjectId) {
+    ctx.pdppError(res, 404, "not_found", "Connection not found", "connector_instance_id");
+    return null;
+  }
+  if (instance.status !== "active") {
+    // A revoked or deleted connection must not be re-armed by the side door.
+    // Reactivating it is a separate, explicit owner decision.
+    ctx.pdppError(
+      res,
+      409,
+      "invalid_request",
+      "Connection is not active; reactivate it before enrolling a device",
+      "connector_instance_id"
+    );
+    return null;
+  }
+  const localBindingId = connectionLocalBindingName(instance);
+  if (!localBindingId) {
+    // Account-kind connections (and any legacy row without a stored binding
+    // name) have no device binding to reproduce. Failing closed is the only
+    // honest answer: inventing a binding name here would mint a code that
+    // silently resolves to a DIFFERENT connection than the one addressed.
+    ctx.pdppError(
+      res,
+      409,
+      "invalid_request",
+      "Connection has no local device binding to enroll against",
+      "connector_instance_id"
+    );
+    return null;
+  }
+  // `source_kind` is deliberately NOT returned: the mint path re-derives it
+  // from the connector manifest (resolveEnrollmentSourceKind), which is the
+  // same authority enrollment itself uses. Echoing the stored value here would
+  // let a legacy row's stale kind override the manifest.
+  return { connectorId: instance.connectorId, localBindingId };
+}
+
+// Enrollment-code lifetime in seconds: the caller's value when it is an
+// integer inside the accepted window, the 15-minute default when unstated, or
+// `null` when stated but out of range (the caller turns that into a typed 400).
+function resolveEnrollmentCodeLifetimeSeconds(raw: unknown): number | null {
+  const seconds = Number.isInteger(raw) ? (raw as number) : 15 * 60;
+  return seconds < 60 || seconds > 86_400 ? null : seconds;
+}
+
+/**
+ * Resolve which binding an enrollment-code request targets. Two ways to name
+ * it, and exactly one may be used, so a request can never state a target twice
+ * and disagree with itself:
+ *
+ *   - `connector_instance_id` — address an EXISTING connection and derive its
+ *     binding server-side (the rebind path).
+ *   - `connector_id` + `local_binding_name` — name a binding directly (the
+ *     original path, unchanged).
+ *
+ * Returns `null` after writing the error response.
+ */
+async function resolveEnrollmentCodeTarget(
+  ctx: MountRefDeviceExportersContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  body: Record<string, unknown>
+): Promise<{ addressedConnectionId: string | null; connectorId: string; localBindingId: string } | null> {
+  const addressedConnectionId =
+    typeof body.connector_instance_id === "string" && body.connector_instance_id.trim()
+      ? body.connector_instance_id.trim()
+      : null;
+  if (!addressedConnectionId) {
+    return {
+      addressedConnectionId: null,
+      connectorId: requireNonEmptyString(body.connector_id, "connector_id"),
+      localBindingId: requireNonEmptyString(body.local_binding_name, "local_binding_name"),
+    };
+  }
+  if (body.connector_id || body.local_binding_name) {
+    ctx.pdppError(
+      res,
+      400,
+      "invalid_request",
+      "Provide either connector_instance_id or connector_id + local_binding_name, not both",
+      "connector_instance_id"
+    );
+    return null;
+  }
+  const resolved = await resolveEnrollmentTargetConnection(ctx, req, res, addressedConnectionId);
+  return resolved ? { addressedConnectionId, ...resolved } : null;
+}
+
 // ─── Route mounts ────────────────────────────────────────────────────────────
 
 // POST /_ref/device-exporters/enrollment-codes
@@ -1972,8 +2114,12 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const body = (req.body as Record<string, unknown>) || {};
-        const connectorId = requireNonEmptyString(body.connector_id, "connector_id");
-        const localBindingId = requireNonEmptyString(body.local_binding_name, "local_binding_name");
+        const target = await resolveEnrollmentCodeTarget(ctx, req, res, body);
+        if (!target) {
+          // resolveEnrollmentCodeTarget already wrote the error response.
+          return;
+        }
+        const { addressedConnectionId, connectorId, localBindingId } = target;
         // Resolve the manifest-derived source kind up front so a connector with
         // no resolvable binding — or a caller-supplied `source_kind` that
         // contradicts the manifest — is rejected before a code is minted, rather
@@ -1986,10 +2132,8 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
           typeof body.source_kind === "string" ? body.source_kind : null
         );
         const now = new Date();
-        const expiresInSeconds = Number.isInteger(body.expires_in_seconds)
-          ? (body.expires_in_seconds as number)
-          : 15 * 60;
-        if (expiresInSeconds < 60 || expiresInSeconds > 86_400) {
+        const expiresInSeconds = resolveEnrollmentCodeLifetimeSeconds(body.expires_in_seconds);
+        if (expiresInSeconds === null) {
           ctx.pdppError(
             res,
             400,
@@ -2033,6 +2177,10 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
         res.status(201).json({
           collection_scope: ownerDeclaredScope,
           connector_id: connectorId,
+          // Echo the connection this code will resolve to when it was addressed
+          // by id, so the owner can confirm the target BEFORE handing the code
+          // to a device — the check that would have caught the fork.
+          ...(addressedConnectionId ? { connector_instance_id: addressedConnectionId } : {}),
           enrollment_code: enrollmentCode,
           expires_at: expiresAt,
           local_binding_name: localBindingId,

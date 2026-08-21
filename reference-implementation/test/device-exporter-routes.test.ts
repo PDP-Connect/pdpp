@@ -1896,6 +1896,105 @@ test("re-enrolling the same connector + local_binding_name resumes one stable co
   });
 });
 
+test("an enrollment code addressed to an existing connection rebinds a new device to it", async () => {
+  // Live incident regression (stranded Signal source). A device token is
+  // write-once and unrecoverable, so losing it forces a re-enroll. Because a
+  // connection is addressed only by its hidden local_binding_name, minting a
+  // code with a slightly different name silently forked the source: the
+  // original kept 6,448 records and became uncollectable, while a brand-new
+  // empty connection started collecting. Addressing the CONNECTION removes the
+  // guess entirely.
+  await withServer(async ({ asUrl }) => {
+    const original = await enrollDevice(asUrl, "peregrine", "codex");
+
+    // Mint against the connection id — never naming the binding.
+    const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_instance_id: original.connector_instance_id,
+    });
+    assert.equal(codeResp.status, 201);
+    // The response echoes the resolved target so the owner can confirm it
+    // BEFORE handing the code to a device.
+    assert.equal(bodyOf(codeResp).connector_instance_id, original.connector_instance_id);
+    assert.equal(bodyOf(codeResp).local_binding_name, "peregrine");
+
+    const enrollResp = await postJson(
+      `${asUrl}/_ref/device-exporters/enroll`,
+      { enrollment_code: stringField(bodyOf(codeResp), "enrollment_code") },
+      PROTOCOL_HEADERS
+    );
+    assert.equal(enrollResp.status, 201);
+    const rebound = bodyOf(enrollResp);
+
+    assert.equal(
+      stringField(rebound, "connector_instance_id"),
+      original.connector_instance_id,
+      "the rebound device must land on the EXISTING connection, not a new one"
+    );
+    assert.notEqual(stringField(rebound, "device_id"), original.device_id, "rebinding mints a fresh device");
+    assert.notEqual(
+      stringField(rebound, "device_token"),
+      original.device_token,
+      "rebinding issues a fresh, write-once token"
+    );
+
+    // The whole point: no fork. Exactly one connection still exists.
+    const rows = typedDb()
+      .prepare<[string], { connector_instance_id: string }>(
+        `SELECT connector_instance_id FROM connector_instances
+          WHERE connector_id = ? AND source_kind = 'local_device'`
+      )
+      .all("codex");
+    assert.equal(rows.length, 1, "rebinding must never fork a second connection");
+  });
+});
+
+test("a rebind enrollment code cannot be minted for another owner's connection or a missing one", async () => {
+  await withServer(async ({ asUrl }) => {
+    const original = await enrollDevice(asUrl, "peregrine-owned", "codex");
+
+    // Unknown connection: 404, the same non-leaking shape revoke uses — a
+    // probe must not be able to distinguish "absent" from "someone else's".
+    const missing = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_instance_id: "cin_does_not_exist",
+    });
+    assert.equal(missing.status, 404);
+
+    // Foreign connection: reassign the row to another owner, then re-probe.
+    getDb()
+      .prepare("UPDATE connector_instances SET owner_subject_id = ? WHERE connector_instance_id = ?")
+      .run("owner_someone_else", original.connector_instance_id);
+    const foreign = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_instance_id: original.connector_instance_id,
+    });
+    assert.equal(foreign.status, 404, "a foreign connection must be indistinguishable from a missing one");
+  });
+});
+
+test("a rebind enrollment code rejects a self-contradicting or non-active target", async () => {
+  await withServer(async ({ asUrl }) => {
+    const original = await enrollDevice(asUrl, "peregrine-conflict", "codex");
+
+    // Stating the target twice could disagree with itself; reject rather than
+    // silently picking a winner.
+    const both = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_instance_id: original.connector_instance_id,
+      connector_id: "codex",
+      local_binding_name: "something-else",
+    });
+    assert.equal(both.status, 400);
+
+    // A revoked connection must not be re-armed through the enrollment side
+    // door; reactivating it is a separate, explicit owner decision.
+    getDb()
+      .prepare("UPDATE connector_instances SET status = 'revoked' WHERE connector_instance_id = ?")
+      .run(original.connector_instance_id);
+    const revoked = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_instance_id: original.connector_instance_id,
+    });
+    assert.equal(revoked.status, 409);
+  });
+});
+
 test("enrollment against an owner-deleted binding fails closed with a typed 409, never resurrects", async () => {
   // Live incident regression (fix-owner-delete-resurrection): an owner
   // DELETE on a device-collected connection removes the connector_instances

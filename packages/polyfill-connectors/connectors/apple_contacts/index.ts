@@ -291,8 +291,9 @@ interface AddressBookCollectionCtx {
   book: { url: string; displayName?: string };
   bookCursor: FingerprintCursor;
   /** See `BaseCollectContext.collectionMode`. `"full_refresh"` makes this book
-   *  ignore its stored `sync_token` for this run. */
-  collectionMode?: "full_refresh" | "incremental";
+   *  ignore its stored `sync_token` for this run. `undefined` means
+   *  `"incremental"`, matching that contract. */
+  collectionMode: "full_refresh" | "incremental" | undefined;
   emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   fetchImpl: DiscoveryFetch;
