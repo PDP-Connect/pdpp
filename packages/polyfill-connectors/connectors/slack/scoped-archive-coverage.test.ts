@@ -15,10 +15,9 @@
  * deps.scopedArchives)` loop calls `runRequestedStreams` once per archive.
  *
  * Before the fix, `runRequestedStreams` itself emitted the messages
- * self-coverage DETAIL_COVERAGE (state_stream=messages, stream=messages) and
- * the message-family DETAIL_COVERAGE (state_stream=messages,
- * stream=reactions|message_attachments) on EVERY call — so N archives meant N
- * emissions of each pair through the same emit side-channel.
+ * self-coverage DETAIL_COVERAGE (state_stream=messages, stream=messages) on
+ * EVERY call — so N archives meant N emissions of the pair through the same
+ * emit side-channel.
  * reference-implementation/runtime/index.ts's `trackDetailCoverage` rejects
  * any repeated (state_stream, stream) pair ("Connector emitted duplicate
  * DETAIL_COVERAGE for state_stream=messages stream=messages"), so a
@@ -196,15 +195,26 @@ test("scoped-archive fold across 2+ archives: each (state_stream, stream) DETAIL
       "messages self-coverage must emit exactly once across the base + 2 scoped archives, not once per archive " +
         `(got ${messagesCoverage.length} — this is the duplicate the runtime rejects)`
     );
-    assert.equal(
-      reactionsCoverage.length,
-      1,
-      `reactions family coverage must emit exactly once across the fold (got ${reactionsCoverage.length})`
+    // `reactions` and `message_attachments` are declared `state_stream:
+    // messages` in the manifest, so they are static single-parent detail
+    // streams and MUST emit no DETAIL_COVERAGE at all —
+    // `validateDetailCoverageAgainstManifest` fails the whole run if they do.
+    // This assertion previously required exactly one emission each, which
+    // encoded the defect as the contract: it passed only because the guard was
+    // not yet deployed, and every Slack run failed with `runtime_error` the
+    // moment drain29 shipped it. The counts were fabricated besides — they
+    // mirrored the PARENT messages denominator rather than any per-key tally
+    // of reactions or attachments actually accounted for.
+    assert.deepEqual(
+      reactionsCoverage,
+      [],
+      `reactions is state_stream-parented in the manifest and must emit NO DETAIL_COVERAGE (got ${reactionsCoverage.length})`
     );
-    assert.equal(
-      attachmentsCoverage.length,
-      1,
-      `message_attachments family coverage must emit exactly once across the fold (got ${attachmentsCoverage.length})`
+    assert.deepEqual(
+      attachmentsCoverage,
+      [],
+      "message_attachments is state_stream-parented in the manifest and must emit NO DETAIL_COVERAGE " +
+        `(got ${attachmentsCoverage.length})`
     );
 
     // The merged denominator: mergeMessagesPassResults sums `considered`
@@ -212,16 +222,6 @@ test("scoped-archive fold across 2+ archives: each (state_stream, stream) DETAIL
     // = 10. A regression that keeps emission single but reverts to only the
     // LAST archive's total (5) or the FIRST call's total (2) must fail here.
     assert.equal(messagesCoverage[0]?.considered, 10, "considered is the SUMMED total across every archive folded");
-    assert.equal(
-      reactionsCoverage[0]?.considered,
-      10,
-      "reactions family denominator mirrors the summed messages total"
-    );
-    assert.equal(
-      attachmentsCoverage[0]?.considered,
-      10,
-      "message_attachments family denominator mirrors the summed messages total"
-    );
   } finally {
     await rm(artifactRoot, { recursive: true, force: true });
   }

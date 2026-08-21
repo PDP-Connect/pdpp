@@ -1947,32 +1947,29 @@ async function declareListConsidered(
   );
 }
 
-async function declareMessageFamilyCoverage(deps: StreamDeps, considered: number, covered: number): Promise<void> {
-  for (const stream of ["reactions", "message_attachments"] as const) {
-    if (deps.requested.has(stream)) {
-      await deps.emit(
-        buildDetailCoverageMessage({
-          stream,
-          stateStream: "messages",
-          requiredKeys: [],
-          hydratedKeys: [],
-          considered,
-          covered,
-        })
-      );
-    }
-  }
-}
-
 /**
- * Declares the messages self-coverage plus the reactions/message_attachments
- * family coverage, ONCE, using the fully-merged `considered` total (the base
- * archive plus every scoped archive `mergeScopedMessageArchivePasses` folded
- * in). A no-op when the message family wasn't requested this run. Called
- * unconditionally, once per run, from `collect()` — never from inside
- * `runRequestedStreams`, which runs once per scoped archive during a fold,
- * and the runtime rejects a repeated (state_stream, stream) DETAIL_COVERAGE
- * pair.
+ * Declares the messages self-coverage ONCE, using the fully-merged
+ * `considered` total (the base archive plus every scoped archive
+ * `mergeScopedMessageArchivePasses` folded in). A no-op when the message
+ * family wasn't requested this run. Called unconditionally, once per run,
+ * from `collect()` — never from inside `runRequestedStreams`, which runs once
+ * per scoped archive during a fold, and the runtime rejects a repeated
+ * (state_stream, stream) DETAIL_COVERAGE pair.
+ *
+ * `reactions` and `message_attachments` deliberately emit NO DETAIL_COVERAGE.
+ * The manifest declares both `state_stream: messages`, i.e. static
+ * single-parent detail streams, whose checkpoint status is projected from the
+ * parent's own commit outcome — so `validateDetailCoverageAgainstManifest`
+ * fails the ENTIRE run if either emits coverage of its own.
+ *
+ * Withholding is also the honest outcome on the numbers alone. The only counts
+ * in scope here are the PARENT message pass's: how many messages were walked,
+ * not how many reactions or attachments were derived against a per-key
+ * denominator. Reporting them under a child stream's name asserts
+ * `covered == considered` for children that were never accounted for — the
+ * fabricated-denominator anti-pattern this codebase has worked to remove. The
+ * children are left honestly unproven rather than falsely complete, exactly as
+ * `apple_contacts` withholds a contacts claim it cannot establish.
  */
 async function declareMergedMessageCoverage(deps: StreamDeps, considered: number, covered: number): Promise<void> {
   if (
@@ -1990,7 +1987,6 @@ async function declareMergedMessageCoverage(deps: StreamDeps, considered: number
       covered,
     })
   );
-  await declareMessageFamilyCoverage(deps, considered, covered);
 }
 
 /**
