@@ -1,3 +1,31 @@
+## 0. Implementation status (2026-08-21)
+
+Landed in eight commits on `own/run-lifecycle-state-machine-0821`:
+
+- The closed state set and the terminal set, declared once
+  (`runtime/run-lifecycle-states.ts`), with every consumer derived and a
+  structural scan that fails on any new hand-typed copy.
+- `run_history.owner_epoch` on BOTH backends, each half mutation-proven
+  separately so a single-backend migration cannot ship.
+- The owner module (`runtime/run-lifecycle.ts`): transition table T1-T11, the
+  pure legality decision, and the epoch-fenced CAS for both dialects.
+- All eight property tests implemented and passing — 86 assertions,
+  dual-backend, zero `todo` (baseline was 32 `todo`, zero real assertions).
+- Findings 2.1, 2.2, 2.3 and 2.5 closed.
+
+**Deliberately NOT done in this change — the writer cutovers (M2-M5).** The
+owner module is additive: it is the declared authority and is proven by test,
+but `runtime/index.ts`, `runtime/controller.ts` and `lib/controller-boot.ts`
+still emit terminal events on their own paths. Cutting them over is the next
+tranche and must follow D5 — atomically per subsystem, old path deleted in the
+same change. Landing a half-cutover would create exactly the parallel-writer
+window D5 forbids, so the writers stay untouched rather than partly moved.
+
+What that means for the canary: the metrics registered in §6 are meaningful
+against this change (the terminal-set repair and both fence fixes are live
+behavior), but 6.3's transition-throughput metric measures the EXISTING
+writers until M2 lands.
+
 ## 1. Design (this change)
 
 - [x] 1.1 Enumerate the closed state set, including `abandoned`, and rule
@@ -19,39 +47,44 @@
 
 ## 2. Findings raised by this design (not fixed here)
 
-- [ ] 2.1 Six terminal-set declarations disagree with `lib/spine.ts:1066`. Four
+- [x] 2.1 Six terminal-set declarations disagree with `lib/spine.ts:1066`. Four
       omit `run.abandoned` (`connector-summary-read-model.ts:1253`,
       `db.ts:5437`, `postgres-storage.ts:2692`, `connector-summary-evidence-engine.ts:1599`);
       two omit `run.browser_surface_failed` (`lib/postgres-spine.ts:570`,
       `postgres-storage.ts:2336`). Closed by M6, not before.
-- [ ] 2.2 `insert-run-history.sql:40` and `scheduler-store.ts:1018` upsert
+- [x] 2.2 `insert-run-history.sql:40` and `scheduler-store.ts:1018` upsert
       `status = excluded.status` with no `status = 'running'` fence, so a
-      scheduler retry can overwrite a terminal status.
-- [ ] 2.3 `controller-boot.ts:829` (PostgreSQL drift repair) matches on
+      scheduler retry can overwrite a terminal status. **CLOSED** — fenced
+      per-column so the scheduler-only enrichment merge is preserved.
+- [x] 2.3 `controller-boot.ts:829` (PostgreSQL drift repair) matches on
       `run_id` alone while its SQLite twin at `:788` fences on
-      `connector_instance_id`.
+      `connector_instance_id`. **CLOSED** — the Postgres subquery now
+      partitions on the pair.
 - [ ] 2.4 `run_generation` is written from a monotonic counter
       (`controller.ts:3187`) and from a retry `attempt`
       (`scheduler/run-executor.ts:819`) — one column, two meanings.
-- [ ] 2.5 Two `createReferenceSchedulerManager` definitions exist
+- [x] 2.5 Two `createReferenceSchedulerManager` definitions exist
       (`server/index.ts:8828` live, `scheduler-manager-factory.ts:374`
-      test-only). Resolve before M2.
+      test-only). **RESOLVED** — the unimported copy is deleted (804 -> 149
+      lines), leaving the production definition in `server/index.ts` alone.
 
 ## 3. Schema (implementation, not this change)
 
-- [ ] 3.1 Add NULL-tolerant `run_history.owner_epoch TEXT` on SQLite via
+- [x] 3.1 Add NULL-tolerant `run_history.owner_epoch TEXT` on SQLite via
       `addColumnIfMissing`, mirroring the `run_generation` migration.
-- [ ] 3.2 Add `run_history.owner_epoch TEXT` on PostgreSQL via
+- [x] 3.2 Add `run_history.owner_epoch TEXT` on PostgreSQL via
       `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, **in the same change** as 3.1.
 - [ ] 3.3 Stamp `owner_epoch` in the same write that admits a run.
-- [ ] 3.4 Add a dual-backend test proving the column exists and is written on
+      (Deferred with the admission cutover — the CAS stamps it on every
+      transition today, but admission itself has not been cut over.)
+- [x] 3.4 Add a dual-backend test proving the column exists and is written on
       both, so a single-backend migration cannot ship.
 
 ## 4. The owner module (implementation, not this change)
 
-- [ ] 4.1 Declare the state set and terminal subset once; every consumer derives.
-- [ ] 4.2 Implement the transition table T1-T11 as epoch-fenced compare-and-swap.
-- [ ] 4.3 Return refusal as an ordinary outcome; never retry blindly.
+- [x] 4.1 Declare the state set and terminal subset once; every consumer derives.
+- [x] 4.2 Implement the transition table T1-T11 as epoch-fenced compare-and-swap.
+- [x] 4.3 Return refusal as an ordinary outcome; never retry blindly.
 - [ ] 4.4 Route boot adjudication (T10/T11) through the same predicate.
 - [ ] 4.5 Cut writers over per the M1-M6 tranches, deleting each old path in the
       same change as its replacement.
@@ -99,37 +132,42 @@ its property, generator, and invariant, and maps to a forbidden transition.
       event per orphan; newest-epoch runs are never adjudicated; record counts
       are never revised.
 
-- [ ] 5.9 Register 5.1-5.8 in the suite as expected-failing until the owner
-      module lands, so their red state is deliberate and visible rather than
-      an unexplained broken build.
+- [x] 5.9 Superseded: 5.1-5.8 are implemented and PASSING against the owner
+      module (86 assertions, dual-backend, zero todo), so there is no
+      expected-failing window to register.
 
 ## 6. Pre-registered canary metrics (D15)
 
 Registered **before** any Step 1 deploy. Post-hoc criteria are how "green"
 claims died in this program.
 
-- [ ] 6.1 **Restarts.** 20 consecutive controller restarts in a replaced
+- [x] 6.1 **Restarts.** 20 consecutive controller restarts in a replaced
       container with zero adjudication anomalies: every `run.started` without a
       terminal event belongs to the newest boot epoch, and no run holds two
       terminal events. Measured by query, not by log reading.
-- [ ] 6.2 **Race-class property tests green.** All of 5.1-5.8 pass on both
+- [x] 6.2 **Race-class property tests green.** All of 5.1-5.8 pass on both
       SQLite and PostgreSQL. Any skipped test counts as a failure.
-- [ ] 6.3 **Transition throughput is non-zero.** Count of successful transitions
+- [x] 6.3 **Transition throughput is non-zero.** Count of successful transitions
       per state pair over the canary window is greater than zero for T1, T2, and
       at least one terminal transition. A machine that refuses everything would
       otherwise satisfy every "zero anomalies" metric.
 - [ ] 6.4 **Refusal rate is bounded.** Refused transitions stay under 1% of
       attempts outside adjudication. A rising refusal rate means the expected
-      state is being computed wrong somewhere.
-- [ ] 6.5 **Behavior preservation (D14).** Per-connector run outcomes over the
+      state is being computed wrong somewhere. **NOT REGISTERED**: a refused
+      CAS matches zero rows and leaves no durable trace, so this cannot be
+      measured by query today. Registering a proxy metric that does not
+      measure refusals would be exactly the post-hoc rationalization D15
+      forbids. It needs a refusal counter, which belongs with the writer
+      cutover that produces refusals.
+- [x] 6.5 **Behavior preservation (D14).** Per-connector run outcomes over the
       canary window match the pre-change baseline in kind and count. Terminal
       state distribution shifts only by the `failed` → `abandoned`
       reclassification the design intends.
-- [ ] 6.6 **No permanent wedge.** Zero connector instances refusing a new run
+- [x] 6.6 **No permanent wedge.** Zero connector instances refusing a new run
       with `active_run_exists` for longer than one scheduling interval.
       Baseline: the UAT instance previously held 7 of 8 `running` rows as
       zombies up to two days old.
-- [ ] 6.7 **Dual-backend parity.** 6.1-6.6 measured on both backends. A
+- [x] 6.7 **Dual-backend parity.** 6.1-6.6 measured on both backends. A
       PostgreSQL-only or SQLite-only pass is a failure, not a partial success.
 
 ## 7. Validation
