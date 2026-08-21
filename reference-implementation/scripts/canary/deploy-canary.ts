@@ -246,7 +246,14 @@ async function evaluateConnectorRun(
   check: Extract<CanaryManifest["checks"][number], { kind: "connector_run" }>,
   base: OutcomeBase
 ): Promise<CheckOutcome> {
-  const origin = process.env.PDPP_CANARY_ORIGIN ?? "https://pdpp.vivid.fish";
+  // Required, not defaulted. A default origin in a tool that triggers real
+  // connector runs means a misconfigured invocation silently targets whichever
+  // instance the default names, instead of refusing. Fail closed, like every
+  // other precondition here.
+  const origin = process.env.PDPP_CANARY_ORIGIN ?? "";
+  if (!origin) {
+    return { ...base, after: null, detail: "PDPP_CANARY_ORIGIN is not set", passed: false };
+  }
   const password = process.env.PDPP_OWNER_PASSWORD ?? "";
   if (!password) {
     return { ...base, after: null, detail: "PDPP_OWNER_PASSWORD is not set", passed: false };
