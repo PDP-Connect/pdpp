@@ -157,5 +157,5 @@ written, and Immich is the gate.
 
 ---
 
-Signed-off-by: Tim Nunamaker <tnunamak@gmail.com>
+Signed-off-by: PDPP Maintainers <maintainers@example.com>
 Assisted-by: AI
