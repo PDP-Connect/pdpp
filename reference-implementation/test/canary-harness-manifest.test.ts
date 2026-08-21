@@ -208,6 +208,17 @@ test("OTP denylist resists casing and separator spellings", () => {
   }
 });
 
+test("OTP denylist catches wholefoods however the separator is spelled", () => {
+  // The two vocabularies disagree: manifests key this `wholefoods`, but RI's
+  // generated registry hyphenates elsewhere (`apple-health` for manifest
+  // `apple_health`), so a hyphenated spelling is one an operator can plausibly
+  // type. Underscore-normalization alone turned `whole-foods` into
+  // `whole_foods`, which prefix-matched nothing and ADMITTED an OTP connector.
+  for (const spelling of ["wholefoods", "whole-foods", "whole_foods", "Whole Foods", "WHOLEFOODS"]) {
+    assert.equal(isOtpDenylisted(spelling), true, `${spelling} must be denylisted`);
+  }
+});
+
 test("OTP denylist does not over-match unrelated connectors", () => {
   for (const connector of ["slack", "gmail", "whatsapp", "google_maps", "chaseable", "amazonia"]) {
     assert.equal(isOtpDenylisted(connector), false, `${connector} must not be denylisted`);
