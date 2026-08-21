@@ -143,6 +143,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   CREDENTIAL_REJECTED: "credential_rejected",
   CREDENTIAL_REQUIRED: "credential_required",
   CREDENTIALS_ACCEPTED: "credentials_accepted",
+  CREDENTIALS_NOT_APPLICABLE_FILE_IMPORT: "credentials_not_applicable_file_import",
   CREDENTIALS_NOT_PROBED: "credentials_not_probed",
   EXTERNAL_TOOL_UNAVAILABLE: "external_tool_unavailable",
   FRESH: "fresh",
@@ -1204,6 +1205,37 @@ export interface ConnectionCredentialEvidence {
   readonly rejected?: boolean;
 }
 
+/**
+ * Authentication-applicability evidence: whether this connection authenticates
+ * to a provider AT ALL.
+ *
+ * A file-import connector (`setup.modality = 'manual_or_upload'` with no
+ * `setup.credential_capture`) parses an artifact the owner already exported and
+ * handed over. It holds no credential, opens no session, and contacts no
+ * provider — Google Maps Timeline Import and WhatsApp both ingest a local file.
+ * There is no authentication to probe, so "are the credentials valid?" has no
+ * referent for them. The shipped projection answers it `credentials_not_probed`
+ * / `unknown` forever, which reads as an outstanding question that no owner
+ * action and no future run can ever close.
+ *
+ * `authenticates: false` makes `CredentialsValid` `not_applicable` — a settled
+ * answer that the question does not apply — instead of `unknown`, a pending one.
+ * This is the same distinction {@link ConnectionAcquisitionEvidence} draws for
+ * freshness, and it obeys the same safety property: inapplicability may only
+ * come from durable evidence that the question is MEANINGLESS, never from the
+ * mere absence of an answer. A connector that authenticates but has simply not
+ * been probed yet keeps its honest `unknown`.
+ *
+ * This deliberately grants no exemption from coverage. An import must still
+ * prove it ingested what it claimed; see `sourceCoverageCondition`.
+ *
+ * Omit/`null` for every connector that authenticates, preserving the shipped
+ * behavior exactly.
+ */
+export interface ConnectionAuthenticationEvidence {
+  readonly authenticates: boolean;
+}
+
 export interface ComputeConnectionHealthInput {
   /**
    * Acquisition-completeness evidence. Present and `complete` only for sources
@@ -1213,6 +1245,12 @@ export interface ComputeConnectionHealthInput {
   readonly acquisition?: ConnectionAcquisitionEvidence | null;
   readonly activity: ConnectionActivityEvidence | null;
   readonly attention: ConnectionAttentionEvidence | null;
+  /**
+   * Authentication-applicability evidence. Present and `authenticates: false`
+   * only for connectors that contact no provider (file imports). See
+   * {@link ConnectionAuthenticationEvidence}.
+   */
+  readonly authentication?: ConnectionAuthenticationEvidence | null;
   readonly backoff: ConnectionBackoffEvidence | null;
   /**
    * True when this connection has a browser/session repair path. This is a
@@ -2257,6 +2295,21 @@ function credentialsNotProvenCondition(): ConnectionHealthCondition {
   });
 }
 
+// A connection that authenticates to nothing has no credential to probe, so
+// "are the credentials valid?" is a category error rather than an open
+// question. `not_applicable` is the settled answer; `unknown` would keep an
+// unanswerable question open forever. See {@link ConnectionAuthenticationEvidence}.
+function credentialsNotApplicableCondition(): ConnectionHealthCondition {
+  return condition({
+    message: "This source imports a file you provide, so it has no credentials to verify.",
+    origin: "readiness",
+    reason: CONDITION_REASON.CREDENTIALS_NOT_APPLICABLE_FILE_IMPORT,
+    severity: "info",
+    status: "not_applicable",
+    type: "CredentialsValid",
+  });
+}
+
 function browserSessionRepairCapabilityUnknownCondition(reason: string): ConnectionHealthCondition {
   return condition({
     message: "The source requires a session, but this connection has no browser-session repair capability.",
@@ -2275,6 +2328,18 @@ function credentialsValidCondition(input: ComputeConnectionHealthInput): Connect
   const credential = input.credential ?? null;
   const credentialAbsent = credential?.capable === true && credential.present !== true;
   const credentialRejectedDurably = credential?.capable === true && credential.rejected === true;
+  // A connector that authenticates to no provider has no credential to probe.
+  // Answered before every other branch because for these connections the
+  // question has no referent at all — but deliberately NOT when contradicting
+  // evidence exists. A stored credential, or a credential-shaped run reason,
+  // means something DID authenticate; the durable declaration is then wrong or
+  // stale, and silently converting a real credential problem into
+  // `not_applicable` would hide exactly the failure the owner must act on.
+  // Evidence wins over declaration, so those cases fall through to the honest
+  // classification below.
+  if (input.authentication?.authenticates === false && credential === null && !(reason && isCredentialReason(reason))) {
+    return credentialsNotApplicableCondition();
+  }
   // A credential-shaped run reason is present: classify honestly by durable
   // credential-presence evidence when we have it. No usable stored credential ->
   // Precedence is durable rejection, then applicable static-secret absence,
