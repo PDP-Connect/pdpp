@@ -25,12 +25,20 @@
  * The safety property this module owns
  * ------------------------------------
  * A canary that triggers a connector run costs the owner a real one-time
- * password on his phone. Six connectors are OTP-gated; one of those codes was
- * burned today when a crash killed a run 49 seconds after the code arrived.
- * `OTP_DENYLISTED_CONNECTORS` is enforced at PARSE time, so a denied run check
- * cannot reach the deploy path even if a manifest asks for it. It is a
- * code-level gate, not a comment asking nicely.
+ * password on his phone. OTP-gated connectors are refused at PARSE time, so a
+ * denied run check cannot reach the deploy path even if a manifest asks for
+ * it. It is a code-level gate, not a comment asking nicely.
+ *
+ * The refusal set is DERIVED fail-closed from connector manifests (see
+ * `otp-posture.ts`) rather than hand-listed here. The hand-listed version had
+ * already drifted — it missed `wholefoods`, which declares an OTP posture in
+ * its own manifest — and a denylist that misses one connector is false
+ * confidence. Derivation is asymmetric: a manifest can only add itself to the
+ * refusal set, never remove itself, so this is strictly harder to disable at
+ * 2am than the constant it replaces.
  */
+
+import { deriveOtpDenylist } from "./otp-posture.ts";
 
 /**
  * Connectors whose runs dispatch a real one-time password to the owner's
@@ -38,18 +46,12 @@
  * rate-limited, human-attention-bearing resource, so the manifest parser
  * REFUSES them outright rather than warning.
  *
- * This list is deliberately a hard-coded constant and not manifest-supplied
- * configuration: a denylist a manifest can edit is a denylist an operator can
- * disable at 2am while debugging, which is exactly when it matters most.
+ * Computed once at module load: the value is a function of manifest facts on
+ * disk, and the harness is a short-lived CLI, so a stale read is not a risk.
+ * A failure to read the manifests THROWS rather than yielding an empty set —
+ * an unknown world is a refused world.
  */
-export const OTP_DENYLISTED_CONNECTORS: readonly string[] = [
-  "usaa",
-  "chase",
-  "heb",
-  "amazon",
-  "venmo",
-  "reddit",
-] as const;
+export const OTP_DENYLISTED_CONNECTORS: readonly string[] = deriveOtpDenylist();
 
 /**
  * Comparison rules a pre-registered numeric check may declare.

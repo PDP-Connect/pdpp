@@ -13,7 +13,11 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { buildRunArgs, parseInspect, rollbackContainerName } from "../scripts/canary/container-spec.ts";
 import { redact, renderRunArgs } from "../scripts/canary/deploy-canary.ts";
@@ -29,10 +33,13 @@ import {
   parseManifest,
   shouldRollback,
 } from "../scripts/canary/manifest.ts";
+import { CANARY_TRIGGERABLE_POSTURES, deriveOtpDenylist } from "../scripts/canary/otp-posture.ts";
 
 // --- ManifestError message assertions, hoisted so each `assert.throws`
 // --- predicate below reuses a module-level pattern instead of allocating one.
 const OTP_DENYLISTED_MESSAGE_PATTERN = /OTP-denylisted/u;
+const UNREADABLE_MANIFESTS_MESSAGE_PATTERN = /cannot read connector manifests/u;
+
 const DIGEST_PINNED_MESSAGE_PATTERN = /digest-pinned/u;
 const ARTIFACT_ASSERTIONS_MESSAGE_PATTERN = /artifactAssertions/u;
 const DUPLICATE_CHECK_ID_MESSAGE_PATTERN = /duplicate check id/u;
@@ -58,6 +65,26 @@ const DOCKER_NAME_ILLEGAL_CHARS_PATTERN = /[:.]/u;
 const REDACTED_OWNER_TOKEN_PATTERN = /PDPP_OWNER_TOKEN=<redacted>/u;
 const VISIBLE_DB_PATH_PATTERN = /PDPP_DB_PATH=\/root\/\.pdpp\/pdpp\.sqlite/u;
 const VISIBLE_NTFY_TOPIC_PATTERN = /NTFY_TOPIC=pdpp/u;
+
+/** Repo root, resolved from this file rather than cwd. */
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * Writes `manifests` into a scratch directory and derives the denylist from
+ * it, so the fail-closed cases below can be driven by manifests that must
+ * never exist in the real tree.
+ */
+function deriveFromFixtures(manifests: Readonly<Record<string, string>>): readonly string[] {
+  const dir = mkdtempSync(join(tmpdir(), "canary-otp-posture-"));
+  try {
+    for (const [name, contents] of Object.entries(manifests)) {
+      writeFileSync(join(dir, name), contents);
+    }
+    return deriveOtpDenylist(dir);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+}
 
 const BASE_MANIFEST = {
   artifactAssertions: [{ description: "d", id: "a", minCount: 1, path: "/app/x.ts", pattern: "marker" }],
@@ -89,7 +116,90 @@ test("OTP denylist covers every connector that texts the owner a code", () => {
   for (const connector of ["usaa", "chase", "heb", "amazon", "venmo", "reddit"]) {
     assert.equal(isOtpDenylisted(connector), true, `${connector} must be denylisted`);
   }
-  assert.deepEqual([...OTP_DENYLISTED_CONNECTORS].sort(), ["amazon", "chase", "heb", "reddit", "usaa", "venmo"]);
+});
+
+test("OTP denylist catches wholefoods, which the hand-maintained list missed", () => {
+  // The concrete drift that motivated deriving this set. `wholefoods` declares
+  // `interaction_posture: "otp_likely"` and `human_interaction: ["otp"]` in its
+  // own manifest -- "Whole Foods (via Amazon) frequently requires OTP" -- and
+  // was absent from the six hardcoded names. Derivation closes it by
+  // construction; this test fails if anyone re-freezes the list.
+  assert.equal(isOtpDenylisted("wholefoods"), true, "wholefoods declares an OTP posture and must be denylisted");
+});
+
+test("OTP denylist equals every manifest that declares an OTP posture, computed independently of the harness", () => {
+  // Recomputed here straight from the manifest files, so this asserts against
+  // the ground truth rather than re-running the harness's own derivation.
+  const manifestDir = join(repoRoot, "packages/polyfill-connectors/manifests");
+  const declaredOtp = readdirSync(manifestDir)
+    .filter((entry) => entry.endsWith(".json"))
+    .filter((entry) => {
+      const capabilities = JSON.parse(readFileSync(join(manifestDir, entry), "utf8")).capabilities ?? {};
+      const posture = capabilities.refresh_policy?.interaction_posture;
+      const interactions = capabilities.human_interaction;
+      return posture === "otp_likely" || (Array.isArray(interactions) && interactions.includes("otp"));
+    })
+    .map((entry) => entry.slice(0, -".json".length))
+    .sort();
+
+  assert.deepEqual(
+    [...OTP_DENYLISTED_CONNECTORS].sort(),
+    declaredOtp,
+    "the derived denylist must equal exactly the manifests declaring an OTP posture"
+  );
+});
+
+test("derivation is fail-closed: a manifest proves safety or it is denied", () => {
+  // Each fixture withholds proof a different way. All must land in the
+  // refusal set; only the last, which positively declares a blessed posture
+  // and no otp interaction, may be triggered.
+  const safe = JSON.stringify({
+    capabilities: { human_interaction: ["credentials"], refresh_policy: { interaction_posture: "credentials" } },
+  });
+  const derived = deriveFromFixtures({
+    "declares_otp_interaction_only.json": JSON.stringify({
+      // Posture scrubbed to a blessed value, but the interaction token
+      // remains: either signal alone is enough to deny.
+      capabilities: { human_interaction: ["otp"], refresh_policy: { interaction_posture: "none" } },
+    }),
+    "declares_otp_posture.json": JSON.stringify({
+      capabilities: { refresh_policy: { interaction_posture: "otp_likely" } },
+    }),
+    "empty_object.json": JSON.stringify({}),
+    "malformed.json": "{ not json",
+    "missing_posture.json": JSON.stringify({ capabilities: { refresh_policy: {} } }),
+    "novel_posture.json": JSON.stringify({
+      // The 2am attack: invent a posture the guard has never heard of. An
+      // unknown value must deny, which is why the blessed set is closed.
+      capabilities: { refresh_policy: { interaction_posture: "definitely_fine_trust_me" } },
+    }),
+    "null_capabilities.json": JSON.stringify({ capabilities: null }),
+    "proves_safe.json": safe,
+  });
+
+  assert.deepEqual(derived, [
+    "declares_otp_interaction_only",
+    "declares_otp_posture",
+    "empty_object",
+    "malformed",
+    "missing_posture",
+    "novel_posture",
+    "null_capabilities",
+  ]);
+});
+
+test("derivation refuses to produce a permissive denylist when manifests cannot be read", () => {
+  // An empty return here would silently allow every connector, including the
+  // OTP ones. Throwing is the only safe answer to "I could not look".
+  assert.throws(
+    () => deriveOtpDenylist(join(tmpdir(), "canary-otp-posture-does-not-exist")),
+    UNREADABLE_MANIFESTS_MESSAGE_PATTERN
+  );
+});
+
+test("the triggerable-posture set is closed and excludes every OTP posture", () => {
+  assert.equal(CANARY_TRIGGERABLE_POSTURES.has("otp_likely"), false, "otp_likely must never be triggerable");
+  assert.deepEqual([...CANARY_TRIGGERABLE_POSTURES].sort(), ["credentials", "manual_action_likely", "none"]);
 });
 
 test("OTP denylist resists casing and separator spellings", () => {

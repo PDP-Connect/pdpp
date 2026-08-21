@@ -81,33 +81,6 @@ const MANIFEST_ROOTS = ["reference-implementation/fixtures/seed-manifests", "pac
  */
 const SHARED_LIBRARY_KIND_DISPATCH_SCAN_ROOT = "packages/polyfill-connectors/src";
 
-/**
- * The canary deploy harness names connectors for ONE reason: to refuse to
- * trigger them. `OTP_DENYLISTED_CONNECTORS` in `scripts/canary/manifest.ts`
- * lists the connectors whose runs cost a real human a one-time password, and
- * the harness hard-refuses to auto-trigger any of them. That list is a fact
- * about the owner's phone, not about the connector registry, and it is
- * deliberately a source constant rather than manifest configuration — a
- * denylist a manifest can edit is a denylist an operator can disable at 2am
- * while debugging, which is exactly when it matters most.
- *
- * That makes it the inverse of what rule (1) exists to catch. The guarded
- * failure is generic runtime logic (scheduling, readiness, gap-bounding,
- * compaction) silently special-casing named connectors so behavior diverges
- * per connector. Here nothing dispatches: the names gate a refusal, the
- * harness is a leaf no RI runtime module imports, and it runs only when an
- * operator invokes it by hand.
- *
- * Exempt from rule (1) ONLY, and matched as an exact repo-root-relative
- * prefix rather than a directory-name segment, so a `canary/` directory
- * appearing under any other scan root is NOT covered. Every other rule --
- * provider endpoints, OAuth scopes, credential env keys, validation-kind
- * dispatch, connector-module imports, sibling data loads -- still runs here.
- * `ri-zero-connector-knowledge-conformance.test.ts` holds a counterweight
- * proving a dispatch-shaped identity use under this prefix is still caught.
- */
-const OTP_DENYLIST_IDENTITY_EXEMPT_ROOT = "reference-implementation/scripts/canary";
-
 /** Files at {@link SHARED_LIBRARY_KIND_DISPATCH_SCAN_ROOT} legitimately
  * exempt from rules (6)/(7) — see that constant's doc comment for what each
  * entry is and why. Exact-file, not a directory/prefix allowlist: adding a
@@ -424,18 +397,13 @@ export function scanFile(
   }
 
   const isSharedLibraryFile = relPath.startsWith(`${SHARED_LIBRARY_KIND_DISPATCH_SCAN_ROOT}/`);
-  // Rule (1) only, and only under this exact prefix — see the constant's doc
-  // comment. Every other identity rule still applies to these files.
-  const isOtpDenylistFile = relPath.startsWith(`${OTP_DENYLIST_IDENTITY_EXEMPT_ROOT}/`);
   violations.push(
-    ...scanFileIdentity(absPath, relPath, connectorKeys, validationKinds, isSharedLibraryFile)
-      .filter((v) => !(isOtpDenylistFile && v.rule === "hardcoded-connector-identity-literal"))
-      .map((v) => ({
-        file: v.file,
-        line: v.line,
-        rule: v.rule,
-        snippet: v.snippet,
-      }))
+    ...scanFileIdentity(absPath, relPath, connectorKeys, validationKinds, isSharedLibraryFile).map((v) => ({
+      file: v.file,
+      line: v.line,
+      rule: v.rule,
+      snippet: v.snippet,
+    }))
   );
   violations.push(...scanFileDataLoads(absPath, relPath, repoRoot, connectorKeys, validationKinds));
 
