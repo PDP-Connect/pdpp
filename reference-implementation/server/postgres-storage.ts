@@ -72,8 +72,62 @@ interface StorageOptions {
 
 let activeBackend: StorageBackend = "sqlite";
 let pool: PgPool | null = null;
+let bulkPool: PgPool | null = null;
 let lockPool: PgPool | null = null;
 let lockPoolCapacity = 0;
+
+/**
+ * Connection-lane sizing, 2026-08-21. The RI runs the HTTP server, the run
+ * scheduler and the connector/embedding runtime in ONE Node process sharing
+ * ONE node-postgres Pool that never set `max` — so the library default of 10
+ * connections was the entire budget for interactive request handlers AND the
+ * background ingest/backfill pipeline together. A burst of bulk work could
+ * therefore starve an interactive handler of a connection outright, which is
+ * a QUEUEING failure independent of how long any single statement runs (and
+ * so is not fixed by the keyset index that precedes this change, nor by the
+ * per-statement bound below).
+ *
+ * Splitting the single pool in two is the node-postgres-layer equivalent of
+ * PgBouncer's pool-alias partitioning, without adding PgBouncer to a
+ * single-process deployment. `max_connections` on this instance is 100, so
+ * 8 + 3 + 1 is nowhere near the server ceiling; the point is not to conserve
+ * connections but to make the interactive lane's supply independent of bulk
+ * demand.
+ */
+const POSTGRES_INTERACTIVE_POOL_MAX = 8;
+const POSTGRES_BULK_POOL_MAX = 3;
+
+/**
+ * Hard per-statement ceiling for the bulk lane. Postgres cannot preempt a
+ * transaction once admitted (see the PostgreSQL wiki's own "Priorities"
+ * page: there are no facilities to limit or prioritize resources per
+ * user/query), so a client-side pacer can decline to start the NEXT unit of
+ * work but can never shorten one already running. `statement_timeout` is the
+ * only mechanism that bounds an in-flight statement from outside it.
+ *
+ * Applied as `SET LOCAL` inside each bulk transaction rather than
+ * `ALTER ROLE ... SET`, deliberately: this deployment has exactly ONE role
+ * (`pdpp`) serving both interactive and bulk traffic, so a role-scoped
+ * timeout would apply the bulk bound to the owner's page loads too. `SET
+ * LOCAL` reverts at transaction end and therefore cannot leak onto whichever
+ * pooled client picks the connection up next — the same rule
+ * `postgresQueryBounded` already documents and its test already proves.
+ *
+ * 15s, not the 2-5s the design sketch suggested: measured bulk statements on
+ * this instance (live pg_stat_activity sampling during a real re-ingest) run
+ * ~0.5-1.1s for the semantic and lexical writes once the keyset index lands.
+ * A bound must be a BACKSTOP against pathology, not a routine cliff — set it
+ * near the routine cost and an ordinary slow page turns a recoverable delay
+ * into a failed backfill. 15s is ~14x the observed write cost and still an
+ * order of magnitude under the 44.5s incident.
+ */
+const POSTGRES_BULK_STATEMENT_TIMEOUT_MS = 15_000;
+/**
+ * Bulk work must not sit in a lock queue either. Kept well under the
+ * statement bound so a contended chunk fails fast and is retried on the next
+ * pass rather than occupying a bulk-lane connection while it waits.
+ */
+const POSTGRES_BULK_LOCK_TIMEOUT_MS = 3000;
 
 // Semantic embedding storage mode, detected at bootstrap. 'vector' when the
 // pgvector extension is available and `semantic_search_blob.embedding` carries
@@ -270,6 +324,20 @@ export function getPostgresPool(): PgPool {
     throw new Error("Postgres storage has not been initialized.");
   }
   return pool;
+}
+
+/**
+ * The bulk lane: ingest/backfill/embedding work. Separate from the
+ * interactive pool so a burst of bulk statements cannot exhaust the
+ * connections HTTP handlers need. Callers should reach this through
+ * `postgresBulkQuery` rather than using the pool directly, so the bulk
+ * statement/lock bounds are applied uniformly.
+ */
+export function getPostgresBulkPool(): PgPool {
+  if (!bulkPool) {
+    throw new Error("Postgres storage has not been initialized.");
+  }
+  return bulkPool;
 }
 
 export function getPostgresLockPool(): PgPool {
@@ -691,6 +759,57 @@ export async function postgresQueryBounded<Row extends QueryResultRow = QueryRes
   }
 }
 
+/**
+ * Runs one bulk-lane statement: on the BULK pool (so it cannot consume an
+ * interactive connection) and under a `SET LOCAL` statement/lock timeout (so
+ * it cannot run unbounded once Postgres has admitted it).
+ *
+ * This is the backstop half of the 2026-08-21 contention fix. The bulk
+ * ingest/backfill path was ALREADY chunked before this change — the semantic
+ * rebuild pages `records` 500 rows at a time and issues each page's read and
+ * write as its own autocommit statement, holding no transaction across
+ * pages. What it lacked was a lane of its own and a ceiling: every page
+ * competed for the same 10 shared connections as the owner's page loads, and
+ * nothing bounded a page that went pathological. Both gaps are what this
+ * closes; the dominant COST of those pages was the missing keyset index,
+ * fixed in the preceding commit.
+ *
+ * A `PostgresStatementTimeoutError` here means the bulk bound fired. Bulk
+ * callers should treat it as "this chunk did not land, retry it on the next
+ * pass" — never as data loss, since each chunk commits independently and the
+ * keyset cursor simply does not advance past an uncommitted page.
+ */
+export async function postgresBulkQuery<Row extends QueryResultRow = QueryResultRow>(
+  sql: string,
+  params: unknown[] = []
+): Promise<{ rowCount: number | null; rows: Row[] }> {
+  const client = await getPostgresBulkPool().connect();
+  try {
+    await client.query("BEGIN");
+    // SET LOCAL, never bare SET: it reverts at COMMIT/ROLLBACK and so cannot
+    // leak this bulk ceiling onto whichever caller the pool hands this
+    // physical connection to next.
+    await client.query(`SET LOCAL statement_timeout = ${POSTGRES_BULK_STATEMENT_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${POSTGRES_BULK_LOCK_TIMEOUT_MS}`);
+    const result = await client.query<Row>(sql, params);
+    await client.query("COMMIT");
+    return { rowCount: result.rowCount, rows: result.rows };
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Rollback failure must not hide the original statement/timeout error.
+    }
+    if ((err as { code?: string } | null)?.code === POSTGRES_STATEMENT_TIMEOUT_SQLSTATE) {
+      // biome-ignore lint/style/useErrorCause: cause is threaded through PostgresStatementTimeoutError's own constructor (matches postgresQueryBounded's identical established pattern) — biome cannot trace it through a custom Error subclass.
+      throw new PostgresStatementTimeoutError({ cause: err });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // ─── Physical storage footprint (read-only operator diagnostics) ─────────────
 //
 // Surfaces the database's on-disk size so an operator can reconcile the
@@ -930,7 +1049,8 @@ export async function initExistingPostgresRepairStorage(config: StorageConfig | 
   if (pool) {
     await closePostgresStorage();
   }
-  pool = new Pool({ connectionString: config.databaseUrl });
+  pool = new Pool({ connectionString: config.databaseUrl, max: POSTGRES_INTERACTIVE_POOL_MAX });
+  bulkPool = new Pool({ connectionString: config.databaseUrl, max: POSTGRES_BULK_POOL_MAX });
   lockPoolCapacity = 1;
   lockPool = new Pool({ connectionString: config.databaseUrl, max: lockPoolCapacity });
   activeBackend = "postgres";
@@ -967,7 +1087,9 @@ export async function initPostgresStorage(
     await closePostgresStorage();
   }
 
-  pool = new Pool({ connectionString: config.databaseUrl });
+  // Two lanes, not one shared pool: see POSTGRES_INTERACTIVE_POOL_MAX.
+  pool = new Pool({ connectionString: config.databaseUrl, max: POSTGRES_INTERACTIVE_POOL_MAX });
+  bulkPool = new Pool({ connectionString: config.databaseUrl, max: POSTGRES_BULK_POOL_MAX });
   lockPoolCapacity = 1;
   lockPool = new Pool({ connectionString: config.databaseUrl, max: lockPoolCapacity });
   activeBackend = "postgres";
@@ -983,8 +1105,10 @@ export async function initPostgresStorage(
 
 export async function closePostgresStorage() {
   const current = pool;
+  const currentBulkPool = bulkPool;
   const currentLockPool = lockPool;
   pool = null;
+  bulkPool = null;
   lockPool = null;
   lockPoolCapacity = 0;
   activeBackend = "sqlite";
@@ -997,6 +1121,9 @@ export async function closePostgresStorage() {
   bumpStorageGeneration();
   if (current) {
     await current.end();
+  }
+  if (currentBulkPool) {
+    await currentBulkPool.end();
   }
   if (currentLockPool) {
     await currentLockPool.end();
