@@ -136,15 +136,18 @@ export function calleeName(callee: Node): string | null {
  * `jsx` Babel parser plugins are mutually exclusive for `.ts` (non-`.tsx`)
  * sources (enabling both misparses a type-cast or generic like `<T>` as a
  * JSX element), so `.tsx`/`.jsx` files select
- * `["typescript", "jsx", "decorators", "importAttributes"]` and everything
- * else selects `["typescript", "decorators", "importAttributes"]`. The
- * `decorators` plugin (standard/stage-3 syntax, not `decorators-legacy`) is
- * always enabled: this repo's `tsconfig.json` sets `erasableSyntaxOnly:
- * true`, which rejects the legacy experimental-decorators form outright, so
- * standard decorators are the only decorator syntax that can validly appear
- * in a real `.ts` source file here — without this plugin, any file using
- * that (valid, erasable) syntax would hit the parse-failure path below for
- * a reason that has nothing to do with the file being malformed.
+ * `["typescript", "jsx", "decorators"]` and everything else selects
+ * `["typescript", "decorators"]`. The `decorators` plugin (standard/stage-3
+ * syntax, not `decorators-legacy`) is always enabled: this repo's
+ * `tsconfig.json` sets `erasableSyntaxOnly: true`, which rejects the legacy
+ * experimental-decorators form outright, so standard decorators are the
+ * only decorator syntax that can validly appear in a real `.ts` source file
+ * here — without this plugin, any file using that (valid, erasable) syntax
+ * would hit the parse-failure path below for a reason that has nothing to
+ * do with the file being malformed. `importAttributes` (Babel 7's opt-in
+ * flag for `import x from "y" with { type: "json" }`) was removed in Babel 8
+ * — that syntax now parses unconditionally, so the plugin name is no longer
+ * needed (or valid) here.
  *
  * Throws on a genuine parse failure (mirroring `@babel/parser`'s own
  * `parse()`); callers keep their own try/catch around this call. A parse
@@ -156,9 +159,7 @@ export function parseSource(raw: string, absPath: string): Node {
   const isJsxExtension = absPath.endsWith(".tsx") || absPath.endsWith(".jsx");
   const ast = parse(raw, {
     errorRecovery: true,
-    plugins: isJsxExtension
-      ? ["typescript", "jsx", "decorators", "importAttributes"]
-      : ["typescript", "decorators", "importAttributes"],
+    plugins: isJsxExtension ? ["typescript", "jsx", "decorators"] : ["typescript", "decorators"],
     sourceType: "module",
   }) as unknown as { program: Node };
   return ast.program;
