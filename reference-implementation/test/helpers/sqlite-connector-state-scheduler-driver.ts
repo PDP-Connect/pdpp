@@ -25,13 +25,20 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
-import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "../../lib/db.ts";
+import { allowUnboundedReadAcknowledged, exec, referenceQueries } from "../../lib/db.ts";
+import { clearCurrentBootEpoch } from "../../lib/spine.ts";
 import { createController } from "../../runtime/controller.ts";
 import { registerConnector } from "../../server/auth.ts";
 import { closeDb, initDb } from "../../server/db.ts";
 import { getSyncState, putSyncState } from "../../server/records.ts";
 
-import { CONNECTOR_A, CONNECTOR_B } from "./connector-state-scheduler-conformance.ts";
+import {
+  announceHarnessRunStarted,
+  CONNECTOR_A,
+  CONNECTOR_B,
+  runHarnessBootReconciliation,
+  spineHasRunAbandoned,
+} from "./connector-state-scheduler-conformance.ts";
 
 interface StateScope {
   connectorId: string;
@@ -187,7 +194,6 @@ export function createSqliteConnectorStateSchedulerDriver() {
       };
     },
 
-    // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
     async insertActiveRun(connectorId: string, run: ActiveRunInput) {
       // The reference uses `controllerUpsertActiveRun` at runtime. The
       // harness asserts that a competing run is rejected and the incumbent
@@ -201,7 +207,17 @@ export function createSqliteConnectorStateSchedulerDriver() {
         run.startedAt,
         run.runGeneration ?? 1,
       ]);
-      return result.changes > 0;
+      const admitted = result.changes > 0;
+      if (admitted) {
+        // A real run is admitted to the flight table AND announced on the
+        // spine. Only the second of those is visible to the boot
+        // reconciler, which adjudicates orphans from `run.started` events
+        // rather than from the flight table, so a harness run that skipped
+        // the emit would be invisible to the very mechanism the restart
+        // scenario exists to pin.
+        await announceHarnessRunStarted(connectorId, run);
+      }
+      return admitted;
     },
 
     // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
@@ -254,8 +270,13 @@ export function createSqliteConnectorStateSchedulerDriver() {
         // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential because each iteration advances shared test state.
         await registerConnector(manifest);
       }
+      // Establish this incarnation's boot epoch before any run is
+      // announced: the spine refuses an unstamped `run.started`, and the
+      // epoch is also what a later restart compares against to decide
+      // which runs it inherited rather than started.
+      await runHarnessBootReconciliation();
       controller = createController({
-        // Quiet logger so the reconciliation warning that fires inside
+        // Quiet logger so the claim-release warning that fires inside
         // `simulateRestart` doesn't leak into test output.
         // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
         logger: { error: () => {}, warn: () => {} },
@@ -263,27 +284,33 @@ export function createSqliteConnectorStateSchedulerDriver() {
     },
 
     async simulateRestart() {
+      // Both halves of a real restart, in the production order.
+      //
       // A fresh controller invokes `releaseAbandonedControllerRunClaims`
       // at construction time against the same db (the module-scoped
-      // sqlite handle is preserved). This mirrors the production
-      // restart sequence: the prior process leaves rows behind in
-      // `controller_active_runs`; the new process boots a controller
-      // and releases those stale claims. The runs' terminal state is
-      // adjudicated separately, from the spine, by
-      // `reconcileOrphanedRunsAtBoot`.
+      // sqlite handle is preserved), clearing the flight rows the prior
+      // process left in `controller_active_runs`. That deliberately
+      // writes no terminal event.
+      //
+      // Adjudication is the successor's separate job, and `startServer`
+      // does it by booting a new epoch and running the spine-driven
+      // reconciler. Without that second call this driver would release
+      // the claims and stop, leaving every abandoned run non-terminal —
+      // and the restart scenario asserting an outcome nothing produced.
       controller = createController({
         // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
         logger: { error: () => {}, warn: () => {} },
       });
-      // Reconciliation emits run.failed events asynchronously; settle
-      // the microtask queue so the spine row is durable before the
-      // harness inspects it.
-      await new Promise((resolve) => setImmediate(resolve));
+      await runHarnessBootReconciliation();
     },
 
     // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
     async teardown() {
       controller = null;
+      // The boot epoch lives in a module-scoped singleton, so a scenario
+      // that left one behind would stamp the next scenario's runs with a
+      // dead incarnation's identity.
+      clearCurrentBootEpoch();
       closeDb();
     },
 
@@ -306,14 +333,8 @@ export function createSqliteConnectorStateSchedulerDriver() {
     },
 
     // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
-    async wasRunMarkedFailed(runId: string) {
-      // `spineCheckRunTerminal` returns truthy for any terminal event.
-      // These synthetic runs never produce a `run.completed`, and claim
-      // release writes no terminal event at all, so a hit here means the
-      // `run.failed` branch fired -- which is exactly what the harness
-      // now asserts must NOT happen.
-      const row = getOne(referenceQueries.spineCheckRunTerminal, [runId]);
-      return Boolean(row);
+    async wasRunAdjudicatedAbandoned(runId: string) {
+      return spineHasRunAbandoned(runId);
     },
   };
 }

@@ -77,18 +77,22 @@
  *     async listActiveRuns(): ActiveRunSummary[]
  *     async deleteActiveRun(connectorId, runId): void
  *
- *     // Simulate a process restart that re-runs the controller's
- *     // stale-claim release. After this resolves the driver MUST report
- *     // zero active runs and MUST NOT have surfaced a run.failed
- *     // terminal event for any previously-active run: releasing a claim
- *     // reports nothing about the work. The run's terminal state is
- *     // adjudicated from the spine by `reconcileOrphanedRunsAtBoot`,
- *     // which writes run.abandoned. The driver SHALL provide a
- *     // synchronous way to inspect terminal events for a run via
- *     // `wasRunMarkedFailed(runId)` so the harness can prove that
- *     // without coupling to the spine schema.
+ *     // Simulate a process restart, running BOTH halves of the real boot
+ *     // sequence: release the flight claims the dead incarnation left
+ *     // behind, then run the successor's spine-driven adjudication. After
+ *     // this resolves the driver MUST report zero active runs and MUST
+ *     // have adjudicated `run.abandoned` for any previously-active run
+ *     // that had not already reached a terminal state.
+ *     //
+ *     // Releasing claims alone does NOT satisfy this: it writes no
+ *     // terminal event, so a driver that stopped there would report a
+ *     // clean registry while every interrupted run stayed unadjudicated.
+ *     //
+ *     // The driver SHALL provide a way to inspect the abandonment verdict
+ *     // for a run via `wasRunAdjudicatedAbandoned(runId)` so the harness
+ *     // can prove the effect without coupling to the spine schema.
  *     async simulateRestart(): void
- *     async wasRunMarkedFailed(runId): boolean
+ *     async wasRunAdjudicatedAbandoned(runId): boolean
  *   }
  *
  * Spec: openspec/changes/add-connector-state-scheduler-conformance-harness/
@@ -96,6 +100,94 @@
  */
 
 import assert from "node:assert/strict";
+
+import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../../lib/controller-boot.ts";
+import { clearCurrentBootEpoch, emitSpineEvent, getCurrentBootEpoch } from "../../lib/spine.ts";
+import { getDb } from "../../server/db.ts";
+
+/**
+ * Announce a harness run on the spine the way a real run announces itself.
+ *
+ * The active-run registry and the spine are two different records of the
+ * same fact, and only the spine one is adjudicable: the boot reconciler
+ * selects orphans by scanning `run.started` events that lack a terminal
+ * event, never by reading `controller_active_runs`. A driver that wrote
+ * only the flight row would leave the restart scenario with nothing for
+ * reconciliation to find, which is how it came to assert an outcome no
+ * mechanism under test produced.
+ *
+ * The spine rejects an unstamped `run.started`, and the stamp is supplied
+ * by the emitting caller rather than injected downstream — see
+ * `runConnector` in `runtime/index.ts`, which this mirrors. Callers must
+ * therefore have booted an epoch first.
+ */
+export async function announceHarnessRunStarted(
+  connectorId: string,
+  run: { runId: string; scenarioId: string; startedAt: string; traceId: string }
+): Promise<void> {
+  const bootEpoch = getCurrentBootEpoch();
+  if (!bootEpoch) {
+    throw new Error("announceHarnessRunStarted: no boot epoch; driver setup must run the boot sequence first");
+  }
+  await emitSpineEvent({
+    actor_id: connectorId,
+    actor_type: "runtime",
+    data: {
+      boot_epoch: bootEpoch.boot_epoch,
+      connector_instance_id: connectorId,
+      controller_id: bootEpoch.controller_id,
+      seq: bootEpoch.seq,
+      source: connectorId,
+    },
+    event_type: "run.started",
+    object_id: run.runId,
+    object_type: "run",
+    occurred_at: run.startedAt,
+    run_id: run.runId,
+    scenario_id: run.scenarioId,
+    status: "started",
+    trace_id: run.traceId,
+  });
+}
+
+/**
+ * True when the spine records the `run.abandoned` verdict for this run.
+ *
+ * Deliberately narrower than the reference's `spineCheckRunTerminal`
+ * probe, which answers "is this run terminal at all" and is satisfied by
+ * `run.completed` and `run.failed` too. The restart scenario exists to pin
+ * WHICH terminal state an interrupted run earns, so a probe that cannot
+ * tell the verdicts apart would not pin it.
+ *
+ * Reads the spine through the shared SQLite handle, the same way
+ * `boot-orphan-reconciliation.test.ts` inspects reconciliation output.
+ */
+export function spineHasRunAbandoned(runId: string): boolean {
+  const db = getDb() as unknown as {
+    prepare: (sql: string) => { get: (...params: unknown[]) => unknown };
+  };
+  const row = db
+    .prepare("SELECT 1 AS present FROM spine_events WHERE run_id = ? AND event_type = 'run.abandoned' LIMIT 1")
+    .get(runId);
+  return Boolean(row);
+}
+
+/**
+ * Run the boot sequence a successor process runs, in the production order:
+ * emit `controller.booted` to establish this incarnation's epoch, then let
+ * `reconcileOrphanedRunsAtBoot` adjudicate every run the previous epoch
+ * left unfinished.
+ *
+ * Mirrors `startServer` (`server/index.ts`), which is the only other caller
+ * of this pair. Drivers delegate here rather than reimplementing it so the
+ * harness keeps exercising the real adjudicator — and so this seam moves in
+ * one place when adjudication becomes a run-lifecycle transition.
+ */
+export async function runHarnessBootReconciliation(): Promise<void> {
+  clearCurrentBootEpoch();
+  const bootEpoch = await emitControllerBootedAndStashEpoch();
+  await reconcileOrphanedRunsAtBoot(bootEpoch);
+}
 
 interface StateProjection {
   connector_id: string;
@@ -149,7 +241,7 @@ interface SchedulerDriver {
     connectorId: string,
     patch: { interval_seconds: number; jitter_seconds?: number; enabled?: boolean }
   ) => Promise<ScheduleSummary>;
-  wasRunMarkedFailed: (runId: string) => Promise<boolean>;
+  wasRunAdjudicatedAbandoned: (runId: string) => Promise<boolean>;
 }
 
 type TestFn = (name: string, fn: () => Promise<void>) => void;
@@ -647,23 +739,17 @@ export function runConnectorStateSchedulerConformance({
     }
   });
 
-  // Pins startup claim release. After a simulated restart any rows left
-  // behind in the active registry must be cleared, and NO `run.failed`
-  // may be written for them.
+  // Pins startup reconciliation. After a simulated restart any rows that
+  // had been left in the active registry must be cleared, and each run the
+  // dead incarnation left unfinished must have been adjudicated
+  // `run.abandoned` — not `run.failed`. Nothing at restart observed a
+  // failure; it observed the absence of a report from a process that is
+  // gone, and only abandonment says that honestly.
   //
-  // Releasing a claim and reporting on the work are separate jobs.
-  // `releaseAbandonedControllerRunClaims` does the former, from the
-  // flight table. The run's terminal state is adjudicated from the
-  // append-only spine by `reconcileOrphanedRunsAtBoot`, which writes
-  // `run.abandoned` -- nothing observed a failure here, only the absence
-  // of a report from a process that is gone, and the two states have
-  // different remedies. Two writers racing for one run's terminal event
-  // would be worse than one, so this path emits none.
-  //
-  // The harness asks the driver via the narrow `wasRunMarkedFailed`
-  // accessor instead of reading the spine table directly, so the
-  // contract stays at the lifecycle layer.
-  t("simulated restart releases abandoned run claims without recording a failure", async () => {
+  // The harness asks the driver via a narrow
+  // `wasRunAdjudicatedAbandoned` accessor instead of reading the spine
+  // table directly so the contract is at the lifecycle layer.
+  t("simulated restart clears abandoned runs and adjudicates each run.abandoned", async () => {
     const driver = await makeDriver();
     await driver.setup();
     try {
@@ -685,16 +771,8 @@ export function runConnectorStateSchedulerConformance({
       const remaining = await driver.listActiveRuns();
       assert.deepEqual(remaining, [], "restart must clear stale active-run rows");
 
-      assert.equal(
-        await driver.wasRunMarkedFailed("run_abandoned_a"),
-        false,
-        "releasing a stale claim must not claim the run failed"
-      );
-      assert.equal(
-        await driver.wasRunMarkedFailed("run_abandoned_b"),
-        false,
-        "releasing a stale claim must not claim the run failed"
-      );
+      assert.equal(await driver.wasRunAdjudicatedAbandoned("run_abandoned_a"), true);
+      assert.equal(await driver.wasRunAdjudicatedAbandoned("run_abandoned_b"), true);
     } finally {
       await driver.teardown();
     }
