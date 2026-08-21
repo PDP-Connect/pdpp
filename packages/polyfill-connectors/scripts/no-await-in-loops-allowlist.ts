@@ -748,7 +748,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/gmail/integration.test.ts",
-    line: 2076,
+    line: 2169,
     column: 16,
     category: "test_assertion_sequencing",
     note: "run(): each run feeds the prior run's committed cursor into the next; the walk is the assertion",

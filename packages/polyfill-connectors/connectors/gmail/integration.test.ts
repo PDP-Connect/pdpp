@@ -32,6 +32,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { mock, test } from "node:test";
 import type {
@@ -1784,19 +1785,12 @@ test("runAllMailPasses: first historical page is bounded, durable only at page e
       true,
       "a bounded page proves its own detail coverage even while historical continuation remains"
     );
-    assert.deepEqual(
+    assert.equal(
       protocolMessages.find((message) => message.type === "DETAIL_COVERAGE" && message.stream === "message_bodies"),
-      {
-        type: "DETAIL_COVERAGE",
-        reference_only: true,
-        stream: "message_bodies",
-        state_stream: "messages",
-        required_keys: [],
-        hydrated_keys: [],
-        considered: 2,
-        covered: 2,
-      },
-      "the body stream reports the same bounded parent-message pass"
+      undefined,
+      "message_bodies is declared `state_stream: messages` in the manifest, so it must emit NO DETAIL_COVERAGE — " +
+        "the runtime rejects the whole run if it does, and the only counts available here are the parent " +
+        "message pass's, which would fabricate covered == considered for bodies never hydrated"
     );
     assert.deepEqual(
       protocolMessages.find((message) => message.type === "SKIP_RESULT" && message.stream === "messages"),
@@ -1817,6 +1811,105 @@ test("runAllMailPasses: first historical page is bounded, durable only at page e
         recovery_hint: { action: "retry_by_runtime", retryable: true },
       },
       "a partial page remains explicitly retryable"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+/**
+ * The manifest — not this test — is the authority on which streams may prove
+ * their own coverage. A stream declared with a `state_stream` parent is a
+ * static single-parent detail stream: its checkpoint status is projected from
+ * that parent's commit outcome, so the runtime rejects the ENTIRE run if such
+ * a stream emits DETAIL_COVERAGE (see `validateDetailCoverageAgainstManifest`).
+ *
+ * This reads the real manifest rather than hard-coding `message_bodies`, so a
+ * future stream that gains a `state_stream` parent is covered the day the
+ * manifest says so.
+ *
+ * Regression: a `message_bodies` DETAIL_COVERAGE reporting the PARENT message
+ * pass's considered/covered shipped to production and failed every Gmail run
+ * with `runtime_error`, driving the scheduler into cooling_off. It was also
+ * dishonest on its own terms — it claimed covered == considered for bodies
+ * that were never hydrated.
+ */
+test("runAllMailPasses: no stream the manifest declares with a state_stream parent may emit DETAIL_COVERAGE", async () => {
+  const manifest = JSON.parse(await readFile(new URL("../../manifests/gmail.json", import.meta.url), "utf8")) as {
+    streams?: Array<{ name: string; state_stream?: string }>;
+  };
+  const stateStreamParented = new Set(
+    (manifest.streams || [])
+      .filter(
+        (stream) =>
+          typeof stream.state_stream === "string" && stream.state_stream && stream.state_stream !== stream.name
+      )
+      .map((stream) => stream.name)
+  );
+  assert.ok(
+    stateStreamParented.has("message_bodies"),
+    "guard precondition: the gmail manifest must still declare message_bodies with a state_stream parent"
+  );
+
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 1201,
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch() {
+        for (const uid of [1, 2]) {
+          yield makeMsg({ uid, emailId: `msg-${uid}` });
+        }
+      },
+    };
+
+    await runAllMailPasses(
+      client,
+      makeAllMailMailbox(),
+      {},
+      {
+        emitRecord: async () => true,
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["messages", "message_bodies"]),
+      }
+    );
+
+    const illegal = protocolMessages
+      .filter((message) => message.type === "DETAIL_COVERAGE")
+      .map((message) => message.stream as string)
+      .filter((stream) => stateStreamParented.has(stream));
+    assert.deepEqual(
+      illegal,
+      [],
+      "these streams emitted DETAIL_COVERAGE despite a manifest-declared state_stream parent, which fails the " +
+        `whole run at runtime: ${illegal.join(", ")}`
     );
   } finally {
     globalThis.process.stdout.write = originalWrite;
