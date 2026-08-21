@@ -76,6 +76,15 @@ const MANIFEST = {
   version: "1.0.0",
 };
 
+/**
+ * The stream added to `MANIFEST` to make the generation-transition case a
+ * genuine DECLARATION change. Terminal facts are keyed by stream name, so a
+ * changed stream set is what the terminal fold fences on; a bare counter bump
+ * with an unchanged declaration is not a transition its evidence is refused
+ * for.
+ */
+const TRANSITION_ADDED_STREAM = { name: "reactions", primary_key: ["id"] };
+
 const UNRELATED_MANIFEST = {
   capabilities: { public_listing: { tier: "supported" } },
   connector_id: "spine-backfill-unrelated",
@@ -247,12 +256,26 @@ test(
     const beforeTransition = await getConnectorSummaryEvidence("cin_backfill_transition");
     assert.equal(beforeTransition.terminal_facts?.state, "current");
 
-    // A genuine manifest transition: advance the connection's durable
-    // generation directly (mirrors what `persistManifestAndAdvanceGenerations`
-    // does on a real manifest change: `manifest_generation = manifest_generation
-    // + 1`, `dirty = 1, state = 'stale'`), then let the real reconcile barrier
-    // sync the evidence row's own `manifest_generation` column — exactly as
-    // the production registry transaction plus its reconcile pass would.
+    // A genuine manifest transition: change the DECLARATION and advance the
+    // connection's durable generation together, mirroring what
+    // `persistManifestAndAdvanceGenerations` does on a real manifest change
+    // (`manifest = <new>`, `manifest_generation = manifest_generation + 1`,
+    // `dirty = 1, state = 'stale'`), then let the real reconcile barrier sync
+    // the evidence row's own columns — exactly as the production registry
+    // transaction plus its reconcile pass would.
+    //
+    // The declaration edit is load-bearing, not decoration. Terminal facts are
+    // keyed by stream name and are invalidated by a change to the declared
+    // stream set, not by any byte of the manifest moving; bumping the counter
+    // alone is a generation transition this connection's evidence has no
+    // reason to be refused for. Declaring a new stream is what makes this a
+    // transition the terminal fold must actually fence on.
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ ...MANIFEST, streams: [...MANIFEST.streams, TRANSITION_ADDED_STREAM] }),
+        MANIFEST.connector_id
+      );
     getDb()
       .prepare("UPDATE connector_instances SET manifest_generation = 1 WHERE connector_instance_id = ?")
       .run("cin_backfill_transition");
@@ -614,10 +637,18 @@ test("real PostgreSQL: a genuine generation transition permanently refuses prior
     const beforeTransition = await getConnectorSummaryEvidence("cin_backfill_transition_pg");
     assert.equal(beforeTransition.terminal_facts?.state, "current");
 
-    // A genuine manifest transition: advance the durable generation and
-    // dirty evidence, mirroring the production registry transaction
-    // (`persistManifestAndAdvanceGenerations`: `manifest_generation =
-    // manifest_generation + 1`, `dirty = 1, state = 'stale'`).
+    // A genuine manifest transition: change the DECLARATION and advance the
+    // durable generation together, mirroring the production registry
+    // transaction (`persistManifestAndAdvanceGenerations`: `manifest = <new>`,
+    // `manifest_generation = manifest_generation + 1`, `dirty = 1, state =
+    // 'stale'`). The declaration edit is load-bearing for the same reason as
+    // in the SQLite twin above: terminal facts are keyed by stream name, so a
+    // changed stream set — not any byte of the manifest moving — is what the
+    // terminal fold fences on.
+    await postgresQuery("UPDATE connectors SET manifest = $1::jsonb WHERE connector_id = $2", [
+      JSON.stringify({ ...MANIFEST, streams: [...MANIFEST.streams, TRANSITION_ADDED_STREAM] }),
+      MANIFEST.connector_id,
+    ]);
     await postgresQuery("UPDATE connector_instances SET manifest_generation = 1 WHERE connector_instance_id = $1", [
       "cin_backfill_transition_pg",
     ]);
