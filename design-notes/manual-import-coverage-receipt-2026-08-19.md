@@ -1,7 +1,9 @@
 # A finished import has no way to prove what it ingested
 
-**Status:** intake. Proposed, not built. Written 2026-08-19 after a related fix
-was deliberately scoped to exclude this case.
+**Status:** superseded 2026-08-20. The premise below was wrong on the facts, and
+the proposed build is unnecessary. See "What was actually true" at the end.
+Written 2026-08-19 after a related fix was deliberately scoped to exclude this
+case.
 
 ## The state that has no honest verdict
 
@@ -96,6 +98,65 @@ one that never tried.
   provenance should be visible, not silently equal to a real receipt.
 - Does a partial import (an interrupted upload) produce a receipt that honestly
   reports incompleteness, or none at all?
+
+---
+
+## What was actually true (2026-08-20)
+
+Three of the four load-bearing claims above are false. Steps 1-3 should not be
+built.
+
+**"No connector emits evidence for `snapshot_import_receipt`" — false.** Both
+connectors already emit an artifact-grounded coverage declaration, and both
+manifests already declare the strategy (`google_maps.json:166,246`,
+`whatsapp.json:140,208`). `google_maps` counts every point/segment element the
+parser produced, at the parse site, and reports `covered < considered` when an
+element had no usable id or timestamp (`finishPoints`/`finishSegments`,
+hardened by `e1b92b36c` the same week this note was written). `whatsapp` counts
+the archive's own file and attachment listing and subtracts media the bounded-
+read policy dropped. Neither denominator is recomputed from the survivors.
+
+**"Nothing will run again" — false, and this is the load-bearing one.** The
+uploaded artifact is durable and is re-read on **every** run, not just at setup:
+`ManualUploadDurableSourceBinding` carries `import_dir`/`import_dir_env_var`
+specifically so they survive promotion, and the run orchestrator injects the
+directory as the connector-declared env var. These connections are re-runnable
+against the file already on disk.
+
+**"Coverage evidence is produced by a collection run" — true, and sufficient.**
+`connector_summary_evidence` is keyed by `connector_instance_id`, but is only
+ever populated by folding a terminal run event's `collection_facts`. Zero runs
+therefore means `stream_latest_facts_json IS NULL` and axis `unknown` — which is
+the correct and honest reading of "never measured", not a defect.
+
+Derivation over the exact shapes these two connectors emit, through the real
+`deriveStreamCoverageCondition`:
+
+| fact | axis |
+| --- | --- |
+| `considered=299248, covered=299248` (fully reconciled) | `complete` |
+| `considered=299248, covered=299243` (5 elements unaccounted) | `partial` |
+| whatsapp attachments, media dropped by read policy | `partial` |
+| no run ever — the live state today | `unknown` |
+
+So the proof path is built and works end-to-end, including the honest partial.
+**The remedy is operational — re-run each connection once against its stored
+artifact — not a receipt, a manifest change, or a read-side branch.** A backfill
+would be strictly worse: it would synthesize a denominator from records already
+ingested, which is the fabricated-denominator anti-pattern (`covered ==
+considered` recomputed from survivors) that the coherence contract exists to
+reject, and it could never produce the `partial` verdict a real re-run can.
+
+One genuine defect did come out of this review, fixed separately: `CredentialsValid`
+had no branch for a connector that authenticates to nothing, so both sources sat
+at `credentials_not_probed`/`unknown` forever. That is now `not_applicable`,
+derived from the manifest declaration.
+
+What remains unprovable either way, and is worth not overclaiming: a reconciled
+artifact proves the run ingested everything the *file* contained. It says
+nothing about whether the file is a complete export of the owner's history —
+the provider decides what goes into it, and no check on this side can see past
+that.
 
 ## Related
 
