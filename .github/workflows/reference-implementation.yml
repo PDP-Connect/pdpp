@@ -31,11 +31,12 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  verify:
-    name: typecheck + full test suite
+  classify:
+    name: classify reference-impacting changes
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
+    timeout-minutes: 5
+    outputs:
+      reference_impacting: ${{ steps.changes.outputs.reference_impacting }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -99,6 +100,17 @@ jobs:
             echo "No reference-impacting changes detected; required context will pass without heavy reference tests."
           fi
 
+  drift-check:
+    name: check generated artifacts
+    needs: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
       - name: Install pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
@@ -131,6 +143,27 @@ jobs:
       - name: Check generated artifacts are not drifted (before any build/prepack normalizes them)
         run: pnpm generated-artifacts:check
 
+  typecheck-reference:
+    name: typecheck reference implementation
+    needs: classify
+    if: needs.classify.outputs.reference_impacting == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
       - name: Install dependencies
         env:
           PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
@@ -138,50 +171,186 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck reference implementation
-        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm --dir reference-implementation run typecheck
 
-      # reference-implementation's own typecheck (above) checks it under ITS
-      # OWN tsconfig (target ES2023). apps/console consumes RI as TS source
-      # via transpilePackages, so Next's build type-checks any RI file
+  typecheck-console:
+    name: typecheck console (RI transitive sources included)
+    needs: classify
+    if: needs.classify.outputs.reference_impacting == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      # reference-implementation's own typecheck (typecheck-reference job) checks
+      # it under ITS OWN tsconfig (target ES2023). apps/console consumes RI as TS
+      # source via transpilePackages, so Next's build type-checks any RI file
       # reachable from console under console's tsconfig (target ES2017) in
       # a single tsc program — a stricter, different check that RI's own
       # typecheck cannot substitute for (e.g. TS2737 on a BigInt literal
       # that is valid under RI's own target but not console's).
       - name: Typecheck console (RI transitive sources included)
-        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm --dir apps/console run types:check
 
+  test-console:
+    name: test console full suite
+    needs: classify
+    if: needs.classify.outputs.reference_impacting == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
       - name: Test console full suite
-        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm --dir apps/console run test
 
+  owner-journey-and-stream-audit:
+    name: owner journey + stream audit checks
+    needs: classify
+    if: needs.classify.outputs.reference_impacting == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
       - name: Test owner journey acceptance harness
-        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm owner-journey:acceptance:test
 
       - name: Check stream evidence inventory is current
-        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm stream-evidence:check
 
       - name: Test stream health audit
-        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm test:scratch -- node --test --import tsx scripts/stream-health-audit/authority.test.ts
 
       - name: Test console health surface gate
-        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm console:health-surface-gate:test
 
+  test-reference-implementation:
+    name: test reference implementation
+    needs: classify
+    if: needs.classify.outputs.reference_impacting == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
       - name: Test reference implementation
-        if: steps.changes.outputs.reference_impacting == 'true'
         env:
           PDPP_TEST_CONCURRENCY: "2"
           PDPP_TEST_FILE_HARD_TIMEOUT_MS: "900000"
           PDPP_TEST_FILE_TIMEOUT_MS: "120000"
         run: pnpm --dir reference-implementation run test
 
-      - name: Report non-reference skip
-        if: steps.changes.outputs.reference_impacting != 'true'
+  verify:
+    name: typecheck + full test suite
+    needs:
+      - classify
+      - drift-check
+      - typecheck-reference
+      - typecheck-console
+      - test-console
+      - owner-journey-and-stream-audit
+      - test-reference-implementation
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate required sub-job results
         run: |
-          echo "No files in the reference required-check scope changed."
-          echo "Emitting successful required context without running the heavy reference suite."
+          set -euo pipefail
+
+          fail=0
+          for job_result in \
+            "drift-check:${{ needs.drift-check.result }}" \
+            "typecheck-reference:${{ needs.typecheck-reference.result }}" \
+            "typecheck-console:${{ needs.typecheck-console.result }}" \
+            "test-console:${{ needs.test-console.result }}" \
+            "owner-journey-and-stream-audit:${{ needs.owner-journey-and-stream-audit.result }}" \
+            "test-reference-implementation:${{ needs.test-reference-implementation.result }}"
+          do
+            name="${job_result%%:*}"
+            result="${job_result##*:}"
+            if [[ "${result}" != "success" && "${result}" != "skipped" ]]; then
+              echo "::error::${name} reported ${result}"
+              fail=1
+            fi
+          done
+
+          if [[ "${{ needs.classify.result }}" != "success" ]]; then
+            echo "::error::classify reported ${{ needs.classify.result }}"
+            fail=1
+          fi
+
+          exit "${fail}"
