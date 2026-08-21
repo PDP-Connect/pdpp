@@ -36,6 +36,7 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import { locatorIsUsable } from "./locator-helpers.ts";
+import { type LoginCredentialFields, resolveLoginCredentials } from "./login-credentials.ts";
 
 const DASHBOARD_URL = "https://secure.chase.com/web/auth/dashboard";
 const LOGON_URL = "https://secure.chase.com/web/auth/";
@@ -69,11 +70,28 @@ const METHOD_LABELS: Record<string, string> = {
   call: "Call me",
   email: "Email me",
 };
-const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
-  "No optional Chase sign-in details were provided. Sign in to Chase in the secure browser, then respond success.";
+const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE = "Sign in to Chase in the secure browser, then respond success.";
+
+/**
+ * Where Chase's sign-in pair lives in the runtime-resolved `credentials`
+ * object. These are the same names the connector's `auth.required` block
+ * declares and the same names the static-secret registry injects — one
+ * vocabulary across capture, injection, and use.
+ */
+const CHASE_LOGIN_FIELDS: LoginCredentialFields = {
+  password: ["CHASE_PASSWORD"],
+  username: ["CHASE_USERNAME"],
+};
 
 interface EnsureChaseSessionArgs {
   context: BrowserContext;
+  /**
+   * Credentials the runtime resolved for THIS run's connection (see
+   * `login-credentials.ts`). Optional so a direct, non-runtime caller can omit
+   * it; an absent credential is a supported state that routes to manual
+   * sign-in, not an error.
+   */
+  credentials?: Readonly<Record<string, string | undefined>>;
   onCredentialSubmit?: () => void;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -387,6 +405,7 @@ async function submitChaseOtp({
 
 export async function ensureChaseSession({
   context,
+  credentials,
   onCredentialSubmit,
   page,
   sendInteraction,
@@ -399,11 +418,17 @@ export async function ensureChaseSession({
     return true;
   }
 
-  const username = process.env.CHASE_USERNAME;
-  const password = process.env.CHASE_PASSWORD;
-  if (!(username && password)) {
+  // Connection-scoped, never ambient: `credentials` belongs to the ONE
+  // connection this run is for, so two Chase connections drive two different
+  // logins. See `login-credentials.ts` for why reading process.env here is
+  // banned (scripts/check-no-direct-credential-env.ts enforces it).
+  const resolved = resolveLoginCredentials(credentials, CHASE_LOGIN_FIELDS, "chase");
+  if (resolved.kind === "absent") {
     const manualProbe = await manualBrowserLogin({
-      message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
+      // Names the CREDENTIAL, not the page: an owner reading this must be able
+      // to tell "no credential was stored for this connection" apart from
+      // "Chase's sign-in page failed to load".
+      message: `${resolved.reason} ${MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE}`,
       page: activePage,
       probe: () => probeChaseSession(context, activePage),
       sendInteraction,
@@ -414,6 +439,7 @@ export async function ensureChaseSession({
     }
     throw new Error("chase_login_manual_incomplete");
   }
+  const { password, username } = resolved;
 
   await activePage.goto(LOGON_URL, {
     waitUntil: "domcontentloaded",

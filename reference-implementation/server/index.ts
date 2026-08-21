@@ -2075,11 +2075,29 @@ async function buildStaticSecretCredentialProber() {
 // Decision 5). For a static-secret connector that HAS an active stored
 // credential, it returns the env fragment carrying only that connection's
 // secret; the run then authenticates with that explicit per-connection
-// capability. It returns `null` for non-static-secret connectors and
-// for browser-session source bindings that have no optional stored login
-// credential. A missing/revoked/deleted credential on a true static-secret
-// connection still fails closed: the run seam throws and the run is refused
-// before any child can use an undeclared provider-account secret.
+// capability. It returns `null` for non-static-secret connectors, for
+// browser-session source bindings that have no optional stored login
+// credential, AND for any connector whose manifest declares
+// `credential_capture.required: false` regardless of how this particular
+// connection's `sourceBinding.kind` happens to be set — see
+// `resolveStaticSecretRunEnv`'s doc. A missing/revoked/deleted credential on a
+// true REQUIRED static-secret connection still fails closed: the run seam
+// throws and the run is refused before any child can use an undeclared
+// provider-account secret.
+//
+// `isStaticSecretCaptureOptional` is load-bearing and must be passed. This
+// function is the resolver the LIVE server actually installs (both the
+// controller path for manual runs and the scheduler path for automatic ones);
+// `server/connection-scoped-run-env.ts` holds a second, structurally identical
+// implementation used by `scheduler-manager-factory.ts` and the test suite.
+// The two drifted: the leaf module passed this argument and this copy did not,
+// so on the live path a `captureRequired: false` connector (venmo) whose
+// connection was bound as anything other than a browser session — e.g. an
+// unpromoted `browser_enrollment_shell`, or a `historical_archive` — hit
+// `recoverSecret`'s throw instead of the intended `null`, and the run was
+// refused rather than proceeding to the connector's own manual sign-in
+// fallback. `connection-scoped-run-env-parity.test.ts` now pins the two
+// implementations to the same argument set so this cannot drift again silently.
 function buildControllerStaticSecretRunEnvResolver() {
   return async ({
     connectorId,
@@ -2090,10 +2108,12 @@ function buildControllerStaticSecretRunEnvResolver() {
     connectorInstanceId: string;
     ownerSubjectId: string;
   }) => {
-    const { isStaticSecretConnector, buildConnectionScopedSecretEnv } = (await loadStaticSecretInjectionHelpers()) as {
-      isStaticSecretConnector: (id: string) => boolean;
-      buildConnectionScopedSecretEnv: (...args: unknown[]) => unknown;
-    };
+    const { isStaticSecretCaptureOptional, isStaticSecretConnector, buildConnectionScopedSecretEnv } =
+      (await loadStaticSecretInjectionHelpers()) as {
+        isStaticSecretCaptureOptional: (id: string) => boolean;
+        isStaticSecretConnector: (id: string) => boolean;
+        buildConnectionScopedSecretEnv: (...args: unknown[]) => unknown;
+      };
     if (!isStaticSecretConnector(connectorId)) {
       return null;
     }
@@ -2104,6 +2124,7 @@ function buildControllerStaticSecretRunEnvResolver() {
       connectorId,
       connectorInstanceId,
       credentialStore,
+      isStaticSecretCaptureOptional,
       isStaticSecretConnector,
       ownerSubjectId,
       sourceBinding: connectorInstance?.sourceBinding ?? null,
