@@ -1038,6 +1038,42 @@ interface GroupMessagesResponse {
 }
 
 /**
+ * Whether a message page is SELF-INCONSISTENT: the very same response body
+ * states the conversation holds `count > 0` messages and simultaneously
+ * serves `messages: []`.
+ *
+ * WHY THIS EXISTS — throttle-blindness. GroupMe signals at least two
+ * materially different situations with a byte-identical HTTP 200 + empty
+ * `messages` array:
+ *
+ *   1. A genuine natural end (nothing more to serve).
+ *   2. A refusal to serve content it still counts.
+ *
+ * Neither carries a distinguishing status code, `Retry-After`, or rate-limit
+ * header — measured live, an empty page and a full page differ in NO header
+ * except `content-length`. So a status-based retry governor (which is what
+ * `httpGovernor` is) cannot see the difference, and a walk that terminates
+ * on `messages.length === 0` alone will silently declare a proven-complete
+ * walk of a conversation it never actually read.
+ *
+ * The response's OWN `count` field is the only in-band signal that
+ * contradicts the empty array, so it is the one thing a walk can check
+ * without inventing a heuristic. `count === 0` with an empty array is
+ * coherent and stays an ordinary natural end; `count > 0` with an empty
+ * array is the provider contradicting itself, and this connector refuses to
+ * call that a proven walk.
+ *
+ * Deliberately NOT a claim about the cause. This predicate says only "the
+ * provider's own two fields disagree, so an empty page here proves nothing"
+ * — never "this is throttling" or "this is retention". Distinguishing those
+ * needs evidence the response does not carry.
+ */
+export function pageContradictsItsOwnCount(resp: GroupMessagesResponse): boolean {
+  const served = (resp.messages || []).length;
+  return served === 0 && typeof resp.count === "number" && resp.count > 0;
+}
+
+/**
  * Walks one group's message pages. Returns the raw item count enumerated
  * across pages (the "considered" contribution for this group) — never
  * aliased to the emitted count, since a page a caller filtered/suppressed
@@ -1055,6 +1091,19 @@ interface PerConversationWalkResult {
    *  ordering to license one). */
   newestMessageId: string | undefined;
   totalSeen: number;
+  /**
+   * True when this walk stopped on a page that CONTRADICTED ITS OWN COUNT
+   * (see `pageContradictsItsOwnCount`) — the provider served an empty array
+   * while stating a non-zero `count`. The walk's boundary is then UNPROVEN:
+   * it may have reached a genuine end, or it may have been refused content
+   * that exists, and the response carries nothing that tells them apart.
+   *
+   * Callers must not treat such a walk as proof of completeness. It is
+   * deliberately separate from `failed`: nothing errored, the request
+   * succeeded, and partial results already emitted stay valid — only the
+   * COMPLETENESS claim is withheld.
+   */
+  unprovenBoundary: boolean;
 }
 
 /**
@@ -1318,7 +1367,14 @@ async function collectGroupMessagesForwardFromCursor(
 
     const messages = resp.messages || [];
     if (!messages.length) {
-      return { totalSeen, newestMessageId };
+      // NOT checked for a self-contradicting count here, unlike the backward
+      // walk. This is a forward resume from a cursor, so `count` describes
+      // the group's WHOLE history while this page describes only what is
+      // NEW since that cursor. `count > 0` with an empty page is the normal,
+      // coherent shape of an up-to-date incremental walk, not a
+      // contradiction — applying the backward walk's predicate here would
+      // flag every healthy incremental run as unproven.
+      return { totalSeen, newestMessageId, unprovenBoundary: false };
     }
     if (!isAscendingByCreatedAt(messages)) {
       // The provider violated its own documented ordering contract for this
@@ -1340,7 +1396,7 @@ async function collectGroupMessagesForwardFromCursor(
     newestMessageId = messages.at(-1)?.id ?? newestMessageId;
 
     if (messages.length < PAGE_SIZE) {
-      return { totalSeen, newestMessageId };
+      return { totalSeen, newestMessageId, unprovenBoundary: false };
     }
 
     const nextAfterId = messages.at(-1)?.id;
@@ -1417,7 +1473,12 @@ async function collectGroupMessagesBackwardToNaturalEnd(
 
     const messages = resp.messages || [];
     if (!messages.length) {
-      return { totalSeen, newestMessageId };
+      // An empty page ends the walk either way — there is no cursor to
+      // continue from. What differs is whether that ending PROVES the
+      // group was fully walked. A page that contradicts its own `count`
+      // proves nothing (see `pageContradictsItsOwnCount`), so the boundary
+      // is reported as unproven instead of silently passing for complete.
+      return { totalSeen, newestMessageId, unprovenBoundary: pageContradictsItsOwnCount(resp) };
     }
 
     if (newestMessageId === undefined) {
@@ -1451,7 +1512,10 @@ async function collectGroupMessagesBackwardToNaturalEnd(
     await emitInScopeGroupMessages(inScope, group.id, cursor, uploader, emitAttachmentRecord, emitRecord);
 
     if (backwardPageReachedNaturalEnd(messages, inScope, pageFullyOutOfScope, sinceEpochSeconds)) {
-      return { totalSeen, newestMessageId };
+      // A natural end reached on a page that DID serve messages: the
+      // provider gave content right up to the boundary, so the boundary is
+      // proven in the ordinary way.
+      return { totalSeen, newestMessageId, unprovenBoundary: false };
     }
 
     const nextBeforeId = messages.at(-1)?.id;
@@ -1774,7 +1838,15 @@ async function collectDirectChatMessagesForChat(
 
     const messages = resp.direct_messages || [];
     if (!messages.length) {
-      return { totalSeen, newestMessageId: undefined };
+      // Same self-contradiction check as the group backward walk. This walk
+      // is always backward-to-natural-end (never a forward cursor resume),
+      // so the response's `count` and its served page describe the same
+      // whole history and a `count > 0` empty page is a real contradiction.
+      return {
+        totalSeen,
+        newestMessageId: undefined,
+        unprovenBoundary: pageContradictsItsOwnCount({ count: resp.count, messages }),
+      };
     }
 
     // In-scope-only accounting, same as the group_messages backward walk: a
@@ -1799,7 +1871,7 @@ async function collectDirectChatMessagesForChat(
     }
 
     if (messages.length < PAGE_SIZE) {
-      return { totalSeen, newestMessageId: undefined };
+      return { totalSeen, newestMessageId: undefined, unprovenBoundary: false };
     }
 
     const nextBeforeId = messages.at(-1)?.id;
@@ -1875,44 +1947,64 @@ export interface GroupMessagesCollectionOutcome extends CollectionOutcome {
 export interface GroupMessageShortfall {
   groupId: string;
   providerCount: number;
+  /**
+   * True when the walk that produced this shortfall ended on a page that
+   * contradicted its own count (see `pageContradictsItsOwnCount`) — so the
+   * shortfall is UNEXPLAINED: the connector cannot tell whether the provider
+   * has nothing to serve or declined to serve what it counts.
+   *
+   * Optional so existing constructions (and fixtures) stay valid; absent is
+   * read as `false`.
+   */
+  unprovenBoundary?: boolean;
   walked: number;
 }
 
 /**
- * Split a run's shortfalls into the two materially different situations they
- * conflate, so each can be reported with its own reason and recovery hint.
+ * Split a run's shortfalls into the situations they conflate, so each can be
+ * reported with its own reason and recovery hint.
  *
- * `withheld` — the walk enumerated NOTHING (`walked === 0`) while GroupMe's
- * `/groups` listing claims a non-zero `messages.count`. Measured against this
- * owner's live workspace, every one of these groups returns HTTP 200 with an
- * empty `messages` array on EVERY documented access path — plain, `limit=1`,
- * `after_id=0`, and (304) `before_id`/`since_id` anchored at the group's own
- * `last_message_id`. The count is a stale provider-side counter for a group
- * whose message bodies GroupMe no longer serves; no pagination change can
- * retrieve them, so `retry_by_runtime` is a false promise.
+ * `unexplained` — the walk ended on a page that CONTRADICTED ITS OWN COUNT:
+ * GroupMe served `messages: []` while stating `count > 0` in the same body.
+ * That response is ambiguous BY CONSTRUCTION. Measured live, it is
+ * byte-identical (headers included, `content-length` aside) whether the
+ * provider has nothing to serve or is declining to serve content it still
+ * counts, and GroupMe emits no status code, `Retry-After`, or rate-limit
+ * header to separate them. The connector therefore does NOT claim to know
+ * which it is, and does not claim the group was proven walked.
  *
- * `partial` — the walk returned SOME messages but fewer than claimed. That is
- * the genuinely retryable shape (a page boundary, a transient truncation).
+ * A PRIOR REVISION of this function classified exactly this shape as
+ * definitively `not_retriable`, keyed on `walked === 0`. That was
+ * unsound: `walked === 0` IS the ambiguous signal, so keying the
+ * "unrecoverable" verdict on it means the connector asserts unrecoverability
+ * on the strength of a response that cannot support the claim. Being
+ * throttled produces the identical shape. Whatever the true cause on any
+ * given group, a connector must not convert an ambiguous observation into a
+ * certain verdict.
  *
- * This is a classification split ONLY. Neither bucket is subtracted from the
- * missing total, and a withheld group is never counted as covered: an
- * unserved message is still an absent message, and saying so honestly is the
- * whole point of the anchor.
+ * `partial` — the walk returned SOME messages but fewer than claimed, and
+ * ended on a page the provider actually served. The shortfall is real and the
+ * boundary evidence is coherent, so retrying is a meaningful suggestion.
+ *
+ * This is a classification split ONLY. NEITHER bucket is subtracted from the
+ * missing total, and neither is counted as covered: an unserved message is
+ * still an absent message, and saying so honestly is the whole point of the
+ * anchor.
  */
 export function partitionGroupMessageShortfalls(shortfalls: readonly GroupMessageShortfall[]): {
   partial: GroupMessageShortfall[];
-  withheld: GroupMessageShortfall[];
+  unexplained: GroupMessageShortfall[];
 } {
   const partial: GroupMessageShortfall[] = [];
-  const withheld: GroupMessageShortfall[] = [];
+  const unexplained: GroupMessageShortfall[] = [];
   for (const s of shortfalls) {
-    if (s.walked === 0) {
-      withheld.push(s);
+    if (s.unprovenBoundary === true) {
+      unexplained.push(s);
     } else {
       partial.push(s);
     }
   }
-  return { partial, withheld };
+  return { partial, unexplained };
 }
 
 /**
@@ -1936,14 +2028,15 @@ export function partitionGroupMessageShortfalls(shortfalls: readonly GroupMessag
  */
 export function groupMessageShortfall(
   group: GroupMeGroup,
-  walked: number
+  walked: number,
+  unprovenBoundary = false
 ): { kind: "ok" } | { kind: "short"; shortfall: GroupMessageShortfall } | { kind: "unanchored" } {
   const providerCount = providerMessageCount(group);
   if (providerCount === null) {
     return { kind: "unanchored" };
   }
   if (providerCount > walked) {
-    return { kind: "short", shortfall: { groupId: group.id, providerCount, walked } };
+    return { kind: "short", shortfall: { groupId: group.id, providerCount, unprovenBoundary, walked } };
   }
   return { kind: "ok" };
 }
@@ -2013,19 +2106,21 @@ const MAX_ANCHOR_IDS_IN_DIAGNOSTIC = 50;
  *  - `provider_reports_more_messages_than_walked` — a PARTIAL walk. GroupMe
  *    says a group holds more messages than the full walk enumerated, and the
  *    walk did return some. Retrying can plausibly close this.
- *  - `provider_serves_no_messages_for_group` — the provider claims a count
- *    but serves NOTHING on any documented access path. Reported separately
- *    and as NOT retryable, because calling it retryable sends the owner
- *    round a loop that provably cannot converge.
+ *  - `provider_served_empty_page_against_its_own_count` — the provider
+ *    served an empty page while the SAME response body still counted
+ *    messages. That shape is ambiguous by construction (it is what both
+ *    "nothing to serve" and "declining to serve" look like on this API), so
+ *    it is reported as an unexplained gap, not as a proven-unrecoverable
+ *    one, and stays retryable.
  *  - `group_message_count_unanchored` — the provider reported no usable
  *    count for these groups, so their walk has NO external anchor at all.
  *    Saying so is the honest alternative to silently treating an unanchored
  *    group as proven.
  *
  * The two shortfall buckets are a CLASSIFICATION split, never a subtraction:
- * a withheld group's messages stay in its own missing total and are never
- * counted as covered. Splitting them tells the owner which part of the gap
- * is worth retrying, without quietly shrinking the gap itself.
+ * an unexplained group's messages stay in its own missing total and are
+ * never counted as covered. Splitting them tells the owner which part of the
+ * gap has coherent evidence behind it, without quietly shrinking the gap.
  *
  * Nothing is emitted for a group where holdings EXCEED the provider count:
  * that is preservation of messages GroupMe has since deleted, not loss.
@@ -2034,7 +2129,7 @@ async function emitGroupMessageAnchorEvidence(
   emit: CollectContext["emit"],
   outcome: GroupMessagesCollectionOutcome
 ): Promise<void> {
-  const { partial, withheld } = partitionGroupMessageShortfalls(outcome.shortfalls);
+  const { partial, unexplained } = partitionGroupMessageShortfalls(outcome.shortfalls);
   if (partial.length > 0) {
     const missingTotal = partial.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
     const visible = partial.slice(0, MAX_ANCHOR_IDS_IN_DIAGNOSTIC);
@@ -2054,27 +2149,31 @@ async function emitGroupMessageAnchorEvidence(
       recovery_hint: { action: "retry_by_runtime", retryable: true },
     });
   }
-  if (withheld.length > 0) {
-    const withheldTotal = withheld.reduce((sum, s) => sum + s.providerCount, 0);
-    const visible = withheld.slice(0, MAX_ANCHOR_IDS_IN_DIAGNOSTIC);
+  if (unexplained.length > 0) {
+    const unexplainedTotal = unexplained.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
+    const visible = unexplained.slice(0, MAX_ANCHOR_IDS_IN_DIAGNOSTIC);
     await emit({
       type: "SKIP_RESULT",
       stream: "group_messages",
-      reason: "provider_serves_no_messages_for_group",
+      reason: "provider_served_empty_page_against_its_own_count",
       message:
-        `GroupMe reports a message count for ${String(withheld.length)} group(s) but served no messages for any of ` +
-        `them: ${String(withheldTotal)} message(s) are counted by the provider yet unavailable on every documented ` +
-        "access path. These are not retrievable by re-running.",
+        "GroupMe served an empty page while its own response still counted messages, in " +
+        `${String(unexplained.length)} group(s): ${String(unexplainedTotal)} message(s) are counted by the provider ` +
+        "but were not served. GroupMe returns the same empty response whether it has nothing to send or is " +
+        "declining to send it, so this run cannot tell those apart and does not claim these group(s) were fully " +
+        "read.",
       diagnostics: {
-        withheld_group_count: withheld.length,
-        withheld_message_total: withheldTotal,
+        unexplained_group_count: unexplained.length,
+        unexplained_message_total: unexplainedTotal,
         groups: visible.map((s) => ({ group_id: s.groupId, provider_count: s.providerCount, walked: s.walked })),
-        truncated: visible.length < withheld.length,
+        truncated: visible.length < unexplained.length,
       },
-      // `not_retriable` (not "none") — RECOVERY_ACTIONS is a closed set in the
-      // runtime's gap normalizer; an unrecognized token is silently replaced by
-      // a regex guess over the reason/message text.
-      recovery_hint: { action: "not_retriable", retryable: false },
+      // Retryable, and deliberately so. The connector cannot prove these are
+      // unrecoverable — an empty page against a non-zero count is exactly what
+      // throttling also produces — so the honest hint is the one that leaves
+      // the door open. Claiming `not_retriable` here would assert a certainty
+      // the evidence does not support.
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
     });
   }
   if (outcome.unanchoredGroupIds.length > 0) {
@@ -2160,7 +2259,7 @@ export async function collectGroupMessages(
         // healthy incremental run. A `since`-scoped walk is excluded for the
         // same reason.
         if (walkedWholeGroup && sinceEpochSeconds === null) {
-          const verdict = groupMessageShortfall(group, groupResult.totalSeen);
+          const verdict = groupMessageShortfall(group, groupResult.totalSeen, groupResult.unprovenBoundary);
           if (verdict.kind === "short") {
             shortfalls.push(verdict.shortfall);
           } else if (verdict.kind === "unanchored") {

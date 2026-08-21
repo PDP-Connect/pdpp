@@ -21,9 +21,14 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { groupMessageShortfall, partitionGroupMessageShortfalls, providerMessageCount } from "./index.ts";
+import {
+  groupMessageShortfall,
+  pageContradictsItsOwnCount,
+  partitionGroupMessageShortfalls,
+  providerMessageCount,
+} from "./index.ts";
 
-const GROUP_ID = "1618492";
+const GROUP_ID = "g-anchor";
 
 function group(overrides: Record<string, unknown>): Parameters<typeof providerMessageCount>[0] {
   return { id: GROUP_ID, ...overrides } as Parameters<typeof providerMessageCount>[0];
@@ -71,6 +76,7 @@ test("groupMessageShortfall reports a gap when the provider claims more than we 
   assert.deepEqual(verdict.kind === "short" ? verdict.shortfall : null, {
     groupId: GROUP_ID,
     providerCount: 500,
+    unprovenBoundary: false,
     walked: 320,
   });
 });
@@ -101,57 +107,128 @@ test("groupMessageShortfall reports a gap for an empty walk against a non-zero c
 
 // ─── partitionGroupMessageShortfalls: classify, never subtract ───────────
 //
-// Live evidence from this owner's workspace (run_1787279998931, and an
-// independent un-throttled sweep of all 156 groups): 42 groups report a
-// non-zero `messages.count` yet return HTTP 200 with an empty `messages`
-// array on EVERY documented access path — plain, `limit=1`, `after_id=0`,
-// and 304 on `before_id`/`since_id` anchored at the group's own
-// `last_message_id`. Those 1601 messages are counted by GroupMe and served
-// by nothing, so telling the owner to retry is a false promise. The split
-// exists to say that honestly — never to shrink the gap.
+// The partition keys on `unprovenBoundary` — whether the walk ended on a page
+// that contradicted its OWN count (`count > 0` alongside `messages: []`).
+//
+// It deliberately does NOT key on `walked === 0`. Measured live against this
+// API, an empty page carries no status code, `Retry-After`, or rate-limit
+// header distinguishing "nothing to serve" from "declining to serve", so
+// `walked === 0` is precisely the ambiguous observation. Keying an
+// "unrecoverable" verdict on it would let the connector assert a certainty
+// the response cannot support — and throttling produces the identical shape.
 
-test("partitionGroupMessageShortfalls routes a zero-message walk to withheld", () => {
-  const { partial, withheld } = partitionGroupMessageShortfalls([{ groupId: "2561292", providerCount: 98, walked: 0 }]);
-  assert.equal(withheld.length, 1);
+test("partitionGroupMessageShortfalls routes a self-contradicting empty page to unexplained", () => {
+  const { partial, unexplained } = partitionGroupMessageShortfalls([
+    { groupId: "g-alpha", providerCount: 98, unprovenBoundary: true, walked: 0 },
+  ]);
+  assert.equal(unexplained.length, 1);
   assert.equal(partial.length, 0);
-  assert.equal(withheld[0]?.providerCount, 98);
+  assert.equal(unexplained[0]?.providerCount, 98);
 });
 
 test("partitionGroupMessageShortfalls routes a genuinely partial walk to partial", () => {
-  const { partial, withheld } = partitionGroupMessageShortfalls([
-    { groupId: "1618492", providerCount: 61, walked: 40 },
+  const { partial, unexplained } = partitionGroupMessageShortfalls([
+    { groupId: "g-beta", providerCount: 61, unprovenBoundary: false, walked: 40 },
   ]);
   assert.equal(partial.length, 1);
-  assert.equal(withheld.length, 0);
+  assert.equal(unexplained.length, 0);
   assert.equal(partial[0]?.walked, 40);
+});
+
+test("partitionGroupMessageShortfalls does NOT route a zero-message walk to unexplained on walked===0 alone", () => {
+  // The regression guard for the throttle-blindness defect. A walk that saw
+  // nothing but ended on a COHERENT page (the provider's own count agreed at
+  // zero) is an ordinary shortfall, not an ambiguous one. If this ever routes
+  // on `walked === 0` again, the connector is back to inferring a verdict from
+  // the one signal that cannot carry it.
+  const { partial, unexplained } = partitionGroupMessageShortfalls([
+    { groupId: "g-gamma", providerCount: 7, unprovenBoundary: false, walked: 0 },
+  ]);
+  assert.equal(unexplained.length, 0);
+  assert.equal(partial.length, 1);
 });
 
 test("partitionGroupMessageShortfalls preserves every message of the gap across both buckets", () => {
   // The whole point: classification must not lose a single claimed message.
-  // A withheld group's full providerCount is still missing (walked 0), so the
-  // combined total must equal the pre-split total.
+  // The combined total must equal the pre-split total.
   const shortfalls = [
-    { groupId: "2561292", providerCount: 98, walked: 0 },
-    { groupId: "4747691", providerCount: 1, walked: 0 },
-    { groupId: "1618492", providerCount: 61, walked: 40 },
+    { groupId: "g-alpha", providerCount: 98, unprovenBoundary: true, walked: 0 },
+    { groupId: "g-delta", providerCount: 1, unprovenBoundary: true, walked: 0 },
+    { groupId: "g-beta", providerCount: 61, unprovenBoundary: false, walked: 40 },
   ];
   const before = shortfalls.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
-  const { partial, withheld } = partitionGroupMessageShortfalls(shortfalls);
+  const { partial, unexplained } = partitionGroupMessageShortfalls(shortfalls);
   const after =
     partial.reduce((sum, s) => sum + (s.providerCount - s.walked), 0) +
-    withheld.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
+    unexplained.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
   assert.equal(after, before);
-  assert.equal(partial.length + withheld.length, shortfalls.length);
+  assert.equal(partial.length + unexplained.length, shortfalls.length);
 });
 
-test("partitionGroupMessageShortfalls keeps a withheld group's messages counted as missing", () => {
-  // A withheld group is NOT explained away: its provider count is the number
-  // of messages still absent from PDPP. Subtracting it to make the books
-  // balance would be exactly the fabricated reconciliation this anchor exists
-  // to prevent.
-  const { withheld } = partitionGroupMessageShortfalls([{ groupId: "2368502", providerCount: 55, walked: 0 }]);
+test("partitionGroupMessageShortfalls keeps an unexplained group's messages counted as missing", () => {
+  // An unexplained group is NOT explained away: its unserved messages are
+  // still absent from PDPP. Subtracting them to make the books balance would
+  // be exactly the fabricated reconciliation this anchor exists to prevent.
+  const { unexplained } = partitionGroupMessageShortfalls([
+    { groupId: "g-epsilon", providerCount: 55, unprovenBoundary: true, walked: 0 },
+  ]);
   assert.equal(
-    withheld.reduce((sum, s) => sum + (s.providerCount - s.walked), 0),
+    unexplained.reduce((sum, s) => sum + (s.providerCount - s.walked), 0),
     55
   );
+});
+
+// ─── pageContradictsItsOwnCount: the throttle-blindness detector ─────────
+//
+// GroupMe answers a message page with HTTP 200 and an empty `messages` array
+// in at least two materially different situations: it has nothing more to
+// send, and it is declining to send content it still counts. Measured live,
+// those responses are identical apart from `content-length` — same status,
+// same `meta.code`, no `Retry-After`, no rate-limit header. A status-based
+// retry governor cannot see the difference.
+//
+// The response's own `count` is the only in-band field that contradicts an
+// empty array, so it is the one thing a walk can check without inventing a
+// heuristic. These tests pin that predicate.
+
+test("pageContradictsItsOwnCount flags an empty page served against a non-zero count", () => {
+  assert.equal(pageContradictsItsOwnCount({ count: 29, messages: [] }), true);
+});
+
+test("pageContradictsItsOwnCount accepts a coherent empty page (count agrees at zero)", () => {
+  // Nothing to serve and the provider says so. An ordinary natural end.
+  assert.equal(pageContradictsItsOwnCount({ count: 0, messages: [] }), false);
+});
+
+test("pageContradictsItsOwnCount never flags a page that actually served messages", () => {
+  // A served page is self-consistent regardless of how `count` compares:
+  // `count` describes the conversation, the array describes this page.
+  const served = [{ id: "m1" }, { id: "m2" }] as unknown as Parameters<
+    typeof pageContradictsItsOwnCount
+  >[0]["messages"];
+  assert.equal(pageContradictsItsOwnCount({ count: 900, messages: served }), false);
+  assert.equal(pageContradictsItsOwnCount({ count: 2, messages: served }), false);
+});
+
+test("pageContradictsItsOwnCount treats a missing/non-numeric count as no contradiction", () => {
+  // Unknown is not a contradiction. An absent count cannot testify against
+  // the empty array, so it must not manufacture an ambiguity finding.
+  const noCount = { messages: [] } as unknown as Parameters<typeof pageContradictsItsOwnCount>[0];
+  assert.equal(pageContradictsItsOwnCount(noCount), false);
+  const nullCount = { count: null, messages: [] } as unknown as Parameters<typeof pageContradictsItsOwnCount>[0];
+  assert.equal(pageContradictsItsOwnCount(nullCount), false);
+});
+
+test("groupMessageShortfall carries the unproven-boundary flag into the shortfall", () => {
+  // The flag must survive the hop from the walk to the shortfall record, or
+  // the partition downstream silently sees every gap as explained.
+  const verdict = groupMessageShortfall(group({ messages: { count: 29 } }), 0, true);
+  assert.equal(verdict.kind, "short");
+  assert.equal(verdict.kind === "short" ? verdict.shortfall.unprovenBoundary : null, true);
+});
+
+test("groupMessageShortfall defaults the unproven-boundary flag to false", () => {
+  const verdict = groupMessageShortfall(group({ messages: { count: 29 } }), 10);
+  assert.equal(verdict.kind, "short");
+  assert.equal(verdict.kind === "short" ? verdict.shortfall.unprovenBoundary : null, false);
 });
