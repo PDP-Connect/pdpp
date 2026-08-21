@@ -49,6 +49,7 @@ import {
   runBoundedConnectorReconciliation,
   runScopedConnectorReconciliation,
 } from "./connector-summary-evidence-bounded-reconciliation.ts";
+import { terminalRunEventTypesSqlGroup } from "../runtime/run-lifecycle-states.ts";
 import { getDb } from "./db.ts";
 import {
   isPostgresStorageBackend,
@@ -1651,7 +1652,7 @@ async function repairCandidateSqlite(connectorInstanceId: string): Promise<Repai
         .prepare(
           `SELECT MAX(event_seq) AS max_seq FROM spine_events
             WHERE connector_instance_id = ?
-              AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
+              AND event_type IN ${terminalRunEventTypesSqlGroup()}`
         )
         .get(connectorInstanceId) as Row | undefined;
       // Terminal-gate revision (2026-07-29): repair also refreshes the
@@ -1851,7 +1852,7 @@ async function repairCandidatePostgres(
       const terminalHighWaterResult = await postgresRepairReadQuery(
         `SELECT MAX(event_seq) AS max_seq FROM spine_events
           WHERE connector_instance_id = $1
-            AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
+            AND event_type IN ${terminalRunEventTypesSqlGroup()}`,
         [connectorInstanceId],
         deadline
       );

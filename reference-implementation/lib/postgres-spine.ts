@@ -16,6 +16,7 @@ import {
   type RunHistorySpineEvent,
   writePostgresRunHistoryForSpineEvent,
 } from "../server/stores/run-history-writer.ts";
+import { TERMINAL_RUN_EVENT_TYPE_LIST, TERMINAL_RUN_EVENT_TYPES } from "../runtime/run-lifecycle-states.ts";
 
 type SourceKind = "connector" | "provider_native";
 type JsonObject = Record<string, unknown>;
@@ -565,10 +566,15 @@ function encodeSummaryCursor(summary: Summary | null | undefined): string | null
   return summary ? `${summary.last_at}::${summary.id}` : null;
 }
 
-// Run-terminal event types — kept aligned with lib/spine.ts
-// RUN_TERMINAL_EVENT_TYPES. Reference: docs/run-reconciliation-design-brief.md §3.7.
-const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled", "run.abandoned"]);
-const RUN_TERMINAL_EVENT_TYPE_LIST = [...RUN_TERMINAL_EVENT_TYPES];
+// Run-terminal event types, derived from the single declaration in
+// runtime/run-lifecycle-states.ts. This copy was "kept aligned with
+// lib/spine.ts" by comment and had drifted: it omitted
+// `run.browser_surface_failed`, a terminal PRE-LAUNCH failure with no later
+// run.failed to repair the projection. The SQLite-side copies omitted a
+// DIFFERENT member (`run.abandoned`), so the two backends disagreed about
+// what "terminal" means.
+const RUN_TERMINAL_EVENT_TYPES = TERMINAL_RUN_EVENT_TYPES;
+const RUN_TERMINAL_EVENT_TYPE_LIST = [...TERMINAL_RUN_EVENT_TYPE_LIST];
 const SUMMARY_EVENT_HEAD_LIMIT = 5000;
 const SUMMARY_EVENT_TAIL_LIMIT = 200;
 const RECENT_CORRELATION_SCAN_CHUNK = 1000;

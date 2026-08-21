@@ -27,6 +27,7 @@ import {
   makeConnectorInstanceId as canonicalConnectorInstanceId,
   makeConnectorInstanceSourceBindingKey as canonicalSourceBindingKey,
 } from "./connector-instance-utils.ts";
+import { terminalRunEventTypesSqlGroup } from "../runtime/run-lifecycle-states.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
@@ -5428,13 +5429,13 @@ function migrateSpineSourceColumns(raw: SqliteDatabase, opts: MigrationOptions =
   return result;
 }
 
-// Terminal event types the connector-summary fold reads
-// (connector-summary-read-model.ts's TERMINAL_RUN_EVENT_TYPES) — kept in
-// exact sync so the backfill below only ever touches rows the fold itself
-// would read, and the partial index it shares
-// (idx_spine_events_terminal_seq) actually serves this UPDATE's WHERE
-// clause instead of forcing a full-table scan.
-const SPINE_TERMINAL_EVENT_TYPES_SQL = "('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')";
+// Terminal event types the connector-summary fold reads, derived from the
+// single declaration in runtime/run-lifecycle-states.ts. The previous version
+// was a hand-typed literal "kept in exact sync" with
+// connector-summary-read-model.ts by comment; the two agreed with each other
+// and both omitted `run.abandoned`, disagreeing with the spine's canonical
+// set. A comment asking two constants to stay in sync is not a mechanism.
+const SPINE_TERMINAL_EVENT_TYPES_SQL = terminalRunEventTypesSqlGroup();
 
 /**
  * Bounded, idempotent, set-based backfill of `spine_events.connector_instance_id`
@@ -6006,7 +6007,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)
       WHERE run_id IS NOT NULL
-        AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')`
+        AND event_type IN ${terminalRunEventTypesSqlGroup()}`
   );
   // Boot-epoch reconciliation idempotency: at most one run.abandoned per
   // orphaned run.started.event_id. A retry of the boot reconciler hits
@@ -6029,7 +6030,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_terminal_seq
       ON spine_events(event_seq)
-      WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
+      WHERE event_type IN ${terminalRunEventTypesSqlGroup()}`
   );
   // Scoped terminal-fact fold source: adds a first-class, indexed
   // connector_instance_id column to spine_events so the connector-summary
@@ -6058,7 +6059,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
     CREATE TRIGGER stamp_terminal_manifest_generation
     AFTER INSERT ON spine_events
     WHEN NEW.manifest_generation IS NULL
-      AND NEW.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
+      AND NEW.event_type IN ${terminalRunEventTypesSqlGroup()}
     BEGIN
       UPDATE spine_events
          SET connector_instance_id = COALESCE(
@@ -6081,7 +6082,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_terminal_instance_seq
       ON spine_events(connector_instance_id, event_seq)
-      WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
+      WHERE event_type IN ${terminalRunEventTypesSqlGroup()}
         AND connector_instance_id IS NOT NULL`
   );
   // Same gap as the Postgres migration's `idx_pg_spine_events_instance_seq`

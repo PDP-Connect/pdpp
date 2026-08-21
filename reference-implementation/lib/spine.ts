@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomBytes } from "node:crypto";
+import { TERMINAL_RUN_EVENT_TYPES } from "../runtime/run-lifecycle-states.ts";
 import { getDb } from "../server/db.ts";
 import { isPostgresStorageBackend } from "../server/postgres-storage.ts";
 import {
@@ -1063,13 +1064,7 @@ function pickFirstNonNull<T extends keyof SpineEventRecord>(
 // `run.failed` event will arrive from connector execution. All run-status
 // projection code must read from this set; never hardcode subset checks like
 // `["completed", "failed"]` elsewhere.
-const RUN_TERMINAL_EVENT_TYPES = new Set([
-  "run.completed",
-  "run.failed",
-  "run.browser_surface_failed",
-  "run.cancelled",
-  "run.abandoned",
-]);
+const RUN_TERMINAL_EVENT_TYPES = TERMINAL_RUN_EVENT_TYPES;
 
 // Walk events newest-first and pick the most recent status that satisfies
 // `accept`. Returns `null` when no event matches.

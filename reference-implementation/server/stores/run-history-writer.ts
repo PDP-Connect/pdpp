@@ -52,18 +52,13 @@
 
 import type { PoolClient } from "pg";
 import { exec, execOn, referenceQueries } from "../../lib/db.ts";
+import { TERMINAL_RUN_EVENT_TYPES } from "../../runtime/run-lifecycle-states.ts";
 
 const RUN_STARTED_EVENT_TYPE = "run.started";
 // Keep this in lock-step with Spine's canonical terminal set. In particular,
 // browser-surface acquisition can fail before connector execution begins, so
 // it has no later run.failed event to repair the durable projection.
-const RUN_TERMINAL_EVENT_TYPES = new Set([
-  "run.completed",
-  "run.failed",
-  "run.browser_surface_failed",
-  "run.cancelled",
-  "run.abandoned",
-]);
+const RUN_TERMINAL_EVENT_TYPES = TERMINAL_RUN_EVENT_TYPES;
 const RUN_PROGRESS_EVENT_TYPE = "run.progress_reported";
 
 export function isRunHistoryRelevantEventType(eventType: string | null | undefined): boolean {

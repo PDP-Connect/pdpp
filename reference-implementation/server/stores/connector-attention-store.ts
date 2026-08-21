@@ -21,6 +21,7 @@ import type { AttentionLifecycle, AttentionRecord, NotificationState } from "../
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../owner-auth.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 import { makeDefaultAccountConnectorInstanceId } from "./connector-instance-store.ts";
+import { TERMINAL_RUN_EVENT_TYPE_LIST } from "../../runtime/run-lifecycle-states.ts";
 
 const OPEN_LIFECYCLES = ["open", "acknowledged", "in_progress"];
 const VALID_LIFECYCLES = new Set([
@@ -47,13 +48,8 @@ const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
 const EXPIRE_DUE_LIMIT = 200;
 const TERMINAL_RUN_ATTENTION_RECONCILE_LIMIT = MAX_LIST_LIMIT;
-const TERMINAL_RUN_EVENT_TYPES = [
-  "run.completed",
-  "run.failed",
-  "run.browser_surface_failed",
-  "run.cancelled",
-  "run.abandoned",
-];
+// Derived from the single declaration in runtime/run-lifecycle-states.ts.
+const TERMINAL_RUN_EVENT_TYPES = [...TERMINAL_RUN_EVENT_TYPE_LIST];
 
 /** Row projection for the transition/notification single-row lookups. */
 interface AttentionLifecycleRow {

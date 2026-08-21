@@ -99,6 +99,7 @@ import {
   SOURCE_PRESSURE_GAP_REASONS,
   type SourcePressureCooldownDecision,
 } from "./scheduler-source-pressure-cooldown.ts";
+import { terminalRunEventTypesSqlGroup } from "./run-lifecycle-states.ts";
 
 // ─── Path constants ─────────────────────────────────────────────────────────
 
@@ -2570,7 +2571,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         SELECT 1 AS present
         FROM spine_events
         WHERE run_id = $1
-          AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
+          AND event_type IN ${terminalRunEventTypesSqlGroup()}
         LIMIT 1
         `,
         [runId]

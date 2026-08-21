@@ -26,6 +26,7 @@ import {
   connectorInstanceAdvisoryLockKey,
   connectorInstanceLockWaitMs,
 } from "./connector-instance-write-coordinator.ts";
+import { terminalRunEventTypesSqlGroup } from "../runtime/run-lifecycle-states.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
@@ -2475,7 +2476,7 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_run_terminal
         ON spine_events(run_id, event_type, event_seq DESC)
         WHERE run_id IS NOT NULL
-          AND event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned');
+          AND event_type IN ${terminalRunEventTypesSqlGroup()};
       -- Boot-epoch reconciliation idempotency: at most one run.abandoned
       -- per orphan run.started.event_id. The constraint name
       -- spine_run_abandoned_cause_unique is referenced by the runtime
@@ -2831,7 +2832,7 @@ export async function bootstrapPostgresSchema({
       -- spine.
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_terminal_seq
         ON spine_events(event_seq)
-        WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled');
+        WHERE event_type IN ${terminalRunEventTypesSqlGroup()};
       -- Scoped terminal-fact fold source: a first-class, indexed
       -- connector_instance_id column lets the connector-summary fold
       -- (connector-summary-read-model.ts) filter its terminal high-water and
@@ -2855,7 +2856,7 @@ export async function bootstrapPostgresSchema({
       DECLARE terminal_instance_id TEXT;
       BEGIN
         IF NEW.manifest_generation IS NULL
-          AND NEW.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
+          AND NEW.event_type IN ${terminalRunEventTypesSqlGroup()}
         THEN
           terminal_instance_id := COALESCE(
             NULLIF(NEW.connector_instance_id, ''),
@@ -2883,7 +2884,7 @@ export async function bootstrapPostgresSchema({
         FOR EACH ROW EXECUTE FUNCTION stamp_terminal_manifest_generation();
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_terminal_instance_seq
         ON spine_events(connector_instance_id, event_seq)
-        WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
+        WHERE event_type IN ${terminalRunEventTypesSqlGroup()}
           AND connector_instance_id IS NOT NULL;
       -- readPostgresDiscoveryContext's per-connection lifecycle-checkpoint
       -- read (connector-summary-evidence-engine.ts, maxLifecycleSeqResult)
@@ -2932,7 +2933,7 @@ export async function bootstrapPostgresSchema({
            NULLIF(data_json->>'connection_id', '')
          )
        WHERE connector_instance_id IS NULL
-         AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
+         AND event_type IN ${terminalRunEventTypesSqlGroup()}
          AND (
            data_json->>'connector_instance_id' IS NOT NULL
            OR data_json->>'connection_id' IS NOT NULL

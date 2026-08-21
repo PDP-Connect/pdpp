@@ -22,6 +22,7 @@ import os from "node:os";
 import { getDb } from "../server/db.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../server/postgres-storage.ts";
 import { type BootEpoch, emitSpineEvent, setCurrentBootEpoch } from "./spine.ts";
+import { terminalRunEventTypesSqlGroup, terminalRunEventTypesSqlList } from "../runtime/run-lifecycle-states.ts";
 
 export interface BootControllerOpts {
   /** Override for testing; defaults to randomUUID. */
@@ -394,7 +395,7 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
         AND NOT EXISTS (
           SELECT 1 FROM spine_events t
           WHERE t.run_id = s.run_id
-            AND t.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
+            AND t.event_type IN ${terminalRunEventTypesSqlGroup()}
         )
         AND NOT EXISTS (
           SELECT 1 FROM spine_events r
@@ -467,7 +468,7 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
       AND NOT EXISTS (
         SELECT 1 FROM spine_events t
         WHERE t.run_id = s.run_id
-          AND t.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
+          AND t.event_type IN ${terminalRunEventTypesSqlGroup()}
       )
       AND NOT EXISTS (
         SELECT 1 FROM spine_events r
@@ -704,8 +705,7 @@ async function projectAbandonedRunHistoryPostgres(client: PgClient, orphan: Orph
 // ─────────────────────────────────────────────────────────────────────────
 
 /** The spine's canonical terminal set, as SQL literals for the drift query. */
-const TERMINAL_EVENT_TYPES_SQL =
-  "'run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned'";
+const TERMINAL_EVENT_TYPES_SQL = terminalRunEventTypesSqlList();
 
 /**
  * Map a terminal event type to the `run_history.status` the generic writer

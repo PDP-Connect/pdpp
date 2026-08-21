@@ -49,6 +49,7 @@ import {
   type ConnectorMaintenanceCursorStore,
   createConnectorMaintenanceCursorStore,
 } from "./connector-maintenance-cursor-store.ts";
+import { TERMINAL_RUN_EVENT_TYPE_LIST, TERMINAL_RUN_EVENT_TYPES } from "../../runtime/run-lifecycle-states.ts";
 
 // Mirrors the writer's RUN_STARTED_EVENT_TYPE / RUN_TERMINAL_EVENT_TYPES
 // (server/stores/run-history-writer.ts) plus the wider terminal set
@@ -56,14 +57,10 @@ import {
 // (run.browser_surface_failed, run.abandoned) — the backfill discovers
 // candidate runs from ANY lifecycle event, then lets the unmodified fold
 // derive status from whatever window it finds.
-const RUN_LIFECYCLE_EVENT_TYPES = [
-  "run.started",
-  "run.completed",
-  "run.failed",
-  "run.browser_surface_failed",
-  "run.cancelled",
-  "run.abandoned",
-] as const;
+// `run.started` plus the canonical terminal set: the lifecycle window is the
+// opening event and every way a run can end, so the tail derives rather than
+// being re-typed.
+const RUN_LIFECYCLE_EVENT_TYPES: readonly string[] = ["run.started", ...TERMINAL_RUN_EVENT_TYPE_LIST];
 
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_DURATION_BUDGET_MS = 2000;
@@ -256,13 +253,7 @@ function factsJsonForBackfill(terminalData: Record<string, unknown> | null): str
   return JSON.stringify(facts);
 }
 
-const RUN_TERMINAL_EVENT_TYPES_FOR_FACTS = new Set([
-  "run.completed",
-  "run.failed",
-  "run.browser_surface_failed",
-  "run.cancelled",
-  "run.abandoned",
-]);
+const RUN_TERMINAL_EVENT_TYPES_FOR_FACTS = TERMINAL_RUN_EVENT_TYPES;
 
 // Composite candidate key: run_id alone is NOT globally unique (see the
 // CandidateRun header comment above). Every per-candidate map in this

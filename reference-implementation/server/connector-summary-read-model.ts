@@ -42,6 +42,7 @@ import {
   pruneOrphanedEvidenceComplete,
   reconcileConnectorSummaryEvidence,
 } from "./connector-summary-evidence-engine.ts";
+import { terminalRunEventTypesSqlList } from "../runtime/run-lifecycle-states.ts";
 import type { ConnectorSummaryReconcileObservation } from "./connector-summary-reconcile-observability.ts";
 import { getDb } from "./db.ts";
 import { isPostgresStorageBackend, PostgresStatementTimeoutError, postgresQuery } from "./postgres-storage.ts";
@@ -1250,8 +1251,11 @@ export async function markAllConnectorSummaryEvidenceDiscoveryFailed(
 // default (missing facts read unknown) keeps verdicts truthful.
 // ---------------------------------------------------------------------------
 
-const TERMINAL_RUN_EVENT_TYPES = ["run.completed", "run.failed", "run.browser_surface_failed", "run.cancelled"];
-const TERMINAL_TYPES_SQL = TERMINAL_RUN_EVENT_TYPES.map((t) => `'${t}'`).join(", ");
+// Derived from the single declaration in runtime/run-lifecycle-states.ts.
+// This constant previously omitted `run.abandoned`, which made every
+// abandoned run invisible to this fold — and the 121 runs the owner-epoch
+// change adjudicated are exactly that population.
+const TERMINAL_TYPES_SQL = terminalRunEventTypesSqlList();
 
 /**
  * The fold's own logic version. A row's stored `stream_facts_event_seq`
