@@ -191,6 +191,30 @@ export function isVenmoFamilyUrl(url: string): boolean {
   }
   return VENMO_FAMILY_HOSTS.has(parsed.hostname);
 }
+
+/** The host Venmo actually serves sign-in, captcha, and OTP from. */
+const VENMO_IDENTITY_HOST = "id.venmo.com";
+
+/**
+ * Whether `url` is a page the owner can complete sign-in ON, right now.
+ *
+ * Strictly narrower than {@link isVenmoFamilyUrl}: this asks "is there a live
+ * sign-in flow on this page worth preserving", not "is this Venmo". The
+ * distinction is load-bearing for {@link waitForManualLogin}, which must
+ * navigate a page that CANNOT be signed in from (`about:blank` on a fresh
+ * run, or the logged-out `venmo.com/` the pre-handoff probe leaves behind)
+ * while leaving a live `id.venmo.com` screen — the captcha or OTP the owner
+ * was just asked to solve — exactly as it stands.
+ */
+export function isVenmoSignInUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === "https:" && parsed.hostname === VENMO_IDENTITY_HOST;
+}
 /**
  * Venmo's identifier field, across both sign-in generations.
  *
@@ -717,7 +741,28 @@ async function waitForManualLogin({
   readonly phase?: VenmoProbePhase;
   readonly reason?: "captcha";
 }): Promise<VenmoAccountProbeResult> {
-  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
+  // Navigate ONLY when the page is not already somewhere the owner can sign in
+  // from. The unconditional `goto` this replaces threw away real, load-bearing
+  // page state at the exact moment the owner was asked to act on it: a rendered
+  // captcha (the `reason: "captcha"` handoff navigates away from the very
+  // challenge it is asking them to solve), Venmo's OTP screen, and any partly
+  // completed form. It also resets a two-step sign-in back to step one, which is
+  // why production run_1787319714987's handoff screenshot showed a pristine
+  // "Log in / Enter email, mobile, or username / Next" form while the message
+  // described a post-submit failure — two different page states separated by
+  // this navigation.
+  //
+  // Only a page on Venmo's IDENTITY host (`id.venmo.com`, where sign-in, the
+  // captcha, and the OTP screen all actually live) is state worth preserving.
+  // Every other page — `about:blank` on a fresh run, and the logged-out
+  // `venmo.com/` the pre-handoff probe leaves behind — is not somewhere the
+  // owner can sign in from, so those still navigate to the real login page
+  // (F2). That keeps the existing "hand the owner a real sign-in page, not
+  // about:blank" guarantee intact while no longer destroying the one screen
+  // the handoff is asking them to act on.
+  if (!isVenmoSignInUrl(page.url())) {
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
+  }
   return await manualBrowserLogin({
     ...(capture ? { capture } : {}),
     message,
@@ -798,7 +843,24 @@ async function fillVenmoPassword(
 ): Promise<VenmoAccountProbeResult | null> {
   const { capture, page, password, passwordScreenTimeoutMs = PASSWORD_SCREEN_TIMEOUT_MS, sendInteraction } = args;
   const passwordIn = page.locator(PASSWORD_SELECTOR).first();
-  if (await locatorIsVisible(passwordIn)) {
+  // A visible password box is NOT proof of a one-screen form. Venmo's step-one
+  // screen renders an UNNAMED `input[type="password"]` alongside the
+  // `login_email` identifier field (live CDP reading, run_1787164654406 — see
+  // USERNAME_SELECTOR's doc), and PASSWORD_SELECTOR's third alternative
+  // matches it. Treating that as "both fields are here, fill and submit" typed
+  // the password into screen one and then clicked `Next`, which submits the
+  // IDENTIFIER alone: Venmo stayed on step one, the post-submit probe read
+  // dead, and the run handed off with the post_submit copy ("automated sign-in
+  // did not complete") ~5s in, having never sent the password. That is
+  // production run_1787319714987.
+  //
+  // The discriminator is the step-one control, not the password box: `#btnNext`
+  // exists only while the identifier screen is up. So a page showing a password
+  // field AND a step-one control is screen one and must be advanced; a password
+  // field with no step-one control is a genuine one-screen form.
+  const stepOneControl = page.locator(STEP_ONE_SUBMIT_SELECTOR).first();
+  const onStepOne = await locatorIsVisible(stepOneControl);
+  if (!onStepOne && (await locatorIsVisible(passwordIn))) {
     await passwordIn.fill(password);
     return null;
   }
