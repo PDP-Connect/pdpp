@@ -1,0 +1,107 @@
+{
+  "step": "step-1-run-lifecycle",
+  "description": "D15 Step 1 pre-registration: N restarts with zero adjudication anomalies, race-class property tests green, plus the hand-checked regression baseline measured live on 2026-08-21.",
+  "container": "pdpp-core-prod-drain",
+  "imageRepo": "pdpp-core",
+  "imageTag": "canary-step1",
+  "dockerfileTarget": "core",
+  "nodeBaseImage": "node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03",
+  "postgresContainer": "pdpp-postgres-1",
+
+  "artifactAssertions": [
+    {
+      "id": "gmail-done-latch-present",
+      "description": "The done-latch fix (39d19704a) must be present in the built image. Measured 2026-08-21: this symbol is absent (0) from the running pdpp-core:drain32 and present (1) in the branch source, so this grep alone distinguishes 'deployed' from 'restarted onto the same bytes'.",
+      "path": "/app/packages/polyfill-connectors/connectors/gmail/index.ts",
+      "pattern": "__resetDoneLatchForTests",
+      "minCount": 1
+    }
+  ],
+
+  "checks": [
+    {
+      "kind": "sql_scalar",
+      "id": "gmail-blank-envelope-damage-frozen",
+      "description": "Gmail blank-envelope damaged records must not increase. Measured live 2026-08-21: 8.",
+      "sql": "select count(*) from records where connector_instance_id='cin_12407c1afb78d56848fe0b20' and stream='messages' and record_json->>'from_email' is null and record_json ? 'subject' and record_json->>'subject' is null",
+      "predicate": "must_not_increase",
+      "blocking": true
+    },
+    {
+      "kind": "sql_timestamp",
+      "id": "gmail-blank-envelope-damage-timestamp-frozen",
+      "description": "The newest blank-envelope record must not advance. Measured live 2026-08-21: 2026-08-21T15:54:44.503Z. A new damaged record would move this even if an old one were deleted, so it catches damage the count alone can hide.",
+      "sql": "select max(emitted_at) from records where connector_instance_id='cin_12407c1afb78d56848fe0b20' and stream='messages' and record_json->>'from_email' is null and record_json ? 'subject' and record_json->>'subject' is null",
+      "predicate": "must_not_advance",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "no-stale-non-terminal-runs",
+      "description": "No run may sit non-terminal for over two hours. NOTE: the naive 'run.started minus terminal events' form returned 2 when measured live, but both were legitimately in-flight runs seconds old; a must_stay_zero on that form would fire a false rollback on any deploy landing while a run is active. The age bound is what makes this metric mean 'stuck' rather than 'busy'. Measured live 2026-08-21: 0.",
+      "sql": "select count(*) from run_history where status='running' and (started_at)::timestamptz < now() - interval '2 hours'",
+      "predicate": "must_stay_zero",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "zero-adjudication-anomalies",
+      "description": "D15 Step 1: zero adjudication anomalies. A run abandoned by successor adjudication is legal; one abandoned WITHOUT a recorded terminal reason is the anomaly, because it means the transition happened outside the state machine.",
+      "sql": "select count(*) from run_history where status='abandoned' and (terminal_reason is null or terminal_reason='') and (started_at)::timestamptz > now() - interval '24 hours'",
+      "predicate": "must_not_increase",
+      "blocking": true
+    },
+    {
+      "kind": "container_fact",
+      "id": "restart-count-must-not-climb",
+      "description": "RestartCount must not climb. Measured live 2026-08-21: 0. A climbing count means the supervisor is crash-looping behind a container that still reports 'Up'.",
+      "fact": "restart_count",
+      "predicate": "must_not_increase",
+      "blocking": true
+    },
+    {
+      "kind": "container_fact",
+      "id": "running-image-must-change",
+      "description": "The running image tag must differ from the pre-image. This is the second half of 'did the deploy happen': the artifact grep proves the bytes are right, this proves the container actually picked them up.",
+      "fact": "running_image",
+      "predicate": "must_change",
+      "blocking": true
+    },
+    {
+      "kind": "log_pattern",
+      "id": "no-uncaught-exception",
+      "description": "uncaughtException must not appear in the post-deploy window.",
+      "pattern": "uncaughtException",
+      "maxOccurrences": 0,
+      "sinceSeconds": 900,
+      "blocking": true
+    },
+    {
+      "kind": "log_pattern",
+      "id": "no-protocol-violation",
+      "description": "The RECORD-after-DONE protocol violation this deploy fixes must not recur.",
+      "pattern": "connector_protocol_violation",
+      "maxOccurrences": 0,
+      "sinceSeconds": 900,
+      "blocking": true
+    },
+    {
+      "kind": "http_health",
+      "id": "health-probe",
+      "description": "The reference server must answer. Verified live 2026-08-21: /owner/login returns 200 unauthenticated and is server-rendered, so a 200 proves the app is serving, not just that a port is open. (/_ref/health and /health both 404; /_ref/fleet-health returns 401 unauthenticated, so neither is usable as an unauthenticated probe.)",
+      "url": "https://pdpp.vivid.fish/owner/login",
+      "expectStatus": 200,
+      "blocking": true
+    },
+    {
+      "kind": "connector_run",
+      "id": "slack-run-succeeds",
+      "description": "A Slack run must reach 'succeeded'. This was structurally impossible before the undici fix while every counter looked healthy, which is why a liveness check that exercises the real path is worth its cost. Slack sends no OTP.",
+      "connectionId": "cin_f565a96cb0a114b0a27e9606",
+      "connectorSlug": "slack",
+      "expectStatus": "succeeded",
+      "timeoutSeconds": 900,
+      "blocking": true
+    }
+  ]
+}
