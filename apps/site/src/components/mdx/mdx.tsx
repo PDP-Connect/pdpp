@@ -66,30 +66,31 @@ function headingTextClassName(size: TextSize, weight?: TextWeight) {
  * affordance (proven with the differ: `display: flex -> block` on every
  * h2/h3). Only the className changes.
  */
+// Rendered as JSX below (`<DefaultH1 ... />`), not called as plain functions —
+// fumadocs' `Heading` is a React component and only React's own render path
+// guarantees its component contract (hooks, forwardRef, memo, …) still holds
+// if a future fumadocs release changes how `Heading` is implemented.
+const DefaultH1 = defaultMdxComponents.h1;
+const DefaultH2 = defaultMdxComponents.h2;
+const DefaultH3 = defaultMdxComponents.h3;
+const DefaultH4 = defaultMdxComponents.h4;
+
 export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
     Mermaid,
-    h1: ({ className, ...props }: HeadingProps) =>
-      defaultMdxComponents.h1({
-        className: cn(headingTextClassName("display"), className),
-        ...props,
-      }),
-    h2: ({ className, ...props }: HeadingProps) =>
-      defaultMdxComponents.h2({
-        className: cn(headingTextClassName("title"), className),
-        ...props,
-      }),
-    h3: ({ className, ...props }: HeadingProps) =>
-      defaultMdxComponents.h3({
-        className: cn(headingTextClassName("heading"), className),
-        ...props,
-      }),
-    h4: ({ className, ...props }: HeadingProps) =>
-      defaultMdxComponents.h4({
-        className: cn(headingTextClassName("lede", "semi"), className),
-        ...props,
-      }),
+    h1: ({ className, ...props }: HeadingProps) => (
+      <DefaultH1 className={cn(headingTextClassName("display"), className)} {...props} />
+    ),
+    h2: ({ className, ...props }: HeadingProps) => (
+      <DefaultH2 className={cn(headingTextClassName("title"), className)} {...props} />
+    ),
+    h3: ({ className, ...props }: HeadingProps) => (
+      <DefaultH3 className={cn(headingTextClassName("heading"), className)} {...props} />
+    ),
+    h4: ({ className, ...props }: HeadingProps) => (
+      <DefaultH4 className={cn(headingTextClassName("lede", "semi"), className)} {...props} />
+    ),
     p: ({ className, color: _color, children, ...props }: ParagraphProps) => (
       <Text as="p" className={className} size="lede" wrap="pretty" {...props}>
         {children}
