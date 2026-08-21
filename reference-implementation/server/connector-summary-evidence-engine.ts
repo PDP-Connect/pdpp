@@ -781,24 +781,36 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   // Reuses the spine's own already-durable, atomically-assigned `event_seq`
   // as the repair receipt, scoped per connection (unlike the fleet-wide
   // terminal scalar, since run-lifecycle freshness is a per-connection fact).
+  // Per-key MAX rather than a GROUP BY aggregate, matching the Postgres
+  // branch -- see the long rationale there. SQLite recognizes the same
+  // `MAX(indexed_column)` shape as a backward index walk, so this keeps the
+  // two backends structurally identical instead of leaving SQLite on the
+  // formulation whose cost grows with total event count.
   const maxLifecycleSeqRows: Row[] = scoped
     ? db
         .prepare(
-          `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
-            WHERE connector_instance_id IN (${placeholders})
-            GROUP BY connector_instance_id`
+          `SELECT i.connector_instance_id,
+                  (SELECT MAX(e.event_seq) FROM spine_events e
+                    WHERE e.connector_instance_id = i.connector_instance_id) AS max_seq
+             FROM connector_instances i
+            WHERE i.connector_instance_id IN (${placeholders})`
         )
         // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
         .all(...connectorInstanceIds!)
     : db
         .prepare(
-          `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
-            WHERE connector_instance_id IS NOT NULL
-            GROUP BY connector_instance_id`
+          `SELECT i.connector_instance_id,
+                  (SELECT MAX(e.event_seq) FROM spine_events e
+                    WHERE e.connector_instance_id = i.connector_instance_id) AS max_seq
+             FROM connector_instances i`
         )
         .all();
+  // See the Postgres branch: a connection with no lifecycle events now
+  // yields NULL where the GROUP BY emitted no row, and `Number(null)` is 0.
   const maxLifecycleEventSeqByInstance = new Map(
-    maxLifecycleSeqRows.map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
+    maxLifecycleSeqRows
+      .filter((row) => row.max_seq !== null && row.max_seq !== undefined)
+      .map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
   );
   return {
     evidenceByInstance,
@@ -979,23 +991,66 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // which are solely owned by the terminal-fold path.
   // Reuses the spine's own already-durable, atomically-assigned `event_seq`
   // as the repair receipt, scoped per connection.
+  // Per-key MAX, never a GROUP BY aggregate over the matched events.
+  //
+  // `GROUP BY connector_instance_id` forces Postgres to READ EVERY EVENT for
+  // every in-scope connection just to keep the largest `event_seq` of each.
+  // That cost grows with total event count; the answer is 13-76 numbers.
+  // Production, 2026-08-21 (`EXPLAIN (ANALYZE, BUFFERS)`, 1.49M-row / 19 GB
+  // `spine_events`): the scoped GROUP BY form read 220,928 index rows with
+  // 201,795 heap fetches in 5,490ms against a 500ms per-unit allowance --
+  // an 11x overrun that cancelled discovery on EVERY pass, so
+  // `candidates_inspected` was 0 and 13 durably-dirty rows never cleared.
+  // Fleet health read 3 healthy / 24 while every underlying run had
+  // succeeded. The unscoped form measured 1,617ms (parallel seq scan).
+  //
+  // The correlated per-key MAX lets the planner walk
+  // `idx_pg_spine_events_instance_seq (connector_instance_id, event_seq)`
+  // BACKWARD and stop at the first row per key -- one index descent per
+  // connection instead of a full group scan. Measured on the same database:
+  // scoped 5,490ms -> 17.6ms (312x), unscoped 1,617ms -> 19.4ms, heap
+  // fetches 201,795 -> 13. `IS NOT NULL` inside the subquery keeps it an
+  // index-only scan (NULLs sort last on a backward walk).
+  //
+  // Driving the unscoped form off `connector_instances` rather than off the
+  // events themselves is behavior-preserving BECAUSE the resulting map is
+  // only ever read as `.get(instanceId)` while looping `ctx.instanceRows`
+  // (see `discoverCandidates`) -- an entry for an id with no instance row is
+  // unreachable by construction. Verified on production: 48 such orphan ids
+  // exist in `spine_events`, and comparing both formulations across every
+  // real instance row returned zero differing values.
+  //
+  // Do not "simplify" this back into a GROUP BY: this is the same
+  // cost-grows-with-row-count defect already removed from the canonical
+  // `records` count above, in a second place.
   const maxLifecycleSeqResult = scoped
     ? await postgresDiscoveryQuery(
-        `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
-          WHERE connector_instance_id = ANY($1::text[])
-          GROUP BY connector_instance_id`,
+        `SELECT ids.connector_instance_id,
+                (SELECT MAX(e.event_seq) FROM spine_events e
+                  WHERE e.connector_instance_id = ids.connector_instance_id) AS max_seq
+           FROM unnest($1::text[]) AS ids(connector_instance_id)`,
         [connectorInstanceIds],
         deadline
       )
     : await postgresDiscoveryQuery(
-        `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
-          WHERE connector_instance_id IS NOT NULL
-          GROUP BY connector_instance_id`,
+        `SELECT i.connector_instance_id,
+                (SELECT MAX(e.event_seq) FROM spine_events e
+                  WHERE e.connector_instance_id = i.connector_instance_id) AS max_seq
+           FROM connector_instances i`,
         [],
         deadline
       );
+  // A connection with no lifecycle events yields `max_seq = NULL` here,
+  // whereas the previous GROUP BY simply emitted no row for it. Both must
+  // become "absent from the map": `classifyCandidate` treats a present
+  // `currentLifecycleEventSeq` as a real receipt to compare against, and
+  // `Number(null)` is 0 -- which would pass its `!== null` guard and, since
+  // any stored seq is `< 0` is false / `null` is true, could latch a
+  // connection dirty on every pass. Drop the NULLs instead of coercing them.
   const maxLifecycleEventSeqByInstance = new Map(
-    (maxLifecycleSeqResult.rows as Row[]).map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
+    (maxLifecycleSeqResult.rows as Row[])
+      .filter((row) => row.max_seq !== null && row.max_seq !== undefined)
+      .map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
   );
   return {
     evidenceByInstance,

@@ -196,21 +196,66 @@ test(
 );
 
 test(
-  "a complete-set orphan prune counts as progress and resets the counter even if the backlog count itself is unchanged",
+  "a complete-set orphan prune does NOT mask a non-empty backlog that never shrinks",
   withTempDb(async () => {
+    // REVISED 2026-08-21 after the production wedge this counter exists to
+    // catch went unreported for 6+ hours. Discovery was cancelled by its
+    // per-unit statement_timeout on every pass, so 13 dirty rows never
+    // cleared and fleet health read 3 healthy / 24. A cancelled discovery is
+    // caught as non-fatal, so the walk still covered the whole 28-instance
+    // fleet and reported `prunedComplete: true` EVERY pass — which, under
+    // the previous contract, reset this counter every pass and made the
+    // alert structurally unreachable in precisely its own scenario.
+    //
+    // "Covered every page" and "the backlog is draining" are different
+    // facts. Pruning orphans while a non-empty dirty backlog sits untouched
+    // is work, not progress. A prune may only count as progress when the
+    // backlog is empty (asserted by the zero-backlog test below).
     const { alerts, sweep } = runnerWithAlerts([
-      round({ eligibleBacklog: 5 }),
-      round({ eligibleBacklog: 5 }),
-      round({ eligibleBacklog: 5, prunedComplete: true }), // resets despite unchanged backlog
-      round({ eligibleBacklog: 5 }),
+      round({ eligibleBacklog: 5 }), // bootstrap baseline, counter 0
+      round({ eligibleBacklog: 5 }), // counter 1
+      round({ eligibleBacklog: 5, prunedComplete: true }), // still stuck at 5 -> counter 2
+      round({ eligibleBacklog: 5 }), // counter 3 -> ALERT
       round({ eligibleBacklog: 5 }),
     ]);
 
-    for (let i = 0; i < 4; i += 1) {
+    for (let i = 0; i < 3; i += 1) {
       // biome-ignore lint/performance/noAwaitInLoops: Sequential rounds by construction.
       await sweep.runEvidenceSweepRound({ maxDurationMs: 1 });
     }
-    assert.deepEqual(alerts, [], "the prune round resets the counter before 3 consecutive no-progress rounds accrue");
+    assert.deepEqual(alerts, [], "a prune round on a stuck backlog neither resets the counter nor alerts early");
+
+    await sweep.runEvidenceSweepRound({ maxDurationMs: 1 });
+    assert.equal(alerts.length, 1, "the stuck backlog alerts on schedule despite the intervening complete prune");
+    assert.deepEqual(alerts[0], { consecutiveNoProgressPasses: 3, eligibleBacklog: 5 });
+  })
+);
+
+test(
+  "REGRESSION (production wedge 2026-08-21): a fleet small enough to be fully covered every pass still alerts when its dirty backlog never drains",
+  withTempDb(async () => {
+    // The exact shape of the incident. The fleet (28 instances, pageSize 25)
+    // is covered on every pass, and discovery's statement_timeout
+    // cancellation is caught as non-fatal — so every round reports
+    // `prunedComplete: true` while 13 dirty rows sit permanently unrepaired.
+    // Before the fix this alerted ZERO times in 6+ hours; the owner found the
+    // wedge by querying the database by hand.
+    const wedgedRound = () => round({ eligibleBacklog: 13, incomplete: false, prunedComplete: true });
+    const { alerts, sweep } = runnerWithAlerts([
+      wedgedRound(),
+      wedgedRound(),
+      wedgedRound(),
+      wedgedRound(),
+      wedgedRound(),
+    ]);
+
+    for (let i = 0; i < 5; i += 1) {
+      // biome-ignore lint/performance/noAwaitInLoops: Sequential rounds by construction.
+      await sweep.runEvidenceSweepRound({ maxDurationMs: 1 });
+    }
+
+    assert.ok(alerts.length > 0, "a permanently stuck dirty backlog must surface as a named, actionable condition");
+    assert.deepEqual(alerts[0], { consecutiveNoProgressPasses: 3, eligibleBacklog: 13 });
   })
 );
 

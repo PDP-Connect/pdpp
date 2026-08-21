@@ -22,7 +22,21 @@ const CANDIDATE_REASON_CLASSES = new Set([
   "retained_bytes_changed_or_unavailable",
 ]);
 
-const FAILURE_CLASSES = new Set(["discovery", "terminal_facts"]);
+/*
+ * `discovery_statement_timeout` is emitted by the cancelled-discovery branch
+ * in connector-summary-read-model.ts. It was absent from this allow-list, so
+ * `sanitizedFailureClasses` stripped it and every cancelled pass arrived here
+ * looking like a clean, idle barrier: `repaired: 0, failed: 0, skipped: 0,
+ * incomplete: false, failureClasses: []`. That pass is then NOT "exceptional"
+ * and is sampled 1-in-100.
+ *
+ * Production, 2026-08-21: discovery was cancelled on every pass for hours,
+ * 13 dirty rows never cleared, fleet health read 3 healthy / 24 — and the
+ * one signal that names the condition was being discarded one line before it
+ * would have been logged. A cancelled discovery is a fact the sweep KNOWS;
+ * dropping it made the system present a state it could not explain.
+ */
+const FAILURE_CLASSES = new Set(["discovery", "discovery_statement_timeout", "terminal_facts"]);
 
 export interface ConnectorSummaryReconcileObservation {
   readonly candidateReasonCounts: Readonly<Record<string, number>>;
