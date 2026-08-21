@@ -262,6 +262,16 @@ export interface RunNowOptions {
    * button cannot accidentally re-hit a hot account that is cooling off.
    */
   force?: boolean;
+  /**
+   * Explicit owner request for a full re-enumeration: send
+   * `collection_mode: "full_refresh"` on START even when durable state exists,
+   * so a connector with its own incremental bookkeeping walks each stream to
+   * its natural end and can re-establish an enumeration boundary. This is the
+   * supported way to prove coverage for a source whose ordinary runs are all
+   * incremental deltas. Does NOT clear stored state — see
+   * `deriveCollectionState`.
+   */
+  fullRefresh?: boolean;
   manifest?: ConnectorManifest;
   /** Authenticated subject used by the server admission boundary. */
   ownerSubjectId?: string;
@@ -3058,7 +3068,20 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     return null;
   }
-  function deriveCollectionState(syncState: { state?: unknown } | null): {
+  // `fullRefresh` is the owner's explicit "prove coverage now" request. It
+  // forces the mode WITHOUT clearing stored state: the state still flows to the
+  // connector, which is what lets a connector that honors the bypass rewrite its
+  // cursor forward from this run's own response instead of rebuilding it from
+  // nothing. Deleting the cursor to force the mode would be destructive and
+  // unrecoverable (the repair CLI keeps a backup table for exactly that reason),
+  // and it would communicate one boolean by throwing away resumable progress.
+  //
+  // A connector that ignores `collection_mode` is unaffected — it will keep
+  // walking incrementally off the state it was handed, exactly as before.
+  function deriveCollectionState(
+    syncState: { state?: unknown } | null,
+    fullRefresh = false
+  ): {
     readonly collectionMode: "full_refresh" | "incremental";
     readonly state: Record<string, unknown> | null;
   } {
@@ -3067,7 +3090,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       rawState && typeof rawState === "object" && !Array.isArray(rawState) && Object.keys(rawState).length
         ? (rawState as Record<string, unknown>)
         : null;
-    return { collectionMode: state ? "incremental" : "full_refresh", state };
+    return { collectionMode: fullRefresh || !state ? "full_refresh" : "incremental", state };
   }
 
   function mintStreamingRegistrationNonce(runId: string): string | null {
@@ -3794,7 +3817,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
       (await getSyncState({
         connector_id: admittedConnectorId,
         connector_instance_id: connectorInstanceId,
-      })) as { state?: unknown } | null
+      })) as { state?: unknown } | null,
+      options.fullRefresh === true
     );
     const ownerToken = options.ownerToken || (await issueRuntimeOwnerToken(runOwnerSubjectId));
 

@@ -2397,7 +2397,7 @@ export const referenceManifests = [
       ...CommonErrors,
     },
     summary:
-      "Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter.",
+      "Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter. Optional JSON body field `full_refresh: true` requests a full re-enumeration (`collection_mode: \"full_refresh\"`) instead of resuming from the connection's stored cursor, so a source whose ordinary runs are incremental deltas can re-establish an enumeration boundary and prove coverage; it does not clear stored state.",
     surface: "reference",
     tags: ["reference", "runs", "connections", "owner-agent"],
   },
@@ -2906,7 +2906,7 @@ export const referenceManifests = [
       ...CommonErrors,
     },
     summary:
-      "Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active.",
+      "Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active. Optional JSON body field `full_refresh: true` requests a full re-enumeration (`collection_mode: \"full_refresh\"`) instead of resuming from the connection's stored cursor, so a source whose ordinary runs are incremental deltas can re-establish an enumeration boundary and prove coverage; it does not clear stored state.",
     surface: "reference",
     tags: ["reference", "runs", "connections"],
   },
