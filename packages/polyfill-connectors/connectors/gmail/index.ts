@@ -3662,18 +3662,22 @@ export async function runAllMailPasses(
     historicalMetas
   );
   const forwardMessageCoverage = await emitMessagesPass(perMessageDeps, forwardMetas);
-  if (deps.requested.has("message_bodies")) {
-    await emit(
-      buildDetailCoverageMessage({
-        considered: historicalMessageCoverage.considered + forwardMessageCoverage.considered,
-        covered: historicalMessageCoverage.covered + forwardMessageCoverage.covered,
-        hydratedKeys: [],
-        requiredKeys: [],
-        stateStream: "messages",
-        stream: "message_bodies",
-      })
-    );
-  }
+  // `message_bodies` deliberately emits NO DETAIL_COVERAGE. The manifest
+  // declares it `state_stream: messages`, i.e. a static single-parent detail
+  // stream, and such a stream's checkpoint status is projected from the
+  // declared parent's own commit outcome — the runtime rejects the run
+  // outright if it emits coverage of its own
+  // (`validateDetailCoverageAgainstManifest`).
+  //
+  // It could not honestly emit one anyway. The numbers available here are the
+  // *parent* pass's considered/covered — how many MESSAGES were walked, not
+  // how many bodies were hydrated against a per-key denominator. Re-reporting
+  // the parent's counts under the body stream's name is the `covered ==
+  // considered` fabrication this codebase has worked to eliminate: it would
+  // claim every walked message proved a body, including the ones whose body
+  // fetch was skipped or failed. `attachments` is the contrast — it earns its
+  // coverage from a real attempt-per-key tally (see
+  // `emitAttachmentDetailCoverage`), which is why it may emit at all.
 
   await runAttachmentBackfillAndRecoveryPass({
     allMail,
