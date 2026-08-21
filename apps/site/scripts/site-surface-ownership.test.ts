@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const SITE_ROOT = fileURLToPath(new URL("../src/", import.meta.url));
 const SOURCE_NOT_RE = /^@source not "([^"]+)";$/gm;
+const SOURCE_FILE_RE = /\.tsx?$/;
+const CLASSNAME_USAGE_RE = /className\s*=|cn\(/;
 
 /** Token-ownership probes — hoisted so the regexes compile once per module. */
 const BACKGROUND_REBIND_RE = /--background: var\(--pdpp-editorial-paper\)/;
@@ -96,10 +98,13 @@ test("concept entrypoint owns Tailwind utility generation", async () => {
  * list — one entrypoint's exclusions are the other's exclusive territory, by
  * design (see the block comment above each list). Nothing mechanically ties
  * the two lists together, so a file move/rename/add can silently desync
- * them: excluded from BOTH builds (renders with zero Tailwind utilities on
- * whichever route uses it) or excluded from NEITHER (duplicate utility
- * generation, the exact cascade-order bug this two-build split exists to
- * prevent). This test is the mechanical tie.
+ * them three ways: excluded from BOTH builds (zero Tailwind utilities on
+ * whichever route uses it), a path that no longer exists (stale entry), or
+ * excluded from NEITHER (duplicate utility generation — the exact
+ * cascade-order bug this two-build split exists to prevent). The test below
+ * checks all three: the first two directly against the parsed lists, the
+ * third by walking the real file tree (see `walkSourceFiles` and its
+ * caller for what that check can and cannot prove).
  */
 function parseSourceNotList(css: string, cssFileUrl: URL): string[] {
   const cssDir = dirname(fileURLToPath(cssFileUrl));
@@ -107,6 +112,42 @@ function parseSourceNotList(css: string, cssFileUrl: URL): string[] {
     assert.ok(relativePath, `@source not directive matched with no capture group: ${fullMatch}`);
     return resolve(cssDir, relativePath);
   });
+}
+
+/** Recursively lists every .ts/.tsx file (skipping *.test.ts[x]) under the given root-relative dirs. */
+function walkSourceFiles(siteRoot: string, rootRelativeDirs: string[]): string[] {
+  const files: string[] = [];
+  const visit = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath);
+      } else if (SOURCE_FILE_RE.test(entry.name) && !entry.name.includes(".test.")) {
+        files.push(entryPath);
+      }
+    }
+  };
+  for (const relDir of rootRelativeDirs) {
+    visit(join(siteRoot, relDir));
+  }
+  return files;
+}
+
+/** True if absPath equals, or lives under, any directory/file in the exclusion set. */
+function isCoveredByExclusion(absPath: string, exclusionSet: Set<string>): boolean {
+  for (const excluded of exclusionSet) {
+    if (absPath === excluded || absPath.startsWith(`${excluded}${sep}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function filterFilesWithClassNameUsage(absPaths: string[]): Promise<string[]> {
+  const withContents = await Promise.all(
+    absPaths.map(async (absPath) => ({ absPath, content: await readFile(absPath, "utf8") }))
+  );
+  return withContents.filter(({ content }) => CLASSNAME_USAGE_RE.test(content)).map(({ absPath }) => absPath);
 }
 
 test("the two Tailwind builds' @source not lists stay disjoint and current", async () => {
@@ -134,5 +175,37 @@ test("the two Tailwind builds' @source not lists stay disjoint and current", asy
     excludedFromBoth,
     [],
     `paths excluded from BOTH Tailwind builds (would render with no utilities): ${excludedFromBoth.join(", ")}`
+  );
+
+  // The check above catches drift BETWEEN the two lists, but says nothing
+  // about a file that was never added to EITHER — the "excluded from
+  // neither" case the comment above also names. That file would get scanned
+  // (and its classes generated) by both builds: not a missing-utility bug
+  // like the both-excluded case, but the exact duplicate-generation /
+  // cascade-order risk this two-build split exists to prevent (see the
+  // `.flex` history in specification.css). Detecting that mechanically
+  // would need a real import-graph trace from each route's entrypoint,
+  // which this test does not attempt. What it can do cheaply: walk every
+  // .ts/.tsx file under app/ and components/, find every one NOT covered by
+  // either exclusion list (directory-prefix or exact-file match), and
+  // require that set to contain only files with no className/cn(...) usage
+  // at all — a file with no Tailwind class strings can't cause a cascade
+  // bug regardless of which build(s) scan it, so it's safe to leave
+  // unclassified. A file WITH class usage in that set is new, unclassified,
+  // and Tailwind-relevant: exactly the silent-drift case. Today that set is
+  // exactly {app/layout.tsx}, the root layout, which is shared by
+  // construction (every route renders through it) — any OTHER member is new
+  // and must be triaged into one of the two @source not lists.
+  const allSourceFiles = walkSourceFiles(SITE_ROOT, ["app", "components"]);
+  const siteExcludeSet = new Set(siteExcludes);
+  const unclassified = allSourceFiles.filter(
+    (absPath) => !(isCoveredByExclusion(absPath, siteExcludeSet) || isCoveredByExclusion(absPath, conceptExcludeSet))
+  );
+  const unclassifiedWithClassNames = await filterFilesWithClassNameUsage(unclassified);
+  const relativeUnclassified = unclassifiedWithClassNames.map((absPath) => relative(SITE_ROOT, absPath));
+  assert.deepEqual(
+    relativeUnclassified,
+    ["app/layout.tsx"],
+    `Tailwind-relevant files excluded from NEITHER build (new/unclassified — add to one @source not list): ${relativeUnclassified.join(", ")}`
   );
 });
