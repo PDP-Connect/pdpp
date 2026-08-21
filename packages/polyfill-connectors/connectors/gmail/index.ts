@@ -56,7 +56,6 @@ import {
   type BodyPartSelection,
   bigintToCursor,
   bigintToNumber,
-  buildDeltaMessageRecord,
   buildMessageBodyRecord,
   buildMessageRecord,
   buildThreadRecord,
@@ -3105,12 +3104,35 @@ export function validateAttachmentHydrationPreflight(args: {
 
 // ─── Delta pass (flag/label changes since priorModseq) ──────────────────
 
-async function runDeltaPass(
+/**
+ * Emit flag/label changes for messages modified since `priorModseq`.
+ *
+ * The envelope is fetched alongside the flags. That is not an optimization —
+ * it is what makes the pass safe. PDPP records are whole-document upserts
+ * (`records` is keyed `UNIQUE(connector_instance_id, stream, record_key)` and
+ * ingest replaces `record_json`), so emitting a partial `messages` record
+ * overwrites the stored row rather than merging into it. An envelope-free
+ * delta record therefore nulls `subject`, `from_email`, `date`, `size_bytes`,
+ * and `snippet` on a message that had them, and sets `received_at` to the run
+ * clock — silently destroying already-collected history every time a label or
+ * a `\Seen` flag changes.
+ *
+ * A message whose envelope the server does not return is skipped rather than
+ * emitted partially: losing a flag update is recoverable on the next pass,
+ * losing the envelope is not.
+ *
+ * `fetchBodiesFn` is the same seam `processMessage` uses. Called with
+ * `wantBodies: false` it fetches at most `SNIPPET_FETCH_MAX_BYTES` of the
+ * plain part — enough to rebuild `snippet`, without touching the
+ * externally-throttled full-body/attachment path.
+ */
+export async function runDeltaPass(
   client: Pick<ImapFlow, "fetch">,
   session: AllMailSession,
   requested: Map<string, StreamRequest>,
   emitRecord: EmitRecordFn,
-  receivedAtFallback: string
+  receivedAtFallback: string,
+  fetchBodiesFn: FetchBodiesFn
 ): Promise<void> {
   if (session.fullResync || session.priorModseq === undefined || session.priorModseq === null) {
     return;
@@ -3121,13 +3143,21 @@ async function runDeltaPass(
     type: "PROGRESS",
     message: `Fetching flag/label deltas since modseq=${String(priorModseq)}`,
   });
+  // `envelope`/`internalDate`/`size`/`bodyStructure` ride along with the flags
+  // so the emitted record is whole. See this function's doc comment: a partial
+  // record is a destructive upsert, not a cheap one. BODYSTRUCTURE is metadata
+  // only — it is what `has_attachments` is derived from, and fetching it does
+  // not pull attachment or body content.
   const deltaQuery: ExtendedFetchQuery = {
     uid: true,
     flags: true,
     labels: true,
     threadId: true,
     emailId: true,
-    envelope: false,
+    envelope: true,
+    internalDate: true,
+    size: true,
+    bodyStructure: true,
   };
   for await (const msg of client.fetch("1:*", deltaQuery, {
     uid: true,
@@ -3137,25 +3167,33 @@ async function runDeltaPass(
     if (!gmMsgid) {
       continue;
     }
-    // Flag/label delta update: emit a tombstone-free upsert of the message
-    // envelope (minimal fields since envelope not re-fetched). For now, we
-    // emit a RECORD with the same id so the RS upserts flag/label state.
-    // Note: PDPP records are "whole-document" upserts in the current RS,
-    // so this delta path is effectively a full re-fetch. Simpler: mark
-    // this path as "only flags" by emitting the fields we have plus nulls.
-    // For robustness, let's actually re-fetch envelope in v2. For v1, emit
-    // flags only.
     if (!requested.has("messages")) {
       continue;
     }
+    // No envelope means no safe record to write. Skipping preserves the
+    // stored row; emitting would blank it.
+    if (!msg.envelope) {
+      continue;
+    }
+    const env = msg.envelope;
+    const receivedAt = perMessageInternalDateToIso(msg.internalDate, () => receivedAtFallback);
+    // Bounded snippet-only body read, exactly as the forward pass does for a
+    // messages-without-bodies scope.
+    const { snippet } = await fetchBodiesFn(msg, selectBodyParts(msg.bodyStructure, false), false, true);
     await emitRecord(
       "messages",
-      buildDeltaMessageRecord({
+      buildMessageRecord({
+        attachmentsCount: decodeBodystructureForAttachments(msg.bodyStructure, gmMsgid, receivedAt).length,
+        dateHeader: env.date ? new Date(env.date).toISOString() : null,
+        envelope: env,
         flagsArr: toFlagsArray(msg.flags),
         gmMsgid,
         gmThrid: String(msg.threadId ?? ""),
         labels: toLabelsArray(msg.labels),
-        receivedAtFallback,
+        rawHeaders: msg.headers,
+        receivedAt,
+        sizeBytes: typeof msg.size === "number" ? msg.size : null,
+        snippet,
       })
     );
   }
@@ -3573,7 +3611,7 @@ export async function runAllMailPasses(
   await emitAttachmentDetailGaps(attachmentCoverage);
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
-  await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
+  await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt, fetchBodiesBound);
 
   if (messageHistoryRequested && historicalFetchRange) {
     const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);

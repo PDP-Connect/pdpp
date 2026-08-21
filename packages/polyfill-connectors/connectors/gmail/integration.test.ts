@@ -93,6 +93,7 @@ import {
   resolveMessagesBackfillTargetUid,
   runAllMailPasses,
   runAttachmentBackfillAndRecoveryPass,
+  runDeltaPass,
   selectAllMailFetchRange,
   selectAttachmentBackfillFetchRange,
   selectMessagesBackfillFetchRange,
@@ -5003,4 +5004,86 @@ test("runAllMailPasses: missing internalDate under declared since propagates unc
   } finally {
     globalThis.process.stdout.write = originalWrite;
   }
+});
+
+// ─── Invariant: the delta pass never blanks an already-collected envelope ───
+
+test("runDeltaPass: emits a WHOLE messages record, never a null-envelope shell", async () => {
+  // REGRESSION EVIDENCE. `records` upserts replace `record_json` wholesale, so
+  // a delta record carrying null envelope fields overwrites — and destroys —
+  // the stored subject/sender/date/size/snippet of a message that had them.
+  // Observed live: 2,534 distinct Gmail messages had been hollowed at least
+  // once, 981 were hollow at rest, each re-hollowed on every label change.
+  //
+  // EVIDENCE DISCRIMINATOR: against the pre-fix code (`envelope: false` in the
+  // delta query + `buildDeltaMessageRecord`) every assertion below on subject,
+  // from_email, date, size_bytes, snippet and received_at fails — that version
+  // emitted exactly the null shell this test forbids.
+  const emitted: Array<{ data: Record<string, unknown>; stream: string }> = [];
+  const emitRecord = (stream: string, data: Record<string, unknown>): Promise<void> => {
+    emitted.push({ data, stream });
+    return Promise.resolve();
+  };
+
+  const delta = makeMsg({ uid: 100, emailId: "gmmsgid-delta", flags: new Set(["\\Seen", "\\Flagged"]) });
+  // biome-ignore lint/suspicious/useAwait: stands in for ImapFlow.fetch's async-iterable-returning signature.
+  const fetch = mock.fn(async function* () {
+    yield delta;
+  });
+
+  const fetchBodies = mock.fn(() =>
+    Promise.resolve({ bodyHtmlFull: null, bodyTextFull: null, snippet: "a real snippet" })
+  );
+
+  await runDeltaPass(
+    { fetch } as unknown as Pick<ImapFlow, "fetch">,
+    { fullResync: false, priorModseq: 1n } as unknown as Parameters<typeof runDeltaPass>[1],
+    makeRequested(["messages"]),
+    emitRecord,
+    "2026-08-20T00:00:00.000Z",
+    fetchBodies as unknown as Parameters<typeof runDeltaPass>[5]
+  );
+
+  const rec = emitted.find((r) => r.stream === "messages");
+  assert.ok(rec, "delta pass emits a messages record");
+  assert.equal(rec.data.subject, "Test subject", "subject survives a flag delta");
+  assert.equal(rec.data.from_email, "alice@example.com", "sender survives a flag delta");
+  assert.equal(rec.data.date, "2026-04-20T10:00:00.000Z", "Date header survives a flag delta");
+  assert.equal(rec.data.size_bytes, 1024, "size survives a flag delta");
+  assert.equal(rec.data.snippet, "a real snippet", "snippet is re-derived, not blanked");
+  assert.equal(
+    rec.data.received_at,
+    "2026-04-20T10:00:05.000Z",
+    "received_at keeps the message's own internalDate, not the run clock"
+  );
+  // The flag change itself must still land — that is the point of the pass.
+  assert.equal(rec.data.is_flagged, true, "the flag delta is applied");
+});
+
+test("runDeltaPass: skips a message the server returns without an envelope", async () => {
+  // Skipping preserves the stored row. Emitting a partial record would blank
+  // it, which is the very defect above — so absent an envelope there is no
+  // safe record to write, and losing one flag update is the cheaper loss.
+  const emitted: Array<{ stream: string }> = [];
+  const emitRecord = (stream: string): Promise<void> => {
+    emitted.push({ stream });
+    return Promise.resolve();
+  };
+  const { envelope: _envelope, ...noEnvelope } = makeMsg({ uid: 101, emailId: "gmmsgid-no-env" });
+  // biome-ignore lint/suspicious/useAwait: stands in for ImapFlow.fetch's async-iterable-returning signature.
+  const fetch = mock.fn(async function* () {
+    yield noEnvelope;
+  });
+  const fetchBodies = mock.fn(() => Promise.resolve({ bodyHtmlFull: null, bodyTextFull: null, snippet: null }));
+
+  await runDeltaPass(
+    { fetch } as unknown as Pick<ImapFlow, "fetch">,
+    { fullResync: false, priorModseq: 1n } as unknown as Parameters<typeof runDeltaPass>[1],
+    makeRequested(["messages"]),
+    emitRecord as unknown as Parameters<typeof runDeltaPass>[3],
+    "2026-08-20T00:00:00.000Z",
+    fetchBodies as unknown as Parameters<typeof runDeltaPass>[5]
+  );
+
+  assert.equal(emitted.length, 0, "no record emitted when the envelope is absent");
 });
