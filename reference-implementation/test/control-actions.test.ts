@@ -1119,9 +1119,17 @@ test("controller startup reconciles abandoned controller-managed runs after rest
       .prepare("SELECT data_json FROM spine_events WHERE event_type = 'run.abandoned' AND run_id = ?")
       .get(runId) as { data_json: string } | undefined;
     assert.ok(abandoned, "startup reconciliation should append run.abandoned");
+    // This fixture's run was blocked on an unanswered `run.interaction_required`
+    // when the prior incarnation died, so the reconciler reports the more
+    // specific of the two abandonment reasons. The general
+    // `controller_terminated_before_run_finished` case (a run that never asked
+    // the owner for anything) is covered in `boot-orphan-reconciliation.test.ts`
+    // alongside the answered-interaction case. What this test pins is the
+    // adjudication itself -- abandoned, never failed -- not which reason string
+    // a run that happens to be awaiting input receives.
     assert.equal(
       (JSON.parse(abandoned.data_json) as { reason: string }).reason,
-      "controller_terminated_before_run_finished"
+      "controller_terminated_while_awaiting_owner_interaction"
     );
 
     const failedRow = getDb()
@@ -1142,7 +1150,9 @@ test("controller startup reconciles abandoned controller-managed runs after rest
     assert.ok(entry, "configured spotify connection should still be listed after restart");
     assert.equal(entry.last_run?.run_id, runId);
     assert.equal(entry.last_run?.status, "abandoned");
-    assert.equal(entry.last_run?.terminal_reason, "controller_terminated_before_run_finished");
+    // Same reason as the spine event asserted above: the projection and the
+    // event log must give the owner one account, not two.
+    assert.equal(entry.last_run?.terminal_reason, "controller_terminated_while_awaiting_owner_interaction");
 
     const remainingRows = getDb().prepare("SELECT COUNT(*) AS count FROM controller_active_runs").get() as CountRow;
     assert.equal(remainingRows.count, 0, "reconciliation should clear stale controller_active_runs rows");
