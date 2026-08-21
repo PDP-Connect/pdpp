@@ -3717,6 +3717,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         const body = await resp.text();
         throw buildHttpFailure(`State persistence failed for ${stream}`, resp.status, body);
       }
+      // Drain the success-path body before moving on. This response is the
+      // only RS response the runtime does not otherwise read (the ingest path
+      // always reads via readIngestResponse), and an unread body leaves
+      // undici's HTTP parser holding buffered response data. If the socket is
+      // then torn down while that parser is paused, Node's vendored undici
+      // hits an unguarded `assert(!this.paused)` in `Parser.finish` and raises
+      // an uncaughtException that no try/catch here can intercept. Reading the
+      // body to completion returns the connection to a clean, resumable state.
+      // The payload is a small JSON ack, so this costs nothing; `catch` keeps
+      // a drain failure from masking an otherwise successful commit, which is
+      // already durable server-side at this point.
+      await resp.text().catch(() => "");
       committedStateStreams.add(stream);
 
       // Cursor-band contiguity: the cursor that was just durably committed is
@@ -5713,6 +5725,11 @@ export async function loadSyncState(
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!resp.ok) {
+    // Drain before discarding: an abandoned error body leaves undici's parser
+    // holding buffered data, which is the state that turns a later socket
+    // teardown into the unguarded `assert(!this.paused)` crash in
+    // `Parser.finish`. See runtime/undici-parser-errors.ts.
+    await resp.text().catch(() => "");
     return null;
   }
   const body = (await resp.json()) as { state?: Record<string, unknown> | null };
