@@ -2320,8 +2320,23 @@ export async function bootstrapPostgresSchema({
         -- (server/stores/run-history-writer.ts) sets this false. Scheduler
         -- cadence/backoff readers filter on this column — see
         -- terminal-read-architecture-fable-0730.md R7.5.
-        scheduler_managed BOOLEAN NOT NULL DEFAULT false
+        scheduler_managed BOOLEAN NOT NULL DEFAULT false,
+        -- See the ALTER below: the column is declared here for fresh
+        -- databases and added by ALTER for existing ones, because
+        -- CREATE TABLE IF NOT EXISTS is a no-op against a live table.
+        owner_epoch TEXT
       );
+
+      -- run_history.owner_epoch — the durable fence for every run-state
+      -- transition (D2). Additive and NULL-tolerant, so existing databases
+      -- migrate without a backfill: a NULL epoch means the row was written
+      -- before the column existed and is claimed by nobody, so any epoch may
+      -- adjudicate it. Ships in the SAME change as the SQLite column in
+      -- server/db.ts — run_generation once shipped to SQLite without
+      -- PostgreSQL and was caught only as a deploy blocker, and this repo
+      -- has kept 6,792 tests green while the deployed backend diverged.
+      ALTER TABLE run_history
+        ADD COLUMN IF NOT EXISTS owner_epoch TEXT;
 
       CREATE INDEX IF NOT EXISTS idx_pg_run_history_connector_completed
         ON run_history(connector_id, completed_at, id);

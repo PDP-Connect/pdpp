@@ -5985,6 +5985,23 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   // as NULL, which the sweep treats as orphaned because no live process
   // claims them. See the column comment on manual_upload_artifacts.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "manual_upload_artifacts", "owner_epoch", "TEXT"));
+  // run_history.owner_epoch — the durable fence for every run-state
+  // transition (D2). Before this column, the boot epoch existed ONLY inside
+  // the spine event's data_json, which no UPDATE can fence on cheaply: every
+  // durable run-state write was fenced on `AND status = 'running'` alone.
+  // That stops a double-terminal write but cannot stop a STALE EPOCH's write
+  // — a predecessor container returning from a pause still sees 'running' and
+  // still wins. Fencing lived in process memory instead (a JavaScript Map in
+  // runtime/controller.ts), which cannot arbitrate across processes.
+  //
+  // Additive and NULL-tolerant so existing databases migrate with no
+  // backfill. A NULL epoch means "written before the column existed, claimed
+  // by nobody", so any epoch may adjudicate it — see the OR-null arm in
+  // runtime/run-lifecycle.ts. Mirrors the manual_upload_artifacts precedent
+  // directly above, and ships in the SAME change as the PostgreSQL column in
+  // server/postgres-storage.ts: run_generation once shipped to SQLite without
+  // PostgreSQL and was caught only as a deploy blocker.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "run_history", "owner_epoch", "TEXT"));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)
