@@ -2127,12 +2127,13 @@ test("RI production code still contains zero connector/provider-specific executa
   assert.deepEqual(violations, [], formatViolationInventory(violations));
 });
 
-// Counterweights for OTP_DENYLIST_IDENTITY_EXEMPT_ROOT
-// (`reference-implementation/scripts/canary`). That exemption suppresses rule
-// (1) for the canary harness's OTP denylist -- connector names used ONLY to
-// refuse to trigger a run that would cost a human a one-time password. An
-// exemption nobody can prove is narrow is a hole, so these three tests pin its
-// exact width: it covers one rule, at one prefix, and nothing else.
+// The canary harness used to hold a rule-(1) exemption at
+// `reference-implementation/scripts/canary` so it could hardcode the six
+// OTP-gated connector names. That exemption is GONE: the harness now derives
+// its refusal set from connector manifests (`scripts/canary/otp-posture.ts`),
+// so it needs no connector names in source and gets no special treatment from
+// this guard. These tests pin that the prefix is ordinary -- every rule,
+// including rule (1), applies there exactly as it does anywhere else.
 
 function withSyntheticCanaryFile<T>(fileName: string, contents: string, run: (relPath: string) => T): T {
   const relPath = `reference-implementation/scripts/canary/${fileName}`;
@@ -2148,14 +2149,7 @@ function withSyntheticCanaryFile<T>(fileName: string, contents: string, run: (re
   }
 }
 
-test("canary OTP-denylist exemption is rule-scoped: dispatch-shaped connector knowledge under scripts/canary/ is still caught", () => {
-  // THE discriminating counterweight. Rules (6)/(7) and rule (1) all flow
-  // through the same `scanFileIdentity` call the exemption filters, so a
-  // filter that dropped every identity violation for this prefix -- rather
-  // than the one denylist rule -- would let the harness import a connector's
-  // own module and branch on a validation kind with nothing reporting it.
-  // Widen the filter and this test goes red; that is what makes the
-  // exemption's width provable instead of asserted.
+test("scripts/canary/ is an ordinary scan root: dispatch-shaped connector knowledge there is caught", () => {
   withSyntheticCanaryFile(
     "synthetic-canary-dispatch-violation.ts",
     [
@@ -2172,13 +2166,13 @@ test("canary OTP-denylist exemption is rule-scoped: dispatch-shaped connector kn
       const violations = scanFile(join(repoRoot, relPath), relPath, new Set(["gmail"]), repoRoot);
       assert.ok(
         violations.some((v) => v.rule === "connector-module-import"),
-        `the exemption covers ONLY hardcoded-connector-identity-literal; a connector-module import under scripts/canary/ must still be caught, got: ${JSON.stringify(violations)}`
+        `a connector-module import under scripts/canary/ must be caught, got: ${JSON.stringify(violations)}`
       );
     }
   );
 });
 
-test("canary OTP-denylist exemption is rule-scoped: a provider endpoint under scripts/canary/ is still caught", () => {
+test("scripts/canary/ is an ordinary scan root: a provider endpoint there is caught", () => {
   withSyntheticCanaryFile(
     "synthetic-canary-endpoint-violation.ts",
     ['export const TOKEN_URL = "https://oauth2.googleapis.com/token";', ""].join("\n"),
@@ -2192,49 +2186,29 @@ test("canary OTP-denylist exemption is rule-scoped: a provider endpoint under sc
   );
 });
 
-test("canary OTP-denylist exemption is prefix-scoped: the same denylist literals under another scan root are still caught", () => {
+test("a hardcoded OTP denylist under scripts/canary/ is caught, exactly like the same literals under any other root", () => {
   const contents = ['export const DENYLIST = ["usaa", "chase", "heb"];', ""].join("\n");
-  // Identical content, two locations. Only the canary prefix is exempt -- a
-  // `canary/` directory under any other scan root must NOT inherit it, which
-  // is why the exemption matches a repo-root-relative prefix and not a bare
-  // first-path-segment name the way EXEMPT_DIR_SEGMENTS does.
   withSyntheticProductionFile("synthetic-server-otp-denylist.ts", contents, (relPath) => {
     const violations = scanFile(join(repoRoot, relPath), relPath, new Set(["usaa", "chase", "heb"]), repoRoot);
     assert.ok(
       violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
-      "connector-identity literals under server/ must still be caught -- the canary exemption must not leak to other roots"
+      "connector-identity literals under server/ must be caught"
     );
   });
-  // The sharp case: a directory that is literally named `canary` but lives
-  // under a DIFFERENT scan root. A segment/substring match would exempt it;
-  // the repo-root-relative prefix must not.
-  const decoyDir = join(repoRoot, "reference-implementation/server/canary");
-  const decoyRelPath = "reference-implementation/server/canary/synthetic-decoy-otp-denylist.ts";
-  const decoyAbsPath = join(repoRoot, decoyRelPath);
-  if (existsSync(decoyAbsPath)) {
-    throw new Error(`refusing to overwrite a file that already exists on disk: ${decoyAbsPath}`);
-  }
-  mkdirSync(decoyDir, { recursive: true });
-  try {
-    writeFileSync(decoyAbsPath, contents);
-    const violations = scanFile(decoyAbsPath, decoyRelPath, new Set(["usaa", "chase", "heb"]), repoRoot);
-    assert.ok(
-      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
-      `a directory named 'canary' under server/ must NOT inherit the exemption -- it is pinned to the exact scripts/canary prefix, got: ${JSON.stringify(violations)}`
-    );
-  } finally {
-    rmSync(decoyDir, { force: true, recursive: true });
-  }
+  // The regression this inverts. These literals WERE exempt here while the
+  // harness hand-listed the six OTP connectors; the list drifted (it missed
+  // wholefoods) and the exemption is gone. Reintroducing a hardcoded denylist
+  // under scripts/canary/ must now go red rather than pass silently.
   withSyntheticCanaryFile("synthetic-canary-otp-denylist.ts", contents, (relPath) => {
     const violations = scanFile(join(repoRoot, relPath), relPath, new Set(["usaa", "chase", "heb"]), repoRoot);
     assert.ok(
-      violations.every((v) => v.rule !== "hardcoded-connector-identity-literal"),
-      `the same literals under scripts/canary/ are the sanctioned OTP denylist, got: ${JSON.stringify(violations)}`
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `a hardcoded connector denylist under scripts/canary/ must be caught now that the harness derives it from manifests, got: ${JSON.stringify(violations)}`
     );
   });
 });
 
-test("canary OTP-denylist exemption does not hide a sibling data load under scripts/canary/", () => {
+test("rule (5) runs under scripts/canary/: an unsanctioned sibling data load is flagged", () => {
   withSyntheticCanaryFile(
     "synthetic-canary-sibling-policy-load.ts",
     [
