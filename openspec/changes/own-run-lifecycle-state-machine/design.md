@@ -144,6 +144,23 @@ policy-in-the-machine error D4 forbids. Recording it as out of scope is the
 honest answer, and it belongs to the sweep-fairness work already in flight on
 this very branch. The state set is not missing a state on its account.
 
+*Verdict confirmed during implementation (2026-08-21)*, re-derived from the F1
+source rather than inherited. The three incidents are: (1) one 2000ms
+round-robin deadline shared across a multi-page walk, where page 1 alone could
+cost 3-8.5s and starve page 2's stale rows every tick; (2) the same shape
+recurring because `missing` and `generic` repair phases each independently
+re-paid a full discovery round-trip; (3) one straggler connection 97,000
+events behind flooring the shared fold budget for all of its page-mates.
+
+In all three the resource being divided is *sweep time*, and the victims are
+connections that never got serviced — not runs that moved illegally. There is
+no state a run occupied that it should not have, and no transition that should
+have been refused. The generalizable defect is real (a shared budget with no
+fairness guarantee, named after the second occurrence and still recurring a
+third time), but it is a scheduler-fairness primitive, not a lifecycle state.
+Adding a state for it would put policy in the machine and make every future
+fairness change a state-machine change — the coupling D4 exists to prevent.
+
 ## (b) The legal transition table
 
 **Single writer per transition.** "Executor" means the one owner module this
