@@ -361,3 +361,53 @@ function readRunHistoryRows(dbPath: string, runId: string) {
 function tempDbPath() {
   return makeTemporaryDbPath("pdpp-boot-recon-proj-");
 }
+
+// The durable projection must tell the same story as the spine event for a
+// run that died while the owner was still being asked for input. Without
+// this, the console would read `controller_terminated_before_run_finished`
+// for a run whose owner had already been sent a real, now-useless OTP.
+test("boot reconciliation projects the awaiting-owner-interaction reason into run_history", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    seedRunningRun(dbPath, { event_id: "evt_proj_otp", records_emitted: 3, run_id: "run_proj_awaiting_otp" });
+    // The connector asked the owner for a code; no terminal interaction event
+    // ever followed, so the owner was still being waited on.
+    const raw = new Database(dbPath);
+    try {
+      const ts = "2026-05-10T12:00:05.000Z";
+      raw
+        .prepare(
+          `
+        INSERT INTO spine_events
+          (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, object_type, object_id, status, run_id,
+           interaction_id, data_json, version)
+        VALUES (?, 'run.interaction_required', ?, ?, 'default', 'trc_seed', 'runtime', ?, 'run', ?, 'started', ?, ?, '{}', 'v1')
+        `
+        )
+        .run("evt_proj_int_req", ts, ts, CONNECTOR_ID, "run_proj_awaiting_otp", "run_proj_awaiting_otp", "int_proj_1");
+    } finally {
+      raw.close();
+    }
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-proj-otp",
+      controllerId: "host-test",
+    });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    const row = readRunHistory(dbPath, "run_proj_awaiting_otp");
+    assert.ok(row, "run_history row must survive reconciliation");
+    assert.equal(row.status, "abandoned");
+    assert.equal(
+      row.terminal_reason,
+      "controller_terminated_while_awaiting_owner_interaction",
+      "run_history must carry the same reason as the spine event"
+    );
+    assert.equal(row.records_emitted, 3, "reconciliation must not discard collected work");
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});

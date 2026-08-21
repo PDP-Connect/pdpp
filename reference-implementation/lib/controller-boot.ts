@@ -161,11 +161,52 @@ export interface ReconcileResult {
  * log give the same account of why the run ended.
  */
 const ABANDONED_AT_BOOT_REASON = "controller_terminated_before_run_finished";
+/**
+ * The typed terminal reason for the subset of those runs that died while
+ * BLOCKED ON A PENDING OWNER INTERACTION — the connector had asked the owner
+ * for input (an OTP, a security code) and was still waiting when the
+ * controller died.
+ *
+ * This is a distinct reason because the owner has already paid a real-world
+ * cost by the time it happens: an OTP is single-use and is delivered out of
+ * band to a real phone. "We asked you for a code and then crashed" is a
+ * materially different account from "the run was cut short", and only the
+ * former tells the owner why a code they were sent became useless.
+ *
+ * It does NOT imply the interaction is recoverable. The owner's answer is
+ * delivered over the connector child's stdin to a live browser session that
+ * holds the authenticated pre-OTP page state, and that child is SIGTERMed by
+ * the runtime's `process.on('exit')` sweep when the controller dies. The
+ * session cannot outlive the process, so a successor cannot reattach and the
+ * next attempt necessarily costs a fresh code. This reason reports that
+ * honestly rather than implying a resumable state that does not exist.
+ */
+const ABANDONED_AWAITING_INTERACTION_REASON = "controller_terminated_while_awaiting_owner_interaction";
 /** Matches the status `run-history-writer.ts` derives for `run.abandoned`. */
 const ABANDONED_RUN_HISTORY_STATUS = "abandoned";
 
+/**
+ * Picks the honest terminal reason for one orphan. A run counts as
+ * interaction-blocked only when its last interaction lifecycle event was a
+ * REQUEST that never reached a terminal interaction event — i.e. the owner
+ * was genuinely still being waited on at the moment the controller died.
+ */
+function terminalReasonFor(orphan: OrphanRow): string {
+  return orphan.awaiting_interaction ? ABANDONED_AWAITING_INTERACTION_REASON : ABANDONED_AT_BOOT_REASON;
+}
+
 interface OrphanRow {
   actor_id: string;
+  /**
+   * True when this run had an interaction request outstanding at the moment
+   * the controller died: at least one `run.interaction_required` /
+   * `run.assistance_requested` event whose `interaction_id` never reached a
+   * terminal interaction event. Selected in SQL (rather than derived later)
+   * so both backends answer the question from the same spine facts.
+   *
+   * `1`/`0` from SQLite, boolean from Postgres; normalized by `readOrphanRows`.
+   */
+  awaiting_interaction: boolean;
   /**
    * The abandoned run's connection. Carried from the `run.started` event so
    * the `run_history` projection can be fenced by the real run identity —
@@ -219,7 +260,24 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
         s.scenario_id,
         s.connector_instance_id,
         s.data_json->>'boot_epoch'    AS original_boot_epoch,
-        s.data_json->>'controller_id' AS original_controller_id
+        s.data_json->>'controller_id' AS original_controller_id,
+        -- Was the owner still being waited on when the controller died?
+        -- True iff some interaction was REQUESTED for this run and that same
+        -- interaction_id never reached a terminal interaction event.
+        EXISTS (
+          SELECT 1 FROM spine_events q
+          WHERE q.run_id = s.run_id
+            AND q.event_type IN ('run.interaction_required', 'run.assistance_requested')
+            AND q.interaction_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM spine_events d
+              WHERE d.interaction_id = q.interaction_id
+                AND d.event_type IN (
+                  'run.interaction_completed', 'run.assistance_resolved',
+                  'run.assistance_cancelled', 'run.assistance_timed_out'
+                )
+            )
+        ) AS awaiting_interaction
       FROM spine_events s
       WHERE s.event_type = 'run.started'
         AND (s.data_json->>'boot_epoch') IS DISTINCT FROM $1
@@ -278,7 +336,23 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
       s.scenario_id,
       s.connector_instance_id,
       json_extract(s.data_json, '$.boot_epoch')    AS original_boot_epoch,
-      json_extract(s.data_json, '$.controller_id') AS original_controller_id
+      json_extract(s.data_json, '$.controller_id') AS original_controller_id,
+      -- Mirrors the Postgres EXISTS above: an interaction was requested for
+      -- this run and never reached a terminal interaction event.
+      EXISTS (
+        SELECT 1 FROM spine_events q
+        WHERE q.run_id = s.run_id
+          AND q.event_type IN ('run.interaction_required', 'run.assistance_requested')
+          AND q.interaction_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM spine_events d
+            WHERE d.interaction_id = q.interaction_id
+              AND d.event_type IN (
+                'run.interaction_completed', 'run.assistance_resolved',
+                'run.assistance_cancelled', 'run.assistance_timed_out'
+              )
+          )
+      ) AS awaiting_interaction
     FROM spine_events s
     WHERE s.event_type = 'run.started'
       AND COALESCE(json_extract(s.data_json, '$.boot_epoch'), '') <> ?
@@ -295,7 +369,18 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
       )
     `
   );
-  const orphans = selectStmt.all(epoch.boot_epoch, epoch.controller_id, epoch.controller_id) as OrphanRow[];
+  // SQLite has no boolean type: EXISTS(...) yields 1/0, so normalize to the
+  // boolean `OrphanRow.awaiting_interaction` declares before any consumer
+  // reads it. (`0` is falsy in JS, but relying on that would leave the row
+  // shape lying about its own type.)
+  const orphans = (
+    selectStmt.all(epoch.boot_epoch, epoch.controller_id, epoch.controller_id) as (Omit<
+      OrphanRow,
+      "awaiting_interaction"
+    > & {
+      awaiting_interaction: unknown;
+    })[]
+  ).map((row) => ({ ...row, awaiting_interaction: Boolean(row.awaiting_interaction) }));
 
   let abandoned = 0;
   for (const orphan of orphans) {
@@ -323,7 +408,7 @@ async function emitRunAbandoned(
     caused_by_event_id: orphan.event_id,
     original_boot_epoch: orphan.original_boot_epoch,
     original_controller_id: orphan.original_controller_id,
-    reason: ABANDONED_AT_BOOT_REASON,
+    reason: terminalReasonFor(orphan),
     reconciled_by_boot_epoch: epoch.boot_epoch,
     reconciled_by_controller_id: epoch.controller_id,
     reconciled_by_seq: epoch.seq,
@@ -383,7 +468,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
     caused_by_event_id: orphan.event_id,
     original_boot_epoch: orphan.original_boot_epoch,
     original_controller_id: orphan.original_controller_id,
-    reason: ABANDONED_AT_BOOT_REASON,
+    reason: terminalReasonFor(orphan),
     reconciled_by_boot_epoch: epoch.boot_epoch,
     reconciled_by_controller_id: epoch.controller_id,
     reconciled_by_seq: epoch.seq,
@@ -476,7 +561,7 @@ async function projectAbandonedRunHistoryPostgres(client: PgClient, orphan: Orph
      WHERE run_id = $4
        AND connector_instance_id = $5
        AND status = 'running'`,
-    [ABANDONED_RUN_HISTORY_STATUS, at, ABANDONED_AT_BOOT_REASON, orphan.run_id, orphan.connector_instance_id]
+    [ABANDONED_RUN_HISTORY_STATUS, at, terminalReasonFor(orphan), orphan.run_id, orphan.connector_instance_id]
   );
 }
 
@@ -664,5 +749,5 @@ function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string): void {
          AND connector_instance_id = ?
          AND status = 'running'`
     )
-    .run(ABANDONED_RUN_HISTORY_STATUS, at, ABANDONED_AT_BOOT_REASON, orphan.run_id, orphan.connector_instance_id);
+    .run(ABANDONED_RUN_HISTORY_STATUS, at, terminalReasonFor(orphan), orphan.run_id, orphan.connector_instance_id);
 }
