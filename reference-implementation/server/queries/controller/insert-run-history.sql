@@ -37,18 +37,45 @@ INSERT INTO run_history(
   attempt,
   scheduler_managed
 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+-- Terminal-outcome columns are fenced on `status = 'running'`. The
+-- enrichment columns are not. This was the ONLY status writer without a
+-- fence, and the header above explains why that mattered: the general
+-- writer normally finalizes this row FIRST, so an unfenced
+-- `status = excluded.status` let a scheduler retry revise an
+-- already-terminal outcome (forbidden transitions F5 and F7, both violated
+-- by one statement).
+--
+-- The fence is per-column rather than a `WHERE` on DO UPDATE because this
+-- upsert has two jobs: recording an outcome AND merging scheduler-only
+-- enrichment (attempt, checkpoint_summary_json, known_gaps_json,
+-- reported_records_emitted). A statement-level WHERE would drop the
+-- enrichment along with the status revision, which is a behavior change.
+-- Keeping enrichment unfenced preserves it, and fencing the outcome
+-- columns makes terminal mean terminal.
 ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
   source_json = excluded.source_json,
-  status = excluded.status,
-  records_emitted = excluded.records_emitted,
+  status = CASE WHEN run_history.status = 'running' THEN excluded.status ELSE run_history.status END,
+  records_emitted = CASE
+    WHEN run_history.status = 'running' THEN excluded.records_emitted
+    ELSE run_history.records_emitted
+  END,
   reported_records_emitted = excluded.reported_records_emitted,
   checkpoint_summary_json = excluded.checkpoint_summary_json,
   known_gaps_json = excluded.known_gaps_json,
   connector_error_json = excluded.connector_error_json,
   trace_id = excluded.trace_id,
-  failure_reason = excluded.failure_reason,
-  terminal_reason = excluded.terminal_reason,
-  completed_at = excluded.completed_at,
-  error = excluded.error,
+  failure_reason = CASE
+    WHEN run_history.status = 'running' THEN excluded.failure_reason
+    ELSE run_history.failure_reason
+  END,
+  terminal_reason = CASE
+    WHEN run_history.status = 'running' THEN excluded.terminal_reason
+    ELSE run_history.terminal_reason
+  END,
+  completed_at = CASE
+    WHEN run_history.status = 'running' THEN excluded.completed_at
+    ELSE run_history.completed_at
+  END,
+  error = CASE WHEN run_history.status = 'running' THEN excluded.error ELSE run_history.error END,
   attempt = excluded.attempt,
   scheduler_managed = 1

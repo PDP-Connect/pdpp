@@ -1015,19 +1015,39 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            attempt,
            scheduler_managed
          ) VALUES($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, true)
+         -- Terminal-outcome columns fenced on status='running'; enrichment
+         -- columns deliberately unfenced. Mirrors the SQLite twin in
+         -- server/queries/controller/insert-run-history.sql, which carries
+         -- the full rationale: this pair were the ONLY status writers with
+         -- no fence, so a scheduler retry could revise an already-terminal
+         -- outcome (F5/F7). A statement-level WHERE would also drop the
+         -- scheduler-only enrichment merge, which is why the fence is
+         -- per-column.
          ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
            source_json = excluded.source_json,
-           status = excluded.status,
-           records_emitted = excluded.records_emitted,
+           status = CASE WHEN run_history.status = 'running' THEN excluded.status ELSE run_history.status END,
+           records_emitted = CASE
+             WHEN run_history.status = 'running' THEN excluded.records_emitted
+             ELSE run_history.records_emitted
+           END,
            reported_records_emitted = excluded.reported_records_emitted,
            checkpoint_summary_json = excluded.checkpoint_summary_json,
            known_gaps_json = excluded.known_gaps_json,
            connector_error_json = excluded.connector_error_json,
            trace_id = excluded.trace_id,
-           failure_reason = excluded.failure_reason,
-           terminal_reason = excluded.terminal_reason,
-           completed_at = excluded.completed_at,
-           error = excluded.error,
+           failure_reason = CASE
+             WHEN run_history.status = 'running' THEN excluded.failure_reason
+             ELSE run_history.failure_reason
+           END,
+           terminal_reason = CASE
+             WHEN run_history.status = 'running' THEN excluded.terminal_reason
+             ELSE run_history.terminal_reason
+           END,
+           completed_at = CASE
+             WHEN run_history.status = 'running' THEN excluded.completed_at
+             ELSE run_history.completed_at
+           END,
+           error = CASE WHEN run_history.status = 'running' THEN excluded.error ELSE run_history.error END,
            attempt = excluded.attempt,
            scheduler_managed = true`,
         [

@@ -806,7 +806,21 @@ function repairTerminalRunHistoryDriftSqlite(): number {
 
 async function repairTerminalRunHistoryDriftPostgres(client: PgClient): Promise<number> {
   // Set-based on Postgres: DISTINCT ON picks the earliest terminal event
-  // per run, and the same `status = 'running'` fence keeps it idempotent.
+  // per (run_id, connector_instance_id), and the same `status = 'running'`
+  // fence keeps it idempotent.
+  //
+  // The pair — not run_id alone — is the identity. This previously joined on
+  // `h.run_id = t.run_id` with only an `h.connector_instance_id IS NOT NULL`
+  // check, an existence test rather than an equality, while its SQLite twin
+  // above correctly fenced on the pair. run_id is NOT globally unique across
+  // connections (two connections can independently mint the same run_id,
+  // confirmed live), so the old join could repair a DIFFERENT connection's
+  // still-running row from this run's terminal event. A dual-backend
+  // asymmetry inside the repair path itself.
+  //
+  // Terminal events carry `connector_instance_id` as a first-class column
+  // (populated at write time in lib/spine.ts, with data_json as the fallback
+  // for pre-column rows), so the subquery can partition on the real identity.
   const { rowCount } = await client.query(
     `
     UPDATE run_history h
@@ -820,15 +834,26 @@ async function repairTerminalRunHistoryDriftPostgres(client: PgClient): Promise<
         completed_at = t.occurred_at,
         terminal_reason = t.data_json->>'reason'
     FROM (
-      SELECT DISTINCT ON (run_id) run_id, event_type, status, occurred_at, data_json
-      FROM spine_events
-      WHERE event_type IN (${TERMINAL_EVENT_TYPES_SQL})
-        AND run_id IS NOT NULL
-      ORDER BY run_id, occurred_at ASC
+      SELECT DISTINCT ON (run_id, connector_instance_id)
+             run_id, connector_instance_id, event_type, status, occurred_at, data_json
+      FROM (
+        SELECT run_id,
+               COALESCE(
+                 NULLIF(connector_instance_id, ''),
+                 NULLIF(data_json->>'connector_instance_id', ''),
+                 NULLIF(data_json->>'connection_id', '')
+               ) AS connector_instance_id,
+               event_type, status, occurred_at, data_json
+        FROM spine_events
+        WHERE event_type IN (${TERMINAL_EVENT_TYPES_SQL})
+          AND run_id IS NOT NULL
+      ) e
+      WHERE connector_instance_id IS NOT NULL
+      ORDER BY run_id, connector_instance_id, occurred_at ASC
     ) t
     WHERE h.run_id = t.run_id
+      AND h.connector_instance_id = t.connector_instance_id
       AND h.status = 'running'
-      AND h.connector_instance_id IS NOT NULL
     `
   );
   return rowCount ?? 0;
