@@ -30,6 +30,22 @@ export interface RunNowOptions {
    * button cannot accidentally re-hit a hot account that is cooling off.
    */
   force?: boolean;
+  /**
+   * Explicit owner request for a full re-enumeration: send
+   * `collection_mode: "full_refresh"` on START even when durable state exists,
+   * so a connector with its own incremental bookkeeping walks each stream to
+   * its natural end and can re-establish an enumeration boundary.
+   *
+   * This is the supported way to prove coverage for a source whose every
+   * ordinary run is an incremental delta (a change feed measures only what
+   * CHANGED, so it can never prove an inventory). It does NOT clear stored
+   * state — the cursor still flows to the connector and is rewritten forward
+   * from this run's own response.
+   *
+   * Independent of `force`, which is about provider-pressure cooldown, not
+   * about how much of the source a run walks.
+   */
+  fullRefresh?: boolean;
   manifest?: ConnectorManifest;
   ownerSubjectId?: string;
   ownerToken?: string;

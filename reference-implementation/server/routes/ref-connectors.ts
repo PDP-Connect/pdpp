@@ -239,6 +239,7 @@ export interface MountRefConnectorsContext {
     options: {
       connectorInstanceId?: string | null;
       force?: boolean;
+      fullRefresh?: boolean;
       runAdmission?: RunAdmission;
       resources?: Readonly<Record<string, readonly string[]>>;
     }
@@ -872,9 +873,14 @@ async function executeRunNow(
 ): Promise<void> {
   assertRemoteControlSupported(namespace);
   const resources = readRunResources(req);
+  // See `owner-connection-run.ts` for the semantics; parsed identically here so
+  // the console surface and the owner-bearer surface agree on what the flag
+  // means. Strict `=== true`, so an ordinary run is unaffected.
+  const fullRefresh = (req.body as Record<string, unknown> | null | undefined)?.full_refresh === true;
   const started = await ctx.runNow(namespace.connectorId, {
     connectorInstanceId: namespace.connectorInstanceId,
     force: audit.force,
+    fullRefresh,
     ...(audit.ownerSubjectId ? { ownerSubjectId: audit.ownerSubjectId } : {}),
     ...(audit.runAdmission === "collection" ? {} : { runAdmission: audit.runAdmission }),
     ...(resources ? { resources } : {}),
