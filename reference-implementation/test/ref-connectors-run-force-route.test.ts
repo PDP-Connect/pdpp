@@ -698,6 +698,7 @@ test("POST /_ref/connections/:id/run resumes a paused historical_archive row bef
       options: {
         connectorInstanceId: "cin_recovered_archive",
         force: false,
+        fullRefresh: false,
         ownerSubjectId: "owner_local",
       },
     },
@@ -747,7 +748,7 @@ test("POST /_ref/connections/:id/run proceeds normally when the resume hook is a
   assert.deepEqual(harness.calls.runNow, [
     {
       connectorId: "chatgpt",
-      options: { connectorInstanceId: "cin_chatgpt", force: false, ownerSubjectId: "owner_local" },
+      options: { connectorInstanceId: "cin_chatgpt", force: false, fullRefresh: false, ownerSubjectId: "owner_local" },
     },
   ]);
 });

@@ -452,6 +452,44 @@ async function loadFullGroupSnapshot(args: {
 }
 
 /**
+ * No token to resume from: `resolveSyncResult` treats `undefined` as "initial
+ * sync". Named so the full_refresh branch below states what it is doing rather
+ * than falling off the end of the function.
+ */
+const WITHHOLD_SYNC_TOKEN = undefined;
+
+/**
+ * Decide which stored sync token (if any) this run may resume from.
+ *
+ * `full_refresh` is the owner/operator bypass BaseCollectContext.collectionMode
+ * defines: a connector with its own incremental bookkeeping MUST ignore that
+ * bookkeeping and walk each stream to its natural end. Withholding the stored
+ * token here (rather than deleting it) sends `resolveSyncResult` down its
+ * initial-sync path, which sets `fullBoundary` and so re-establishes the
+ * contacts enumeration boundary this run — the ONLY way the contacts coverage
+ * claim can be emitted for a book that already has a token. The stored token is
+ * left untouched on disk: the run rewrites it from its own sync-collection
+ * response, and a failed run persists nothing, so an incremental resume stays
+ * available either way. `undefined` collectionMode means `"incremental"`, per
+ * that same contract.
+ */
+async function resolveResumableSyncToken(
+  collectionMode: "full_refresh" | "incremental" | undefined,
+  storedSyncToken: string | undefined,
+  progress: AddressBookCollectionCtx["progress"]
+): Promise<string | undefined> {
+  if (collectionMode !== "full_refresh") {
+    return storedSyncToken;
+  }
+  if (storedSyncToken) {
+    await progress("Full refresh requested: re-enumerating this address book", { stream: "contacts" });
+  }
+  // Withhold the stored token so `resolveSyncResult` takes its initial-sync
+  // path and re-establishes the enumeration boundary. The token stays on disk.
+  return WITHHOLD_SYNC_TOKEN;
+}
+
+/**
  * Collect one address book: probe sync capability, fetch (sync-collection or
  * bounded full snapshot), emit the address-book entity record plus contact +
  * group records, and advance this book's contacts-stream cursor. Extracted
@@ -487,22 +525,9 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     state.contacts as Record<string, { sync_token?: string; fingerprints?: Record<string, string> }>
   )?.[bookKey];
 
-  // `full_refresh` is the owner/operator bypass BaseCollectContext.collectionMode
-  // defines: a connector with its own incremental bookkeeping MUST ignore that
-  // bookkeeping and walk each stream to its natural end. Withholding the stored
-  // token here (rather than deleting it) sends `resolveSyncResult` down its
-  // initial-sync path, which sets `fullBoundary` and so re-establishes the
-  // contacts enumeration boundary this run — the ONLY way the contacts coverage
-  // claim below can be emitted for a book that already has a token. The stored
-  // token is left untouched on disk: this run rewrites it from its own
-  // sync-collection response, and a failed run persists nothing, so an
-  // incremental resume stays available either way. `undefined` means
-  // `"incremental"`, per that same contract.
-  const fullRefresh = collectionMode === "full_refresh";
-  const priorSyncToken = fullRefresh ? undefined : priorSync?.sync_token;
-  if (fullRefresh && priorSync?.sync_token) {
-    await progress("Full refresh requested: re-enumerating this address book", { stream: "contacts" });
-  }
+  // See `resolveResumableSyncToken`: a full_refresh run withholds the stored
+  // token so this book re-establishes its enumeration boundary.
+  const priorSyncToken = await resolveResumableSyncToken(collectionMode, priorSync?.sync_token, progress);
 
   await progress("Probing sync capability", { stream: "contacts" });
   const syncResult = await resolveSyncResult({

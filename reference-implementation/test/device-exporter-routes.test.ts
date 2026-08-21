@@ -1977,8 +1977,8 @@ test("a rebind enrollment code rejects a self-contradicting or non-active target
     // Stating the target twice could disagree with itself; reject rather than
     // silently picking a winner.
     const both = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
-      connector_instance_id: original.connector_instance_id,
       connector_id: "codex",
+      connector_instance_id: original.connector_instance_id,
       local_binding_name: "something-else",
     });
     assert.equal(both.status, 400);
