@@ -2,24 +2,23 @@
   "name": "pdpp-site",
   "version": "1.0.0",
   "private": true,
-  "//dev": "TEMPORARY: --webpack works around a Turbopack dev-server async-hook leak in Next 16.2.x (RangeError: Map maximum size exceeded). Remove the flag once vercel/next.js#91396 is fixed.",
-  "//build": "TEMPORARY: --webpack keeps local/CI builds off Turbopack after repeated native SIGSEGV during static page generation on Next 16.2.x.",
+  "license": "Apache-2.0",
   "scripts": {
     "//dev-node-options": "NODE_OPTIONS adds Node.js diagnostic reports on fatal V8 errors and uncaught exceptions. Reports land in tmp/node-reports/ at the repo root (gitignored), excluding env/network sections so reports do not persist secrets.",
     "//dev-port": "Public site defaults to :3001 (design.md §5). PDPP_SITE_PORT overrides; PDPP_WEB_PORT kept as a fallback for existing contributor env files.",
     "//sync-specs": "Generates content/docs/spec-*.md from the normative root spec-*.md (single source). The generated files are gitignored; predev/prebuild regenerate them. See scripts/sync-spec-docs.mjs.",
-    "sync:specs": "node scripts/sync-spec-docs.mjs",
-    "predev": "node scripts/sync-spec-docs.mjs",
-    "dev": "sh -c 'mkdir -p ../../tmp/node-reports && SITE_PORT=${PDPP_SITE_PORT:-${PDPP_WEB_PORT:-3001}} && NODE_OPTIONS=\"--report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=$(cd ../../tmp/node-reports && pwd)\" next dev --webpack --hostname 0.0.0.0 --port $SITE_PORT'",
     "prebuild": "node scripts/sync-spec-docs.mjs",
     "build": "next build --webpack",
-    "start": "next start",
-    "types:check": "node scripts/sync-spec-docs.mjs && fumadocs-mdx && next typegen && tsc --noEmit",
-    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx --import ../../packages/operator-ui/css-stub-register.ts \"scripts/*.test.ts\" \"src/**/*.test.ts\"",
-    "colors:generate": "tsx scripts/generate-concept-colors.mts",
-    "colors:check": "tsx scripts/generate-concept-colors.mts --check",
     "check": "ultracite check && pnpm --dir ../.. generated-artifacts:check",
+    "colors:check": "tsx scripts/generate-concept-colors.mts --check",
+    "colors:generate": "tsx scripts/generate-concept-colors.mts",
+    "predev": "node scripts/sync-spec-docs.mjs",
+    "dev": "sh -c 'mkdir -p ../../tmp/node-reports && SITE_PORT=${PDPP_SITE_PORT:-${PDPP_WEB_PORT:-3001}} && NODE_OPTIONS=\"--report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=$(cd ../../tmp/node-reports && pwd)\" next dev --webpack --hostname 0.0.0.0 --port $SITE_PORT'",
     "fix": "ultracite fix",
+    "start": "next start",
+    "sync:specs": "node scripts/sync-spec-docs.mjs",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx --import ../../packages/operator-ui/css-stub-register.ts \"scripts/*.test.ts\" \"src/**/*.test.ts\"",
+    "types:check": "node scripts/sync-spec-docs.mjs && fumadocs-mdx && next typegen && tsc --noEmit",
     "verify": "pnpm types:check && pnpm test && pnpm check && pnpm build"
   },
   "dependencies": {
@@ -57,7 +56,9 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "design-book": "0.5.0",
+    "playwright": "^1.62.1",
     "typescript": "^7.0.2"
   },
-  "license": "Apache-2.0"
+  "//build": "TEMPORARY: --webpack keeps local/CI builds off Turbopack after repeated native SIGSEGV during static page generation on Next 16.2.x.",
+  "//dev": "TEMPORARY: --webpack works around a Turbopack dev-server async-hook leak in Next 16.2.x (RangeError: Map maximum size exceeded). Remove the flag once vercel/next.js#91396 is fixed."
 }

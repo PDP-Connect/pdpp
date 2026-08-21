@@ -17,12 +17,20 @@
 // Usage:
 //   node scripts/style-differ.mjs --baseline http://localhost:4123 --candidate http://localhost:4124
 //   node scripts/style-differ.mjs --baseline <url> --candidate <url> --routes /,/self-host --out report.json
+//   node scripts/style-differ.mjs --baseline <url> --candidate <url> --routes /specification \
+//     --viewports "1279:1279:900,1280:1280:900,1281:1281:900"
+//
+// The last form is the exact command used to check #nd-toc's computed
+// `display` on both sides of fumadocs' 1280px collapse breakpoint (see the
+// comment above the removed CSS fallback in styles/surfaces/specification.css).
+// Re-run it against a fresh baseline/candidate pair whenever that fallback's
+// removal needs re-proving — the default viewports below do not cover it.
 //
 // This script makes no product change. It is read-only against whatever two
 // servers you point it at.
 
 import { writeFile } from "node:fs/promises";
-import { chromium } from "/tmp/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const DEFAULT_ROUTES = ["/", "/specification", "/self-host", "/self-host/coverage", "/participate", "/maintainers"];
 
@@ -51,6 +59,7 @@ const KEY_SELECTORS = [
   "[data-slot=pdpp-editorial-button]",
   "[data-slot=pdpp-editorial-rail]",
   "[data-slot=pdpp-front-door]",
+  "#nd-toc",
   "p",
   "a[href]",
   "button",
@@ -85,6 +94,12 @@ const FLAG_HANDLERS = {
   },
   "--routes": (args, value) => {
     args.routes = value.split(",").map((entry) => entry.trim());
+  },
+  "--viewports": (args, value) => {
+    args.viewports = value.split(",").map((entry) => {
+      const [name, width, height] = entry.trim().split(":");
+      return { name, width: Number(width), height: Number(height ?? width) };
+    });
   },
   "--out": (args, value) => {
     args.out = value;
