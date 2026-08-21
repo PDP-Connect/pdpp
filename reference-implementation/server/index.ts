@@ -81,6 +81,7 @@ import { projectRunAutomationPolicy } from "../runtime/run-automation-policy.ts"
 import { matchesRecoveryInstance } from "../runtime/scheduler/recovery-instance-scope.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import { isVendoredUndiciParserAssertion } from "../runtime/undici-parser-errors.ts";
 import {
   buildPendingConsentRequestUri,
   configureNativeManifest,
@@ -9493,6 +9494,10 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
   const cliLogger = buildLogger();
   let shuttingDown = false;
   let pipeWarnEmitted = false;
+  // Every containment is logged (not deduplicated like the pipe warning):
+  // a rising count is the operational signal that the upstream trigger is
+  // still firing, so it must stay visible rather than collapse to one line.
+  let undiciParserAssertionsContained = 0;
 
   const exitOnFatal = (reason: string) => (err: unknown) => {
     if (shuttingDown) {
@@ -9521,6 +9526,26 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
           /* warn emission may itself EPIPE; swallow once */
         }
       }
+      return;
+    }
+    // An assertion inside Node's VENDORED undici HTTP parser, raised from a
+    // socket-teardown event, is a liveness bug in a dependency rather than a
+    // signal that this process holds corrupt state. Left fatal it kills the
+    // whole reference process and abandons every unrelated in-flight run
+    // (observed in production: a Slack run and an unrelated GroupMe run
+    // abandoned 145ms apart by one crash). undici destroys the socket
+    // regardless and the owning fetch() promise still rejects, so the run
+    // that owned the request fails honestly through its own error path.
+    // Every other uncaught error — including any ERR_ASSERTION raised by
+    // application code — still takes the fatal path below.
+    // See runtime/undici-parser-errors.ts for the full mechanism and for
+    // why this specific shape is safe to contain.
+    if (isVendoredUndiciParserAssertion(err)) {
+      undiciParserAssertionsContained += 1;
+      cliLogger.error(
+        { contained_total: undiciParserAssertionsContained, err },
+        "vendored undici parser assertion contained; process survives"
+      );
       return;
     }
     exitOnFatal("uncaughtException")(err);
