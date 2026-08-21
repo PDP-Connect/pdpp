@@ -2096,7 +2096,7 @@ const POSTGRES_PROJECTION_RELEVANT_EVIDENCE_CHANGED = projectionRelevantEvidence
 function upsertSqliteEvidenceRow(db: Db, row: Row): void {
   const existing = db
     .prepare(
-      "SELECT manifest_generation, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      "SELECT manifest_generation, manifest_fingerprint, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
     )
     .get(row.connector_instance_id) as Row | undefined;
   const manifestGenerationChanged =
@@ -2201,7 +2201,7 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
 
 async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
   const existingResult = await client.query(
-    "SELECT manifest_generation, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
+    "SELECT manifest_generation, manifest_fingerprint, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
     [row.connector_instance_id]
   );
   const existing = existingResult.rows[0] as Row | undefined;
@@ -2298,8 +2298,73 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
   );
 }
 
+/**
+ * Whether a generation advance actually invalidates this row's terminal facts.
+ *
+ * The generation counter is the OUTER, conservative fence: it advances on any
+ * byte of any manifest (`auth.ts` `persistManifestAndAdvanceGenerations`), so
+ * it answers "could this evidence be stale", never "is it". Editing
+ * `capabilities.refresh_policy.recommended_mode` across the fleet advanced 24
+ * generations at once and blanked terminal facts on every one of them, though
+ * the fold reads no such field.
+ *
+ * The declaration fingerprint is the INNER, exact fence. It is the sorted set
+ * of declared stream names (`parseManifestDeclaration`) — precisely the
+ * manifest section the terminal fold depends on. The fold itself reads no
+ * manifest content at all: it folds `collection_facts.streams` off the spine
+ * event, keyed by stream name. The only way a manifest edit can change which
+ * facts are attributable is by changing which streams are declared, which is
+ * exactly what moves this fingerprint. This is the dependency edge Salsa
+ * records by observing a read and Bazel's Skyframe records via `getValue()`;
+ * here the read-set is small and static enough to declare directly.
+ *
+ * So a generation advance is necessary but NOT sufficient: facts are discarded
+ * only when the declaration they were folded under actually changed. This is
+ * the rule the write path already believed it was applying — see the
+ * "A fingerprint transition is the sole exception" note on the upsert's
+ * terminal-facts bindings, which describes this predicate rather than the
+ * generation equality that was actually being tested.
+ *
+ * Fail closed on absence: a NULL stored or incoming fingerprint means the
+ * declaration is unknown for one side of the comparison, so the coarse
+ * generation verdict stands.
+ *
+ * Fail closed on UNOBSERVED generations too, and this is the subtle one. The
+ * fingerprint is a value, not a history, so it cannot distinguish "never
+ * changed" from "changed and changed back". A stream removed and re-added
+ * before any reconcile ran advances the generation twice and returns to a
+ * byte-identical declaration — the classic ABA problem — yet the facts folded
+ * before the removal must not be reattached to the re-added stream. The
+ * monotonic counter is precisely the thing that does not have that blind spot,
+ * so the fingerprint is only trusted to overrule it across a single-step
+ * advance the row actually witnessed. A jump of more than one generation means
+ * at least one declaration state passed unobserved, and an unobserved state is
+ * not evidence of continuity. On the live instance every evidence row tracks
+ * its instance generation exactly, so the ordinary boot-time reconcile path
+ * takes the single-step branch.
+ */
+function manifestDeclarationChanged(existing: Row | undefined, row: Row): boolean {
+  if (existing === undefined) {
+    return false;
+  }
+  const storedGeneration = Number(existing.manifest_generation ?? 0);
+  const incomingGeneration = Number(row.manifest_generation ?? 0);
+  if (!(Number.isFinite(storedGeneration) && Number.isFinite(incomingGeneration))) {
+    return true;
+  }
+  if (incomingGeneration - storedGeneration !== 1) {
+    return true;
+  }
+  const storedFingerprint = existing.manifest_fingerprint;
+  const incomingFingerprint = row.manifest_fingerprint;
+  if (typeof storedFingerprint !== "string" || typeof incomingFingerprint !== "string") {
+    return true;
+  }
+  return storedFingerprint !== incomingFingerprint;
+}
+
 function terminalFactsForRepair(existing: Row | undefined, row: Row, manifestGenerationChanged: boolean) {
-  if (manifestGenerationChanged) {
+  if (manifestGenerationChanged && manifestDeclarationChanged(existing, row)) {
     return {
       eventSeq: row.terminal_facts_generation_boundary,
       latestFactsJson: null,
