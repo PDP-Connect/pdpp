@@ -153,10 +153,14 @@ function row(over: Partial<Parameters<typeof summarizePlan>[0][number]>) {
  * can never masquerade as coverage.
  */
 const SKIP_REASON = "PDPP_TEST_POSTGRES_URL unset";
-const dbTest: typeof test = POSTGRES_URL
-  ? test
-  : (((name: string, fn: Parameters<typeof test>[1]) =>
-      test(name, { skip: SKIP_REASON }, fn as never)) as unknown as typeof test);
+type DbTestFn = () => void | Promise<void>;
+const dbTest = (name: string, fn: DbTestFn): void => {
+  if (POSTGRES_URL) {
+    test(name, fn);
+    return;
+  }
+  test(name, { skip: SKIP_REASON }, fn);
+};
 
 async function withSchema<T>(fn: (pool: pg.Pool, schema: string) => Promise<T>): Promise<T> {
   const schema = `aor_test_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
