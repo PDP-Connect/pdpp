@@ -40,7 +40,16 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -57,6 +66,31 @@ const VERIFY_CLI_PATH = join(PACKAGE_ROOT, "bin", "scenario-verify.ts");
 const STUB_CONNECTOR_PATH = join(PACKAGE_ROOT, "src", "test-fixtures", "scenario-cli-stub-connector.ts");
 const WATCHDOG_STUB_CONNECTOR_PATH = join(PACKAGE_ROOT, "src", "test-fixtures", "scenario-watchdog-paced-connector.ts");
 const TIMER_ORDER_CONNECTOR_PATH = join(PACKAGE_ROOT, "src", "test-fixtures", "scenario-timer-ordering-connector.ts");
+
+/**
+ * Generated fixture connectors that import `src/connector-runtime.ts` (which
+ * in turn imports "@pdpp/connector-protocol") must be written INSIDE this
+ * package tree, not under `os.tmpdir()`. Node's package-exports resolution
+ * walks up from a module's own path looking for the nearest `node_modules`;
+ * from `/tmp` (or any path outside this workspace) that walk never finds
+ * this package's `node_modules/@pdpp/connector-protocol`, so the spawned
+ * subprocess dies with ERR_PACKAGE_PATH_NOT_EXPORTED before the test's real
+ * assertion ever runs. Proven by direct reproduction: the identical fixture
+ * file resolves fine from inside the package tree and fails the same way
+ * from `/tmp`.
+ *
+ * `tmp/` (this package's own scratch dir, not `os.tmpdir()`) is used
+ * instead — it's already covered by the repo-root `.gitignore`'s bare
+ * `tmp/` pattern, so nothing generated here is ever committable. Pure
+ * fixtures that only import `node:*` builtins (e.g. the stub HTTP providers
+ * below) don't hit this resolution problem and stay under `os.tmpdir()`.
+ */
+const PACKAGE_TMP_DIR = join(PACKAGE_ROOT, "tmp");
+
+function packageScratchDir(): string {
+  mkdirSync(PACKAGE_TMP_DIR, { recursive: true });
+  return PACKAGE_TMP_DIR;
+}
 
 // ─── Synthetic HTTP provider (the stub connector's "real" upstream), run as
 // a standalone `node` subprocess — see the module docstring FINDING above
@@ -421,7 +455,10 @@ test("scenario-record: a capture whose ENTIRE provider contact is loopback is al
  */
 function writeVacuousSeedConnector(counterPath: string): string {
   const connectorRuntimePath = join(PACKAGE_ROOT, "src", "connector-runtime.ts");
-  const scriptPath = join(tmpdir(), `pdpp-vacuous-seed-connector-${String(process.pid)}-${String(Date.now())}.ts`);
+  const scriptPath = join(
+    packageScratchDir(),
+    `pdpp-vacuous-seed-connector-${String(process.pid)}-${String(Date.now())}.ts`
+  );
   const src = `
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { RecordData, ValidateRecord } from ${JSON.stringify(connectorRuntimePath)};
@@ -580,6 +617,7 @@ test("scenario-verify: state_seeded_second_run_with_changed_requests is not clai
   } finally {
     await provider.close().catch(() => undefined);
     rmSync(tmpDir, { recursive: true, force: true });
+    rmSync(connectorPath, { force: true });
   }
 });
 
@@ -596,7 +634,7 @@ test("scenario-verify: state_seeded_second_run_with_changed_requests is not clai
  */
 function writeEgressEscapeConnector(kind: "http-get" | "https-request" | "net-connect", targetUrl: string): string {
   const scriptPath = join(
-    tmpdir(),
+    packageScratchDir(),
     `pdpp-egress-escape-connector-${kind}-${String(process.pid)}-${String(Date.now())}.ts`
   );
   const target = new URL(targetUrl);
@@ -724,6 +762,7 @@ for (const kind of ["http-get", "https-request", "net-connect"] as const) {
     } finally {
       await new Promise<void>((resolve) => canaryServer.close(() => resolve()));
       rmSync(tmpDir, { recursive: true, force: true });
+      rmSync(connectorPath, { force: true });
     }
   });
 }
@@ -777,6 +816,7 @@ test("scenario-verify: a scenario with zero interactions and zero expected recor
     t.diagnostic(`verify stdout:\n${verifyResult.stdout}`);
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
+    rmSync(connectorPath, { force: true });
   }
 });
 
