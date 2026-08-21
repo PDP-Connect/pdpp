@@ -406,22 +406,54 @@ async function emitUnprovenChannelDiagnostic(
     return;
   }
   const { inScope, outOfScope } = partitionUnprovenChannels(unproven, archiveChannelReachability(db));
-  if (inScope.length > 0) {
-    const visibleIds = inScope.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
+  // Split the in-scope gap by whether slackdump ever opened a messages chunk
+  // for the channel. Both are gaps, but they have different causes and
+  // different fixes, and reporting them as one bucket is what made this
+  // owner's real defect unreadable for months: "unproven history, a
+  // re-archive is required" was emitted every run while every run was
+  // choosing `resume`, which by construction could never close it.
+  const untouched = untouchedChannelIds(db);
+  const neverRequested = inScope.filter((id) => untouched.has(id));
+  const startedUnfinished = inScope.filter((id) => !untouched.has(id));
+  if (neverRequested.length > 0) {
+    const visibleIds = neverRequested.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "channel_history_never_requested",
+      message:
+        `${String(neverRequested.length)} joined, unarchived Slack channel(s) hold no message data at all: the ` +
+        "archive's channel enumeration was cut short before it reached them, so their history has never been " +
+        "requested even once. This is recoverable — a full archive pass (not a resume) collects them.",
+      diagnostics: {
+        inventory_count: inventory.size,
+        finalized_count: finalized.size,
+        never_requested_count: neverRequested.length,
+        never_requested_channel_ids: visibleIds,
+        truncated: visibleIds.length < neverRequested.length,
+      },
+      recovery_hint: {
+        action: "retry_by_runtime",
+        retryable: true,
+      },
+    });
+  }
+  if (startedUnfinished.length > 0) {
+    const visibleIds = startedUnfinished.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
     await emit({
       type: "SKIP_RESULT",
       stream: "messages",
       reason: "channel_history_not_finalized",
       message:
         `Slack archive lists ${String(inventory.size)} channels but slackdump proved a finished message walk for only ` +
-        `${String(finalized.size)}; ${String(inScope.length)} joined, unarchived channel(s) have unproven history. ` +
-        "Their messages may be absent or partial. A full re-archive is required to close this.",
+        `${String(finalized.size)}; ${String(startedUnfinished.length)} joined, unarchived channel(s) were walked ` +
+        "part-way and never finished. Their messages are partial. A further archive pass is required to close this.",
       diagnostics: {
         inventory_count: inventory.size,
         finalized_count: finalized.size,
-        unproven_count: inScope.length,
+        unproven_count: startedUnfinished.length,
         unproven_channel_ids: visibleIds,
-        truncated: visibleIds.length < inScope.length,
+        truncated: visibleIds.length < startedUnfinished.length,
       },
       recovery_hint: {
         action: "retry_by_runtime",
@@ -1627,17 +1659,145 @@ async function mergeScopedMessageArchivePasses(deps: {
 }
 
 /**
+ * Channel ids the archive's own inventory lists that slackdump never opened
+ * a single messages chunk for.
+ *
+ * Distinct from `unprovenChannelIds`, and the distinction is the whole point.
+ * "Unproven" spans two very different states: a channel slackdump STARTED and
+ * did not finish (non-final chunks exist — `resume` closes it), and a channel
+ * slackdump NEVER TOUCHED (no chunk of any type — `resume` will never reach
+ * it). `resume` walks the channels already recorded in the archive within a
+ * lookback window; it does not re-enumerate the workspace, so a channel absent
+ * from the archive stays absent no matter how many times it runs.
+ *
+ * On this owner's workspace the `archive` pass (SESSION 1) died 16 minutes in
+ * having opened messages chunks for 5 channels. The 1360 `resume` sessions
+ * that followed over the next three months never grew that set past 5 — the
+ * set of channels with any messages chunk is still exactly the 5 SESSION 1
+ * reached. Twelve joined, unarchived channels have never been requested even
+ * once.
+ */
+function untouchedChannelIds(db: DatabaseSync): Set<string> {
+  const rows = safeAll<{ id: string }>(
+    db,
+    `
+    SELECT DISTINCT c.ID AS id
+    FROM CHANNEL c
+    WHERE c.ID IS NOT NULL AND c.ID != ''
+      AND NOT EXISTS (
+        SELECT 1 FROM CHUNK k
+        WHERE k.TYPE_ID = 0 AND k.CHANNEL_ID = c.ID
+      )
+  `
+  );
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Whether this archive still owes a full `archive` enumeration.
+ *
+ * `resume` is the right tool for an archive whose enumeration finished: it
+ * carries every channel forward cheaply within its lookback. It is the WRONG
+ * tool for an archive whose enumeration never finished, because the channels
+ * that enumeration never reached are not in the archive for `resume` to walk.
+ * Choosing resume purely on `existsSync(archivePath)` — which is what this
+ * connector did — makes that state permanent: the directory exists, so every
+ * subsequent run resumes, so the missing channels are never requested, so the
+ * directory keeps existing in exactly the same incomplete shape.
+ *
+ * The archive records the fact needed to tell the two apart. slackdump writes
+ * a SESSION row per invocation with its own `FINISHED` flag and `MODE`. An
+ * archive whose `MODE = 'archive'` session never set `FINISHED = 1` is one
+ * whose enumeration was cut short, and it stays owed until an `archive` pass
+ * actually completes.
+ *
+ * Reads as "not owed" when the archive carries no SESSION bookkeeping at all.
+ * An archive that cannot report its own session state cannot prove it was
+ * interrupted either, and forcing a multi-GB re-archive off absent evidence is
+ * the same defect in the other direction.
+ */
+/**
+ * `archiveEnumerationIncomplete` for an archive on disk, by path.
+ *
+ * Opens read-only and always closes. A path that does not exist, or a file
+ * too damaged to open, reports `false` — same absent-evidence rule as the
+ * in-DB check: never force a multi-GB re-archive off a failure to read.
+ */
+export function archivePathEnumerationIncomplete(sqlitePath: string): boolean {
+  if (!existsSync(sqlitePath)) {
+    return false;
+  }
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(sqlitePath, { readOnly: true });
+  } catch {
+    return false;
+  }
+  try {
+    return archiveEnumerationIncomplete(db);
+  } finally {
+    db.close();
+  }
+}
+
+function archiveEnumerationIncomplete(db: DatabaseSync): boolean {
+  const rows = safeAll<{ finished: number }>(
+    db,
+    `
+    SELECT MAX(FINISHED) AS finished
+    FROM SESSION
+    WHERE MODE = 'archive'
+  `
+  );
+  const finished = rows[0]?.finished;
+  if (finished === undefined || finished === null) {
+    return false;
+  }
+  return Number(finished) !== 1;
+}
+
+/**
+ * Whether the archive at `sqlitePath` still owes a full enumeration, saying so
+ * in the run log when it does.
+ *
+ * The disclosure matters as much as the decision. This run is about to spend a
+ * full `archive` pass instead of a cheap `resume`, and the owner's run log is
+ * the only place that choice — and the reason for it — is visible.
+ */
+function reportOwedEnumeration(sqlitePath: string, archivePath: string, progress: CollectContext["progress"]): boolean {
+  if (!archivePathEnumerationIncomplete(sqlitePath)) {
+    return false;
+  }
+  progress(
+    `Slack: the archive at ${archivePath} has no completed 'archive' session — its channel enumeration was cut ` +
+      "short, so channels it never reached hold no data and 'resume' would never request them. Running a full " +
+      "'archive' against the existing directory to finish the enumeration.",
+    { stream: "messages" }
+  );
+  return true;
+}
+
+/**
  * Incremental via slackdump resume, full via archive.
  * Resume path: (a) explicit state.archive_dir from a prior successful run,
  * or (b) an archive directory already exists on disk from a timed-out or
  * crashed prior run. Resuming salvages partial progress — slackdump picks
- * up from the last recorded chunk for each channel, so a previously-timed-
- * out 1.1 GB archive turns into "finish the rest" rather than "restart".
+ * up from the last recorded chunk for each channel it already holds.
+ *
+ * `forceFullArchive` overrides both: an archive whose enumeration never
+ * completed (see `archiveEnumerationIncomplete`) must re-run `archive`, not
+ * resume, or the channels enumeration never reached stay unreachable forever.
+ * slackdump's `archive` is itself resumable against the same directory, so
+ * this finishes the interrupted enumeration rather than discarding the 4.8 GB
+ * already on disk.
  */
-function pickResumeTarget(
+export function pickResumeTarget(
   state: CollectContext["state"],
   archivePath: string,
-  { allowStateArchive = true }: { allowStateArchive?: boolean } = {}
+  {
+    allowStateArchive = true,
+    forceFullArchive = false,
+  }: { allowStateArchive?: boolean; forceFullArchive?: boolean } = {}
 ): { resumeTarget: string | null; priorArchive: string | undefined } {
   // STATE is stream-keyed per Collection Profile: state is returned as
   // { <stream>: <cursor>, ... }. We write `archive_dir` into the messages
@@ -1645,6 +1805,12 @@ function pickResumeTarget(
   const messagesState = state.messages as MessagesState | undefined;
   const legacyArchiveDir = (state as Record<string, unknown>).archive_dir as string | undefined;
   const priorArchive = messagesState?.archive_dir || legacyArchiveDir; // fallback for pre-fix state
+  if (forceFullArchive) {
+    // `priorArchive` is still reported: callers use it to distinguish an
+    // archive named by STATE from one merely discovered on disk, and that
+    // fact is unchanged by which subcommand we choose to run.
+    return { resumeTarget: null, priorArchive };
+  }
   const discoveredArchive = existsSync(archivePath) ? archivePath : null;
   const resumeTarget = allowStateArchive && priorArchive && existsSync(priorArchive) ? priorArchive : discoveredArchive;
   return { resumeTarget, priorArchive };
@@ -3129,8 +3295,13 @@ if (isMainModule(import.meta.url)) {
       const { archivePath, sqlitePath } = resolveScopedArchivePaths(baseArchivePaths, positionalChannels);
       await mkdir(dumpDir, { recursive: true });
 
+      // An archive whose `archive` enumeration never finished still owes one.
+      // Resuming it can only ever re-walk the channels enumeration already
+      // reached, so the ones it never reached would stay missing forever.
+      const enumerationIncomplete = reportOwedEnumeration(sqlitePath, archivePath, progress);
       const { resumeTarget, priorArchive } = pickResumeTarget(state, archivePath, {
         allowStateArchive: isUnscopedMessageBoundary,
+        forceFullArchive: enumerationIncomplete,
       });
       const useResume = Boolean(resumeTarget);
       const messagesState = state.messages as MessagesState | undefined;
