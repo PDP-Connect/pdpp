@@ -1413,7 +1413,7 @@ const deepGmail = [
   {
     id: rid("gm"),
     thread_id: "th8",
-    from: "Stanford Alumni <alumni@stanford.edu>",
+    from: "Northcrest Alumni <alumni@northcrest.example.edu>",
     to: ["the owner@example.com"],
     subject: "Class of 2014 — 5-year reunion",
     snippet: "Save the date: October 19, 2019. Memorial Auditorium.",

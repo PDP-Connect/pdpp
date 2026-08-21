@@ -116,11 +116,11 @@ test("BEHAVIOR null/absent cell values render empty, matching stringifyCell", ()
 
 test("BEHAVIOR an array-of-objects cell (e.g. a Gmail `cc` field) renders readable names, never raw JSON", () => {
   const cc = [
-    { email: "mmarco@law.harvard.edu", name: "Meg Marco" },
-    { email: "anna@opendatalabs.xyz", name: "Anna Kazlauskas" },
+    { email: "rowan.diaz@example.edu", name: "Rowan Diaz" },
+    { email: "sasha.lindqvist@example.org", name: "Sasha Lindqvist" },
   ];
   const text = displayCell(cc, undefined);
-  assert.equal(text, "Meg Marco, Anna Kazlauskas");
+  assert.equal(text, "Rowan Diaz, Sasha Lindqvist");
   assert.doesNotMatch(text, JSON_SYNTAX_RE, "must never contain JSON syntax characters");
 });
 

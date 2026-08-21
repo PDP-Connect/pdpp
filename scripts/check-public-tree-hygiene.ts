@@ -5,7 +5,7 @@
 // Public-tree hygiene gate: catch operator-private residue before it ships in
 // a public squash (github.com/PDP-Connect/pdpp).
 //
-// This is deliberately NARROW — four exact, previously-reintroduced private-
+// This is deliberately NARROW — six exact, previously-reintroduced private-
 // residue classes, not a broad "no internal words" filter. It must never flag
 // legitimate product/connector names (`Claude`, `Codex`, `Anthropic`, etc.);
 // those are load-bearing content, not residue. See
@@ -18,6 +18,13 @@
 //   2. operator's personal machine codename (`peregrine`)
 //   3. operator's private internal network domain (`*.vivid.fish`)
 //   4. internal cross-provider orchestrator branch jargon (`waspflow/<slug>`)
+//   5. a maintainer's personal mailbox at a consumer mail host
+//   6. an identifiable person's address at a real institution (.edu/.gov/.mil
+//      or a project domain)
+//
+// For 5 and 6 the synthetic convention is an RFC 2606 reserved domain
+// (example.com/net/org, *.example, .test, .invalid), so the fix for a hit is
+// always to move the address there — never to widen an allowlist.
 //
 // Scope: tracked, non-archive files only (git ls-files, excluding any path
 // segment literally named `archive`) — archived openspec history and this
@@ -63,6 +70,45 @@ export const RESIDUE_CLASSES: ResidueClass[] = [
     id: "orchestrator-branch-jargon",
     pattern: /\bwaspflow\/[a-zA-Z0-9._-]+/,
     describe: (match) => `internal cross-provider orchestrator branch reference (${match})`,
+  },
+  {
+    id: "personal-email-address",
+    // A deliverable personal mailbox at a real consumer mail host. Narrow on
+    // BOTH sides on purpose:
+    //
+    //   - domain: only the consumer/personal mail hosts a maintainer or a
+    //     third party would actually read mail at. Corporate and vendor
+    //     domains (github.com, costco.com, ...) are excluded because the
+    //     addresses the tree holds at those domains are role senders in
+    //     fixture data, not anyone's mailbox.
+    //   - local-part: excludes role mailboxes (noreply@, support@, ...) and
+    //     placeholder locals (user@, owner@, you@, ...), which are the
+    //     established synthetic convention and carry no identity.
+    //
+    // Synthetic addresses belong at an RFC 2606 reserved domain
+    // (example.com/net/org, *.example, .test, .invalid) — those never match
+    // here, so the fix for a hit is always "move it to a reserved domain",
+    // never "add an allowlist entry".
+    pattern:
+      /\b(?!(?:no-?reply|do-?not-?reply|noreply|support|help|info|admin|contact|hello|team|sales|billing|security|abuse|postmaster|webmaster|maintainers|owner|user|test|example|sample|fixture|you|me|someone|anyone|placeholder|your-[a-z-]*)\b)[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*(?:\+[a-z0-9._-]+)?@(?:gmail|googlemail|icloud|me|mac|outlook|hotmail|live|msn|yahoo|ymail|aol|proton|protonmail|pm|gmx|mail|zoho|fastmail|hey|tutanota|yandex|qq|163|126)\.(?:com|me|ru|cn|net|org)\b/i,
+    describe: (match) => `a real personal email address (${match}) — use a reserved example/test domain`,
+  },
+  {
+    id: "identifiable-institution-email",
+    // The other half of the same leak: a named third party's address at a
+    // real institution, copied out of live captured data (a Gmail `cc`
+    // field) into a fixture. Registry-restricted TLDs (.edu/.gov/.mil) and
+    // the project's own real domains cannot be squatted for test data, so
+    // any address there identifies an actual person or office.
+    //
+    // Deliberately NOT extended to open TLDs (.com/.app/...): the tree's
+    // fixture personas legitimately live at real-looking corporate domains
+    // (a Figma sender, an airline, a bank), and flagging those would need a
+    // sprawling allowlist — the failure mode this check exists to avoid.
+    pattern:
+      /\b[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*(?:\+[a-z0-9._-]+)?@(?![a-z0-9-]*\.?example\b)[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:edu|gov|mil)\b|\b[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*@(?:opendatalabs\.xyz|pdp-connect\.org)\b/i,
+    describe: (match) =>
+      `an identifiable person's address at a real institution (${match}) — use a reserved example/test domain`,
   },
 ];
 
