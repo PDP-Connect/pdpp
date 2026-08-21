@@ -1332,14 +1332,24 @@ test("schedule upsert rejects enabling manual or background-unsafe connector pol
   }
 });
 
-test("schedule upsert permits a manual-default connector when background_safe=true is declared", async () => {
+test("schedule upsert permits an interactive-login connector that declares background_safe", async () => {
+  // Subject under test: an owner-created schedule is accepted, and projects
+  // `automation_mode: "assisted"`, for a connector whose first login is
+  // owner-present but whose session then persists.
+  //
+  // The fixture used to pair `background_safe: true` with
+  // `recommended_mode: "manual"`. That combination is now rejected at
+  // registration as self-contradictory (server/refresh-policy-consistency.ts):
+  // mode is derived from the posture + background-safety, and those two
+  // facts derive `automatic`. Declaring the derived mode keeps the fixture
+  // honest without changing what this test asserts.
   const manifest = {
     capabilities: {
       refresh_policy: {
         background_safe: true,
         interaction_posture: "otp_likely",
         rationale: "Owner-created schedule is allowed after the connection is marked background-safe.",
-        recommended_mode: "manual",
+        recommended_mode: "automatic",
       },
     },
     connector_id: "manual-safe-test",
