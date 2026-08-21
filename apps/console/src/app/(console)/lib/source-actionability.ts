@@ -16,7 +16,7 @@ import type {
 
 export type SourceWorkGroupId = "needsOwner" | "notMeasured" | "review" | "systemIssue" | "unavailable" | "working";
 
-export type SourceStatusKind = "blocked" | "degraded" | "healthy" | "pending" | "revoked" | "unknown";
+export type SourceStatusKind = "blocked" | "degraded" | "healthy" | "paused" | "pending" | "revoked" | "unknown";
 
 export type SourceStatusTone = "destructive" | "muted" | "success" | "warning";
 
@@ -71,6 +71,8 @@ export interface SourceActionabilityProjection {
   nextAction: FormattedNextAction | null;
   ownerActionByStream: SourceStreamOwnerActionAvailability;
   ownerActionCue: SourceOwnerActionCue | null;
+  /** Collection is stopped but fully reversible. Never true when `revoked`. */
+  paused: boolean;
   primaryAction: RefRequiredAction | null;
   primaryVerdictAction: SourcePrimaryVerdictAction | null;
   renderedStatus: SourceStatusFlag;
@@ -221,6 +223,24 @@ export function isRevokedConnector(connector: RefConnectorSummary): boolean {
 }
 
 /**
+ * A `paused` connection: collection is stopped, but nothing was given up —
+ * records, grants, schedule, and the stored credential all survive, and the
+ * owner can resume from the same detail page they paused on. Like
+ * {@link isRevokedConnector} this is a LIFECYCLE check independent of the
+ * verdict, because `rendered_verdict` carries no lifecycle concept: a paused
+ * row's health/coverage evidence describes the collection that stopped, and
+ * rendering that as the source's status would tell the owner about a state
+ * the connection is no longer in.
+ *
+ * Deliberately does NOT treat a revoked row as paused — `isRevokedConnector`
+ * is checked first everywhere the two meet, so the durable state always wins
+ * over the reversible one.
+ */
+export function isPausedConnector(connector: RefConnectorSummary): boolean {
+  return connector.status === "paused";
+}
+
+/**
  * A `draft` connection has completed neither its credential capture nor its
  * first ingest — `rendered_verdict`/`connection_health` carry no lifecycle
  * concept (they are built from health/coverage/schedule evidence that a
@@ -281,10 +301,19 @@ export function deriveRenderedSourceStatus(
   revoked: boolean,
   pending = false,
   terminalSetupDisposition: RefTerminalSetupDisposition | null = null,
-  running = false
+  running = false,
+  paused = false
 ): SourceStatusFlag {
   if (revoked) {
     return { dot: "⊘", freshnessNote: null, kind: "revoked", label: "Revoked", tone: "muted" };
+  }
+  // Ranked directly after `revoked` and ahead of `running`/`pending`: a paused
+  // connection is not collecting, so a stale in-flight run flag or a verdict
+  // tone must never render it as "Syncing" or as a health colour. Muted (not
+  // a warning tone) because pause is a state the owner chose, not a problem
+  // to fix — the way back is an action, which the detail page offers.
+  if (paused) {
+    return { dot: "⏸", freshnessNote: null, kind: "paused", label: "Paused", tone: "muted" };
   }
   if (running) {
     return { dot: "◌", freshnessNote: null, kind: "pending", label: "Syncing", tone: "muted" };
@@ -502,9 +531,33 @@ function isHiddenFragment(connector: RefConnectorSummary): boolean {
   return connector.source_visibility === "hidden_from_sources";
 }
 
+/** The one owner-facing CTA label for resuming a paused connection. */
+export const RESUME_PAUSED_CTA_LABEL = "Resume";
+
 export function sourceWorkItemFromConnector(connector: RefConnectorSummary): SourceWorkItem | null {
   if (isRevokedConnector(connector) || isHiddenFragment(connector)) {
     return null;
+  }
+
+  // A paused source is surfaced in `review` ("Available actions"), never in
+  // `needsOwner`. Nothing is broken and nothing is waiting on the owner — the
+  // owner already decided to stop collecting — so counting it as "needs you"
+  // would inflate the one number that is supposed to mean "you are blocking
+  // something" (see `sourceAttentionHeadline`). But it must not vanish either:
+  // a paused row that produced no work item at all (the `revoked` treatment)
+  // would leave collection silently stopped with no path back on any list
+  // surface. `review` is exactly the group for an optional action the owner
+  // may take, so the source stays visible and carries its own way out.
+  //
+  // Checked before the verdict for the same reason `deriveRenderedSourceStatus`
+  // ranks paused early: a paused row's verdict describes collection that has
+  // stopped.
+  if (isPausedConnector(connector)) {
+    return itemFromConnector(connector, "review", {
+      actionLabel: RESUME_PAUSED_CTA_LABEL,
+      statusLabel: "is paused",
+      what: "Collection is paused. Your existing records, schedule, and sign-in are kept — resume to start collecting again.",
+    });
   }
 
   const terminalSetupDisposition = connector.terminal_setup_disposition ?? null;
@@ -558,6 +611,7 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
   const routeId = connectionRouteId(connector);
   const label = connectorLabel(connector);
   const revoked = isRevokedConnector(connector);
+  const paused = !revoked && isPausedConnector(connector);
   const terminalSetupDisposition = connector.terminal_setup_disposition ?? null;
   const pending = !revoked && isSetupInProgressConnector(connector) && terminalSetupDisposition === null;
   const running = connector.last_run !== null && isActiveConnectorRunSummaryStatus(connector.last_run.status);
@@ -578,6 +632,7 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
     nextAction: formatRenderedRequiredAction(connector.rendered_verdict, pending, terminalSetupDisposition),
     ownerActionByStream: pending ? {} : ownerActionAvailabilityByStream(connector.rendered_verdict ?? null),
     ownerActionCue: ownerActionCueFromVerdictAction(primaryVerdictAction),
+    paused,
     primaryAction,
     primaryVerdictAction,
     renderedStatus: deriveRenderedSourceStatus(
@@ -585,7 +640,8 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
       revoked,
       pending,
       terminalSetupDisposition,
-      running
+      running,
+      paused
     ),
     revoked,
     routeId,

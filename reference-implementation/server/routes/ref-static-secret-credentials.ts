@@ -176,6 +176,22 @@ export interface StaticSecretProbeContext {
   readonly setupFields?: Readonly<Record<string, string>> | null;
 }
 
+// Non-secret outcome of the resume+first-sync chain that runs automatically
+// after a credential capture on a paused historical_archive row. `skipped`
+// means the row was NOT paused+historical_archive at capture time (the
+// normal draft/active capture path — no auto-resume behavior change).
+//
+// `resumed_and_synced.runId` is a non-nullable `string` BY DESIGN: absent a
+// real run handle (no controller wired, or `runNow` returned no usable
+// `run_id`), the row IS resumed but the sync did not verifiably start — that
+// case must report `failed`, never `resumed_and_synced` with a fabricated or
+// null run id. A caller reading a non-null `run_id` off this result must be
+// able to trust an actual run was launched.
+export type ArchiveResumeAndSyncResult =
+  | { readonly kind: "skipped" }
+  | { readonly kind: "resumed_and_synced"; readonly runId: string }
+  | { readonly kind: "failed"; readonly code: string; readonly message: string };
+
 export interface MountRefStaticSecretCredentialsContext {
   autoResumeSatisfiedActions?: (input: {
     connectorId: string;
@@ -233,6 +249,24 @@ export interface MountRefStaticSecretCredentialsContext {
     }
   ) => Promise<ConnectorNamespace>;
   resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike>;
+  // Optional. When the target row was `paused` + `source_binding.kind ===
+  // 'historical_archive'` AT THE MOMENT the capture request was received
+  // (checked before any write, using `createRequestConnectorInstanceStore`),
+  // this runs AFTER a successful credential store: it resumes the connection
+  // (paused -> active, the same guarded status flip
+  // `ref-connection-resume.ts` uses) and then triggers the connector's normal
+  // first-sync/incremental run — the SAME run path the "Run this connection"
+  // next-step already points to, never a full-history replay and never a
+  // second connector_instance row. Absent for narrow injected test callers
+  // that do not exercise the archive-reconnect journey; every other capture
+  // (draft/active, or a paused row of any other binding kind) is unaffected
+  // regardless of whether this is injected, because the route only calls it
+  // when the pre-capture status+binding check matches.
+  resumeHistoricalArchiveConnectionAndRunFirstSync?: (input: {
+    connectorId: string;
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+  }) => Promise<ArchiveResumeAndSyncResult>;
   setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
@@ -464,13 +498,28 @@ async function updateDraftSetupFieldsBeforeProbe(
   }
   const store = ctx.createRequestConnectorInstanceStore();
   const instance = await store.get(input.connectorInstanceId);
-  if (instance?.status !== "draft") {
+  const binding = staticSecretBindingRecord(instance?.sourceBinding);
+  // Two admitted cases: a static-secret draft mid-setup (the original retry
+  // path), and a paused recovered historical-archive row completing the
+  // archive-reconnect journey. Every other status/binding combination is a
+  // no-op — setup fields only ever attach ahead of the FIRST successful
+  // capture for a row, never as a side channel to touch an already-claimed
+  // (active) connection's binding.
+  const isDraftSetup = instance?.status === "draft";
+  const isPausedHistoricalArchive = instance?.status === "paused" && binding?.kind === "historical_archive";
+  if (!(isDraftSetup || isPausedHistoricalArchive)) {
     return;
   }
-  const binding = staticSecretBindingRecord(instance.sourceBinding);
-  if (binding?.kind !== "static_secret_draft") {
+  if (isDraftSetup && binding?.kind !== "static_secret_draft") {
     throwCodedError("static_secret_draft_required", "Only a static-secret draft can update setup fields during retry.");
   }
+  if (!binding) {
+    return;
+  }
+  // Preserve the existing binding record (including `kind`) — only
+  // `setup_fields` is overwritten, so a `historical_archive` row's binding
+  // kind survives this write exactly as `updateStaticSecretBinding`'s own
+  // guard (widened to admit `paused`) expects.
   binding.setup_fields = input.setupFields;
   await store.updateStaticSecretBinding({
     connectorId: input.connectorId,
@@ -574,7 +623,15 @@ async function claimProbedStaticSecretIdentity(
   const { identity, sourceBindingKey } = staticSecretIdentityClaim(input);
   const current = await currentInstanceOrThrow(store, input.connectorInstanceId);
   const binding = currentBindingOrThrow(current);
-  if (current.status === "active" && isStaticSecretPipelineBinding(current.sourceBinding)) {
+  // `paused` is admitted alongside `active`: a recovered historical-archive
+  // row can still carry a residual credential + durable identity from before
+  // it was paused, and that case must prove sameness exactly like an active
+  // row — see `assertStaticSecretActiveCredentialReplacementAllowed`'s doc
+  // comment.
+  if (
+    (current.status === "active" || current.status === "paused") &&
+    isStaticSecretPipelineBinding(current.sourceBinding)
+  ) {
     const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
     const existingCredential = await credentialStore.getMetadata(input.connectorInstanceId);
     assertStaticSecretActiveCredentialReplacementAllowed({
@@ -632,7 +689,12 @@ async function assertActiveReplacementAllowedWithoutProbe(
 ): Promise<void> {
   const store = requireConnectorInstanceStore(ctx);
   const current = await currentInstanceOrThrow(store, input.connectorInstanceId);
-  if (current.status !== "active" || !isStaticSecretPipelineBinding(current.sourceBinding)) {
+  // `paused` is admitted alongside `active` — see the sibling probed-identity
+  // call site's comment above `claimProbedStaticSecretIdentity`.
+  if (
+    (current.status !== "active" && current.status !== "paused") ||
+    !isStaticSecretPipelineBinding(current.sourceBinding)
+  ) {
     return;
   }
   const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
@@ -937,16 +999,72 @@ function validateBundledSecret(contract: StaticSecretCredentialContract, secret:
   return { kind: "proceed" };
 }
 
+// Detects, BEFORE any write, whether the capture target is a paused
+// historical_archive row — the ONE case that triggers automatic
+// resume+first-sync after this capture succeeds. Every other target (draft,
+// active, or a paused row of any other binding kind) is unaffected: this
+// returns false and `storeAndRespond` never calls the resume+sync hook.
+async function isPausedHistoricalArchiveTarget(
+  ctx: MountRefStaticSecretCredentialsContext,
+  namespace: ConnectorNamespace
+): Promise<boolean> {
+  if (typeof ctx.createRequestConnectorInstanceStore !== "function") {
+    return false;
+  }
+  const store = ctx.createRequestConnectorInstanceStore();
+  const instance = await store.get(namespace.connectorInstanceId);
+  if (instance?.status !== "paused") {
+    return false;
+  }
+  const binding = instance.sourceBinding;
+  return Boolean(
+    binding && typeof binding === "object" && (binding as { kind?: unknown }).kind === "historical_archive"
+  );
+}
+
+// Runs the resume+first-sync chain and folds its outcome into the response
+// honestly: `failed` never gets papered over as `resumed_and_synced`.
+async function resumeArchiveConnectionAfterCapture(
+  ctx: MountRefStaticSecretCredentialsContext,
+  namespace: ConnectorNamespace,
+  ownerSubjectId: string
+): Promise<ArchiveResumeAndSyncResult> {
+  if (typeof ctx.resumeHistoricalArchiveConnectionAndRunFirstSync !== "function") {
+    return { kind: "skipped" };
+  }
+  try {
+    return await ctx.resumeHistoricalArchiveConnectionAndRunFirstSync({
+      connectorId: namespace.connectorId,
+      connectorInstanceId: namespace.connectorInstanceId,
+      ownerSubjectId,
+    });
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    return {
+      code: typeof code === "string" ? code : "api_error",
+      kind: "failed",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 // Stores the validated credential and sends the success response.
 // A `paused` connection is the only status admitted by this route's
 // `allowStatuses` that isn't already collectible (`active`) or pre-first-sync
-// (`draft`). Widening the allowlist to admit it without also resuming it here
-// would leave the owner's "fix and resume" action stuck: the credential
-// saves, but `admitOwnerRunConnection`'s active-only gate keeps rejecting
-// both the manual run this response links to and every scheduled run, with
-// no other path in this codebase that ever flips `paused` back to `active`.
-// This mirrors owner-connection-reactivate.ts's `revoked -> active` flip,
-// scoped to `paused` and with no `revokedAt` field to clear.
+// (`draft`), and saving a working credential onto one resumes it: that IS the
+// owner's "fix and resume" action, expressed as a single decision rather than
+// a credential save followed by a second, separate resume click. Without this
+// flip the credential would save while `admitOwnerRunConnection`'s active-only
+// gate kept rejecting both the manual run this response links to and every
+// scheduled run.
+//
+// This predates (and is deliberately kept alongside) the explicit pause/resume
+// routes in `owner-connection-resume.ts` / `ref-connection-resume.ts`. Those
+// answer "the owner asked to resume THIS connection"; this answers "the owner
+// repaired the credential, which is what pausing was blocking on". Both end at
+// the same `paused -> active` flip, and mirror
+// owner-connection-reactivate.ts's `revoked -> active`, with no `revokedAt` to
+// clear.
 async function resumePausedConnectionAfterCredentialCapture(
   ctx: MountRefStaticSecretCredentialsContext,
   connectorInstanceId: string,
@@ -977,6 +1095,10 @@ async function storeAndRespond(
     secret: string;
   }
 ): Promise<void> {
+  // Checked BEFORE the credential write: the resume+sync decision is keyed on
+  // the row's state at request time, not on anything the capture itself
+  // changes (capture never touches status or source_binding.kind).
+  const wasPausedHistoricalArchive = await isPausedHistoricalArchiveTarget(ctx, args.namespace);
   const store = ctx.createRequestConnectorInstanceCredentialStore();
   const previous = await store.getMetadata(args.namespace.connectorInstanceId);
   const now = ctx.now ? ctx.now() : new Date().toISOString();
@@ -991,15 +1113,38 @@ async function storeAndRespond(
   const resumed = await resumePausedConnectionAfterCredentialCapture(ctx, args.namespace.connectorInstanceId, now);
   const rotated = Boolean(previous);
   const autoResume = await autoResumeAfterCredentialCapture(ctx, args.namespace, metadata, args.ownerSubjectId);
+  const archiveResume: ArchiveResumeAndSyncResult = wasPausedHistoricalArchive
+    ? await resumeArchiveConnectionAfterCapture(ctx, args.namespace, args.ownerSubjectId)
+    : { kind: "skipped" };
   await emitCaptureAudit(ctx, req, res, {
     connectionId: args.namespace.connectorInstanceId,
     connectorId: args.namespace.connectorId,
     credentialKind: args.credentialKind,
-    outcome: "succeeded",
+    outcome: archiveResume.kind === "failed" ? "failed" : "succeeded",
     ownerSubjectId: args.ownerSubjectId,
     rotated,
   });
+  if (archiveResume.kind === "failed") {
+    // Honest failure: the credential IS stored (this route's own job
+    // succeeded), but the caller asked for the archive-reconnect journey and
+    // that did not complete — surface it as an error rather than reporting
+    // success with a silently incomplete auto_resume. The credential capture
+    // is not rolled back (per static-secret-identity.ts's normal semantics,
+    // storing is not transactional with resume/run), so a retry of THIS
+    // capture would rotate an identical credential; the owner's real retry
+    // path is the resume/run action itself, once the underlying cause (e.g.
+    // provider outage) is resolved.
+    ctx.pdppError(
+      res,
+      502,
+      "archive_reconnect_resume_failed",
+      `The credential was stored, but resuming this recovered connection failed: ${archiveResume.message}`
+    );
+    return;
+  }
   res.status(rotated ? 200 : 201).json({
+    archive_reconnect:
+      archiveResume.kind === "resumed_and_synced" ? { run_id: archiveResume.runId, status: "resumed" } : null,
     auto_resume: autoResume,
     connection_id: args.namespace.connectorInstanceId,
     connector_id: args.namespace.connectorId,
@@ -1017,7 +1162,9 @@ async function storeAndRespond(
       kind: "run_connection",
       method: "POST",
       reason:
-        "Run this connection from the owner session or scheduler. The connection stays hidden until first ingest accepts records.",
+        archiveResume.kind === "resumed_and_synced"
+          ? "This recovered connection was resumed and its first sync has started."
+          : "Run this connection from the owner session or scheduler. The connection stays hidden until first ingest accepts records.",
       url: `/_ref/connections/${encodeURIComponent(args.namespace.connectorInstanceId)}/run`,
     },
     object: "static_secret_credential_capture",
@@ -1125,7 +1272,13 @@ async function runStaticSecretCredentialCapture(
     // Admit `paused` too: a paused connection is still owned and still has a
     // durable identity/binding — updating its sign-in details is the
     // supported "fix and resume" action, not a state the owner is blocked
-    // from touching. `revoked` is deliberately excluded; that path stays
+    // from touching. This keeps its connector_instance_id, records, grants,
+    // audit, schedule, and checkpoints intact (e.g. a recovered
+    // historical-archive row with no surviving credential). Every guard below
+    // that treats a replacement as sensitive is keyed on `status === "active"`
+    // specifically, so a paused target with no existing credential always
+    // takes the establishment path, never the active-replacement path.
+    // `revoked` is deliberately excluded; that path stays
     // owner-connection-reactivate.ts's job (see storeAndRespond's paused ->
     // active flip below for the resume half of this contract).
     allowStatuses: ["active", "draft", "paused"],

@@ -312,7 +312,9 @@ import { mountOwnerConnectionCollectionScope } from "./routes/owner-connection-c
 import { mountOwnerConnectionDelete } from "./routes/owner-connection-delete.ts";
 import { mountOwnerConnectionDiagnostics } from "./routes/owner-connection-diagnostics.ts";
 import { mountOwnerConnectionIntent } from "./routes/owner-connection-intent.ts";
+import { mountOwnerConnectionPause } from "./routes/owner-connection-pause.ts";
 import { mountOwnerConnectionReactivate } from "./routes/owner-connection-reactivate.ts";
+import { applyResume, mountOwnerConnectionResume } from "./routes/owner-connection-resume.ts";
 import { mountOwnerConnectionRevoke } from "./routes/owner-connection-revoke.ts";
 import { mountOwnerConnectionRun } from "./routes/owner-connection-run.ts";
 import { mountOwnerConnectionSchedule } from "./routes/owner-connection-schedule.ts";
@@ -337,6 +339,8 @@ import {
   mountRefBrowserEnrollmentShell,
   promoteBrowserEnrollmentShellBinding,
 } from "./routes/ref-browser-enrollment-shell.ts";
+import { mountRefConnectionPause } from "./routes/ref-connection-pause.ts";
+import { HISTORICAL_ARCHIVE_SOURCE_BINDING_KIND, mountRefConnectionResume } from "./routes/ref-connection-resume.ts";
 import {
   mountRefConnectionDelete,
   mountRefConnectionDetail,
@@ -5786,6 +5790,50 @@ export function buildAsApp(opts: ServerOpts = {}) {
     resolveOwnerConnectorNamespace,
     resolveRegisteredConnectorManifest,
     resolveSingleConnectorIdQueryValue,
+    // See `MountRefConnectorsContext.resumeHistoricalArchiveConnectionIfPaused`
+    // doc comment. Reuses `applyResume` — the SAME status-flip primitive the
+    // bearer and owner-session resume routes call — so this is not a third
+    // resume implementation. Ownership is enforced by
+    // `resolveOwnerConnectorNamespace` (via `applyResume`'s
+    // `getConnectorInstance` -> a subsequent `updateStatus`, which is itself
+    // owner-scoped in the store) failing the `historical_archive` guard or
+    // an owner mismatch as a thrown error, which this hook swallows to a
+    // `false` no-op: the run-now handler's own `resolveRefConnectionNamespace`
+    // call right after this is what actually enforces ownership + status for
+    // the run itself, so silently no-op'ing an unresumable/foreign target
+    // here does not skip that check — it only means the run resolves the
+    // target's TRUE current state (which may still legitimately fail).
+    resumeHistoricalArchiveConnectionIfPaused: async (input: {
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+    }) => {
+      const store = createRequestConnectorInstanceStore();
+      const instance = (await store.get(input.connectorInstanceId)) as {
+        ownerSubjectId?: string;
+        status?: string;
+      } | null;
+      if (!instance || instance.ownerSubjectId !== input.ownerSubjectId || instance.status !== "paused") {
+        return false;
+      }
+      try {
+        await applyResume(
+          {
+            getConnectorInstance: (connectorInstanceId: string) => store.get(connectorInstanceId),
+            invalidateConnectorSummariesCache,
+            updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+              store.updateStatus(connectorInstanceId, options as Parameters<typeof store.updateStatus>[1]),
+          } as unknown as Parameters<typeof applyResume>[0],
+          input.connectorInstanceId,
+          { requireSourceBindingKind: HISTORICAL_ARCHIVE_SOURCE_BINDING_KIND }
+        );
+        return true;
+      } catch {
+        // Not a historical_archive row (or some other resume guard failed):
+        // no-op. The run-now resolver right after this call enforces the
+        // real status/ownership gate and will surface its own typed error.
+        return false;
+      }
+    },
     runNow: (connectorId: string, options: unknown) =>
       controller?.runNow(connectorId, options as Parameters<NonNullable<typeof controller>["runNow"]>[1]),
     setReferenceTraceId,
@@ -5877,8 +5925,122 @@ export function buildAsApp(opts: ServerOpts = {}) {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     resolveOwnerConnectorNamespace,
     resolveRegisteredConnectorManifest,
+    // Fires ONLY when the capture route detects (before the credential
+    // write) that the target was `paused` + `historical_archive` — the
+    // recovered-archive reconnect journey. Resumes the SAME
+    // connector_instance row via `applyResume` (identical primitive the
+    // owner-agent bearer and owner-session resume routes use — no duplicate
+    // status-flip logic), then triggers the connector's normal
+    // first-sync/incremental run via `controller.runNow`. Never creates a
+    // second connection_instance row and never requests a full-history
+    // replay (no `runAdmission` override, no `force`): this is the exact
+    // "Run this connection" path the capture response's own next_step
+    // already documents, just triggered automatically instead of requiring a
+    // second owner click.
+    resumeHistoricalArchiveConnectionAndRunFirstSync: async (input: {
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+    }) => {
+      const store = createRequestConnectorInstanceStore();
+      await applyResume(
+        {
+          getConnectorInstance: (connectorInstanceId: string) => store.get(connectorInstanceId),
+          invalidateConnectorSummariesCache,
+          updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+            store.updateStatus(connectorInstanceId, options as Parameters<typeof store.updateStatus>[1]),
+        } as unknown as Parameters<typeof applyResume>[0],
+        input.connectorInstanceId,
+        { requireSourceBindingKind: HISTORICAL_ARCHIVE_SOURCE_BINDING_KIND }
+      );
+      // The row is now resumed (the `applyResume` call above already
+      // committed). What follows only decides how HONESTLY that is reported:
+      // absent a real run handle, this must return `failed`, never fabricate
+      // `resumed_and_synced` with a null `runId` — the capture route's 502
+      // path exists precisely so it can't claim a sync started when it did
+      // not, and a caller reading `archive_reconnect.run_id` must be able to
+      // trust that a non-null id means an actual run was launched.
+      if (!controller) {
+        return {
+          code: "archive_reconnect_run_unavailable",
+          kind: "failed",
+          message: "This connection was resumed, but no run controller is available to start its first sync.",
+        };
+      }
+      const started = (await controller.runNow(input.connectorId, {
+        connectorInstanceId: input.connectorInstanceId,
+        ownerSubjectId: input.ownerSubjectId,
+      })) as { run_id?: string } | undefined;
+      if (typeof started?.run_id !== "string" || started.run_id.length === 0) {
+        return {
+          code: "archive_reconnect_run_unavailable",
+          kind: "failed",
+          message: "This connection was resumed, but starting its first sync did not return a run id.",
+        };
+      }
+      return {
+        kind: "resumed_and_synced",
+        runId: started.run_id,
+      };
+    },
     setReferenceTraceId,
   } as unknown as Parameters<typeof mountRefStaticSecretCredentialCapture>[1]);
+
+  // POST /_ref/connections/:connectorInstanceId/resume is the owner-session
+  // (cookie-authed) sibling of the bearer resume routes in `buildRsApp`
+  // (`mountOwnerConnectionResume`), scoped to exactly one connectorInstanceId
+  // (no connector-only auto-select). It shares the SAME
+  // `updateConnectorInstanceStatus` status-flip primitive via `applyResume`
+  // (see owner-connection-resume.ts) — no second resume implementation. The
+  // `getConnectorInstance` seam stays wired because `applyResume` still needs
+  // it for the IMPLICIT auto-resume hooks' `historical_archive` guard; this
+  // route itself resumes any paused row the owner owns.
+  mountRefConnectionResume(app, {
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getConnectorInstance: (connectorInstanceId: string) =>
+      createRequestConnectorInstanceStore().get(connectorInstanceId),
+    getOwnerSubjectId,
+    handleError,
+    invalidateConnectorSummariesCache,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+      createRequestConnectorInstanceStore().updateStatus(
+        connectorInstanceId,
+        options as Parameters<ReturnType<typeof createRequestConnectorInstanceStore>["updateStatus"]>[1]
+      ),
+  } as unknown as Parameters<typeof mountRefConnectionResume>[1]);
+
+  // POST /_ref/connections/:connectorInstanceId/pause is the owner-session
+  // (cookie-authed) sibling of the bearer pause routes in `buildRsApp`
+  // (`mountOwnerConnectionPause`), and the exact inverse of the resume mount
+  // directly above. It shares the SAME `updateConnectorInstanceStatus`
+  // status-flip primitive via `applyPause` (see owner-connection-pause.ts).
+  // No `getConnectorInstance` seam: pause takes no source-binding-kind guard,
+  // because every pause is an explicit owner act.
+  mountRefConnectionPause(app, {
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerSubjectId,
+    handleError,
+    invalidateConnectorSummariesCache,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+      createRequestConnectorInstanceStore().updateStatus(
+        connectorInstanceId,
+        options as Parameters<ReturnType<typeof createRequestConnectorInstanceStore>["updateStatus"]>[1]
+      ),
+  } as unknown as Parameters<typeof mountRefConnectionPause>[1]);
 
   mountRefStaticSecretDraftConnection(app, {
     canonicalConnectorKey,
@@ -7109,6 +7271,91 @@ function buildRsApp(opts: ServerOpts = {}) {
         createRequestConnectorInstanceStore() as unknown as Record<string, (...args: unknown[]) => unknown>
       ).updateStatus?.(connectorInstanceId, options),
   } as unknown as Parameters<typeof mountOwnerConnectionReactivate>[1]);
+
+  // POST /v1/owner/connections/:connectionId/resume and
+  // POST /v1/owner/connectors/:connectorId/resume are the bearer-authed
+  // owner-agent connection-RESUME routes: the `paused`-status sibling of
+  // reactivate. Flips a single `paused` connection back to `active` so it
+  // becomes runnable again. Already-collected records, grants, schedule, and
+  // audit spine are untouched — zero cascade. Ownership is enforced by the
+  // namespace resolver with `allowStatuses: ['paused']` BEFORE any mutation
+  // (foreign/unknown id → 404; non-paused id → connector_instance_not_paused
+  // 409). Credential freshness is delegated to the next collection run — the
+  // owner is expected to have already repaired the credential (e.g. via the
+  // static-secret credential-capture route, which admits a `paused` target)
+  // before calling resume.
+  mountOwnerConnectionResume(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    invalidateConnectorSummariesCache,
+    listActiveBindingsForGrant,
+    listPausedConnectionsForConnector: async ({
+      ownerSubjectId,
+      connectorId,
+    }: {
+      ownerSubjectId: string;
+      connectorId: string;
+    }) =>
+      (
+        (await createRequestConnectorInstanceStore().listByOwner(ownerSubjectId)) as unknown as Array<{
+          connectorId: string;
+          status: string;
+        }>
+      ).filter((inst) => inst.connectorId === connectorId && inst.status === "paused"),
+    markConnectorSummaryEvidenceDirty,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      (
+        createRequestConnectorInstanceStore() as unknown as Record<string, (...args: unknown[]) => unknown>
+      ).updateStatus?.(connectorInstanceId, options),
+  } as unknown as Parameters<typeof mountOwnerConnectionResume>[1]);
+
+  // POST /v1/owner/connections/:connectionId/pause and
+  // POST /v1/owner/connectors/:connectorId/pause are the bearer-authed
+  // owner-agent connection-PAUSE routes: the inverse of resume directly above.
+  // Flips a single `active` connection to `paused` so no future scheduled or
+  // manual run lands for it. Already-collected records, grants, schedule, the
+  // stored credential, and the audit spine are untouched — zero cascade, and
+  // the row stays fully resumable. Ownership is enforced by the namespace
+  // resolver with `allowStatuses: ['active']` BEFORE any mutation
+  // (foreign/unknown id → 404; non-active id → connector_instance_not_active
+  // 409). The connector-only variant selects the single ACTIVE connection via
+  // `listActiveBindingsForGrant` (whose SQL pins `status = 'active'`), the
+  // mirror of resume's paused-row filter.
+  mountOwnerConnectionPause(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    invalidateConnectorSummariesCache,
+    listActiveBindingsForGrant,
+    markConnectorSummaryEvidenceDirty,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      (
+        createRequestConnectorInstanceStore() as unknown as Record<string, (...args: unknown[]) => unknown>
+      ).updateStatus?.(connectorInstanceId, options),
+  } as unknown as Parameters<typeof mountOwnerConnectionPause>[1]);
 
   // DELETE /v1/owner/connections/:connectionId and
   // DELETE /v1/owner/connectors/:connectorId are the bearer-authed owner-agent

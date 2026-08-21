@@ -74,14 +74,27 @@ interface ResolveNamespaceCall {
 
 type MountRefRun = typeof mountRefConnectionRun | typeof mountRefConnectorRun;
 
-function buildHarness(mount: MountRefRun, harnessOptions: { draftConnectionId?: string } = {}) {
+interface ResumeHookCall {
+  readonly connectorInstanceId: string;
+  readonly ownerSubjectId: string;
+}
+
+function buildHarness(
+  mount: MountRefRun,
+  harnessOptions: {
+    draftConnectionId?: string;
+    resumeHistoricalArchiveConnectionIfPaused?: (input: ResumeHookCall) => Promise<boolean>;
+  } = {}
+) {
   const calls: {
     emitSpineEvent: SpineEvent[];
     runNow: RunNowCall[];
     resolveOwnerConnectorNamespace: ResolveNamespaceCall[];
+    resumeHistoricalArchiveConnectionIfPaused: ResumeHookCall[];
   } = {
     emitSpineEvent: [],
     resolveOwnerConnectorNamespace: [],
+    resumeHistoricalArchiveConnectionIfPaused: [],
     runNow: [],
   };
   const ctx: MountRefConnectorsContext = {
@@ -124,6 +137,15 @@ function buildHarness(mount: MountRefRun, harnessOptions: { draftConnectionId?: 
       throw err;
     },
     requireOwnerSession: (_req, _res, next) => (typeof next === "function" ? next() : undefined),
+    ...(harnessOptions.resumeHistoricalArchiveConnectionIfPaused
+      ? {
+          resumeHistoricalArchiveConnectionIfPaused: async (input: ResumeHookCall): Promise<boolean> => {
+            calls.resumeHistoricalArchiveConnectionIfPaused.push(input);
+            const resumeHook = harnessOptions.resumeHistoricalArchiveConnectionIfPaused;
+            return resumeHook ? await resumeHook(input) : false;
+          },
+        }
+      : {}),
     resolveOwnerConnectorNamespace(_req, connectorId, options = {}) {
       calls.resolveOwnerConnectorNamespace.push({ connectorId, options });
       if (
@@ -561,4 +583,94 @@ test("POST /v1/owner/connections/:id/run rejects empty scoped resources instead 
 
   await assert.rejects(() => harness.invoke({ body: { resources: { messages: [] } } }), TOP_LEVEL_REGEX_1);
   assert.deepEqual(harness.calls.runNow, []);
+});
+
+test("POST /_ref/connections/:id/run resumes a paused historical_archive row before running (collection admission)", async () => {
+  const harness = buildHarness(mountRefConnectionRun, {
+    resumeHistoricalArchiveConnectionIfPaused: async () => true,
+  });
+
+  const res = await harness.invoke({
+    body: {},
+    params: { connectorInstanceId: "cin_recovered_archive" },
+  });
+
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(harness.calls.resumeHistoricalArchiveConnectionIfPaused, [
+    { connectorInstanceId: "cin_recovered_archive", ownerSubjectId: "owner_local" },
+  ]);
+  assert.deepEqual(harness.calls.runNow, [
+    {
+      connectorId: "chatgpt",
+      options: {
+        connectorInstanceId: "cin_recovered_archive",
+        force: false,
+        ownerSubjectId: "owner_local",
+      },
+    },
+  ]);
+});
+
+test("POST /_ref/connections/:id/run does not call the resume hook for browser_enrollment (draft) admission", async () => {
+  const harness = buildHarness(mountRefConnectionRun, {
+    draftConnectionId: "cin_draft_shell",
+    resumeHistoricalArchiveConnectionIfPaused: async () => true,
+  });
+
+  const res = await harness.invoke({
+    body: { run_admission: "browser_enrollment" },
+    params: { connectorInstanceId: "cin_draft_shell" },
+  });
+
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(
+    harness.calls.resumeHistoricalArchiveConnectionIfPaused,
+    [],
+    "the draft-row browser-enrollment run admission must never call the resume hook"
+  );
+});
+
+test("POST /_ref/connectors/:id/run never calls the resume hook (connector-scoped run family)", async () => {
+  const harness = buildHarness(mountRefConnectorRun, {
+    resumeHistoricalArchiveConnectionIfPaused: async () => true,
+  });
+
+  const res = await harness.invoke({ body: {}, params: { connectorId: "chatgpt" } });
+
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(
+    harness.calls.resumeHistoricalArchiveConnectionIfPaused,
+    [],
+    "the connector-scoped run route has no single connectorInstanceId to resume"
+  );
+});
+
+test("POST /_ref/connections/:id/run proceeds normally when the resume hook is absent (no context wiring)", async () => {
+  const harness = buildHarness(mountRefConnectionRun);
+
+  const res = await harness.invoke({ body: {}, params: { connectorInstanceId: "cin_chatgpt" } });
+
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(harness.calls.runNow, [
+    {
+      connectorId: "chatgpt",
+      options: { connectorInstanceId: "cin_chatgpt", force: false, ownerSubjectId: "owner_local" },
+    },
+  ]);
+});
+
+test("POST /_ref/connections/:id/run resumes a paused historical_archive row before running (setup admission, e.g. console Sync now)", async () => {
+  const harness = buildHarness(mountRefConnectionRun, {
+    resumeHistoricalArchiveConnectionIfPaused: async () => true,
+  });
+
+  const res = await harness.invoke({
+    body: { run_admission: "setup" },
+    params: { connectorInstanceId: "cin_recovered_archive_setup" },
+  });
+
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(harness.calls.resumeHistoricalArchiveConnectionIfPaused, [
+    { connectorInstanceId: "cin_recovered_archive_setup", ownerSubjectId: "owner_local" },
+  ]);
 });
