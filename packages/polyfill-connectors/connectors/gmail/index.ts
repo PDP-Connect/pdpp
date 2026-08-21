@@ -486,10 +486,8 @@ export function recordAttachmentCoverage(
 
 /**
  * Build the per-run attachments DETAIL_COVERAGE after the detail lane settles.
- * A requested attachments pass that scans the parent `messages` boundary and
- * finds zero attachment parts has a real empty denominator: `required_keys: []`
- * means "nothing owed", not "unknown". The list cursor that anchors this
- * detail pass lives on `messages`, so that is the `state_stream`.
+ * The list cursor that anchors this detail pass lives on `messages`, so that is
+ * the `state_stream`.
  * Reference-only: this reuses DETAIL_COVERAGE without promoting it to portable
  * protocol.
  *
@@ -509,13 +507,67 @@ export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailC
 }
 
 /**
- * Emit the per-run attachments DETAIL_COVERAGE after the detail lane settles.
+ * Whether this run walked a boundary that can support an attachments coverage
+ * claim at all.
+ *
+ * `attachments` has no enumeration of its own: an attachment is only ever
+ * discovered by decoding the BODYSTRUCTURE of a message the run already
+ * fetched. Its denominator is therefore inherited from whatever slice of the
+ * mailbox the run walked — and on an ordinary scheduled run that slice is the
+ * incremental forward window plus the MODSEQ delta, i.e. a CHANGE FEED, not an
+ * inventory.
+ *
+ * That is exactly the apple_contacts `contactsBoundaryEstablished` situation
+ * (`connectors/apple_contacts/index.ts`), and it needs the same answer. A quiet
+ * 16-minute run that observes no new mail decodes no attachment parts and would
+ * otherwise emit `considered: 0, covered: 0` — numbers that are trivially
+ * self-consistent and read downstream as "this stream is proven complete",
+ * when the honest statement is "this run proved nothing about the mailbox".
+ * Worse, the two are indistinguishable to the gate: a stream that has walked
+ * almost nothing and a stream that is genuinely fully collected emit the
+ * identical fact. Withholding is what keeps those two apart.
+ *
+ * The one boundary that does justify a whole-stream claim is a COMPLETED
+ * historical `messages` walk: the historical pass fetches every UID below the
+ * forward floor and `processMessage` decodes attachments for each one, so once
+ * `messages.backfill.completed_at` is set, every message in All Mail has had
+ * its attachment parts enumerated. Until then the mailbox below the resume
+ * point is simply unwalked, and no count taken above it describes it.
+ *
+ * Emitting nothing leaves the stream honestly unproven (the coherence
+ * contract's `checkpoint_only`/`no_proof_strategy` -> axis `unknown`) rather
+ * than falsely complete. `unknown` is a worse-looking verdict than a green
+ * `0/0` and that is the point: it is the true one, and it is the verdict an
+ * owner can act on.
+ */
+export function attachmentsCoverageBoundaryEstablished(session: { messagesBackfill: MessagesBackfillCursor }): boolean {
+  return typeof session.messagesBackfill.completed_at === "string" && session.messagesBackfill.completed_at !== "";
+}
+
+/**
+ * Emit the per-run attachments DETAIL_COVERAGE after the detail lane settles —
+ * but only when the run established a boundary that can support the claim
+ * (see `attachmentsCoverageBoundaryEstablished`).
  *
  * Extracted from `runAllMailPasses` to keep that orchestrator under the
  * cognitive-complexity ceiling (authoring guide §"Rules the tooling enforces").
  */
-async function emitAttachmentDetailCoverage(coverage: AttachmentDetailCoverage | undefined): Promise<void> {
+async function emitAttachmentDetailCoverage(
+  coverage: AttachmentDetailCoverage | undefined,
+  boundaryEstablished: boolean
+): Promise<void> {
   if (!coverage) {
+    return;
+  }
+  if (!boundaryEstablished) {
+    // Deliberately not a SKIP_RESULT: nothing was skipped by policy. The run
+    // simply has no denominator worth reporting, and says so by staying quiet.
+    await emit({
+      type: "PROGRESS",
+      stream: "attachments",
+      message:
+        "Withholding attachments coverage: the historical messages walk has not completed, so this run's attachment counts describe an incremental window, not the mailbox",
+    });
     return;
   }
   await emit(buildAttachmentDetailCoverageMessage(coverage));
@@ -3048,6 +3100,42 @@ interface ImapDownloadResponse {
   meta?: ImapDownloadMeta;
 }
 
+/**
+ * Download one attachment PART's bytes.
+ *
+ * `expectedSize` is deliberately taken from BODYSTRUCTURE (`attachment.size_bytes`)
+ * and NOT from the download response's `meta.expectedSize`.
+ *
+ * imapflow populates `meta.expectedSize` from the FETCH `RFC822.SIZE` item
+ * (`lib/imap-flow.js`: `meta = { expectedSize: response.size }`, where `size`
+ * is requested as the `RFC822.SIZE` atom in `lib/commands/fetch.js`).
+ * RFC822.SIZE is the size of the ENTIRE MESSAGE — every part, every MIME
+ * header, every boundary — not of the part being downloaded. It is the same
+ * number for every part of a multipart message.
+ *
+ * Feeding a message-scoped size into a per-attachment cap made a message
+ * reject ALL of its attachments whenever their SUM crossed the cap, even
+ * though no single one came close. Observed live on the owner's mailbox:
+ * 68 attachments marked `too_large` across 18 messages, of which only 2 were
+ * genuinely over the 25 MiB cap; one 3,080-byte attachment was rejected as
+ * "29830196 > 26214400 bytes". Two parts of one message recorded the byte-for-byte
+ * identical "observed" size — impossible for real per-part sizes, and the tell
+ * that the number was never the part's.
+ *
+ * That number is not just a wrong skip: `isProvenUnfillableGap`
+ * (`server/connector-gap-classification.ts`) parses this exact
+ * "exceeds max size: <observed> > <limit>" text as DURABLE PROOF that an item
+ * is permanently uncollectable. A message-scoped size therefore manufactured
+ * per-item impossibility proofs for items that are collectible, which is the
+ * fabricated-evidence failure that predicate exists to refuse.
+ *
+ * BODYSTRUCTURE's per-part `size` is the only per-part size IMAP gives us
+ * before transfer, so it is the only honest pre-flight number. When it is
+ * absent we report `null` (unknown) rather than substituting a
+ * message-scoped stand-in: `enforceMaxBytes` still counts real bytes
+ * mid-stream, so an under-reported or missing size is caught by observation
+ * instead of by a guess.
+ */
 export async function fetchAttachmentPart(
   client: Pick<ImapFlow, "download">,
   msg: FetchMessageObject,
@@ -3061,7 +3149,7 @@ export async function fetchAttachmentPart(
   })) as ImapDownloadResponse;
   return {
     content: response.content,
-    expectedSize: typeof response.meta?.expectedSize === "number" ? response.meta.expectedSize : attachment.size_bytes,
+    expectedSize: attachment.size_bytes,
     mimeType: response.meta?.contentType || attachment.content_type || DEFAULT_ATTACHMENT_MIME_TYPE,
   };
 }
@@ -3449,10 +3537,12 @@ export async function runAllMailPasses(
         recoveryOnly: true,
         session,
       });
-      // Recovery-only mode still reports attachment evidence for the served
-      // gaps it actually touched, but it returns before the ordinary Gmail
-      // walk and cursor advancement.
-      await emitAttachmentDetailCoverage(attachmentCoverage);
+      // Recovery-only mode touches exactly the served gaps it was handed and
+      // returns before the ordinary Gmail walk, so it never establishes a
+      // mailbox boundary — its counts describe a retry list, not an inventory.
+      // It still emits its DETAIL_GAPs below; only the coverage CLAIM is
+      // withheld (see `attachmentsCoverageBoundaryEstablished`).
+      await emitAttachmentDetailCoverage(attachmentCoverage, false);
       await emitAttachmentDetailGaps(attachmentCoverage);
     }
     return;
@@ -3603,7 +3693,7 @@ export async function runAllMailPasses(
   // record (primary pass + historical backfill) has settled and before the
   // messages STATE cursor commits — the ordering the progress-evidence
   // contract expects (records, then DETAIL_COVERAGE, then STATE).
-  await emitAttachmentDetailCoverage(attachmentCoverage);
+  await emitAttachmentDetailCoverage(attachmentCoverage, attachmentsCoverageBoundaryEstablished(session));
   // Then one matching DETAIL_GAP per failed attachment, so the commit-gate can
   // credit each gap_keys entry against a durable pending gap. Without this the
   // gate aborts an otherwise-successful run and the messages cursor never

@@ -58,6 +58,7 @@ import {
   addAttachmentBackfillRecordToSummary,
   advanceMessagesBackfillCursor,
   attachmentBackfillPageByteBudget,
+  attachmentsCoverageBoundaryEstablished,
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
   buildAttachmentTransferProgressMessage,
@@ -71,6 +72,7 @@ import {
   emitMessagesPass,
   type FetchBodiesFn,
   type FetchedBodies,
+  fetchAttachmentPart,
   formatAttachmentBackfillSummary,
   type HydrateAttachmentFn,
   isoToImapDate,
@@ -5086,4 +5088,154 @@ test("runDeltaPass: skips a message the server returns without an envelope", asy
   );
 
   assert.equal(emitted.length, 0, "no record emitted when the envelope is absent");
+});
+
+// ─── Per-part size honesty (RFC822.SIZE is the MESSAGE, not the part) ────────
+
+test("fetchAttachmentPart: reports the PART's BODYSTRUCTURE size, never the message-wide RFC822.SIZE", async () => {
+  // imapflow sets `meta.expectedSize` from the FETCH RFC822.SIZE item, which
+  // is the size of the WHOLE MESSAGE — identical for every part. Trusting it
+  // as a per-attachment size made a message reject all of its attachments
+  // whenever their SUM crossed the cap.
+  const MESSAGE_WIDE_SIZE = 35_962_168;
+  const PART_SIZE = 4_154_730;
+  const download = mock.fn(() =>
+    Promise.resolve({
+      content: Readable.from([Buffer.alloc(8, 0x41)]),
+      meta: { contentType: "application/pdf", expectedSize: MESSAGE_WIDE_SIZE },
+    })
+  );
+
+  const result = await fetchAttachmentPart({ download } as unknown as Pick<ImapFlow, "download">, makeMsg({ uid: 7 }), {
+    content_type: "application/pdf",
+    id: "m:2",
+    part_index: "2",
+    size_bytes: PART_SIZE,
+  } as AttachmentRecord);
+
+  assert.equal(
+    result.expectedSize,
+    PART_SIZE,
+    "expectedSize must be the part's own BODYSTRUCTURE size, not the message's RFC822.SIZE"
+  );
+  assert.notEqual(
+    result.expectedSize,
+    MESSAGE_WIDE_SIZE,
+    "the message-wide size must never be surfaced as a part size"
+  );
+});
+
+test("fetchAttachmentPart: reports unknown (null) rather than substituting the message-wide size", async () => {
+  // When BODYSTRUCTURE gives no per-part size there is no honest pre-flight
+  // number. `enforceMaxBytes` still counts real bytes mid-stream, so the
+  // right answer is "unknown", not a message-scoped stand-in.
+  const download = mock.fn(() =>
+    Promise.resolve({
+      content: Readable.from([Buffer.alloc(8, 0x41)]),
+      meta: { contentType: "application/pdf", expectedSize: 30_000_000 },
+    })
+  );
+
+  const result = await fetchAttachmentPart({ download } as unknown as Pick<ImapFlow, "download">, makeMsg({ uid: 7 }), {
+    content_type: "application/pdf",
+    id: "m:2",
+    part_index: "2",
+    size_bytes: null,
+  } as AttachmentRecord);
+
+  assert.equal(result.expectedSize, null, "an unknown part size stays unknown");
+});
+
+test("makeAttachmentHydrator: many small attachments summing over the cap all hydrate", async () => {
+  // The live defect: one message held 8 attachments of ~4.5 MB each. Every one
+  // was marked too_large against the 25 MiB per-attachment cap using the
+  // message's 35,962,168-byte total. None was individually close to the cap.
+  const MESSAGE_WIDE_SIZE = 35_962_168;
+  const PART_SIZE = 4_154_730;
+  const payload = Buffer.alloc(64, 0x41);
+  const uploadBlob = mock.fn(({ content }: { content: AsyncIterable<Buffer | Uint8Array | string> }) =>
+    (async () => {
+      let bytes = 0;
+      for await (const chunk of content) {
+        bytes += Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.from(chunk).byteLength;
+      }
+      return { blob_id: "blob_ok", mime_type: "application/pdf", sha256: "0".repeat(64), size_bytes: bytes };
+    })()
+  );
+  const hydrate = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    // Mirrors imapflow: meta.expectedSize is the message-wide RFC822.SIZE.
+    fetchAttachment: (_msg, attachment) =>
+      Promise.resolve({
+        content: Readable.from([payload]),
+        expectedSize: attachment.size_bytes,
+        mimeType: "application/pdf",
+      }),
+    maxBytes: DEFAULT_MAX_ATTACHMENT_BYTES,
+    uploadBlob,
+  });
+
+  const result = await hydrate(makeMsg({ uid: 9 }), {
+    content_type: "application/pdf",
+    id: "m:3",
+    part_index: "3",
+    size_bytes: PART_SIZE,
+  } as AttachmentRecord);
+
+  assert.equal(result.record.hydration_status, "hydrated", "a 4 MB part under a 25 MiB cap must hydrate");
+  // Guards the fixture's premise: the message total really is over the cap
+  // while the single part really is under it, so this test would fail if the
+  // message-wide size were ever reinstated as the per-part size.
+  assert.ok(MESSAGE_WIDE_SIZE > DEFAULT_MAX_ATTACHMENT_BYTES, "the message total is over the cap");
+  assert.ok(PART_SIZE < DEFAULT_MAX_ATTACHMENT_BYTES, "the individual part is under the cap");
+});
+
+test("makeAttachmentHydrator: a genuinely oversized part is still refused", async () => {
+  // The cap must keep working. This is the one real case on the live mailbox:
+  // a single 32,122,600-byte attachment over the 25 MiB cap.
+  const uploadBlob = mock.fn(() => Promise.reject(new Error("must not upload")));
+  const hydrate = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
+    fetchAttachment: () => Promise.reject(new Error("must not download")),
+    maxBytes: DEFAULT_MAX_ATTACHMENT_BYTES,
+    uploadBlob,
+  });
+
+  const result = await hydrate(makeMsg({ uid: 9 }), {
+    content_type: "application/octet-stream",
+    id: "m:2",
+    part_index: "2",
+    size_bytes: 32_122_600,
+  } as AttachmentRecord);
+
+  assert.equal(result.record.hydration_status, "too_large");
+  assert.match(String(result.record.hydration_error), /exceeds max size: 32122600 > 26214400 bytes/);
+  assert.equal(uploadBlob.mock.callCount(), 0, "an over-cap part is refused before any transfer");
+});
+
+// ─── Coverage honesty: withhold the claim without a boundary ────────────────
+
+test("attachmentsCoverageBoundaryEstablished: only a completed historical messages walk is a boundary", () => {
+  assert.equal(
+    attachmentsCoverageBoundaryEstablished({ messagesBackfill: { completed_at: null } as never }),
+    false,
+    "an in-flight historical walk proves nothing about the mailbox"
+  );
+  assert.equal(
+    attachmentsCoverageBoundaryEstablished({ messagesBackfill: {} as never }),
+    false,
+    "an absent completion is not a boundary"
+  );
+  assert.equal(
+    attachmentsCoverageBoundaryEstablished({ messagesBackfill: { completed_at: "" } as never }),
+    false,
+    "an empty completion stamp is not a boundary"
+  );
+  assert.equal(
+    attachmentsCoverageBoundaryEstablished({
+      messagesBackfill: { completed_at: "2026-08-21T12:40:35.475Z" } as never,
+    }),
+    true,
+    "a completed historical walk has enumerated every message's attachment parts"
+  );
 });
