@@ -214,6 +214,58 @@ test("unknown: a mixed source set keeps wait when any source is transient", () =
   assert.equal(findCondition(snap, "ProjectionReliable")?.remediation?.action, "wait");
 });
 
+test("unknown: superseded and catching-up projections carry different reasons and different remedies", () => {
+  // The two causes need OPPOSITE advice, so they must not share a `reason`.
+  // Collapsing them is what let one hardcoded remediation string ("wait") be
+  // shown for a cause that waiting can never clear. `reason` is the
+  // discriminator the condition schema already had; remediation is derived
+  // from it rather than pinned to the condition type.
+  const superseded = findCondition(
+    computeConnectionHealth(
+      input({
+        coverage: { axis: "complete" },
+        freshness: { axis: "fresh" },
+        projection: { unreliableSources: ["terminal_facts_historical"] },
+        run: run(),
+      })
+    ),
+    "ProjectionReliable"
+  );
+  const catchingUp = findCondition(
+    computeConnectionHealth(
+      input({
+        coverage: { axis: "complete" },
+        freshness: { axis: "fresh" },
+        projection: { unreliableSources: ["record_checkpoint_lag"] },
+        run: run(),
+      })
+    ),
+    "ProjectionReliable"
+  );
+
+  assert.equal(superseded?.reason, CONNECTION_CONDITION_REASONS.PROJECTION_SUPERSEDED_BY_DEFINITION_CHANGE);
+  assert.equal(catchingUp?.reason, CONNECTION_CONDITION_REASONS.PROJECTION_UNRELIABLE);
+  assert.notEqual(
+    superseded?.reason,
+    catchingUp?.reason,
+    "one reason cannot carry two remedies that contradict each other"
+  );
+
+  // The remediation STRING itself must differ, not merely the action enum —
+  // the reported defect was the owner-visible copy, not the machine field.
+  assert.notEqual(
+    superseded?.remediation?.label,
+    catchingUp?.remediation?.label,
+    "remediation copy must be a function of the reason, not of the condition"
+  );
+  assert.match(String(catchingUp?.remediation?.label), TOP_LEVEL_REGEX_11);
+  assert.doesNotMatch(
+    String(superseded?.remediation?.label),
+    TOP_LEVEL_REGEX_11,
+    "never tell the owner to wait for something that cannot happen"
+  );
+});
+
 test("shared condition reasons expose canonical reason-code constants", () => {
   assert.equal(CONNECTION_CONDITION_REASONS.PROJECTION_UNRELIABLE, "projection_unreliable");
   assert.equal(CONNECTION_CONDITION_REASONS.CREDENTIAL_REJECTED, "credential_rejected");

@@ -173,6 +173,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   OUTBOX_TRANSIENT_UPLOAD_FAILURE: "outbox_transient_upload_failure",
   OUTBOX_UNKNOWN: "outbox_unknown",
   PROJECTION_CURRENT: "projection_current",
+  PROJECTION_SUPERSEDED_BY_DEFINITION_CHANGE: "projection_superseded_by_definition_change",
   PROJECTION_UNRELIABLE: "projection_unreliable",
   REMOTE_SURFACE_AVAILABLE: "remote_surface_available",
   REMOTE_SURFACE_FAILED: "remote_surface_failed",
@@ -1996,6 +1997,41 @@ function conditionExpired(expiresAt: string | null, observedAt: string | null): 
  */
 const RUN_CLEARABLE_PROJECTION_SOURCES: ReadonlySet<string> = new Set(["terminal_facts_historical"]);
 
+/**
+ * Remediation is a pure function of the condition's `reason`, computed here at
+ * projection time — never a static string owned by the condition TYPE.
+ *
+ * `ProjectionReliable` is `false` for at least two causes that need opposite
+ * advice. A projection still catching up clears itself, so "wait" is true. A
+ * projection superseded by a definition change never clears on its own, so
+ * "wait" is the one instruction guaranteed to fail — it is what left several
+ * connections reading "Not measured" for half a day while the owner waited for
+ * an event that could not arrive. Binding the remedy to the CONDITION rather
+ * than to the CAUSE is the mechanism of that bug, so the two are bound
+ * together here instead: one reason, one remedy, no way to add a cause without
+ * choosing its advice.
+ */
+function projectionRemediationForReason(reason: string): ConnectionHealthCondition["remediation"] {
+  if (reason === CONDITION_REASON.PROJECTION_SUPERSEDED_BY_DEFINITION_CHANGE) {
+    // Same shape as every other owner-runnable remediation in this file (see
+    // `stale_manual_refresh` and the retryable-gap coverage condition): the
+    // runtime performs the retry, and the console's Refresh CTA is the
+    // owner's way to ask for it now.
+    return {
+      action: "retry_by_runtime",
+      label: "Run the connector to rebuild its evidence",
+      retryable: true,
+      target: "run",
+    };
+  }
+  return {
+    action: "wait",
+    label: "Wait for the reference read model to refresh",
+    retryable: true,
+    target: null,
+  };
+}
+
 function projectionReliableCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   // This is the canonical projection-reliability composition boundary. Several
   // failed components can share one closed reason code (for example a repair
@@ -2006,33 +2042,20 @@ function projectionReliableCondition(input: ComputeConnectionHealthInput): Conne
     // still clear on its own — a mixed set is only as stuck as its most
     // recoverable member. Only an entirely run-clearable set changes advice.
     const requiresRun = sources.every((source) => RUN_CLEARABLE_PROJECTION_SOURCES.has(source));
+    const reason = requiresRun
+      ? CONDITION_REASON.PROJECTION_SUPERSEDED_BY_DEFINITION_CHANGE
+      : CONDITION_REASON.PROJECTION_UNRELIABLE;
     return condition({
       message: requiresRun
         ? `Projection evidence has not run since the connection's setup changed: ${sources.join(", ")}. A new successful run will restore it.`
         : `Projection evidence is unreliable: ${sources.join(", ")}.`,
       origin: "read_model",
-      reason: CONDITION_REASON.PROJECTION_UNRELIABLE,
+      reason,
       // The first unreliable source is surfaced as the machine-readable
       // reason_code; callers that need the complete set still have the full
       // list in `unreliableSources`/the human-readable `message` below.
       reasonCode: sources[0] ?? null,
-      remediation: requiresRun
-        ? {
-            // Same shape as every other owner-runnable remediation in this
-            // file (see `stale_manual_refresh` and the retryable-gap
-            // coverage condition): the runtime performs the retry, and the
-            // console's Refresh CTA is the owner's way to ask for it now.
-            action: "retry_by_runtime",
-            label: "Run the connector to rebuild its evidence",
-            retryable: true,
-            target: "run",
-          }
-        : {
-            action: "wait",
-            label: "Wait for the reference read model to refresh",
-            retryable: true,
-            target: null,
-          },
+      remediation: projectionRemediationForReason(reason),
       severity: "blocked",
       status: "false",
       type: "ProjectionReliable",
