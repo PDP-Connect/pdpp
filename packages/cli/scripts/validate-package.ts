@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertBareSpecifiersResolve,
   assertManifestTargets,
   assertPackedFiles,
   type PackageManifest,
@@ -51,6 +52,7 @@ try {
     encoding: "utf8",
   });
   assertManifestTargets(manifest, join(extractionRoot, "package"));
+  assertBareSpecifiersResolve(manifest, join(extractionRoot, "package"), packedFiles);
   process.stdout.write(`Validated ${pack.filename} (${packedFiles.length} files).\n`);
 } finally {
   rmSync(tempRoot, { force: true, recursive: true });

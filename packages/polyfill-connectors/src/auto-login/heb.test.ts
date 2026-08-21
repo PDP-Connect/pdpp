@@ -34,11 +34,28 @@ const PASSKEY_HTML = readFileSync(
   new URL("../../connectors/heb/__fixtures__/passkey-page.html", import.meta.url),
   "utf8"
 );
+const PASSKEY_ENROLLMENT_HTML = readFileSync(
+  new URL("../../connectors/heb/__fixtures__/passkey-enrollment-page.html", import.meta.url),
+  "utf8"
+);
+/** The live shape observed in run_1787109487130. */
+const PASSKEY_ENROLLMENT_URL = "https://accounts.heb.com/interaction/abc123xyz/passkey_registration";
 const LOADING_HTML = "<html><body><main><p>Loading your orders...</p></main></body></html>";
 const VERIFICATION_HTML = readFileSync(
   new URL("../../connectors/heb/__fixtures__/verification-code-page.html", import.meta.url),
   "utf8"
 );
+/**
+ * The live login-method chooser from run_1787109487130. Matches
+ * VERIFICATION_CODE_RE via the radio label "Email me a one-time code" while
+ * carrying no code input at all.
+ */
+const LOGIN_METHOD_CHOOSER_HTML = readFileSync(
+  new URL("../../connectors/heb/__fixtures__/login-method-chooser-page.html", import.meta.url),
+  "utf8"
+);
+/** The live chooser URL from run_1787109487130 — the `/login` interaction route. */
+const LOGIN_METHOD_CHOOSER_URL = "https://accounts.heb.com/interaction/5iuOgIGpIH0ju9UJKtBiK/login";
 const CAPTCHA_HTML = readFileSync(
   new URL("../../connectors/heb/__fixtures__/captcha-page.html", import.meta.url),
   "utf8"
@@ -91,12 +108,21 @@ function makeInteractionHarness({
   };
 }
 
-type PageStateKind = "live" | "login" | "incapsula" | "passkey" | "verification" | "captcha" | "unknown";
+type PageStateKind =
+  | "live"
+  | "login"
+  | "incapsula"
+  | "passkey"
+  | "passkey_enrollment"
+  | "verification"
+  | "captcha"
+  | "unknown";
 type ControlKind = "email" | "password" | "submit" | "code";
 type PostSubmitOutcomeKind = Exclude<PageStateKind, "login">;
 
 interface PostSubmitTransition {
   atMs: number;
+  buttons?: FakeButtonState[];
   html?: string;
   kind: PostSubmitOutcomeKind;
   url?: string;
@@ -124,7 +150,21 @@ interface FakeFormState {
   visible: boolean;
 }
 
+/**
+ * A page-level (non-form) control, used to model the passkey-enrollment
+ * screen's "Add passkey" / "Not now" buttons.
+ */
+interface FakeButtonState {
+  enabled: boolean;
+  onClick?: () => void;
+  text: string;
+  visible: boolean;
+}
+
 interface FakePageState {
+  buttons: FakeButtonState[];
+  declineClicks: number;
+  enrollClicks: number;
   forms: FakeFormState[];
   gotoEvents: Array<{
     atMs: number;
@@ -179,6 +219,49 @@ function defaultLoginForms(): FakeFormState[] {
   return [createForm()];
 }
 
+/**
+ * Model the live enrollment screen's two controls. `onDecline` defaults to the
+ * behavior observed via CDP: clicking "Not now" navigates to the logged-in
+ * orders page.
+ */
+function passkeyEnrollmentButtons({
+  declineEffective = true,
+  declineEnabled = true,
+  declineVisible = true,
+}: {
+  declineEffective?: boolean;
+  declineEnabled?: boolean;
+  declineVisible?: boolean;
+} = {}): FakeButtonState[] {
+  return [
+    {
+      enabled: true,
+      onClick: (): void => {
+        state.enrollClicks += 1;
+      },
+      text: "Add passkey",
+      visible: true,
+    },
+    {
+      enabled: declineEnabled,
+      onClick: (): void => {
+        state.declineClicks += 1;
+        if (!declineEffective) {
+          return;
+        }
+        state.live = true;
+        state.url = ORDERS_URL;
+        state.html = LIVE_HTML;
+        state.view = "live";
+        state.buttons = [];
+        state.forms = [];
+      },
+      text: "Not now",
+      visible: declineVisible,
+    },
+  ];
+}
+
 function makePostSubmitWaitClock(page: Page): { now: () => number; wait: (ms: number) => Promise<void> } {
   return {
     now: (): number => state.nowMs,
@@ -208,6 +291,14 @@ function applyPostSubmitOutcome(outcome: PostSubmitTransition): void {
       state.html = outcome.html ?? PASSKEY_HTML;
       state.forms = [];
       state.view = "passkey";
+      return;
+    case "passkey_enrollment":
+      state.live = false;
+      state.url = outcome.url ?? PASSKEY_ENROLLMENT_URL;
+      state.html = outcome.html ?? PASSKEY_ENROLLMENT_HTML;
+      state.forms = [];
+      state.buttons = outcome.buttons ?? passkeyEnrollmentButtons();
+      state.view = "passkey_enrollment";
       return;
     case "verification":
       state.live = false;
@@ -475,6 +566,144 @@ function formLocator(form: FakeFormState, formIndex: number): Locator {
   return locator as Locator;
 }
 
+function buttonLocator(button: FakeButtonState): Locator {
+  const locator: Pick<
+    Locator,
+    | "click"
+    | "count"
+    | "fill"
+    | "first"
+    | "innerText"
+    | "inputValue"
+    | "isEnabled"
+    | "isVisible"
+    | "locator"
+    | "nth"
+    | "press"
+  > = {
+    click: (): Promise<void> => {
+      button.onClick?.();
+      return Promise.resolve();
+    },
+    count: async (): Promise<number> => 1,
+    fill: (): Promise<void> => Promise.resolve(),
+    first(): Locator {
+      return locator as Locator;
+    },
+    innerText: async (): Promise<string> => button.text,
+    inputValue: async (): Promise<string> => "",
+    isEnabled: async (): Promise<boolean> => button.enabled,
+    isVisible: async (): Promise<boolean> => button.visible,
+    locator(): Locator {
+      return emptyLocator();
+    },
+    press: (): Promise<void> => Promise.resolve(),
+    nth(): Locator {
+      return locator as Locator;
+    },
+  };
+  return locator as Locator;
+}
+
+function buttonsLocator(): Locator {
+  const locator: Pick<
+    Locator,
+    | "click"
+    | "count"
+    | "fill"
+    | "first"
+    | "innerText"
+    | "inputValue"
+    | "isEnabled"
+    | "isVisible"
+    | "locator"
+    | "nth"
+    | "press"
+  > = {
+    click: (): Promise<void> => Promise.resolve(),
+    count: async (): Promise<number> => state.buttons.length,
+    fill: (): Promise<void> => Promise.resolve(),
+    first(): Locator {
+      return state.buttons[0] ? buttonLocator(state.buttons[0]) : emptyLocator();
+    },
+    innerText: async (): Promise<string> => "",
+    inputValue: async (): Promise<string> => "",
+    isEnabled: async (): Promise<boolean> => state.buttons.some((b) => b.enabled && b.visible),
+    isVisible: async (): Promise<boolean> => state.buttons.some((b) => b.visible),
+    locator(): Locator {
+      return emptyLocator();
+    },
+    press: (): Promise<void> => Promise.resolve(),
+    nth(index: number): Locator {
+      const button = state.buttons[index];
+      return button ? buttonLocator(button) : emptyLocator();
+    },
+  };
+  return locator as Locator;
+}
+
+/**
+ * Page-level control lookup, mirroring how a real DOM answers
+ * `page.locator(VERIFICATION_CODE_SELECTOR)`: every matching input on the page,
+ * regardless of which form encloses it. The connector uses this to decide
+ * whether the page can actually ACCEPT a code, so the fake must aggregate the
+ * same way rather than reporting zero.
+ */
+function pageControlsLocator(kind: ControlKind): Locator {
+  interface Entry {
+    control: FakeControlState;
+    controlIndex: number;
+    form: FakeFormState;
+    formIndex: number;
+  }
+  function entries(): Entry[] {
+    const found: Entry[] = [];
+    state.forms.forEach((form, formIndex) => {
+      controlListFor(form, kind).forEach((control, controlIndex) => {
+        found.push({ control, controlIndex, form, formIndex });
+      });
+    });
+    return found;
+  }
+  function at(index: number): Locator {
+    const entry = entries()[index];
+    return entry ? controlLocator(entry.form, entry.formIndex, kind, entry.controlIndex) : emptyLocator();
+  }
+  const locator: Pick<
+    Locator,
+    | "click"
+    | "count"
+    | "fill"
+    | "first"
+    | "innerText"
+    | "inputValue"
+    | "isEnabled"
+    | "isVisible"
+    | "locator"
+    | "nth"
+    | "press"
+  > = {
+    click: (): Promise<void> => Promise.resolve(),
+    count: async (): Promise<number> => entries().length,
+    fill: (): Promise<void> => Promise.resolve(),
+    first(): Locator {
+      return at(0);
+    },
+    innerText: async (): Promise<string> => "",
+    inputValue: async (): Promise<string> => "",
+    isEnabled: async (): Promise<boolean> => entries().some(({ control }) => control.enabled && control.visible),
+    isVisible: async (): Promise<boolean> => entries().some(({ control }) => control.visible),
+    locator(): Locator {
+      return emptyLocator();
+    },
+    press: (): Promise<void> => Promise.resolve(),
+    nth(index: number): Locator {
+      return at(index);
+    },
+  };
+  return locator as Locator;
+}
+
 function formsLocator(): Locator {
   const locator: Pick<
     Locator,
@@ -514,6 +743,9 @@ function makePage(initial: FakePageInit = {}): Page {
   }
 
   state = {
+    buttons: initial.buttons ?? [],
+    declineClicks: 0,
+    enrollClicks: 0,
     forms,
     html: initial.html ?? UNKNOWN_HTML,
     gotoEvents: [],
@@ -546,6 +778,9 @@ function makePage(initial: FakePageInit = {}): Page {
         } else if (state.view === "passkey") {
           state.url = SIGNIN_URL;
           state.html = PASSKEY_HTML;
+        } else if (state.view === "passkey_enrollment") {
+          state.url = PASSKEY_ENROLLMENT_URL;
+          state.html = PASSKEY_ENROLLMENT_HTML;
         } else if (state.view === "verification") {
           state.url = SIGNIN_URL;
           state.html = VERIFICATION_HTML;
@@ -566,6 +801,14 @@ function makePage(initial: FakePageInit = {}): Page {
     locator: (selector: string): Locator => {
       if (selector === "form") {
         return formsLocator();
+      }
+      // The passkey decline selector enumerates page-level clickable controls.
+      if (selector.includes('[role="button"]')) {
+        return buttonsLocator();
+      }
+      const kind = controlKindFromSelector(selector);
+      if (kind) {
+        return pageControlsLocator(kind);
       }
       return emptyLocator();
     },
@@ -607,6 +850,423 @@ async function withHebCredentials(run: () => Promise<void>): Promise<void> {
     }
   }
 }
+
+// ─── Passkey-enrollment interstitial (run_1787109487130) ──────────────────
+// Live ground truth: 4s after submit the page was
+// https://accounts.heb.com/interaction/<id>/passkey_registration, sign-in had
+// ALREADY succeeded, and no code was ever dispatched. The connector emitted a
+// fabricated `otp` interaction and blocked for 10+ minutes. Clicking "Not now"
+// navigated straight to the logged-in orders page.
+
+test("ensureHebSession declines the post-submit passkey-enrollment upsell and continues WITHOUT any OTP prompt", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      html: SIGNIN_HTML,
+      live: false,
+      postSubmitOutcomes: [
+        {
+          atMs: 200,
+          kind: "passkey_enrollment",
+        },
+      ],
+      url: SIGNIN_URL,
+      view: "login",
+    });
+    const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
+
+    const ok = await ensureHebSession({
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    // The defect being fixed: no interaction of ANY kind, and above all no otp.
+    assert.equal(harness.requests.length, 0, "the enrollment upsell must never prompt the owner");
+    assert.equal(
+      harness.requests.filter((req) => req.kind === "otp").length,
+      0,
+      "no OTP may be fabricated for a screen that never sent a code"
+    );
+    assert.equal(state.declineClicks, 1, "the decline control must be clicked exactly once");
+    assert.equal(state.enrollClicks, 0, "PDPP must never enroll a passkey");
+    assert.equal(state.live, true);
+    assert.equal(state.url, ORDERS_URL);
+  });
+});
+
+test("ensureHebSession declines a passkey-enrollment page reached on the initial probe, without an OTP prompt", async () => {
+  const page = makePage({
+    buttons: passkeyEnrollmentButtons(),
+    html: PASSKEY_ENROLLMENT_HTML,
+    live: false,
+    url: PASSKEY_ENROLLMENT_URL,
+    view: "passkey_enrollment",
+  });
+  const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
+
+  const ok = await ensureHebSession({
+    page,
+    postSubmitWaitClock: makePostSubmitWaitClock(page),
+    sendInteraction: harness.sendInteraction,
+  });
+
+  assert.equal(ok, true);
+  assert.equal(harness.requests.length, 0);
+  assert.equal(state.declineClicks, 1);
+  assert.equal(state.enrollClicks, 0);
+  assert.equal(state.live, true);
+});
+
+test("ensureHebSession fails honestly when the passkey decline control is unusable — never an OTP prompt", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      html: SIGNIN_HTML,
+      live: false,
+      postSubmitOutcomes: [
+        {
+          atMs: 200,
+          // "Not now" present in the copy but not actually clickable.
+          buttons: passkeyEnrollmentButtons({ declineVisible: false }),
+          kind: "passkey_enrollment",
+        },
+      ],
+      url: SIGNIN_URL,
+      view: "login",
+    });
+    const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
+
+    await assert.rejects(
+      ensureHebSession({
+        page,
+        postSubmitWaitClock: makePostSubmitWaitClock(page),
+        sendInteraction: harness.sendInteraction,
+      }),
+      /heb_passkey_enrollment_decline_control_missing/
+    );
+    assert.equal(
+      harness.requests.filter((req) => req.kind === "otp").length,
+      0,
+      "a failed decline must never degrade into a fabricated OTP prompt"
+    );
+    assert.equal(state.declineClicks, 0);
+    assert.equal(state.enrollClicks, 0);
+    assert.equal(state.live, false);
+  });
+});
+
+test("ensureHebSession fails honestly when the passkey decline click does not take effect — bounded, no OTP, no spin", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      html: SIGNIN_HTML,
+      live: false,
+      postSubmitOutcomes: [
+        {
+          atMs: 200,
+          // Clickable, but the page stays on passkey_registration afterward.
+          buttons: passkeyEnrollmentButtons({ declineEffective: false }),
+          kind: "passkey_enrollment",
+        },
+      ],
+      url: SIGNIN_URL,
+      view: "login",
+    });
+    const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
+
+    await assert.rejects(
+      ensureHebSession({
+        page,
+        postSubmitWaitClock: makePostSubmitWaitClock(page),
+        sendInteraction: harness.sendInteraction,
+      }),
+      /heb_passkey_enrollment_decline_ineffective/
+    );
+    assert.equal(
+      harness.requests.filter((req) => req.kind === "otp").length,
+      0,
+      "an ineffective decline must never degrade into a fabricated OTP prompt"
+    );
+    assert.equal(state.enrollClicks, 0, "PDPP must never click Add passkey, even while retrying");
+    // Bounded: retries stop rather than spinning for the full timeout.
+    assert.ok(state.declineClicks >= 1);
+    assert.ok(state.declineClicks <= 4, `decline retries must be bounded, saw ${state.declineClicks}`);
+    assert.equal(state.live, false);
+  });
+});
+
+test("a genuine verification-code surface on the accounts.heb.com interaction host STILL prompts for OTP", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      html: VERIFICATION_HTML,
+      live: false,
+      postSubmitOutcomes: [
+        {
+          atMs: 200,
+          html: LIVE_HTML,
+          kind: "live",
+          url: ORDERS_URL,
+        },
+      ],
+      // A sibling interaction route that is NOT passkey_registration.
+      url: "https://accounts.heb.com/interaction/abc123xyz/verification",
+      view: "verification",
+    });
+    const harness = makeInteractionHarness();
+
+    const ok = await ensureHebSession({
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(harness.requests.length, 1);
+    assert.equal(harness.requests[0]?.kind, "otp", "real challenges must be unaffected by the passkey fix");
+    assert.match(harness.requests[0]?.message ?? "", VERIFICATION_MSG_RE);
+    assert.equal(state.declineClicks, 0);
+  });
+});
+
+// ─── Login-method chooser (run_1787109487130) ─────────────────────────────
+// Live ground truth: 340ms after the login form loaded, the page was still
+// https://accounts.heb.com/interaction/<id>/login — a chooser reading "Choose
+// how you log in" with radios "Email me a one-time code" and "Enter password"
+// (the latter ALREADY CHECKED). It has no code input. VERIFICATION_CODE_RE
+// matched the radio LABEL, so the connector classified it `verification_code`
+// and prompted the owner for a code that H-E-B had never sent.
+
+test("the login-method chooser never prompts for an OTP — a radio label offering a code is not a challenge", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      // The chooser has a password field but NO code field, exactly as captured.
+      forms: [createForm({ codeControls: [], submitControls: [createControl(true)] })],
+      html: LOGIN_METHOD_CHOOSER_HTML,
+      live: false,
+      postSubmitOutcomes: [
+        {
+          atMs: 200,
+          html: LIVE_HTML,
+          kind: "live",
+          url: ORDERS_URL,
+        },
+      ],
+      url: LOGIN_METHOD_CHOOSER_URL,
+      view: "login",
+    });
+    const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
+
+    const ok = await ensureHebSession({
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    });
+
+    // The defect: the owner was asked for a code that was never sent.
+    assert.equal(
+      harness.requests.filter((req) => req.kind === "otp").length,
+      0,
+      "a page merely OFFERING to send a code must never trigger an OTP prompt"
+    );
+    assert.equal(ok, true, "the already-selected password path must carry the sign-in through");
+    assert.equal(state.live, true);
+  });
+});
+
+test("the chooser's own copy cannot fabricate an OTP prompt on the post-submit wait either", async () => {
+  await withHebCredentials(async () => {
+    // Post-submit, H-E-B re-renders the SAME chooser route. The wait loop must
+    // keep waiting rather than reclassifying that re-render as a challenge.
+    const page = makePage({
+      html: SIGNIN_HTML,
+      live: false,
+      postSubmitOutcomes: [
+        {
+          atMs: 200,
+          html: LOGIN_METHOD_CHOOSER_HTML,
+          kind: "unknown",
+          url: LOGIN_METHOD_CHOOSER_URL,
+        },
+        {
+          atMs: 600,
+          html: LIVE_HTML,
+          kind: "live",
+          url: ORDERS_URL,
+        },
+      ],
+      url: SIGNIN_URL,
+      view: "login",
+    });
+    const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
+
+    const ok = await ensureHebSession({
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(
+      harness.requests.filter((req) => req.kind === "otp").length,
+      0,
+      "the post-submit re-render of the chooser must not be read as a code challenge"
+    );
+  });
+});
+
+test("prose mentioning a one-time code with no code input never prompts — text alone is not evidence", async () => {
+  await withHebCredentials(async () => {
+    // Every VERIFICATION_CODE_RE phrase, on a page with no code input at all.
+    const proseOnly = [
+      "<!DOCTYPE html><html><body><main>",
+      "<h1>Account security</h1>",
+      "<p>We can send a verification code to your email.</p>",
+      "<p>Your security code keeps your account safe.</p>",
+      "<p>Choose “Email me a one-time code” to receive one.</p>",
+      "<p>No code sent yet.</p>",
+      "</main></body></html>",
+    ].join("");
+
+    const page = makePage({
+      // No forms at all: nothing on this page can accept a code.
+      forms: [],
+      html: proseOnly,
+      live: false,
+      url: "https://accounts.heb.com/interaction/abc123xyz/notice",
+      view: "unknown",
+    });
+    const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
+
+    await assert.rejects(
+      ensureHebSession({
+        page,
+        postSubmitWaitClock: makePostSubmitWaitClock(page),
+        sendInteraction: harness.sendInteraction,
+      }),
+      /heb_login_unexpected_ui/,
+      "an unrecognized page must fail with a named error, never a fabricated OTP prompt"
+    );
+
+    assert.equal(
+      harness.requests.filter((req) => req.kind === "otp").length,
+      0,
+      "code copy without a code input must never prompt"
+    );
+    // Requirement 4: no silent fallthrough. The owner is handed the browser.
+    const handoffs = harness.requests.filter((req) => req.kind === "manual_action");
+    assert.equal(handoffs.length, 1, "the honest path is a browser handoff, not an invented secret");
+    assert.match(handoffs[0]?.message ?? "", SECURE_BROWSER_MSG_RE);
+  });
+});
+
+test("a code input that disappears between classification and the prompt fails honestly instead of prompting", async () => {
+  await withHebCredentials(async () => {
+    // H-E-B re-renders the interaction route mid-flight. Classification saw a
+    // real code input; by the time the owner would be asked, it is gone. The
+    // owner must not be sent hunting for a code this page can no longer take.
+    const page = makePage({
+      html: VERIFICATION_HTML,
+      live: false,
+      url: "https://accounts.heb.com/interaction/abc123xyz/verification",
+      view: "verification",
+    });
+    // The code input is real when the surface is classified, then H-E-B
+    // re-renders the route and it is gone before the owner would be asked.
+    // `checkpoint` is the connector's own progress signal, so the removal is
+    // pinned to the exact step after classification rather than to a poll count.
+    const harness = makeInteractionHarness();
+    const checkpoint = (name: string): Promise<void> => {
+      if (name === "heb-verification-code-loaded") {
+        state.forms = [createForm({ codeControls: [], submitControls: [] })];
+      }
+      return Promise.resolve();
+    };
+
+    await assert.rejects(
+      ensureHebSession({
+        checkpoint,
+        page,
+        postSubmitWaitClock: makePostSubmitWaitClock(page),
+        sendInteraction: harness.sendInteraction,
+      }),
+      /heb_verification_code_input_missing/,
+      "the prompt site must re-verify that the page can still accept a code"
+    );
+    assert.equal(
+      harness.requests.filter((req) => req.kind === "otp").length,
+      0,
+      "no OTP may be requested once the code input is gone"
+    );
+  });
+});
+
+test("the enrollment control is never clicked — only an exact decline label is actionable", async () => {
+  // The enrollment screen's only control is "Add passkey". No decline label
+  // matches it, so the run must stop with a named error rather than clicking
+  // the one button on screen.
+  const page = makePage({
+    buttons: [
+      {
+        enabled: true,
+        onClick: (): void => {
+          state.enrollClicks += 1;
+        },
+        text: "Add passkey",
+        visible: true,
+      },
+    ],
+    html: PASSKEY_ENROLLMENT_HTML,
+    live: false,
+    url: PASSKEY_ENROLLMENT_URL,
+    view: "passkey_enrollment",
+  });
+  const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
+
+  await assert.rejects(
+    ensureHebSession({
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    }),
+    /heb_passkey_enrollment_decline_control_missing/
+  );
+  assert.equal(state.enrollClicks, 0, "PDPP must never click Add passkey");
+  assert.equal(harness.requests.filter((req) => req.kind === "otp").length, 0);
+});
+
+test("passkey-enrollment detection does not fire on a lookalike URL or on enrollment copy alone", async () => {
+  // Copy-only lookalike: the enrollment marketing text on a page whose URL is
+  // NOT the passkey_registration route must not be auto-declined.
+  const copyOnly = makePage({
+    buttons: passkeyEnrollmentButtons(),
+    html: PASSKEY_ENROLLMENT_HTML,
+    live: false,
+    url: "https://accounts.heb.com/interaction/abc123xyz/login",
+    view: "unknown",
+  });
+  const copyHarness = makeInteractionHarness();
+  await ensureHebSession({
+    page: copyOnly,
+    postSubmitWaitClock: makePostSubmitWaitClock(copyOnly),
+    sendInteraction: copyHarness.sendInteraction,
+  });
+  assert.equal(state.declineClicks, 0, "URL is required — marketing copy alone must not trigger a decline");
+
+  // Foreign-host lookalike: the route name on a host that is not accounts.heb.com.
+  const foreignHost = makePage({
+    buttons: passkeyEnrollmentButtons(),
+    html: PASSKEY_ENROLLMENT_HTML,
+    live: false,
+    url: "https://evil.example.com/interaction/abc/passkey_registration",
+    view: "unknown",
+  });
+  const foreignHarness = makeInteractionHarness();
+  await ensureHebSession({
+    page: foreignHost,
+    postSubmitWaitClock: makePostSubmitWaitClock(foreignHost),
+    sendInteraction: foreignHarness.sendInteraction,
+  });
+  assert.equal(state.declineClicks, 0, "the host must be accounts.heb.com");
+});
 
 test("probeHebSession returns true when the persisted profile already reaches orders", async () => {
   const page = makePage({ html: LIVE_HTML, live: true, url: ORDERS_URL, view: "live" });

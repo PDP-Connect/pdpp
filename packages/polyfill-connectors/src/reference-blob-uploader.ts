@@ -256,12 +256,35 @@ async function fetchUploadResponse(args: {
   }
 }
 
+/**
+ * The RI host's real error envelope (`request-helpers.ts` `pdppError`) always
+ * shapes `error` as an OBJECT — `{ code, message, type, request_id, ... }` —
+ * never a bare string. `String(errorField)` on that object stringifies to
+ * the useless `"[object Object]"`, which is exactly what production Gmail
+ * attachment `hydration_error` values captured verbatim (16 attachments
+ * quarantined terminal on a 503 whose real cause was permanently masked).
+ * Prefer the nested `.message` when present; fall back to the bare-string
+ * shape a non-RI or future-shape server might still send.
+ */
+function extractErrorFieldMessage(errorField: unknown): string | null {
+  if (typeof errorField === "string") {
+    return errorField;
+  }
+  if (errorField && typeof errorField === "object" && !Array.isArray(errorField)) {
+    const nested = (errorField as Record<string, unknown>).message;
+    if (typeof nested === "string" && nested.length > 0) {
+      return nested;
+    }
+  }
+  return null;
+}
+
 async function validatedBlobUploadResponse(response: Response, upload: HashingUploadBody): Promise<ReferenceBlobRef> {
   const body = (await response.json().catch((): unknown => null)) as unknown;
   if (!response.ok) {
     const message =
       body && typeof body === "object" && !Array.isArray(body)
-        ? String((body as Record<string, unknown>).error ?? response.statusText)
+        ? (extractErrorFieldMessage((body as Record<string, unknown>).error) ?? response.statusText)
         : response.statusText;
     throw new ReferenceBlobUploadFailure(
       httpFailureKind(response.status),

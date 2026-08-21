@@ -14,6 +14,17 @@ import { type BindValue, iterateDynamicSqlAcknowledged } from "../lib/db.ts";
  */
 
 export interface BoundedPageResult<TFailure> {
+  /**
+   * Every id `repair()` was actually invoked for this page, in attempt
+   * order — success, failure, and deferred outcomes all count as
+   * "attempted" (only a candidate never reached because the deadline
+   * expired, or an id that was never even classified as a candidate, is
+   * excluded). A scoped caller (`runScopedConnectorReconciliation`) uses
+   * this to advance a fairness-rotation cursor to the LAST id it genuinely
+   * gave a turn, not merely the last id it fetched — see
+   * `runDirtyPriorityAcceleration` in connector-summary-read-model.ts.
+   */
+  readonly attemptedIds: readonly string[];
   readonly candidateReasonCounts: Readonly<Record<string, number>>;
   readonly candidatesInspected: number;
   readonly discovered: number;
@@ -136,6 +147,7 @@ async function repairCandidates<TFailure>({
   }>;
   readonly selected: readonly (readonly [string, string])[];
 }): Promise<{
+  readonly attemptedIds: readonly string[];
   readonly failed: number;
   readonly failedRows: ReadonlyMap<string, TFailure>;
   readonly processed: number;
@@ -147,19 +159,42 @@ async function repairCandidates<TFailure>({
     repaired: number;
   }
   let processed = 0;
+  // Every id `repair()` was actually invoked for, in attempt order —
+  // regardless of whether it succeeded, failed, or was deferred (a
+  // deferred candidate — e.g. one with an active run — still consumed its
+  // turn and must not be re-selected as if it had never been tried). This
+  // is the fairness-rotation primitive `runDirtyPriorityAcceleration` needs
+  // to advance its cursor to the LAST ATTEMPTED id rather than the last
+  // FETCHED id (see that function's doc for the production starvation this
+  // closes).
+  const attemptedIds: string[] = [];
   const state: RepairState = { failed: 0, failedRows: new Map(), repaired: 0 };
   for (const [id] of selected) {
-    if (deadline !== null && Date.now() >= deadline) {
+    // Guaranteed forward progress (2026-08-18): the FIRST selected candidate
+    // always gets attempted, even if `discover`'s own batched read (never
+    // deadline-checked — it is one indivisible await, not a per-candidate
+    // loop) already consumed the whole round's budget by the time this loop
+    // starts. Production: a discovery read contending with unrelated heavy
+    // I/O took 8.9s against a 2s round budget, so `Date.now() >= deadline`
+    // was ALREADY true before candidate #1 — every one of 16 dirty
+    // candidates was reported `skipped` with zero repair attempts, forever,
+    // because the SAME slow discovery repeated every round. A repair unit
+    // already selected represents real, already-spent discovery work; never
+    // attempting even one wastes that work and guarantees the backlog can
+    // never shrink. Every candidate AFTER the first still obeys the
+    // ordinary cooperative-deadline contract (no unit begins once expired).
+    if (processed > 0 && deadline !== null && Date.now() >= deadline) {
       break;
     }
     // biome-ignore lint/performance/noAwaitInLoops: Repairs are intentionally sequential to preserve lease and revision ordering.
     const result = await repair(id);
     processed += 1;
+    attemptedIds.push(id);
     if (!result.deferred) {
       recordRepairOutcome(state, id, result);
     }
   }
-  return { ...state, processed };
+  return { ...state, attemptedIds, processed };
 }
 
 export async function processBoundedReconciliationPage<TInstance, TReason extends string, TFailure>({
@@ -200,6 +235,7 @@ export async function processBoundedReconciliationPage<TInstance, TReason extend
   return {
     candidateBudgetUsed: candidateBudgetUsed + repairs.processed,
     page: {
+      attemptedIds: repairs.attemptedIds,
       candidateReasonCounts: selection.counts,
       candidatesInspected: instanceRows.length,
       discovered: instanceRows.length,
@@ -293,6 +329,7 @@ export async function runScopedConnectorReconciliation<TInstance, TReason extend
   const repairs = await repairCandidates({ deadline, repair, selected: selection.selected });
   const repaired = repairs.repaired + (await prune(connectorInstanceIds, instanceRows, deadline));
   return {
+    attemptedIds: repairs.attemptedIds,
     candidateReasonCounts: selection.counts,
     candidatesInspected: instanceRows.length,
     discovered: instanceRows.length,
@@ -305,6 +342,7 @@ export async function runScopedConnectorReconciliation<TInstance, TReason extend
 
 function mergeBoundedPage<TFailure>(
   result: {
+    attemptedIds: string[];
     candidateReasonCounts: Record<string, number>;
     candidatesInspected: number;
     discovered: number;
@@ -323,6 +361,7 @@ function mergeBoundedPage<TFailure>(
   result.failed += page.failed;
   result.repaired += page.repaired;
   result.skipped += page.skipped;
+  result.attemptedIds.push(...page.attemptedIds);
   for (const [id, row] of page.failedRows) {
     result.failedRows.set(id, row);
   }
@@ -369,6 +408,7 @@ export async function runBoundedKeysetReconciliation<TFailure>({
   readonly readPage: (afterId: string | null, limit: number) => Promise<readonly string[]>;
 }): Promise<BoundedReconciliationResult<TFailure>> {
   const result: {
+    attemptedIds: string[];
     candidateReasonCounts: Record<string, number>;
     candidatesInspected: number;
     discovered: number;
@@ -377,6 +417,7 @@ export async function runBoundedKeysetReconciliation<TFailure>({
     repaired: number;
     skipped: number;
   } = {
+    attemptedIds: [],
     candidateReasonCounts: {},
     candidatesInspected: 0,
     discovered: 0,

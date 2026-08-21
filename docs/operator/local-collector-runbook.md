@@ -1,8 +1,10 @@
-# Local Collector Runbook (Claude Code / Codex)
+# Local Collector Runbook (Claude Code / Codex / Signal)
 
 Status: reference-experimental operator surface. Not PDPP Core or Collection Profile protocol.
 
-This is the single-page operator runbook for running Claude Code and Codex local collectors against a PDPP Docker reference deployment, with resumable connector state. It supersedes the bare `bin/local-device-exporter.ts` flow in `reference-implementation/docs/local-device-exporter.md` &mdash; that script remains as a compatibility shim but does not participate in STATE sync.
+This is the single-page operator runbook for running Claude Code, Codex, and Signal Desktop local collectors against a PDPP Docker reference deployment, with resumable connector state. It supersedes the bare `bin/local-device-exporter.ts` flow in `reference-implementation/docs/local-device-exporter.md` &mdash; that script remains as a compatibility shim but does not participate in STATE sync.
+
+Steps 1&ndash;5 below apply to every local-collector connector, including Signal &mdash; swap `--connector claude_code` for `--connector signal` in Steps 2 and 4. Signal carries one additional prerequisite (the `sigtop` sidecar binary) and one structural constraint (it only runs on the owner's own logged-in desktop session) that Claude Code/Codex do not have; see "Signal Desktop prerequisites" below before Step 1.
 
 ## What you are setting up
 
@@ -40,6 +42,95 @@ State is authoritative on the server. Before each connector pass the runner fetc
   current published release. See
   `docs/reference/local-collector.md`§"Deployment Posture: Published vs Dev".
 
+## Signal Desktop prerequisites
+
+Signal is a **local-collector-only** connector: unlike Slack (`slackdump`) or
+Google Messages (`gmcli`), its sidecar tool cannot ship inside the Core
+server image. The manifest declares a `desktop_session` runtime binding, and
+the engine resolves that to `local_device` placement and refuses server-side
+placement outright. This is by design, not a temporary gap &mdash; see
+`design-notes/connector-sidecar-packaging-2026-08-17.md` for the full
+evidence trail (a container hits four successive failures: missing file,
+no D-Bus session, uid mismatch, AppArmor denial).
+
+**Why:** Signal Desktop's SQLCipher database key is stored encrypted in
+`~/.config/Signal/config.json` (`encryptedKey`) and unwraps only through a
+session-bound OS keyring &mdash; KWallet/GNOME Keyring (`libsecret`) on
+Linux, Keychain on macOS, DPAPI on Windows. Check which backend your
+Signal Desktop uses:
+
+```bash
+cat ~/.config/Signal/config.json
+```
+
+- `"safeStorageBackend": "kwallet6"` (or `gnome_libsecret`, etc.) &mdash; the
+  key only unwraps inside the owner's own logged-in desktop session. Run the
+  collector directly on that machine, logged in as that user, outside any
+  container.
+- `"safeStorageBackend": "basic_text"` &mdash; the key is stored unwrapped.
+  A server-side path is technically possible in this configuration, but it
+  is not what this connector is built or tested for; treat it as a
+  documentation note, not a supported deployment target.
+
+**Install `sigtop`** (github.com/tbvdm/sigtop, ISC license) &mdash; the CLI
+this connector spawns as an arms-length subprocess to decrypt and read
+Signal Desktop's database, the same "sidecar" pattern the `slack` connector
+uses for `slackdump`:
+
+```bash
+# Linux: pkg-config needs the libsecret headers to build the safeStorage
+# unwrap. If you cannot install system-wide (no root), download the .deb
+# with apt-get download (works without sudo) and extract it locally, then
+# point PKG_CONFIG_PATH/CGO_LDFLAGS at the extracted tree instead of
+# installing system-wide.
+sudo apt install libsecret-1-dev pkg-config   # Debian/Ubuntu
+# or: dnf install libsecret-devel pkgconf-pkg-config   # Fedora
+
+GOBIN=~/.local/bin go install github.com/tbvdm/sigtop/cmd/sigtop@latest
+```
+
+Note the real import path is `github.com/tbvdm/sigtop/cmd/sigtop` &mdash;
+`go install github.com/tbvdm/sigtop@latest` (without `/cmd/sigtop`) fails
+with "module ... found, but does not contain package ...".
+
+**Verify the binary actually works** &mdash; `sigtop -v` and `sigtop version`
+are NOT valid subcommands (there is no version flag at all); use a real
+subcommand instead:
+
+```bash
+sigtop check-database   # fast SQLCipher integrity check against the local DB;
+                         # exits 0 with no output on success
+```
+
+If Signal Desktop is running, close it first &mdash; sigtop needs unlocked
+read access to `db.sqlite`/`db.sqlite-wal`/`db.sqlite-shm`.
+
+**Point the collector at `sigtop`** if it is not on `PATH` (a custom
+`GOBIN`, a non-standard install location, etc.):
+
+```bash
+export SIGTOP_BIN=/absolute/path/to/sigtop   # default: "sigtop" on PATH
+```
+
+`resolveSigtopBin`/`runSigtop` in `packages/polyfill-connectors/connectors/signal/index.ts`
+implement this resolution; a missing binary fails fast with a message
+naming both the install command and the `SIGTOP_BIN` override, rather than
+an opaque `ENOENT`.
+
+**Building `@pdpp/local-collector` from source for Signal support**: if your
+installed `@pdpp/local-collector` predates Signal (`advertise` does not list
+`signal` under `bundled_connectors`), rebuild from a checkout that has the
+connector. The collector's `tsconfig.build.json` `include` list is the
+package's actual shipping manifest &mdash; a connector must be listed there
+(and its test-only fixture files that pull in `better-sqlite3` must be
+listed under `exclude`, the same way `imessage/fixtures.ts` and
+`signal/fixtures.ts` are) or its compiled `.js` never reaches the tarball,
+even if the connector is registered in `collector-registry.ts` and shows up
+under `advertise`. A collector shipping only `collector-definition.js` for a
+connector (no `index.js`) will advertise it but fail at spawn time with
+`spawn tsx ENOENT` (falling back to running uncompiled `.ts` source, which
+needs a `tsx` binary this package deliberately does not depend on).
+
 ## Step 1 &mdash; Confirm collector runtime capabilities
 
 On the host with Claude/Codex data:
@@ -55,9 +146,13 @@ Expected output (capabilities may grow):
   "runtime": "collector",
   "bindings": ["network", "filesystem", "local_device"],
   "collector_protocol_version": "1",
-  "bundled_connectors": ["claude_code", "codex"]
+  "bundled_connectors": ["claude_code", "codex", "google_takeout", "imessage", "apple_photos", "google_messages", "signal"]
 }
 ```
+
+If `signal` is missing from `bundled_connectors`, see "Signal Desktop
+prerequisites" above &mdash; your installed build predates Signal support
+and needs rebuilding from a checkout that has it.
 
 Both `claude_code` and `codex` require the `filesystem` binding, which the collector advertises by default. The published package intentionally does not bundle the `browser` binding; browser-bound connectors stay in the monorepo until each has its own publishability review. A connector that requires a binding the collector does not advertise will fail before spawn with `runtime_capability_mismatch` &mdash; you do not need to discover that empirically.
 
@@ -67,7 +162,7 @@ In a browser, open `/device-exporters` on the reference deployment, signed in as
 
 Use the "Create enrollment code" form:
 
-- Connector id: `claude_code` (or `codex`).
+- Connector id: `claude_code` (or `codex`, `signal`, ...).
 - Local binding: a stable name like `personal-laptop` or `ci-runner-eu-1`. Used by the server to namespace the connection id. Existing server responses still expose this compatibility field as `source_instance_id`.
 - Display name: optional, propagates as the device label.
 
@@ -129,7 +224,7 @@ PDPP_CONNECTION_ID=si_... \
     --connector claude_code
 ```
 
-Swap `--connector claude_code` for `codex` to ingest Codex CLI history/skills/etc.
+Swap `--connector claude_code` for `codex` to ingest Codex CLI history/skills/etc., or for `signal` to ingest Signal Desktop messages/conversations/reactions/attachments (see "Signal Desktop prerequisites" above first &mdash; `sigtop` must be installed and Signal Desktop must not be running).
 
 Live progress prints to stderr as the connector finds records (phase, running
 counts, and a final summary), so a large local archive no longer looks stuck

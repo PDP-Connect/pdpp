@@ -25,9 +25,14 @@
  * connector over the public API — they capture preference signal
  * (upvoted/downvoted history) no third party can see.
  *
- * Pagination: opaque `after` cursor, newest-first. Incremental sync stops
- * once we cross the earliest `created_utc` from the prior run — same
- * pattern the original API-based connector used.
+ * Pagination: opaque `after` cursor. The stop rule is per-stream, because
+ * Reddit does not order every listing the same way:
+ *   submitted/comments  — ordered by the item's own `created_utc`, so an
+ *     incremental run stops once it crosses the prior run's high-water mark.
+ *   saved/upvoted/downvoted/hidden — ordered by OWNER ACTION time. An old
+ *     post upvoted today sits at rank 1 with an old `created_utc`, so the
+ *     created-based stop is invalid here: these walk the full listing and
+ *     dedupe by fullname. See `RedditListingOrder` in parsers.ts.
  *
  * Rate limit: Reddit's logged-in web JSON allows ~100 req/min before 429.
  * We page at limit=100 and use a conservative 500ms politeDelay between
@@ -50,7 +55,12 @@
 
 import { isMainModule } from "@pdpp/connector-protocol";
 import type { Page } from "playwright";
-import { ensureRedditSession, isSessionLive } from "../../src/auto-login/reddit.ts";
+import {
+  ensureRedditJsonOrigin,
+  ensureRedditSession,
+  isSessionLive,
+  REDDIT_JSON_ORIGIN,
+} from "../../src/auto-login/reddit.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
@@ -67,10 +77,12 @@ import {
   appendNewChildren,
   classifyListingStatus,
   commentRecord,
+  dedupeByFullname,
   MAX_PAGES,
   maxCreatedEpoch,
   nextAfter,
   pagePath,
+  type RedditListingOrder,
   savedRecord,
   sinceFromState,
   submittedRecord,
@@ -152,11 +164,30 @@ interface ProgressExtra {
 
 // ─── Fetch through the page (preserves session cookie + anti-bot) ───────
 
+/**
+ * Every listing fetch is issued from the page, and Reddit grants NO
+ * cross-origin access to its listing JSON — so the page must already be on
+ * {@link REDDIT_JSON_ORIGIN} or the browser blocks the request before it
+ * reaches the network, surfacing as `TypeError: Failed to fetch` (mapped to
+ * `status: 0` below, then to `reddit_http_0`).
+ *
+ * `ensureSession` normally leaves the page on the right origin, but collect
+ * runs after an arbitrary amount of navigation and the reauth path can move it
+ * again, so this does not assume — it re-establishes the origin on the first
+ * fetch and then no-ops (a URL check, no navigation) for every page after it.
+ * This is the same defect that broke the liveness probe in
+ * `run_1787164349370`; see `src/auto-login/reddit.ts`'s REDDIT_JSON_ORIGIN.
+ */
 async function redditFetch(page: Page, path: string): Promise<RedditFetchResult> {
+  if (!(await ensureRedditJsonOrigin(page))) {
+    // Reported as a transport-shaped failure so the existing retry
+    // classification handles it, rather than a bare throw from collect.
+    return { status: 0, json: { error: "reddit_json_origin_unavailable" } as never };
+  }
   return (await page.evaluate(
-    async ({ path: evalPath, userAgent }) => {
+    async ({ origin, path: evalPath, userAgent }) => {
       try {
-        const res = await fetch(`https://old.reddit.com${evalPath}`, {
+        const res = await fetch(`${origin}${evalPath}`, {
           credentials: "include",
           headers: {
             accept: "application/json",
@@ -175,7 +206,7 @@ async function redditFetch(page: Page, path: string): Promise<RedditFetchResult>
         return { status: 0, json: { error: String(err) } };
       }
     },
-    { path, userAgent: USER_AGENT }
+    { origin: REDDIT_JSON_ORIGIN, path, userAgent: USER_AGENT }
   )) as RedditFetchResult;
 }
 
@@ -289,7 +320,8 @@ export async function paginate(
   progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
   streamName?: string,
   onAuthFailed?: RedditReauthFn,
-  repairBudget: ReturnType<typeof createRepairBudget> = createRepairBudget()
+  repairBudget: ReturnType<typeof createRepairBudget> = createRepairBudget(),
+  order: RedditListingOrder = "created"
 ): Promise<RedditChild[]> {
   const all: RedditChild[] = [];
   let after: string | null = null;
@@ -335,7 +367,7 @@ export async function paginate(
     if (children.length === 0) {
       break;
     }
-    if (appendNewChildren(children, sinceEpochUtc, all)) {
+    if (appendNewChildren(children, sinceEpochUtc, all, order)) {
       break;
     }
 
@@ -346,7 +378,13 @@ export async function paginate(
     await delay(PAGE_DELAY_MS);
   }
 
-  return all;
+  // `action`-ordered streams walk the whole listing every run, so the same
+  // item recurs across runs and (rarely) within one walk when Reddit shifts
+  // items between pages mid-walk. Dedupe by fullname before the caller counts
+  // `considered`/`covered`, so coverage reflects distinct items rather than
+  // repeat sightings. `created`-ordered streams stop at the cursor and are
+  // already distinct, so this is a no-op for them.
+  return order === "action" ? dedupeByFullname(all) : all;
 }
 
 // ─── Stream runner ──────────────────────────────────────────────────────
@@ -357,6 +395,10 @@ export async function paginate(
 export interface RedditStreamConfig {
   endpoint: string;
   name: string;
+  /** How Reddit sorts this listing. Drives the pagination stop rule — see
+   *  {@link RedditListingOrder}. Omitted means `created` (authorship
+   *  timeline), the only ordering for which an early stop is sound. */
+  order?: RedditListingOrder;
   progressMessage: string;
   toRecord: (c: RedditChild) => RecordData;
 }
@@ -401,7 +443,8 @@ export async function collectStream(args: CollectStreamArgs): Promise<CollectStr
     progress,
     stream.name,
     onAuthFailed,
-    repairBudget
+    repairBudget,
+    stream.order ?? "created"
   );
 
   const latestEpoch = maxCreatedEpoch(items, sinceEpoch ?? 0);
@@ -451,27 +494,35 @@ export function buildStreamTable(userPath: string, emittedAt: string): RedditStr
       progressMessage: "Fetching comments",
       toRecord: (c) => commentRecord(c.data, emittedAt),
     },
+    // The four streams below are ordered by OWNER ACTION time, not by the
+    // item's `created_utc` — acting on an old item puts an old `created_utc`
+    // at the top of the listing. They must walk the full listing and dedupe;
+    // see `RedditListingOrder`.
     {
       name: "saved",
       endpoint: `${userPath}/saved.json`,
+      order: "action",
       progressMessage: "Fetching saved items",
       toRecord: (c) => savedRecord(c, emittedAt),
     },
     {
       name: "upvoted",
       endpoint: `${userPath}/upvoted.json`,
+      order: "action",
       progressMessage: "Fetching upvoted items",
       toRecord: (c) => voteRecord(c, emittedAt),
     },
     {
       name: "downvoted",
       endpoint: `${userPath}/downvoted.json`,
+      order: "action",
       progressMessage: "Fetching downvoted items",
       toRecord: (c) => voteRecord(c, emittedAt),
     },
     {
       name: "hidden",
       endpoint: `${userPath}/hidden.json`,
+      order: "action",
       progressMessage: "Fetching hidden items",
       toRecord: (c) => voteRecord(c, emittedAt),
     },
@@ -479,8 +530,12 @@ export function buildStreamTable(userPath: string, emittedAt: string): RedditStr
 }
 
 /** Build a RedditListingFetch bound to a Playwright page. Extracted
- *  so tests can substitute a non-browser fetch. */
-function makePageFetch(page: Page): RedditListingFetch {
+ *  so tests can substitute a non-browser fetch.
+ *
+ *  Exported so `redditFetch`'s origin guard is directly testable: reaching it
+ *  only through `collectAllStreams` means every listing/parsing fixture has to
+ *  model navigation, which would bury the one behavior under test. */
+export function makePageFetch(page: Page): RedditListingFetch {
   return (path) => redditFetch(page, path);
 }
 
@@ -595,12 +650,18 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
  */
 export async function redditEnsureSession({
   capture,
+  checkpoint,
   context,
   onCredentialSubmit,
   page,
   sendInteraction,
 }: EnsureSessionArgs): Promise<void> {
-  await ensureRedditSession({ capture, context, onCredentialSubmit, page, sendInteraction });
+  // Forwarding `checkpoint` is the point of production run_1787109028586's
+  // fix: without it the watchdog's no-progress message could only name the
+  // runtime's own `session-establish:begin`, so a 120s stall inside the
+  // first liveness probe was indistinguishable from a stall anywhere else in
+  // session establishment.
+  await ensureRedditSession({ capture, checkpoint, context, onCredentialSubmit, page, sendInteraction });
 }
 
 if (isMainModule(import.meta.url)) {

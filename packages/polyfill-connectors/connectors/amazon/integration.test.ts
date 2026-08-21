@@ -424,13 +424,33 @@ test("collect path does not advance a year cursor after unparseable order-date d
   );
 });
 
-test("amazon manifest: successful manual runs have a bounded freshness window", () => {
+test("amazon manifest: successful runs have a bounded freshness window", () => {
+  // The bounded window is what this test is for: without
+  // `maximum_staleness_seconds`, freshness is `unknown` and a successful run
+  // cannot project `current`.
+  //
+  // The mode assertion moved from a hard-coded "manual" to the connector's
+  // own declared facts. Amazon declares `background_safe: true` — the
+  // browser session persists after the owner's first login — and mode is now
+  // DERIVED from that (see reference-implementation/runtime/
+  // refresh-mode-derivation.ts). Pinning "manual" here contradicted the
+  // manifest's own background-safety claim.
   const manifest = JSON.parse(readFileSync(AMAZON_MANIFEST_PATH, "utf8")) as {
-    capabilities?: { refresh_policy?: { maximum_staleness_seconds?: number; recommended_mode?: string } };
+    capabilities?: {
+      refresh_policy?: {
+        background_safe?: boolean;
+        interaction_posture?: string;
+        maximum_staleness_seconds?: number;
+        recommended_mode?: string;
+      };
+    };
   };
   const policy = manifest.capabilities?.refresh_policy;
-  assert.equal(policy?.recommended_mode, "manual");
   assert.equal(policy?.maximum_staleness_seconds, 86_400);
+  // Amazon's first login is owner-present, and the session then persists.
+  assert.equal(policy?.interaction_posture, "otp_likely");
+  assert.equal(policy?.background_safe, true);
+  assert.equal(policy?.recommended_mode, "automatic");
 });
 
 // ─── Empty list-page classification ──────────────────────────────────────
@@ -2037,4 +2057,110 @@ test("a run with zero considered orders still emits a zero-required DETAIL_COVER
   assert.deepEqual(cov.required_keys, []);
   assert.deepEqual(cov.hydrated_keys, []);
   assert.equal(findDetailGaps(protocolMessages).length, 0, "zero considered orders produce no gaps");
+});
+
+// ─── item_count reconciliation ──────────────────────────────────────────
+
+/**
+ * `item_count` is not a provider assertion — Amazon never states a count in any
+ * markup this connector reads. The number is a count of item elements parsed
+ * from two surfaces, so the only reconcilable claim is the detail page's own
+ * item list: every item that page showed must survive into a record. A merged
+ * list SHORTER than the detail list means an item was seen and then lost.
+ */
+function findItemCountShortfalls(protocolMessages: readonly unknown[]): Record<string, unknown>[] {
+  return protocolMessages.filter(
+    (m) =>
+      (m as { type?: string; reason?: string }).type === "SKIP_RESULT" &&
+      (m as { reason?: string }).reason === "item_count_shortfall"
+  ) as Record<string, unknown>[];
+}
+
+test("emitOrderAndItems: every detail-page item becoming a record reports no shortfall", async () => {
+  const { deps, protocolMessages, emitted } = makeRecordingDeps();
+  const detail = makeDetail({
+    items: [
+      makeDetailItem({ asin: "B000000001", name: "Widget A" }),
+      makeDetailItem({ asin: "B000000002", name: "Widget B" }),
+    ],
+  });
+  await emitOrderAndItems(deps, makeListOrder({ items: [] }), detail, "2026-01-05");
+
+  assert.equal(emitted.filter((r) => r.stream === "order_items").length, 2);
+  assert.equal(findItemCountShortfalls(protocolMessages).length, 0, "a complete order must not report a gap");
+});
+
+test("emitOrderAndItems: a detail item that never becomes a record is reported as a shortfall", async () => {
+  // Two detail items collapse to one record because they carry the same
+  // identity, so one of the items the page showed us is not in the database.
+  // Before this check that loss was silent.
+  const { deps, protocolMessages, emitted } = makeRecordingDeps();
+  const detail = makeDetail({
+    items: [
+      makeDetailItem({ asin: "B000000001", name: "Widget A" }),
+      makeDetailItem({ asin: "B000000001", name: "Widget A" }),
+    ],
+  });
+  await emitOrderAndItems(deps, makeListOrder({ items: [] }), detail, "2026-01-05");
+
+  const emittedItems = emitted.filter((r) => r.stream === "order_items").length;
+  const shortfalls = findItemCountShortfalls(protocolMessages);
+  assert.equal(emittedItems, 1, "the two detail rows collapsed to one record");
+  assert.equal(shortfalls.length, 1, "the lost item must be surfaced");
+  assert.deepEqual(shortfalls[0]?.diagnostics, {
+    order_id: makeListOrder().orderId,
+    declared_item_count: 2,
+    emitted_item_count: 1,
+  });
+});
+
+test("emitOrderAndItems: no detail page means no denominator and no fabricated shortfall", async () => {
+  // A 3+ item order whose list card collapsed its titles reaches here with an
+  // empty list and no detail. Counting the list card as the denominator would
+  // invent a gap on every such order.
+  const { deps, protocolMessages } = makeRecordingDeps();
+  await emitOrderAndItems(deps, makeListOrder({ items: [] }), null, "2026-01-05");
+
+  assert.equal(
+    findItemCountShortfalls(protocolMessages).length,
+    0,
+    "an unfetched detail page is an unknown, not a proven shortfall"
+  );
+});
+
+test("emitOrderAndItems: the denominator is the detail page, never the list card", async () => {
+  // Pins WHICH surface supplies the claim. The list card here shows two items
+  // that dedupe to one record — a merge outcome, not a loss, because the list
+  // card is not an authority on how many items an order has. Only the detail
+  // page's own item list is a claim worth holding the connector to; falling
+  // back to the list card manufactures a gap out of ordinary deduplication.
+  const { deps, protocolMessages, emitted } = makeRecordingDeps();
+  const listOrder = makeListOrder({
+    items: [
+      { asin: "B000000001", name: "Widget A", url: null },
+      { asin: "B000000001", name: "Widget A", url: null },
+    ],
+  });
+  await emitOrderAndItems(deps, listOrder, null, "2026-01-05");
+
+  assert.equal(emitted.filter((r) => r.stream === "order_items").length, 1, "the duplicate list rows collapse");
+  assert.equal(
+    findItemCountShortfalls(protocolMessages).length,
+    0,
+    "the list card is not a provider claim, so its count must not become a denominator"
+  );
+});
+
+test("emitOrderAndItems: items out of scope suppress the reconciliation entirely", async () => {
+  const { deps, protocolMessages } = makeRecordingDeps({ wantsItems: false });
+  const detail = makeDetail({
+    items: [makeDetailItem({ asin: "B000000001" }), makeDetailItem({ asin: "B000000001" })],
+  });
+  await emitOrderAndItems(deps, makeListOrder({ items: [] }), detail, "2026-01-05");
+
+  assert.equal(
+    findItemCountShortfalls(protocolMessages).length,
+    0,
+    "a stream nobody asked for cannot report a gap against records it never tried to emit"
+  );
 });

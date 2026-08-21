@@ -608,6 +608,39 @@ CREATE TABLE IF NOT EXISTS connector_instance_tombstones (
   UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
 );
 
+-- Reversible alias/read-model grouping of a recovered-fragment connector
+-- instance under the canonical connector instance for the SAME real
+-- provider account. This table is deliberately the ONLY mechanism for
+-- account unification: no code path physically rewrites a fragment's own
+-- connector_instance_id, moves its records, or deletes it. Every read
+-- surface that must present "one logical account" (Sources, Explore,
+-- lexical/semantic search, source detail, public read identity) resolves
+-- through connector-instance-canonicalization.ts, which reads this table.
+-- Grouping a fragment never affects credentials, schedules, or checkpoint
+-- state -- those stay attached only to the canonical row (enforced by the
+-- migration tool, not by a DB constraint, since credentials/schedules key
+-- off connector_instance_id with no FK to this table).
+-- connector_instance_id is the PRIMARY KEY: a fragment has exactly one
+-- canonical target at a time (no fan-out), and the canonical row itself is
+-- never a fragment (see assertion in the resolver / migration tool, not a DB
+-- CHECK, since a cross-row self-reference isn't expressible as a CHECK).
+-- Deleting a row is the complete rollback: the alias disappears and the
+-- fragment reverts to being its own independently-visible connection.
+CREATE TABLE IF NOT EXISTS connector_instance_groups (
+  connector_instance_id           TEXT PRIMARY KEY,
+  canonical_connector_instance_id TEXT NOT NULL,
+  owner_subject_id                TEXT NOT NULL,
+  reason                          TEXT NOT NULL,
+  evidence                        TEXT NOT NULL DEFAULT '{}',
+  grouped_by                      TEXT NOT NULL,
+  grouped_at                      TEXT NOT NULL,
+  CHECK (connector_instance_id <> canonical_connector_instance_id)
+);
+CREATE INDEX IF NOT EXISTS idx_connector_instance_groups_owner
+  ON connector_instance_groups(owner_subject_id);
+CREATE INDEX IF NOT EXISTS idx_connector_instance_groups_canonical
+  ON connector_instance_groups(canonical_connector_instance_id);
+
 -- Per-connection encrypted static-secret credential store. A peer of the
 -- instance-scoped storage / schedule state: a single connector-declared static
 -- provider secret sealed at rest under the owner/operator key and keyed to
@@ -683,6 +716,12 @@ CREATE TABLE IF NOT EXISTS manual_upload_artifacts (
   error_json            TEXT,
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
+  -- The boot epoch of the process that owns this in-flight upload.
+  -- An artifact stuck at uploaded/validating whose owner_epoch is not the
+  -- current one is provably orphaned: the process that could have finished
+  -- it is gone. NULL means "written before this column existed"; the sweep
+  -- treats those as orphaned too, since no live process claims them.
+  owner_epoch           TEXT,
   FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT,
   FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE SET NULL,
   FOREIGN KEY(acquisition_batch_id) REFERENCES acquisition_batches(batch_id) ON DELETE SET NULL
@@ -1081,6 +1120,30 @@ CREATE TABLE IF NOT EXISTS connector_schedules (
   enabled           INTEGER NOT NULL DEFAULT 1,
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL
+);
+
+-- The deployment's durable controller identity.
+--
+-- Exactly one row (id = 'singleton'). Written once, on the first boot that
+-- finds the table empty, and read unchanged by every boot after that.
+--
+-- Why this table exists: resolveControllerId used to fall back to
+-- os.hostname(), which under Docker is the container ID and is fresh on
+-- every "docker run". The boot reconciler only adjudicates orphans whose
+-- controller_id matches its own, so after any container replacement it
+-- matched nothing and every orphan from a prior container became permanently
+-- non-terminal. Production accumulated 121 such runs between 2026-05 and
+-- 2026-07 under 106 distinct controller ids.
+--
+-- Identity has to outlive the process to be an identity at all. An env var
+-- would also work, but only for as long as an operator remembers to set it on
+-- every container recreation -- and forgetting is silent, which is exactly how
+-- the original defect went unnoticed for three months. Reading it from the
+-- same database that holds the runs makes the correct value the default.
+CREATE TABLE IF NOT EXISTS controller_identity (
+  id            TEXT PRIMARY KEY,
+  controller_id TEXT NOT NULL,
+  created_at    TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS controller_active_runs (
@@ -5899,6 +5962,7 @@ DROP INDEX IF EXISTS idx_blob_bindings_record;
 CREATE INDEX IF NOT EXISTS idx_records_lookup ON records(connector_instance_id, stream, record_key);
 CREATE INDEX IF NOT EXISTS idx_records_version ON records(connector_instance_id, stream, version);
 CREATE INDEX IF NOT EXISTS idx_records_semantic_time ON records(connector_instance_id, stream, (COALESCE(NULLIF(semantic_time, ''), emitted_at)) DESC, record_key DESC);
+CREATE INDEX IF NOT EXISTS idx_records_canonical_count ON records(connector_instance_id, deleted, stream, emitted_at);
 CREATE INDEX IF NOT EXISTS idx_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version);
 CREATE INDEX IF NOT EXISTS idx_record_changes_emitted ON record_changes(connector_instance_id, stream, emitted_at);
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key);
@@ -5917,6 +5981,10 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheckAccessTokenApiKey(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
+  // Additive and NULL-tolerant: rows written before this column existed read
+  // as NULL, which the sweep treats as orphaned because no live process
+  // claims them. See the column comment on manual_upload_artifacts.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "manual_upload_artifacts", "owner_epoch", "TEXT"));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)
@@ -5998,6 +6066,19 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
       ON spine_events(connector_instance_id, event_seq)
       WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
         AND connector_instance_id IS NOT NULL`
+  );
+  // Same gap as the Postgres migration's `idx_pg_spine_events_instance_seq`
+  // (postgres-storage.ts): `readSqliteDiscoveryContext`'s lifecycle-checkpoint
+  // read groups by `connector_instance_id` over EVERY event type, not just
+  // the four terminal outcomes the index above covers, so it fell through to
+  // an unindexed scan here too. `better-sqlite3` has no statement-timeout
+  // cancellation, so this backend never produced the loud
+  // `discovery_statement_timeout` symptom Postgres did — just a silent,
+  // ever-slower scan as `spine_events` grows. Add the same general index.
+  raw.exec(
+    `CREATE INDEX IF NOT EXISTS idx_spine_events_instance_seq
+      ON spine_events(connector_instance_id, event_seq)
+      WHERE connector_instance_id IS NOT NULL`
   );
   // Backfill connector_instance_id for pre-existing TERMINAL rows whose
   // identity already lives in data_json (Sol fourth-verdict P1.1): the

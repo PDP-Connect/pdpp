@@ -77,6 +77,7 @@ export type VerdictLabel =
   | "Checking"
   | "Degraded"
   | "Healthy"
+  | "Import complete"
   | "Needs refresh"
   | "Not measured"
   | "Syncing";
@@ -339,6 +340,16 @@ export interface StreamRollup {
   /** Manifest stream priority. `required` streams weight the worst-wins rollup. */
   readonly priority: "accepted_absence" | "optional" | "required";
   readonly stream_id: string;
+  /**
+   * Whether this stream's ENTIRE terminal shortfall carries durable per-item
+   * proof of impossibility — the collection report entry's
+   * `coverage_unfillable_accounted`, computed once by
+   * `isStreamFullyUnfillableAccounted`
+   * (`server/connector-gap-classification.ts`) and only carried here. Meaningful
+   * solely alongside `coverage: "terminal_gap"`. Optional; absent/`false`
+   * preserves the shipped behavior exactly.
+   */
+  readonly unfillable_accounted?: boolean;
 }
 
 /**
@@ -444,6 +455,13 @@ function labelForPill(
   if (tone === "green" && snapshot.axes.outbox === "active") {
     return "Syncing";
   }
+  // A one-time import that reached green did so BECAUSE freshness is
+  // not_applicable, not because it proved current. "Healthy" implies an
+  // ongoing collection loop this source will never run again; "Import
+  // complete" names the actual, final state honestly.
+  if (tone === "green" && freshnessNotApplicable(snapshot)) {
+    return "Import complete";
+  }
   if (tone === "amber") {
     const label = amberLabel(snapshot, disposition, toneInputs);
     // An active run dominates a routine "needs refresh" nudge (Wave 10a
@@ -502,7 +520,29 @@ function baseStateTone(state: ConnectionHealthSnapshot["state"], lastSuccessAt: 
   }
 }
 
+/**
+ * A completed one-time import (`source_kind = 'manual'`) declares its `Fresh`
+ * condition `not_applicable` — a settled answer, not a pending one (see
+ * `conditionIsSettledSatisfied`, `connection-health.ts`, and
+ * `design-notes/source-state-truth-2026-08-18.md`). `axes.freshness` itself
+ * stays `unknown` (it is derived straight from raw freshness evidence, which
+ * a finished import never produces), so the tone/label/annotation layer must
+ * read the CONDITION, not the axis, to avoid re-encoding the same "we don't
+ * know" doubt the condition model already settled.
+ */
+export function freshnessNotApplicable(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.type === "Fresh" &&
+      condition.status === "not_applicable" &&
+      condition.reason === CONNECTION_CONDITION_REASONS.FRESHNESS_NOT_APPLICABLE_COMPLETE
+  );
+}
+
 function freshnessHealthTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
+  if (freshnessNotApplicable(snapshot)) {
+    return "green";
+  }
   switch (snapshot.axes.freshness) {
     case "fresh":
       return "green";
@@ -612,16 +652,40 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
 }
 
 /**
+ * Whether a stream's terminal shortfall is fully backed by durable per-item
+ * impossibility proof, so it owes nothing further. The one place this module
+ * asks that question — tone, the terminal-action gate, and the affected-stream
+ * list all read it, so they cannot drift apart. Meaningful only for
+ * `terminal_gap`; the boolean itself is computed once by
+ * `isStreamFullyUnfillableAccounted` (`server/connector-gap-classification.ts`)
+ * and merely carried here.
+ */
+function streamCoverageIsFullyAccounted(stream: StreamRollup): boolean {
+  return stream.coverage === "terminal_gap" && stream.unfillable_accounted === true;
+}
+
+/**
  * The worst per-stream coverage tone, weighted by manifest priority: an
  * `accepted_absence`/`optional` stream that is merely stale or partial annotates but
  * does NOT downgrade the pill below the required-stream tone (mitigates "worst-wins
  * over-ambers on a trivial optional stream", design Risks). A required stream always
  * contributes its full tone; optional stream coverage remains an advisory fact.
+ *
+ * A `terminal_gap` whose ENTIRE shortfall is proven permanently uncollectable
+ * tones GREEN, for the same reason it no longer derives a `terminal` disposition
+ * (`isUnfillableAccountedTerminalGap`, `connection-health.ts`): the connector
+ * collected everything collectible and can name exactly what it could not and
+ * why, which is the coverage axis's own `SourceCoverageComplete: true /
+ * coverage_complete_unfillable_accounted` verdict. Reading the raw axis here
+ * while the condition set reads the proof would re-introduce the very
+ * disagreement this pairing exists to remove — the pill would stay red under a
+ * fully healthy condition set. Only `terminal_gap` is softened; `unsupported`
+ * and `unavailable` keep their red.
  */
 function worstStreamCoverageTone(streams: readonly StreamRollup[]): VerdictTone {
   let worstTone: VerdictTone = "green";
   for (const stream of streams) {
-    const tone = coverageTone(stream.coverage);
+    const tone = streamCoverageIsFullyAccounted(stream) ? "green" : coverageTone(stream.coverage);
     if (stream.priority === "required") {
       worstTone = worse(worstTone, tone);
     }
@@ -692,6 +756,7 @@ function streamDisposition(
     gapRetryable: stream.gap_retryable,
     refresh,
     schedule,
+    unfillableAccounted: stream.unfillable_accounted === true,
   });
 }
 
@@ -736,7 +801,7 @@ function terminalCoverageCta(snapshot: ConnectionHealthSnapshot, disposition: Fo
   if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
     return "Coverage gap needs review";
   }
-  return "Connector code needs a fix";
+  return "Some data from this source can't be collected";
 }
 
 /** Open structured owner attention (the `needs_attention` driver). */
@@ -1077,7 +1142,7 @@ function buildRequiredActions(
     actions.push({
       affects: unmeasuredRequiredStreamIds(streams),
       audience: "maintainer",
-      cta: "Coverage for this source's streams is not being measured; a connector update is needed",
+      cta: "Some data from this source isn't being measured yet",
       kind: "code_fix",
       satisfied_when: { kind: "none" },
       surface: { kind: "maintainer" },
@@ -1258,9 +1323,20 @@ function reauthSatisfaction(surface: OwnerActionSurface): SatisfactionContract {
   return { kind: "confirming_run_succeeded" };
 }
 
+/**
+ * The streams a maintainer `code_fix` action actually speaks to. A stream whose
+ * terminal shortfall is fully accounted for is excluded: naming it would tell
+ * the maintainer to fix something already proven impossible and unbroken (a
+ * 29MB attachment against a 25MB cap is not a defect), and would misreport the
+ * blast radius of the streams that ARE stuck.
+ */
 function terminalStreamIds(streams: readonly StreamRollup[]): string[] {
   return streams
-    .filter((s) => s.coverage === "terminal_gap" || s.coverage === "unsupported" || s.coverage === "unavailable")
+    .filter(
+      (s) =>
+        (s.coverage === "terminal_gap" || s.coverage === "unsupported" || s.coverage === "unavailable") &&
+        !streamCoverageIsFullyAccounted(s)
+    )
     .map((s) => s.stream_id);
 }
 
@@ -1366,6 +1442,9 @@ function freshnessAnnotationText(
 ): string | null {
   if (snapshot.axes.freshness === "fresh") {
     return freshRecencyText(tone, progress);
+  }
+  if (freshnessNotApplicable(snapshot)) {
+    return "This is a one-time import. It finished and will not refresh.";
   }
   if (snapshot.axes.freshness === "unknown") {
     return "Freshness has not been measured yet.";
@@ -1495,7 +1574,7 @@ function terminalForwardStatement(
     if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
       return "Latest collection completed with known coverage gaps.";
     }
-    return "This connector needs a code fix before it can collect again.";
+    return "Some data from this source can't be collected.";
   }
   return "This data can't be recovered by a future run.";
 }
@@ -1557,6 +1636,9 @@ function buildForwardStatement(
       if (snapshot.axes.outbox === "active") {
         return "The local collector is uploading saved records.";
       }
+      if (freshnessNotApplicable(snapshot)) {
+        return "This one-time import finished. There is nothing left to run.";
+      }
       if (snapshot.axes.freshness === "unknown") {
         return "Freshness has not been measured yet.";
       }
@@ -1591,10 +1673,14 @@ function terminalProgressHeadline(retained: number | null, actions: readonly Req
     return `${held}; reconnect this account before further collection.`;
   }
   if (actions.some((action) => action.kind === "code_fix")) {
-    if (actions.some((action) => action.kind === "code_fix" && action.cta !== "Connector code needs a fix")) {
+    if (
+      actions.some(
+        (action) => action.kind === "code_fix" && action.cta !== "Some data from this source can't be collected"
+      )
+    ) {
       return `${held}; source coverage has known gaps.`;
     }
-    return `${held}; connector code needs a fix before new collection.`;
+    return `${held}; some of this source's data can't be collected.`;
   }
   return `${held}; this source cannot collect more until the terminal issue is fixed.`;
 }
@@ -2117,14 +2203,57 @@ function channelCause(channel: RenderedChannel, runtimeCapped: boolean, primary:
 }
 
 /**
- * Project the inspection-layer `detail` and calibration `trace` OFF a verdict for a
- * grant-scoped client. The owner-only diagnostics (`detail`, `trace`) are stripped so a
- * grant-scoped REST/MCP read can never see them. Dispatch C wires this at the wire seam;
- * exported here so the grant-scope regression can pin the contract at the type level.
+ * An owner-audience `RequiredAction`. `audience` is narrowed to the literal `"owner"`
+ * so a `maintainer` or `none` action is not assignable to a grant-scoped verdict — the
+ * audience filter below is what produces this type, and the compiler holds the line.
  */
-export type GrantScopedVerdict = Omit<RenderedVerdict, "detail" | "trace">;
+export type OwnerScopedRequiredAction = RequiredAction & { readonly audience: "owner" };
+
+/**
+ * Project the owner-only material OFF a verdict for a grant-scoped client:
+ *
+ * - the inspection-layer `detail` and calibration `trace` (gap backlog, raw
+ *   disposition, conditions, next-attempt floor, collection rate);
+ * - every non-owner-audience entry of `required_actions`. A `maintainer` action's
+ *   `cta` is implementer-facing copy about a connector defect (`kind: "code_fix"`,
+ *   `surface: { kind: "maintainer" }`), and an `audience: "none"` action is an
+ *   internal wait marker. Neither is owner-facing material, so neither may reach a
+ *   third-party app holding a scoped grant.
+ *
+ * `streams[].action_ref` is a POSITIONAL index into `required_actions[]`, so dropping
+ * entries must renumber the survivors. A stream whose action was dropped gets
+ * `action_ref: null` — it keeps its own `statement`/`coverage`, it just no longer
+ * points at maintainer material.
+ *
+ * Dispatch C wires this at the wire seam; exported here so the grant-scope regression
+ * can pin the contract at the type level.
+ */
+export type GrantScopedVerdict = Omit<RenderedVerdict, "detail" | "required_actions" | "trace"> & {
+  readonly required_actions: readonly OwnerScopedRequiredAction[];
+};
+
+function isOwnerScopedAction(action: RequiredAction): action is OwnerScopedRequiredAction {
+  return action.audience === "owner";
+}
 
 export function toGrantScopedVerdict(verdict: RenderedVerdict): GrantScopedVerdict {
   const { detail: _detail, trace: _trace, ...rest } = verdict;
-  return rest;
+
+  const scopedActions: OwnerScopedRequiredAction[] = [];
+  // Old index -> new index for the surviving owner actions; absent = dropped.
+  const remapped = new Map<number, number>();
+  for (const [index, action] of rest.required_actions.entries()) {
+    if (isOwnerScopedAction(action)) {
+      remapped.set(index, scopedActions.length);
+      scopedActions.push(action);
+    }
+  }
+
+  return {
+    ...rest,
+    required_actions: scopedActions,
+    streams: rest.streams.map((row) =>
+      row.action_ref === null ? row : { ...row, action_ref: remapped.get(row.action_ref) ?? null }
+    ),
+  };
 }

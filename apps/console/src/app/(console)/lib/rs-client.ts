@@ -34,6 +34,7 @@ import type {
   RefRetainedBytesBreakdown,
 } from "./ref-client.ts";
 import { refFetch } from "./ref-client.ts";
+import { aggregateStreamRecordCounts } from "./stream-record-count-aggregate.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface StreamSummary {
@@ -1446,7 +1447,7 @@ function projectRun(
 export async function getConnectorOverview(connector: ConnectorManifest): Promise<ConnectorOverview> {
   try {
     const streams = await listStreams(connector.connector_id);
-    const totalRecords = streams.reduce((sum, s) => sum + (s.record_count ?? 0), 0);
+    const { totalRecords, totalRecordsState } = aggregateStreamRecordCounts(streams);
 
     // Run data: most-recent run (any status) + most-recent succeeded.
     // Kept lazy-import to avoid a cycle: ref-client imports from owner-token
@@ -1467,6 +1468,7 @@ export async function getConnectorOverview(connector: ConnectorManifest): Promis
       lastSuccessfulRun,
       streams,
       totalRecords,
+      totalRecordsState,
     };
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
@@ -1480,6 +1482,10 @@ export async function getConnectorOverview(connector: ConnectorManifest): Promis
       lastSuccessfulRun: null,
       streams: [],
       totalRecords: 0,
+      // The read FAILED, so nothing is known about how much this connection
+      // holds. `resolveRecordCountDisplay` short-circuits on `error` first, but
+      // the state must not claim a measured zero for any other consumer.
+      totalRecordsState: "unobserved",
     };
   }
 }

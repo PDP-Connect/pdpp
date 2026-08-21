@@ -568,11 +568,22 @@ async function emitSkillsStream(
 ): Promise<void> {
   // Each skill is a subdirectory with SKILL.md at its root. Follows symlinks
   // (skills are often symlinked from dotfiles). Skips hidden dirs (.system).
+  //
+  // Fail closed on an unreadable directory, matching `emitRulesStream` and
+  // `emitPromptsStream`, which already route through `listIfExists`. This
+  // function previously swallowed EVERY error, so a permission failure on the
+  // skills directory was indistinguishable from "this owner has no skills" —
+  // the filesystem is the whole source of truth here, so an unreadable
+  // directory is a source-boundary failure, not evidence of emptiness. ENOENT
+  // (genuinely absent) remains a legitimate empty enumeration.
   let entries: Dirent[];
   try {
     entries = await readdir(skillsDir, { withFileTypes: true });
-  } catch {
-    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return;
+    }
+    throw error;
   }
   for (const ent of entries) {
     if (shouldSkipSkillEntry(ent)) {

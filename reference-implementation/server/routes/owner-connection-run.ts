@@ -155,6 +155,7 @@ export interface MountOwnerConnectionRunContext {
     options: {
       connectorInstanceId?: string | null;
       force?: boolean;
+      fullRefresh?: boolean;
       ownerSubjectId?: string;
       resources?: Readonly<Record<string, readonly string[]>>;
     }
@@ -336,6 +337,14 @@ function buildRunHandler(
     // `force` must be explicitly `true` in the request body; any other value
     // (absent, null, false, non-boolean) is treated as an ordinary safe run.
     const force = (req.body as Record<string, unknown> | null | undefined)?.force === true;
+    // `full_refresh` asks the connector to walk each stream to its natural end
+    // rather than resuming from its cursor, so a source whose ordinary runs are
+    // incremental deltas can re-establish an enumeration boundary and prove
+    // coverage. Same strict-`true` parsing as `force`: absent/null/false/
+    // non-boolean all mean an ordinary incremental run. It is deliberately a
+    // separate flag from `force` — one is about provider pressure, the other
+    // about how much of the source this run walks.
+    const fullRefresh = (req.body as Record<string, unknown> | null | undefined)?.full_refresh === true;
     let connectionId: string | null = null;
     let connectorKey: string | null = null;
     try {
@@ -375,6 +384,7 @@ function buildRunHandler(
       const started = await ctx.runNow(namespace.connectorId, {
         connectorInstanceId: namespace.connectorInstanceId,
         force,
+        fullRefresh,
         ownerSubjectId,
         ...(resources ? { resources } : {}),
       });

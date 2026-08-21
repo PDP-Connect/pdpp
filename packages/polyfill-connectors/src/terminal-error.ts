@@ -74,3 +74,23 @@ export function assertValidConnectorErrorCode(code: string): void {
     );
   }
 }
+
+/**
+ * Non-throwing sibling of `assertValidConnectorErrorCode`: does `value`
+ * already satisfy the unredacted `code` charset/length contract?
+ *
+ * Used by callers that catch an arbitrary thrown `Error` (e.g.
+ * `session-establish.ts`'s `ensureSession` catch block) and want to
+ * opportunistically recover a `code` FROM the thrown message when the
+ * connector happened to throw a bare `Error("some_snake_case_token")` —
+ * which is exactly what every `ensureHebSession`/`ensureUsaaSession`/etc.
+ * throw site already does. The anchored `^...$` regex (no spaces, no
+ * colons) is what keeps this safe: a compound message like
+ * "usaa_session_failed: source_unavailable: ..." fails the check and is
+ * correctly left to the redacted `message` channel only — only a thrown
+ * message that IS, in its entirety, one short snake_case token is treated
+ * as code-shaped.
+ */
+export function isConnectorErrorCodeShaped(value: string): boolean {
+  return CONNECTOR_ERROR_CODE_RE.test(value);
+}

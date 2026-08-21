@@ -167,12 +167,14 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
   otpResponseAuthenticated: boolean;
   page: Page;
   roleQueries: Array<{ name: unknown; role: string }>;
+  textCodeChoiceClicks: number;
 } {
   let actionClicked = false;
   let actionClicks = 0;
   let otpChallengeActive = false;
   let otpResponseAuthenticated = false;
   let otpResponse = "";
+  let textCodeChoiceClicks = 0;
   let passwordFieldReady = false;
   let currentUrl = LOGIN_URL;
   const filledSelectors: string[] = [];
@@ -196,16 +198,26 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
       return Promise.resolve("We are unable to complete your request. Our system is currently unavailable.");
     },
   };
-  const otpInputLocator: Pick<Locator, "fill" | "first"> = {
+  const otpInputLocator: Pick<Locator, "fill" | "first" | "isEnabled" | "isVisible"> = {
     fill: (code: string): Promise<void> => {
       otpResponse = code;
       return Promise.resolve();
     },
     first: (): Locator => otpInputLocator as Locator,
+    isEnabled: (): Promise<boolean> => Promise.resolve(otpChallengeActive),
+    isVisible: (): Promise<boolean> => Promise.resolve(otpChallengeActive),
   };
-  const textCodeChoiceLocator: Pick<Locator, "click" | "first"> = {
-    click: (): Promise<void> => Promise.resolve(),
+  // The delivery control. Clicking this is what makes the real USAA send an
+  // SMS, so the fixture records every click on it: a test asserting zero
+  // dispatches is asserting on this counter, not merely on prompt count.
+  const textCodeChoiceLocator: Pick<Locator, "click" | "first" | "isEnabled" | "isVisible"> = {
+    click: (): Promise<void> => {
+      textCodeChoiceClicks += 1;
+      return Promise.resolve();
+    },
     first: (): Locator => textCodeChoiceLocator as Locator,
+    isEnabled: (): Promise<boolean> => Promise.resolve(true),
+    isVisible: (): Promise<boolean> => Promise.resolve(true),
   };
   const actionLocator = (count: number, index: number): Locator => {
     const locator: Pick<Locator, "click" | "count" | "isVisible" | "nth"> = {
@@ -297,6 +309,9 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
     },
     page: fake as Page,
     roleQueries,
+    get textCodeChoiceClicks(): number {
+      return textCodeChoiceClicks;
+    },
   };
 }
 
@@ -927,6 +942,327 @@ test("mutation-kill: onCredentialSubmit omitted from ensureUsaaSession's call st
         page,
         sendInteraction: interactions.sendInteraction,
       })
+    );
+  });
+});
+
+/**
+ * A page sitting on USAA's delivery-method chooser after the password was
+ * submitted, used to prove the dispatch guard. Synthetic, not a real capture:
+ * no USAA auth-page markup exists on disk, and the live site is off limits
+ * because it is the owner's real bank. Selectors are copied from the module's
+ * own constants.
+ *
+ * The fixture records EVERY click, keyed by selector, because the harm this
+ * guard prevents is a click — not a prompt. `dispatchClicks` counts clicks on
+ * the delivery control (each one is a real SMS on the live site), and
+ * `positionalClicks` counts clicks on the hardcoded positional selector the
+ * old `.catch()` fallback used.
+ */
+interface DispatchFixtureOptions {
+  /** Whether the delivery control is enabled. Visible-but-disabled is the Venmo class of defect. */
+  choiceEnabled?: boolean;
+  /** Whether the delivery control is present/visible at all. */
+  choicePresent?: boolean;
+  /** Whether the code entry is still usable after a code is submitted. */
+  codeEntrySurvivesSubmit?: boolean;
+  /** Body copy shown once the code has been submitted, before any session exists. */
+  postSubmitBody?: string;
+  /** Whether a dashboard visit shows an authenticated session (the owner signed in manually). */
+  sessionLive?: () => boolean;
+}
+
+const POSITIONAL_FALLBACK_SELECTOR = "#miam-choice-container\\ 0-id";
+
+function makeTextCodeDispatchPage(options: DispatchFixtureOptions = {}): {
+  clickedSelectors: string[];
+  dispatchClicks: number;
+  page: Page;
+  positionalClicks: number;
+} {
+  const {
+    choiceEnabled = true,
+    choicePresent = true,
+    codeEntrySurvivesSubmit = true,
+    postSubmitBody,
+    sessionLive,
+  } = options;
+  let passwordSubmitted = false;
+  let codeSubmitted = false;
+  let dispatchClicks = 0;
+  let positionalClicks = 0;
+  const clickedSelectors: string[] = [];
+  let currentUrl = LOGIN_URL;
+
+  const bodyLocator: Pick<Locator, "innerText"> = {
+    innerText: (): Promise<string> => {
+      if (currentUrl === DASHBOARD_URL) {
+        return Promise.resolve(sessionLive?.() ? "Log Off" : "no session");
+      }
+      if (codeSubmitted && postSubmitBody !== undefined) {
+        return Promise.resolve(postSubmitBody);
+      }
+      // The chooser copy that the old guard matched on its own.
+      return Promise.resolve("Text security code");
+    },
+  };
+  const choiceLocator: Pick<Locator, "click" | "first" | "isEnabled" | "isVisible"> = {
+    click: (): Promise<void> => {
+      dispatchClicks += 1;
+      return Promise.resolve();
+    },
+    first: (): Locator => choiceLocator as Locator,
+    isEnabled: (): Promise<boolean> => Promise.resolve(choicePresent && choiceEnabled),
+    isVisible: (): Promise<boolean> => Promise.resolve(choicePresent),
+  };
+  const positionalLocator: Pick<Locator, "click" | "first" | "isEnabled" | "isVisible"> = {
+    click: (): Promise<void> => {
+      positionalClicks += 1;
+      return Promise.resolve();
+    },
+    first: (): Locator => positionalLocator as Locator,
+    isEnabled: (): Promise<boolean> => Promise.resolve(true),
+    isVisible: (): Promise<boolean> => Promise.resolve(true),
+  };
+  // Once dispatched, the code entry is usable so the OTP flow can proceed. It
+  // can be made to disappear after submit, modelling USAA's session-timeout
+  // and lockout pages, which keep retry-flavoured copy but drop the entry.
+  const codeEntryUsable = (): boolean => dispatchClicks > 0 && (codeEntrySurvivesSubmit || !codeSubmitted);
+  const otpInputLocator: Pick<Locator, "fill" | "first" | "isEnabled" | "isVisible"> = {
+    fill: (): Promise<void> => Promise.resolve(),
+    first: (): Locator => otpInputLocator as Locator,
+    isEnabled: (): Promise<boolean> => Promise.resolve(codeEntryUsable()),
+    isVisible: (): Promise<boolean> => Promise.resolve(codeEntryUsable()),
+  };
+
+  const fake: Partial<Page> = {};
+  fake.click = ((selector: string): Promise<void> => {
+    clickedSelectors.push(selector);
+    if (selector === "#next-button") {
+      passwordSubmitted = true;
+    }
+    if (selector === 'button[type="submit"], #next-button' && dispatchClicks > 0) {
+      codeSubmitted = true;
+    }
+    return Promise.resolve();
+  }) as Page["click"];
+  fake.evaluate = ((): Promise<Array<{ name: string; placeholder: string; type: string }>> =>
+    Promise.resolve([])) as Page["evaluate"];
+  fake.fill = ((): Promise<void> => Promise.resolve()) as Page["fill"];
+  fake.getByRole = ((): Locator => {
+    const empty: Pick<Locator, "count" | "isVisible" | "nth"> = {
+      count: (): Promise<number> => Promise.resolve(0),
+      isVisible: (): Promise<boolean> => Promise.resolve(false),
+      nth: (): Locator => empty as Locator,
+    };
+    return empty as Locator;
+  }) as Page["getByRole"];
+  fake.goto = ((url: string): ReturnType<Page["goto"]> => {
+    currentUrl = url;
+    return Promise.resolve(null);
+  }) as Page["goto"];
+  fake.locator = ((selector: string): Locator => {
+    if (selector === POSITIONAL_FALLBACK_SELECTOR) {
+      return positionalLocator as Locator;
+    }
+    if (selector.includes("Text security code to:")) {
+      return choiceLocator as Locator;
+    }
+    if (selector.includes("one-time-code")) {
+      return otpInputLocator as Locator;
+    }
+    if (selector === "#next-button:not([disabled])" || selector === 'input[name="memberId"]') {
+      const inert: Pick<Locator, "press" | "waitFor"> = {
+        press: (): Promise<void> => Promise.resolve(),
+        waitFor: (): Promise<void> => Promise.resolve(),
+      };
+      return inert as Locator;
+    }
+    return bodyLocator as Locator;
+  }) as Page["locator"];
+  fake.waitForLoadState = ((): Promise<void> => Promise.resolve()) as Page["waitForLoadState"];
+  fake.waitForSelector = ((selector: string): Promise<unknown> => {
+    if (selector === 'input[name="password"]') {
+      return passwordSubmitted ? Promise.resolve({}) : Promise.reject(new Error("password field unavailable"));
+    }
+    if (selector.includes("one-time-code") && dispatchClicks === 0) {
+      return Promise.reject(new Error("OTP challenge unavailable"));
+    }
+    return Promise.resolve({});
+  }) as Page["waitForSelector"];
+  fake.waitForTimeout = (): Promise<void> => Promise.resolve();
+  fake.url = (): string => currentUrl;
+
+  return {
+    clickedSelectors,
+    get dispatchClicks(): number {
+      return dispatchClicks;
+    },
+    page: fake as Page,
+    get positionalClicks(): number {
+      return positionalClicks;
+    },
+  };
+}
+
+test("ensureUsaaSession does not dispatch a security code when the chooser copy matches but no usable delivery control is present", async () => {
+  await withUsaaCredentials(async () => {
+    const fixturePage = makeTextCodeDispatchPage({ choicePresent: false });
+    // Manual handoff is declined, so the refusal surfaces as a named error.
+    const interactions = makeInteractionHarness("cancelled");
+    const context = makeContext([[]]);
+
+    await assert.rejects(
+      ensureUsaaSession({
+        context,
+        page: fixturePage.page,
+        sendInteraction: interactions.sendInteraction,
+      }),
+      /usaa_text_code_choice_not_found/
+    );
+
+    assert.equal(fixturePage.dispatchClicks, 0, "no delivery control may be clicked: that click is a real SMS");
+    assert.equal(
+      interactions.requests.filter((request) => request.kind === "otp").length,
+      0,
+      "the owner is never asked for a code that was never sent"
+    );
+  });
+});
+
+test("ensureUsaaSession treats a visible but DISABLED delivery control as not usable and refuses to dispatch", async () => {
+  await withUsaaCredentials(async () => {
+    // Playwright reports a disabled control as visible, so a visibility-only
+    // guard would click here. This is the Venmo root cause applied to dispatch.
+    const fixturePage = makeTextCodeDispatchPage({ choiceEnabled: false, choicePresent: true });
+    const interactions = makeInteractionHarness("cancelled");
+    const context = makeContext([[]]);
+
+    await assert.rejects(
+      ensureUsaaSession({
+        context,
+        page: fixturePage.page,
+        sendInteraction: interactions.sendInteraction,
+      }),
+      /usaa_text_code_choice_not_found/
+    );
+
+    assert.equal(fixturePage.dispatchClicks, 0, "a disabled control is not evidence the chooser is ready");
+  });
+});
+
+test("ensureUsaaSession never clicks the removed hardcoded positional selector, even when the delivery control is absent", async () => {
+  await withUsaaCredentials(async () => {
+    // The old code fell back to clicking `#miam-choice-container 0-id` whenever
+    // the text-matched click failed — guessing at a bank's UI with the owner's
+    // SMS budget. That fallback is gone; nothing may ever click it.
+    const fixturePage = makeTextCodeDispatchPage({ choicePresent: false });
+    const interactions = makeInteractionHarness("cancelled");
+    const context = makeContext([[]]);
+
+    await assert.rejects(
+      ensureUsaaSession({
+        context,
+        page: fixturePage.page,
+        sendInteraction: interactions.sendInteraction,
+      }),
+      /usaa_text_code_choice_not_found/
+    );
+
+    assert.equal(fixturePage.positionalClicks, 0, "the positional fallback must never fire");
+    assert.ok(
+      !fixturePage.clickedSelectors.includes(POSITIONAL_FALLBACK_SELECTOR),
+      "no click may target the hardcoded positional selector"
+    );
+  });
+});
+
+test("ensureUsaaSession hands off to the owner's browser when the delivery control cannot be located, and succeeds if they sign in", async () => {
+  await withUsaaCredentials(async () => {
+    // The owner signs in during the handoff, so the session only becomes live
+    // once the manual_action interaction has been answered.
+    let signedInManually = false;
+    const fixturePage = makeTextCodeDispatchPage({
+      choicePresent: false,
+      sessionLive: (): boolean => signedInManually,
+    });
+    const interactions = makeInteractionHarness("success");
+    const context = makeContext([[]], () => signedInManually);
+    const sendInteraction = async (request: InteractionRequest): Promise<InteractionResponse> => {
+      const response = await interactions.sendInteraction(request);
+      if (request.kind === "manual_action") {
+        signedInManually = true;
+      }
+      return response;
+    };
+
+    const ok = await ensureUsaaSession({
+      context,
+      page: fixturePage.page,
+      sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(fixturePage.dispatchClicks, 0, "handoff replaces the guess; it never dispatches");
+    assert.equal(fixturePage.positionalClicks, 0);
+    assert.deepEqual(
+      interactions.requests.map((request) => request.kind),
+      ["manual_action"],
+      "the owner is asked to finish sign-in, not for a code"
+    );
+  });
+});
+
+test("ensureUsaaSession dispatches exactly once and re-prompts only on positive rejection evidence", async () => {
+  await withUsaaCredentials(async () => {
+    // USAA never says the code was refused, and the code entry goes away after
+    // submit. Without positive rejection evidence the loop must stop after one
+    // prompt rather than running MAX_OTP_ATTEMPTS times.
+    const fixturePage = makeTextCodeDispatchPage({ postSubmitBody: "Please wait while we redirect you." });
+    const interactions = makeInteractionHarness("success", { code: "123456" });
+    const context = makeContext([[]]);
+
+    const ok = await ensureUsaaSession({
+      context,
+      page: fixturePage.page,
+      sendInteraction: interactions.sendInteraction,
+    }).catch((): false => false);
+
+    assert.equal(ok, false);
+    assert.equal(fixturePage.dispatchClicks, 1, "the delivery control is clicked exactly once: one SMS, not three");
+    assert.equal(
+      interactions.requests.filter((request) => request.kind === "otp").length,
+      1,
+      "a code that was never positively rejected must not be re-demanded"
+    );
+  });
+});
+
+test("ensureUsaaSession stops re-prompting when retry copy appears but the code entry is gone", async () => {
+  await withUsaaCredentials(async () => {
+    // USAA's session-timeout and lockout pages carry words like "expired" and
+    // "try again" while offering no code entry at all. Retry copy alone must
+    // not keep the loop alive: there is nothing left to answer, so a second
+    // prompt would demand a code the page cannot consume.
+    const fixturePage = makeTextCodeDispatchPage({
+      codeEntrySurvivesSubmit: false,
+      postSubmitBody: "Your session has expired. Please try again.",
+    });
+    const interactions = makeInteractionHarness("success", { code: "123456" });
+    const context = makeContext([[]]);
+
+    const ok = await ensureUsaaSession({
+      context,
+      page: fixturePage.page,
+      sendInteraction: interactions.sendInteraction,
+    }).catch((): false => false);
+
+    assert.equal(ok, false);
+    assert.equal(fixturePage.dispatchClicks, 1, "still exactly one dispatch");
+    assert.equal(
+      interactions.requests.filter((request) => request.kind === "otp").length,
+      1,
+      "a page with no usable code entry must not be prompted against again"
     );
   });
 });

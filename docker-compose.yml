@@ -26,6 +26,17 @@ services:
     # below — the env guard exists precisely to refuse boot if this policy
     # (or an equivalent one) is missing.
     restart: unless-stopped
+    # An unconstrained container reports the WHOLE host to
+    # effectiveCpuCount()/effectiveMemoryBudgetBytes(), so
+    # resolveEmbeddingConcurrency() sizes the transformer pool against every
+    # core on the machine. On a 24-core host that derives workLimit=8 x
+    # intraOpNumThreads=3 = 24 native ONNX threads, which then contend with
+    # postgres and the web service in this same stack. The sizing math is
+    # correct; it was being handed a budget this service does not actually own.
+    # Declare the share explicitly and let operators raise it on dedicated
+    # hardware.
+    cpus: ${PDPP_REFERENCE_CPUS:-4}
+    mem_limit: ${PDPP_REFERENCE_MEM_LIMIT:-4g}
     environment:
       AS_PORT: "7662"
       RS_PORT: "7663"
@@ -179,6 +190,14 @@ services:
       # the storage backend. To re-run the migration tool, do it on the
       # host with the SQLite file at `./packages/polyfill-connectors/
       # .pdpp-data/pdpp.sqlite` and the host-published Postgres port.
+      # Browser profiles live under PDPP_BROWSER_PROFILE_ROOT
+      # (/var/lib/pdpp/browser-profiles, baked into the image). Without this
+      # mount they sit in the container's ephemeral layer and are destroyed on
+      # every restart, so every browser-backed connector -- ChatGPT, Reddit,
+      # Amazon, Chase -- demands a fresh interactive login after each deploy.
+      # deploy/docker/docker-compose.yml already mounts this; the owner stack
+      # did not, and twelve deploys in one day cost the owner that many logins.
+      - pdpp-data:/var/lib/pdpp
       - pdpp-transformers:/var/cache/pdpp/transformers
       - pdpp-home:/root/.pdpp
       # File connector imports. Override the host-side paths with
@@ -225,6 +244,33 @@ services:
     # `PDPP_POSTGRES_BIND_HOST` AND set non-default credentials.
     ports:
       - "${PDPP_POSTGRES_BIND_HOST:-127.0.0.1}:${PDPP_POSTGRES_PORT:-55432}:5432"
+    # Defaults are sized for a small demo database, not for the ingest volume a
+    # real instance reaches. Two symptoms this addresses, both observed live:
+    # thousands of "checkpoints are occurring too frequently" warnings during
+    # bulk ingest (max_wal_size too small), and autovacuum taking 19+ minutes on
+    # a 4.2M-row search index while starving the maintenance sweep
+    # (maintenance_work_mem at the 64MB default). Override per deployment.
+    # Docker gives a container 64MB of /dev/shm by default. Postgres uses
+    # shared memory for parallel query workers, and on a multi-million-row
+    # table that is not enough -- a parallel VACUUM or aggregate fails with
+    # "could not resize shared memory segment ... No space left on device",
+    # which reads as a disk problem and is not one. Observed on a 5.5M-row
+    # records table.
+    shm_size: ${PDPP_POSTGRES_SHM_SIZE:-1g}
+    command:
+      - postgres
+      - -c
+      - max_wal_size=${PDPP_POSTGRES_MAX_WAL_SIZE:-8GB}
+      - -c
+      - min_wal_size=${PDPP_POSTGRES_MIN_WAL_SIZE:-1GB}
+      - -c
+      - checkpoint_timeout=${PDPP_POSTGRES_CHECKPOINT_TIMEOUT:-15min}
+      - -c
+      - shared_buffers=${PDPP_POSTGRES_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${PDPP_POSTGRES_EFFECTIVE_CACHE_SIZE:-1536MB}
+      - -c
+      - maintenance_work_mem=${PDPP_POSTGRES_MAINTENANCE_WORK_MEM:-512MB}
     volumes:
       - pdpp-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -267,6 +313,7 @@ services:
       - "${PDPP_WEB_PORT:-3002}:3000"
 
 volumes:
+  pdpp-data:
   pdpp-transformers:
   pdpp-home:
   pdpp-postgres-data:

@@ -10,6 +10,7 @@ import {
   type StreamRollup,
   synthesizeRenderedVerdict,
   toGrantScopedVerdict,
+  type VerdictStreamRow,
 } from "../runtime/rendered-verdict.ts";
 
 // Task 10: grant-scope isolation.
@@ -212,4 +213,194 @@ test("grant-scope: ConnectorSummary.rendered_verdict detail must go through toGr
   // The 2,532 recovered gap backlog must not be serializable from the scoped verdict.
   const serialized = JSON.stringify(scopedAgain);
   assert.ok(!serialized.includes("2532"), "gap count must not be reachable from grant-scoped verdict");
+});
+
+// ─── Audience isolation at the grant boundary ────────────────────────────────
+//
+// `required_actions` survives the grant-scoped projection (see "public
+// attention-layer fields survive the projection" above), so its CONTENTS must be
+// filtered rather than the field dropped. A `maintainer`-audience action is
+// implementer-facing: its `cta` names a connector defect ("Some data from this
+// source can't be collected", `kind: "code_fix"`, `surface: { kind: "maintainer" }`)
+// and it is not owner-satisfiable (`satisfied_when: { kind: "none" }`). A
+// third-party app holding a scoped grant must only ever see owner-facing material.
+//
+// `audience: "none"` (the `wait` marker) is likewise internal bookkeeping, not an
+// action a grant-scoped client can render or act on.
+
+/** A terminal-coverage snapshot with NO credential failure — the shape that makes
+ * `buildRequiredActions` emit the maintainer-audience `code_fix` action. */
+function terminalCoverageSnapshot(): ConnectionHealthSnapshot {
+  return {
+    ...snapshot(),
+    axes: { attention: "none", coverage: "terminal_gap", freshness: "fresh", outbox: "idle", remote_surface: "none" },
+    badges: { stale: false, syncing: false },
+    conditions: [],
+    dominant_condition_id: null,
+    forward_disposition: "terminal",
+    last_success_at: "2026-06-15T10:00:00.000Z",
+    next_attempt_at: null,
+    reason_code: null,
+    state: "degraded",
+  };
+}
+
+/** A fully-specified stream row pointing at a chosen `required_actions[]` index. */
+function row(streamId: string, actionRef: number): VerdictStreamRow {
+  return {
+    action_ref: actionRef,
+    collected: 5,
+    considered: 10,
+    coverage: "retryable_gap",
+    disposition: "resumable",
+    statement: "The next run is expected to fill the rest.",
+    stream_id: streamId,
+  };
+}
+
+function terminalStream(): StreamRollup {
+  return {
+    attention_open: false,
+    collected: 2,
+    considered: 9,
+    coverage: "terminal_gap",
+    gap_retryable: false,
+    priority: "required",
+    stream_id: "s1",
+  };
+}
+
+test("grant-scope: a maintainer-audience code_fix action does NOT reach a grant-scoped verdict", () => {
+  const owner = synthesizeRenderedVerdict(
+    terminalCoverageSnapshot(),
+    [terminalStream()],
+    { backgroundSafe: true, interactionPosture: "none", recommendedMode: "automatic" },
+    true
+  );
+
+  // Precondition: the owner verdict really does carry the maintainer action.
+  const maintainer = owner.required_actions.filter((a) => a.audience === "maintainer");
+  assert.equal(maintainer.length, 1, "owner verdict carries the maintainer code_fix action");
+  assert.equal(maintainer[0]?.kind, "code_fix");
+  assert.equal(maintainer[0]?.cta, "Some data from this source can't be collected");
+
+  const scoped = toGrantScopedVerdict(owner);
+  assert.deepEqual(
+    scoped.required_actions.filter((a) => a.audience !== "owner"),
+    [],
+    "grant scope carries no non-owner action"
+  );
+  // The maintainer-only MARKERS are not reachable through any public field.
+  //
+  // Deliberately NOT asserted: that the sentence "Some data from this source can't
+  // be collected" is absent. `forward_statement` and `progress.headline` are
+  // owner-facing narrative DERIVED from the primary action
+  // (`terminalForwardStatement`), and they are supposed to reach a grant-scoped
+  // client — they state the collection outcome without asking anyone to fix code.
+  // What must not cross the boundary is the actionable maintainer entry itself:
+  // its `kind`, its `surface`, and the CTA in a slot a client would render as a
+  // button. Sharing wording with the CTA is a copy coincidence, not a leak.
+  const serialized = JSON.stringify(scoped);
+  assert.ok(!serialized.includes("code_fix"), "maintainer action kind must not leak");
+  assert.ok(!serialized.includes('"maintainer"'), "maintainer surface/audience must not leak");
+  assert.deepEqual(
+    scoped.required_actions.map((a) => a.cta),
+    [],
+    "no CTA is offered to a grant-scoped client for a maintainer-only defect"
+  );
+});
+
+test("grant-scope: owner-audience actions DO survive the projection", () => {
+  // The default snapshot() is a credential failure — an owner-satisfiable reauth.
+  const owner = synthesizeRenderedVerdict(
+    snapshot(),
+    [stream()],
+    { backgroundSafe: false, interactionPosture: "otp_likely", recommendedMode: "manual" },
+    true
+  );
+  const ownerActions = owner.required_actions.filter((a) => a.audience === "owner");
+  assert.ok(ownerActions.length > 0, "precondition: owner verdict carries an owner action");
+
+  const scoped = toGrantScopedVerdict(owner);
+  assert.deepEqual(
+    scoped.required_actions,
+    ownerActions,
+    "every owner-audience action survives the grant-scoped projection unchanged"
+  );
+  assert.ok(JSON.stringify(scoped).includes("Reconnect this account"), "owner CTA still reaches grant scope");
+});
+
+test("grant-scope: dropping a non-owner action renumbers streams[].action_ref", () => {
+  // `action_ref` is a POSITIONAL index into `required_actions[]`. If the filter
+  // removed entries without remapping, a stream pointing at the owner action at
+  // index 1 would, after the maintainer action at index 0 is dropped, silently
+  // point at index 1 of a 1-element array (dangling) — or worse, at a different
+  // action. Built as a literal so both audiences coexist in a known order.
+  const base = synthesizeRenderedVerdict(
+    snapshot(),
+    [stream()],
+    { backgroundSafe: false, interactionPosture: "otp_likely", recommendedMode: "manual" },
+    true
+  );
+  const ownerAction = base.required_actions.find((a) => a.audience === "owner");
+  assert.ok(ownerAction, "precondition: an owner action exists to reference");
+
+  const mixed: RenderedVerdict = {
+    ...base,
+    required_actions: [
+      {
+        affects: ["s1"],
+        audience: "maintainer",
+        cta: "Some data from this source can't be collected",
+        kind: "code_fix",
+        satisfied_when: { kind: "none" },
+        surface: { kind: "maintainer" },
+        terminal: false,
+        urgency: "soon",
+      },
+      ownerAction,
+    ],
+    streams: [row("s1", 0), row("s2", 1)],
+  };
+
+  const scoped = toGrantScopedVerdict(mixed);
+  assert.equal(scoped.required_actions.length, 1, "only the owner action survives");
+  assert.equal(scoped.required_actions[0]?.audience, "owner");
+
+  const byId = new Map(scoped.streams.map((r) => [r.stream_id, r.action_ref]));
+  assert.equal(byId.get("s1"), null, "a stream whose action was dropped no longer points at one");
+  assert.equal(byId.get("s2"), 0, "the surviving owner action is renumbered from index 1 to index 0");
+  // The renumbered ref must resolve to the owner action, not run off the end.
+  const s2Ref = byId.get("s2");
+  assert.equal(typeof s2Ref, "number");
+  assert.equal(scoped.required_actions[s2Ref as number]?.cta, ownerAction.cta);
+});
+
+test("grant-scope: an audience:none wait action does not reach a grant-scoped verdict", () => {
+  const base = synthesizeRenderedVerdict(
+    snapshot(),
+    [stream()],
+    { backgroundSafe: false, interactionPosture: "otp_likely", recommendedMode: "manual" },
+    true
+  );
+  const mixed: RenderedVerdict = {
+    ...base,
+    required_actions: [
+      {
+        affects: [],
+        audience: "none",
+        cta: "Collecting — no action needed",
+        kind: "wait",
+        satisfied_when: { kind: "none" },
+        surface: { kind: "none" },
+        terminal: false,
+        urgency: "verifying",
+      },
+    ],
+    streams: [row("s1", 0)],
+  };
+
+  const scoped = toGrantScopedVerdict(mixed);
+  assert.deepEqual(scoped.required_actions, [], "the wait marker is internal, not grant-scoped material");
+  assert.equal(scoped.streams[0]?.action_ref, null, "its dangling action_ref is cleared, not left at 0");
 });

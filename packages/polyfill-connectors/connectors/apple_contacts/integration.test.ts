@@ -231,6 +231,38 @@ test("apple_contacts integration: a second run emits a tombstone for a server-si
   }
 });
 
+test("apple_contacts integration: an initial sync of a genuinely empty address book proves verified-empty coverage", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    // No contacts at all, and no prior cursor: this run establishes the full
+    // boundary, so `considered: 0` is a real measurement ("I enumerated the
+    // address book and it held nothing") rather than a quiet change feed.
+    // Withholding the claim here would turn a legitimately-empty required
+    // stream into a permanent `unknown`, which is its own failure.
+    const only = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = only.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded");
+    assert.equal(recordsOf(only.messages, "contacts").length, 0);
+
+    const contactsCoverage = only.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(
+      contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE",
+      "a boundary-establishing run must still emit contacts coverage for a genuine zero"
+    );
+    assert.equal(contactsCoverage.considered, 0);
+    assert.equal(contactsCoverage.covered, 0);
+  } finally {
+    await server.close();
+  }
+});
+
 test("apple_contacts integration: an unchanged incremental sync re-enumerates the group inventory", async () => {
   const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
   try {
@@ -268,6 +300,76 @@ test("apple_contacts integration: an unchanged incremental sync re-enumerates th
     assert.ok(groupsCoverage && groupsCoverage.type === "DETAIL_COVERAGE");
     assert.equal(groupsCoverage.considered, 1);
     assert.equal(groupsCoverage.covered, 1);
+
+    // The quiet incremental run enumerated nothing, so it must not claim a
+    // contacts boundary. This is the shape observed in production on
+    // cin_d344ba53d6d95c7dd343393d: a stored sync_token with an empty
+    // fingerprint map, replaying as `considered: 0` forever.
+    const contactsCoverage = second.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.equal(
+      contactsCoverage,
+      undefined,
+      "an unchanged incremental sync must not claim a proven contacts boundary"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("apple_contacts integration: a full_refresh run re-enumerates and proves contacts coverage despite a stored sync token", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    server.contacts.set("erin", {
+      uid: "erin",
+      href: "/addressbooks/owner/card/erin.vcf",
+      vcard: buildVCard({ uid: "erin", fn: "Erin Example", categories: ["Friends"] }),
+    });
+    server.contacts.set("frank", {
+      uid: "frank",
+      href: "/addressbooks/owner/card/frank.vcf",
+      vcard: buildVCard({ uid: "frank", fn: "Frank Example" }),
+    });
+
+    const first = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+    const firstState = first.messages.findLast(
+      (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "contacts"
+    );
+    assert.ok(firstState);
+
+    // Same stored-token starting point as the quiet-incremental test above —
+    // which asserts this run emits NO contacts coverage. The only difference
+    // here is the owner-requested `collection_mode: "full_refresh"`, so this
+    // pins the bypass itself rather than any change in the source data.
+    const refreshed = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: { ...startMessage({ contacts: firstState.cursor }), collection_mode: "full_refresh" },
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const contactsCoverage = refreshed.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(
+      contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE",
+      "a full_refresh run must re-establish the contacts boundary and claim coverage"
+    );
+    // The claim must be the real inventory (both contacts), not a `considered: 0`
+    // artifact of a change feed — that distinction is the whole point.
+    assert.equal(contactsCoverage.considered, 2);
+    assert.equal(contactsCoverage.covered, 2);
+
+    // The refreshed run must still write a usable token forward, so the next
+    // ordinary run can resume incrementally rather than re-walking forever.
+    const refreshedState = refreshed.messages.findLast(
+      (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "contacts"
+    );
+    assert.ok(refreshedState);
+    const [bookState] = Object.values(refreshedState.cursor as Record<string, { sync_token?: string }>);
+    assert.ok(bookState?.sync_token, "a full_refresh run must still persist a sync token for the next run");
   } finally {
     await server.close();
   }
@@ -315,10 +417,20 @@ test("apple_contacts integration: incremental group requests re-enumerate a genu
     assert.equal(contactRecords.filter((message) => message.op !== "delete").length, 0);
     assert.equal(recordsOf(second.messages, "contact_groups").length, 0);
 
+    // The incremental contact delta is not a CONTACT boundary either. This run
+    // saw one deletion and zero live resources, which is a change feed, not an
+    // enumeration of the address book. Emitting `considered: 0, covered: 0`
+    // here would hand the coherence contract a fabricated
+    // `enumeration_boundary` proof and paint a required stream green off a
+    // quiet sync. The honest move is to emit no contacts coverage at all and
+    // let the stream read `unknown` until a run actually establishes the
+    // boundary.
     const contactsCoverage = second.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
-    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
-    assert.equal(contactsCoverage.considered, 0);
-    assert.equal(contactsCoverage.covered, 0);
+    assert.equal(
+      contactsCoverage,
+      undefined,
+      "an incremental contact delta must not claim a proven-empty contacts inventory"
+    );
 
     // The incremental contact delta is not a group boundary. The connector
     // must obtain a full snapshot before proving that the now-empty group
@@ -504,6 +616,186 @@ test("apple_contacts integration: never logs credentials or vCard field values i
     assert.equal(serialized.includes(PASSWORD), false);
     assert.equal(serialized.includes("Erin Secretname"), false);
     assert.equal(serialized.includes("erin-secret@example.com"), false);
+  } finally {
+    await server.close();
+  }
+});
+
+/**
+ * Live-shape regression (probe against p196-contacts.icloud.com, 2026-08-19).
+ *
+ * iCloud answers a `sync-collection` REPORT by enumerating each member with
+ * `getetag` ONLY — it does not inline the `address-data` the request asked
+ * for — and it also lists the collection's own href beside its members. That
+ * is RFC-legal (RFC 6578 §3.2 requires enumeration, not inlining), so the
+ * client must fetch bodies via `addressbook-multiget` (RFC 6352 §8.7).
+ *
+ * Before this was handled, the connector dropped every member that arrived
+ * without an inlined body, and a populated address book reported a *measured*
+ * zero — the most dangerous possible failure, because a proven zero is
+ * indistinguishable downstream from a genuinely empty account.
+ */
+test("apple_contacts integration: collects contacts when sync-collection enumerates members without inlining address-data", async () => {
+  const server = await startFakeCardDavServer({
+    username: USERNAME,
+    password: PASSWORD,
+    syncCollectionOmitsAddressData: true,
+  });
+  try {
+    server.contacts.set("frank", {
+      uid: "frank",
+      href: "/addressbooks/owner/card/frank.vcf",
+      vcard: buildVCard({ uid: "frank", fn: "Frank Example", email: "frank@example.com", categories: ["Family"] }),
+    });
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded");
+
+    const contacts = recordsOf(result.messages, "contacts");
+    assert.equal(contacts.length, 1, "the enumerated member's body must be fetched, not dropped");
+    assert.equal(contacts[0]?.display_name, "Frank Example");
+
+    // The collection's own href is enumerated alongside its members; it must
+    // not be mistaken for a contact resource.
+    assert.equal(
+      contacts.some((c) => String(c.id).endsWith("/addressbooks/owner/card")),
+      false,
+      "the collection itself must not be emitted as a contact"
+    );
+
+    const contactsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(contactsCoverage.considered, 1);
+    assert.equal(contactsCoverage.covered, 1);
+
+    // Groups derive from CATEGORIES, which only exist once bodies are hydrated.
+    const groups = recordsOf(result.messages, "contact_groups");
+    assert.deepEqual(
+      groups.map((g) => g.name),
+      ["Family"]
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("apple_contacts integration: an enumerated member whose body never arrives is an honest partial, not a proven zero", async () => {
+  const server = await startFakeCardDavServer({
+    username: USERNAME,
+    password: PASSWORD,
+    syncCollectionOmitsAddressData: true,
+    multigetReturnsNoBodies: true,
+  });
+  try {
+    server.contacts.set("ghost", {
+      uid: "ghost",
+      href: "/addressbooks/owner/card/ghost.vcf",
+      vcard: buildVCard({ uid: "ghost", fn: "Ghost Example" }),
+    });
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded");
+
+    assert.equal(recordsOf(result.messages, "contacts").length, 0);
+
+    const contactsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(contactsCoverage.considered, 1, "the member the server enumerated must stay in the denominator");
+    assert.equal(contactsCoverage.covered, 0);
+    assert.equal(
+      contactsCoverage.considered > contactsCoverage.covered,
+      true,
+      "an unfetchable member must read as an honest partial, never a proven zero"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("apple_contacts integration: an iCloud group vCard becomes a group, not a phantom contact", async () => {
+  // The defect this closes: iCloud stores each group as its own vCard
+  // resource marked `X-ADDRESSBOOKSERVER-KIND:group`, but the connector read
+  // only the vCard-standard CATEGORIES property. So the group's own resource
+  // was emitted AS A CONTACT — a phantom whose display_name is the group's
+  // name, counted as a covered contact — while `contact_groups`, a REQUIRED
+  // stream, stayed empty. The fake server could not synthesize this shape
+  // until now, which is why the whole suite passed while the connector was
+  // blind.
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    server.contacts.set("alice", {
+      uid: "alice",
+      href: "/addressbooks/owner/card/alice.vcf",
+      vcard: buildVCard({ uid: "alice", fn: "Alice Example" }),
+    });
+    server.contacts.set("bob", {
+      uid: "bob",
+      href: "/addressbooks/owner/card/bob.vcf",
+      vcard: buildVCard({ uid: "bob", fn: "Bob Example" }),
+    });
+    server.contacts.set("family-group", {
+      uid: "family-group",
+      href: "/addressbooks/owner/card/family-group.vcf",
+      vcard: buildVCard({ uid: "family-group", fn: "Family", groupMemberUids: ["alice", "bob"] }),
+    });
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded");
+
+    const contacts = recordsOf(result.messages, "contacts");
+    const contactNames = contacts.map((c) => String(c.display_name)).sort((a, b) => a.localeCompare(b));
+    assert.deepEqual(contactNames, ["Alice Example", "Bob Example"]);
+    assert.equal(
+      contacts.some((c) => c.display_name === "Family"),
+      false,
+      "the group vCard leaked into the contacts stream as a phantom contact"
+    );
+
+    // The group the connector was previously blind to must now be a record,
+    // with the membership the SERVER stated rather than one inferred from
+    // contact bodies.
+    const groups = recordsOf(result.messages, "contact_groups");
+    assert.deepEqual(
+      groups.map((g) => g.name),
+      ["Family"]
+    );
+    const memberUids = groups[0]?.member_uids as string[] | undefined;
+    assert.ok(memberUids);
+    assert.deepEqual(
+      [...memberUids].sort((a, b) => a.localeCompare(b)),
+      ["alice", "bob"]
+    );
+
+    // The group resource must leave the contacts denominator too: counting
+    // it as considered-but-not-covered would manufacture a permanent
+    // shortfall out of correct behaviour.
+    const contactsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(contactsCoverage.considered, 2);
+    assert.equal(contactsCoverage.covered, 2);
   } finally {
     await server.close();
   }

@@ -585,6 +585,8 @@
     }
   ],
   "reason_display_messages": {
+    "branch_tip_missing": "A conversation points at a message we couldn't find, so part of it is missing",
+    "branch_truncated": "A conversation is missing earlier messages from its current thread",
     "empty_detail": "We opened this conversation but found no messages to import",
     "http_error": "We hit a network problem talking to the service",
     "missing_mapping": "We opened this conversation but it had no message data to read",

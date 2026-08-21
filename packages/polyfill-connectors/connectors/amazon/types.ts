@@ -61,7 +61,7 @@ export interface OrdersRecord {
   fetched_at: string;
   gift_order: boolean;
   id: string;
-  item_count: number;
+  item_count: number | null;
   order_date: string;
   order_total: string | null;
   order_total_cents: number | null;

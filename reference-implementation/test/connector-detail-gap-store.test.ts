@@ -35,6 +35,7 @@ type RunConnectorTestOptions = Omit<RuntimeRunConnectorOptions, "detailGapStore"
 type RunConnectorFn = (opts: RunConnectorTestOptions) => Promise<RuntimeRunConnectorResult>;
 const runConnectorWithGapStore = runConnector as RunConnectorFn;
 const DIFFERENT_PARENT_STREAM_PATTERN = /different parent stream/;
+const TOO_LARGE_REFUSAL_PATTERN = /too_large/;
 
 // This file never routes through the real connector-instance store — every
 // dependency it hands the runtime (detail gap store, state server, etc.) is
@@ -2797,6 +2798,134 @@ test(
   })
 );
 
+// ─── `--reason=` extension: explicit named terminal-reason requeue ──────────
+//
+// Reproduces the Gmail cin_12407c1afb78d56848fe0b20 shape: a terminal
+// `temporary_unavailable` attachments row with NO recorded last_error (37-117
+// silent retries), scoped alongside a `too_large` row that DOES carry a
+// durable size-vs-cap proof, on the SAME connector instance and stream. The
+// extension must reopen the former under an explicit `--reason=` and refuse
+// the latter categorically, never by accident of which one happens to be
+// requeued first.
+
+test(
+  "store requeues an explicitly named non-default reason (temporary_unavailable) and leaves other reasons on the same instance untouched",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorInstanceId = "cin_gmail_reason_scope_test";
+    const seededTempUnavailable = await store.upsertPendingGap({
+      connectorId: "gmail",
+      connectorInstanceId,
+      gapId: "gap_temp_unavailable_reason_scope",
+      reason: "temporary_unavailable",
+      recordKey: "attachment_temp_unavailable",
+      stream: "attachments",
+    });
+    assert.ok(seededTempUnavailable, "seededTempUnavailable is present");
+    // Production shape: terminalized after repeated attempts with no recorded error at all.
+    await store.markGapStatus(seededTempUnavailable.gap_id, "terminal", {});
+
+    const seededQuarantined = await store.upsertPendingGap({
+      connectorId: "gmail",
+      connectorInstanceId,
+      gapId: "gap_quarantined_reason_scope",
+      reason: "quarantined",
+      recordKey: "attachment_quarantined",
+      stream: "attachments",
+    });
+    assert.ok(seededQuarantined, "seededQuarantined is present");
+    await store.markGapStatus(seededQuarantined.gap_id, "terminal", {
+      lastError: { class: "quarantined" },
+      reason: "quarantined",
+    });
+
+    const summary = await store.requeueQuarantinedTerminalGapsForConnectorInstance("gmail", connectorInstanceId, {
+      reason: "temporary_unavailable",
+      streams: ["attachments"],
+    });
+
+    assert.deepEqual(summary, { matched: 1, requeued: 1 });
+
+    const requeued = await store.getGapById(seededTempUnavailable.gap_id);
+    assert.ok(requeued, "requeued is present");
+    assert.equal(requeued.status, "pending", "the named-reason row moved out of terminal");
+    assert.equal(requeued.reason, "temporary_unavailable", "an already-honest reason is preserved, not rewritten");
+    assert.equal(requeued.attempt_count, 0);
+
+    const untouched = await store.getGapById(seededQuarantined.gap_id);
+    assert.ok(untouched, "untouched is present");
+    assert.equal(untouched.status, "terminal", "a different reason on the SAME instance/stream is never swept up");
+    assert.equal(untouched.reason, "quarantined");
+  })
+);
+
+test(
+  "store refuses to requeue too_large even when --reason=too_large is named explicitly, on both backends",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorInstanceId = "cin_gmail_too_large_refusal_test";
+    const seeded = await store.upsertPendingGap({
+      connectorId: "gmail",
+      connectorInstanceId,
+      gapId: "gap_too_large_refusal",
+      reason: "too_large",
+      recordKey: "oversized_attachment",
+      stream: "attachments",
+    });
+    assert.ok(seeded, "seeded is present");
+    await store.markGapStatus(seeded.gap_id, "terminal", {
+      lastError: { class: "too_large", message: "attachment exceeds max size: 29209135 > 26214400 bytes" },
+      reason: "too_large",
+    });
+
+    await assert.rejects(
+      () =>
+        store.requeueQuarantinedTerminalGapsForConnectorInstance("gmail", connectorInstanceId, {
+          reason: "too_large",
+          streams: ["attachments"],
+        }),
+      TOO_LARGE_REFUSAL_PATTERN,
+      "the store refuses the call outright rather than matching zero rows silently"
+    );
+
+    // Zero rows changed: the refusal is a thrown error before any read/write,
+    // not a mutation that happened to affect nothing.
+    const untouched = await store.getGapById(seeded.gap_id);
+    assert.ok(untouched, "untouched is present");
+    assert.equal(untouched.status, "terminal");
+    assert.equal(untouched.reason, "too_large");
+  })
+);
+
+test(
+  "store default reason (quarantined) is unchanged by the --reason= extension",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorInstanceId = "cin_amazon_default_reason_test";
+    const seeded = await store.upsertPendingGap({
+      connectorId: "amazon",
+      connectorInstanceId,
+      reason: "temporary_unavailable",
+      recordKey: "default_reason_order",
+      stream: "order_items",
+    });
+    assert.ok(seeded, "seeded is present");
+    await store.markGapStatus(seeded.gap_id, "terminal", {
+      lastError: { class: "quarantined" },
+      reason: "quarantined",
+    });
+
+    // No `reason` option at all — must behave exactly as before this change.
+    const summary = await store.requeueQuarantinedTerminalGapsForConnectorInstance("amazon", connectorInstanceId, {});
+
+    assert.deepEqual(summary, { matched: 1, requeued: 1 });
+    const requeued = await store.getGapById(seeded.gap_id);
+    assert.ok(requeued, "requeued is present");
+    assert.equal(requeued.status, "pending");
+    assert.equal(requeued.reason, "temporary_unavailable", "quarantine unwrap logic is unchanged");
+  })
+);
+
 // ─── Durable lease acceptance tests ──────────────────────────────────────────
 //
 // These tests prove the lease fix: gaps marked in_progress when served are
@@ -3251,9 +3380,304 @@ test(
   })
 );
 
+// ─── listTerminalGapsForConnector (§10-A unfillableAccounted read path) ───────
+//
+// Reproduces production `connector_detail_gaps` for cin_12407c1afb78d56848fe0b20
+// (Gmail): a `too_large` terminal row carrying a durable
+// `AttachmentTooLargeError`-shaped `last_error_json`, and a
+// `temporary_unavailable` terminal row with NO recorded error at all (37-117
+// attempts, no evidence). The bound is exercised too — proves the store-level
+// LIMIT actually clamps rather than only being documented.
+
+test(
+  "SQLite listTerminalGapsForConnector returns only status='terminal' rows scoped to the connector (and instance), carrying last_error",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorId = "gmail";
+    const connectorInstanceId = "cin_gmail_terminal_read";
+    const otherInstanceId = "cin_gmail_terminal_read_other";
+    const now = "2026-08-03T01:05:16.714Z";
+
+    const provenGap = await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId,
+      gapId: "gap_too_large_proven",
+      now,
+      reason: "too_large",
+      recordKey: "1603990324753116597:1.2",
+      stream: "attachments",
+    });
+    assert.ok(provenGap);
+    await store.markGapStatus(provenGap.gap_id, "terminal", {
+      lastError: { class: "too_large", message: "attachment exceeds max size: 29209135 > 26214400 bytes" },
+      now,
+    });
+
+    const unprovenGap = await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId,
+      gapId: "gap_temp_unavailable_unproven",
+      now,
+      reason: "temporary_unavailable",
+      recordKey: "1395620753265911792:1.2",
+      stream: "attachments",
+    });
+    assert.ok(unprovenGap);
+    // Production shape: terminalized with NO last_error at all.
+    await store.markGapStatus(unprovenGap.gap_id, "terminal", { now });
+
+    // A still-pending gap on the same connector/stream must never appear.
+    await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId,
+      gapId: "gap_still_pending",
+      now,
+      reason: "temporary_unavailable",
+      recordKey: "still-pending",
+      stream: "attachments",
+    });
+
+    // A terminal gap on a DIFFERENT connector instance must not leak into a
+    // single-instance-scoped read.
+    const otherInstanceGap = await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId: otherInstanceId,
+      gapId: "gap_other_instance_terminal",
+      now,
+      reason: "too_large",
+      recordKey: "other-instance",
+      stream: "attachments",
+    });
+    assert.ok(otherInstanceGap);
+    await store.markGapStatus(otherInstanceGap.gap_id, "terminal", {
+      lastError: { class: "too_large", message: "attachment exceeds max size: 30000000 > 26214400 bytes" },
+      now,
+    });
+
+    const scoped = await store.listTerminalGapsForConnector(connectorId, { connectorInstanceId });
+    assert.deepEqual(
+      // biome-ignore lint/suspicious/useArraySortCompare: the test relies on the platform default lexical sort behavior.
+      scoped.map((gap) => gap.gap_id).sort(),
+      ["gap_temp_unavailable_unproven", "gap_too_large_proven"],
+      "only status='terminal' rows for THIS instance, never pending or another instance's terminal row"
+    );
+    const proven = scoped.find((gap) => gap.gap_id === "gap_too_large_proven");
+    const unproven = scoped.find((gap) => gap.gap_id === "gap_temp_unavailable_unproven");
+    assert.deepEqual(proven?.last_error, {
+      class: "too_large",
+      message: "attachment exceeds max size: 29209135 > 26214400 bytes",
+    });
+    assert.equal(unproven?.last_error, null, "the unproven row's last_error is null, not fabricated");
+
+    // Connector-wide (no connectorInstanceId) read includes BOTH instances.
+    const connectorWide = await store.listTerminalGapsForConnector(connectorId);
+    assert.deepEqual(
+      // biome-ignore lint/suspicious/useArraySortCompare: the test relies on the platform default lexical sort behavior.
+      connectorWide.map((gap) => gap.gap_id).sort(),
+      ["gap_other_instance_terminal", "gap_temp_unavailable_unproven", "gap_too_large_proven"]
+    );
+
+    // Bound is honored, not just documented.
+    const bounded = await store.listTerminalGapsForConnector(connectorId, { connectorInstanceId, limit: 1 });
+    assert.equal(bounded.length, 1);
+  })
+);
+
+// ─── listTerminalGapsByConnectorInstanceIds (batch list-page read) ───────────
+//
+// The `/sources` LIST page reads terminal-gap ROWS for a whole page in one
+// query, so its unfillable-proof verdict matches the single-connection detail
+// read instead of degrading to `false`. The load-bearing contract is
+// truncation: an instance over the per-instance cap is reported by identity
+// with NO rows, because a partial row set cannot prove "every terminal gap in
+// this stream is unfillable" — the unproven gap could be the row past the cap.
+
+test(
+  "SQLite listTerminalGapsByConnectorInstanceIds groups terminal rows per connection and never leaks across instances",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorId = "gmail";
+    const first = "cin_gmail_batch_first";
+    const second = "cin_gmail_batch_second";
+    const absent = "cin_gmail_batch_absent";
+    const now = "2026-08-03T01:05:16.714Z";
+
+    const proven = await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId: first,
+      gapId: "gap_batch_proven",
+      now,
+      reason: "too_large",
+      recordKey: "1603990324753116597:1.2",
+      stream: "attachments",
+    });
+    assert.ok(proven);
+    await store.markGapStatus(proven.gap_id, "terminal", {
+      lastError: { class: "too_large", message: "attachment exceeds max size: 29209135 > 26214400 bytes" },
+      now,
+    });
+
+    const unproven = await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId: second,
+      gapId: "gap_batch_unproven",
+      now,
+      reason: "temporary_unavailable",
+      recordKey: "1395620753265911792:1.2",
+      stream: "attachments",
+    });
+    assert.ok(unproven);
+    await store.markGapStatus(unproven.gap_id, "terminal", { now });
+
+    // A pending gap on the page must never appear in a terminal read.
+    await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId: first,
+      gapId: "gap_batch_still_pending",
+      now,
+      reason: "temporary_unavailable",
+      recordKey: "still-pending",
+      stream: "attachments",
+    });
+
+    const read = await store.listTerminalGapsByConnectorInstanceIds([first, second, absent]);
+    assert.deepEqual(
+      read.gapsByConnectorInstanceId.get(first)?.map((gap) => gap.gap_id),
+      ["gap_batch_proven"],
+      "only this instance's terminal rows, never the sibling's or a pending row"
+    );
+    assert.deepEqual(
+      read.gapsByConnectorInstanceId.get(second)?.map((gap) => gap.gap_id),
+      ["gap_batch_unproven"]
+    );
+    assert.equal(
+      read.gapsByConnectorInstanceId.get(absent),
+      undefined,
+      "an instance with no terminal gaps is simply absent, never a fabricated empty page"
+    );
+    assert.deepEqual(read.gapsByConnectorInstanceId.get(first)?.[0]?.last_error, {
+      class: "too_large",
+      message: "attachment exceeds max size: 29209135 > 26214400 bytes",
+    });
+    assert.equal(read.gapsByConnectorInstanceId.get(second)?.[0]?.last_error, null);
+    assert.equal(read.truncatedConnectorInstanceIds.size, 0, "nothing is truncated well under the cap");
+
+    assert.deepEqual(
+      await store.listTerminalGapsByConnectorInstanceIds([]),
+      { gapsByConnectorInstanceId: new Map(), truncatedConnectorInstanceIds: new Set() },
+      "an empty id set reads nothing rather than degenerating into a whole-table scan"
+    );
+  })
+);
+
+test(
+  "SQLite listTerminalGapsByConnectorInstanceIds reports a truncated instance by identity and withholds its rows entirely",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorId = "gmail";
+    const truncated = "cin_gmail_batch_truncated";
+    const under = "cin_gmail_batch_under_cap";
+    const now = "2026-08-03T01:05:16.714Z";
+
+    // Every one of these rows carries proof. Under a cap of 2 the read still
+    // must NOT report a verdict: the caller cannot know the unseen rows are
+    // proven too. This is the exact false-green the contract refuses.
+    for (const index of [0, 1, 2]) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered test setup is intentionally sequential — each gap must commit before it is terminalized.
+      const gap = await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId: truncated,
+        gapId: `gap_batch_trunc_${index}`,
+        now,
+        reason: "too_large",
+        recordKey: `oversized_${index}`,
+        stream: "attachments",
+      });
+      assert.ok(gap);
+      await store.markGapStatus(gap.gap_id, "terminal", {
+        lastError: { class: "too_large", message: "attachment exceeds max size: 29209135 > 26214400 bytes" },
+        now,
+      });
+    }
+    const underCap = await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId: under,
+      gapId: "gap_batch_under_cap",
+      now,
+      reason: "too_large",
+      recordKey: "oversized_under_cap",
+      stream: "attachments",
+    });
+    assert.ok(underCap);
+    await store.markGapStatus(underCap.gap_id, "terminal", {
+      lastError: { class: "too_large", message: "attachment exceeds max size: 29209135 > 26214400 bytes" },
+      now,
+    });
+
+    const read = await store.listTerminalGapsByConnectorInstanceIds([truncated, under], { rowsPerInstance: 2 });
+    assert.deepEqual([...read.truncatedConnectorInstanceIds], [truncated]);
+    assert.equal(
+      read.gapsByConnectorInstanceId.get(truncated),
+      undefined,
+      "the truncated instance carries NO rows — a partial set must never reach the proof classifier"
+    );
+    assert.deepEqual(
+      read.gapsByConnectorInstanceId.get(under)?.map((gap) => gap.gap_id),
+      ["gap_batch_under_cap"],
+      "one instance being truncated must not withhold an unrelated instance's complete read"
+    );
+
+    // Exactly at the cap is complete, not truncated: the cap+1 probe row is
+    // what distinguishes the two, so the boundary is worth pinning.
+    const atCap = await store.listTerminalGapsByConnectorInstanceIds([truncated], { rowsPerInstance: 3 });
+    assert.equal(atCap.truncatedConnectorInstanceIds.size, 0);
+    assert.equal(atCap.gapsByConnectorInstanceId.get(truncated)?.length, 3);
+  })
+);
+
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 if (POSTGRES_URL) {
+  test("Postgres store refuses to requeue too_large even when --reason=too_large is named explicitly", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gap_pg_too_large_refusal_${suffix}`;
+    const connectorInstanceId = `cin_pg_too_large_refusal_${suffix}`;
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      const seeded = await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        reason: "too_large",
+        recordKey: "oversized_attachment_pg",
+        stream: "attachments",
+      });
+      assert.ok(seeded, "seeded is present");
+      await store.markGapStatus(seeded.gap_id, "terminal", {
+        lastError: { class: "too_large", message: "attachment exceeds max size: 30000000 > 26214400 bytes" },
+        reason: "too_large",
+      });
+
+      await assert.rejects(
+        () =>
+          store.requeueQuarantinedTerminalGapsForConnectorInstance(connectorId, connectorInstanceId, {
+            reason: "too_large",
+          }),
+        TOO_LARGE_REFUSAL_PATTERN,
+        "the store refuses the call outright rather than matching zero rows silently"
+      );
+
+      const untouched = await store.getGapById(seeded.gap_id);
+      assert.ok(untouched, "untouched is present");
+      assert.equal(untouched.status, "terminal");
+    } finally {
+      await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
   test("detail-gap page batch preserves exact-instance pending and aggregate facts on Postgres", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `gap_pg_batch_${suffix}`;
@@ -3294,6 +3718,151 @@ if (POSTGRES_URL) {
     } finally {
       await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = ANY($1::text[])", [
         [first, second],
+      ]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test("Postgres listTerminalGapsForConnector returns only status='terminal' rows scoped to the connector instance, carrying last_error", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gmail_pg_terminal_read_${suffix}`;
+    const connectorInstanceId = `cin_gmail_pg_terminal_${suffix}`;
+    const now = "2026-08-03T01:05:16.714Z";
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      const provenGap = await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        gapId: `gap_pg_too_large_proven_${suffix}`,
+        now,
+        reason: "too_large",
+        recordKey: "1603990324753116597:1.2",
+        stream: "attachments",
+      });
+      assert.ok(provenGap);
+      await store.markGapStatus(provenGap.gap_id, "terminal", {
+        lastError: { class: "too_large", message: "attachment exceeds max size: 29209135 > 26214400 bytes" },
+        now,
+      });
+      const unprovenGap = await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        gapId: `gap_pg_temp_unavailable_unproven_${suffix}`,
+        now,
+        reason: "temporary_unavailable",
+        recordKey: "1395620753265911792:1.2",
+        stream: "attachments",
+      });
+      assert.ok(unprovenGap);
+      await store.markGapStatus(unprovenGap.gap_id, "terminal", { now });
+      await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        gapId: `gap_pg_still_pending_${suffix}`,
+        now,
+        reason: "temporary_unavailable",
+        recordKey: "still-pending",
+        stream: "attachments",
+      });
+
+      const scoped = await store.listTerminalGapsForConnector(connectorId, { connectorInstanceId });
+      assert.deepEqual(
+        // biome-ignore lint/suspicious/useArraySortCompare: the test relies on the platform default lexical sort behavior.
+        scoped.map((gap) => gap.gap_id).sort(),
+        [`gap_pg_temp_unavailable_unproven_${suffix}`, `gap_pg_too_large_proven_${suffix}`]
+      );
+      const proven = scoped.find((gap) => gap.gap_id === `gap_pg_too_large_proven_${suffix}`);
+      const unproven = scoped.find((gap) => gap.gap_id === `gap_pg_temp_unavailable_unproven_${suffix}`);
+      assert.deepEqual(proven?.last_error, {
+        class: "too_large",
+        message: "attachment exceeds max size: 29209135 > 26214400 bytes",
+      });
+      assert.equal(unproven?.last_error, null);
+    } finally {
+      await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test("Postgres listTerminalGapsByConnectorInstanceIds groups per connection and withholds a truncated instance's rows", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gmail_pg_batch_terminal_${suffix}`;
+    const truncated = `cin_gmail_pg_batch_trunc_${suffix}`;
+    const under = `cin_gmail_pg_batch_under_${suffix}`;
+    const now = "2026-08-03T01:05:16.714Z";
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      // Same fixture and same assertions as the SQLite truncation test: proves
+      // backend parity for the truncation contract, not just for the happy path.
+      for (const index of [0, 1, 2]) {
+        // biome-ignore lint/performance/noAwaitInLoops: ordered test setup is intentionally sequential — each gap must commit before it is terminalized.
+        const gap = await store.upsertPendingGap({
+          connectorId,
+          connectorInstanceId: truncated,
+          gapId: `gap_pg_batch_trunc_${index}_${suffix}`,
+          now,
+          reason: "too_large",
+          recordKey: `oversized_${index}`,
+          stream: "attachments",
+        });
+        assert.ok(gap);
+        await store.markGapStatus(gap.gap_id, "terminal", {
+          lastError: { class: "too_large", message: "attachment exceeds max size: 29209135 > 26214400 bytes" },
+          now,
+        });
+      }
+      const unproven = await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId: under,
+        gapId: `gap_pg_batch_under_${suffix}`,
+        now,
+        reason: "temporary_unavailable",
+        recordKey: "no_recorded_error",
+        stream: "attachments",
+      });
+      assert.ok(unproven);
+      await store.markGapStatus(unproven.gap_id, "terminal", { now });
+      // A pending row on the page must never appear in a terminal read.
+      await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId: under,
+        gapId: `gap_pg_batch_pending_${suffix}`,
+        now,
+        reason: "temporary_unavailable",
+        recordKey: "still-pending",
+        stream: "attachments",
+      });
+
+      const read = await store.listTerminalGapsByConnectorInstanceIds([truncated, under], { rowsPerInstance: 2 });
+      assert.deepEqual([...read.truncatedConnectorInstanceIds], [truncated]);
+      assert.equal(
+        read.gapsByConnectorInstanceId.get(truncated),
+        undefined,
+        "the truncated instance carries NO rows — a partial set must never reach the proof classifier"
+      );
+      assert.deepEqual(
+        read.gapsByConnectorInstanceId.get(under)?.map((gap) => gap.gap_id),
+        [`gap_pg_batch_under_${suffix}`],
+        "only status='terminal' rows for the complete instance, never its pending row"
+      );
+      assert.equal(read.gapsByConnectorInstanceId.get(under)?.[0]?.last_error, null);
+
+      const atCap = await store.listTerminalGapsByConnectorInstanceIds([truncated], { rowsPerInstance: 3 });
+      assert.equal(atCap.truncatedConnectorInstanceIds.size, 0);
+      assert.equal(atCap.gapsByConnectorInstanceId.get(truncated)?.length, 3);
+      assert.deepEqual(atCap.gapsByConnectorInstanceId.get(truncated)?.[0]?.last_error, {
+        class: "too_large",
+        message: "attachment exceeds max size: 29209135 > 26214400 bytes",
+      });
+    } finally {
+      await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = ANY($1::text[])", [
+        [truncated, under],
       ]);
       await closePostgresStorage();
       closeDb();

@@ -7,9 +7,12 @@ import test from "node:test";
 import {
   buildCollectionReport,
   type CollectionReportEntry,
+  type ConnectorDetailGapStoreLike,
+  getUnfillableAccountedByStreamForInstanceIds,
   projectCollectionReport,
   type RuntimeCollectionFact,
   rollupCollectionReportCoverageOverride,
+  rollupCollectionReportUnfillableAccounted,
 } from "../server/ref-control.ts";
 
 // server/ref-control.ts's ManifestStream/ConnectorRunSummary/etc. interfaces are
@@ -184,6 +187,112 @@ test("declared checkpoint-window strategy with a measured boundary and committed
   const entry = entryFor(entries, "messages");
   assert.equal(entry.coverage_condition, "complete");
   assert.equal(entry.forward_disposition, "complete");
+});
+
+// ─── vacuous-zero coverage: a required stream that reported nothing ───────────
+//
+// A connector that emits NO coverage fact for a manifest-declared required
+// stream must leave that stream `unknown`, never `complete`. This is the
+// runtime half of the apple_contacts fix (production connection
+// cin_d344ba53d6d95c7dd343393d): the connector withholds its DETAIL_COVERAGE on
+// an incremental run that enumerated nothing, and the projection must carry
+// that silence through as unproven rather than as "not owed".
+
+test("required manifest stream with NO fact at all reads unknown, never complete", () => {
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    // The run reported a fact for `address_books` only. `contacts` is declared
+    // and required, but the connector emitted no coverage for it.
+    collectionFacts: { streams: [fact({ considered: 1, covered: 1, stream: "address_books" })] },
+    freshness: "fresh",
+    manifestStreams: [
+      { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "address_books" },
+      { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "contacts", required: true },
+    ],
+    refresh: null,
+  });
+  const contacts = entryFor(entries, "contacts");
+  assert.equal(contacts.required, true);
+  assert.equal(contacts.considered, "unknown");
+  // The whole point: silence is unproven, not satisfied.
+  assert.equal(contacts.coverage_condition, "unknown");
+  // The stream that DID measure its boundary is untouched.
+  assert.equal(entryFor(entries, "address_books").coverage_condition, "complete");
+});
+
+test("a measured considered:0 on a required stream still proves verified-empty coverage", () => {
+  // Proof-of-emptiness must remain expressible. A connector that genuinely
+  // enumerated the boundary and found nothing reports `considered: 0` and is
+  // entitled to `complete` — this is the existing coherence-contract channel
+  // (rule 2, `enumeration_boundary`) and the fix must not break it.
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [fact({ checkpoint: "committed", collected: 0, considered: 0, covered: 0, stream: "contacts" })],
+    },
+    freshness: "fresh",
+    manifestStreams: [
+      { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "contacts", required: true },
+    ],
+    refresh: null,
+  });
+  const entry = entryFor(entries, "contacts");
+  assert.equal(entry.considered, 0);
+  assert.equal(entry.coverage_condition, "complete");
+});
+
+test("a NON-required manifest stream with no fact is unchanged by the required-stream gate", () => {
+  // Constraint: only required streams change behavior. An optional declared
+  // stream with no fact reads `unknown` here too, but it must not roll up into
+  // the connection axis — proven by the rollup test below.
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: { streams: [fact({ considered: 3, covered: 3, stream: "address_books" })] },
+    freshness: "fresh",
+    manifestStreams: [
+      { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "address_books" },
+      {
+        coverage_strategy: "full_inventory",
+        freshness_strategy: "scheduled_window",
+        name: "canvases",
+        required: false,
+      },
+    ],
+    refresh: null,
+  });
+  const optional = entryFor(entries, "canvases");
+  assert.equal(optional.required, false);
+  assert.equal(optional.coverage_condition, "unknown");
+  // The connection-level rollup only considers required streams, so an
+  // optional unknown must NOT drag a complete axis to unknown.
+  const optionalManifest: ManifestStreamFixture[] = [
+    { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "address_books" },
+    { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "canvases", required: false },
+  ];
+  assert.equal(rollupCollectionReportCoverageOverride("complete", entries, optionalManifest), null);
+});
+
+test("a required stream reading unknown drags the connection coverage axis off complete", () => {
+  // The end-to-end consequence: this is what stops the Healthy pill. The axis
+  // becomes `unknown`, which withholds healthy WITHOUT manufacturing a
+  // degraded/"Can't collect" verdict.
+  const manifestStreams: ManifestStreamFixture[] = [
+    { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "address_books" },
+    { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "contacts", required: true },
+  ];
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: { streams: [fact({ considered: 1, covered: 1, stream: "address_books" })] },
+    freshness: "fresh",
+    manifestStreams,
+    refresh: null,
+  });
+  const override = rollupCollectionReportCoverageOverride("complete", entries, manifestStreams);
+  assert.equal(override, "unknown");
+  // Explicitly NOT a degrading axis: unknown may withhold healthy, but it must
+  // never manufacture a false red.
+  assert.notEqual(override, "terminal_gap");
+  assert.notEqual(override, "partial");
 });
 
 test("unreliable projection withholds required complete coverage but preserves optional policy outcomes", () => {
@@ -794,6 +903,68 @@ test("terminal detail gap without a denominator is visible on its stream", () =>
   assert.equal(orderItems.considered, "unknown");
   assert.equal(orderItems.coverage_condition, "terminal_gap");
   assert.equal(orderItems.forward_disposition, "terminal");
+  assert.equal(orderItems.coverage_unfillable_accounted, false);
+});
+
+// ─── unfillableAccounted (§10-A) — Gmail attachments' exact production shape ──
+
+test("terminal_gap stream fully backed by durable unfillable proof -> coverage_unfillable_accounted true", () => {
+  const entries = report(
+    [fact({ checkpoint: "not_staged", collected: 349_023, considered: null, stream: "attachments" })],
+    {
+      manifestStreams: [{ name: "attachments" }],
+      terminalDetailGapsByStream: new Map([["attachments", 32]]),
+      unfillableAccountedByStream: new Map([["attachments", true]]),
+    }
+  );
+  const attachments = entryFor(entries, "attachments");
+  assert.equal(attachments.coverage_condition, "terminal_gap");
+  assert.equal(attachments.coverage_unfillable_accounted, true);
+});
+
+test("terminal_gap stream with the read unmeasured (store doesn't implement it) -> coverage_unfillable_accounted stays false", () => {
+  const entries = report(
+    [fact({ checkpoint: "not_staged", collected: 349_023, considered: null, stream: "attachments" })],
+    {
+      manifestStreams: [{ name: "attachments" }],
+      terminalDetailGapsByStream: new Map([["attachments", 32]]),
+      // unfillableAccountedByStream omitted entirely — the real "not implemented" shape.
+    }
+  );
+  const attachments = entryFor(entries, "attachments");
+  assert.equal(attachments.coverage_condition, "terminal_gap");
+  assert.equal(attachments.coverage_unfillable_accounted, false);
+});
+
+test("a non-terminal_gap stream never carries coverage_unfillable_accounted even if the map says true (defense in depth)", () => {
+  const entries = report([fact({ checkpoint: "committed", collected: 10, considered: 10, stream: "labels" })], {
+    manifestStreams: [{ name: "labels" }],
+    // Deliberately mismatched input: no terminal gap exists on this stream, but
+    // the map claims accounted-for anyway. The classifier must not trust it.
+    unfillableAccountedByStream: new Map([["labels", true]]),
+  });
+  const labels = entryFor(entries, "labels");
+  assert.equal(labels.coverage_condition, "complete");
+  assert.equal(labels.coverage_unfillable_accounted, false);
+});
+
+test("stale evidence scope withdraws coverage_unfillable_accounted along with the terminal_gap condition it was proven against", () => {
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [fact({ checkpoint: "not_staged", collected: 100, considered: null, stream: "attachments" })],
+    },
+    declaredCollectionScope: "narrowed_v2",
+    evidenceCollectionScope: "unscoped",
+    freshness: "fresh",
+    manifestStreams: [{ name: "attachments" }],
+    refresh: null,
+    terminalDetailGapsByStream: new Map([["attachments", 32]]),
+    unfillableAccountedByStream: new Map([["attachments", true]]),
+  });
+  const attachments = entryFor(entries, "attachments");
+  assert.equal(attachments.coverage_condition, "unknown");
+  assert.equal(attachments.coverage_unfillable_accounted, false);
 });
 
 test("current pending detail gap raises an old zero-gap fact", () => {
@@ -1481,6 +1652,148 @@ test("optional terminal stream remains advisory while required terminal stream r
   );
 });
 
+// ─── rollupCollectionReportUnfillableAccounted (§10-A) ────────────────────────
+//
+// The connection-level sibling rollup: `true` only when the resolved axis is
+// `terminal_gap` AND every required stream at `terminal_gap` is itself
+// `coverage_unfillable_accounted`. Mirrors production Gmail exactly: the
+// `attachments` stream carries 32 proven `too_large` rows mixed with 5
+// unproven `temporary_unavailable` rows in the SAME stream, so the per-stream
+// classifier already resolves that mix to `false` (see
+// collection-report-projection.test.ts's own per-stream tests above) — these
+// tests instead cover the connection-level fold across MULTIPLE streams.
+
+function unfillableEntry(
+  overrides: Partial<CollectionReportEntry> & Pick<CollectionReportEntry, "stream">
+): CollectionReportEntry {
+  return {
+    checkpoint: "not_staged",
+    collected: 0,
+    considered: "unknown",
+    coverage_condition: "terminal_gap",
+    coverage_strategy: null,
+    coverage_unfillable_accounted: false,
+    covered: "unknown",
+    evidence_as_of: null,
+    forward_disposition: "terminal",
+    freshness_strategy: null,
+    pending_detail_gaps: 0,
+    pending_detail_gaps_is_floor: false,
+    required: true,
+    skipped: null,
+    ...overrides,
+  };
+}
+
+test("resolved axis terminal_gap, single required stream fully accounted -> connection accounted true", () => {
+  const attachments = unfillableEntry({ coverage_unfillable_accounted: true, stream: "attachments" });
+  assert.equal(
+    rollupCollectionReportUnfillableAccounted("terminal_gap", [attachments], [{ name: "attachments" }]),
+    true
+  );
+});
+
+test("resolved axis terminal_gap, one of two required terminal_gap streams unaccounted -> connection accounted false", () => {
+  const attachments = unfillableEntry({ coverage_unfillable_accounted: true, stream: "attachments" });
+  const messages = unfillableEntry({ coverage_unfillable_accounted: false, stream: "messages" });
+  assert.equal(
+    rollupCollectionReportUnfillableAccounted(
+      "terminal_gap",
+      [attachments, messages],
+      [{ name: "attachments" }, { name: "messages" }]
+    ),
+    false
+  );
+});
+
+test("resolved axis is NOT terminal_gap -> always false, even if a stream entry claims accounted (stale/mismatched input)", () => {
+  const attachments = unfillableEntry({ coverage_unfillable_accounted: true, stream: "attachments" });
+  assert.equal(
+    rollupCollectionReportUnfillableAccounted("retryable_gap", [attachments], [{ name: "attachments" }]),
+    false
+  );
+  assert.equal(rollupCollectionReportUnfillableAccounted("complete", [attachments], [{ name: "attachments" }]), false);
+});
+
+test("an optional (non-required) terminal_gap stream's proof does not count toward the required-only rollup", () => {
+  const optionalStream = unfillableEntry({
+    coverage_unfillable_accounted: true,
+    required: false,
+    stream: "optional_stream",
+  });
+  // No required stream is terminal_gap at all -> nothing to account for.
+  assert.equal(
+    rollupCollectionReportUnfillableAccounted(
+      "terminal_gap",
+      [optionalStream],
+      [{ name: "optional_stream", required: false }]
+    ),
+    false
+  );
+});
+
+test("no terminal_gap entries in the report at all, despite a terminal_gap resolved axis -> false (mismatched-input guard, never a claim from nothing)", () => {
+  assert.equal(rollupCollectionReportUnfillableAccounted("terminal_gap", [], []), false);
+});
+
+test("a proven terminal_gap stream alongside a genuinely-unmeasured (unknown) required stream is NOT accounted — cross-stream leakage guard", () => {
+  // Reproduces the google-maps/whatsapp shape alongside a Gmail-shaped proven
+  // stream on the SAME connection: terminal_gap outranks unknown in worst-wins
+  // precedence, so the resolved axis is terminal_gap even though `messages`
+  // never carries a terminal_gap entry at all — it would be invisible to a
+  // filter that only ever looks at terminal_gap rows.
+  const attachments = unfillableEntry({ coverage_unfillable_accounted: true, stream: "attachments" });
+  const neverMeasured = unfillableEntry({
+    coverage_condition: "unknown",
+    forward_disposition: "unmeasured",
+    stream: "messages",
+  });
+  assert.equal(
+    rollupCollectionReportUnfillableAccounted(
+      "terminal_gap",
+      [attachments, neverMeasured],
+      [{ name: "attachments" }, { name: "messages" }]
+    ),
+    false
+  );
+});
+
+test("a proven terminal_gap stream alongside a retryable_gap required stream is NOT accounted", () => {
+  const attachments = unfillableEntry({ coverage_unfillable_accounted: true, stream: "attachments" });
+  const retryable = unfillableEntry({
+    coverage_condition: "retryable_gap",
+    forward_disposition: "resumable",
+    stream: "threads",
+  });
+  assert.equal(
+    rollupCollectionReportUnfillableAccounted(
+      "terminal_gap",
+      [attachments, retryable],
+      [{ name: "attachments" }, { name: "threads" }]
+    ),
+    false
+  );
+});
+
+test("a proven terminal_gap stream alongside an accepted-coverage (unsupported) required stream IS still accounted", () => {
+  // Accepted-coverage axes are settled, non-degrading claims — they must not
+  // block the rollup the way unknown/retryable_gap/gaps/partial do.
+  const attachments = unfillableEntry({ coverage_unfillable_accounted: true, stream: "attachments" });
+  const accepted = unfillableEntry({
+    coverage_condition: "unsupported",
+    forward_disposition: "complete",
+    stream: "labels",
+  });
+  assert.equal(
+    rollupCollectionReportUnfillableAccounted(
+      "terminal_gap",
+      [attachments, accepted],
+      [{ name: "attachments" }, { name: "labels" }]
+    ),
+    true
+  );
+});
+
 // openspec/changes/fix-recovery-run-lifecycle: a recovery-only run performs
 // no forward/list inventory pass by definition, so `buildCollectionFacts`
 // (connector-gap-bounding.ts) returns null for it unconditionally — a
@@ -1742,4 +2055,113 @@ test("proof-predicate parity: a stored `disabled` checkpoint proves durable cove
   );
   assert.equal(entry.checkpoint, "disabled");
   assert.equal(entry.evidence_as_of, "2026-07-10T00:00:00.000Z");
+});
+
+// ─── getUnfillableAccountedByStreamForInstanceIds (batch list-page reader) ────
+//
+// The list page's per-stream unfillable verdict comes from a batched
+// terminal-gap ROW read. These pin the reader's refusals directly, against a
+// fake store, because the real store's per-instance cap is not reachable from
+// the projection call site: the honest-`null` and truncation contracts are the
+// whole safety argument for reading a bounded page at all.
+
+type TerminalGapPageReadFixture = Awaited<
+  ReturnType<NonNullable<ConnectorDetailGapStoreLike["listTerminalGapsByConnectorInstanceIds"]>>
+>;
+
+/** A store exposing ONLY the batch terminal-gap read, returning a caller-supplied page. */
+function batchGapStore(
+  read: TerminalGapPageReadFixture | (() => TerminalGapPageReadFixture)
+): ConnectorDetailGapStoreLike {
+  return {
+    listPendingGaps: () => [],
+    listTerminalGapsByConnectorInstanceIds: () => (typeof read === "function" ? read() : read),
+  };
+}
+
+const PROVEN_GAP = { last_error: { message: "attachment exceeds max size: 29209135 > 26214400 bytes" } };
+// Production's retry-exhausted shape: terminalized with no recorded error.
+const UNPROVEN_GAP = { last_error: null };
+
+test("batch unfillable read proves a stream whose terminal gaps all carry size-vs-cap evidence", async () => {
+  const verdicts = await getUnfillableAccountedByStreamForInstanceIds(
+    batchGapStore({
+      gapsByConnectorInstanceId: new Map([
+        [
+          "cin_a",
+          [
+            { ...PROVEN_GAP, stream: "attachments" },
+            { ...PROVEN_GAP, stream: "attachments" },
+          ],
+        ],
+      ]),
+      truncatedConnectorInstanceIds: new Set(),
+    }),
+    ["cin_a"]
+  );
+  assert.equal(verdicts?.get("cin_a")?.get("attachments"), true);
+});
+
+test("batch unfillable read refuses a stream holding even one unproven terminal gap", async () => {
+  const verdicts = await getUnfillableAccountedByStreamForInstanceIds(
+    batchGapStore({
+      gapsByConnectorInstanceId: new Map([
+        [
+          "cin_a",
+          [
+            { ...PROVEN_GAP, stream: "attachments" },
+            { ...UNPROVEN_GAP, stream: "attachments" },
+            { ...PROVEN_GAP, stream: "labels" },
+          ],
+        ],
+      ]),
+      truncatedConnectorInstanceIds: new Set(),
+    }),
+    ["cin_a"]
+  );
+  assert.equal(
+    verdicts?.get("cin_a")?.get("attachments"),
+    false,
+    "partial proof is not proof — one unproven gap sinks the stream"
+  );
+  assert.equal(verdicts?.get("cin_a")?.get("labels"), true, "a sibling stream is judged on its own gaps");
+});
+
+test("batch unfillable read leaves a truncated instance unmeasured even when every returned row is proven", async () => {
+  const verdicts = await getUnfillableAccountedByStreamForInstanceIds(
+    batchGapStore({
+      // The store withholds a truncated instance's rows; assert the reader
+      // refuses even if a future store regression hands them over anyway.
+      gapsByConnectorInstanceId: new Map([
+        ["cin_truncated", [{ ...PROVEN_GAP, stream: "attachments" }]],
+        ["cin_complete", [{ ...PROVEN_GAP, stream: "attachments" }]],
+      ]),
+      truncatedConnectorInstanceIds: new Set(["cin_truncated"]),
+    }),
+    ["cin_truncated", "cin_complete"]
+  );
+  assert.equal(
+    verdicts?.get("cin_truncated"),
+    undefined,
+    "a truncated read is unmeasured, never a `true` fabricated from the rows that happened to fit"
+  );
+  assert.equal(verdicts?.get("cin_complete")?.get("attachments"), true, "the complete sibling is still decided");
+});
+
+test("batch unfillable read is null (unmeasured) when the store does not implement it or the read throws", async () => {
+  assert.equal(
+    await getUnfillableAccountedByStreamForInstanceIds({ listPendingGaps: () => [] }, ["cin_a"]),
+    null,
+    "a store without the batch read yields unmeasured, never a verdict derived from counts"
+  );
+  assert.equal(
+    await getUnfillableAccountedByStreamForInstanceIds(
+      batchGapStore(() => {
+        throw new Error("detail gap store unavailable");
+      }),
+      ["cin_a"]
+    ),
+    null,
+    "a throwing read yields unmeasured, matching every other optional field on this projection"
+  );
 });

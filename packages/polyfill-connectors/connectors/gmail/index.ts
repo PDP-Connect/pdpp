@@ -56,7 +56,6 @@ import {
   type BodyPartSelection,
   bigintToCursor,
   bigintToNumber,
-  buildDeltaMessageRecord,
   buildMessageBodyRecord,
   buildMessageRecord,
   buildThreadRecord,
@@ -172,7 +171,40 @@ function getReadline(): ReadlineInterface {
 // control chars out of body text before encoding. The JSONL encoding
 // itself — BigInt coercion + U+2028/U+2029 escaping — lives in
 // `stringifyForJsonl`.
+// DONE is terminal on the wire, and nothing below this line may write after
+// it. The runtime's `handleMsg` latches the first DONE of any status and
+// throws `Connector emitted <TYPE> after DONE` on the next message, failing
+// the whole run as a protocol violation.
+//
+// Enforcing that here rather than at each terminal path is deliberate: the
+// terminal paths do not stop this process. `flushAndExit` only registers
+// listeners and returns (see `connector-exit.ts` — it waits for the runtime
+// to close stdin, up to 30 minutes), so after `fail()` or a rejection
+// handler emits DONE, the interrupted work is still on the stack. An
+// in-flight `for await` over an IMAP FETCH keeps iterating and keeps calling
+// `emitRecord`, and each of those writes lands after the DONE.
+//
+// That is what production hit: gmail runs failed `connector_protocol_violation
+// "Connector emitted RECORD after DONE"` while reporting more records emitted
+// than the runtime ever flushed — the surplus was written into a channel that
+// had already closed. Making every terminal path unwind perfectly would be a
+// standing obligation on code that mostly cannot see it coming; making the
+// write refuse is a property of the channel.
+//
+// Suppressed messages go to stderr, so a swallowed record is diagnosable
+// rather than silent. Emitting them would fail the run outright, which is
+// strictly worse: the records ingested before DONE are durable and the run's
+// own terminal status is already decided.
+let doneEmitted = false;
+
 function emit(msg: EmittedMessage): Promise<void> {
+  if (doneEmitted) {
+    process.stderr.write(`[gmail] suppressed ${String(msg.type)} after DONE\n`);
+    return Promise.resolve();
+  }
+  if (msg.type === "DONE") {
+    doneEmitted = true;
+  }
   const line = stringifyForJsonl(sanitizeForJsonl(msg));
   const ok = process.stdout.write(line);
   if (ok) {
@@ -183,6 +215,17 @@ function emit(msg: EmittedMessage): Promise<void> {
       resolve();
     });
   });
+}
+
+/** Test-only reset of the terminal latch; the real process never reuses it. */
+export function __resetDoneLatchForTests(): void {
+  doneEmitted = false;
+}
+
+/** Test-only handle on the real stdout emitter, so the latch is exercised
+ *  through the same function every production path writes through. */
+export function gmailEmitForTests(msg: EmittedMessage): Promise<void> {
+  return emit(msg);
 }
 
 function flushAndExit(code: number): void {
@@ -305,6 +348,18 @@ interface AttachmentHydrationFailure {
   readonly stage: AttachmentHydrationFailureStage;
 }
 
+/**
+ * A `failed` hydration's stage, if known, else the same `unclassified_failed`
+ * bucket already used by `attachment_hydration_failure_outcome` telemetry.
+ * This is the ONLY hydration-failure detail that ever reaches a DETAIL_GAP:
+ * a bounded category, never `AttachmentRecord.hydration_error` (raw IMAP/blob
+ * text that can embed hostnames, tokens, or URLs — see
+ * `buildAttachmentDetailGap`'s doc comment on why that string never crosses).
+ */
+function attachmentHydrationFailureClass(failure: AttachmentHydrationFailure | null): string {
+  return failure?.stage ?? "unclassified_failed";
+}
+
 export interface AttachmentHydrationResult {
   readonly failure: AttachmentHydrationFailure | null;
   readonly record: AttachmentRecord;
@@ -389,12 +444,28 @@ export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSumma
  *   - `failed`   → `gapKeys` (a retryable detail gap to re-attempt next run).
  *   - `too_large` or `deferred` → unaccounted (required denominator only).
  */
+/** A failed attachment hydration, paired with why it failed (bounded, non-secret). */
+export interface FailedAttachmentRecord {
+  readonly failureClass: string;
+  readonly record: AttachmentRecord;
+}
+
 export interface AttachmentDetailCoverage {
   /**
    * Failed attachment records, retained so the run can emit one matching
-   * DETAIL_GAP per `gapKeys` entry.
+   * DETAIL_GAP per `gapKeys` entry. The host commit-gate credits a missing
+   * required key only when it is hydrated, optional-skipped, or backed by a
+   * durable pending DETAIL_GAP — `gap_keys` alone do not satisfy it. Each
+   * record's `id` is exactly the value that landed in `gapKeys`, keeping the
+   * gap's `record_key` and the coverage key a single source of truth.
+   *
+   * `failureClass` is the bounded, non-secret classification (see
+   * `attachmentHydrationFailureClass`) — the only hydration-failure detail
+   * that reaches the emitted DETAIL_GAP. Without it, a gap that keeps
+   * failing on every retry never records why: `attempt_count` climbs but
+   * `last_error_json` stays null forever (the 2026-08 Gmail 5-row defect).
    */
-  failedRecords: AttachmentRecord[];
+  failedRecords: FailedAttachmentRecord[];
   gapKeys: string[];
   hydratedKeys: string[];
   requiredKeys: string[];
@@ -410,8 +481,28 @@ export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
  * its terminal `hydration_status`. A `deferred` status (never hydrated this
  * run) is still a considered key but has no terminal outcome bucket, so it
  * counts only toward the denominator. Pure: mutates the passed accumulator.
+ *
+ * `failure` is the same `AttachmentHydrationFailure | null` the hydrator
+ * already computes for aggregate telemetry — passed through here so a
+ * `failed` outcome's DETAIL_GAP can carry a bounded, non-secret `error.class`
+ * instead of recording an attempt with no evidence of why it failed.
  */
-export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, record: AttachmentRecord): void {
+export function recordAttachmentCoverage(
+  coverage: AttachmentDetailCoverage,
+  record: AttachmentRecord,
+  failure: AttachmentHydrationFailure | null = null
+): void {
+  // The runtime rejects a DETAIL_COVERAGE whose required_keys repeats a key.
+  // The same attachment id can legitimately reach this accumulator twice in a
+  // run -- a message re-observed across pages, or a retry re-walking a
+  // partially hydrated thread -- so pushing unconditionally turns an ordinary
+  // duplicate observation into a hard run failure ("invalid
+  // DETAIL_COVERAGE.required_keys: duplicate key"), which is what took Gmail
+  // out on 2026-08-17. Record each key once; the terminal-outcome buckets
+  // below are already keyed by the same id and stay consistent with it.
+  if (coverage.requiredKeys.includes(record.id)) {
+    return;
+  }
   coverage.requiredKeys.push(record.id);
   switch (record.hydration_status) {
     case "hydrated":
@@ -419,7 +510,10 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, rec
       return;
     case "failed":
       coverage.gapKeys.push(record.id);
-      coverage.failedRecords.push(record);
+      // Retain the record so a matching DETAIL_GAP is emitted for this key.
+      // `gap_keys` on DETAIL_COVERAGE are not enough on their own: the host
+      // commit-gate requires a durable pending DETAIL_GAP to credit the key.
+      coverage.failedRecords.push({ failureClass: attachmentHydrationFailureClass(failure), record });
       return;
     case "too_large":
     case "deferred":
@@ -436,10 +530,8 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, rec
 
 /**
  * Build the per-run attachments DETAIL_COVERAGE after the detail lane settles.
- * A requested attachments pass that scans the parent `messages` boundary and
- * finds zero attachment parts has a real empty denominator: `required_keys: []`
- * means "nothing owed", not "unknown". The list cursor that anchors this
- * detail pass lives on `messages`, so that is the `state_stream`.
+ * The list cursor that anchors this detail pass lives on `messages`, so that is
+ * the `state_stream`.
  * Reference-only: this reuses DETAIL_COVERAGE without promoting it to portable
  * protocol.
  *
@@ -459,13 +551,67 @@ export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailC
 }
 
 /**
- * Emit the per-run attachments DETAIL_COVERAGE after the detail lane settles.
+ * Whether this run walked a boundary that can support an attachments coverage
+ * claim at all.
+ *
+ * `attachments` has no enumeration of its own: an attachment is only ever
+ * discovered by decoding the BODYSTRUCTURE of a message the run already
+ * fetched. Its denominator is therefore inherited from whatever slice of the
+ * mailbox the run walked — and on an ordinary scheduled run that slice is the
+ * incremental forward window plus the MODSEQ delta, i.e. a CHANGE FEED, not an
+ * inventory.
+ *
+ * That is exactly the apple_contacts `contactsBoundaryEstablished` situation
+ * (`connectors/apple_contacts/index.ts`), and it needs the same answer. A quiet
+ * 16-minute run that observes no new mail decodes no attachment parts and would
+ * otherwise emit `considered: 0, covered: 0` — numbers that are trivially
+ * self-consistent and read downstream as "this stream is proven complete",
+ * when the honest statement is "this run proved nothing about the mailbox".
+ * Worse, the two are indistinguishable to the gate: a stream that has walked
+ * almost nothing and a stream that is genuinely fully collected emit the
+ * identical fact. Withholding is what keeps those two apart.
+ *
+ * The one boundary that does justify a whole-stream claim is a COMPLETED
+ * historical `messages` walk: the historical pass fetches every UID below the
+ * forward floor and `processMessage` decodes attachments for each one, so once
+ * `messages.backfill.completed_at` is set, every message in All Mail has had
+ * its attachment parts enumerated. Until then the mailbox below the resume
+ * point is simply unwalked, and no count taken above it describes it.
+ *
+ * Emitting nothing leaves the stream honestly unproven (the coherence
+ * contract's `checkpoint_only`/`no_proof_strategy` -> axis `unknown`) rather
+ * than falsely complete. `unknown` is a worse-looking verdict than a green
+ * `0/0` and that is the point: it is the true one, and it is the verdict an
+ * owner can act on.
+ */
+export function attachmentsCoverageBoundaryEstablished(session: { messagesBackfill: MessagesBackfillCursor }): boolean {
+  return typeof session.messagesBackfill.completed_at === "string" && session.messagesBackfill.completed_at !== "";
+}
+
+/**
+ * Emit the per-run attachments DETAIL_COVERAGE after the detail lane settles —
+ * but only when the run established a boundary that can support the claim
+ * (see `attachmentsCoverageBoundaryEstablished`).
  *
  * Extracted from `runAllMailPasses` to keep that orchestrator under the
  * cognitive-complexity ceiling (authoring guide §"Rules the tooling enforces").
  */
-async function emitAttachmentDetailCoverage(coverage: AttachmentDetailCoverage | undefined): Promise<void> {
+async function emitAttachmentDetailCoverage(
+  coverage: AttachmentDetailCoverage | undefined,
+  boundaryEstablished: boolean
+): Promise<void> {
   if (!coverage) {
+    return;
+  }
+  if (!boundaryEstablished) {
+    // Deliberately not a SKIP_RESULT: nothing was skipped by policy. The run
+    // simply has no denominator worth reporting, and says so by staying quiet.
+    await emit({
+      type: "PROGRESS",
+      stream: "attachments",
+      message:
+        "Withholding attachments coverage: the historical messages walk has not completed, so this run's attachment counts describe an incremental window, not the mailbox",
+    });
     return;
   }
   await emit(buildAttachmentDetailCoverageMessage(coverage));
@@ -488,11 +634,23 @@ async function emitAttachmentDetailCoverage(coverage: AttachmentDetailCoverage |
  * order-detail gap; retrying next run is the honest, non-destructive default.
  *
  * Reference-only and bounded: only opaque message and part identifiers cross
- * (X-GM-MSGID, the BODYSTRUCTURE part index, and the attachment id). No
- * filename, content, blob bytes, raw error text, tokens, cookies, URLs, request
- * bodies, or payload snippets are carried.
+ * (X-GM-MSGID, the BODYSTRUCTURE part index, and the attachment id), plus —
+ * when `failureClass` is supplied — a bounded, non-secret failure category
+ * (e.g. `imap_download_failed`, `blob_upload_http_5xx`, `unclassified_failed`;
+ * see `attachmentHydrationFailureClass`). No filename, content, blob bytes,
+ * raw error text, tokens, cookies, URLs, request bodies, or payload snippets
+ * are ever carried — `AttachmentRecord.hydration_error` (which CAN embed
+ * that raw text) never crosses this boundary, by construction: only the
+ * caller-supplied category string can reach `error.class`.
+ *
+ * Without a failure class, a repeatedly-retried gap accrues `attempt_count`
+ * on every run but never records why it keeps failing — `last_error_json`
+ * stays null forever, which is indistinguishable from "never attempted" and
+ * blocks the stream from ever proving its remaining gaps are impossible
+ * (2026-08 Gmail: 5 `attachments` gaps reached terminal status with 37-117
+ * attempts and a permanently-null `last_error_json`).
  */
-export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGapMessage {
+export function buildAttachmentDetailGap(attachment: AttachmentRecord, failureClass?: string): DetailGapMessage {
   return buildDetailGap({
     stream: "attachments",
     parentStream: "messages",
@@ -504,6 +662,7 @@ export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGa
       part_index: attachment.part_index,
       attachment_id: attachment.id,
     },
+    ...(failureClass ? { error: { class: failureClass } } : {}),
   });
 }
 
@@ -586,7 +745,7 @@ async function emitAttachmentRecords(
     // Record the outcome BEFORE emitting so the coverage denominator counts
     // every attempt even if the emit is scope-filtered downstream.
     if (deps.attachmentCoverage) {
-      recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
+      recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure);
     }
     const emitted = await deps.emitRecord("attachments", { ...hydrated });
     // Only `hydrated` may acknowledge a served gap as recovered. Unaccounted
@@ -619,8 +778,8 @@ async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | und
   if (!coverage) {
     return;
   }
-  for (const attachment of coverage.failedRecords) {
-    await emit(buildAttachmentDetailGap(attachment));
+  for (const failed of coverage.failedRecords) {
+    await emit(buildAttachmentDetailGap(failed.record, failed.failureClass));
   }
 }
 
@@ -800,6 +959,45 @@ export async function emitMessagesPass(
     }
   }
   return { considered: metas.length, covered: count };
+}
+
+/**
+ * Disclose the mailbox-wide inventory total against this run's walk boundary.
+ *
+ * Gmail's `messages` DETAIL_COVERAGE is deliberately PER-PAGE: the runtime's
+ * `isHealthyBoundedContinuation` admits a bounded page only when
+ * `considered === covered` on same-page facts, so the page denominator must
+ * stay the page. Overwriting it with the mailbox-wide `EXISTS` would make every
+ * run of a 140k-message mailbox read `partial` forever and would break the
+ * continuation contract outright — a wrong denominator, not a better one.
+ *
+ * The honest place for the provider total is therefore a SEPARATE fact: the
+ * server-declared inventory size, plus how much of the UID space this
+ * connector's two cursors have actually claimed. `EXISTS` is validated
+ * fail-closed in `validateExistsTotal` before this point, so a missing or
+ * malformed total has already thrown and can never reach here as a silent
+ * "complete". What this adds is visibility: the number the provider asserts,
+ * next to the boundary we have walked to.
+ */
+async function emitAllMailInventoryDisclosure(
+  emitFn: (msg: EmittedMessage) => Promise<void>,
+  session: AllMailSession,
+  historicalCursor: MessagesBackfillCursor,
+  forwardFloorUid: number
+): Promise<void> {
+  const backfilledThroughUid = historicalCursor.backfilled_through_uid ?? 0;
+  await emitFn({
+    type: "PROGRESS",
+    stream: "messages",
+    message: `All Mail reports ${session.existsTotal} messages; historical walk is through UID ${backfilledThroughUid} of ${forwardFloorUid}`,
+    all_mail_inventory: {
+      all_mail_exists: session.existsTotal,
+      backfilled_through_uid: backfilledThroughUid,
+      forward_floor_uid: forwardFloorUid,
+      historical_backfill_complete: historicalCursor.completed_at !== null,
+      uidvalidity: session.uidvalidityNum,
+    },
+  });
 }
 
 /** Record a bounded terminal outcome so a poison UID cannot replay forever. */
@@ -1049,13 +1247,55 @@ async function findAllMailbox(client: ImapFlow): Promise<ListResponse | null> {
 
 interface AllMailSession {
   attachmentBackfill: AttachmentAllMailCursor;
+  /**
+   * IMAP `EXISTS` for All Mail: the server's own count of the messages in the
+   * mailbox, taken from the SELECT this run already performed. This is the
+   * only mailbox-wide inventory total Gmail hands us, and it is measured at
+   * the provider boundary — before a single UID is walked and independently
+   * of what any pass emits.
+   */
+  existsTotal: number;
   fullResync: boolean;
   highestModseqCursor: number | string | null;
   messagesBackfill: MessagesBackfillCursor;
+  priorExistsTotal: number | undefined;
   priorModseq: number | string | null | undefined;
   priorUidnext: number;
   uidnext: number | undefined;
   uidvalidityNum: number;
+}
+
+/**
+ * Validate the IMAP `EXISTS` count for All Mail and bind it as the mailbox's
+ * inventory total. Fail closed on missing/malformed, mirroring Jellyfin's
+ * `validateTotalRecordCount`: a silently absent total that reads as success is
+ * precisely the bug this contract exists to prevent.
+ *
+ * `priorTotal` is compared only WITHIN a UIDVALIDITY epoch (the caller passes
+ * `undefined` across a re-key). A decrease inside one epoch is real deletion or
+ * a server bug and must throw rather than pass quietly. Across a re-key the UID
+ * space was rebuilt, so a different count is expected and is not loss.
+ */
+function validateExistsTotal(value: unknown, priorTotal: number | undefined): number {
+  if (value === undefined || value === null) {
+    throw new Error("gmail_all_mail_exists_missing: SELECT reported no EXISTS for All Mail");
+  }
+  if (typeof value !== "number") {
+    throw new Error("gmail_all_mail_exists_not_number");
+  }
+  if (!Number.isFinite(value)) {
+    throw new Error("gmail_all_mail_exists_not_finite");
+  }
+  if (!Number.isInteger(value)) {
+    throw new Error("gmail_all_mail_exists_not_integer");
+  }
+  if (value < 0) {
+    throw new Error("gmail_all_mail_exists_negative");
+  }
+  if (priorTotal !== undefined && value < priorTotal) {
+    throw new Error(`gmail_all_mail_exists_decreased: ${value} < ${priorTotal}`);
+  }
+  return value;
 }
 
 /**
@@ -1084,6 +1324,15 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
   const priorAttachmentAllMail: AttachmentAllMailCursor = attachmentsState.all_mail ?? {};
   const priorMessagesBackfill: MessagesBackfillCursor = messagesState.backfill ?? {};
   const priorUidvalidity = priorAllMail.uidvalidity;
+  // Only compare EXISTS against a prior recorded in the SAME UID epoch. A
+  // UIDVALIDITY change means the mailbox was re-keyed, so the old count
+  // describes a different UID space and a lower new count is not loss —
+  // exactly the re-key-vs-deletion distinction the messages cursor already
+  // draws above. Comparing across the boundary would turn every legitimate
+  // re-key into a spurious throw.
+  const priorExistsTotal =
+    priorUidvalidity === uidvalidityNum && typeof priorAllMail.exists === "number" ? priorAllMail.exists : undefined;
+  const existsTotal = validateExistsTotal(mailbox.exists, priorExistsTotal);
   const attachmentBackfill =
     priorAttachmentAllMail.uidvalidity === uidvalidityNum
       ? priorAttachmentAllMail
@@ -1093,6 +1342,8 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
         };
   return {
     attachmentBackfill,
+    existsTotal,
+    priorExistsTotal,
     messagesBackfill:
       priorMessagesBackfill.uidvalidity === uidvalidityNum
         ? priorMessagesBackfill
@@ -1462,9 +1713,65 @@ export function selectMessagesBackfillFetchRange(args: {
   return `${startUid}:${Math.min(targetUid, startUid + windowUids - 1)}`;
 }
 
+/**
+ * Decide the ceiling the historical walk must reach on THIS run.
+ *
+ * The band defect this closes
+ * ---------------------------
+ * The two pointers divide one UID space, so they must MEET: every UID below
+ * `forward_uidnext` that the forward pass did not actually walk has to fall
+ * inside the historical walk's remit, or it belongs to neither walk and is
+ * never fetched.
+ *
+ * The old rule was `prior.target_uid ?? priorEnd` — once written, the ceiling
+ * only ever copied itself forward. Meanwhile the forward watermark advanced on
+ * every run with new mail. So the ceiling froze at the mailbox's size on the
+ * day the backfill started while the resume point climbed away from it, and the
+ * interval between them reopened continuously and grew without bound. Repairing
+ * the stored value (as `scripts/repair/gmail-backfill-target-extend.ts` did)
+ * fixed one instance of the gap and not the mechanism: the very next run with
+ * new mail reopened it.
+ *
+ * The rule here instead ties the ceiling to the ONE fact that makes the band
+ * provably empty: the historical walk must own everything up to where the
+ * forward walk genuinely resumes from. `forwardFloorUid` is that point minus
+ * one — the last UID the forward pass will NOT fetch on the next run.
+ *
+ * Why this cannot rewind or thrash
+ * --------------------------------
+ *   - It only ever RAISES: `Math.max` against the prior ceiling. A ceiling that
+ *     could fall would re-open `completed_at` on a finished walk and, worse,
+ *     let `backfilled_through_uid` sit above its own target.
+ *   - It never touches `backfilled_through_uid`. Progress through the mailbox
+ *     (~150k UIDs on the live instance) is preserved exactly; raising a ceiling
+ *     adds `new - old` UIDs of work and re-walks nothing already done.
+ *   - It is bounded per run. The ceiling rises to a watermark the mailbox
+ *     already passed, never to a live `uidnext` that moves while we walk, so
+ *     the walk converges on a fixed target instead of chasing the mailbox
+ *     forever. Termination is preserved: each run consumes a bounded page and
+ *     the ceiling only gains the UIDs that arrived since the last run.
+ */
+export function resolveMessagesBackfillTargetUid(args: {
+  forwardFloorUid: number;
+  prior: MessagesBackfillCursor;
+}): number {
+  const priorEnd = args.prior.backfilled_through_uid ?? 0;
+  const priorTarget = args.prior.target_uid ?? priorEnd;
+  // Monotonic by construction: the ceiling is a high-water mark, never a
+  // setting. A ceiling that fell below `backfilled_through_uid` would make the
+  // walk's own recorded progress illegal against its target.
+  return Math.max(priorTarget, args.forwardFloorUid);
+}
+
 export function advanceMessagesBackfillCursor(args: {
   now: string;
   pageEndUid: number;
+  /**
+   * The cursor for this run, whose `target_uid` is the ceiling already raised
+   * to meet the forward watermark by `resolveMessagesBackfillTargetUid`. The
+   * ceiling is read from here rather than passed separately so there is exactly
+   * one source of truth for it.
+   */
   prior: MessagesBackfillCursor;
 }): Required<MessagesBackfillCursor> {
   const priorEnd = args.prior.backfilled_through_uid ?? 0;
@@ -1878,7 +2185,7 @@ async function settleServedAttachmentRecoveryAttempt(
 ): Promise<void> {
   const hydrated = hydration.record;
   if (deps.attachmentCoverage) {
-    recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
+    recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure);
   }
   const emitted = await deps.emitRecord("attachments", { ...hydrated });
   if (emitted && hydrated.hydration_status === "hydrated") {
@@ -2837,6 +3144,42 @@ interface ImapDownloadResponse {
   meta?: ImapDownloadMeta;
 }
 
+/**
+ * Download one attachment PART's bytes.
+ *
+ * `expectedSize` is deliberately taken from BODYSTRUCTURE (`attachment.size_bytes`)
+ * and NOT from the download response's `meta.expectedSize`.
+ *
+ * imapflow populates `meta.expectedSize` from the FETCH `RFC822.SIZE` item
+ * (`lib/imap-flow.js`: `meta = { expectedSize: response.size }`, where `size`
+ * is requested as the `RFC822.SIZE` atom in `lib/commands/fetch.js`).
+ * RFC822.SIZE is the size of the ENTIRE MESSAGE — every part, every MIME
+ * header, every boundary — not of the part being downloaded. It is the same
+ * number for every part of a multipart message.
+ *
+ * Feeding a message-scoped size into a per-attachment cap made a message
+ * reject ALL of its attachments whenever their SUM crossed the cap, even
+ * though no single one came close. Observed live on the owner's mailbox:
+ * 68 attachments marked `too_large` across 18 messages, of which only 2 were
+ * genuinely over the 25 MiB cap; one 3,080-byte attachment was rejected as
+ * "29830196 > 26214400 bytes". Two parts of one message recorded the byte-for-byte
+ * identical "observed" size — impossible for real per-part sizes, and the tell
+ * that the number was never the part's.
+ *
+ * That number is not just a wrong skip: `isProvenUnfillableGap`
+ * (`server/connector-gap-classification.ts`) parses this exact
+ * "exceeds max size: <observed> > <limit>" text as DURABLE PROOF that an item
+ * is permanently uncollectable. A message-scoped size therefore manufactured
+ * per-item impossibility proofs for items that are collectible, which is the
+ * fabricated-evidence failure that predicate exists to refuse.
+ *
+ * BODYSTRUCTURE's per-part `size` is the only per-part size IMAP gives us
+ * before transfer, so it is the only honest pre-flight number. When it is
+ * absent we report `null` (unknown) rather than substituting a
+ * message-scoped stand-in: `enforceMaxBytes` still counts real bytes
+ * mid-stream, so an under-reported or missing size is caught by observation
+ * instead of by a guess.
+ */
 export async function fetchAttachmentPart(
   client: Pick<ImapFlow, "download">,
   msg: FetchMessageObject,
@@ -2850,7 +3193,7 @@ export async function fetchAttachmentPart(
   })) as ImapDownloadResponse;
   return {
     content: response.content,
-    expectedSize: typeof response.meta?.expectedSize === "number" ? response.meta.expectedSize : attachment.size_bytes,
+    expectedSize: attachment.size_bytes,
     mimeType: response.meta?.contentType || attachment.content_type || DEFAULT_ATTACHMENT_MIME_TYPE,
   };
 }
@@ -2893,12 +3236,35 @@ export function validateAttachmentHydrationPreflight(args: {
 
 // ─── Delta pass (flag/label changes since priorModseq) ──────────────────
 
-async function runDeltaPass(
+/**
+ * Emit flag/label changes for messages modified since `priorModseq`.
+ *
+ * The envelope is fetched alongside the flags. That is not an optimization —
+ * it is what makes the pass safe. PDPP records are whole-document upserts
+ * (`records` is keyed `UNIQUE(connector_instance_id, stream, record_key)` and
+ * ingest replaces `record_json`), so emitting a partial `messages` record
+ * overwrites the stored row rather than merging into it. An envelope-free
+ * delta record therefore nulls `subject`, `from_email`, `date`, `size_bytes`,
+ * and `snippet` on a message that had them, and sets `received_at` to the run
+ * clock — silently destroying already-collected history every time a label or
+ * a `\Seen` flag changes.
+ *
+ * A message whose envelope the server does not return is skipped rather than
+ * emitted partially: losing a flag update is recoverable on the next pass,
+ * losing the envelope is not.
+ *
+ * `fetchBodiesFn` is the same seam `processMessage` uses. Called with
+ * `wantBodies: false` it fetches at most `SNIPPET_FETCH_MAX_BYTES` of the
+ * plain part — enough to rebuild `snippet`, without touching the
+ * externally-throttled full-body/attachment path.
+ */
+export async function runDeltaPass(
   client: Pick<ImapFlow, "fetch">,
   session: AllMailSession,
   requested: Map<string, StreamRequest>,
   emitRecord: EmitRecordFn,
-  receivedAtFallback: string
+  receivedAtFallback: string,
+  fetchBodiesFn: FetchBodiesFn
 ): Promise<void> {
   if (session.fullResync || session.priorModseq === undefined || session.priorModseq === null) {
     return;
@@ -2909,41 +3275,81 @@ async function runDeltaPass(
     type: "PROGRESS",
     message: `Fetching flag/label deltas since modseq=${String(priorModseq)}`,
   });
+  // `envelope`/`internalDate`/`size`/`bodyStructure` ride along with the flags
+  // so the emitted record is whole. See this function's doc comment: a partial
+  // record is a destructive upsert, not a cheap one. BODYSTRUCTURE is metadata
+  // only — it is what `has_attachments` is derived from, and fetching it does
+  // not pull attachment or body content.
   const deltaQuery: ExtendedFetchQuery = {
     uid: true,
     flags: true,
     labels: true,
     threadId: true,
     emailId: true,
-    envelope: false,
+    envelope: true,
+    internalDate: true,
+    size: true,
+    bodyStructure: true,
   };
+  // Phase A: drain the delta FETCH completely before issuing any other IMAP
+  // command. Phase B: fetch snippets and emit.
+  //
+  // The split is required, not stylistic — it is the same rule the message
+  // pass states at its own Phase A/B boundary: imapflow multiplexes one
+  // command at a time over a single connection, so a nested command issued
+  // while the outer iterator is still open hangs that iterator. Calling
+  // `fetchBodiesFn` (a `fetchOne`) inside the `for await` did exactly that.
+  //
+  // `fetchBodies` swallows its own errors, so the nested call surfaced not as
+  // a body-fetch failure but as a wedged connection: the run stopped making
+  // progress after "Fetching flag/label deltas", sat until a timeout, and
+  // then tripped the runtime's post-DONE guard while the abandoned iterator
+  // drained. Draining first keeps the envelope guarantee below intact and
+  // costs only the metadata already held in memory.
+  const deltaMetas: FetchMessageObject[] = [];
   for await (const msg of client.fetch("1:*", deltaQuery, {
     uid: true,
     changedSince: priorModseqBig,
   })) {
-    const gmMsgid = String(msg.emailId ?? "");
-    if (!gmMsgid) {
-      continue;
-    }
-    // Flag/label delta update: emit a tombstone-free upsert of the message
-    // envelope (minimal fields since envelope not re-fetched). For now, we
-    // emit a RECORD with the same id so the RS upserts flag/label state.
-    // Note: PDPP records are "whole-document" upserts in the current RS,
-    // so this delta path is effectively a full re-fetch. Simpler: mark
-    // this path as "only flags" by emitting the fields we have plus nulls.
-    // For robustness, let's actually re-fetch envelope in v2. For v1, emit
-    // flags only.
     if (!requested.has("messages")) {
       continue;
     }
+    if (!String(msg.emailId ?? "")) {
+      continue;
+    }
+    // No envelope means no safe record to write. Skipping preserves the
+    // stored row; emitting would blank it.
+    if (!msg.envelope) {
+      continue;
+    }
+    deltaMetas.push(msg);
+  }
+
+  for (const msg of deltaMetas) {
+    const gmMsgid = String(msg.emailId ?? "");
+    const env = msg.envelope;
+    if (!env) {
+      continue;
+    }
+    const receivedAt = perMessageInternalDateToIso(msg.internalDate, () => receivedAtFallback);
+    // Bounded snippet-only body read, exactly as the forward pass does for a
+    // messages-without-bodies scope. Sequential by necessity: this is one IMAP
+    // command at a time on a connection that is not concurrent.
+    const { snippet } = await fetchBodiesFn(msg, selectBodyParts(msg.bodyStructure, false), false, true);
     await emitRecord(
       "messages",
-      buildDeltaMessageRecord({
+      buildMessageRecord({
+        attachmentsCount: decodeBodystructureForAttachments(msg.bodyStructure, gmMsgid, receivedAt).length,
+        dateHeader: env.date ? new Date(env.date).toISOString() : null,
+        envelope: env,
         flagsArr: toFlagsArray(msg.flags),
         gmMsgid,
         gmThrid: String(msg.threadId ?? ""),
         labels: toLabelsArray(msg.labels),
-        receivedAtFallback,
+        rawHeaders: msg.headers,
+        receivedAt,
+        sizeBytes: typeof msg.size === "number" ? msg.size : null,
+        snippet,
       })
     );
   }
@@ -3101,8 +3507,21 @@ export async function runAllMailPasses(
     deps.requested.has("attachments") ||
     deps.requested.has("threads");
   const forwardFetchRange = selectAllMailFetchRange(session, deps.requested);
-  const historicalTargetUid =
-    session.messagesBackfill.target_uid ?? Math.max(0, (session.uidnext ?? session.priorUidnext) - 1);
+  // Where the forward walk resumes on the NEXT run, and therefore the last UID
+  // it will not fetch. The historical walk must own everything up to here or
+  // the interval between the two belongs to neither (see
+  // `resolveMessagesBackfillTargetUid`).
+  //
+  // On a full resync there is no forward range at all: the forward watermark
+  // below is written from the live `uidnext` without a single UID having been
+  // walked, so the ENTIRE mailbox below it is historical work and the ceiling
+  // must say so. Reading the same `session.uidnext` the watermark is written
+  // from is what keeps the two pointers describing one space.
+  const forwardFloorUid = Math.max(0, (session.uidnext ?? session.priorUidnext) - 1);
+  const historicalTargetUid = resolveMessagesBackfillTargetUid({
+    forwardFloorUid,
+    prior: session.messagesBackfill,
+  });
   const historicalCursor: MessagesBackfillCursor = {
     ...session.messagesBackfill,
     backfilled_through_uid: session.messagesBackfill.backfilled_through_uid ?? 0,
@@ -3186,10 +3605,12 @@ export async function runAllMailPasses(
         recoveryOnly: true,
         session,
       });
-      // Recovery-only mode still reports attachment evidence for the served
-      // gaps it actually touched, but it returns before the ordinary Gmail
-      // walk and cursor advancement.
-      await emitAttachmentDetailCoverage(attachmentCoverage);
+      // Recovery-only mode touches exactly the served gaps it was handed and
+      // returns before the ordinary Gmail walk, so it never establishes a
+      // mailbox boundary — its counts describe a retry list, not an inventory.
+      // It still emits its DETAIL_GAPs below; only the coverage CLAIM is
+      // withheld (see `attachmentsCoverageBoundaryEstablished`).
+      await emitAttachmentDetailCoverage(attachmentCoverage, false);
       await emitAttachmentDetailGaps(attachmentCoverage);
     }
     return;
@@ -3287,6 +3708,7 @@ export async function runAllMailPasses(
     stream: "messages",
     message: `Collected ${metas.length} headers; beginning body pass`,
   });
+  await emitAllMailInventoryDisclosure(emit, session, historicalCursor, forwardFloorUid);
   const perMessageDeps: PerMessageDeps = {
     ...(attachmentCoverage ? { attachmentCoverage } : {}),
     emitProtocol: emit,
@@ -3308,18 +3730,22 @@ export async function runAllMailPasses(
     historicalMetas
   );
   const forwardMessageCoverage = await emitMessagesPass(perMessageDeps, forwardMetas);
-  if (deps.requested.has("message_bodies")) {
-    await emit(
-      buildDetailCoverageMessage({
-        considered: historicalMessageCoverage.considered + forwardMessageCoverage.considered,
-        covered: historicalMessageCoverage.covered + forwardMessageCoverage.covered,
-        hydratedKeys: [],
-        requiredKeys: [],
-        stateStream: "messages",
-        stream: "message_bodies",
-      })
-    );
-  }
+  // `message_bodies` deliberately emits NO DETAIL_COVERAGE. The manifest
+  // declares it `state_stream: messages`, i.e. a static single-parent detail
+  // stream, and such a stream's checkpoint status is projected from the
+  // declared parent's own commit outcome — the runtime rejects the run
+  // outright if it emits coverage of its own
+  // (`validateDetailCoverageAgainstManifest`).
+  //
+  // It could not honestly emit one anyway. The numbers available here are the
+  // *parent* pass's considered/covered — how many MESSAGES were walked, not
+  // how many bodies were hydrated against a per-key denominator. Re-reporting
+  // the parent's counts under the body stream's name is the `covered ==
+  // considered` fabrication this codebase has worked to eliminate: it would
+  // claim every walked message proved a body, including the ones whose body
+  // fetch was skipped or failed. `attachments` is the contrast — it earns its
+  // coverage from a real attempt-per-key tally (see
+  // `emitAttachmentDetailCoverage`), which is why it may emit at all.
 
   await runAttachmentBackfillAndRecoveryPass({
     allMail,
@@ -3339,7 +3765,7 @@ export async function runAllMailPasses(
   // record (primary pass + historical backfill) has settled and before the
   // messages STATE cursor commits — the ordering the progress-evidence
   // contract expects (records, then DETAIL_COVERAGE, then STATE).
-  await emitAttachmentDetailCoverage(attachmentCoverage);
+  await emitAttachmentDetailCoverage(attachmentCoverage, attachmentsCoverageBoundaryEstablished(session));
   // Then one matching DETAIL_GAP per failed attachment, so the commit-gate can
   // credit each gap_keys entry against a durable pending gap. Without this the
   // gate aborts an otherwise-successful run and the messages cursor never
@@ -3347,14 +3773,35 @@ export async function runAllMailPasses(
   await emitAttachmentDetailGaps(attachmentCoverage);
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
-  await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
+  await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt, fetchBodiesBound);
 
   if (messageHistoryRequested && historicalFetchRange) {
     const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);
+    // Sums BOTH passes, like the `message_bodies` DETAIL_COVERAGE above: the
+    // forward pass runs in the same call to `runAllMailPasses` and emits its
+    // own `messages` records via the same shared `emitRecord`, so the raw
+    // collected-record count already includes them. Reporting only
+    // `historicalMessageCoverage` undercounted the denominator against that
+    // total every scheduled run with new mail waiting alongside a pending
+    // historical backfill.
+    //
+    // Both emissions below MUST read these same two numbers. The runtime's
+    // `isHealthyBoundedContinuation` accepts a bounded page only when the
+    // continuation's considered/covered are identical to the DETAIL_COVERAGE
+    // fact's — it binds a continuation to complete *same-page* facts, and the
+    // summing above is what defines "the page" here. Feeding the continuation
+    // historical-only counts desyncs the pair by exactly the forward-pass
+    // count, the identity check fails, and the stream degrades to a
+    // retryable_gap instead of deriving complete. The sibling `threads`
+    // emission never desyncs precisely because it feeds one variable to both.
+    const messagesCoverage = {
+      considered: historicalMessageCoverage.considered + forwardMessageCoverage.considered,
+      covered: historicalMessageCoverage.covered + forwardMessageCoverage.covered,
+    };
     await emit(
       buildDetailCoverageMessage({
-        considered: historicalMessageCoverage.considered,
-        covered: historicalMessageCoverage.covered,
+        considered: messagesCoverage.considered,
+        covered: messagesCoverage.covered,
         hydratedKeys: [],
         requiredKeys: [],
         stateStream: "messages",
@@ -3364,8 +3811,8 @@ export async function runAllMailPasses(
     if (historicalPageEndUid < historicalTargetUid) {
       await emitHistoricalContinuationSkip(emit, "messages", {
         boundary: String(historicalCursor.uidvalidity),
-        considered: historicalMessageCoverage.considered,
-        covered: historicalMessageCoverage.covered,
+        considered: messagesCoverage.considered,
+        covered: messagesCoverage.covered,
         slice_start: Number(historicalFetchRange.split(":")[0]),
         slice_end: historicalPageEndUid,
       });
@@ -3388,6 +3835,11 @@ export async function runAllMailPasses(
         prior: historicalCursor,
       });
     } else {
+      // A completed walk with no fetch range left. This is reachable only when
+      // the ceiling did NOT move — `historicalTargetUid` is raised before the
+      // range is selected, so any reopened band yields a non-null range and is
+      // handled by the branch above. With an unchanged ceiling this cursor is
+      // already at its target, so carrying it forward is exact.
       nextMessagesBackfill = historicalCursor;
     }
   }
@@ -3405,6 +3857,9 @@ export async function runAllMailPasses(
         uidnext: nextUidnext,
         forward_uidnext: nextForwardUidnext,
         highest_modseq: session.highestModseqCursor ?? null,
+        // Carry the mailbox's own EXISTS forward so the next run in this epoch
+        // can prove the inventory did not shrink underneath us.
+        exists: session.existsTotal,
       },
       ...(nextMessagesBackfill ? { backfill: nextMessagesBackfill } : {}),
     },

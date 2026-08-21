@@ -333,7 +333,7 @@ test("toSourceInstanceView does not render maintainer or wait actions as owner C
     {
       affects: [],
       audience: "maintainer",
-      cta: "Connector code needs a fix",
+      cta: "Some data from this source can't be collected",
       kind: "code_fix",
       satisfied_when: { kind: "none" },
       terminal: true,
@@ -857,6 +857,87 @@ test("toSourcesView disambiguates duplicate unnamed connections without exposing
   assert.equal(views[2]?.displayName, "Amazon - Personal");
   assert.equal(views[2]?.accountLine, "100 records · 2 streams");
   assert.equal(views[2]?.listKind, null);
+});
+
+test("toSourcesView hides a pure recovered historical fragment", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_fragment",
+      connector_id: "chase",
+      display_name: "Chase",
+      source_visibility: "hidden_from_sources",
+    }),
+  ]);
+
+  assert.deepEqual(views, [], "a pure recovered fragment must not appear as its own Sources row");
+});
+
+test("toSourcesView keeps a UAT-transferred historical_archive row visible", () => {
+  // Google Maps / WhatsApp UAT imports carry a historical_archive binding but
+  // a UAT-transfer marker — server-side `source_visibility` reads "active"
+  // for these, distinguishing them from a bare recovered fragment.
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_uat",
+      connector_id: "google_maps",
+      display_name: "Google Maps",
+      source_visibility: "active",
+    }),
+  ]);
+
+  assert.equal(views.length, 1, "a UAT-transferred source must remain visible on Sources");
+  assert.equal(views[0]?.connectionId, "cin_uat");
+});
+
+test("toSourcesView keeps an active promoted connection visible", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_active",
+      connector_id: "gmail",
+      display_name: "Gmail",
+      source_visibility: "active",
+    }),
+  ]);
+
+  assert.equal(views.length, 1);
+  assert.equal(views[0]?.connectionId, "cin_active");
+});
+
+test("toSourcesView keeps a summary visible when source_visibility is absent (older reference)", () => {
+  const views = toSourcesView([summary({ connection_id: "cin_legacy" })]);
+
+  assert.equal(views.length, 1, "an older reference omitting source_visibility must fail open to visible");
+});
+
+test("toSourcesView filters hidden fragments out of a mixed page while preserving order for the rest", () => {
+  const views = toSourcesView([
+    summary({ connection_id: "cin_1", connector_id: "gmail", display_name: "Gmail", source_visibility: "active" }),
+    summary({
+      connection_id: "cin_fragment_1",
+      connector_id: "amazon",
+      display_name: "Amazon",
+      source_visibility: "hidden_from_sources",
+    }),
+    summary({
+      connection_id: "cin_uat",
+      connector_id: "whatsapp",
+      display_name: "WhatsApp",
+      source_visibility: "active",
+    }),
+    summary({
+      connection_id: "cin_fragment_2",
+      connector_id: "reddit",
+      display_name: "Reddit",
+      source_visibility: "hidden_from_sources",
+    }),
+    summary({ connection_id: "cin_2", connector_id: "chase", display_name: "Chase", source_visibility: "active" }),
+  ]);
+
+  assert.deepEqual(
+    views.map((view) => view.connectionId),
+    ["cin_1", "cin_uat", "cin_2"],
+    "hidden fragments are dropped without disturbing the relative order of visible rows"
+  );
 });
 
 test("duplicate source review flags same-type unnamed active sources without hiding them", () => {

@@ -17,6 +17,7 @@ import {
   primaryOwnerActionRemediation,
   primaryRequiredAction,
   projectSourceActionability,
+  RESUME_PAUSED_CTA_LABEL,
   SETUP_IN_PROGRESS_CTA_LABEL,
   SOURCE_WORK_GROUP_COPY,
   sourceAttentionHeadline,
@@ -186,14 +187,14 @@ test("source actionability ignores non-owner local-device remediation for owner-
       required_actions: [
         action({
           audience: "maintainer",
-          cta: "Connector code needs a fix",
+          cta: "Some data from this source can't be collected",
           kind: "code_fix",
           remediation: {
             cause: "stalled_unknown",
             commands: [],
             kind: "local_collector_recovery",
             label: "Fix connector code",
-            summary: "Connector code needs a fix before owner recovery can proceed.",
+            summary: "A maintainer must repair the collector before owner recovery can proceed.",
             target: { identity_source: "source_instance_bindings", kind: "local_device" },
           },
           satisfied_when: { kind: "none" },
@@ -214,11 +215,11 @@ test("source actionability does not convert maintainer-primary work into owner w
       source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "attention",
-        forward_statement: "Connector code needs a fix before this can collect again.",
+        forward_statement: "Some data from this source can't be collected.",
         required_actions: [
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -312,12 +313,12 @@ test("source actionability keeps a Degraded pill (no wired owner action) in syst
       source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
-        forward_statement: "Connector code needs a fix before this can collect again.",
+        forward_statement: "Some data from this source can't be collected.",
         pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -377,7 +378,7 @@ test("source actionability resolves per-stream owner action availability from ac
           action({ cta: "Retry now", kind: "retry_gap", satisfied_when: { kind: "gap_recovered" } }),
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -492,6 +493,69 @@ test("source actionability: revoked outranks draft — a revoked connection neve
   assert.equal(actionability.work, null);
 });
 
+// A PURE recovered historical fragment — production shape (2026-08-18): a
+// spine-events-only reconstruction of an owner-deleted connection, restored
+// under a synthetic `restored-historical-archive:` binding key with no
+// credential ever captured for the resurrected identity. The server already
+// marks this `source_visibility: "hidden_from_sources"` (see `ref-control.ts`
+// `deriveSourceVisibility`) and the Sources list already honors it
+// (`sources-view-model.ts` `isVisibleOnSourcesList`), but `source-work` derivation
+// never consulted the field, so the SAME fragment still landed in the
+// needs-you group with "Reconnect this account and collection resumes" — a
+// prompt that is false for a connection the owner already deleted and does
+// not intend to reconnect. `/syncs` and the dashboard "Needs you" section
+// both read `sourceWorkFromConnectors`, so this defect was owner-visible on
+// both surfaces.
+test("source actionability excludes a hidden_from_sources pure recovered fragment from every work group", () => {
+  const fragment = connector({
+    connection_id: "cin_e4ab231c7d49b8f59e4c80ed",
+    connector_id: "chatgpt",
+    display_name: "ChatGPT (historical archive 2 of 2)",
+    rendered_verdict: verdict({
+      forward_statement: "Reconnect this account and collection resumes.",
+      pill: { label: "Can't collect", tone: "red" },
+      required_actions: [action({ cta: "Reconnect this account", kind: "reauth" })],
+    }),
+    source_visibility: "hidden_from_sources",
+    source_work: "needs_owner",
+    status: "paused",
+  });
+
+  const actionability = projectSourceActionability(fragment);
+  assert.equal(actionability.work, null, "a hidden_from_sources fragment must never produce a work item");
+
+  const groups = sourceWorkFromConnectors([fragment]);
+  assert.equal(groups.needsOwner.length, 0);
+  assert.equal(groups.review.length, 0);
+  assert.equal(groups.systemIssues.length, 0);
+  assert.equal(groups.notMeasured.length, 0);
+  assert.equal(groups.working.length, 0);
+  assert.equal(groups.unavailable.length, 0);
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 0);
+});
+
+// A normal `"active"` visibility connection with the identical needs_owner
+// verdict shape must be unaffected — this guards against the fix
+// over-suppressing every credential-required connection instead of only the
+// hidden fragment.
+test("source actionability still surfaces a visible needs_owner connection with the same verdict shape", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({
+      connection_id: "cin_live_needs_owner",
+      rendered_verdict: verdict({
+        forward_statement: "Reconnect this account and collection resumes.",
+        pill: { label: "Can't collect", tone: "red" },
+        required_actions: [action({ cta: "Reconnect this account", kind: "reauth" })],
+      }),
+      source_visibility: "active",
+      source_work: "needs_owner",
+    }),
+  ]);
+
+  assert.equal(groups.needsOwner.length, 1);
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 1);
+});
+
 test("source actionability: a non-draft connection with real verdict evidence is never treated as setup_in_progress", () => {
   const actionability = projectSourceActionability(connector());
 
@@ -558,12 +622,12 @@ test("source actionability headline counts only needs-owner work and exposes sta
       source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
-        forward_statement: "Connector code needs a fix before this can collect again.",
+        forward_statement: "Some data from this source can't be collected.",
         pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -767,6 +831,7 @@ test("source actionability groups a Needs refresh connection under review, never
 // ─── Recovery-state grouping (connector-neutral recovery governor UI tranche) ──
 
 const RECOVERY_CHECKING_RE = /checking/i;
+const RESUME_COPY_RE = /resume/i;
 const SOURCE_DETAILS_RE = /Open source details/;
 const RECOVERY_SYNCING_RE = /syncing details/i;
 const RECOVERY_CATCHING_UP_RE = /catching up/i;
@@ -919,7 +984,7 @@ test("recovery grouping: a connector-defect verdict with recoverable gaps stays 
         required_actions: [
           action({
             audience: "maintainer",
-            cta: "Connector code needs a fix",
+            cta: "Some data from this source can't be collected",
             kind: "code_fix",
             satisfied_when: { kind: "none" },
             terminal: true,
@@ -962,4 +1027,57 @@ test("recovery grouping: an inactive backlog routes to NAMED recovery before the
   assert.doesNotMatch(row.statusLabel, RECOVERY_CHECKING_RE);
   assert.doesNotMatch(row.what, RECOVERY_CHECKING_RE);
   assert.match(`${row.statusLabel} ${row.what}`, RECOVERY_CATCHING_UP_RE);
+});
+
+// --- Paused: a first-class, owner-reversible lifecycle state ----------------
+// Pause stops collection without giving anything up. These pin the two
+// properties that make it usable: the owner can SEE it, and can get back out.
+
+test("a paused source renders the Paused status rather than its pre-pause verdict", () => {
+  const actionability = projectSourceActionability(
+    connector({
+      // A healthy-looking verdict from before the pause must not win: it
+      // describes collection that has stopped.
+      rendered_verdict: verdict({ pill: { label: "Healthy", tone: "green" } }),
+      status: "paused",
+    })
+  );
+
+  assert.equal(actionability.paused, true);
+  assert.equal(actionability.renderedStatus.kind, "paused");
+  assert.equal(actionability.renderedStatus.label, "Paused");
+  assert.equal(actionability.renderedStatus.tone, "muted");
+});
+
+test("a paused source outranks an in-flight run flag and never renders as Syncing", () => {
+  const flag = deriveRenderedSourceStatus(verdict(), false, false, null, true, true);
+
+  assert.equal(flag.kind, "paused", "paused must outrank running");
+  assert.equal(flag.label, "Paused");
+});
+
+test("a revoked source outranks paused, so the durable state always wins", () => {
+  const actionability = projectSourceActionability(connector({ revoked_at: "2026-08-01T00:00:00Z", status: "paused" }));
+
+  assert.equal(actionability.revoked, true);
+  assert.equal(actionability.paused, false, "revoked must suppress paused, never both at once");
+  assert.equal(actionability.renderedStatus.kind, "revoked");
+});
+
+test("a paused source offers Resume as an available action, not as owner-blocking work", () => {
+  const summary = connector({ source_work: "needs_owner", status: "paused" });
+  const groups = sourceWorkFromConnectors([summary]);
+
+  // Visible, so collection is never silently stopped with no way back...
+  assert.equal(groups.review.length, 1);
+  const [row] = groups.review;
+  assert.ok(row);
+  assert.equal(row.actionLabel, RESUME_PAUSED_CTA_LABEL);
+  assert.equal(row.statusLabel, "is paused");
+  assert.match(row.what, RESUME_COPY_RE);
+  // ...but never counted against the "needs you" headline: the owner chose
+  // this state and is not blocking anything. Note the server said
+  // `needs_owner` here; the lifecycle check must still win.
+  assert.equal(groups.needsOwner.length, 0);
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 0);
 });

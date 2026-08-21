@@ -26,6 +26,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Page } from "playwright";
+import { REDDIT_JSON_ORIGIN } from "../../src/auto-login/reddit.ts";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { createRepairBudget } from "../../src/repair-budget.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
@@ -33,6 +34,7 @@ import {
   buildStreamTable,
   collectAllStreams,
   collectStream,
+  makePageFetch,
   makeReauth,
   normalizeRedditTerminalError,
   paginate,
@@ -325,16 +327,66 @@ for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
       delay: NO_DELAY,
     });
 
-    assert.deepEqual(
-      secondHarness.emitted.map((record) => record.data.id),
-      [stream.name === "comments" ? `t1_${stream.name}new` : `t3_${stream.name}new`],
-      `${stream.name}: a restart must not re-emit the cursor boundary`
-    );
+    const prefix = stream.name === "comments" ? "t1_" : "t3_";
+    const emittedIds = secondHarness.emitted.map((record) => record.data.id);
+    if (stream.order === "action") {
+      // Action-ordered listings (saved/upvoted/downvoted/hidden) are sorted by
+      // when the OWNER acted, not by created_utc, so an item below the cursor
+      // says nothing about what follows it. These streams must walk the whole
+      // listing and re-see the boundary item; suppressing it is exactly the
+      // defect that froze `upvoted` at a 2026-04-28 cursor while real history
+      // ran back to 2011. Re-emitting is safe — records are keyed by fullname.
+      assert.deepEqual(
+        emittedIds,
+        [`${prefix}${stream.name}new`, `${prefix}${stream.name}old`],
+        `${stream.name}: an action-ordered restart must walk past the cursor boundary`
+      );
+    } else {
+      assert.deepEqual(
+        emittedIds,
+        [`${prefix}${stream.name}new`],
+        `${stream.name}: a created-ordered restart must not re-emit the cursor boundary`
+      );
+    }
     const secondState = secondHarness.protocolMessages.find((message) => message.type === "STATE");
     assert.ok(secondState && secondState.type === "STATE");
     assert.deepEqual(secondState.cursor, { last_created_utc: 300 });
   });
 }
+
+// A restart on an action-ordered stream must recover history BELOW the stored
+// cursor — the real-world shape of the defect, where `upvoted`'s cursor sat at
+// a 2026 timestamp and every older upvote had become unreachable.
+test("collectStream: action-ordered restart recovers items far below the cursor", async () => {
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "upvoted");
+  assert.ok(stream);
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch, calls } = makeScriptedFetch({
+    [stream.endpoint]: [
+      // Rank 1 is a 2011-era post upvoted moments ago, far below the cursor.
+      okResult(listing([makePost("t3_upvotedancient", 100)], "t3_upvotedancient")),
+      okResult(listing([makePost("t3_upvotedolder", 90)], null)),
+    ],
+  });
+
+  await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: { upvoted: { last_created_utc: 1_777_366_297 } },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+  });
+
+  assert.equal(calls.length, 2, "must page past an old item instead of halting on it");
+  assert.deepEqual(
+    harness.emitted.map((r) => r.data.id),
+    ["t3_upvotedancient", "t3_upvotedolder"],
+    "history below the cursor must be recovered, not skipped"
+  );
+});
 
 // ─── Invariant 4: multi-page pagination threads the 'after' cursor ──────
 
@@ -822,41 +874,46 @@ test("collectAllStreams: credential-less env gate stops the FIRST requested stre
 // login count is exactly 1 regardless of how many streams 401.
 
 /** A fake Playwright Page that (a) always reports a live session to
- *  `isSessionLive`'s `goto` + `locator(...).count()` probe — so every reauth
- *  attempt genuinely succeeds, never masked by a scripted-sequence
- *  exhaustion — while counting each `goto` call (the real navigation
- *  `isSessionLive` performs) as one login-repair attempt, and (b) answers
- *  `page.evaluate(fetch, ...)` — the real production shape `makePageFetch`
- *  builds — by routing to a scripted `RedditListingFetch`. One object plays
- *  both roles because production `collectAllStreams` drives both `fetchPath`
- *  (via `makePageFetch(page)`) and `makeReauth(ctx)` (via
- *  `isSessionLive(ctx.page)`) off the SAME `ctx.page`. Counting real `goto`
- *  navigations (rather than a bounded scripted-answer sequence) is what
- *  makes this discriminate a per-stream-budget regression: with a real
- *  budget shared across the run, `goto` fires at most twice total (the two
- *  `isSessionLive` probes inside ONE repair); a regressed per-call budget
- *  would let every one of the 6 streams attempt its own repair, each firing
- *  two more `goto` calls, so the count would climb unboundedly instead of
+ *  `isSessionLive`'s `/saved.json` JSON probe — so every reauth attempt
+ *  genuinely succeeds, never masked by a scripted-sequence exhaustion —
+ *  while counting each such probe call as one login-repair attempt, and
+ *  (b) answers `page.evaluate(fetch, ...)` for listing pages — the real
+ *  production shape `makePageFetch` builds — by routing to a scripted
+ *  `RedditListingFetch`. One object plays both roles because production
+ *  `collectAllStreams` drives both `fetchPath` (via `makePageFetch(page)`)
+ *  and `makeReauth(ctx)` (via `isSessionLive(ctx.page)`) off the SAME
+ *  `ctx.page`, and both go through `page.evaluate`. Counting real
+ *  liveness-probe calls (rather than a bounded scripted-answer sequence) is
+ *  what makes this discriminate a per-stream-budget regression: with a real
+ *  budget shared across the run, the probe fires at most twice total (the
+ *  two `isSessionLive` calls inside ONE repair — `ensureRedditSession`'s own
+ *  fast-path check, then `makeReauth`'s follow-up); a regressed per-call
+ *  budget would let every one of the 6 streams attempt its own repair, each
+ *  firing two more probes, so the count would climb unboundedly instead of
  *  capping at 2 — a scripted-sequence approach would instead just run out
  *  and silently report "not live" for the extra attempts, hiding the defect. */
-function makeReauthCapablePage(fetch: RedditListingFetch): { gotoCalls: number; page: Page } {
-  const state = { gotoCalls: 0 };
+function makeReauthCapablePage(fetch: RedditListingFetch): { probeCalls: number; page: Page } {
+  const state = { probeCalls: 0 };
   const page = {
     evaluate: (_fn: unknown, args: unknown): Promise<unknown> => {
       const { path } = args as { path: string };
+      if (path === `${USER_PATH}/saved.json`) {
+        state.probeCalls += 1;
+        return Promise.resolve({ status: 200 }); // isSessionLive's liveness probe: always live
+      }
       return fetch(path);
     },
-    goto: () => {
-      state.gotoCalls += 1;
-      return Promise.resolve(null);
-    },
+    goto: () => Promise.resolve(null),
     locator: () => ({
-      count: async () => 1, // always reports the logout link present: session reads live
+      count: async () => 1, // credential-less fallback path only; unused once REDDIT_USERNAME is set
     }),
+    // Already on the JSON origin, as a real run is by collect time — the
+    // origin guard in `redditFetch`/`isSessionLive` then no-ops.
+    url: () => `${REDDIT_JSON_ORIGIN}/`,
   } as any;
   return {
-    get gotoCalls() {
-      return state.gotoCalls;
+    get probeCalls() {
+      return state.probeCalls;
     },
     page,
   };
@@ -925,15 +982,14 @@ test("collectAllStreams: 6 credentialed streams each 401 on their first page —
     // regression by reading "not live" for extra attempts) — every reauth
     // attempted, whether 1 or 6, would genuinely succeed if attempted. The
     // discriminating signal is therefore how many times a repair is
-    // attempted at all, measured by counting `page.goto` calls: `isSessionLive`
-    // navigates once per probe, and one successful repair costs exactly two
-    // navigations (ensureRedditSession's own fast-path probe, then
-    // makeReauth's follow-up probe). A run-scoped budget spends this ONCE for
-    // the whole run: 2 navigations total, no matter how many of the 6
-    // streams 401. A regressed per-call/per-stream budget would let every
-    // 401'ing stream attempt its own repair, each costing 2 more
-    // navigations — the count would grow with stream count instead of
-    // staying flat at 2.
+    // attempted at all, measured by counting `isSessionLive`'s `/saved.json`
+    // probe calls: one successful repair costs exactly two probes
+    // (ensureRedditSession's own fast-path check, then makeReauth's
+    // follow-up check). A run-scoped budget spends this ONCE for the whole
+    // run: 2 probes total, no matter how many of the 6 streams 401. A
+    // regressed per-call/per-stream budget would let every 401'ing stream
+    // attempt its own repair, each costing 2 more probes — the count would
+    // grow with stream count instead of staying flat at 2.
     const pageHandle = makeReauthCapablePage(fetch);
     const { page } = pageHandle;
     const ctx = createCredentialedMockBrowserContext(
@@ -954,9 +1010,9 @@ test("collectAllStreams: 6 credentialed streams each 401 on their first page —
     );
 
     assert.equal(
-      pageHandle.gotoCalls,
+      pageHandle.probeCalls,
       2,
-      "exactly one repair's worth of session-live navigation (2 goto calls) for the WHOLE run, regardless of " +
+      "exactly one repair's worth of session-live probing (2 /saved.json calls) for the WHOLE run, regardless of " +
         "how many of the 6 streams 401 — a per-stream/per-call budget would let every 401'ing stream repair " +
         "independently and this count would climb with stream count instead of staying at 2"
     );
@@ -1268,13 +1324,24 @@ test("collectStream: schema-invalid item not counted in covered, still emitted f
 
 // ─── Invariant 11: real collectAllStreams emits DETAIL_COVERAGE ───────────
 
-/** Create a mock page that redirects evaluate calls to a scripted fetch */
+/**
+ * Create a mock page that redirects evaluate calls to a scripted fetch.
+ *
+ * `url()` reports the JSON origin because that is where a real run's page
+ * already sits by the time collect runs: `redditFetch`'s origin guard is a
+ * URL check that no-ops in that state. Modeling it keeps these listing/parsing
+ * oracles about listings and parsing. The guard's own behavior — including a
+ * page on the WRONG origin — is proven separately below and in
+ * `src/auto-login/reddit.test.ts`, not accidentally by every test here.
+ */
 function createMockPageForFetch(fetch: RedditListingFetch) {
   return {
     evaluate: (_fn: (args: unknown) => Promise<unknown>, args: unknown): Promise<unknown> => {
       const { path } = args as { path: string };
       return fetch(path);
     },
+    goto: (): Promise<null> => Promise.resolve(null),
+    url: (): string => `${REDDIT_JSON_ORIGIN}/`,
   };
 }
 
@@ -1401,4 +1468,53 @@ test("collectAllStreams: one valid + one invalid child emits DETAIL_COVERAGE wit
   assert.equal(coverageMsg.covered, 1, "only schema-valid item counts as covered");
   assert.equal(harness.emitted.length, 1, "runtime emits only valid record");
   assert.equal(harness.skipped.length, 1, "runtime SKIP_RESULT logs invalid record");
+});
+
+// ─── Invariant 12: the collect path's in-page fetch is same-origin ────────
+//
+// `redditFetch` has the SAME cross-origin defect the liveness probe had
+// (production `run_1787164349370`): Reddit sends no
+// `Access-Control-Allow-Origin`, so a credentialed fetch issued from a page on
+// the wrong origin is blocked by the browser before it reaches the network and
+// surfaces as `TypeError: Failed to fetch` -> `status: 0` -> `reddit_http_0`.
+// A live session would fail every listing with an opaque HTTP error.
+
+/** A page that models the browser's CORS rule: the in-page fetch only succeeds
+ *  when the page itself is already on the JSON origin. */
+function makeCorsAwarePage(startUrl: string): { gotoCalls: () => number; page: Page } {
+  let url = startUrl;
+  let gotoCalls = 0;
+  const page = {
+    evaluate: (_fn: unknown, args: unknown): Promise<unknown> => {
+      const { origin } = args as { origin: string };
+      if (new URL(url).origin !== origin) {
+        // Blocked before the network — exactly what the real callback catches.
+        return Promise.resolve({ status: 0, json: { error: "TypeError: Failed to fetch" } });
+      }
+      return Promise.resolve({ status: 200, json: listing([], null) });
+    },
+    goto: (target: string): Promise<null> => {
+      gotoCalls += 1;
+      url = target;
+      return Promise.resolve(null);
+    },
+    url: (): string => url,
+  } as unknown as Page;
+  return { gotoCalls: () => gotoCalls, page };
+}
+
+test("redditFetch establishes the JSON origin, so a listing fetched from a www.reddit.com page succeeds instead of failing CORS", async () => {
+  const { gotoCalls, page } = makeCorsAwarePage("https://www.reddit.com/");
+  const result = await makePageFetch(page)(`${USER_PATH}/saved.json`);
+
+  assert.equal(result.status, 200, "the collect fetch must not be blocked by the page's origin");
+  assert.equal(gotoCalls(), 1, "the wrong origin must be corrected exactly once");
+});
+
+test("redditFetch does not re-navigate when the page is already on the JSON origin (COUNTERWEIGHT)", async () => {
+  const { gotoCalls, page } = makeCorsAwarePage(`${REDDIT_JSON_ORIGIN}/`);
+  const result = await makePageFetch(page)(`${USER_PATH}/saved.json`);
+
+  assert.equal(result.status, 200);
+  assert.equal(gotoCalls(), 0, "an already-correct origin must not be re-navigated on every listing page");
 });

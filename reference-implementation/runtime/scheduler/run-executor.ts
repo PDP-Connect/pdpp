@@ -33,6 +33,7 @@ import {
   type RunAutomationMode,
   type RunTriggerKind,
 } from "../run-automation-policy.ts";
+import { createRunLogger, NOOP_RUN_BASE_LOGGER, type RunBaseLogger } from "../run-logger.ts";
 import type {
   ConnectorSchedule,
   GetStateHandler,
@@ -83,6 +84,13 @@ export interface RunExecutorDeps {
   getState: GetStateHandler;
   handleGrantFailureDisable: (reason: string | null | undefined, connectorInstanceId: string) => void;
   isManagedConnector: IsManagedConnectorHandler;
+  /**
+   * Base structured logger to bind run identity onto (see
+   * `runtime/run-logger.ts`). Optional: defaults to `NOOP_RUN_BASE_LOGGER`,
+   * so existing callers/tests that construct `RunExecutorDeps` directly are
+   * unaffected.
+   */
+  logger?: RunBaseLogger;
   markNeedsHuman: NeedsHumanHandler;
   maxRunWallClockMs: number;
   onInteraction: InteractionHandler;
@@ -131,7 +139,17 @@ function describeFailedRunResult(result: RunConnectorResult): RunConnectorError 
   return {
     checkpoint_summary: result.checkpoint_summary || null,
     connector_error: result.connector_error || null,
-    failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
+    // `failure_reason` and `terminal_reason` are two SEPARATE classification
+    // channels, not a value and its fallback. `shouldRetryRunFailure` checks
+    // each against its own set — `NON_RETRYABLE_FAILURE_REASONS` and
+    // `NON_RETRYABLE_TERMINAL_REASONS` (scheduler-retry-classifier.ts:60,71)
+    // — so folding a terminal reason into this field feeds it to a set that
+    // was never meant to see it and silently changes retry classification.
+    // `connector_protocol_violation` is forwarded because it is a member of
+    // BOTH vocabularies; nothing else is.
+    failure_reason:
+      result.failure_message ||
+      (result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null),
     known_gaps: result.known_gaps || null,
     message: result.message || "unknown",
     records_emitted: result.records_emitted ?? 0,
@@ -408,7 +426,22 @@ function buildSuccessOrFailureRecord({
     connectorError: result.connector_error || null,
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    failureReason: null,
+    // Was hardcoded `null` unconditionally — every scheduled run's
+    // run_history.failure_reason column stayed empty even on failure,
+    // leaving `terminal_reason` (a coarse bucket) as the only classification
+    // on record and `connector_error_json` as the only other evidence. The
+    // runtime always computes a concise, run-specific failure_message (e.g.
+    // "Run exceeded a connector assistance timeout.") and already emits it on
+    // the terminal spine event; this was simply never read here.
+    //
+    // Deliberately does NOT fall back to `terminal_reason`. The two are
+    // independent columns that callers read side by side — a run whose only
+    // classification is its terminal bucket records `failureReason: null` and
+    // `terminalReason: <bucket>`, and collapsing them would make the pair
+    // report the same fact twice while erasing "there was no distinct
+    // message." See `describeFailedRunResult` above for why the same
+    // collapse is additionally unsafe on the retry-classification path.
+    failureReason: result.failure_message || null,
     knownGaps: result.known_gaps || [],
     recordsEmitted: result.records_emitted || 0,
     reportedRecordsEmitted: result.reported_records_emitted ?? null,
@@ -606,6 +639,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
+    logger: baseLogger = NOOP_RUN_BASE_LOGGER,
     markNeedsHuman,
     maxRunWallClockMs,
     onInteraction,
@@ -630,6 +664,11 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     await Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
+      createRunLogger(baseLogger, {
+        connectorId,
+        connectorInstanceId: record.connectorInstanceId,
+        runId: record.runId,
+      }).error(`failed to persist run history: ${message}`, { phase: "run_history_persist" });
     });
   }
 
@@ -786,6 +825,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     ).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] failed to reserve active run for ${connectorId}: ${message}`);
+      createRunLogger(baseLogger, { connectorId, connectorInstanceId, runId }).error(
+        `failed to reserve active run: ${message}`,
+        { phase: "active_run_reserve" }
+      );
       return false;
     });
     return upserted !== false;
@@ -883,6 +926,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         await Promise.resolve(activeRunStore.deleteActiveRun(connectorInstanceId, runId)).catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           console.error(`[scheduler] failed to clear active run ${runId} for ${connectorId}: ${message}`);
+          createRunLogger(baseLogger, { connectorId, connectorInstanceId, runId }).error(
+            `failed to clear active run: ${message}`,
+            { phase: "active_run_clear" }
+          );
         });
       }
     };

@@ -11,7 +11,7 @@
  * via `claimForSweep` -- the real primitive `reconcileAbandonedManualUploadArtifactsAtBoot`
  * uses to decide sweep ownership.
  *
- * Args (argv[2..]): dbPath artifactId cutoffIso nowIso
+ * Args (argv[2..]): dbPath artifactId currentEpoch nowIso
  * Output: a single JSON line on stdout: {"claimed": boolean}
  */
 
@@ -19,13 +19,13 @@ import { initDb } from "../server/db.ts";
 import { createRequestManualUploadArtifactStore } from "../server/request-store-factories.ts";
 
 async function main(): Promise<void> {
-  const [dbPath, artifactId, cutoffIso, nowIso] = process.argv.slice(2);
-  if (!(dbPath && artifactId && cutoffIso && nowIso)) {
-    throw new Error("usage: manual-upload-claim-sweep-child.ts <dbPath> <artifactId> <cutoffIso> <nowIso>");
+  const [dbPath, artifactId, currentEpoch, nowIso] = process.argv.slice(2);
+  if (!(dbPath && artifactId && currentEpoch && nowIso)) {
+    throw new Error("usage: manual-upload-claim-sweep-child.ts <dbPath> <artifactId> <currentEpoch> <nowIso>");
   }
   initDb(dbPath);
   const store = createRequestManualUploadArtifactStore();
-  const claimed = await store.claimForSweep(artifactId, cutoffIso, nowIso);
+  const claimed = await store.claimForSweep(artifactId, currentEpoch, nowIso);
   process.stdout.write(`${JSON.stringify({ claimed })}\n`);
 }
 

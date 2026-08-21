@@ -54,8 +54,9 @@
  * Tested surfaces: fixture-driven only (pilot-fixture.test.ts,
  * parsers.test.ts, schemas.test.ts, integration.test.ts,
  * src/auto-login/venmo.test.ts). No live network call has proven this
- * redesign against a real account yet. The manifest therefore keeps the
- * connector in Development until a live run is verified.
+ * redesign against a real account yet. The manifest lists it at Preview
+ * (see public_listing.rationale) so the owner can opt in to perform that
+ * first live run, matching the signal connector's precedent.
  *
  * CHANGES
  *   v0.2.0 (2026-08-10) — browser-session redesign; removed
@@ -121,6 +122,7 @@ const MAX_TRANSACTION_PAGES = 400;
  * hand-copied stand-in that could silently drift from it.
  */
 export const VENMO_RETRYABLE_PATTERN = /venmo_rate_limited|venmo_transport_error|venmo_probe_transport_error/i;
+
 // The redesign dropped `venmoPacingProfile`/the HTTP governor (page-context
 // fetch has no direct outbound Node HTTP to pace — F10 in
 // /tmp/review-venmo-browser-redesign-0810.md), but the page loops below
@@ -196,6 +198,29 @@ function makePageFetch(page: Page): VenmoPageFetch {
     }
     return { status: outcome.status, body: outcome.body };
   };
+}
+
+/**
+ * `collect()`'s own call to `ensureVenmoOrigin`, extracted so it is
+ * unit-testable without a real Playwright `page` (mirrors `errorDetail`/
+ * `assertVenmoOk` below, both pulled out of the fetch loop for the same
+ * reason). `ensureVenmoOrigin` now throws `venmo_origin_navigation_failed`
+ * when the one-time navigation doesn't land on venmo.com (see its doc —
+ * production run_1787101857760, the owner's first-ever Venmo run). Folded
+ * into this connector's own `venmo_transport_error` naming so it matches
+ * `VENMO_RETRYABLE_PATTERN` the same way any other transport fault in this
+ * file's fetch loop already does, rather than escaping `collect()` as an
+ * unrecognized, non-retryable name.
+ */
+export async function establishVenmoCollectOrigin(page: Page): Promise<void> {
+  try {
+    await ensureVenmoOrigin(page);
+  } catch (err) {
+    throw new Error(
+      `venmo_transport_error [origin navigation]: ${redactTransportDetail(err instanceof Error ? err.message : String(err))}`,
+      { cause: err }
+    );
+  }
 }
 
 export function errorDetail(body: string): string {
@@ -486,8 +511,9 @@ if (isMainModule(import.meta.url)) {
       // (e.g. `id.venmo.com`); `api.venmo.com`'s CORS allowlist only grants
       // a credentialed fetch from `https://venmo.com`, so collect must
       // establish that origin itself rather than assume ensureSession left
-      // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md).
-      await ensureVenmoOrigin(page);
+      // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md). See
+      // `establishVenmoCollectOrigin`'s doc for why this is wrapped.
+      await establishVenmoCollectOrigin(page);
       const fetchPath = makePageFetch(page);
       const account = await fetchProfile(fetchPath);
       const ownerId = account?.id;

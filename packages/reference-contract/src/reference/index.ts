@@ -767,6 +767,43 @@ const OwnerConnectionReactivateSchema = {
   type: "object",
 };
 
+// Owner-agent connection-resume result: the `paused`-status sibling of
+// reactivate. Resume is zero-cascade (records, grants, schedule, and audit
+// spine are untouched) and does not itself validate or supply a credential,
+// so the response only confirms the connection's new `active` status and the
+// `resumed_at` stamp.
+const OwnerConnectionResumeSchema = {
+  additionalProperties: false,
+  properties: {
+    connection_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    object: { const: "owner_connection_resume" },
+    resumed_at: { type: "string" },
+    status: { const: "active" },
+  },
+  required: ["object", "connection_id", "connector_id", "connector_key", "status", "resumed_at"],
+  type: "object",
+};
+
+// Owner-agent connection-pause result: the inverse of resume. Pause is
+// zero-cascade (records, grants, schedule, the stored credential, and audit
+// spine are all untouched) — it only stops future runs — so the response
+// confirms the connection's new `paused` status and the `paused_at` stamp.
+const OwnerConnectionPauseSchema = {
+  additionalProperties: false,
+  properties: {
+    connection_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    object: { const: "owner_connection_pause" },
+    paused_at: { type: "string" },
+    status: { const: "paused" },
+  },
+  required: ["object", "connection_id", "connector_id", "connector_key", "status", "paused_at"],
+  type: "object",
+};
+
 // Non-secret deletion summary returned by the owner-agent connection-DELETE
 // routes. Carries counts + stable identifiers only — never record contents,
 // secrets, or per-record detail. `deleted_record_count` /
@@ -2360,7 +2397,7 @@ export const referenceManifests = [
       ...CommonErrors,
     },
     summary:
-      "Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter.",
+      'Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter. Optional JSON body field `full_refresh: true` requests a full re-enumeration (`collection_mode: "full_refresh"`) instead of resuming from the connection\'s stored cursor, so a source whose ordinary runs are incremental deltas can re-establish an enumeration boundary and prove coverage; it does not clear stored state.',
     surface: "reference",
     tags: ["reference", "runs", "connections", "owner-agent"],
   },
@@ -2431,6 +2468,62 @@ export const referenceManifests = [
     },
     summary:
       "Owner-agent bearer: reactivate a connector's revoked connection addressed by `connector_id`. Auto-selects the only revoked connection for that connector. When more than one connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `revoked` to `active` (zero cascade). Owner bearers only.",
+    surface: "reference",
+    tags: ["reference", "owner-agent"],
+  },
+  {
+    id: "ownerResumeConnection",
+    method: "POST",
+    path: "/v1/owner/connections/{connectionId}/resume",
+    request: { params: ConnectionIdParamSchema },
+    responses: {
+      200: { description: "Resumed", schema: OwnerConnectionResumeSchema },
+      ...CommonErrors,
+    },
+    summary:
+      "Owner-agent bearer: resume one paused connection, addressed by `connection_id`. The `paused`-status sibling of `ownerReactivateConnection`: flips the connection from `paused` back to `active` so it becomes runnable again. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). Resume does not itself validate or supply a credential — repair the credential first (e.g. via the static-secret credential-capture route, which admits a `paused` target) if the connection needs one; a resumed connection with a missing/invalid credential surfaces a typed credential error on its next collection run. A non-paused (active/draft/revoked) connection returns `connector_instance_not_paused` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+  },
+  {
+    id: "ownerResumeConnector",
+    method: "POST",
+    path: "/v1/owner/connectors/{connectorId}/resume",
+    request: { params: ConnectorIdParamSchema },
+    responses: {
+      200: { description: "Resumed", schema: OwnerConnectionResumeSchema },
+      ...CommonErrors,
+    },
+    summary:
+      "Owner-agent bearer: resume a connector's paused connection addressed by `connector_id`. Auto-selects the only paused connection for that connector. When more than one paused connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `paused` to `active` (zero cascade). Owner bearers only.",
+    surface: "reference",
+    tags: ["reference", "owner-agent"],
+  },
+  {
+    id: "ownerPauseConnection",
+    method: "POST",
+    path: "/v1/owner/connections/{connectionId}/pause",
+    request: { params: ConnectionIdParamSchema },
+    responses: {
+      200: { description: "Paused", schema: OwnerConnectionPauseSchema },
+      ...CommonErrors,
+    },
+    summary:
+      "Owner-agent bearer: pause one active connection, addressed by `connection_id`. The inverse of `ownerResumeConnection`: flips the connection from `active` to `paused` so no future scheduled or manual run lands for it. Already-collected records, grants, schedule, the stored credential, and the audit spine are untouched (zero cascade) — pause is the reversible 'stop collecting for now, keep everything' act, distinct from revoke, which is the durable end of an account relationship. Resume it with `ownerResumeConnection`. A non-active (already-paused/draft/revoked) connection returns `connector_instance_not_active` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+  },
+  {
+    id: "ownerPauseConnector",
+    method: "POST",
+    path: "/v1/owner/connectors/{connectorId}/pause",
+    request: { params: ConnectorIdParamSchema },
+    responses: {
+      200: { description: "Paused", schema: OwnerConnectionPauseSchema },
+      ...CommonErrors,
+    },
+    summary:
+      "Owner-agent bearer: pause a connector's active connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `active` to `paused` (zero cascade). Owner bearers only.",
     surface: "reference",
     tags: ["reference", "owner-agent"],
   },
@@ -2813,7 +2906,7 @@ export const referenceManifests = [
       ...CommonErrors,
     },
     summary:
-      "Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active.",
+      'Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active. Optional JSON body field `full_refresh: true` requests a full re-enumeration (`collection_mode: "full_refresh"`) instead of resuming from the connection\'s stored cursor, so a source whose ordinary runs are incremental deltas can re-establish an enumeration boundary and prove coverage; it does not clear stored state.',
     surface: "reference",
     tags: ["reference", "runs", "connections"],
   },

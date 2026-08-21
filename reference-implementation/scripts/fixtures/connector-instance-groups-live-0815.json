@@ -1,0 +1,85 @@
+[
+  {
+    "connectorInstanceId": "cin_cd523fe54af1881cc18d7368",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 2868, "overlapKeys": 2868, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_77518de64bd37acdfeda94d0",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 1145, "overlapKeys": 1145, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_262027b59b4c410edb5e7e32",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 1145, "overlapKeys": 1145, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_9828c95c42a4f69c52dc4f47",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 1145, "overlapKeys": 1145, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_ff1db86c666dc677b82dbc96",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 1036, "overlapKeys": 1036, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_6f679b8a85ec144d0a734338",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 932, "overlapKeys": 932, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_2cdcc6b4959a09316ad618e7",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 186, "overlapKeys": 186, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_fceda15a2db4a7162c812093",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 104, "overlapKeys": 104, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_4506a37b1c93cc4ae44dcd73",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 104, "overlapKeys": 104, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_7488877897081b41b95d5dba",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 50, "overlapKeys": 50, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_ee8f6b72f0b3b1b911c75672",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 50, "overlapKeys": 50, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_2c070ab98ad6c997a15e85b4",
+    "canonicalConnectorInstanceId": "cin_a8ec003e6d441205d646f178",
+    "reason": "proven_subset",
+    "evidence": { "recordCount": 50, "overlapKeys": 50, "connector": "amazon" }
+  },
+  {
+    "connectorInstanceId": "cin_c8587b1ec6c0f1ceb891d8cb",
+    "canonicalConnectorInstanceId": null,
+    "reason": "unresolved_identity",
+    "evidence": {
+      "connector": "github",
+      "fragmentProviderUserId": "101915388",
+      "canonicalProviderUserId": "1095217",
+      "note": "Different GitHub user id than the active canonical instance cin_b110e71fb14fb61450d2d427. Zero record-key overlap. Must NOT be auto-grouped. Requires owner confirmation of whether 101915388 is a real second GitHub account before any decision."
+    }
+  }
+]

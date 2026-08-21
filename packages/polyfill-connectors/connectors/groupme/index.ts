@@ -124,6 +124,17 @@ interface GroupMeGroup {
   id: string;
   image_url?: string | null;
   members_count?: number | null;
+  /**
+   * GroupMe's own documented per-group message envelope on `GET /groups`:
+   * `{ count, last_message_id, last_message_created_at, preview }`.
+   *
+   * The connector previously read only a FLAT `messages_count`, which is
+   * absent from that documented shape — and live evidence agrees: all 156
+   * of this owner's groups carry `messages_count: null` across every
+   * version ever collected, while the sibling `members_count` populates
+   * normally. So the flat field was never the real one.
+   */
+  messages?: { count?: number | null } | null;
   messages_count?: number | null;
   muted?: boolean | null;
   name?: string | null;
@@ -132,6 +143,33 @@ interface GroupMeGroup {
   share_url?: string | null;
   show_full_last_message?: boolean | null;
   updated_at?: number | null;
+}
+
+/**
+ * The provider-reported message count for one group, read from whichever
+ * shape the API actually returned: the documented nested
+ * `messages.count`, or the flat `messages_count` this connector has always
+ * modelled.
+ *
+ * Returns `null` when NEITHER is present or usable. That distinction is
+ * load-bearing: `null` means "the provider did not tell us", which is
+ * different from `0` ("the provider says this group is empty"). A missing
+ * count must never collapse into a zero denominator — that would assert an
+ * empty group that was simply never reported on.
+ *
+ * Rejects non-integer, negative, and non-finite values rather than
+ * coercing them, so a malformed provider value degrades to "unknown"
+ * instead of silently becoming a fabricated anchor.
+ */
+export function providerMessageCount(group: GroupMeGroup): number | null {
+  const candidate = group.messages?.count ?? group.messages_count;
+  if (typeof candidate !== "number" || !Number.isFinite(candidate)) {
+    return null;
+  }
+  if (!Number.isInteger(candidate) || candidate < 0) {
+    return null;
+  }
+  return candidate;
 }
 
 interface GroupMeAttachment {
@@ -841,7 +879,9 @@ function toGroupRecord(g: GroupMeGroup): RecordData {
     created_at: convertTimestamp(g.created_at),
     updated_at: convertTimestamp(g.updated_at),
     member_count: g.members_count ?? null,
-    messages_count: g.messages_count ?? null,
+    // Reads whichever shape the API returned. The prior flat-only read is
+    // why all 156 of this owner's groups persisted `messages_count: null`.
+    messages_count: providerMessageCount(g),
   };
 }
 
@@ -1825,6 +1865,87 @@ export async function collectDirectChatMessages(
  */
 export interface GroupMessagesCollectionOutcome extends CollectionOutcome {
   nextCursors: GroupMessageCursors;
+  /** Per-group provider-count reconciliation for this run. */
+  shortfalls: GroupMessageShortfall[];
+  /** Groups whose walk could not be anchored because the provider reported no count. */
+  unanchoredGroupIds: string[];
+}
+
+/** One group where the provider reported MORE messages than the walk saw. */
+export interface GroupMessageShortfall {
+  groupId: string;
+  providerCount: number;
+  walked: number;
+}
+
+/**
+ * Split a run's shortfalls into the two materially different situations they
+ * conflate, so each can be reported with its own reason and recovery hint.
+ *
+ * `withheld` — the walk enumerated NOTHING (`walked === 0`) while GroupMe's
+ * `/groups` listing claims a non-zero `messages.count`. Measured against this
+ * owner's live workspace, every one of these groups returns HTTP 200 with an
+ * empty `messages` array on EVERY documented access path — plain, `limit=1`,
+ * `after_id=0`, and (304) `before_id`/`since_id` anchored at the group's own
+ * `last_message_id`. The count is a stale provider-side counter for a group
+ * whose message bodies GroupMe no longer serves; no pagination change can
+ * retrieve them, so `retry_by_runtime` is a false promise.
+ *
+ * `partial` — the walk returned SOME messages but fewer than claimed. That is
+ * the genuinely retryable shape (a page boundary, a transient truncation).
+ *
+ * This is a classification split ONLY. Neither bucket is subtracted from the
+ * missing total, and a withheld group is never counted as covered: an
+ * unserved message is still an absent message, and saying so honestly is the
+ * whole point of the anchor.
+ */
+export function partitionGroupMessageShortfalls(shortfalls: readonly GroupMessageShortfall[]): {
+  partial: GroupMessageShortfall[];
+  withheld: GroupMessageShortfall[];
+} {
+  const partial: GroupMessageShortfall[] = [];
+  const withheld: GroupMessageShortfall[] = [];
+  for (const s of shortfalls) {
+    if (s.walked === 0) {
+      withheld.push(s);
+    } else {
+      partial.push(s);
+    }
+  }
+  return { partial, withheld };
+}
+
+/**
+ * Compare one group's provider-reported message count against what this
+ * run's walk actually enumerated.
+ *
+ * ONE-DIRECTIONAL ON PURPOSE. Only `providerCount > walked` is reported.
+ * The reverse — we walked more than the provider now claims — is NOT a
+ * defect: PDPP is a preservation product, so messages deleted from GroupMe
+ * after we collected them legitimately make our holdings larger than the
+ * provider's current count. Reporting that as a gap would flag successful
+ * preservation as loss.
+ *
+ * Returns `null` when the provider reported no usable count: unknown is
+ * not zero, and an absent count must never become a denominator.
+ *
+ * CEILING: this is a scalar, so it cannot distinguish "we are missing N
+ * distinct messages" from "we collected N duplicates". GroupMe exposes no
+ * cheap per-group message-id listing to make this a set comparison, so the
+ * anchor detects magnitude only — see the connector README note.
+ */
+export function groupMessageShortfall(
+  group: GroupMeGroup,
+  walked: number
+): { kind: "ok" } | { kind: "short"; shortfall: GroupMessageShortfall } | { kind: "unanchored" } {
+  const providerCount = providerMessageCount(group);
+  if (providerCount === null) {
+    return { kind: "unanchored" };
+  }
+  if (providerCount > walked) {
+    return { kind: "short", shortfall: { groupId: group.id, providerCount, walked } };
+  }
+  return { kind: "ok" };
 }
 
 /**
@@ -1881,6 +2002,100 @@ async function collectOneGroupMessages(
   );
 }
 
+/** Cap on ids/entries listed in an anchor diagnostic; counts are always exact. */
+const MAX_ANCHOR_IDS_IN_DIAGNOSTIC = 50;
+
+/**
+ * Emit the provider-count reconciliation for `group_messages`.
+ *
+ * Two distinct findings, deliberately not merged:
+ *
+ *  - `provider_reports_more_messages_than_walked` — a PARTIAL walk. GroupMe
+ *    says a group holds more messages than the full walk enumerated, and the
+ *    walk did return some. Retrying can plausibly close this.
+ *  - `provider_serves_no_messages_for_group` — the provider claims a count
+ *    but serves NOTHING on any documented access path. Reported separately
+ *    and as NOT retryable, because calling it retryable sends the owner
+ *    round a loop that provably cannot converge.
+ *  - `group_message_count_unanchored` — the provider reported no usable
+ *    count for these groups, so their walk has NO external anchor at all.
+ *    Saying so is the honest alternative to silently treating an unanchored
+ *    group as proven.
+ *
+ * The two shortfall buckets are a CLASSIFICATION split, never a subtraction:
+ * a withheld group's messages stay in its own missing total and are never
+ * counted as covered. Splitting them tells the owner which part of the gap
+ * is worth retrying, without quietly shrinking the gap itself.
+ *
+ * Nothing is emitted for a group where holdings EXCEED the provider count:
+ * that is preservation of messages GroupMe has since deleted, not loss.
+ */
+async function emitGroupMessageAnchorEvidence(
+  emit: CollectContext["emit"],
+  outcome: GroupMessagesCollectionOutcome
+): Promise<void> {
+  const { partial, withheld } = partitionGroupMessageShortfalls(outcome.shortfalls);
+  if (partial.length > 0) {
+    const missingTotal = partial.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
+    const visible = partial.slice(0, MAX_ANCHOR_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "group_messages",
+      reason: "provider_reports_more_messages_than_walked",
+      message:
+        `GroupMe reports more messages than this run walked in ${String(partial.length)} group(s): ` +
+        `${String(missingTotal)} message(s) unaccounted for. Their history may be incomplete.`,
+      diagnostics: {
+        short_group_count: partial.length,
+        missing_message_total: missingTotal,
+        groups: visible.map((s) => ({ group_id: s.groupId, provider_count: s.providerCount, walked: s.walked })),
+        truncated: visible.length < partial.length,
+      },
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
+    });
+  }
+  if (withheld.length > 0) {
+    const withheldTotal = withheld.reduce((sum, s) => sum + s.providerCount, 0);
+    const visible = withheld.slice(0, MAX_ANCHOR_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "group_messages",
+      reason: "provider_serves_no_messages_for_group",
+      message:
+        `GroupMe reports a message count for ${String(withheld.length)} group(s) but served no messages for any of ` +
+        `them: ${String(withheldTotal)} message(s) are counted by the provider yet unavailable on every documented ` +
+        "access path. These are not retrievable by re-running.",
+      diagnostics: {
+        withheld_group_count: withheld.length,
+        withheld_message_total: withheldTotal,
+        groups: visible.map((s) => ({ group_id: s.groupId, provider_count: s.providerCount, walked: s.walked })),
+        truncated: visible.length < withheld.length,
+      },
+      // `not_retriable` (not "none") — RECOVERY_ACTIONS is a closed set in the
+      // runtime's gap normalizer; an unrecognized token is silently replaced by
+      // a regex guess over the reason/message text.
+      recovery_hint: { action: "not_retriable", retryable: false },
+    });
+  }
+  if (outcome.unanchoredGroupIds.length > 0) {
+    const visible = outcome.unanchoredGroupIds.slice(0, MAX_ANCHOR_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "group_messages",
+      reason: "group_message_count_unanchored",
+      message:
+        `GroupMe reported no per-group message count for ${String(outcome.unanchoredGroupIds.length)} group(s), so their ` +
+        "walk has no external completeness anchor. Coverage for these groups is unproven, not proven complete.",
+      diagnostics: {
+        unanchored_group_count: outcome.unanchoredGroupIds.length,
+        unanchored_group_ids: visible,
+        truncated: visible.length < outcome.unanchoredGroupIds.length,
+      },
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
+    });
+  }
+}
+
 export async function collectGroupMessages(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
@@ -1907,6 +2122,8 @@ export async function collectGroupMessages(
   // cursor. The cursor MAP is still rebuilt from what this full walk
   // observes, so the next ordinary run resumes forward-incrementally again.
   const bypassCursor = collectionMode === "full_refresh";
+  const shortfalls: GroupMessageShortfall[] = [];
+  const unanchoredGroupIds: string[] = [];
   const outcome = await runCollectionPass(
     "group_messages",
     "group messages",
@@ -1921,6 +2138,7 @@ export async function collectGroupMessages(
       );
       for (const group of groups) {
         const priorCursor = priorCursors[group.id];
+        const walkedWholeGroup = priorCursor === undefined || bypassCursor;
         const groupResult = await collectOneGroupMessages(
           token,
           group,
@@ -1934,6 +2152,21 @@ export async function collectGroupMessages(
           sinceEpochSeconds
         );
         considered += groupResult.totalSeen;
+        // The provider count describes the group's WHOLE history, so it can
+        // only be compared against a walk that covered the whole history: a
+        // cold start or an explicit full_refresh. An incremental forward
+        // resume deliberately sees only new messages, and comparing a total
+        // against that window would report a false shortfall on every
+        // healthy incremental run. A `since`-scoped walk is excluded for the
+        // same reason.
+        if (walkedWholeGroup && sinceEpochSeconds === null) {
+          const verdict = groupMessageShortfall(group, groupResult.totalSeen);
+          if (verdict.kind === "short") {
+            shortfalls.push(verdict.shortfall);
+          } else if (verdict.kind === "unanchored") {
+            unanchoredGroupIds.push(group.id);
+          }
+        }
         if (groupResult.newestMessageId !== undefined) {
           nextCursors[group.id] = groupResult.newestMessageId;
         }
@@ -1942,7 +2175,14 @@ export async function collectGroupMessages(
     },
     reportStreamFailure
   );
-  return { ...outcome, nextCursors: outcome.failed ? {} : nextCursors };
+  return {
+    ...outcome,
+    nextCursors: outcome.failed ? {} : nextCursors,
+    // A failed pass proves nothing about completeness — withhold both
+    // findings exactly as the cursor map is withheld.
+    shortfalls: outcome.failed ? [] : shortfalls,
+    unanchoredGroupIds: outcome.failed ? [] : unanchoredGroupIds,
+  };
 }
 
 /**
@@ -2027,6 +2267,7 @@ export async function collect(
       effectiveCollectionMode,
       reportStreamFailure
     );
+    await emitGroupMessageAnchorEvidence(emit, groupMessagesOutcome);
   }
   let directChatsOutcome: CollectionOutcome | undefined;
   if (requested.has("direct_messages")) {

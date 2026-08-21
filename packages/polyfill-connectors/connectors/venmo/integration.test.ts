@@ -18,9 +18,16 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
-import { collectAllStreams, collectTransactions, fetchAllFriends, type VenmoPageFetch } from "./index.ts";
+import {
+  collectAllStreams,
+  collectTransactions,
+  establishVenmoCollectOrigin,
+  fetchAllFriends,
+  type VenmoPageFetch,
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 const OWNER_ID = "1111111111111111111";
@@ -490,4 +497,51 @@ test("collectAllStreams: never calls globalThis.fetch — every read goes throug
   } finally {
     globalThis.fetch = original;
   }
+});
+
+// ─── establishVenmoCollectOrigin: collect()'s own origin guard ─────────────
+//
+// `ensureSession` may leave the page wherever sign-in redirected it (e.g.
+// `id.venmo.com`), so `collect()` re-establishes the `venmo.com` origin
+// itself before its first credentialed fetch. Regression coverage for
+// production run_1787101857760 (2026-08-18): a navigation that resolves
+// without actually landing on venmo.com must fail fast with a diagnosable,
+// retryable name — `venmo_transport_error` — rather than let the next fetch
+// throw a bare, unclassified "Failed to fetch" from an opaque origin.
+
+test("establishVenmoCollectOrigin: a stuck-on-about:blank navigation throws venmo_transport_error, not a bare opaque-origin failure", async () => {
+  const gotoUrls: string[] = [];
+  const page: Pick<Page, "goto" | "url"> = {
+    goto(url: string): ReturnType<Page["goto"]> {
+      gotoUrls.push(url);
+      // Resolves without the page actually leaving about:blank — the exact
+      // production defect (ensureVenmoOrigin's old `.catch(() => undefined)`
+      // returned regardless of whether the navigation landed).
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "about:blank";
+    },
+  };
+  await assert.rejects(establishVenmoCollectOrigin(page as Page), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /venmo_transport_error/, "must match VENMO_RETRYABLE_PATTERN, not escape unclassified");
+    assert.match(err.message, /venmo_origin_navigation_failed/, "the underlying cause stays legible");
+    return true;
+  });
+  assert.deepEqual(gotoUrls, ["https://venmo.com/"]);
+});
+
+test("establishVenmoCollectOrigin: a successful navigation to venmo.com resolves without throwing", async () => {
+  let currentUrl = "about:blank";
+  const page: Pick<Page, "goto" | "url"> = {
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return currentUrl;
+    },
+  };
+  await assert.doesNotReject(establishVenmoCollectOrigin(page as Page));
 });

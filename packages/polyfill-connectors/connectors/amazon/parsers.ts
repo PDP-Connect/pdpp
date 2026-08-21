@@ -698,6 +698,43 @@ export function buildOrderItemRecord(orderId: string, orderDate: string, merged:
  * with the detail-page fetch. Prefers detail-page grand total (includes tax)
  * over the list-page total.
  */
+/**
+ * Resolve the order's item count, or null when neither surface can prove one.
+ *
+ * Amazon asserts no item count anywhere we read; the number is the count of
+ * item elements we managed to parse, from two independent surfaces. That makes
+ * a zero ambiguous, and the ambiguity was being resolved the wrong way.
+ *
+ * The list card only renders item titles for SMALL orders. Live data is
+ * unambiguous about this: across 1,183 collected orders, `item_count === 0`
+ * NEVER occurs on an order holding 1 or 2 items, and occurs on 53 orders
+ * holding 3-7 — Amazon collapses 3+ item orders behind a "+N more items"
+ * affordance that renders no per-item titles. For those orders the list
+ * contributes 0 and the count rests entirely on the order-detail page.
+ *
+ * When that detail fetch is deferred (per-run attempt budget, temporary-failure
+ * cap, or a latched session repair) `detail` is null, and the previous
+ * `Math.max(list, detail ?? 0)` collapsed to a confident `0`. Every one of
+ * those 53 orders also has a null `shipping_address_summary`, confirming the
+ * detail page — not the parse — is what was missing. The record then claimed an
+ * empty order while the database held 3-7 item rows for it.
+ *
+ * A non-nullable count cannot express "not fetched", so a fetch failure was
+ * indistinguishable from a genuinely empty order. Returning null when no
+ * surface saw an item keeps a real empty order (which reaches here with a
+ * successful detail) reporting 0, while an unfetched one reports unknown.
+ */
+function resolveItemCount(listOrder: ListPageOrder, detail: OrderDetail | null): number | null {
+  const counted = Math.max(listOrder.items.length, detail?.items?.length ?? 0);
+  if (counted > 0) {
+    return counted;
+  }
+  // Nothing counted. Only the detail page can distinguish an empty order from
+  // an unobserved one: with it we looked and found nothing, without it we never
+  // looked at the surface that carries items for anything but a tiny order.
+  return detail ? 0 : null;
+}
+
 export function buildOrderRecord(
   listOrder: ListPageOrder,
   detail: OrderDetail | null,
@@ -717,7 +754,7 @@ export function buildOrderRecord(
     payment_method_summary: detail?.payment_method_summary || null,
     gift_order: detail?.gift_order ?? false,
     digital_order: detail?.digital_order ?? false,
-    item_count: Math.max(listOrder.items.length, detail?.items?.length ?? 0),
+    item_count: resolveItemCount(listOrder, detail),
     fetched_at: emittedAt,
   };
 }

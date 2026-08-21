@@ -16,7 +16,7 @@
 
 import type { EmittedMessage } from "@pdpp/connector-protocol";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
-import { buildFullScanCoverageMessage, politeDelay, runConnector } from "../../src/connector-runtime.ts";
+import { buildDetailCoverageMessage, politeDelay, runConnector } from "../../src/connector-runtime.ts";
 import { notionPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
@@ -267,11 +267,25 @@ async function runStream(args: RunStreamArgs): Promise<void> {
   const streamState = state[streamName] as { last_edited_time?: string } | undefined;
   const prior = streamState?.last_edited_time;
   let latest = prior;
+  // Rows this run objectively accounted for — emitted-and-valid, or correctly
+  // suppressed as unchanged. NEVER aliased to `items.length`: the schema is
+  // strict (title ≤ 4000 chars, url ≤ 4096, safe-text), so a real page CAN be
+  // rejected, and a rejected page must not be claimed as covered just because
+  // it was enumerated. Tallied from the same `validateRecord` verdict the
+  // runtime's emitRecord applies.
+  let covered = 0;
   for (const item of items) {
     if (prior && item.last_edited_time && item.last_edited_time <= prior) {
+      // Suppressed-unchanged: an earlier run's identical content already passed
+      // the real emitRecord shape-check, so this is genuinely accounted for.
+      covered += 1;
       continue;
     }
-    await emitRecord(streamName, toRecord(item));
+    const record = toRecord(item);
+    if (validateRecord(streamName, record).ok) {
+      covered += 1;
+    }
+    await emitRecord(streamName, record);
     if (item.last_edited_time && (!latest || item.last_edited_time > latest)) {
       latest = item.last_edited_time;
     }
@@ -286,7 +300,30 @@ async function runStream(args: RunStreamArgs): Promise<void> {
   // The search result is the complete enumeration boundary for this stream.
   // Emit measured full-scan evidence even when it is empty; record counts alone
   // cannot distinguish a verified empty workspace from missing coverage proof.
-  await emit(buildFullScanCoverageMessage(streamName, items.length));
+  //
+  // `considered` is that boundary (`items.length`, measured at the enumeration
+  // site); `covered` is the independently tallied count above, so a page the
+  // schema rejected reads a real `partial` instead of being silently absorbed.
+  // `buildFullScanCoverageMessage` is deliberately NOT used: it forces
+  // `covered === considered`, which cannot express a dropped page.
+  //
+  // Deletion-safe by construction: Notion reports a deleted page IN-BAND as
+  // `archived: true` rather than omitting it, so a deletion stays inside the
+  // boundary, is validated like any other row, and counts as covered. The
+  // runtime turns it into a tombstone (`isTombstone`, below). An upstream
+  // deletion is therefore a covered fact, never a coverage gap — which is what
+  // keeps this proof from firing on PDPP's deliberate retention of records the
+  // provider has since removed.
+  await emit(
+    buildDetailCoverageMessage({
+      stream: streamName,
+      stateStream: streamName,
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: items.length,
+      covered,
+    })
+  );
   await emit({
     type: "STATE",
     stream: streamName,

@@ -61,6 +61,7 @@ import {
 } from "../operations/rs-search-semantic/index.ts";
 import {
   listActiveOwnerBindingsForConnectors,
+  resolveCanonicalConnectorInstanceIdsForBindings,
   resolveDisplayNamesForBindings,
   resolveFanInBindings,
 } from "./connection-identity.ts";
@@ -4038,6 +4039,24 @@ async function queryVectorSemanticPlanEntries({
  * rows don't exist, hits are absent (empty data) but retrieval_mode still
  * says semantic on any hits that do come back.
  */
+// Rewrites each hit's `connectorInstanceId` in place to its canonical
+// connector-instance identity (owner-mode only), via one bounded owner-group
+// preload. Extracted from `buildSemanticSnapshot` to keep that function's
+// cognitive complexity within budget; mirrors the equivalent block in
+// `server/search.ts`'s `buildSnapshot`.
+async function canonicalizeSemanticHitConnectorInstanceIds(hits: readonly CollapsedSemanticHit[]): Promise<void> {
+  const canonicalIds = await resolveCanonicalConnectorInstanceIdsForBindings({
+    connectorInstanceIds: hits.map((hit) => hit.connectorInstanceId ?? null),
+    ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+  });
+  for (const hit of hits) {
+    const canonicalId = hit.connectorInstanceId ? canonicalIds.get(hit.connectorInstanceId) : undefined;
+    if (canonicalId) {
+      hit.connectorInstanceId = canonicalId;
+    }
+  }
+}
+
 async function buildSemanticSnapshot({
   q,
   perConnectorPlans,
@@ -4117,6 +4136,15 @@ async function buildSemanticSnapshot({
     }
   }
   const collapsedArr = Array.from(collapsed.values()).sort(compareHits);
+
+  // Attribute each hit to its canonical connector-instance identity before
+  // display-name resolution — same account-unification wiring as lexical
+  // search's `buildSnapshot` (server/search.ts): a grouped fragment's hit
+  // reports the canonical connection identity Sources/Explore show for that
+  // logical account, via one bounded owner-group preload. Owner-mode only.
+  if (isOwner) {
+    await canonicalizeSemanticHitConnectorInstanceIds(collapsedArr);
+  }
 
   // Decorate each hit with the owner-facing display_name when the store has
   // a non-placeholder label for the binding. Lookups are deduped per

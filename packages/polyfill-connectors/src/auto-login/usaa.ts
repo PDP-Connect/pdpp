@@ -17,12 +17,26 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
+import { locatorIsUsable } from "./locator-helpers.ts";
 
 const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
 const LOGIN_URL = "https://www.usaa.com/my/logon";
 const LOGGED_IN_TEXT = /Log Off|Good (Morning|Afternoon|Evening)/i;
 const SESSION_COOKIE = /^(LtpaToken2|AST|MemberGlobalSession)$/;
+/**
+ * Copy that ACCOMPANIES the delivery-method chooser. Necessary but never
+ * sufficient: this phrase also appears on USAA's security-settings pages and
+ * in the chooser's own post-dispatch confirmation line, neither of which is a
+ * chooser awaiting a click. See {@link findUsaaTextCodeChoice}.
+ */
 const TEXT_CODE_PROMPT = /Text security code/i;
+/**
+ * The delivery control itself — the thing the click actually targets. USAA
+ * renders each method as a clickable row whose label begins "Text security
+ * code to:" followed by a masked destination. Scoped to interactive roles so
+ * it cannot match the same words appearing in body prose.
+ */
+const TEXT_CODE_CHOICE_SELECTOR = ':text-matches("Text security code to:", "i")';
 const OTP_INPUT_SELECTOR = 'input[autocomplete="one-time-code"], input[name*="code" i], input[placeholder*="code" i]';
 const OTP_RETRY_TEXT = /retry|invalid|incorrect|expired|try again/i;
 const LOGIN_NAVIGATION_INTERVENTION_ERROR = /page\.goto: net::ERR_(HTTP2_PROTOCOL_ERROR|CONNECTION_RESET|FAILED)\b/i;
@@ -42,6 +56,8 @@ const MANUAL_LOGIN_MESSAGE =
   "USAA could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
 const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
   "No optional USAA sign-in details were provided. Sign in to USAA in the secure browser, then respond success.";
+const MANUAL_LOGIN_MESSAGE_CHOICE_MISSING =
+  "USAA asked for a security code but PDPP could not find the control that sends it, so it did not request one. Choose how to receive your code in the secure browser and finish sign-in. PDPP resumes when sign-in succeeds.";
 // `classifyUsaaLoginStepFailure` returning `source_unavailable` proves only
 // that USAA's page copy matches known outage boilerplate — it does NOT prove
 // the provider is actually down. It still reaches manual_action unless this
@@ -284,17 +300,44 @@ async function requestOtp(sendInteraction: EnsureUsaaSessionArgs["sendInteractio
   return resp.data.code;
 }
 
+/**
+ * The delivery control USAA's method chooser renders for the SMS option.
+ *
+ * Clicking this is what makes USAA dispatch a real code, so it is deliberately
+ * the ONLY way this module reaches that act — there is no positional fallback.
+ */
+function findUsaaTextCodeChoice(page: Page): Locator {
+  return page.locator(TEXT_CODE_CHOICE_SELECTOR).first();
+}
+
+/**
+ * Whether the page is still a code entry the owner can answer.
+ *
+ * Requires a usable input, not merely retry-flavoured copy. The old check
+ * accepted `OTP_RETRY_TEXT` on its own, so a page carrying the word "expired"
+ * or "try again" — including USAA's session-timeout and lockout pages, which
+ * have no code entry at all — kept the loop alive and re-prompted the owner
+ * for a code that nothing could consume.
+ */
 async function isStillOnOtpChallenge(page: Page): Promise<boolean> {
-  const retryText = await page
+  return await locatorIsUsable(page.locator(OTP_INPUT_SELECTOR));
+}
+
+/**
+ * Whether USAA positively rejected the code just submitted.
+ *
+ * This is what makes a further prompt honest. A usable input still on screen
+ * proves only that the page did not advance; USAA's own retry copy is the
+ * evidence that the previous code was actually consumed and refused. Without
+ * it, "no session yet" is indistinguishable from a slow redirect, and asking
+ * again would demand a second secret for a code that may still be valid.
+ */
+async function usaaRejectedPreviousCode(page: Page): Promise<boolean> {
+  const bodyText = await page
     .locator("body")
     .innerText()
     .catch((): string => "");
-  const otpStillVisible = await page
-    .locator(OTP_INPUT_SELECTOR)
-    .first()
-    .isVisible()
-    .catch((): boolean => false);
-  return otpStillVisible || OTP_RETRY_TEXT.test(retryText);
+  return OTP_RETRY_TEXT.test(bodyText);
 }
 
 async function completeOtpChallenge({ context, page, sendInteraction }: EnsureUsaaSessionArgs): Promise<boolean> {
@@ -311,11 +354,47 @@ async function completeOtpChallenge({ context, page, sendInteraction }: EnsureUs
     if ((await hasLoggedInCookie(context)) && (await verifyLoggedIn(context, page))) {
       return true;
     }
-    if (!(await isStillOnOtpChallenge(page))) {
+    // Re-prompting costs the owner another trip to their phone, so it needs
+    // both halves of the evidence: a code entry that can still accept an
+    // answer, AND USAA saying it refused the last one. "No session yet" alone
+    // is not a rejection — it is also what a slow redirect looks like.
+    if (!((await isStillOnOtpChallenge(page)) && (await usaaRejectedPreviousCode(page)))) {
       return false;
     }
   }
   return false;
+}
+
+/**
+ * Ask USAA to send a security code, then run the code challenge.
+ *
+ * The one place in this module that causes a real SMS to a real phone, so the
+ * click is gated on the delivery control being usable — visible AND enabled.
+ * Matching page copy is not authorization: the phrase appears on pages with no
+ * chooser at all, and a disabled control still reports itself visible.
+ *
+ * Returns true only if the resulting challenge established a session. When the
+ * control cannot be found, this hands the browser to the owner and, failing
+ * that, throws — it never guesses at a coordinate.
+ */
+async function dispatchTextCodeAndComplete(args: EnsureUsaaSessionArgs): Promise<boolean> {
+  const { context, page, sendInteraction } = args;
+  const textCodeChoice = findUsaaTextCodeChoice(page);
+  if (!(await locatorIsUsable(textCodeChoice))) {
+    // Previously this fell back to clicking a hardcoded positional element
+    // (`#miam-choice-container 0-id`) whenever the text match was wrong —
+    // guessing at a bank's UI with the owner's SMS budget, and then looping up
+    // to three times. There is no honest way to dispatch a code we cannot
+    // locate the control for, so hand the browser to the owner instead.
+    if (await requestManualLoginRecovery({ context, page, sendInteraction }, MANUAL_LOGIN_MESSAGE_CHOICE_MISSING)) {
+      return true;
+    }
+    throw new Error(
+      `usaa_text_code_choice_not_found: page text matched but no usable delivery control was present; refused to dispatch a security code. url=${page.url()}`
+    );
+  }
+  await textCodeChoice.click();
+  return await completeOtpChallenge({ context, page, sendInteraction });
 }
 
 async function submitMemberId(page: Page, username: string): Promise<boolean> {
@@ -478,18 +557,8 @@ export async function ensureUsaaSession({
 
   const bodyText = (await page.locator("body").innerText()).slice(0, 1000);
 
-  if (TEXT_CODE_PROMPT.test(bodyText)) {
-    // Trigger the SMS + ask the owner for the code via INTERACTION
-    await page
-      .locator(':text-matches("Text security code to:", "i")')
-      .first()
-      .click()
-      .catch(async (): Promise<void> => {
-        await page.locator("#miam-choice-container\\ 0-id").click();
-      });
-    if (await completeOtpChallenge({ context, page, sendInteraction })) {
-      return true;
-    }
+  if (TEXT_CODE_PROMPT.test(bodyText) && (await dispatchTextCodeAndComplete({ context, page, sendInteraction }))) {
+    return true;
   }
 
   if (await verifyLoggedIn(context, page)) {

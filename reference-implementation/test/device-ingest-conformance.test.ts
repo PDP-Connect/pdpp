@@ -2989,8 +2989,150 @@ async function runVersionCasOracle(driver: Driver): Promise<void> {
   );
 }
 
+/**
+ * A batch whose records are ALL already durable
+ * (`durable_prefix_count === record_count`) must still be able to reach
+ * `accepted`, no matter how long this attempt took.
+ *
+ * The live wedge this pins: the attempt deadline was checked AFTER the
+ * durable phase and index maintenance but BEFORE
+ * `completeProcessingBatch`. A slow-but-successful attempt therefore threw
+ * `device_ingest_retryable` with every record already committed, leaving
+ * the reservation `processing` with a FULL durable prefix. Nothing reaps a
+ * stale `processing` row, so the collector retried the same batch forever:
+ * each retry skipped the durable loop (`start === records.length`) but
+ * still re-ran the final-plan repair + embedding publish, blew the same
+ * deadline again, and 503'd again — a self-sustaining livelock at ~45% of
+ * batches once the queue backed up (one row reached 1058 attempts).
+ *
+ * The deadline is a bound on WORK YET TO DO, not a reason to discard work
+ * already durably committed. Once the durable prefix is complete the only
+ * thing left is the status transition, which must not be deadline-gated.
+ */
+async function runFullPrefixDeadlineOracle(driver: Driver): Promise<void> {
+  const device = await enrollConfiguredDevice(driver, "full-prefix-deadline");
+  const key = "full-prefix-deadline-key";
+  const request = batch(device, nextId("full-prefix-deadline"), [deviceRecord(key, "deadline-content")]);
+
+  // Strand the batch with a COMPLETE durable prefix, exactly like a slow
+  // attempt that committed every record and then blew its deadline.
+  __setDeviceIngestPhaseFaultHookForTest((point: string) => {
+    if (point === "after-durable-phase") {
+      throw new Error("strand the batch with every record already durable");
+    }
+  });
+  try {
+    assert.equal((await driver.ingest(device, request)).status, 503);
+  } finally {
+    __setDeviceIngestPhaseFaultHookForTest(null);
+  }
+
+  const stranded = mustExist(await driver.outcome(device, request.batch_id), "a stranded reservation must exist");
+  assert.equal(stranded.status, "processing");
+  assert.equal(
+    Number(stranded.durable_prefix_count),
+    Number(stranded.record_count),
+    "sanity: the reservation is stranded with a FULL durable prefix — the wedged shape seen in production"
+  );
+
+  // Now retry that fully-durable batch under an attempt deadline that has
+  // ALREADY expired, which is what a real slow retry hits. Before the fix
+  // this threw at the post-index `assertBatchAttemptBefore`, never reaching
+  // `completeProcessingBatch`, and 503'd forever.
+  const previousDeadline = process.env.PDPP_INGEST_BATCH_ATTEMPT_DEADLINE_MS;
+  process.env.PDPP_INGEST_BATCH_ATTEMPT_DEADLINE_MS = "1";
+  let retried: JsonResponse;
+  try {
+    retried = await driver.ingest(device, request);
+  } finally {
+    if (previousDeadline === undefined) {
+      delete process.env.PDPP_INGEST_BATCH_ATTEMPT_DEADLINE_MS;
+    } else {
+      process.env.PDPP_INGEST_BATCH_ATTEMPT_DEADLINE_MS = previousDeadline;
+    }
+  }
+
+  assert.equal(
+    retried.status,
+    201,
+    "a retry of a batch whose records are ALL durable must settle it, not 503 forever — this is the production wedge"
+  );
+
+  const settled = mustExist(await driver.outcome(device, request.batch_id), "the settled outcome must persist");
+  assert.equal(settled.status, "accepted", "the reservation must reach a terminal accepted state");
+  assert.equal(Number(settled.durable_prefix_count), Number(settled.record_count));
+  assert.equal(Number(settled.http_status), 201);
+  assert.ok(settled.accepted_at, "an accepted reservation must carry accepted_at");
+
+  // And it must stay idempotent: replaying the same batch returns the same
+  // stored acceptance rather than redoing work.
+  const replay = await driver.ingest(device, request);
+  assert.equal(replay.status, 201, "an accepted batch replays as accepted");
+}
+
+/**
+ * A failed device-ingest batch attempt must leave a server-side trace.
+ *
+ * The collector's 503 envelope is a fixed, bounded template by design (no
+ * storage/index/model/SQL diagnostic is safe to hand a collector), so before
+ * this fix the real cause of a stuck batch was visible NOWHERE: not in the
+ * client response, not in the server log. That is how the livelock above ran
+ * for hours — 219 ingest POSTs in 12 minutes, zero error/warn lines.
+ *
+ * Mirrors the ingest-rejection diagnosability contract established by
+ * `rs-ingest-systemic-failure-server-log.test.ts`. The log line carries
+ * identifiers only, never record content.
+ */
+async function runAttemptFailureServerLogOracle(driver: Driver): Promise<void> {
+  const device = await enrollConfiguredDevice(driver, "attempt-failure-log");
+  const secretContent = "canary_DeviceIngestServerLogOnlyMarkerNeverInHttpBody";
+  const request = batch(device, nextId("attempt-failure-log"), [deviceRecord("log-key", secretContent)]);
+
+  const capturedErrorLogs: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    capturedErrorLogs.push(args.map((value) => String(value)).join(" "));
+  };
+  __setDeviceIngestPhaseFaultHookForTest((point: string) => {
+    if (point === "after-durable-phase") {
+      throw new Error("deterministic attempt failure for the server-log oracle");
+    }
+  });
+  let response: JsonResponse;
+  try {
+    response = await driver.ingest(device, request);
+  } finally {
+    __setDeviceIngestPhaseFaultHookForTest(null);
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(response.status, 503, "the attempt must still fail retryably");
+
+  const attemptLine = capturedErrorLogs.find((line) => line.includes("[device-ingest] batch attempt failed"));
+  assert.ok(
+    attemptLine,
+    `a failed device-ingest attempt must be logged server-side, got: ${JSON.stringify(capturedErrorLogs)}`
+  );
+  assert.ok(attemptLine.includes(`device_id=${device.device_id}`), "the log line must identify the device");
+  assert.ok(attemptLine.includes(`batch_id=${request.batch_id}`), "the log line must identify the batch");
+  assert.ok(
+    attemptLine.includes("durable_prefix_start="),
+    "the log line must report the durable cursor that distinguishes a wedged batch"
+  );
+
+  // Diagnosability must not become an exfiltration channel: the log carries
+  // identifiers, never record content, and the HTTP body stays redacted.
+  assert.ok(!attemptLine.includes(secretContent), "the server log must never carry record content");
+  assert.ok(
+    !JSON.stringify(response.body).includes(secretContent),
+    "the redacted 503 envelope must never carry record content"
+  );
+}
+
 const ORACLES: [string, (driver: Driver) => Promise<void>][] = [
   ["phase fault/resume matrix", runPhaseFaultMatrix],
+  ["full durable prefix settles under an expired deadline", runFullPrefixDeadlineOracle],
+  ["failed batch attempts are logged server-side", runAttemptFailureServerLogOracle],
   ["simultaneous identity matrix", runConcurrentIdentityOracle],
   ["duplicate and newer writer matrix", runDuplicateAndNewerWriterOracle],
   ["derived repair and canonical records", runRepairAndCanonicalOracle],

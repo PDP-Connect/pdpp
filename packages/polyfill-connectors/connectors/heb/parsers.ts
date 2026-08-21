@@ -661,8 +661,39 @@ export function parseOrderDetailDom(html: string): OrderDetail | null {
 // block/challenge renders as an empty shell — no h3, no breadcrumb nav, no
 // [data-testid], document.body.children.length <= 2, and at least one iframe.
 // `_Incapsula_Resource` alone (present on every page) must NOT count as a block.
+//
+// Imperva also serves a SECOND, iframe-less block shape: a ~650-byte document
+// whose entire body is a JSON incident report — `{"incidentId": "...",
+// "hostName": "www.heb.com", "errorCode": "15", "description": "This page
+// could not load..."}` — returned with HTTP **200**, not 403. Observed live
+// against /my-account/order-history on 2026-08-20.
+//
+// That shape defeated the iframe-only detector: `hasIframe` is false, so a
+// block fell through to the zero-order classification and was reported as
+// `selector_drift` ("4 cards on the page, 0 matching") — a markup-drift
+// diagnosis for what is really bot protection. The recovery for those two is
+// opposite (rewrite a selector vs. back off and re-establish trust), so the
+// misclassification sent every retry down the wrong path.
+//
+// Matched structurally on the incident-report field set rather than on the
+// prose, which is localized and has changed before. `errorCode` alone is too
+// generic to key on: H-E-B's own API errors use that name too, so require the
+// `incidentId` + `hostName` pair that only Imperva's report carries.
+const IMPERVA_INCIDENT_ID_RE = /"incidentId"\s*:/;
+const IMPERVA_HOST_NAME_RE = /"hostName"\s*:/;
+const IMPERVA_INCIDENT_MAX_BYTES = 4000;
+
+function isImpervaIncidentReport(html: string): boolean {
+  if (html.length > IMPERVA_INCIDENT_MAX_BYTES) {
+    return false;
+  }
+  return IMPERVA_INCIDENT_ID_RE.test(html) && IMPERVA_HOST_NAME_RE.test(html);
+}
 
 export function isIncapsulaBlocked(html: string): boolean {
+  if (isImpervaIncidentReport(html)) {
+    return true;
+  }
   const { document } = parseHTML(html);
   const { body } = document;
   if (!body) {
@@ -692,6 +723,43 @@ export function looksLoggedOut(landedUrl: string, html: string): boolean {
 
 // ─── Empty-list-page diagnostics ──────────────────────────────────────────
 
+// ─── Source-authored empty state ──────────────────────────────────────────
+// When the account has no orders in H-E-B's retention window, the order-results
+// container renders a dedicated empty-state component instead of order cards:
+//
+//   <div data-qe-id="orderResults">…<div class="Empty_box__…">
+//     <svg class="OrderEmpty_orderSvg__…">…
+//     <p class="…Empty_heading__…">No past orders</p>
+//
+// This is H-E-B telling us the history is empty, not us inferring it from the
+// absence of something. Detect the component, not the prose: the copy ("No past
+// orders") is user-facing and localizable, whereas `OrderEmpty_`/`Empty_box` are
+// CSS-module class prefixes on the component itself.
+//
+// Require the marker to sit INSIDE `[data-qe-id="orderResults"]`. That container
+// is present on populated pages too, so nesting is what separates "the results
+// region says it is empty" from an empty-state component reused elsewhere on a
+// page that does have orders — a bare document-wide search for `Empty_box` would
+// conflate the two.
+//
+// This matters because the empty state is otherwise indistinguishable from
+// selector drift by counting alone: the component's own class names
+// (OrderHistoryPage_headerContainer, OrderHistoryPage_resultsContainer,
+// OrderHistoryPage_messagingContainer, OrderEmpty_orderSvg) all match
+// `[class*="order" i]`, so a genuinely empty page reports `any_card: 4,
+// order_cards: 0` — exactly the signature the classifier reads as drift.
+const ORDER_RESULTS_SELECTOR = '[data-qe-id="orderResults"]';
+const EMPTY_STATE_SELECTOR = '[class*="OrderEmpty_"], [class*="Empty_box"]';
+
+export function hasOrdersEmptyState(html: string): boolean {
+  const { document } = parseHTML(html);
+  const results = document.querySelector(ORDER_RESULTS_SELECTOR);
+  if (!results) {
+    return false;
+  }
+  return Boolean(results.querySelector(EMPTY_STATE_SELECTOR));
+}
+
 export function diagnoseEmptyListPage(html: string, url: string): ListPageDiagnostics {
   const { document } = parseHTML(html);
   return {
@@ -701,6 +769,7 @@ export function diagnoseEmptyListPage(html: string, url: string): ListPageDiagno
     any_card: document.querySelectorAll('[class*="order" i]').length,
     password_form: Boolean(document.querySelector('input[type="password"]')),
     incapsula_block: isIncapsulaBlocked(html),
+    empty_state: hasOrdersEmptyState(html),
     body_preview: normText(document.body).slice(0, 240),
   };
 }
@@ -711,6 +780,7 @@ export function redactHebListPageDiagnostics(diag: ListPageDiagnostics): ListPag
   return {
     any_card: diag.any_card,
     body_preview: "",
+    empty_state: diag.empty_state,
     incapsula_block: diag.incapsula_block,
     order_cards: diag.order_cards,
     password_form: diag.password_form,

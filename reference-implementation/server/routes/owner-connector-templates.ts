@@ -14,6 +14,7 @@
 
 import {
   buildConnectionSetupPlan,
+  isKnownScaffoldConnector,
   isSupportedBrowserCollectorConnector,
   staticSecretCredentialCaptureFromManifest,
 } from "../connection-setup-plan.ts";
@@ -358,6 +359,12 @@ function projectTemplate(
     connector_modality: modality,
     display_name: displayNameForTemplate(connectorKey, manifest),
     icon: manifest.icon ?? null,
+    // Development-tier-only fact: whether this connector is a KNOWN scaffold
+    // (unconditional SKIP_RESULT, no real collection) versus real-but-unproven.
+    // The console needs this to decide whether a Development-tier card may
+    // ever render an add action -- a scaffold must never get one, because
+    // clicking it cannot collect anything.
+    is_known_scaffold: isKnownScaffoldConnector(connectorKey),
     object: "owner_connector_template",
     public_listing: manifest.capabilities?.public_listing ?? null,
     registration_status: "registered",

@@ -269,3 +269,71 @@ export function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): s
   }
   return null;
 }
+
+// ─── Durable unfillable-gap proof (§10-A / `unfillableAccounted`) ─────────────
+//
+// A `connector_detail_gaps` row this predicate reads. Matches the projected
+// `DetailGap.last_error` shape (`server/stores/connector-detail-gap-store.ts`
+// `rowToGap`) — the durable, actively-written field. `policy_disposition_json`
+// exists on a handful of legacy rows from an abandoned branch but no shipped
+// writer populates it, so it is deliberately NOT read here; resurrecting an
+// unmaintained column would make the classifier depend on evidence no current
+// code path can reproduce for a new gap.
+export interface TerminalGapProofRow {
+  readonly last_error?: unknown;
+  readonly status?: unknown;
+}
+
+const OBSERVED_EXCEEDS_LIMIT_MESSAGE_RE = /exceeds max size:\s*(\d+)\s*>\s*(\d+)\s*bytes/i;
+
+/**
+ * True when a single terminal gap row carries durable, per-item proof that the
+ * item can never be collected — a recorded observed size strictly greater than
+ * a recorded cap, both present in the same error record. This is deliberately
+ * narrow: an attempt count, a bare error class with no numbers, or a message
+ * that fails to parse are NOT proof, however many times the item was retried.
+ *
+ * The message format (`"... exceeds max size: <observed> > <limit> bytes"`) is
+ * `AttachmentTooLargeError`'s wire shape (`connectors/gmail/index.ts`) — a
+ * connector-neutral convention, not a Gmail-specific string match, so any
+ * connector that reports a byte-cap shortfall the same way is read the same
+ * way. A `class: "too_large"` tag alone (no parseable numbers) is NOT proof —
+ * the numbers are the evidence; the tag is only a hint of where to look.
+ */
+export function isProvenUnfillableGap(gap: TerminalGapProofRow | null | undefined): boolean {
+  if (!gap || typeof gap !== "object") {
+    return false;
+  }
+  const lastError = gap.last_error;
+  if (!lastError || typeof lastError !== "object" || Array.isArray(lastError)) {
+    return false;
+  }
+  // biome-ignore lint/style/useDestructuring: Explicit property access documents the durable row shape being read.
+  const message = (lastError as { message?: unknown }).message;
+  if (typeof message !== "string") {
+    return false;
+  }
+  const match = OBSERVED_EXCEEDS_LIMIT_MESSAGE_RE.exec(message);
+  if (!match) {
+    return false;
+  }
+  const observed = Number(match[1]);
+  const limit = Number(match[2]);
+  return Number.isFinite(observed) && Number.isFinite(limit) && observed > limit;
+}
+
+/**
+ * Whether an entire stream's terminal detail gaps are unfillable-accounted:
+ * at least one terminal gap exists AND every single one of them carries
+ * durable per-item impossibility proof ({@link isProvenUnfillableGap}). A
+ * stream with even one unproven terminal gap (e.g. a retry-exhausted row with
+ * no recorded size-vs-cap evidence) does NOT qualify — partial proof is not
+ * proof, it is the false-green this predicate exists to refuse.
+ *
+ * Returns `false` for an empty gap list: "no terminal gaps" is not the same
+ * claim as "coverage is unfillable-accounted" (the caller's coverage axis
+ * would not be `terminal_gap` in that case anyway).
+ */
+export function isStreamFullyUnfillableAccounted(terminalGaps: readonly TerminalGapProofRow[]): boolean {
+  return terminalGaps.length > 0 && terminalGaps.every(isProvenUnfillableGap);
+}

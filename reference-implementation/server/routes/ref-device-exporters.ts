@@ -195,6 +195,10 @@ interface ConnectorInstanceRow {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   readonly ownerSubjectId: string;
+  /** The stored `{kind, local_binding_name, device_id, source_instance_id}`
+   *  identity this connection was minted from. Only the first two are stable
+   *  per binding; the device/source ids are per-enrollment. */
+  readonly sourceBinding?: unknown;
   readonly sourceBindingKey?: string | null;
   readonly sourceKind?: string | null;
   readonly status: string;
@@ -1960,6 +1964,144 @@ async function resolveActiveDeviceConnectorInstance(
   return instance;
 }
 
+// Read the stable `local_binding_name` out of a connection's stored
+// source_binding. Only that field (with `kind`) determines which connection an
+// enrollment resolves to — `device_id`/`source_instance_id` in the same object
+// are per-enrollment and deliberately ignored here.
+function connectionLocalBindingName(instance: ConnectorInstanceRow): string | null {
+  const binding = instance.sourceBinding;
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    return null;
+  }
+  const value = (binding as { local_binding_name?: unknown }).local_binding_name;
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+/**
+ * Resolve the binding an enrollment code should carry when the owner minted it
+ * against an EXISTING connection (`connector_instance_id`) rather than naming a
+ * raw `local_binding_name`.
+ *
+ * Why this exists. `connector_instance_id` is a deterministic hash of
+ * `{owner, connector, source_kind, hash({kind, local_binding_name})}`, so an
+ * enrollment lands on a connection purely by reproducing its binding name. That
+ * already makes re-enrollment resume the same connection — but only if the
+ * owner types the same string. The binding name is not shown anywhere, so
+ * getting it wrong silently mints a SECOND connection and forks the source in
+ * two: the original keeps the records and becomes uncollectable, while the new
+ * one collects into an empty history. Losing a device token (write-once by
+ * design, unrecoverable) is exactly when an owner must re-enroll, so the one
+ * moment rebinding is needed is the moment it is most likely to go wrong.
+ *
+ * Addressing the CONNECTION instead removes the guess. The owner names an id
+ * they can see; the server derives the binding from that connection's own
+ * stored `source_binding`. Enrollment then flows down the unchanged, already
+ * tested path and lands on the same connector_instance by construction.
+ *
+ * Authorization. Ownership is verified HERE, at mint time, under the route's
+ * existing owner-session guard — an unknown or foreign connection is 404, the
+ * same non-leaking shape `revoke` uses. The enrolling device never names a
+ * connection; it presents only the code. So a device cannot aim itself at
+ * another connection's data — the target was fixed by the owner before the code
+ * existed.
+ */
+async function resolveEnrollmentTargetConnection(
+  ctx: MountRefDeviceExportersContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  connectorInstanceId: string
+): Promise<{ connectorId: string; localBindingId: string } | null> {
+  const ownerSubjectId = ctx.getOwnerSubjectId(req);
+  const instance = await ctx.createRequestConnectorInstanceStore().get(connectorInstanceId);
+  if (!instance || instance.ownerSubjectId !== ownerSubjectId) {
+    ctx.pdppError(res, 404, "not_found", "Connection not found", "connector_instance_id");
+    return null;
+  }
+  if (instance.status !== "active") {
+    // A revoked or deleted connection must not be re-armed by the side door.
+    // Reactivating it is a separate, explicit owner decision.
+    ctx.pdppError(
+      res,
+      409,
+      "invalid_request",
+      "Connection is not active; reactivate it before enrolling a device",
+      "connector_instance_id"
+    );
+    return null;
+  }
+  const localBindingId = connectionLocalBindingName(instance);
+  if (!localBindingId) {
+    // Account-kind connections (and any legacy row without a stored binding
+    // name) have no device binding to reproduce. Failing closed is the only
+    // honest answer: inventing a binding name here would mint a code that
+    // silently resolves to a DIFFERENT connection than the one addressed.
+    ctx.pdppError(
+      res,
+      409,
+      "invalid_request",
+      "Connection has no local device binding to enroll against",
+      "connector_instance_id"
+    );
+    return null;
+  }
+  // `source_kind` is deliberately NOT returned: the mint path re-derives it
+  // from the connector manifest (resolveEnrollmentSourceKind), which is the
+  // same authority enrollment itself uses. Echoing the stored value here would
+  // let a legacy row's stale kind override the manifest.
+  return { connectorId: instance.connectorId, localBindingId };
+}
+
+// Enrollment-code lifetime in seconds: the caller's value when it is an
+// integer inside the accepted window, the 15-minute default when unstated, or
+// `null` when stated but out of range (the caller turns that into a typed 400).
+function resolveEnrollmentCodeLifetimeSeconds(raw: unknown): number | null {
+  const seconds = Number.isInteger(raw) ? (raw as number) : 15 * 60;
+  return seconds < 60 || seconds > 86_400 ? null : seconds;
+}
+
+/**
+ * Resolve which binding an enrollment-code request targets. Two ways to name
+ * it, and exactly one may be used, so a request can never state a target twice
+ * and disagree with itself:
+ *
+ *   - `connector_instance_id` — address an EXISTING connection and derive its
+ *     binding server-side (the rebind path).
+ *   - `connector_id` + `local_binding_name` — name a binding directly (the
+ *     original path, unchanged).
+ *
+ * Returns `null` after writing the error response.
+ */
+async function resolveEnrollmentCodeTarget(
+  ctx: MountRefDeviceExportersContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  body: Record<string, unknown>
+): Promise<{ addressedConnectionId: string | null; connectorId: string; localBindingId: string } | null> {
+  const addressedConnectionId =
+    typeof body.connector_instance_id === "string" && body.connector_instance_id.trim()
+      ? body.connector_instance_id.trim()
+      : null;
+  if (!addressedConnectionId) {
+    return {
+      addressedConnectionId: null,
+      connectorId: requireNonEmptyString(body.connector_id, "connector_id"),
+      localBindingId: requireNonEmptyString(body.local_binding_name, "local_binding_name"),
+    };
+  }
+  if (body.connector_id || body.local_binding_name) {
+    ctx.pdppError(
+      res,
+      400,
+      "invalid_request",
+      "Provide either connector_instance_id or connector_id + local_binding_name, not both",
+      "connector_instance_id"
+    );
+    return null;
+  }
+  const resolved = await resolveEnrollmentTargetConnection(ctx, req, res, addressedConnectionId);
+  return resolved ? { addressedConnectionId, ...resolved } : null;
+}
+
 // ─── Route mounts ────────────────────────────────────────────────────────────
 
 // POST /_ref/device-exporters/enrollment-codes
@@ -1972,8 +2114,12 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const body = (req.body as Record<string, unknown>) || {};
-        const connectorId = requireNonEmptyString(body.connector_id, "connector_id");
-        const localBindingId = requireNonEmptyString(body.local_binding_name, "local_binding_name");
+        const target = await resolveEnrollmentCodeTarget(ctx, req, res, body);
+        if (!target) {
+          // resolveEnrollmentCodeTarget already wrote the error response.
+          return;
+        }
+        const { addressedConnectionId, connectorId, localBindingId } = target;
         // Resolve the manifest-derived source kind up front so a connector with
         // no resolvable binding — or a caller-supplied `source_kind` that
         // contradicts the manifest — is rejected before a code is minted, rather
@@ -1986,10 +2132,8 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
           typeof body.source_kind === "string" ? body.source_kind : null
         );
         const now = new Date();
-        const expiresInSeconds = Number.isInteger(body.expires_in_seconds)
-          ? (body.expires_in_seconds as number)
-          : 15 * 60;
-        if (expiresInSeconds < 60 || expiresInSeconds > 86_400) {
+        const expiresInSeconds = resolveEnrollmentCodeLifetimeSeconds(body.expires_in_seconds);
+        if (expiresInSeconds === null) {
           ctx.pdppError(
             res,
             400,
@@ -2033,6 +2177,10 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
         res.status(201).json({
           collection_scope: ownerDeclaredScope,
           connector_id: connectorId,
+          // Echo the connection this code will resolve to when it was addressed
+          // by id, so the owner can confirm the target BEFORE handing the code
+          // to a device — the check that would have caught the fork.
+          ...(addressedConnectionId ? { connector_instance_id: addressedConnectionId } : {}),
           enrollment_code: enrollmentCode,
           expires_at: expiresAt,
           local_binding_name: localBindingId,
@@ -2571,10 +2719,14 @@ async function processDeviceIngestBatch(
         sourceInstanceId,
       });
     }
+    // Hoisted so the catch boundary below can report how far the durable
+    // prefix had advanced when the attempt failed — the single fact that
+    // distinguishes a batch stuck with work remaining from one stranded
+    // with every record already durable.
+    const start = reservation.durablePrefixCount ?? 0;
     try {
       const storageTarget = referenceLocalDeviceStorageTarget(ctx, connectorId, connectorInstanceId);
       const attemptDeadline = performance.now() + batchAttemptDeadlineMs();
-      const start = reservation.durablePrefixCount ?? 0;
       const durableVersionByInputIndex = new Map<number, number>();
       for (let inputIndex = start; inputIndex < records.length; inputIndex += 1) {
         const record = records[inputIndex];
@@ -2626,14 +2778,37 @@ async function processDeviceIngestBatch(
       }
       await maybeDeviceIngestPhaseFault("after-durable-phase");
 
+      // From here on every record is durable, so all that remains is derived
+      // repair/publish plus the reservation's status transition.
+      //
+      // The deadline still bounds THIS phase on an attempt that arrived with
+      // durable work to do (`start < records.length`): abandoning it is safe
+      // and cheap, because the prefix cursor it just advanced means the retry
+      // resumes strictly closer to done.
+      //
+      // It must NOT bound a RESUMED attempt that arrived already fully
+      // durable (`start === records.length`). Such an attempt has nothing
+      // left to abandon — it re-runs the same final-plan repair and embedding
+      // publish every time — so aborting it strands the reservation
+      // `processing` with a FULL durable prefix in exactly the state it
+      // started in. Nothing reaps such a row, so the collector retried the
+      // identical batch, blew the identical deadline, and 503'd again,
+      // forever: a self-sustaining livelock that wedged ~45% of live batches
+      // (one row reached 1058 attempts over ~8 hours). Letting the resumed
+      // attempt run to `completeProcessingBatch` is what makes an
+      // already-durable reservation self-heal, including rows wedged by an
+      // earlier build. See `runFullPrefixDeadlineOracle`.
+      const resumedFullyDurable = start >= records.length;
+      const settleDeadline = resumedFullyDurable ? Number.POSITIVE_INFINITY : attemptDeadline;
+
       const finalPlan = finalDeviceRecordPlan(records, connectorInstanceId);
-      assertBatchAttemptBefore(attemptDeadline);
+      assertBatchAttemptBefore(settleDeadline);
       // No `coordinatorOwnership` passthrough here either: `prepareDeviceFinalRecords`
       // acquires its own fresh fence ONLY when it actually has repair work to
       // do (a retry whose durable prefix already covered some final keys) —
       // see its own short-circuit for the common first-attempt case.
       const preparedFinalPlan = await ctx.prepareDeviceFinalRecords(storageTarget, finalPlan, attemptContext, start);
-      assertBatchAttemptBefore(attemptDeadline);
+      assertBatchAttemptBefore(settleDeadline);
       // A repaired (retry-repaired) entry already carries its own fresh
       // `version` from `prepareDeviceFinalRecords`'s reread. A fresh
       // (non-repaired) entry's version comes from THIS attempt's own durable
@@ -2668,7 +2843,7 @@ async function processDeviceIngestBatch(
           authoritativeFinalPlan,
           finalIndexPlanConcurrency(),
           async ({ record, inputIndex, version }) => {
-            assertBatchAttemptBefore(attemptDeadline);
+            assertBatchAttemptBefore(settleDeadline);
             if (typeof version !== "number") {
               // No durable version could be resolved for this key (e.g. it was
               // never actually written this attempt and has no repair reread
@@ -2680,11 +2855,14 @@ async function processDeviceIngestBatch(
               attemptContext,
               deviceFinalInputIndex: inputIndex,
             });
-            assertBatchAttemptBefore(attemptDeadline);
+            assertBatchAttemptBefore(settleDeadline);
           }
         );
       });
-      assertBatchAttemptBefore(attemptDeadline);
+      // Deliberately NO deadline check between the last publish and
+      // `completeProcessingBatch`: once the publish loop is done the only
+      // remaining step is the status transition, and throwing there would
+      // strand a fully-durable reservation for no benefit.
       const response = {
         accepted_record_count: records.length,
         batch_id: batchId,
@@ -2714,11 +2892,27 @@ async function processDeviceIngestBatch(
       });
       await maybeDeviceIngestPhaseFault("after-accepted-commit");
       res.status(201).json(response);
-    } catch {
+    } catch (err) {
+      // Server-log-only diagnosability, mirroring the ingest-rejection
+      // contract proven by rs-ingest-systemic-failure-server-log.test.ts.
+      // The collector's 503 envelope is a fixed, bounded template by design
+      // (see the redaction rationale below), which previously left the real
+      // cause of a stuck device batch visible NOWHERE: no client detail, no
+      // server line. That silence is how a livelock wedging ~45% of live
+      // batches ran for hours with 219 ingest POSTs in 12 minutes and not a
+      // single error/warn line to point at it. Identifiers only — never
+      // record content.
+      const cause = err as { code?: unknown; message?: unknown } | null;
+      console.error(
+        `[device-ingest] batch attempt failed device_id=${deviceId} batch_id=${batchId} ` +
+          `connector_instance_id=${connectorInstanceId} batch_seq=${batchSeq} record_count=${records.length} ` +
+          `durable_prefix_start=${start} code=${String(cause?.code ?? "unknown")}: ${String(cause?.message ?? "unknown")}`
+      );
       // Once a processing reservation exists, no storage/index/model/SQL
       // diagnostic is safe to expose to a collector. The reservation remains
       // sticky and the fixed retry envelope lets the next attempt resume it.
-      // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
+      // Deliberately NO `cause`: the real error is already on the server log
+      // above, and attaching it here would risk it reaching the collector.
       throw safeDeviceIngestAttemptError();
     }
   });

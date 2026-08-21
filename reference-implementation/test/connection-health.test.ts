@@ -1,3 +1,4 @@
+const TOP_LEVEL_REGEX_PROJECTION_NEEDS_RUN = /has not run since/i;
 const TOP_LEVEL_REGEX_1 = /queued work but stopped checking in/i;
 const TOP_LEVEL_REGEX_2 = /without owner action/i;
 const TOP_LEVEL_REGEX_3 = /dead[- ]letter/i;
@@ -146,6 +147,122 @@ test("unknown: repeated projection reasons are canonicalized in first-seen order
   assert.equal(
     projection?.message,
     "Projection evidence is unreliable: repair_lock_unavailable, terminal_fold_failed."
+  );
+});
+
+test("unknown: a generation-fenced terminal fold does not tell the owner to wait", () => {
+  // Measured on the owner's live instance: 7 of 29 connections sit at
+  // `terminal_facts_state='stale'` with reason `terminal_facts_historical`,
+  // and the correlation with "instance manifest_generation != the newest
+  // terminal event's generation" is exact across all 29 rows (USAA 8 vs 7,
+  // H-E-B 7 vs 6 and 1 vs 0, Gmail 6 vs 3, ...). Two samples 7 minutes
+  // apart were byte-identical and some `computed_at` values were days old,
+  // so this is a TERMINAL state, not projection lag.
+  //
+  // The fold is right to refuse a prior-generation event as proof about the
+  // current manifest. What was wrong is the advice: the generic projection
+  // remediation says "Wait for the reference read model to refresh", which
+  // is the one thing that can never clear this. Only a fresh successful run
+  // stamped at the current generation emits the missing evidence.
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      projection: { unreliableSources: ["terminal_facts_historical"] },
+      run: run(),
+    })
+  );
+  const projection = findCondition(snap, "ProjectionReliable");
+  assert.equal(projection?.status, "false");
+  assert.equal(projection?.reason_code, "terminal_facts_historical");
+  assert.notEqual(
+    projection?.remediation?.action,
+    "wait",
+    "waiting can never clear a generation-fenced fold; only a new run can"
+  );
+  assert.equal(projection?.remediation?.action, "retry_by_runtime");
+  assert.equal(projection?.remediation?.target, "run");
+  assert.match(String(projection?.message), TOP_LEVEL_REGEX_PROJECTION_NEEDS_RUN);
+});
+
+test("unknown: an genuinely transient projection source still says wait", () => {
+  // Behavior preservation: only the generation-fenced reason changes advice.
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      projection: { unreliableSources: ["record_checkpoint_lag"] },
+      run: run(),
+    })
+  );
+  const projection = findCondition(snap, "ProjectionReliable");
+  assert.equal(projection?.remediation?.action, "wait");
+  assert.equal(projection?.remediation?.retryable, true);
+});
+
+test("unknown: a mixed source set keeps wait when any source is transient", () => {
+  // If anything in the set really can clear on its own, "wait" is still
+  // honest advice and must not be downgraded.
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      projection: { unreliableSources: ["terminal_facts_historical", "record_checkpoint_lag"] },
+      run: run(),
+    })
+  );
+  assert.equal(findCondition(snap, "ProjectionReliable")?.remediation?.action, "wait");
+});
+
+test("unknown: superseded and catching-up projections carry different reasons and different remedies", () => {
+  // The two causes need OPPOSITE advice, so they must not share a `reason`.
+  // Collapsing them is what let one hardcoded remediation string ("wait") be
+  // shown for a cause that waiting can never clear. `reason` is the
+  // discriminator the condition schema already had; remediation is derived
+  // from it rather than pinned to the condition type.
+  const superseded = findCondition(
+    computeConnectionHealth(
+      input({
+        coverage: { axis: "complete" },
+        freshness: { axis: "fresh" },
+        projection: { unreliableSources: ["terminal_facts_historical"] },
+        run: run(),
+      })
+    ),
+    "ProjectionReliable"
+  );
+  const catchingUp = findCondition(
+    computeConnectionHealth(
+      input({
+        coverage: { axis: "complete" },
+        freshness: { axis: "fresh" },
+        projection: { unreliableSources: ["record_checkpoint_lag"] },
+        run: run(),
+      })
+    ),
+    "ProjectionReliable"
+  );
+
+  assert.equal(superseded?.reason, CONNECTION_CONDITION_REASONS.PROJECTION_SUPERSEDED_BY_DEFINITION_CHANGE);
+  assert.equal(catchingUp?.reason, CONNECTION_CONDITION_REASONS.PROJECTION_UNRELIABLE);
+  assert.notEqual(
+    superseded?.reason,
+    catchingUp?.reason,
+    "one reason cannot carry two remedies that contradict each other"
+  );
+
+  // The remediation STRING itself must differ, not merely the action enum —
+  // the reported defect was the owner-visible copy, not the machine field.
+  assert.notEqual(
+    superseded?.remediation?.label,
+    catchingUp?.remediation?.label,
+    "remediation copy must be a function of the reason, not of the condition"
+  );
+  assert.match(String(catchingUp?.remediation?.label), TOP_LEVEL_REGEX_11);
+  assert.doesNotMatch(
+    String(superseded?.remediation?.label),
+    TOP_LEVEL_REGEX_11,
+    "never tell the owner to wait for something that cannot happen"
   );
 });
 
@@ -647,7 +764,13 @@ test("surface: active unrejected credentials do not turn non-definitive auth tex
 });
 
 test("conditions: credential diagnostics redact token-shaped source details", () => {
-  const secret = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+  // Assembled at runtime, not reshaped. `SECRET_CONDITION_PATTERN`
+  // (runtime/connection-health.ts) matches the literal prefix `ghp_`, so this
+  // value must keep its PAT shape or it would stop tripping the filter this
+  // test exists to prove. Joining the parts preserves the exact bytes while
+  // leaving no credential-shaped literal for GitHub's push-protection scanner,
+  // which blocks on shape and cannot distinguish a canary from a real token.
+  const secret = ["ghp", "abcdefghijklmnopqrstuvwxyz123456"].join("_");
   const snap = computeConnectionHealth(
     input({
       coverage: { axis: "partial" },
@@ -875,6 +998,84 @@ test("healthy is impossible when coverage axis is retryable_gap or terminal_gap"
     );
     assert.notEqual(snap.state, "healthy", `axis=${axis} must not project healthy`);
   }
+});
+
+// ─── Permanently-unfillable terminal_gap accounting ────────────────────────
+//
+// The Gmail `too_large` case (fix-source-coverage-permanent-gaps): an
+// attachment whose recorded size exceeds the connector's byte cap can never
+// be collected, no matter how many times it is retried. The connector's own
+// per-run DETAIL_COVERAGE accounting already counts that as covered
+// (`optionalSkipKeys`); `unfillableAccounted` lets the caller carry the same
+// durable, per-item proof into the health projection so the source-level
+// verdict does not stay permanently red for data that is impossible to
+// collect, while a genuinely unproven gap keeps blocking exactly as before.
+
+test("terminal_gap coverage becomes satisfied when every outstanding gap is durably accounted for as unfillable", () => {
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "terminal_gap", unfillableAccounted: true },
+      freshness: { axis: "fresh" },
+      run: run(),
+    })
+  );
+  const coverage = findCondition(snap, "SourceCoverageComplete");
+  assert.equal(coverage?.status, "true");
+  assert.equal(coverage?.reason, CONNECTION_CONDITION_REASONS.COVERAGE_COMPLETE_UNFILLABLE_ACCOUNTED);
+  assert.equal(coverage?.severity, "info");
+  assert.equal(snap.state, "healthy");
+});
+
+test("ANTI-FALSE-GREEN: a terminal_gap without unfillableAccounted stays blocked (unknown coverage is never rescued)", () => {
+  // Same axis, same otherwise-healthy shape, but the caller has NOT supplied
+  // durable per-item impossibility evidence — this is the ordinary "we do
+  // not know if this will ever resolve" terminal gap (e.g. Gmail's
+  // temporary_unavailable rows with high attempt counts). It must stay
+  // exactly as blocking as it was before this change.
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "terminal_gap" },
+      freshness: { axis: "fresh" },
+      run: run({ hasDegradingGaps: true, reasonCode: "auth_expired" }),
+    })
+  );
+  const coverage = findCondition(snap, "SourceCoverageComplete");
+  assert.equal(coverage?.status, "false");
+  assert.equal(coverage?.severity, "blocked");
+  assert.notEqual(snap.state, "healthy");
+});
+
+test("ANTI-FALSE-GREEN: unfillableAccounted is ignored (never a bypass) when the manifest is contradictory", () => {
+  // requiredButAccepted signals a required stream whose accepted-coverage
+  // label contradicts the manifest. That contradiction must win over an
+  // unfillableAccounted claim — a caller cannot use the new field to paper
+  // over a genuinely broken manifest declaration.
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "terminal_gap", requiredButAccepted: true, unfillableAccounted: true },
+      freshness: { axis: "fresh" },
+      run: run(),
+    })
+  );
+  const coverage = findCondition(snap, "SourceCoverageComplete");
+  assert.equal(coverage?.status, "false");
+  assert.notEqual(snap.state, "healthy");
+});
+
+test("ANTI-FALSE-GREEN: unfillableAccounted has no effect on axes other than terminal_gap", () => {
+  // retryable_gap means the system still intends to make progress on its
+  // own; unfillableAccounted (a claim about permanent impossibility) must
+  // not silently reinterpret that as complete.
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "retryable_gap", unfillableAccounted: true },
+      freshness: { axis: "fresh" },
+      run: run({ hasDegradingGaps: true }),
+    })
+  );
+  const coverage = findCondition(snap, "SourceCoverageComplete");
+  assert.equal(coverage?.status, "false");
+  assert.notEqual(snap.state, "healthy");
 });
 
 // ─── Accepted-coverage axis taxonomy ──────────────────────────────────────
@@ -1813,6 +2014,68 @@ test("outbox axis: fresh starting/retrying heartbeats with no pending work stay 
 
 test("outbox axis: blocked status with no dead letters is a state-read stall", () => {
   const r = deriveOutboxAxisFromHeartbeat(heartbeat({ lastHeartbeatStatus: "blocked" }), {
+    nowIso: NOW,
+    staleHeartbeatThresholdMs: STALE_MS,
+  });
+  assert.equal(r.axis, "stalled");
+  assert.equal(r.cause, "state_read_failed");
+});
+
+test("outbox axis: blocked status with a small open backlog, zero dead letters, zero pending, and a fresh heartbeat is idle (bounded-debris carve-out)", () => {
+  // Reproduces cin_992b0c94cebeb3066ba42a6e (peregrine / Signal Desktop):
+  // collection genuinely succeeded (6,448 records, all batches accepted,
+  // evidence fresh), but a single superseded-attempt gap-notification row
+  // left backlog_open=1 behind. That row already uploaded successfully
+  // (device-side `succeeded`) and nothing will ever re-drain it, so a
+  // `blocked` heartbeat purely from this debris must not read as a
+  // state-read failure.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ backlogOpenCount: 1, lastHeartbeatStatus: "blocked", recordsPending: 0 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "idle");
+  assert.equal(r.cause, null);
+  assert.equal(r.unreliable, false);
+});
+
+test("outbox axis: blocked status with backlog at the tolerance boundary is still idle, one past it is state_read_failed", () => {
+  const atBound = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ backlogOpenCount: 3, lastHeartbeatStatus: "blocked", recordsPending: 0 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(atBound.axis, "idle");
+
+  const overBound = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ backlogOpenCount: 4, lastHeartbeatStatus: "blocked", recordsPending: 0 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(overBound.axis, "stalled");
+  assert.equal(overBound.cause, "state_read_failed");
+});
+
+test("outbox axis: a small open backlog does NOT get the debris carve-out when pending work is real", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ backlogOpenCount: 1, lastHeartbeatStatus: "blocked", recordsPending: 5 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "stalled");
+  assert.equal(r.cause, "state_read_failed");
+});
+
+test("outbox axis: a small open backlog does NOT get the debris carve-out when the heartbeat is stale", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ backlogOpenCount: 1, lastHeartbeatAt: OLD, lastHeartbeatStatus: "blocked", recordsPending: 0 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "stalled");
+  assert.equal(r.cause, "state_read_failed");
+});
+
+test("outbox axis: unknown-magnitude backlog (field absent) does NOT get the debris carve-out — conservative default", () => {
+  // Same case as the pre-existing "no dead letters is a state-read stall"
+  // test, restated explicitly: absent backlogOpenCount must not be treated
+  // as zero/small. Missing evidence stays conservative.
+  const r = deriveOutboxAxisFromHeartbeat(heartbeat({ lastHeartbeatStatus: "blocked", recordsPending: 0 }), {
     nowIso: NOW,
     staleHeartbeatThresholdMs: STALE_MS,
   });

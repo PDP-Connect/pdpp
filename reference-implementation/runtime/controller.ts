@@ -262,6 +262,16 @@ export interface RunNowOptions {
    * button cannot accidentally re-hit a hot account that is cooling off.
    */
   force?: boolean;
+  /**
+   * Explicit owner request for a full re-enumeration: send
+   * `collection_mode: "full_refresh"` on START even when durable state exists,
+   * so a connector with its own incremental bookkeeping walks each stream to
+   * its natural end and can re-establish an enumeration boundary. This is the
+   * supported way to prove coverage for a source whose ordinary runs are all
+   * incremental deltas. Does NOT clear stored state — see
+   * `deriveCollectionState`.
+   */
+  fullRefresh?: boolean;
   manifest?: ConnectorManifest;
   /** Authenticated subject used by the server admission boundary. */
   ownerSubjectId?: string;
@@ -1050,9 +1060,13 @@ interface ManifestFingerprint {
 let referenceFixtureFingerprints: Map<string, ManifestFingerprint> | null = null;
 let polyfillManifestFingerprints: Map<string, ManifestFingerprint> | null = null;
 let polyfillConnectorPaths: Map<string, string> | null = null;
-const ABANDONED_CONTROLLER_RUN_REASON = "controller_restarted";
 const MAX_RECOVERY_CONTINUATION_ENVELOPES = 12;
 const RECOVERY_CONTINUATION_PENDING_READ_LIMIT = 100;
+// Minimum gap between two self-launched recovery continuations for the same
+// connection. The depth cap bounds how MANY envelopes run; this bounds how
+// FAST they run, which is what the owner actually feels when each envelope
+// costs an interactive sign-in.
+const RECOVERY_CONTINUATION_MIN_INTERVAL_MS = 60_000;
 
 // Typed terminal reason for a run whose launch path threw before the
 // runtime recorded any terminal event (e.g. env/spawn prep failed before
@@ -2395,6 +2409,14 @@ function browserSurfaceReplacementReceiptStoreFor(
  * Create a new controller instance.
  */
 export function createController(opts: ControllerOptions = {}): Controller {
+  // Last continuation launch per connection id. Scoped to THIS controller, not
+  // the module: a module-global map is shared by every controller in the
+  // process, so one controller's continuation would throttle an unrelated
+  // controller that happens to drive the same connection id, and nothing ever
+  // evicts the entries. Per-controller state is released with the controller,
+  // and a restart clears it — the depth cap plus the eligibility check remain
+  // the durable bounds. This only smooths bursts within one controller's life.
+  const recoveryContinuationLastStartedAt = new Map<string, number>();
   const log: ControllerLogger = opts.logger || console;
   const resolveConnectorPath = opts.connectorPathResolver || resolveDefaultConnectorPath;
   const ownerClientId = opts.ownerClientId || "cli_longview";
@@ -2560,7 +2582,31 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return Boolean(row);
   }
 
-  async function reconcileAbandonedControllerRuns(): Promise<void> {
+  /**
+   * Release the `controller_active_runs` flight rows a dead incarnation left
+   * behind, so a connection is not refused a new run by a claim nobody holds.
+   *
+   * This deliberately writes NO terminal event. It used to emit
+   * `run.failed` / `controller_restarted`, which was a false claim: nothing
+   * here observed a failure, only the absence of a report from a process that
+   * is gone. `run.abandoned` is the honest state for that, and the boot
+   * reconciler in `lib/controller-boot.ts` already writes it, from the spine,
+   * with full epoch provenance.
+   *
+   * Deleting the emission rather than retargeting it to `run.abandoned`
+   * avoids two writers racing for one run's terminal event. The boot
+   * reconciler is the better of the two: it reads the append-only spine
+   * rather than the flight table, it is idempotent on `caused_by_event_id`,
+   * and it aborts boot on error instead of swallowing it. Now that
+   * controller identity is durable, its ownership filter actually matches, so
+   * it covers every case this path used to cover.
+   *
+   * The cleanup itself stays because `reconcileBrowserSurfaceLeasesAfterBoot`
+   * reads `listPersistedActiveRuns()` to decide which leases are still held.
+   * Sidekiq draws the same line: stopping accepting work and reporting on
+   * work already accepted are separate jobs.
+   */
+  async function releaseAbandonedControllerRunClaims(): Promise<void> {
     const rows = await listPersistedActiveRuns();
     if (rows.length === 0) {
       return;
@@ -2568,36 +2614,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
     for (const row of rows) {
       // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-      if (!(await runAlreadyTerminal(row.run_id))) {
-        try {
-          await emitSpineEvent({
-            actor_id: row.connector_id,
-            actor_type: "runtime",
-            data: {
-              source: buildRunSource(row.connector_id),
-              ...buildRunConnectionIdentity(row.connector_instance_id),
-              failure_reason: ABANDONED_CONTROLLER_RUN_REASON,
-              message: "Reference server restarted while a controller-managed run was still active.",
-              reason: ABANDONED_CONTROLLER_RUN_REASON,
-            },
-            event_type: "run.failed",
-            object_id: row.run_id,
-            object_type: "run",
-            run_id: row.run_id,
-            scenario_id: row.scenario_id,
-            status: "failed",
-            trace_id: row.trace_id,
-          });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          log.warn?.(`[controller] failed to emit restart reconciliation event for ${row.run_id}: ${message}`);
-        }
-      }
       await clearPersistedActiveRun(row.connector_instance_id ?? row.connector_id, row.run_id);
     }
 
     for (const row of rows) {
-      log.warn?.(`[controller] reconciled abandoned controller-managed run ${row.run_id} for ${row.connector_id}`);
+      log.warn?.(
+        `[controller] released stale active-run claim ${row.run_id} for ${row.connector_id}; ` +
+          "the boot reconciler adjudicates its terminal state from the spine"
+      );
     }
   }
 
@@ -2612,10 +2636,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
   async function reconcileStartupRunState(): Promise<void> {
     try {
-      await reconcileAbandonedControllerRuns();
+      await releaseAbandonedControllerRunClaims();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log.warn?.(`[controller] failed to reconcile abandoned controller-managed runs: ${message}`);
+      log.warn?.(`[controller] failed to release stale active-run claims: ${message}`);
     }
     try {
       await reconcileOpenAttentionForTerminalRuns();
@@ -3045,7 +3069,20 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     return null;
   }
-  function deriveCollectionState(syncState: { state?: unknown } | null): {
+  // `fullRefresh` is the owner's explicit "prove coverage now" request. It
+  // forces the mode WITHOUT clearing stored state: the state still flows to the
+  // connector, which is what lets a connector that honors the bypass rewrite its
+  // cursor forward from this run's own response instead of rebuilding it from
+  // nothing. Deleting the cursor to force the mode would be destructive and
+  // unrecoverable (the repair CLI keeps a backup table for exactly that reason),
+  // and it would communicate one boolean by throwing away resumable progress.
+  //
+  // A connector that ignores `collection_mode` is unaffected — it will keep
+  // walking incrementally off the state it was handed, exactly as before.
+  function deriveCollectionState(
+    syncState: { state?: unknown } | null,
+    fullRefresh = false
+  ): {
     readonly collectionMode: "full_refresh" | "incremental";
     readonly state: Record<string, unknown> | null;
   } {
@@ -3054,7 +3091,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       rawState && typeof rawState === "object" && !Array.isArray(rawState) && Object.keys(rawState).length
         ? (rawState as Record<string, unknown>)
         : null;
-    return { collectionMode: state ? "incremental" : "full_refresh", state };
+    return { collectionMode: fullRefresh || !state ? "full_refresh" : "incremental", state };
   }
 
   function mintStreamingRegistrationNonce(runId: string): string | null {
@@ -3488,6 +3525,20 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!(await hasEligibleNonPressureRecoveryWork(input.connectorId, input.connectorInstanceId))) {
       return;
     }
+    // Space continuations apart. Without this the next envelope starts within
+    // ~200ms of the previous run completing, so a connection with pending gaps
+    // can burn the whole depth budget back-to-back. For a connector whose
+    // sign-in sends the owner a one-time passcode that is one push per
+    // envelope, in seconds. Progress still happens; it is just not a burst.
+    const sinceLast = Date.now() - (recoveryContinuationLastStartedAt.get(input.connectorInstanceId) ?? 0);
+    if (sinceLast < RECOVERY_CONTINUATION_MIN_INTERVAL_MS) {
+      log.warn?.(
+        `[controller] recovery continuation deferred for ${input.connectorId} ` +
+          `(connection=${input.connectorInstanceId}, ${sinceLast}ms since last continuation)`
+      );
+      return;
+    }
+    recoveryContinuationLastStartedAt.set(input.connectorInstanceId, Date.now());
     try {
       const continuationOptions: RunNowOptions = {
         connectorInstanceId: input.connectorInstanceId,
@@ -3767,7 +3818,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
       (await getSyncState({
         connector_id: admittedConnectorId,
         connector_instance_id: connectorInstanceId,
-      })) as { state?: unknown } | null
+      })) as { state?: unknown } | null,
+      options.fullRefresh === true
     );
     const ownerToken = options.ownerToken || (await issueRuntimeOwnerToken(runOwnerSubjectId));
 

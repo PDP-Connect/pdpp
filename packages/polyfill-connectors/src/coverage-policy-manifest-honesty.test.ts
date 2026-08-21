@@ -261,7 +261,9 @@ const KNOWN_MISSING_REQUIRED = new Map([
   ["github.issues", "78d301cf719a8421"],
   ["github.pull_requests", "d444968a557e6de5"],
   ["github.gists", "b373793ba858d2c5"],
-  ["gmail.messages", "88c18d102254ecd8"],
+  // gmail.messages left this map by declaring `required: true` (it is the
+  // connector's state_stream and the parent of attachments, so a run that
+  // skipped it would not be a Gmail run at all).
   ["gmail.threads", "10a2882dc2287b8c"],
   ["gmail.labels", "7b5c8aad799a9641"],
   // gmail.message_bodies left this map by declaring `required: false`
@@ -269,7 +271,11 @@ const KNOWN_MISSING_REQUIRED = new Map([
   // field. It is separately grantable and optional, so a body failure must
   // not fail the whole connector run.
   ["gmail.attachments", "3883a623c52d9879"],
-  ["google_maps.timeline_points", "8bb6f3a0b2f01651"],
+  // google_maps.timeline_points left this map by declaring `required: false`
+  // explicitly (the encouraged shrink path) when its `coverage_strategy`
+  // moved to `snapshot_import_receipt`, matching its already-explicit
+  // sibling `timeline_segments`. A Timeline export can contain points
+  // without segments or vice versa, so neither is load-bearing.
   ["google_maps_data_portability.archive_jobs", "1bdf641fe46f4606"],
   ["google_takeout.location_history", "4541b67d9dca3a75"],
   ["google_takeout.youtube_watch_history", "a457e03d943b3122"],

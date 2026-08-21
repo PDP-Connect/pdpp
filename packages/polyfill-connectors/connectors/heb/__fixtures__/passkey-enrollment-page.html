@@ -1,0 +1,30 @@
+<!--
+  SYNTHETIC fixture modeling the post-authentication passkey-enrollment upsell
+  observed live on 2026-08-17 during run_1787109487130, at
+  https://accounts.heb.com/interaction/<id>/passkey_registration (title
+  "My H-E-B Account"), scrubbed of personal data.
+
+  This screen is NOT a challenge: sign-in had already succeeded behind it, and
+  clicking "Not now" navigated straight to the logged-in orders page. It is
+  kept as a fixture because the connector previously classified it as a
+  verification-code surface and fabricated an OTP prompt for a code H-E-B
+  never sent.
+-->
+<!DOCTYPE html>
+<html>
+  <body>
+    <main>
+      <h3>Skip the password</h3>
+      <p>You can now use passkeys to log in</p>
+      <ul>
+        <li>Set up takes seconds</li>
+        <li>Faster log in on all your devices</li>
+        <li>Your account gets added protection</li>
+      </ul>
+      <button type="button">Add passkey</button>
+      <button type="button">Not now</button>
+      <p>Keep using password or passcode for now</p>
+      <a href="/passkeys/learn-more">Learn more about passkeys</a>
+    </main>
+  </body>
+</html>

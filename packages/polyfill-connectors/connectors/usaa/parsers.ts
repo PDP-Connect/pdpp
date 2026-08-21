@@ -7,6 +7,7 @@
 
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { isStatementSummaryDescription } from "./statement-reconciliation.ts";
 import type {
   AccountRecord,
   AccountStatsRecord,
@@ -415,6 +416,16 @@ function parseModernTxnLine(
     return null;
   }
   const description = descRaw.replace(WS_RUN_2PLUS_RE, " ").trim();
+  // USAA's checking-era table prints the period summary as a row shaped
+  // exactly like a transaction — "02/04 Ending Balance -- -- $33,821.48" —
+  // so this regex matches it and would store the closing BALANCE as a
+  // transaction AMOUNT. Live evidence: 14 such rows reached this owner's
+  // `transactions` stream, with amounts up to $52,334.41 that never
+  // happened. The summary is not a transaction; drop it here, at the point
+  // of parse, so no downstream consumer has to know about it.
+  if (isStatementSummaryDescription(description)) {
+    return null;
+  }
   const amount = currencyToCentsFromStatement(amountRaw);
   const balance = balanceRaw ? currencyToCentsFromStatement(balanceRaw) : null;
   if (amount === null) {

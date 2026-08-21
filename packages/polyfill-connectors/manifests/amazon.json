@@ -47,7 +47,8 @@
   "capabilities": {
     "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 7200,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "otp_likely",
@@ -55,7 +56,7 @@
       "bot_detection_sensitivity": "high",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "Amazon remains manual by default because sign-in and anti-bot checks are common, but an owner can explicitly opt into a background schedule after authenticating the connection."
+      "rationale": "Sign-in and anti-bot checks are common on first login, but the session persists in the owner's browser profile afterward, so scheduled refresh reuses it. background_safe:true records that persistence and recommended_mode follows from it. assisted_after_owner_auth:true means a background run may still ask the owner for bounded help when Amazon re-challenges."
     },
     "public_listing": {
       "tier": "supported"
@@ -115,7 +116,7 @@
             "type": "boolean"
           },
           "item_count": {
-            "type": "integer"
+            "type": ["integer", "null"]
           },
           "fetched_at": {
             "type": "string",
@@ -296,6 +297,7 @@
   ],
   "reason_display_messages": {
     "empty_first_page_without_diagnostics": "The first page came back empty and we couldn't tell why",
+    "item_count_shortfall": "An order lists more items than we could save",
     "empty_first_page_without_terminal_signal": "The first page came back empty with no sign it was really the end",
     "list_page_navigation_failed": "We couldn't load an orders page, so we stopped before advancing",
     "list_page_shape_check_failed": "The page didn't look like we expected",

@@ -14,7 +14,8 @@
   "capabilities": {
     "human_interaction": ["manual_action"],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 7200,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "manual_action_likely",
@@ -22,7 +23,7 @@
       "bot_detection_sensitivity": "medium",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "The owner signs in through an isolated WHOOP browser profile. A live owner run proved the full backfill and a second checkpointed run reused the saved session without prompting, so the owner can opt into background scheduling after authenticating the connection."
+      "rationale": "The owner signs in through an isolated WHOOP browser profile. A live owner run proved the full backfill and a second checkpointed run reused the saved session without prompting, so scheduled refresh reuses that session. assisted_after_owner_auth:true means a background run may ask the owner for bounded help if the session lapses."
     },
     "public_listing": {
       "tier": "preview",

@@ -50,15 +50,15 @@
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "high",
       "bot_detection_sensitivity": "low",
-      "background_safe": false,
-      "rationale": "Steam Web API does not publish rate limits. PDPP policy: start at a 250ms per-request floor, honor Retry-After when supplied, and preserve 429/throttled transient failures for recovery; 403 is treated as an authorization or visibility failure. One-hour polling is conservative to avoid community-reported multi-hour lockouts. Preview remains manual and background_safe stays false until repeated live runs support unattended collection."
+      "background_safe": true,
+      "rationale": "Steam Web API is an API-key connector with no interactive login, so unattended refresh is mechanically safe. Steam does not publish rate limits; PDPP policy is a 250ms per-request floor, honoring Retry-After when supplied, and preserving 429/throttled transient failures for recovery, with 403 treated as an authorization or visibility failure. One-hour polling is conservative to avoid community-reported multi-hour lockouts. Repeated live runs are still outstanding, which public_listing.tier:preview records — auto-enrollment gates on tier, not on refresh mode."
     },
     "public_listing": {
       "tier": "preview"

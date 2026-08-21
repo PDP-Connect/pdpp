@@ -78,13 +78,15 @@
  *     async deleteActiveRun(connectorId, runId): void
  *
  *     // Simulate a process restart that re-runs the controller's
- *     // abandoned-run reconciliation. After this resolves the driver
- *     // MUST report zero active runs and MUST have surfaced a
- *     // run.failed terminal event for any previously-active run that did
- *     // not already have one. The driver SHALL provide a synchronous
- *     // way to inspect terminal events for a run via
- *     // `wasRunMarkedFailed(runId)` so the harness can prove the
- *     // reconciliation effect without coupling to the spine schema.
+ *     // stale-claim release. After this resolves the driver MUST report
+ *     // zero active runs and MUST NOT have surfaced a run.failed
+ *     // terminal event for any previously-active run: releasing a claim
+ *     // reports nothing about the work. The run's terminal state is
+ *     // adjudicated from the spine by `reconcileOrphanedRunsAtBoot`,
+ *     // which writes run.abandoned. The driver SHALL provide a
+ *     // synchronous way to inspect terminal events for a run via
+ *     // `wasRunMarkedFailed(runId)` so the harness can prove that
+ *     // without coupling to the spine schema.
  *     async simulateRestart(): void
  *     async wasRunMarkedFailed(runId): boolean
  *   }
@@ -645,13 +647,23 @@ export function runConnectorStateSchedulerConformance({
     }
   });
 
-  // Pins startup reconciliation. After a simulated restart any rows
-  // that had been left in the active registry must be cleared, and a
-  // run.failed terminal event must have been surfaced for each one
-  // that did not already have one. The harness asks the driver via a
-  // narrow `wasRunMarkedFailed` accessor instead of reading the spine
-  // table directly so the contract is at the lifecycle layer.
-  t("simulated restart reconciles abandoned runs and emits run.failed for each", async () => {
+  // Pins startup claim release. After a simulated restart any rows left
+  // behind in the active registry must be cleared, and NO `run.failed`
+  // may be written for them.
+  //
+  // Releasing a claim and reporting on the work are separate jobs.
+  // `releaseAbandonedControllerRunClaims` does the former, from the
+  // flight table. The run's terminal state is adjudicated from the
+  // append-only spine by `reconcileOrphanedRunsAtBoot`, which writes
+  // `run.abandoned` -- nothing observed a failure here, only the absence
+  // of a report from a process that is gone, and the two states have
+  // different remedies. Two writers racing for one run's terminal event
+  // would be worse than one, so this path emits none.
+  //
+  // The harness asks the driver via the narrow `wasRunMarkedFailed`
+  // accessor instead of reading the spine table directly, so the
+  // contract stays at the lifecycle layer.
+  t("simulated restart releases abandoned run claims without recording a failure", async () => {
     const driver = await makeDriver();
     await driver.setup();
     try {
@@ -673,8 +685,16 @@ export function runConnectorStateSchedulerConformance({
       const remaining = await driver.listActiveRuns();
       assert.deepEqual(remaining, [], "restart must clear stale active-run rows");
 
-      assert.equal(await driver.wasRunMarkedFailed("run_abandoned_a"), true);
-      assert.equal(await driver.wasRunMarkedFailed("run_abandoned_b"), true);
+      assert.equal(
+        await driver.wasRunMarkedFailed("run_abandoned_a"),
+        false,
+        "releasing a stale claim must not claim the run failed"
+      );
+      assert.equal(
+        await driver.wasRunMarkedFailed("run_abandoned_b"),
+        false,
+        "releasing a stale claim must not claim the run failed"
+      );
     } finally {
       await driver.teardown();
     }

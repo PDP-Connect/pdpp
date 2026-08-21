@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Unit tests for the `revokeConnection` / `deleteConnection` client-wrapper
- * outcome mappings.
+ * Unit tests for the `revokeConnection` / `deleteConnection` /
+ * `pauseConnection` / `resumeConnection` client-wrapper outcome mappings.
  *
  * The pure `(status, body, code)` → outcome classifiers live in
  * `connection-control-result.ts` (not `operator-runs.ts`) specifically so they
@@ -29,6 +29,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   classifyDeleteConnectionResponse,
+  classifyPauseConnectionResponse,
+  classifyResumeConnectionResponse,
   classifyRevokeConnectionResponse,
   connectionControlErrorCode,
 } from "./connection-control-result.ts";
@@ -46,6 +48,14 @@ const WRAPPER_DELETE_PATH_RE = /connectionControlPath\(connectionId, ""\)/;
 const WRAPPER_DELETE_METHOD_RE = /method: "DELETE"/;
 const WRAPPER_DELETE_CLASSIFY_RE =
   /classifyDeleteConnectionResponse\(response\.status, body, connectionControlErrorCode\(body\)\)/;
+const PAUSE_THROWS_RE = /nope|connection pause failed/;
+const RESUME_THROWS_RE = /nope|connection resume failed/;
+const WRAPPER_PAUSE_PATH_RE = /connectionControlPath\(connectionId, "\/pause"\)/;
+const WRAPPER_PAUSE_CLASSIFY_RE =
+  /classifyPauseConnectionResponse\(response\.status, body, connectionControlErrorCode\(body\)\)/;
+const WRAPPER_RESUME_PATH_RE = /connectionControlPath\(connectionId, "\/resume"\)/;
+const WRAPPER_RESUME_CLASSIFY_RE =
+  /classifyResumeConnectionResponse\(response\.status, body, connectionControlErrorCode\(body\)\)/;
 
 test("revoke 200 maps to revoked", () => {
   assert.deepEqual(classifyRevokeConnectionResponse(200, { status: "revoked" }, null), { status: "revoked" });
@@ -120,4 +130,73 @@ test("operator-runs deleteConnection DELETEs the shared owner-session connection
   assert.match(src, WRAPPER_DELETE_PATH_RE);
   assert.match(src, WRAPPER_DELETE_METHOD_RE);
   assert.match(src, WRAPPER_DELETE_CLASSIFY_RE);
+});
+
+// --- Pause / resume ---------------------------------------------------------
+// The typed refusals matter as much as the successes: a repeat pause (or a
+// resume of an already-active connection) is a no-op the console messages in
+// place, NOT an error banner, so each must classify rather than throw.
+
+test("pause maps 200 to paused", () => {
+  assert.deepEqual(classifyPauseConnectionResponse(200, { object: "owner_connection_pause" }, null), {
+    status: "paused",
+  });
+});
+
+test("pause maps 409 connector_instance_not_active to not_active", () => {
+  const body = { error: { code: "connector_instance_not_active" } };
+  assert.deepEqual(classifyPauseConnectionResponse(409, body, connectionControlErrorCode(body)), {
+    status: "not_active",
+  });
+});
+
+test("pause maps 404 connector_instance_not_found to not_found", () => {
+  const body = { error: { code: "connector_instance_not_found" } };
+  assert.deepEqual(classifyPauseConnectionResponse(404, body, connectionControlErrorCode(body)), {
+    status: "not_found",
+  });
+});
+
+test("pause on an unexpected status throws a described error", () => {
+  const body = { error: { code: "api_error", message: "nope" } };
+  assert.throws(() => classifyPauseConnectionResponse(500, body, connectionControlErrorCode(body)), PAUSE_THROWS_RE);
+});
+
+test("resume maps 200 to resumed", () => {
+  assert.deepEqual(classifyResumeConnectionResponse(200, { object: "owner_connection_resume" }, null), {
+    status: "resumed",
+  });
+});
+
+test("resume maps 409 connector_instance_not_paused to not_paused", () => {
+  const body = { error: { code: "connector_instance_not_paused" } };
+  assert.deepEqual(classifyResumeConnectionResponse(409, body, connectionControlErrorCode(body)), {
+    status: "not_paused",
+  });
+});
+
+test("resume maps 404 connector_instance_not_found to not_found", () => {
+  const body = { error: { code: "connector_instance_not_found" } };
+  assert.deepEqual(classifyResumeConnectionResponse(404, body, connectionControlErrorCode(body)), {
+    status: "not_found",
+  });
+});
+
+test("resume on an unexpected status throws a described error", () => {
+  const body = { error: { code: "api_error", message: "nope" } };
+  assert.throws(() => classifyResumeConnectionResponse(500, body, connectionControlErrorCode(body)), RESUME_THROWS_RE);
+});
+
+test("operator-runs pauseConnection POSTs the shared owner-session pause route through the classifier", async () => {
+  const src = await readFile(OPERATOR_RUNS_FILE, "utf8");
+  assert.match(src, WRAPPER_PAUSE_PATH_RE);
+  assert.match(src, WRAPPER_POST_RE);
+  assert.match(src, WRAPPER_PAUSE_CLASSIFY_RE);
+});
+
+test("operator-runs resumeConnection POSTs the shared owner-session resume route through the classifier", async () => {
+  const src = await readFile(OPERATOR_RUNS_FILE, "utf8");
+  assert.match(src, WRAPPER_RESUME_PATH_RE);
+  assert.match(src, WRAPPER_POST_RE);
+  assert.match(src, WRAPPER_RESUME_CLASSIFY_RE);
 });

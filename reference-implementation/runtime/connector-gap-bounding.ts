@@ -199,12 +199,20 @@ export function boundGapString(value: unknown): string | null {
  * `connector_error_message` on a terminal spine event.  The message is
  * connector-authored and therefore untrusted: apply the same redaction
  * as redactStderrTail and cap the length.
+ *
+ * `declaredReasonTokens` is optional and additive — omitted callers see
+ * byte-identical behavior to before. When supplied (see
+ * `runtime/declared-reason-tokens.ts`), a token in the set survives
+ * `redactStderrTail`'s length-based `LONG_OPAQUE_RE` pass instead of being
+ * collapsed to `[REDACTED]` — see that module's doc for why a categorical,
+ * connector-declared fault-class name (e.g. `venmo_probe_transport_error`)
+ * is not the kind of secret that heuristic exists to catch.
  */
-export function boundConnectorErrorMessage(value: unknown): string | null {
+export function boundConnectorErrorMessage(value: unknown, declaredReasonTokens?: ReadonlySet<string>): string | null {
   if (typeof value !== "string") {
     return null;
   }
-  const { text } = redactStderrTail(value);
+  const { text } = redactStderrTail(value, declaredReasonTokens ? { declaredReasonTokens } : {});
   if (text.length <= CONNECTOR_ERROR_MESSAGE_MAX) {
     return text;
   }
