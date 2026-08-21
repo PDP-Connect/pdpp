@@ -1,0 +1,113 @@
+{
+  "step": "records-keyset-index-and-bulk-lane",
+  "description": "D15 pre-registration for the 2026-08-21 44.5s source-detail page incident. Two independently shippable fixes: (1) idx_pg_records_instance_stream_id, closing the missing keyset index that made BOTH the page query and the semantic backfill's own coverage scan multi-second; (2) a separate bulk connection lane with a Postgres-enforced statement/lock ceiling, closing the pool-starvation half. Every bound below was measured live on 2026-08-21 BEFORE any deploy.",
+  "container": "pdpp-core-prod-drain",
+  "imageRepo": "pdpp-core",
+  "imageTag": "canary-records-keyset",
+  "dockerfileTarget": "core",
+  "nodeBaseImage": "node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03",
+  "postgresContainer": "pdpp-postgres-1",
+
+  "artifactAssertions": [
+    {
+      "id": "keyset-index-migration-present",
+      "description": "The keyset-index migration must be present in the built image. Measured 2026-08-21: this symbol is absent from the running pdpp-core:drain33 and present in the branch source, so this grep alone distinguishes 'deployed' from 'restarted onto the same bytes'.",
+      "path": "/app/reference-implementation/server/postgres-storage.ts",
+      "pattern": "ensurePostgresRecordsInstanceStreamIdIndex",
+      "minCount": 1
+    },
+    {
+      "id": "bulk-lane-present",
+      "description": "The bulk connection lane must be present in the built image. Same deployed-vs-restarted discrimination as above, for the second of the two fixes.",
+      "path": "/app/reference-implementation/server/postgres-storage.ts",
+      "pattern": "postgresBulkQuery",
+      "minCount": 1
+    }
+  ],
+
+  "checks": [
+    {
+      "kind": "sql_scalar",
+      "id": "keyset-index-valid",
+      "description": "PRIMARY METRIC. idx_pg_records_instance_stream_id must exist AND be both valid and ready. Measured live 2026-08-21 BEFORE deploy: 0 (the index does not exist; the page query plans Index Scan using records_pkey, 27.4s, Rows Removed by Filter 3,031,420). Expected after deploy: 1. indisvalid/indisready are the load-bearing part, not mere existence: an interrupted CREATE INDEX CONCURRENTLY leaves the index present but INVALID, the planner ignores it, and the slow plan silently returns -- so a bare existence check would report success on exactly the failure mode this build's CONCURRENTLY path can produce.",
+      "sql": "select count(*) from pg_index ix join pg_class c on c.oid=ix.indexrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='idx_pg_records_instance_stream_id' and ix.indisvalid and ix.indisready",
+      "predicate": "must_be_at_least",
+      "bound": 1,
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "no-statement-outlives-bulk-ceiling",
+      "description": "No client statement may run past the 15s bulk ceiling. Measured live 2026-08-21: 0 at sample time -- but this is a POINT-IN-TIME sample and 0 here is partly luck, so it is meaningful only as a guard against regression, not as evidence the defect was absent. During the incident this same query returned non-zero repeatedly (records-page statements sampled at 22.3s and 27.4s). Excludes autovacuum, which is a maintenance backend and legitimately long-running.",
+      "sql": "select count(*) from pg_stat_activity where datname='pdpp' and state='active' and backend_type='client backend' and query not like '%pg_stat_activity%' and now()-query_start > interval '15 seconds'",
+      "predicate": "must_stay_zero",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "records-page-scan-not-slow",
+      "description": "The specific statement shape from the incident -- the keyset page over `records` that both the source-detail page and the semantic backfill issue -- must not be observed running past 5s. Measured live 2026-08-21: successive backfill pages sampled at 1.2s, 1.6s, 1.9s, 7.0s, 12.2s, 17.2s, 22.3s and 27.4s, so a 5s bound is comfortably above the healthy cost and well below the observed pathology. Post-index this shape measured 1.4-1.7ms at production-representative volume regardless of cursor depth.",
+      "sql": "select count(*) from pg_stat_activity where datname='pdpp' and state='active' and backend_type='client backend' and query like '%FROM records%' and query like '%ORDER BY id ASC%' and now()-query_start > interval '5 seconds'",
+      "predicate": "must_stay_zero",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "records-row-count-preserved",
+      "description": "BEHAVIOR PRESERVATION (D14). Neither fix may add, drop or soft-delete a record: an index changes access paths only, and routing bulk work to a second pool changes which connection runs a statement, not what it writes. Measured live 2026-08-21 by executing this exact SQL: 5,614,451 live rows. must_not_decrease rather than must_equal because ordinary ingest legitimately adds rows during the canary window.",
+      "sql": "select count(*) from records where deleted = false",
+      "predicate": "must_not_decrease",
+      "blocking": true
+    },
+    {
+      "kind": "sql_scalar",
+      "id": "semantic-index-coverage-preserved",
+      "description": "BEHAVIOR PRESERVATION (D14) for the bulk WRITE path specifically. postgresSemanticIndexInsertManyGuarded moved onto the bulk lane; its single-statement version-CAS is unchanged, so its output must be too. A drop here would mean the bulk statement_timeout is cancelling real backfill work rather than acting as a backstop -- the most plausible way this change could do harm. Measured live 2026-08-21 by executing this exact SQL immediately before deploy: 65,146.",
+      "sql": "select count(*) from semantic_search_blob",
+      "predicate": "must_not_decrease",
+      "blocking": true
+    },
+    {
+      "kind": "container_fact",
+      "id": "restart-count-must-not-climb",
+      "description": "RestartCount must not climb. Measured live 2026-08-21: 0 on pdpp-core-prod-drain. A climbing count means the supervisor is crash-looping behind a container that still reports 'Up' -- the relevant risk here being a boot-time migration that wedges.",
+      "fact": "restart_count",
+      "predicate": "must_not_increase",
+      "blocking": true
+    },
+    {
+      "kind": "container_fact",
+      "id": "running-image-must-change",
+      "description": "The running image tag must differ from the pre-image: the artifact greps prove the bytes are right, this proves the container actually picked them up.",
+      "fact": "running_image",
+      "predicate": "must_change",
+      "blocking": true
+    },
+    {
+      "kind": "log_pattern",
+      "id": "no-uncaught-exception",
+      "description": "uncaughtException must not appear in the post-deploy window.",
+      "pattern": "uncaughtException",
+      "maxOccurrences": 0,
+      "sinceSeconds": 900,
+      "blocking": true
+    },
+    {
+      "kind": "log_pattern",
+      "id": "bulk-timeout-must-not-fire-routinely",
+      "description": "The bulk statement_timeout is a BACKSTOP, not a routine cliff. Measured bulk writes on this instance run 0.5-1.1s against a 15s ceiling, so it should never fire in normal operation; if it does, the ceiling is mis-sized or something regressed, and either way the operator should see it rather than have backfill silently shedding chunks. Non-blocking: a single fire is a signal to investigate, not a reason to roll back a deploy that is otherwise healthy.",
+      "pattern": "exceeded its per-unit admission allowance",
+      "maxOccurrences": 0,
+      "sinceSeconds": 900,
+      "blocking": false
+    },
+    {
+      "kind": "http_health",
+      "id": "health-probe",
+      "description": "The reference server must answer. /owner/login returns 200 unauthenticated and is server-rendered, so a 200 proves the app is serving rather than that a port is open.",
+      "url": "https://pdpp.vivid.fish/owner/login",
+      "expectStatus": 200,
+      "blocking": true
+    }
+  ]
+}

@@ -16,6 +16,7 @@ import type { PostgresTransactionClient } from "./postgres-storage.ts";
 import {
   isPostgresSemanticIterativeScanSupported,
   isPostgresSemanticVectorEmbedding,
+  postgresBulkQuery,
   postgresQuery,
   withPostgresTransaction,
 } from "./postgres-storage.ts";
@@ -693,6 +694,13 @@ export function postgresSemanticIndexInsertMany({
  * immediately before writing — a row a concurrent delete/newer-write has
  * since superseded is silently skipped, never resurrected/overwritten.
  * See harden-connector-instance-write-fence-transaction-native.
+ *
+ * Runs on the BULK lane (`postgresBulkQuery`): this is background backfill
+ * work, so it must neither consume a connection the owner's page loads need
+ * nor run unbounded once Postgres has admitted it. The single-statement
+ * version-CAS above is unchanged — `postgresBulkQuery` wraps exactly this
+ * one statement in its own short BEGIN/COMMIT, so the statement's snapshot
+ * semantics, and therefore the CAS, are identical.
  */
 export async function postgresSemanticIndexInsertManyGuarded({
   connectorId,
@@ -710,7 +718,7 @@ export async function postgresSemanticIndexInsertManyGuarded({
     return 0;
   }
   const vectorMode = isPostgresSemanticVectorEmbedding();
-  await postgresQuery(
+  await postgresBulkQuery(
     `INSERT INTO semantic_search_blob (connector_id, connector_instance_id, scope_key, record_key, embedding)
      SELECT rows.connector_id, rows.connector_instance_id, rows.scope_key, rows.record_key, rows.embedding::${vectorMode ? "vector" : "jsonb"}
      FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::bigint[])
@@ -786,13 +794,30 @@ export async function postgresSemanticIndexDeleteWithClient(
   );
 }
 
+/**
+ * The semantic backfill's coverage scan: one keyset page of `records`.
+ *
+ * Runs on the BULK lane. This statement is the one live `pg_stat_activity`
+ * sampling caught at 27.4s during the 2026-08-21 incident — it is background
+ * work, and it was competing for the same connections as the owner's page
+ * loads while doing it. Its COST is addressed by
+ * `idx_pg_records_instance_stream_id` (this exact keyset shape); the bulk
+ * lane and bounded statement here are the backstop, so a page that goes
+ * pathological anyway is cancelled by Postgres instead of holding a
+ * connection open indefinitely.
+ *
+ * Already chunked by construction: the caller (`rebuildSemanticIndexForStream`)
+ * pages 500 rows at a time and each page is its own statement, so no
+ * transaction spans pages and the keyset cursor only advances past a page
+ * that committed.
+ */
 export async function postgresSemanticRecordsPage({
   connectorInstanceId,
   stream,
   lastId,
   limit,
 }: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">> & { lastId: number; limit: number }) {
-  const result = await postgresQuery(
+  const result = await postgresBulkQuery(
     `SELECT id, record_key, record_json, version
      FROM records
      WHERE connector_instance_id = $1
