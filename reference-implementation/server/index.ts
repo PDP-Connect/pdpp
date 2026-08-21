@@ -8562,13 +8562,15 @@ export async function startServer(opts: ServerOpts = {}) {
     abortStartupBackfill: (reason: unknown) => startupBackfillAbortController.abort(reason),
     asPort,
     asServer,
-    // Exposed for the CLI entrypoint's graceful-shutdown path
-    // (`exitOnSignal`). The controller's `drainActiveRuns` awaits all
-    // in-flight `runConnector` promises within a bounded window so
-    // connector children have time to release their Chromium contexts
-    // before the parent exits and closes their stdio pipes. See
-    // `runtime/controller.ts` and `polyfill-connectors/src/profile-lock.ts`
-    // for the layered design.
+    // Exposed for the CLI entrypoint and for callers that need to await
+    // in-flight `runConnector` promises (`drainActiveRuns`, the watchdog,
+    // `awaitRun`).
+    //
+    // The shutdown path deliberately does NOT drain — a drain cannot finish
+    // minutes-long connector work inside Docker's 10s grace, and was measured
+    // burning its whole budget without saving a run. Interrupted runs are
+    // adjudicated by the successor at boot instead. See the SIGTERM handler
+    // in this file and `lib/controller-boot.ts`.
     controller,
     logger,
     rsPort,
@@ -9658,28 +9660,35 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     server.stopBrowserSurfaceLeaseSweep?.();
     server.stopConnectorMaintenanceSweep?.();
     await server.stopClientEventDeliveryWorker?.();
-    // Drain in-flight connector children IN PARALLEL with the HTTP /
-    // backfill drains. Children received their own SIGTERM from Docker
-    // and are running their Layer A shutdown-hook to release Chromium.
-    // We give them 5s — typical context.close completes in 1-2s; the
-    // 3s buffer absorbs slow Chromium teardown and network latency.
-    // Docker's default grace period is 10s; the parallel `allSettled`
-    // below is bounded by max(2s, 2s, 5s) = 5s, well within that.
-    // Runs that don't drain in time get SIGKILL'd by Docker on grace
-    // expiry; the residue is cleaned up on next boot by
+    // In-flight connector runs are deliberately NOT drained here.
+    //
+    // A drain cannot succeed inside the budget that actually exists.
+    // Production sets no `--stop-timeout`, so Docker's 10s default governs,
+    // and `--stop-timeout` is fixed at container creation — Docker has no
+    // equivalent of systemd's runtime `EXTEND_TIMEOUT_USEC=`. A Gmail run
+    // takes minutes. The gap is two orders of magnitude and is not closable.
+    //
+    // The 5s drain that used to be here was measured in production spending
+    // its entire budget and abandoning the run anyway
+    // (`drained:0, elapsedMs:5000, timedOut:1`). That is a negative win: it
+    // consumed half the SIGKILL budget doing nothing, while making the
+    // failure look handled.
+    //
+    // Correctness does not depend on the dying process reporting. It cannot:
+    // a `kill -9` has no drain at all. The successor adjudicates instead —
+    // `reconcileOrphanedRunsAtBoot` writes `run.abandoned` for any run whose
+    // owner epoch is not the current one. Temporal ships the same layering
+    // (`WorkerStopTimeout` defaults to 0s; the service writes the terminal
+    // state on a timer), as does Kafka (the successor's `InitProducerId`
+    // epoch bump recovers the previous instance's transaction).
+    //
+    // Dropping the drain makes shutdown faster and the failure mode honest.
+    // `drainActiveRuns` itself stays on the controller: it means "await
+    // in-flight runs", which the watchdog, `awaitRun`, and the test suite all
+    // rely on. Sidekiq draws the same line between *quiet* and *drain*.
+    // Chromium residue is still cleaned on next boot by
     // polyfill-connectors/src/profile-lock.ts (Layer C).
-    const CONNECTOR_DRAIN_TIMEOUT_MS = 5000;
-    const drainConnectors = server.controller?.drainActiveRuns
-      ? server.controller.drainActiveRuns(CONNECTOR_DRAIN_TIMEOUT_MS).then(
-          (summary) => {
-            cliLogger.info(summary, "connector run drain complete");
-          },
-          (err) => {
-            cliLogger.warn({ err }, "connector run drain failed");
-          }
-        )
-      : Promise.resolve();
-    await Promise.allSettled([...httpDrains, Promise.race([awaitStartupTasks, backfillDeadline]), drainConnectors]);
+    await Promise.allSettled([...httpDrains, Promise.race([awaitStartupTasks, backfillDeadline])]);
     // See shutdownStorageClose's own doc comment for the drain-gates-close
     // invariant and why exit(1) here does not mean the in-flight job
     // finishes safely -- only that this process is not the one that raced
