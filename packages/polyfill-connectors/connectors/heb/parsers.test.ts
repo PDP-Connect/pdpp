@@ -802,3 +802,29 @@ test("buildOrderItemRecord maps a parsed detail item into the emitted order_item
   assert.equal(record.line_total_cents, 429);
   assert.equal(record.order_date, "2026-07-14");
 });
+
+// ─── Promotional interstitial vs the empty state (run_1787343993082) ──────
+// The promo overlay that covered a live orders page arrives on the SAME route
+// as the source-authored empty state and, like it, leaves no order cards
+// legible. These pin the two apart in both directions, because mistaking either
+// for the other would either fabricate an empty history for an account that has
+// orders or suppress a genuine "no past orders" claim behind a marketing popup.
+//
+// They cannot collide by construction, not merely by ordering: the empty-state
+// marker must sit INSIDE `[data-qe-id="orderResults"]`, whereas the modal is
+// portaled to <body>, outside the Next.js root entirely.
+
+test("the promotional interstitial is not read as a source-authored empty state", () => {
+  assert.equal(hasOrdersEmptyState(fixture("whats-new-modal-over-orders.html")), false);
+});
+
+test("the promotional interstitial is not read as an Incapsula block", () => {
+  assert.equal(isIncapsulaBlocked(fixture("whats-new-modal-over-orders.html")), false);
+});
+
+test("the source-authored empty state is still detected with an overlay-capable page shape", () => {
+  // Guards the reverse direction: teaching the connector about modals must not
+  // make a genuinely empty history stop reporting itself as empty.
+  assert.equal(hasOrdersEmptyState(fixture("orders-list-no-past-orders.html")), true);
+  assert.equal(isIncapsulaBlocked(fixture("orders-list-no-past-orders.html")), false);
+});

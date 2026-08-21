@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<!--
+  The email-first login form, reduced to the elements that drive surface
+  classification.
+
+  Live shape captured at
+  /root/.pdpp/fixture-captures/heb/raw/2026-08-19T03-18-07-656Z/dom/session-establish-heb-login-form-loaded.html
+  in container `pdpp-core-prod-drain` (url
+  https://accounts.heb.com/interaction/<id>/login, title "My H-E-B Account").
+  The interaction id and the owner's email were replaced with synthetic values.
+
+  This is the surface that made the connector fall through to the unclassified
+  fallback on a perfectly ordinary expired session. H-E-B collects the EMAIL
+  FIRST: only the email input is on screen, next to a "Continue" button, with
+  "Or, log in with a passkey" and "Create one" below it. The password field
+  exists in the DOM the whole time, but it is parked inside
+
+    <fieldset ... class="... overflow-hidden w-0 h-0">
+
+  A `w-0 h-0 overflow-hidden` ancestor has a ZERO bounding box, so Playwright
+  reports the password input — and every other descendant — as NOT VISIBLE.
+  `aria-hidden="true"` and `tabindex="-1"` on the same fieldset say the same
+  thing to the accessibility tree.
+
+  That is the whole defect: `resolveUniqueLoginFormRoot` required exactly one
+  VISIBLE password input inside the form root, counted zero, and refused to call
+  this a login form. The page is unambiguously a login form to any human looking
+  at it.
+
+  Keep the zero-size fieldset exactly as-is. It is not decoration — it IS the
+  regression this fixture pins.
+-->
+<html>
+<body>
+  <main>
+    <img alt="H-E-B logo" src="/logo.svg" />
+    <form novalidate class="relative flex flex-col align-items-start mt-2">
+      <input type="hidden" data-testid="requestId" name="requestId" value="UNSET" />
+      <input type="hidden" name="step" value="1" />
+      <div>
+        <h1 class="text-2xl font-extrabold text-center">Log in</h1>
+        <h2 class="text-center mt-4"></h2>
+      </div>
+      <div class="flex flex-col">
+        <div class="form-control-group">
+          <input
+            autocomplete="username webauthn"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
+            aria-hidden="false"
+            autofocus
+            enterkeyhint="go"
+            class="form-control bg-transparent rounded-none"
+            type="email"
+            id="email-input"
+            placeholder="Email"
+            aria-label="Email"
+            name="email"
+          />
+        </div>
+        <label class="ml-1 text-xs form-label order-1" for="email-input">Email</label>
+      </div>
+      <fieldset
+        role="none"
+        aria-hidden="true"
+        tabindex="-1"
+        data-testid="credentials-fieldset"
+        class="flex flex-col gap-5 overflow-hidden w-0 h-0"
+      >
+        <label for="emailOtp" role="none" aria-hidden="true" tabindex="-1">
+          <input type="radio" id="emailOtp" role="none" aria-hidden="true" tabindex="-1" class="peer mr-2" name="authType" value="otp" />
+          <span role="none" aria-hidden="true" tabindex="-1" class="peer-checked:font-bold">Email me a one-time code</span><br />
+          <div class="ml-6 font-normal text-sm break-all"></div>
+        </label>
+        <label for="credentials">
+          <input
+            type="radio"
+            id="credentials"
+            role="none"
+            aria-hidden="true"
+            tabindex="-1"
+            aria-label="Enter password"
+            class="peer mr-2 mb-3"
+            name="authType"
+            checked
+            value="password"
+          />
+          <span class="peer-checked:font-bold">Enter password</span>
+          <div class="hidden peer-checked:flex flex-col gap-3 ml-6">
+            <div class="flex flex-col">
+              <div class="form-control-group">
+                <input
+                  autocomplete="current-password"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  autofocus
+                  enterkeyhint="go"
+                  role="none"
+                  aria-hidden="true"
+                  tabindex="-1"
+                  class="form-control bg-transparent rounded-none"
+                  type="password"
+                  id="password-input"
+                  placeholder=""
+                  aria-label="Password"
+                  name="password"
+                />
+                <div class="form-control-append">
+                  <button type="button" aria-hidden="true" tabindex="-1">Show</button>
+                </div>
+              </div>
+              <label class="hidden ml-1 text-xs form-label order-1" for="password-input">Password</label>
+            </div>
+            <a role="none" aria-hidden="true" tabindex="-1" href="/interaction/synthetic-interaction-id/forgot-pw">
+              Forgot your password?
+            </a>
+          </div>
+        </label>
+      </fieldset>
+      <div>
+        <button
+          class="w-full rounded-3xl font-extrabold px-2 py-2.5 text-white bg-dark-gray mb-4"
+          type="submit"
+          aria-disabled="false"
+        >
+          Continue
+        </button>
+        <button type="button" class="w-full rounded-3xl text-center text-blue font-extrabold px-2 py-2.5">
+          Or, log in with a passkey
+        </button>
+      </div>
+      <div>
+        Don&#8217;t have an account?
+        <a href="/interaction/synthetic-interaction-id/register">Create one</a>
+      </div>
+    </form>
+  </main>
+  <p>Copyright &copy; 2026 H&#8209;E&#8209;B, LP</p>
+</body>
+</html>
