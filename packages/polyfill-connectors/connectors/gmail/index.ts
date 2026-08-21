@@ -171,7 +171,40 @@ function getReadline(): ReadlineInterface {
 // control chars out of body text before encoding. The JSONL encoding
 // itself — BigInt coercion + U+2028/U+2029 escaping — lives in
 // `stringifyForJsonl`.
+// DONE is terminal on the wire, and nothing below this line may write after
+// it. The runtime's `handleMsg` latches the first DONE of any status and
+// throws `Connector emitted <TYPE> after DONE` on the next message, failing
+// the whole run as a protocol violation.
+//
+// Enforcing that here rather than at each terminal path is deliberate: the
+// terminal paths do not stop this process. `flushAndExit` only registers
+// listeners and returns (see `connector-exit.ts` — it waits for the runtime
+// to close stdin, up to 30 minutes), so after `fail()` or a rejection
+// handler emits DONE, the interrupted work is still on the stack. An
+// in-flight `for await` over an IMAP FETCH keeps iterating and keeps calling
+// `emitRecord`, and each of those writes lands after the DONE.
+//
+// That is what production hit: gmail runs failed `connector_protocol_violation
+// "Connector emitted RECORD after DONE"` while reporting more records emitted
+// than the runtime ever flushed — the surplus was written into a channel that
+// had already closed. Making every terminal path unwind perfectly would be a
+// standing obligation on code that mostly cannot see it coming; making the
+// write refuse is a property of the channel.
+//
+// Suppressed messages go to stderr, so a swallowed record is diagnosable
+// rather than silent. Emitting them would fail the run outright, which is
+// strictly worse: the records ingested before DONE are durable and the run's
+// own terminal status is already decided.
+let doneEmitted = false;
+
 function emit(msg: EmittedMessage): Promise<void> {
+  if (doneEmitted) {
+    process.stderr.write(`[gmail] suppressed ${String(msg.type)} after DONE\n`);
+    return Promise.resolve();
+  }
+  if (msg.type === "DONE") {
+    doneEmitted = true;
+  }
   const line = stringifyForJsonl(sanitizeForJsonl(msg));
   const ok = process.stdout.write(line);
   if (ok) {
@@ -182,6 +215,17 @@ function emit(msg: EmittedMessage): Promise<void> {
       resolve();
     });
   });
+}
+
+/** Test-only reset of the terminal latch; the real process never reuses it. */
+export function __resetDoneLatchForTests(): void {
+  doneEmitted = false;
+}
+
+/** Test-only handle on the real stdout emitter, so the latch is exercised
+ *  through the same function every production path writes through. */
+export function gmailEmitForTests(msg: EmittedMessage): Promise<void> {
+  return emit(msg);
 }
 
 function flushAndExit(code: number): void {
@@ -3247,15 +3291,30 @@ export async function runDeltaPass(
     size: true,
     bodyStructure: true,
   };
+  // Phase A: drain the delta FETCH completely before issuing any other IMAP
+  // command. Phase B: fetch snippets and emit.
+  //
+  // The split is required, not stylistic — it is the same rule the message
+  // pass states at its own Phase A/B boundary: imapflow multiplexes one
+  // command at a time over a single connection, so a nested command issued
+  // while the outer iterator is still open hangs that iterator. Calling
+  // `fetchBodiesFn` (a `fetchOne`) inside the `for await` did exactly that.
+  //
+  // `fetchBodies` swallows its own errors, so the nested call surfaced not as
+  // a body-fetch failure but as a wedged connection: the run stopped making
+  // progress after "Fetching flag/label deltas", sat until a timeout, and
+  // then tripped the runtime's post-DONE guard while the abandoned iterator
+  // drained. Draining first keeps the envelope guarantee below intact and
+  // costs only the metadata already held in memory.
+  const deltaMetas: FetchMessageObject[] = [];
   for await (const msg of client.fetch("1:*", deltaQuery, {
     uid: true,
     changedSince: priorModseqBig,
   })) {
-    const gmMsgid = String(msg.emailId ?? "");
-    if (!gmMsgid) {
+    if (!requested.has("messages")) {
       continue;
     }
-    if (!requested.has("messages")) {
+    if (!String(msg.emailId ?? "")) {
       continue;
     }
     // No envelope means no safe record to write. Skipping preserves the
@@ -3263,10 +3322,19 @@ export async function runDeltaPass(
     if (!msg.envelope) {
       continue;
     }
+    deltaMetas.push(msg);
+  }
+
+  for (const msg of deltaMetas) {
+    const gmMsgid = String(msg.emailId ?? "");
     const env = msg.envelope;
+    if (!env) {
+      continue;
+    }
     const receivedAt = perMessageInternalDateToIso(msg.internalDate, () => receivedAtFallback);
     // Bounded snippet-only body read, exactly as the forward pass does for a
-    // messages-without-bodies scope.
+    // messages-without-bodies scope. Sequential by necessity: this is one IMAP
+    // command at a time on a connection that is not concurrent.
     const { snippet } = await fetchBodiesFn(msg, selectBodyParts(msg.bodyStructure, false), false, true);
     await emitRecord(
       "messages",

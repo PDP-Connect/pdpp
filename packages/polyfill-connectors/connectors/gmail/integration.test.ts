@@ -47,6 +47,7 @@ import { buildFullScanCoverageMessage } from "../../src/connector-runtime.ts";
 import { ReferenceBlobUploadFailure, runtimeBlobUploadAvailable } from "../../src/reference-blob-uploader.ts";
 import { type EmittedRecord, makeRecordingEmit, type RecordedEvent } from "../../src/test-harness.ts";
 import {
+  __resetDoneLatchForTests,
   ATTACHMENT_BACKFILL_PAGE_DEFAULT_BYTES,
   ATTACHMENT_BACKFILL_PAGE_MAX_BYTES,
   ATTACHMENT_BACKFILL_PAGE_MIN_BYTES,
@@ -75,6 +76,7 @@ import {
   type FetchedBodies,
   fetchAttachmentPart,
   formatAttachmentBackfillSummary,
+  gmailEmitForTests,
   type HydrateAttachmentFn,
   isoToImapDate,
   makeAttachmentDetailCoverage,
@@ -5101,7 +5103,105 @@ test("runAllMailPasses: missing internalDate under declared since propagates unc
   }
 });
 
+// ─── Invariant: DONE is terminal on the wire ────────────────────────────────
+
+test("emit: suppresses any message written after DONE", async () => {
+  // REGRESSION EVIDENCE. Production gmail runs failed
+  // `connector_protocol_violation "Connector emitted RECORD after DONE"`
+  // (runs run_1787331290490_1, run_1787332551497_1, run_1787333444049 on
+  // 2026-08-21), reporting 82 records emitted against 18 flushed — the
+  // surplus was written after the runtime had already latched DONE.
+  //
+  // The cause is that no terminal path stops the process: `flushAndExit`
+  // registers listeners and RETURNS (connector-exit.ts waits for the runtime
+  // to close stdin), so interrupted in-flight work keeps emitting. The
+  // channel itself therefore has to refuse the write.
+  //
+  // EVIDENCE DISCRIMINATOR: with the `doneEmitted` latch removed from
+  // `emit`, the RECORD below is written to stdout and this test fails on
+  // `afterDone.length`.
+  __resetDoneLatchForTests();
+  const lines: string[] = [];
+  const originalWrite = globalThis.process.stdout.write;
+  globalThis.process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+    lines.push(String(chunk));
+    return true;
+  }) as typeof globalThis.process.stdout.write;
+  try {
+    await gmailEmitForTests({ type: "PROGRESS", message: "before" });
+    await gmailEmitForTests({ type: "DONE", status: "succeeded", records_emitted: 1 });
+    await gmailEmitForTests({
+      type: "RECORD",
+      stream: "messages",
+      key: "k",
+      data: {},
+      emitted_at: "2026-08-21T00:00:00.000Z",
+    });
+    await gmailEmitForTests({ type: "DONE", status: "failed", records_emitted: 0 });
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+    __resetDoneLatchForTests();
+  }
+
+  const parsed = lines.map((l) => JSON.parse(l) as { status?: string; type: string });
+  const doneIndex = parsed.findIndex((m) => m.type === "DONE");
+  assert.ok(doneIndex >= 0, "the DONE itself is written");
+  const afterDone = parsed.slice(doneIndex + 1);
+  assert.deepEqual(afterDone, [], "nothing may be written to stdout after DONE");
+  assert.equal(parsed.filter((m) => m.type === "DONE").length, 1, "a second DONE is suppressed too");
+  assert.equal(parsed.filter((m) => m.type === "RECORD").length, 0, "the post-DONE RECORD never reaches the runtime");
+});
+
 // ─── Invariant: the delta pass never blanks an already-collected envelope ───
+
+test("runDeltaPass: issues no IMAP command while the delta FETCH iterator is open", async () => {
+  // REGRESSION EVIDENCE. imapflow multiplexes one command at a time over a
+  // single connection, so a nested command issued mid-iteration hangs the
+  // outer iterator — the rule `runAllMailPasses` states at its own Phase A/B
+  // boundary. The delta pass called `fetchBodies` (a `fetchOne`) inside its
+  // `for await`, which wedged the run after "Fetching flag/label deltas"
+  // until a timeout, then tripped the post-DONE guard as the abandoned
+  // iterator drained.
+  //
+  // EVIDENCE DISCRIMINATOR: with the snippet fetch moved back inside the
+  // `for await`, `openWhileFetching` records a nested call and this fails.
+  const emitted: Array<{ stream: string }> = [];
+  let iteratorOpen = false;
+  const openWhileFetching: string[] = [];
+
+  // biome-ignore lint/suspicious/useAwait: stands in for ImapFlow.fetch's async-iterable-returning signature.
+  const fetch = mock.fn(async function* () {
+    iteratorOpen = true;
+    try {
+      yield makeMsg({ uid: 200, emailId: "gmmsgid-a" });
+      yield makeMsg({ uid: 201, emailId: "gmmsgid-b" });
+    } finally {
+      iteratorOpen = false;
+    }
+  });
+
+  const fetchBodies = mock.fn(() => {
+    if (iteratorOpen) {
+      openWhileFetching.push("nested");
+    }
+    return Promise.resolve({ bodyHtmlFull: null, bodyTextFull: null, snippet: "s" });
+  });
+
+  await runDeltaPass(
+    { fetch } as unknown as Pick<ImapFlow, "fetch">,
+    { fullResync: false, priorModseq: 1n } as unknown as Parameters<typeof runDeltaPass>[1],
+    makeRequested(["messages"]),
+    ((stream: string): Promise<void> => {
+      emitted.push({ stream });
+      return Promise.resolve();
+    }) as unknown as Parameters<typeof runDeltaPass>[3],
+    "2026-08-20T00:00:00.000Z",
+    fetchBodies as unknown as Parameters<typeof runDeltaPass>[5]
+  );
+
+  assert.deepEqual(openWhileFetching, [], "no body fetch may run while the delta FETCH iterator is open");
+  assert.equal(emitted.length, 2, "both delta messages still emit after the iterator drains");
+});
 
 test("runDeltaPass: emits a WHOLE messages record, never a null-envelope shell", async () => {
   // REGRESSION EVIDENCE. `records` upserts replace `record_json` wholesale, so
