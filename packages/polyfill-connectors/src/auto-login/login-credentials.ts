@@ -107,6 +107,10 @@ function firstNonEmpty(
       return value;
     }
   }
+  // No configured field carried a usable value. Returning explicitly keeps
+  // `noImplicitReturns` satisfied and states the "no credential" case as a
+  // real branch rather than an implicit fall-through.
+  return undefined;
 }
 
 /**
