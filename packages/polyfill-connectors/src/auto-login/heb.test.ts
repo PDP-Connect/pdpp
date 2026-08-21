@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { parseHTML } from "linkedom";
 import type { Locator, Page } from "playwright";
 
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
@@ -177,6 +178,7 @@ interface FakePageState {
   onWaitForTimeout: (() => void) | undefined;
   postSubmitOutcomes: PostSubmitTransition[];
   submitClicks: number;
+  title: string;
   url: string;
   view: PageStateKind;
 }
@@ -755,6 +757,7 @@ function makePage(initial: FakePageInit = {}): Page {
     onWaitForTimeout: initial.onWaitForTimeout,
     postSubmitOutcomes: initial.postSubmitOutcomes ?? (initial.postSubmitOutcome ? [initial.postSubmitOutcome] : []),
     submitClicks: 0,
+    title: initial.title ?? "",
     url: initial.url ?? SIGNIN_URL,
     view: initial.view ?? "unknown",
   };
@@ -812,6 +815,9 @@ function makePage(initial: FakePageInit = {}): Page {
       }
       return emptyLocator();
     },
+    // The honest-unknown message names the page it could not classify, so the
+    // fake has to be able to answer for its own title like a real page does.
+    title: (): Promise<string> => Promise.resolve(state.title),
     url: (): string => state.url,
     waitForTimeout: (ms: number): Promise<void> => {
       state.nowMs += ms;
@@ -2031,4 +2037,260 @@ test("ensureHebSession reports a clear provider-rejected error when the split OT
     assert.equal(state.submitClicks, 1);
     assert.equal(state.live, false);
   });
+});
+
+// ─── Unclassified live surfaces (run_1787343993082, run_1787344095924) ────
+// Two owners hit the SAME generic fallback within minutes for two entirely
+// different reasons, and both were told "H-E-B did not render the expected
+// login form":
+//
+//   * run_1787343993082 was already signed in. A promotional "what's new"
+//     interstitial was covering the orders page. No login was needed at all.
+//   * run_1787344095924 really had an expired session, but H-E-B served the
+//     email-first login form, whose password input sits inside a `w-0 h-0
+//     overflow-hidden` fieldset and so reports as not visible.
+//
+// The fake `Page` above cannot model either shape: visibility there is a
+// declared boolean, and the defects are both about how a REAL DOM answers
+// `isVisible()` through zero-size ancestors and body-level portals. These tests
+// therefore drive a linkedom-backed page against the captured HTML, so the
+// production selectors are exercised against the bytes H-E-B actually served.
+
+const WHATS_NEW_MODAL_HTML = readFileSync(
+  new URL("../../connectors/heb/__fixtures__/whats-new-modal-over-orders.html", import.meta.url),
+  "utf8"
+);
+const EMAIL_FIRST_LOGIN_HTML = readFileSync(
+  new URL("../../connectors/heb/__fixtures__/email-first-login-page.html", import.meta.url),
+  "utf8"
+);
+/** The live email-first login route observed in run_1787344095924. */
+const EMAIL_FIRST_LOGIN_URL = "https://accounts.heb.com/interaction/synthetic-interaction-id/login";
+
+interface DomPageState {
+  clicks: string[];
+  html: string;
+  title: string;
+  url: string;
+}
+
+/**
+ * A `Page` backed by a real DOM.
+ *
+ * `isVisible()` implements the part of Playwright's visibility contract these
+ * defects turn on: an element is invisible when it or any ancestor has a zero
+ * bounding box (`w-0 h-0`, `hidden`, `display:none`) or is `aria-hidden`.
+ * Modeling that faithfully is the whole point — a boolean flag would let the
+ * email-first fixture pass while the real page still failed.
+ */
+function makeDomPage(init: { html: string; title?: string; url: string }): {
+  page: Page;
+  state: DomPageState;
+} {
+  const domState: DomPageState = {
+    clicks: [],
+    html: init.html,
+    title: init.title ?? "",
+    url: init.url,
+  };
+  let doc = parseHTML(domState.html).document;
+
+  function isElementVisible(el: Element | null): boolean {
+    let node: Element | null = el;
+    while (node && node.tagName !== "HTML") {
+      const cls = node.getAttribute("class") ?? "";
+      const style = node.getAttribute("style") ?? "";
+      if (node.getAttribute("aria-hidden") === "true") {
+        return false;
+      }
+      if (/(^|\s)hidden(\s|$)/.test(cls) || /(^|\s)w-0(\s|$)/.test(cls) || /(^|\s)h-0(\s|$)/.test(cls)) {
+        return false;
+      }
+      if (/display\s*:\s*none/.test(style)) {
+        return false;
+      }
+      node = node.parentElement;
+    }
+    return true;
+  }
+
+  function domLocator(selector: string, root?: Element): Locator {
+    function matches(): Element[] {
+      const scope = root ?? doc;
+      return [...scope.querySelectorAll(selector)];
+    }
+    function nthEl(index: number): Element | null {
+      return matches()[index] ?? null;
+    }
+    function makeFor(index: number): Locator {
+      const locator: Partial<Locator> = {
+        click: (): Promise<void> => {
+          const el = nthEl(index);
+          if (el) {
+            const id = el.getAttribute("data-qe-id") ?? el.getAttribute("aria-label") ?? el.tagName;
+            domState.clicks.push(id);
+            // Dismissing the interstitial removes the portaled overlay, exactly
+            // as H-E-B's own close handler does.
+            if (el.getAttribute("data-qe-id") === "modalClose") {
+              const cover = doc.querySelector('[data-component="modal-cover-core"]');
+              cover?.parentNode?.removeChild(cover);
+              domState.html = doc.toString();
+            }
+          }
+          return Promise.resolve();
+        },
+        count: async (): Promise<number> => 1,
+        fill: (): Promise<void> => Promise.resolve(),
+        innerText: async (): Promise<string> => nthEl(index)?.textContent ?? "",
+        inputValue: async (): Promise<string> => "",
+        isEnabled: async (): Promise<boolean> => !nthEl(index)?.hasAttribute("disabled"),
+        isVisible: async (): Promise<boolean> => isElementVisible(nthEl(index)),
+        locator: (sub: string): Locator => domLocator(sub, nthEl(index) ?? undefined),
+        press: (): Promise<void> => Promise.resolve(),
+      };
+      locator.first = (): Locator => makeFor(0);
+      locator.nth = (i: number): Locator => makeFor(i);
+      return locator as Locator;
+    }
+    const listLocator: Partial<Locator> = {
+      click: (): Promise<void> => makeFor(0).click(),
+      count: async (): Promise<number> => matches().length,
+      fill: (): Promise<void> => Promise.resolve(),
+      innerText: async (): Promise<string> => matches()[0]?.textContent ?? "",
+      inputValue: async (): Promise<string> => "",
+      isEnabled: async (): Promise<boolean> => matches().some((el) => !el.hasAttribute("disabled")),
+      isVisible: async (): Promise<boolean> => matches().some((el) => isElementVisible(el)),
+      locator: (sub: string): Locator => domLocator(sub, matches()[0]),
+      press: (): Promise<void> => Promise.resolve(),
+    };
+    listLocator.first = (): Locator => makeFor(0);
+    listLocator.nth = (i: number): Locator => makeFor(i);
+    return listLocator as Locator;
+  }
+
+  const page: Partial<Page> = {
+    content: (): Promise<string> => Promise.resolve(domState.html),
+    goto: (url: string): Promise<null> => {
+      domState.url = url;
+      doc = parseHTML(domState.html).document;
+      return Promise.resolve(null);
+    },
+    locator: (selector: string): Locator => domLocator(selector),
+    title: (): Promise<string> => Promise.resolve(domState.title),
+    url: (): string => domState.url,
+    waitForTimeout: (): Promise<void> => Promise.resolve(),
+  };
+  return { page: page as Page, state: domState };
+}
+
+test("promotional interstitial over a live session is dismissed without involving the owner", async () => {
+  const { page, state: domState } = makeDomPage({
+    html: WHATS_NEW_MODAL_HTML,
+    title: "Your orders | HEB.com",
+    url: ORDERS_URL,
+  });
+  const harness = makeInteractionHarness();
+  const checkpoints: string[] = [];
+
+  const established = await ensureHebSession({
+    checkpoint: (name: string): Promise<void> => {
+      checkpoints.push(name);
+      return Promise.resolve();
+    },
+    page,
+    sendInteraction: harness.sendInteraction,
+  });
+
+  // The whole point: the session was always live, so the owner is never asked
+  // for anything and the run continues.
+  assert.equal(established, true);
+  assert.deepEqual(harness.requests, []);
+  assert.ok(domState.clicks.includes("modalClose"), "expected the close control to be clicked");
+  assert.ok(checkpoints.includes("heb-interstitial-dismissing"), "expected a dismissal checkpoint");
+  assert.ok(!checkpoints.includes("heb-unclassified-surface"), "a dismissed promo must not be an unclassified surface");
+});
+
+test("the email-first login form classifies as login_form, not as an unknown surface", async () => {
+  const { page } = makeDomPage({
+    html: EMAIL_FIRST_LOGIN_HTML,
+    title: "My H-E-B Account",
+    url: EMAIL_FIRST_LOGIN_URL,
+  });
+  const harness = makeInteractionHarness();
+
+  // The handoff cannot recover here (the fixture is a static login page, so the
+  // re-probe never goes live), which is the correct honest outcome. What this
+  // test is about is the MESSAGE the owner saw on the way there.
+  await assert.rejects(
+    ensureHebSession({
+      page,
+      sendInteraction: harness.sendInteraction,
+    }),
+    /heb_login_unexpected_ui/
+  );
+  assert.equal(harness.requests.length, 1);
+  const [request] = harness.requests;
+  const message = String((request as { message?: string }).message ?? "");
+  // The accurate copy for a real expired session — and emphatically NOT the old
+  // "did not render the expected login form", which was false on this page.
+  assert.match(message, /did not finish signing in automatically/);
+  assert.doesNotMatch(message, /did not render the expected login form/);
+  assert.doesNotMatch(message, /could not identify/);
+});
+
+test("a genuinely unrecognized surface reports what was observed instead of asserting a cause", async () => {
+  const { page } = makeDomPage({
+    html: "<html><body><main><p>Something new from H-E-B</p></main></body></html>",
+    title: "H-E-B",
+    url: "https://www.heb.com/some-new-surface",
+  });
+  const harness = makeInteractionHarness();
+  const checkpoints: string[] = [];
+
+  await assert.rejects(
+    ensureHebSession({
+      checkpoint: (name: string): Promise<void> => {
+        checkpoints.push(name);
+        return Promise.resolve();
+      },
+      page,
+      sendInteraction: harness.sendInteraction,
+    }),
+    /heb_login_unexpected_ui/
+  );
+  assert.equal(harness.requests.length, 1);
+  const message = String((harness.requests[0] as { message?: string }).message ?? "");
+  // Honest unknown: it names the page and admits it cannot classify it, rather
+  // than asserting a login problem it has no evidence for.
+  assert.match(message, /could not identify what H-E-B is showing/);
+  // The URL the classifier actually looked at — the probe navigates to the
+  // orders page before inspecting, so that is the page being described.
+  assert.match(message, /https:\/\/www\.heb\.com\/my-account\/your-orders/);
+  assert.match(message, /no password field/);
+  assert.match(message, /no dialog overlay/);
+  assert.doesNotMatch(message, /did not render the expected login form/);
+  // The classifier's failure must be VISIBLE so the next unknown shape gets
+  // fixed rather than silently defaulting forever.
+  assert.ok(checkpoints.includes("heb-unclassified-surface"), "expected an unclassified-surface diagnostic");
+});
+
+test("an interstitial that cannot be dismissed degrades to an honest unknown, never a false login claim", async () => {
+  // Same dialog chassis, but the close control is gone. This must not be
+  // reported as success and must not be reported as a login problem.
+  const undismissable = WHATS_NEW_MODAL_HTML.replace(/data-qe-id="modalClose"/, 'data-qe-id="notTheCloseButton"');
+  const { page } = makeDomPage({
+    html: undismissable,
+    title: "Your orders | HEB.com",
+    url: ORDERS_URL,
+  });
+  const harness = makeInteractionHarness();
+
+  // The orders page underneath is still authenticated, so the session probe
+  // still finds live evidence and the run proceeds without the owner.
+  const established = await ensureHebSession({
+    page,
+    sendInteraction: harness.sendInteraction,
+  });
+  assert.equal(established, true);
+  assert.deepEqual(harness.requests, []);
 });

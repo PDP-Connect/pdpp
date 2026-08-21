@@ -83,6 +83,34 @@ const VERIFICATION_CODE_RE = /\b(verification code|security code|one[- ]time cod
 const CAPTCHA_RE = /\b(captcha|verify you are human|security check)\b/i;
 const AUTHENTICATED_ORDERS_EVIDENCE_RE = /data-qe-id="orderResults"|data-testid="no-orders-message"/i;
 const LOGIN_FORM_SELECTOR = "form";
+/**
+ * H-E-B's promotional "what's new" interstitial.
+ *
+ * This is not an auth surface at all. It is a marketing announcement portaled
+ * to `<body>` — OUTSIDE the Next.js root — over an already-authenticated page.
+ * It steals focus and covers the order content, which is exactly why the run
+ * that hit it asked the owner to sign in when no sign-in was needed.
+ *
+ * Keyed on `data-component` + the ARIA dialog contract, never on the CSS-module
+ * class names beside them: `ModalContainers_modalContent__o_tcp` carries a build
+ * hash that rotates on every H-E-B deploy. The copy is off-limits for the same
+ * reason it always is — it is marketing text, it is localized, and the
+ * `WhatsNewModal_` chassis is a GENERIC slot that will carry entirely different
+ * words next month with this identical structure.
+ */
+const INTERSTITIAL_DIALOG_SELECTOR = '[data-component="modal-content"][role="dialog"][aria-modal="true"]';
+/**
+ * The dismissal control. `data-qe-id` is H-E-B's own QA-engineering hook and is
+ * the most durable handle on the page. Its accessible name is "Close Modal",
+ * not "Close" — matched structurally here so the label never has to be.
+ */
+const INTERSTITIAL_CLOSE_SELECTOR = '[data-qe-id="modalClose"]';
+/**
+ * Bounds the dismissal retries. One interstitial may be queued behind another,
+ * but a control that keeps not taking effect means the page is not what this
+ * code thinks it is, and the run must stop rather than spin.
+ */
+const MAX_INTERSTITIAL_DISMISS_ATTEMPTS = 3;
 
 export type HebAuthSurface =
   | "live"
@@ -177,6 +205,53 @@ async function hasUniqueLoginFormRoot(page: Page): Promise<boolean> {
   return (await resolveUniqueLoginFormRoot(page)) !== null;
 }
 
+/**
+ * Whether this form root is H-E-B's login form.
+ *
+ * The bar is one visible email input and one visible submit control. The
+ * password field is counted but NOT required to be visible, because H-E-B
+ * serves an email-first variant of this form: the password input is present in
+ * the DOM from first paint, parked inside
+ *
+ *   <fieldset aria-hidden="true" tabindex="-1" class="... overflow-hidden w-0 h-0">
+ *
+ * A `w-0 h-0 overflow-hidden` ancestor has a zero bounding box, so Playwright
+ * reports every descendant as not visible. Requiring a VISIBLE password input
+ * therefore rejected an ordinary, unambiguous login form — the owner was told
+ * "H-E-B did not render the expected login form" while looking at H-E-B's login
+ * form. See `connectors/heb/__fixtures__/email-first-login-page.html`.
+ *
+ * Requiring a password input to EXIST still distinguishes this form from the
+ * other single-field pages in the flow (forgot-password, register, the OTP
+ * entry screen), none of which carry a password input at all.
+ * `submitVerifiedLoginForm` remains responsible for whether the field can
+ * actually be FILLED; that is a separate question from what this surface IS,
+ * and it fails honestly on its own when the answer is no.
+ *
+ * The two-clause password rule is deliberate. When a password field IS on
+ * screen, exactly one must be — more than one visible password input is
+ * genuine ambiguity and stays fail-closed, which is what keeps the
+ * hidden-and-disabled-distractor guarantee intact. Only when NONE is visible
+ * does mere presence suffice, because that is precisely the email-first state.
+ */
+async function countsMatchLoginForm(root: Locator): Promise<boolean> {
+  const emailCount = await countUsableCandidates(root.locator(EMAIL_SELECTOR));
+  if (emailCount !== 1) {
+    return false;
+  }
+  const submitCount = await countUsableCandidates(root.locator(SUBMIT_SELECTOR));
+  if (submitCount !== 1) {
+    return false;
+  }
+  const passwordLocator = root.locator(PASSWORD_SELECTOR);
+  const visiblePasswordCount = await countUsableCandidates(passwordLocator);
+  if (visiblePasswordCount > 0) {
+    return visiblePasswordCount === 1;
+  }
+  const presentPasswordCount = await passwordLocator.count().catch((): number => 0);
+  return presentPasswordCount > 0;
+}
+
 async function resolveUniqueLoginFormRoot(page: Page): Promise<Locator | null> {
   const forms = page.locator(LOGIN_FORM_SELECTOR);
   const count = await forms.count().catch((): number => 0);
@@ -192,10 +267,7 @@ async function resolveUniqueLoginFormRoot(page: Page): Promise<Locator | null> {
     if (!(visible && enabled)) {
       continue;
     }
-    const emailCount = await countUsableCandidates(root.locator(EMAIL_SELECTOR));
-    const passwordCount = await countUsableCandidates(root.locator(PASSWORD_SELECTOR));
-    const submitCount = await countUsableCandidates(root.locator(SUBMIT_SELECTOR));
-    if (emailCount === 1 && passwordCount === 1 && submitCount === 1) {
+    if (await countsMatchLoginForm(root)) {
       viableRoots += 1;
       resolved = root;
       if (viableRoots > 1) {
@@ -317,6 +389,50 @@ function hasAuthenticatedOrdersEvidence(html: string): boolean {
 }
 
 /**
+ * Whether a promotional interstitial is currently covering the page.
+ *
+ * Requires a visible, enabled dismissal control, not merely a dialog node in
+ * the DOM. H-E-B leaves collapsed modal containers parked in the markup, and a
+ * dialog this code cannot actually close is not one it should claim to handle —
+ * it must fall through to classification like any other unrecognized surface.
+ */
+async function hasDismissibleInterstitial(page: Page): Promise<boolean> {
+  const dialogs = await page
+    .locator(INTERSTITIAL_DIALOG_SELECTOR)
+    .count()
+    .catch((): number => 0);
+  if (dialogs === 0) {
+    return false;
+  }
+  return (await countUsableCandidates(page.locator(INTERSTITIAL_CLOSE_SELECTOR))) > 0;
+}
+
+/**
+ * Dismiss the promotional interstitial covering an authenticated page.
+ *
+ * Deliberately silent from the owner's point of view: closing a marketing
+ * announcement is not a decision that needs a human, and asking for one was the
+ * defect. Returns `false` when the overlay outlives its dismissals so the caller
+ * classifies the page normally instead of assuming success.
+ */
+async function dismissInterstitials(page: Page, checkpoint?: SessionCheckpointFn): Promise<boolean> {
+  for (let attempt = 0; attempt < MAX_INTERSTITIAL_DISMISS_ATTEMPTS; attempt += 1) {
+    if (!(await hasDismissibleInterstitial(page))) {
+      return true;
+    }
+    await checkpoint?.("heb-interstitial-dismissing");
+    const clicked = await clickWhenUsable(page, page.locator(INTERSTITIAL_CLOSE_SELECTOR), {
+      timeout: POST_SUBMIT_POLL_INTERVAL_MS,
+    });
+    if (!clicked) {
+      return false;
+    }
+    await page.waitForTimeout(POST_SUBMIT_POLL_INTERVAL_MS);
+  }
+  return !(await hasDismissibleInterstitial(page));
+}
+
+/**
  * Names what was actually observed. Deliberately distinct per reason so an
  * operator can tell "the button was gone" from "the click did not stick".
  */
@@ -324,6 +440,68 @@ function passkeyEnrollmentDeclineError(reason: "control_unavailable" | "still_on
   return reason === "control_unavailable"
     ? "heb_passkey_enrollment_decline_control_missing"
     : "heb_passkey_enrollment_decline_ineffective";
+}
+
+/**
+ * What the classifier could see, for the honest-unknown message.
+ *
+ * Structural facts only — no page text, no account content. The URL and title
+ * are H-E-B's own routing and chrome, which is what makes them useful to an
+ * owner deciding what to do next and safe to show.
+ */
+interface UnknownSurfaceObservation {
+  readonly hasDialog: boolean;
+  readonly hasPasswordInput: boolean;
+  readonly title: string;
+  readonly url: string;
+}
+
+async function observeUnknownSurface(page: Page): Promise<UnknownSurfaceObservation> {
+  const [title, dialogCount, passwordCount] = await Promise.all([
+    page.title().catch((): string => ""),
+    page
+      .locator(INTERSTITIAL_DIALOG_SELECTOR)
+      .count()
+      .catch((): number => 0),
+    page
+      .locator(PASSWORD_SELECTOR)
+      .count()
+      .catch((): number => 0),
+  ]);
+  return {
+    hasDialog: dialogCount > 0,
+    hasPasswordInput: passwordCount > 0,
+    title,
+    url: page.url(),
+  };
+}
+
+/**
+ * The honest unknown.
+ *
+ * The old copy asserted a specific cause — "H-E-B did not render the expected
+ * login form" — for every surface the classifier failed to recognize. Two
+ * different live pages hit it within minutes: a promo overlay on an already
+ * signed-in session, where no login was needed at all, and a perfectly ordinary
+ * login form. Both owners were told the same wrong thing and had to guess.
+ *
+ * So this says what was seen and admits what it does not know. A confident
+ * wrong cause is worse than an accurate "PDPP could not classify this": the
+ * owner is the one looking at the screen, and they can act on a description far
+ * better than on a misdiagnosis.
+ */
+function unknownSurfaceMessage(observed: UnknownSurfaceObservation): string {
+  const sawParts = [
+    observed.hasPasswordInput ? "a password field" : "no password field",
+    observed.hasDialog ? "a dialog overlay" : "no dialog overlay",
+  ];
+  const titlePart = observed.title ? ` titled “${observed.title}”` : "";
+  return (
+    `PDPP could not identify what H-E-B is showing. The page at ${observed.url}${titlePart} ` +
+    `had ${sawParts.join(" and ")}, which does not match any surface PDPP recognizes. ` +
+    "Open the secure browser, do whatever the page actually asks for, then continue. " +
+    "PDPP will re-check the session afterward."
+  );
 }
 
 function manualLoginMessage(surface: Exclude<HebAuthSurface, "live">): string {
@@ -341,7 +519,12 @@ function manualLoginMessage(surface: Exclude<HebAuthSurface, "live">): string {
     case "incapsula":
       return "H-E-B is showing an Imperva Incapsula challenge. Complete it in the secure browser, then continue. PDPP will re-check the session afterward.";
     default:
-      return "H-E-B did not render the expected login form. Open the secure browser, sign in there, then continue. PDPP will re-check the session afterward.";
+      // `unknown` never reaches here: it routes through `unknownSurfaceMessage`,
+      // which describes the page instead of asserting a cause. Keeping this
+      // branch total-but-unreachable means a NEW surface added to the union
+      // fails typecheck at the switch rather than silently inheriting someone
+      // else's copy — which is how both misleading messages happened.
+      return unknownSurfaceMessage({ hasDialog: false, hasPasswordInput: false, title: "", url: "" });
   }
 }
 
@@ -403,7 +586,7 @@ async function inspectPostSubmitAuthSurface(page: Page): Promise<HebAuthSurface>
   return "unknown";
 }
 
-async function probeOrdersPage(page: Page): Promise<HebAuthSurface> {
+async function probeOrdersPage(page: Page, checkpoint?: SessionCheckpointFn): Promise<HebAuthSurface> {
   await page
     .goto(ORDERS_URL, {
       waitUntil: "domcontentloaded",
@@ -411,11 +594,16 @@ async function probeOrdersPage(page: Page): Promise<HebAuthSurface> {
     })
     .catch((): undefined => undefined);
   await page.waitForTimeout(SESSION_PROBE_WAIT_MS);
+  // Clear promotional overlays BEFORE classifying. An interstitial is not an
+  // auth surface, and leaving one up made a live session look like a broken
+  // one. Dismissal failure is deliberately not fatal: the classifier then reads
+  // the page as it actually is and reports an honest unknown if it must.
+  await dismissInterstitials(page, checkpoint);
   return inspectAuthSurface(page);
 }
 
-async function reProbeAfterManualAction(page: Page): Promise<boolean> {
-  return (await probeOrdersPage(page)) === "live";
+async function reProbeAfterManualAction(page: Page, checkpoint?: SessionCheckpointFn): Promise<boolean> {
+  return (await probeOrdersPage(page, checkpoint)) === "live";
 }
 
 function defaultPostSubmitWaitClock(page: Page): PostSubmitWaitClock {
@@ -518,23 +706,36 @@ async function waitForPostSubmitAuthSurface(
 
 async function handOffToOwner({
   capture,
+  checkpoint,
   page,
   sendInteraction,
   surface,
 }: Pick<EnsureHebSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  readonly checkpoint?: SessionCheckpointFn | undefined;
   readonly surface: Exclude<HebAuthSurface, "live">;
 }): Promise<boolean> {
+  let message: string;
+  if (surface === "unknown") {
+    const observed = await observeUnknownSurface(page);
+    // Make the classifier's failure VISIBLE. A surface that silently defaults
+    // forever never gets fixed; this checkpoint is the record that says which
+    // page shape H-E-B served that PDPP could not name.
+    await checkpoint?.("heb-unclassified-surface");
+    message = unknownSurfaceMessage(observed);
+  } else {
+    message = manualLoginMessage(surface);
+  }
   await manualAction(
     {
       ...(capture ? { capture } : {}),
-      message: manualLoginMessage(surface),
+      message,
       page,
       reason: "login",
       timeoutSeconds: 1800,
     },
     sendInteraction
   );
-  return reProbeAfterManualAction(page);
+  return reProbeAfterManualAction(page, checkpoint);
 }
 
 async function handleVerifiedLoginFormSubmission({
@@ -592,6 +793,7 @@ async function handleVerifiedLoginFormSubmission({
   await checkpoint?.("heb-manual-login-handoff");
   const recovered = await handOffToOwner({
     ...(capture ? { capture } : {}),
+    checkpoint,
     page,
     sendInteraction,
     surface: postSubmitSurface.surface,
@@ -768,6 +970,7 @@ async function handleVerificationCodeSubmission({
   await checkpoint?.("heb-manual-login-handoff");
   const recovered = await handOffToOwner({
     ...(capture ? { capture } : {}),
+    checkpoint,
     page,
     sendInteraction,
     surface: postSubmitSurface.surface,
@@ -779,8 +982,8 @@ async function handleVerificationCodeSubmission({
   throw new Error("heb_login_unexpected_ui");
 }
 
-export async function probeHebSession(page: Page): Promise<boolean> {
-  return (await probeOrdersPage(page)) === "live";
+export async function probeHebSession(page: Page, checkpoint?: SessionCheckpointFn): Promise<boolean> {
+  return (await probeOrdersPage(page, checkpoint)) === "live";
 }
 
 /**
@@ -831,7 +1034,7 @@ export async function ensureHebSession({
   sendInteraction,
 }: EnsureHebSessionArgs): Promise<boolean> {
   await checkpoint?.("heb-auth-probe");
-  if (await probeHebSession(page)) {
+  if (await probeHebSession(page, checkpoint)) {
     await checkpoint?.("heb-session-already-live");
     return true;
   }
@@ -886,6 +1089,7 @@ export async function ensureHebSession({
   const repairSurface: Exclude<HebAuthSurface, "live"> = surface === "live" ? "unknown" : surface;
   const recovered = await handOffToOwner({
     ...(capture ? { capture } : {}),
+    checkpoint,
     page,
     sendInteraction,
     surface: repairSurface,

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<!--
+  The promotional "what's new" interstitial observed over an AUTHENTICATED
+  orders page, reduced to the elements that drive surface classification.
+
+  Live shape captured at
+  /root/.pdpp/fixture-captures/heb/raw/2026-08-19T03-18-07-656Z/dom/runtime-collect-start.html
+  in container `pdpp-core-prod-drain` (url https://www.heb.com/my-account/your-orders,
+  title "Your orders | HEB.com"). Owner name, email, account id, cart, and store
+  were stripped; the promo copy is H-E-B's own marketing text and carries no
+  personal data.
+
+  This is the surface that made the connector ask the owner to sign in when the
+  session was already live. The page underneath is authenticated — `orderResults`
+  is present and populated — but the modal is portaled to <body> OUTSIDE the
+  Next.js root, steals focus, and covers the order content.
+
+  Load-bearing structure, in the order the classifier reads it:
+
+    * The dialog is `[data-component="modal-content"][role="dialog"][aria-modal="true"]`.
+      `data-component` is H-E-B's own component hook; the CSS-module class
+      suffixes (`__o_tcp`) are BUILD HASHES that rotate on every deploy, so they
+      must never be matched.
+    * The close control is `[data-qe-id="modalClose"]` — H-E-B's QA-engineering
+      id, and the most durable dismissal hook on the page. Note its accessible
+      name is "Close Modal", not "Close".
+    * The skin class is `WhatsNewModal_`, a GENERIC announcement slot. Future
+      promos will reuse this chassis with entirely different copy, so nothing
+      here keys on "fastest delivery" or "$9.95".
+
+  The modal is a SIBLING of `[data-qe-id="orderResults"]`, never nested inside
+  it. That is what keeps it structurally distinct from the source-authored empty
+  state (`OrderEmpty_`/`Empty_box` INSIDE `orderResults`) — the two cannot be
+  confused by construction, not merely by ordering.
+-->
+<html>
+<body>
+  <div id="__next">
+    <main>
+      <h1>Your orders</h1>
+      <div data-qe-id="orderResults">
+        <div class="OrderHistoryPage_resultsContainer__abc12">
+          <a href="/my-account/order-history/HEB00000000000000">
+            <span class="OrderSummaryCard_orderTitle__def34">Order</span>
+          </a>
+        </div>
+      </div>
+    </main>
+  </div>
+  <next-route-announcer>
+    <p aria-live="assertive" id="__next-route-announcer__" role="alert"></p>
+  </next-route-announcer>
+  <div
+    data-component="modal-cover-core"
+    class="ModalSheet_modalSheet__XZ6PD WhatsNewModal_modalSheet__eIhlB CoreModal_modalCover__Gvk6b"
+    tabindex="-1"
+  >
+    <div class="ModalContainers_modalCover__1tKfw" data-component="modal-cover-container" style="opacity: 1;">
+      <div data-component="modal-outer" class="ModalContainers_modalOuter__LEqAu">
+        <div
+          data-component="modal-content"
+          class="ModalContainers_modalContent__o_tcp"
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            type="button"
+            aria-label="Close Modal"
+            data-qe-id="modalClose"
+            class="Button_button__ytBI_ IconButton_base__zs1MO ModalClose_button__ARgTE"
+            data-component="button"
+          >
+            <span class="ButtonLabel_buttonLabel__z680Q" data-component="button-label">
+              <span class="ButtonLabel_buttonText__1w7YM">
+                <svg width="24" height="24" aria-hidden="true"></svg>
+              </span>
+            </span>
+          </button>
+          <h2 class="WhatsNewModal_modalTitle__vOcwa ModalTitle_title__6n1f0">Our fastest delivery yet</h2>
+          <div data-component="modal-body" class="WhatsNewModal_modalBody__8Ac3R ModalBody_body__sR1DU">
+            <div class="WhatsNewModal_content__XZUf_">
+              Get your faves in as little as an hour with H&#8209;E&#8209;B Now, just $9.95.
+            </div>
+          </div>
+          <div class="ModalFooter_modalFooter__5LyBr">
+            <button type="button" class="Button_button__ytBI_ Button_primaryDefault__0_x_e" data-component="button">
+              <span class="ButtonLabel_buttonLabel__z680Q" data-component="button-label">
+                <span class="ButtonLabel_buttonText__1w7YM">View delivery times</span>
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
