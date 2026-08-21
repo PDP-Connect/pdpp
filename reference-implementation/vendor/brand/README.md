@@ -202,7 +202,7 @@ Still open:
   `table` remain in console globals (see Numeric treatment above); leave
   until that audit.
 
-Editorial (`--pdpp-concept-*`) and docs Fumadocs overrides stay in
+Editorial (`--pdpp-editorial-*`) and docs Fumadocs overrides stay in
 `styles/editorial.css` / `styles/docs.css` — that remains the model.
 
 ### Site dual cascade (`apps/site`)
@@ -211,7 +211,7 @@ Editorial (`--pdpp-concept-*`) and docs Fumadocs overrides stay in
 top of `apps/site/src/app/globals.css`):
 
 - brand → sandbox / operator-ui / ThemeProvider
-- editorial → marketing (`.pdpp-concept`; page chrome is `container max-w-page` on `PdppConceptPage`)
+- editorial → marketing (`.pdpp-editorial`; page chrome is `container max-w-page` on `PdppConceptPage`)
 - docs.css → bridge tax (fumadocs chrome remapped to concept under
   `[data-pdpp-doc-theme]`)
 
@@ -220,7 +220,7 @@ top of `apps/site/src/app/globals.css`):
   volume as known cost. Today is (3).
 - [ ] **Editorial `@theme` bridge** — dormant at
   `apps/site/src/styles/editorial-tokens/` (`primitive.css` duplicates
-  `--pdpp-concept-*` runtime values; `semantic.css` bridges TW utilities).
+  `--pdpp-editorial-*` runtime values; `semantic.css` bridges TW utilities).
   Import when marketing JSX starts using `bg-paper` / `text-ink` / `p-pad`.
   Do not merge into `@pdpp/brand`. Do not delete the token block from
   `editorial.css` until this package is wired and verified.
