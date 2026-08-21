@@ -62,8 +62,7 @@
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",
       "background_safe": false,
-      "assisted_after_owner_auth": true,
-      "rationale": "Manual only while this connector stays unproven against a real account. Once proven, the session persists in the profile after first login, so background scheduling can be revisited then."
+      "rationale": "Venmo requires an interactive login that may serve a one-time code, and this connector has not proven that the profile session survives across runs, so refresh stays owner-present. Maturity is tracked by public_listing.tier:preview; if a live run proves session reuse, declare background_safe:true and the recommended mode follows."
     },
     "public_listing": {
       "tier": "preview",

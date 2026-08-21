@@ -47,7 +47,8 @@
   "capabilities": {
     "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 7200,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "otp_likely",
@@ -55,7 +56,7 @@
       "bot_detection_sensitivity": "medium",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "Reddit remains manual by default because first login from a new profile commonly serves a 2FA/OTP step or a Cloudflare challenge, but the session persists in the profile afterward, so an owner can explicitly opt into a background schedule after authenticating the connection."
+      "rationale": "First login from a new profile commonly serves a 2FA/OTP step or a Cloudflare challenge, but the session persists in the profile afterward, so scheduled refresh reuses it. assisted_after_owner_auth:true means a background run may ask the owner for bounded help when Reddit re-challenges."
     },
     "public_listing": {
       "tier": "supported"

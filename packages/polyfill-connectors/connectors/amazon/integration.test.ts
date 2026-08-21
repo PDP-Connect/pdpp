@@ -424,13 +424,33 @@ test("collect path does not advance a year cursor after unparseable order-date d
   );
 });
 
-test("amazon manifest: successful manual runs have a bounded freshness window", () => {
+test("amazon manifest: successful runs have a bounded freshness window", () => {
+  // The bounded window is what this test is for: without
+  // `maximum_staleness_seconds`, freshness is `unknown` and a successful run
+  // cannot project `current`.
+  //
+  // The mode assertion moved from a hard-coded "manual" to the connector's
+  // own declared facts. Amazon declares `background_safe: true` — the
+  // browser session persists after the owner's first login — and mode is now
+  // DERIVED from that (see reference-implementation/runtime/
+  // refresh-mode-derivation.ts). Pinning "manual" here contradicted the
+  // manifest's own background-safety claim.
   const manifest = JSON.parse(readFileSync(AMAZON_MANIFEST_PATH, "utf8")) as {
-    capabilities?: { refresh_policy?: { maximum_staleness_seconds?: number; recommended_mode?: string } };
+    capabilities?: {
+      refresh_policy?: {
+        background_safe?: boolean;
+        interaction_posture?: string;
+        maximum_staleness_seconds?: number;
+        recommended_mode?: string;
+      };
+    };
   };
   const policy = manifest.capabilities?.refresh_policy;
-  assert.equal(policy?.recommended_mode, "manual");
   assert.equal(policy?.maximum_staleness_seconds, 86_400);
+  // Amazon's first login is owner-present, and the session then persists.
+  assert.equal(policy?.interaction_posture, "otp_likely");
+  assert.equal(policy?.background_safe, true);
+  assert.equal(policy?.recommended_mode, "automatic");
 });
 
 // ─── Empty list-page classification ──────────────────────────────────────

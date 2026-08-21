@@ -74,15 +74,15 @@
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
       "minimum_interval_seconds": 900,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
-      "background_safe": false,
-      "rationale": "Jellyfin is self-hosted with no public rate limits. Core API provides LastPlayedDate and PlayCount as aggregate state (not per-session history). Items are fetched as a full inventory snapshot each run (Jellyfin core API does not expose a true incremental cursor for items; only library-level metadata). Hourly polling is conservative for a manually proven instance, but version compatibility is unproven and credentialed deployment compatibility remains unproven. PlaybackReporting plugin is optional and marks v2 scope expansion; core v1 scope is limited to aggregate playback metadata."
+      "background_safe": true,
+      "rationale": "Jellyfin is a self-hosted API-key connector with no public rate limits and no interactive login, so unattended refresh is mechanically safe. Core API provides LastPlayedDate and PlayCount as aggregate state (not per-session history); items are fetched as a full inventory snapshot each run because the core API exposes no true incremental cursor. Version and credentialed-deployment compatibility remain unproven, which public_listing.tier:preview records — auto-enrollment gates on tier, not on refresh mode. PlaybackReporting plugin is optional and marks v2 scope expansion; core v1 scope is limited to aggregate playback metadata."
     },
     "public_listing": {
       "tier": "preview"
