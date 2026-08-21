@@ -1651,7 +1651,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/auto-login/chase.ts",
-    line: 179,
+    line: 197,
     column: 32,
     category: "ordered_browser_interaction",
     note: "Promise.all(): sequential Playwright action against the shared page/context",
