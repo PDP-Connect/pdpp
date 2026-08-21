@@ -272,13 +272,40 @@ export function normalizeConnectorSlug(slug: string): string {
 }
 
 /**
+ * Drops separators entirely, so `whole-foods`, `whole_foods` and `wholefoods`
+ * all collapse to one spelling.
+ *
+ * Needed because the two vocabularies disagree: manifests key this connector
+ * `wholefoods`, while RI's generated registry hyphenates elsewhere
+ * (`apple-health` for manifest `apple_health`). Underscore-normalization alone
+ * maps `whole-foods` to `whole_foods`, which prefix-matches nothing — the OTP
+ * connector would be admitted under a spelling an operator can plausibly type.
+ */
+function stripSeparators(slug: string): string {
+  return slug.replace(/_+/gu, "");
+}
+
+/**
  * True when the slug names an OTP-gated connector. Matches the bare slug and
  * any `<slug>_suffix` form, so `chase_bank` is caught while an unrelated
  * connector like `chaseable` is not.
+ *
+ * Compared both underscore-normalized and separator-stripped: a connector must
+ * survive BOTH spellings to be triggered. Over-matching here costs a canary
+ * run that has to be requested by hand; under-matching costs a real OTP.
  */
 export function isOtpDenylisted(slug: string): boolean {
   const normalized = normalizeConnectorSlug(slug);
-  return OTP_DENYLISTED_CONNECTORS.some((denied) => normalized === denied || normalized.startsWith(`${denied}_`));
+  const stripped = stripSeparators(normalized);
+  return OTP_DENYLISTED_CONNECTORS.some((denied) => {
+    const deniedStripped = stripSeparators(denied);
+    return (
+      normalized === denied ||
+      normalized.startsWith(`${denied}_`) ||
+      stripped === deniedStripped ||
+      stripped.startsWith(`${deniedStripped}_`)
+    );
+  });
 }
 
 /** Fields every check kind shares, threaded through to each per-kind parser. */
