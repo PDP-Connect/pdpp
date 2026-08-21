@@ -28,9 +28,10 @@ node reference-implementation/scripts/canary/deploy-canary.ts \
 ```
 
 `--receipt-dir=<path>` sets where receipts land (default
-`local/canary-receipts`). `PDPP_OWNER_PASSWORD` must be set for
-`connector_run` checks; `PDPP_CANARY_ORIGIN` overrides the default origin
-`https://pdpp.vivid.fish`.
+`local/canary-receipts`). `connector_run` checks require BOTH
+`PDPP_OWNER_PASSWORD` and `PDPP_CANARY_ORIGIN` — the origin has no default,
+so a misconfigured invocation refuses rather than targeting some other
+instance. A check whose environment is incomplete fails; it never guesses.
 
 Exit code is `0` on pass or dry run, `1` on any blocking failure, artifact
 mismatch, or manifest rejection.
