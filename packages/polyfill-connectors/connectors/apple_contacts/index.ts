@@ -290,6 +290,9 @@ interface AddressBookCollectionCtx {
   authHeader: string;
   book: { url: string; displayName?: string };
   bookCursor: FingerprintCursor;
+  /** See `BaseCollectContext.collectionMode`. `"full_refresh"` makes this book
+   *  ignore its stored `sync_token` for this run. */
+  collectionMode?: "full_refresh" | "incremental";
   emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   fetchImpl: DiscoveryFetch;
@@ -468,6 +471,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     book,
     bookCursor,
     authHeader,
+    collectionMode,
     fetchImpl,
     trustedOrigins,
     state,
@@ -482,13 +486,30 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     state.contacts as Record<string, { sync_token?: string; fingerprints?: Record<string, string> }>
   )?.[bookKey];
 
+  // `full_refresh` is the owner/operator bypass BaseCollectContext.collectionMode
+  // defines: a connector with its own incremental bookkeeping MUST ignore that
+  // bookkeeping and walk each stream to its natural end. Withholding the stored
+  // token here (rather than deleting it) sends `resolveSyncResult` down its
+  // initial-sync path, which sets `fullBoundary` and so re-establishes the
+  // contacts enumeration boundary this run — the ONLY way the contacts coverage
+  // claim below can be emitted for a book that already has a token. The stored
+  // token is left untouched on disk: this run rewrites it from its own
+  // sync-collection response, and a failed run persists nothing, so an
+  // incremental resume stays available either way. `undefined` means
+  // `"incremental"`, per that same contract.
+  const fullRefresh = collectionMode === "full_refresh";
+  const priorSyncToken = fullRefresh ? undefined : priorSync?.sync_token;
+  if (fullRefresh && priorSync?.sync_token) {
+    await progress("Full refresh requested: re-enumerating this address book", { stream: "contacts" });
+  }
+
   await progress("Probing sync capability", { stream: "contacts" });
   const syncResult = await resolveSyncResult({
     bookUrl: book.url,
     authHeader,
     fetchImpl,
     trustedOrigins,
-    priorSyncToken: priorSync?.sync_token,
+    priorSyncToken,
   }).catch((err: unknown) => {
     // resolveSyncResult throws either the HTTP-status-shaped
     // carddav_sync_collection_failed (transient — retryable, matching the
@@ -713,7 +734,7 @@ if (isMainModule(import.meta.url)) {
       kind: "env",
       required: [["APPLE_ID", "APPLE_ID_EMAIL"], "APPLE_APP_SPECIFIC_PASSWORD"],
     },
-    async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+    async collect({ state, requested, credentials, emit, emitRecord, progress, collectionMode }) {
       const accountEmail = credentials.APPLE_ID || credentials.APPLE_ID_EMAIL;
       const appPassword = credentials.APPLE_APP_SPECIFIC_PASSWORD;
       if (!(accountEmail && appPassword)) {
@@ -781,6 +802,7 @@ if (isMainModule(import.meta.url)) {
           book,
           bookCursor,
           authHeader,
+          collectionMode,
           fetchImpl,
           trustedOrigins,
           state,
