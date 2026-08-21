@@ -158,12 +158,17 @@ function makeLiveContext(page: Page): BrowserContext {
   return fake as BrowserContext;
 }
 
+/**
+ * Runs `run` with the streaming env cleared.
+ *
+ * This no longer touches `CHASE_USERNAME` / `CHASE_PASSWORD`: an absent
+ * credential is now expressed by passing no `credentials` to
+ * `ensureChaseSession`, not by mutating the process environment. That is the
+ * point of the change — ambient state can no longer decide whether a login is
+ * attempted, so a test cannot accidentally depend on it either.
+ */
 async function withoutChaseCredentials(run: () => Promise<void>): Promise<void> {
-  const priorUsername = process.env.CHASE_USERNAME;
-  const priorPassword = process.env.CHASE_PASSWORD;
   const priorStreamingEnv = new Map<(typeof STREAMING_ENV_KEYS)[number], string | undefined>();
-  delete process.env.CHASE_USERNAME;
-  delete process.env.CHASE_PASSWORD;
   for (const key of STREAMING_ENV_KEYS) {
     priorStreamingEnv.set(key, process.env[key]);
     delete process.env[key];
@@ -171,16 +176,6 @@ async function withoutChaseCredentials(run: () => Promise<void>): Promise<void> 
   try {
     await run();
   } finally {
-    if (priorUsername === undefined) {
-      delete process.env.CHASE_USERNAME;
-    } else {
-      process.env.CHASE_USERNAME = priorUsername;
-    }
-    if (priorPassword === undefined) {
-      delete process.env.CHASE_PASSWORD;
-    } else {
-      process.env.CHASE_PASSWORD = priorPassword;
-    }
     for (const key of STREAMING_ENV_KEYS) {
       const value = priorStreamingEnv.get(key);
       if (value === undefined) {
@@ -307,6 +302,12 @@ interface FakeOtpPage {
    * asserting "no dispatch" must check.
    */
   deliveryClicks: number;
+  /**
+   * Values typed into the sign-in form, keyed by field. Lets a test prove
+   * WHICH account was signed in — the fact a process-global credential env var
+   * structurally cannot distinguish between two connections.
+   */
+  filledValues: { password: string[]; username: string[] };
   gotoCalls: string[];
   page: Page;
   state: FakeOtpPageState;
@@ -358,11 +359,20 @@ function makeOtpPage(
     count: (): Promise<number> => Promise.resolve(1),
     first: (): Locator => signInButton as Locator,
   };
-  const credentialField: Pick<Locator, "fill" | "first" | "waitFor"> = {
-    fill: (): Promise<void> => Promise.resolve(),
-    first: (): Locator => credentialField as Locator,
-    waitFor: (): Promise<void> => Promise.resolve(),
+  const filledValues: { password: string[]; username: string[] } = { password: [], username: [] };
+  const makeCredentialField = (bucket: string[]): Locator => {
+    const field: Pick<Locator, "fill" | "first" | "waitFor"> = {
+      fill: (value: string): Promise<void> => {
+        bucket.push(value);
+        return Promise.resolve();
+      },
+      first: (): Locator => field as Locator,
+      waitFor: (): Promise<void> => Promise.resolve(),
+    };
+    return field as Locator;
   };
+  const usernameField = makeCredentialField(filledValues.username);
+  const passwordField = makeCredentialField(filledValues.password);
   // `mds-button#next-content` → `.locator("button")` → `.first()`, the chain
   // `clickChaseNext` walks. Advancing past it is not itself a dispatch; the
   // dispatch already happened when the delivery option was clicked.
@@ -412,8 +422,11 @@ function makeOtpPage(
       if (selector.includes("signin-button")) {
         return signInButton as Locator;
       }
-      if (selector.includes("password") || selector.includes("userId") || selector.includes("username")) {
-        return credentialField as Locator;
+      if (selector.includes("password")) {
+        return passwordField;
+      }
+      if (selector.includes("userId") || selector.includes("username")) {
+        return usernameField;
       }
       // The "Next" control that follows the method chooser. Present only when
       // the chooser is, matching Chase's real challenge page. Models the
@@ -428,6 +441,7 @@ function makeOtpPage(
     get deliveryClicks(): number {
       return deliveryClicks;
     },
+    filledValues,
     gotoCalls,
     page: fake as Page,
     state,
@@ -444,25 +458,21 @@ function makeOtpContext(page: Page): BrowserContext {
   return fake as BrowserContext;
 }
 
+/**
+ * Chase's sign-in pair as the runtime hands it to `ensureSession`.
+ *
+ * Formerly this suite set `process.env.CHASE_USERNAME` / `_PASSWORD` around
+ * each test. `ensureChaseSession` now takes the connection's credentials as an
+ * argument (see `login-credentials.ts`), so the fixture is a plain object and
+ * the tests no longer mutate global state to steer a login.
+ */
+const CHASE_TEST_CREDENTIALS = Object.freeze({
+  CHASE_PASSWORD: "synthetic-password",
+  CHASE_USERNAME: "synthetic-user",
+});
+
 async function withChaseCredentials(run: () => Promise<void>): Promise<void> {
-  const priorUsername = process.env.CHASE_USERNAME;
-  const priorPassword = process.env.CHASE_PASSWORD;
-  process.env.CHASE_USERNAME = "test-user";
-  process.env.CHASE_PASSWORD = "test-password";
-  try {
-    await run();
-  } finally {
-    if (priorUsername === undefined) {
-      delete process.env.CHASE_USERNAME;
-    } else {
-      process.env.CHASE_USERNAME = priorUsername;
-    }
-    if (priorPassword === undefined) {
-      delete process.env.CHASE_PASSWORD;
-    } else {
-      process.env.CHASE_PASSWORD = priorPassword;
-    }
-  }
+  await run();
 }
 
 function recordingInteraction(
@@ -488,7 +498,12 @@ test("a page matching the OTP copy with no code input never asks the owner for a
     const requests: InteractionRequest[] = [];
 
     await assert.rejects(
-      ensureChaseSession({ context, page, sendInteraction: recordingInteraction(requests) }),
+      ensureChaseSession({
+        context,
+        credentials: CHASE_TEST_CREDENTIALS,
+        page,
+        sendInteraction: recordingInteraction(requests),
+      }),
       /chase_login_incomplete_after_submit/
     );
 
@@ -509,6 +524,7 @@ test("a genuine code-entry page still prompts the owner for a code", async () =>
 
     const ok = await ensureChaseSession({
       context,
+      credentials: CHASE_TEST_CREDENTIALS,
       page,
       sendInteraction: (req: InteractionRequest): Promise<InteractionResponse> => {
         requests.push(req);
@@ -538,6 +554,7 @@ test("a split per-digit code layout still counts as a real code-entry page", asy
 
     const ok = await ensureChaseSession({
       context,
+      credentials: CHASE_TEST_CREDENTIALS,
       page,
       sendInteraction: (req: InteractionRequest): Promise<InteractionResponse> => {
         requests.push(req);
@@ -590,7 +607,12 @@ test("an OTP input that vanishes between classification and the prompt fails lou
     });
 
     await assert.rejects(
-      ensureChaseSession({ context, page: guardedPage, sendInteraction: recordingInteraction(requests) }),
+      ensureChaseSession({
+        context,
+        credentials: CHASE_TEST_CREDENTIALS,
+        page: guardedPage,
+        sendInteraction: recordingInteraction(requests),
+      }),
       /chase_otp_input_missing/
     );
 
@@ -627,8 +649,15 @@ test("ensureChaseSession hands off when optional credentials are absent", async 
     assert.deepEqual(gotoCalls, [DASHBOARD_URL, DASHBOARD_URL]);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "manual_action");
-    assert.match(requests[0]?.message ?? "", /No optional Chase sign-in details/);
-    assert.doesNotMatch(requests[0]?.message ?? "", /password|test-user/u);
+    // The owner-facing reason must name the CREDENTIAL, not the page. Before
+    // `resolveLoginCredentials`, an absent credential produced copy that read
+    // like a provider/page problem; an owner could not tell "nothing was
+    // stored for this connection" from "Chase failed to render".
+    assert.match(requests[0]?.message ?? "", /no stored credential for this chase connection/);
+    assert.match(requests[0]?.message ?? "", /missing: CHASE_USERNAME, CHASE_PASSWORD/);
+    assert.doesNotMatch(requests[0]?.message ?? "", /did not render|failed to load/i);
+    // Names only, never values.
+    assert.doesNotMatch(requests[0]?.message ?? "", /synthetic-password|synthetic-user/u);
   });
 });
 
@@ -648,7 +677,12 @@ test("the identity-challenge copy alone never dispatches a code when the deliver
     const requests: InteractionRequest[] = [];
 
     await assert.rejects(
-      ensureChaseSession({ context, page: fake.page, sendInteraction: recordingInteraction(requests) }),
+      ensureChaseSession({
+        context,
+        credentials: CHASE_TEST_CREDENTIALS,
+        page: fake.page,
+        sendInteraction: recordingInteraction(requests),
+      }),
       /chase_delivery_method_not_available/
     );
 
@@ -677,7 +711,12 @@ test("a visible but DISABLED delivery option is not evidence the chooser is read
     const requests: InteractionRequest[] = [];
 
     await assert.rejects(
-      ensureChaseSession({ context, page: fake.page, sendInteraction: recordingInteraction(requests) }),
+      ensureChaseSession({
+        context,
+        credentials: CHASE_TEST_CREDENTIALS,
+        page: fake.page,
+        sendInteraction: recordingInteraction(requests),
+      }),
       /chase_delivery_method_not_available/
     );
 
@@ -700,6 +739,7 @@ test("a genuine method chooser still dispatches exactly once and reaches the cod
 
     await ensureChaseSession({
       context,
+      credentials: CHASE_TEST_CREDENTIALS,
       page: fake.page,
       sendInteraction: (request: InteractionRequest): Promise<InteractionResponse> => {
         if (request.kind === "otp") {
@@ -716,4 +756,48 @@ test("a genuine method chooser still dispatches exactly once and reaches the cod
       "the owner is asked for the code that was genuinely dispatched"
     );
   });
+});
+
+/**
+ * The case the process-global env-var design structurally cannot express.
+ *
+ * `process.env.CHASE_USERNAME` holds ONE account. An owner with two Chase
+ * connections needs each run to sign in as its OWN account. Because
+ * `ensureChaseSession` now takes the connection's credentials as an argument,
+ * two runs in the SAME process — sharing one `process.env` — type two
+ * different usernames into the sign-in form.
+ *
+ * The assertion is on what was typed into the form, not on the arguments
+ * passed in: proving the right value merely arrived would not prove it reached
+ * the login.
+ */
+test("two connections of one connector sign in as their own accounts", async () => {
+  const signIn = async (credentials: Readonly<Record<string, string>>) => {
+    const fake = makeOtpPage({ otpInputs: 0, promptTextVisible: false, signedOut: true });
+    const context = makeOtpContext(fake.page);
+    // The page never becomes live, so this always ends in a throw; the login
+    // ATTEMPT — the values typed into the form — is what this test is about.
+    await ensureChaseSession({
+      context,
+      credentials,
+      page: fake.page,
+      sendInteraction: recordingInteraction([]),
+    }).catch((): void => undefined);
+    return fake.filledValues;
+  };
+
+  const connectionA = await signIn({
+    CHASE_PASSWORD: "synthetic-pw-a",
+    CHASE_USERNAME: "owner-a@example.invalid",
+  });
+  const connectionB = await signIn({
+    CHASE_PASSWORD: "synthetic-pw-b",
+    CHASE_USERNAME: "owner-b@example.invalid",
+  });
+
+  assert.deepEqual(connectionA.username, ["owner-a@example.invalid"]);
+  assert.deepEqual(connectionB.username, ["owner-b@example.invalid"]);
+  assert.deepEqual(connectionA.password, ["synthetic-pw-a"]);
+  assert.deepEqual(connectionB.password, ["synthetic-pw-b"]);
+  assert.notDeepEqual(connectionA.username, connectionB.username, "two connections must not collapse onto one account");
 });
