@@ -6,6 +6,7 @@ import { describeError } from "./describe-error.ts";
 /**
  * Pure mappings for the owner-session connection control responses
  * (`POST /_ref/connections/:id/revoke`, `POST /_ref/connections/:id/reactivate`,
+ * `POST /_ref/connections/:id/pause`, `POST /_ref/connections/:id/resume`,
  * and `DELETE /_ref/connections/:id`), factored out of `operator-runs.ts` so
  * they can be unit tested directly under `node --test` without pulling in the
  * server-only fetch helpers (`owner-token.ts` imports `server-only`, which
@@ -25,6 +26,18 @@ import { describeError } from "./describe-error.ts";
  *     - `200` → `reactivated`
  *     - `409 connector_instance_not_revoked` → `not_revoked` (connection is
  *       already active; nothing to reactivate)
+ *     - `404 connector_instance_not_found` → `not_found`
+ *
+ *   Pause:
+ *     - `200` → `paused`
+ *     - `409 connector_instance_not_active` → `not_active` (already paused,
+ *       draft, or revoked; nothing to pause)
+ *     - `404 connector_instance_not_found` → `not_found`
+ *
+ *   Resume:
+ *     - `200` → `resumed`
+ *     - `409 connector_instance_not_paused` → `not_paused` (connection is
+ *       already active; nothing to resume)
  *     - `404 connector_instance_not_found` → `not_found`
  *
  *   Delete:
@@ -69,6 +82,18 @@ export function classifyReactivateConnectionResponse(
   throw new Error(describeError(body, `connection reactivate failed (${status})`));
 }
 
+export type PauseConnectionOutcome = "paused" | "not_active" | "not_found";
+
+export interface PauseConnectionResult {
+  status: PauseConnectionOutcome;
+}
+
+export type ResumeConnectionOutcome = "resumed" | "not_paused" | "not_found";
+
+export interface ResumeConnectionResult {
+  status: ResumeConnectionOutcome;
+}
+
 export type DeleteConnectionOutcome = "deleted" | "run_active" | "default_account" | "not_found";
 
 export interface DeleteConnectionResult {
@@ -106,6 +131,53 @@ export function classifyRevokeConnectionResponse(
     return { status: "already_revoked" };
   }
   throw new Error(describeError(body, `connection revoke failed (${status})`));
+}
+
+/**
+ * Map a pause response `(status, body, errorCode)` to a typed outcome, or throw
+ * a described error for any status that is not a documented pause outcome.
+ * `not_active` covers every non-active target (already paused, draft, revoked)
+ * — the route answers one typed code for all of them, so a repeat pause is a
+ * clean no-op the console messages in place rather than an error banner.
+ */
+export function classifyPauseConnectionResponse(
+  status: number,
+  body: unknown,
+  errorCode: string | null
+): PauseConnectionResult {
+  if (status === 200) {
+    return { status: "paused" };
+  }
+  if (status === 409 && errorCode === "connector_instance_not_active") {
+    return { status: "not_active" };
+  }
+  if (status === 404 && errorCode === "connector_instance_not_found") {
+    return { status: "not_found" };
+  }
+  throw new Error(describeError(body, `connection pause failed (${status})`));
+}
+
+/**
+ * Map a resume response `(status, body, errorCode)` to a typed outcome, or
+ * throw a described error for any status that is not a documented resume
+ * outcome. The inverse of {@link classifyPauseConnectionResponse}:
+ * `not_paused` covers every non-paused target.
+ */
+export function classifyResumeConnectionResponse(
+  status: number,
+  body: unknown,
+  errorCode: string | null
+): ResumeConnectionResult {
+  if (status === 200) {
+    return { status: "resumed" };
+  }
+  if (status === 409 && errorCode === "connector_instance_not_paused") {
+    return { status: "not_paused" };
+  }
+  if (status === 404 && errorCode === "connector_instance_not_found") {
+    return { status: "not_found" };
+  }
+  throw new Error(describeError(body, `connection resume failed (${status})`));
 }
 
 /**

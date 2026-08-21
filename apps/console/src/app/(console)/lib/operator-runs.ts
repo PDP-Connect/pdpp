@@ -4,11 +4,15 @@
 import { type CancelRunResult, cancelRunErrorCode, classifyCancelRunResponse } from "./cancel-run-result.ts";
 import {
   classifyDeleteConnectionResponse,
+  classifyPauseConnectionResponse,
   classifyReactivateConnectionResponse,
+  classifyResumeConnectionResponse,
   classifyRevokeConnectionResponse,
   connectionControlErrorCode,
   type DeleteConnectionResult,
+  type PauseConnectionResult,
   type ReactivateConnectionResult,
+  type ResumeConnectionResult,
   type RevokeConnectionResult,
 } from "./connection-control-result.ts";
 import { describeError } from "./describe-error.ts";
@@ -18,8 +22,12 @@ export type { CancelRunOutcome, CancelRunResult } from "./cancel-run-result.ts";
 export type {
   DeleteConnectionOutcome,
   DeleteConnectionResult,
+  PauseConnectionOutcome,
+  PauseConnectionResult,
   ReactivateConnectionOutcome,
   ReactivateConnectionResult,
+  ResumeConnectionOutcome,
+  ResumeConnectionResult,
   RevokeConnectionOutcome,
   RevokeConnectionResult,
 } from "./connection-control-result.ts";
@@ -456,6 +464,39 @@ export async function reactivateConnection(connectionId: string): Promise<Reacti
   });
   const body = await readBody(response);
   return classifyReactivateConnectionResponse(response.status, body, connectionControlErrorCode(body));
+}
+
+/**
+ * Owner-pause one active connection via the owner-session
+ * `POST /_ref/connections/:id/pause` route. Stops future collection while
+ * keeping everything: records, grants, schedule, and the stored credential are
+ * untouched, and the connection resumes through {@link resumeConnection}.
+ * Distinct from revoke, which ends the account relationship and requires an
+ * explicit re-initiate. Returns a typed outcome (`not_active` if the
+ * connection was not active) so the console can message in place.
+ */
+export async function pauseConnection(connectionId: string): Promise<PauseConnectionResult> {
+  const response = await fetchAs(connectionControlPath(connectionId, "/pause"), {
+    method: "POST",
+  });
+  const body = await readBody(response);
+  return classifyPauseConnectionResponse(response.status, body, connectionControlErrorCode(body));
+}
+
+/**
+ * Owner-resume one paused connection via the owner-session
+ * `POST /_ref/connections/:id/resume` route. The inverse of
+ * {@link pauseConnection}: flips the connection back to `active` so scheduled
+ * and manual runs land again. Zero cascade; credential freshness is delegated
+ * to the next collection run. Returns a typed outcome (`not_paused` if the
+ * connection was already active) so the console can message in place.
+ */
+export async function resumeConnection(connectionId: string): Promise<ResumeConnectionResult> {
+  const response = await fetchAs(connectionControlPath(connectionId, "/resume"), {
+    method: "POST",
+  });
+  const body = await readBody(response);
+  return classifyResumeConnectionResponse(response.status, body, connectionControlErrorCode(body));
 }
 
 /**

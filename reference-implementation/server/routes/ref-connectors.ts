@@ -217,6 +217,23 @@ export interface MountRefConnectorsContext {
   ) => Promise<ConnectorNamespace>;
   resolveRegisteredConnectorManifest: (connectorId: string) => Promise<unknown>;
   resolveSingleConnectorIdQueryValue: (raw: unknown) => string | null;
+  // Optional. Called by `mountRefConnectionRun` BEFORE the normal run
+  // resolution, for a "collection" (default; owner-launched browser sessions)
+  // or "setup" (the console's "Sync now" button, per `sources/actions.ts`)
+  // run admission. When the target connectorInstanceId is owned by
+  // `ownerSubjectId`, currently `paused`, AND its `source_binding.kind ===
+  // 'historical_archive'`, this resumes the connection (the same guarded
+  // status flip `ref-connection-resume.ts` uses) so the run below proceeds
+  // against an `active` row instead of 400ing. A no-op (resolves to `false`)
+  // for every other case — active/draft/revoked targets, or a paused row of
+  // any other binding kind — so the existing draft-row browser-enrollment run
+  // admission (`runAdmission: "browser_enrollment"`, which allows `draft` and
+  // never reaches this hook) and every other run-now call site are
+  // unaffected.
+  resumeHistoricalArchiveConnectionIfPaused?: (input: {
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+  }) => Promise<boolean>;
   runNow: (
     connectorId: string,
     options: {
@@ -936,6 +953,31 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
         connectionId = connectorInstanceId;
         runAdmission = readRunAdmission(req);
+        // Additive branch: a recovered historical-archive row lands `paused`
+        // and would otherwise 400 here (`runAdmissionStatuses` allows
+        // `active` for "collection" and `active`/`draft` for "setup", never
+        // `paused`). Resume it first — same guard as the dedicated resume
+        // routes (owner + historical_archive required) — so the console's
+        // normal "Sync now" click (`runAdmission: "setup"`, per
+        // `sources/actions.ts`) and an owner-launched browser session
+        // (`runAdmission: "collection"`, the default) against a recovered
+        // row both proceed normally instead of failing. Deliberately
+        // EXCLUDES "browser_enrollment": that admission is the pre-credential
+        // draft-shell enrollment path and never legitimately targets an
+        // already-paused row. Every other target (already active, draft,
+        // revoked, or a paused row of a different binding kind) is
+        // untouched: the hook itself no-ops for those, so this call changes
+        // nothing about the existing draft-row browser-enrollment path or
+        // any other run-now caller.
+        if (
+          (runAdmission === "collection" || runAdmission === "setup") &&
+          ctx.resumeHistoricalArchiveConnectionIfPaused
+        ) {
+          await ctx.resumeHistoricalArchiveConnectionIfPaused({
+            connectorInstanceId,
+            ownerSubjectId,
+          });
+        }
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId, {
           allowStatuses: runAdmissionStatuses(runAdmission),
         });
