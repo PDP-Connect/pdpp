@@ -32,7 +32,9 @@
  * and no admission is possible without it:
  *
  *   1. POSITIVE MARKER (fail-closed). The target must contain the sentinel
- *      table `pdpp_test_database_sentinel` with a matching marker row. A
+ *      table `pdpp_test_guard.pdpp_test_database_sentinel` with a matching
+ *      marker row (its own schema, so a suite that legitimately runs
+ *      `DROP SCHEMA public CASCADE` does not erase its own admission). A
  *      database nobody explicitly provisioned as a test database has no
  *      sentinel, so it is REFUSED BY DEFAULT. Production has no sentinel and
  *      can never acquire one by accident -- only `provisionTestDatabase()`
@@ -41,8 +43,8 @@
  *      this fail closed: the unknown case is the refused case.
  *
  *   2. REAL-OWNER-DATA REFUSAL (defense in depth). Even WITH a sentinel, the
- *      target is refused if it holds owner data the current run did not
- *      create -- concretely, rows in `records` predating this run's sentinel.
+ *      target is refused if `public.records` is non-empty at admission time,
+ *      i.e. it holds data this run did not create.
  *      This closes the residual path where a sentinel is stamped onto a
  *      database that already holds real data (a restored production dump, or
  *      a production database someone stamped by hand). Marker and data must
@@ -61,8 +63,24 @@
 
 import { Client } from "pg";
 
+/**
+ * The sentinel lives in its OWN schema, not in `public`.
+ *
+ * A real suite (`test/browser-surface-lease-store.test.ts`) legitimately runs
+ * `DROP SCHEMA public CASCADE` to prove the empty-database bootstrap path. A
+ * sentinel in `public` is destroyed by that, and every later
+ * `initPostgresStorage` in the file is then refused -- the guard would break
+ * honest tests. Keeping the marker in a separate schema means the product's
+ * own schema can be dropped and rebuilt freely while the "this database is
+ * scratch" fact survives, which is the fact the guard actually needs.
+ */
+export const TEST_DATABASE_SENTINEL_SCHEMA = "pdpp_test_guard";
+
 /** The sentinel table every admissible test database must carry. */
 export const TEST_DATABASE_SENTINEL_TABLE = "pdpp_test_database_sentinel";
+
+/** Fully-qualified sentinel table, safe against a `DROP SCHEMA public CASCADE`. */
+const SENTINEL_RELATION = `${TEST_DATABASE_SENTINEL_SCHEMA}.${TEST_DATABASE_SENTINEL_TABLE}`;
 
 /** The marker value written into the sentinel table. */
 export const TEST_DATABASE_SENTINEL_MARKER = "pdpp-ephemeral-test-database";
@@ -111,9 +129,9 @@ async function withClient<T>(databaseUrl: string, fn: (client: Client) => Promis
   }
 }
 
-async function tableExists(client: Client, table: string): Promise<boolean> {
+async function relationExists(client: Client, qualifiedRelation: string): Promise<boolean> {
   const result = await client.query<{ exists: boolean }>("SELECT to_regclass($1) IS NOT NULL AS exists", [
-    `public.${table}`,
+    qualifiedRelation,
   ]);
   return result.rows[0]?.exists === true;
 }
@@ -128,8 +146,10 @@ async function tableExists(client: Client, table: string): Promise<boolean> {
  */
 export async function provisionTestDatabase(databaseUrl: string): Promise<void> {
   await withClient(databaseUrl, async (client) => {
-    if (await tableExists(client, OWNER_DATA_TABLE)) {
-      const existing = await client.query<{ count: string }>(`SELECT count(*)::text AS count FROM ${OWNER_DATA_TABLE}`);
+    if (await relationExists(client, `public.${OWNER_DATA_TABLE}`)) {
+      const existing = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM public.${OWNER_DATA_TABLE}`
+      );
       const rowCount = Number(existing.rows[0]?.count ?? "0");
       if (rowCount > 0) {
         throw new ProductionDatabaseRefusedError(
@@ -137,13 +157,14 @@ export async function provisionTestDatabase(databaseUrl: string): Promise<void> 
         );
       }
     }
+    await client.query(`CREATE SCHEMA IF NOT EXISTS ${TEST_DATABASE_SENTINEL_SCHEMA}`);
     await client.query(
-      `CREATE TABLE IF NOT EXISTS ${TEST_DATABASE_SENTINEL_TABLE} (
+      `CREATE TABLE IF NOT EXISTS ${SENTINEL_RELATION} (
          marker text PRIMARY KEY,
          provisioned_at timestamptz NOT NULL DEFAULT now()
        )`
     );
-    await client.query(`INSERT INTO ${TEST_DATABASE_SENTINEL_TABLE} (marker) VALUES ($1) ON CONFLICT DO NOTHING`, [
+    await client.query(`INSERT INTO ${SENTINEL_RELATION} (marker) VALUES ($1) ON CONFLICT DO NOTHING`, [
       TEST_DATABASE_SENTINEL_MARKER,
     ]);
   });
@@ -160,18 +181,17 @@ export async function provisionTestDatabase(databaseUrl: string): Promise<void> 
 export async function assertTestDatabase(databaseUrl: string): Promise<void> {
   const target = describeTarget(databaseUrl);
   await withClient(databaseUrl, async (client) => {
-    if (!(await tableExists(client, TEST_DATABASE_SENTINEL_TABLE))) {
+    if (!(await relationExists(client, SENTINEL_RELATION))) {
       throw new ProductionDatabaseRefusedError(
-        `REFUSING to run tests against ${target}: it carries no "${TEST_DATABASE_SENTINEL_TABLE}" table, so it is NOT a provisioned test database and may be PRODUCTION. Tests must run against a database provisioned by provisionTestDatabase() (the RI test runner does this per file). This is fail-closed by design: an unmarked database is always refused.`
+        `REFUSING to run tests against ${target}: it carries no "${SENTINEL_RELATION}" table, so it is NOT a provisioned test database and may be PRODUCTION. Tests must run against a database provisioned by provisionTestDatabase() (the RI test runner does this per file). This is fail-closed by design: an unmarked database is always refused.`
       );
     }
-    const marker = await client.query<{ marker: string }>(
-      `SELECT marker FROM ${TEST_DATABASE_SENTINEL_TABLE} WHERE marker = $1`,
-      [TEST_DATABASE_SENTINEL_MARKER]
-    );
+    const marker = await client.query<{ marker: string }>(`SELECT marker FROM ${SENTINEL_RELATION} WHERE marker = $1`, [
+      TEST_DATABASE_SENTINEL_MARKER,
+    ]);
     if (marker.rows.length === 0) {
       throw new ProductionDatabaseRefusedError(
-        `REFUSING to run tests against ${target}: "${TEST_DATABASE_SENTINEL_TABLE}" exists but carries no "${TEST_DATABASE_SENTINEL_MARKER}" marker row, so this database was not provisioned as a PDPP test database.`
+        `REFUSING to run tests against ${target}: "${SENTINEL_RELATION}" exists but carries no "${TEST_DATABASE_SENTINEL_MARKER}" marker row, so this database was not provisioned as a PDPP test database.`
       );
     }
 
@@ -187,9 +207,9 @@ export async function assertTestDatabase(databaseUrl: string): Promise<void> {
     // Note: `records` deliberately has no created_at/ingested-at column to key
     // a time comparison off, so "predates this run" is expressed as "present
     // at admission time" -- which is the stricter and simpler test.
-    if (await tableExists(client, OWNER_DATA_TABLE)) {
+    if (await relationExists(client, `public.${OWNER_DATA_TABLE}`)) {
       const preexisting = await client.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM ${OWNER_DATA_TABLE}`
+        `SELECT count(*)::text AS count FROM public.${OWNER_DATA_TABLE}`
       );
       const rowCount = Number(preexisting.rows[0]?.count ?? "0");
       if (rowCount > 0) {
