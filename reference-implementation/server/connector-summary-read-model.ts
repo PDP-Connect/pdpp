@@ -1308,7 +1308,24 @@ const TERMINAL_TYPES_SQL = TERMINAL_RUN_EVENT_TYPES.map((t) => `'${t}'`).join(",
 // the fold only re-reads to narrow EXISTING facts, never to originate
 // fresh ones. A v4 current map is never a valid baseline after this
 // upgrade, for the same self-healing reason as v2->v3 and v3->v4.
-const STREAM_FACTS_FOLD_LOGIC_VERSION = 5;
+//
+// Version 6 adds the measured-boundary guard to `mergeEventStreamFacts`: a
+// newer fact carrying no measured `considered` denominator no longer erases
+// a stored fact that carries one. A v5 map may already have folded exactly
+// that erasure — an incremental change-feed run (or any run that commits a
+// checkpoint without emitting DETAIL_COVERAGE) overwriting a full
+// enumeration's proof — and parked its checkpoint past the erasing event,
+// so the destroyed proof would stay destroyed even after this fix ships.
+// A v5 current map is therefore never a valid baseline: `seedFoldState`
+// replays it from an empty map on the first observation, exactly like every
+// upgrade above, and the true proof is recovered from the retained terminal
+// event history that still holds it.
+// Exported so tests can assert "the row carries THIS binary's fold version"
+// against the constant itself rather than against a copied literal. Several
+// tests previously hardcoded the then-current number and had to be edited on
+// every semantics bump, which makes a stale literal — not a real regression —
+// look like a failure.
+export const STREAM_FACTS_FOLD_LOGIC_VERSION = 6;
 // A route may retry a replay once after a concurrent writer wins its CAS.
 // This is deliberately small: each retry rereads the durable baseline, and
 // persistent contention fails closed in memory rather than spinning or
@@ -1733,6 +1750,30 @@ function factCheckpointProvesDurableCoverage(fact: Row): boolean {
 }
 
 /**
+ * Whether a stream fact carries a MEASURED enumeration boundary — a
+ * `considered` denominator the connector measured at the enumeration site.
+ *
+ * This is deliberately a test of PRESENCE, never of magnitude. A measured
+ * `considered: 0` is a positive statement ("I enumerated the boundary and it
+ * held nothing"), which is exactly how a zero-result run legitimately proves
+ * verified emptiness — so it counts as measured here, and a genuine zero
+ * therefore stays able to replace a larger prior proof. The predicate mirrors
+ * the contract's own `readCount` acceptance rule (a finite, non-negative
+ * number), so a malformed denominator reads as UNMEASURED rather than being
+ * laundered into a boundary; it is the same question
+ * `evaluateStreamCoherence` asks before it can return `enumeration_boundary`,
+ * and the same one `isCheckpointOnlyClaim` asks to name a checkpoint-only
+ * claim. Mirrored rather than imported for the reason documented on
+ * `factCheckpointProvesDurableCoverage` above: this raw-facts store must not
+ * depend on how coverage is derived.
+ */
+function factCarriesMeasuredBoundary(fact: Row): boolean {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+  const considered = fact.considered;
+  return typeof considered === "number" && Number.isFinite(considered) && considered >= 0;
+}
+
+/**
  * Merge one event's stream facts into a connection's map: newest attempt
  * wins per stream, UNLESS doing so would erase durable proof with an
  * attempt that proves nothing. A recovery-only run's terminal fact block
@@ -1758,10 +1799,31 @@ function factCheckpointProvesDurableCoverage(fact: Row): boolean {
  * accepted-absence fact whose parent checkpoint committed/disabled) still
  * replaces the stored fact normally — forward progress is unaffected.
  *
+ * Measured-boundary guard (a second, INDEPENDENT floor): once a stream's
+ * stored fact carries a measured enumeration boundary (a `considered`
+ * denominator — see `factCarriesMeasuredBoundary`), a newer attempt that
+ * carries none does not replace it. The checkpoint floor above cannot cover
+ * this case, because a run that structurally cannot measure still commits
+ * its checkpoint honestly: an incremental change-feed pass (CardDAV
+ * `sync-collection`, RFC 6578) makes real durable cursor progress while
+ * deliberately WITHHOLDING coverage keys, since its `considered` would count
+ * only CHANGED resources and a quiet run would otherwise read as a
+ * proven-empty inventory. Such a fact clears the checkpoint floor and would
+ * erase a genuine proof.
+ *
+ * The guard keys on PRESENCE of the measurement, never its magnitude, so it
+ * is a floor on EVIDENCE KIND rather than on counts: the newest MEASURING
+ * fact always wins, even when it measures a smaller number or a genuine
+ * zero. That is what keeps a truthful zero expressible and stops the fold
+ * from freezing a stale high-water mark after an upstream deletion. The
+ * fold retains the newest fact that actually measured — not the newest fact,
+ * and not the largest.
+ *
  * A stream with no prior durably-proven fact is unaffected by the guard:
  * every attempt — resolved or not — still replaces it, so an honestly-never-
  * proven stream keeps surfacing its newest (possibly unresolved) attempt
- * rather than silently freezing on the first thing recorded for it. Run
+ * rather than silently freezing on the first thing recorded for it. The same
+ * holds for a never-measured stream under the measured-boundary guard. Run
  * failure/cancellation itself is never represented here; it is the separate
  * run-health/run-summary authority's job, and this guard only decides which
  * PER-STREAM fact is authoritative evidence going forward.
@@ -1794,6 +1856,18 @@ function mergeEventStreamFacts(
     ) {
       // The stored fact already proves durable coverage; this newer attempt
       // does not. Keep the stronger, already-proven fact — do not regress it.
+      continue;
+    }
+    if (existing && factCarriesMeasuredBoundary(existing.fact) && !factCarriesMeasuredBoundary(rawFact as Row)) {
+      // The stored fact measured an enumeration boundary; this newer attempt
+      // measured none. A run that structurally CANNOT measure — an
+      // incremental change-feed pass, whose `considered` would count only
+      // CHANGED resources — commits its checkpoint legitimately and so
+      // clears the checkpoint floor above, yet carries no coverage keys at
+      // all. Letting it win would silently destroy a proof an earlier full
+      // enumeration genuinely earned, resetting the stream to "Not
+      // measured". Absence of measurement is not newer information than a
+      // measurement, so the measured fact stands.
       continue;
     }
     facts[stream] = {

@@ -87,6 +87,7 @@ import {
   foldConnectorSummaryStreamFacts,
   getConnectorSummaryEvidence,
   rebuildConnectorSummaryEvidence,
+  STREAM_FACTS_FOLD_LOGIC_VERSION,
 } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 
@@ -345,7 +346,7 @@ test("CAS-loser: a rejected stale write is a true no-op — no partial/torn colu
   });
 });
 
-test("fold-contract upgrade: a version-2 writer cannot overwrite a version-4 terminal map even at the same checkpoint", async () => {
+test("fold-contract upgrade: a version-2 writer cannot overwrite a current-version terminal map even at the same checkpoint", async () => {
   await withTempDb(async () => {
     seedInstance("cin_v3_owner", "gmail");
     await rebuildConnectorSummaryEvidence();
@@ -359,7 +360,7 @@ test("fold-contract upgrade: a version-2 writer cannot overwrite a version-4 ter
     const version3Row = evidenceRow("cin_v3_owner");
     assert.equal(
       Number(version3Row.stream_facts_fold_version),
-      5,
+      STREAM_FACTS_FOLD_LOGIC_VERSION,
       "premise: the new fold contract owns the durable row"
     );
 
@@ -377,7 +378,7 @@ test("fold-contract upgrade: a version-2 writer cannot overwrite a version-4 ter
       }),
       foldVersion: 2,
     });
-    assert.equal(oldBinaryWriteAccepted, false, "the version-2 CAS baseline cannot match a version-5 row");
+    assert.equal(oldBinaryWriteAccepted, false, "the version-2 CAS baseline cannot match a current-version row");
     assert.deepEqual(
       evidenceRow("cin_v3_owner"),
       version3Row,

@@ -60,6 +60,7 @@ import {
   foldConnectorSummaryStreamFacts,
   getConnectorSummaryEvidence,
   rebuildConnectorSummaryEvidence,
+  STREAM_FACTS_FOLD_LOGIC_VERSION,
 } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 
@@ -218,7 +219,7 @@ test("bounded first pass: maxEvents:1 processes AT MOST one event (never the who
     assert.equal(row.terminal_facts_reason_code, "terminal_fold_incomplete");
     assert.equal(
       Number(row.stream_facts_fold_version),
-      5,
+      STREAM_FACTS_FOLD_LOGIC_VERSION,
       "the version field already reflects the current fold logic from the FIRST partial write"
     );
 
@@ -291,7 +292,7 @@ test("bounded upgrade replay from a pre-existing (pre-versioning) row: maxEvents
     assert.equal(row.terminal_facts_reason_code, "terminal_fold_incomplete");
     assert.equal(
       Number(row.stream_facts_fold_version),
-      5,
+      STREAM_FACTS_FOLD_LOGIC_VERSION,
       "the version field already reflects the current fold logic from the FIRST partial write"
     );
 
@@ -353,7 +354,7 @@ test("exact replacement: a converged pass with genuinely zero facts clears strea
       "the stale leftover fact map is genuinely cleared, not COALESCEd back in"
     );
     assert.equal(row.terminal_facts_state, "current");
-    assert.equal(Number(row.stream_facts_fold_version), 5);
+    assert.equal(Number(row.stream_facts_fold_version), STREAM_FACTS_FOLD_LOGIC_VERSION);
   });
 });
 
