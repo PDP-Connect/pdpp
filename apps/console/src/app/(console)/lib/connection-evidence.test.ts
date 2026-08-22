@@ -14,6 +14,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { formatCoverageAxis, formatFreshnessAxis, formatOutboxAxis } from "@pdpp/display";
 import {
   deriveAutoPausedBanner,
   deriveConnectionNextStep,
@@ -22,12 +23,9 @@ import {
   derivePrimaryRowAction,
   deriveStreakDots,
   formatCollectionRateReadout,
-  formatCoverageAxis,
   formatDominantCondition,
   formatForwardDisposition,
-  formatFreshnessAxis,
   formatLastDurableProgress,
-  formatOutboxAxis,
   formatProjectionFreshness,
   formatSourceHeartbeat,
   formatSourceOutboxState,
