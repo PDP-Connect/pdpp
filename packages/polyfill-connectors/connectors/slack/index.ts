@@ -43,6 +43,11 @@
  *   SLACK_CHANNEL_ALLOWLIST   (csv of channel IDs — maps to slackdump positional args)
  *   SLACK_CHANNEL_TYPES       (csv: public,private,im,mpim — default all four)
  *   SLACK_MEMBER_ONLY         (bool, default true — -member-only flag)
+ *                             Set false to archive EVERY channel the workspace
+ *                             lists, including public channels this account has
+ *                             left and channels Slack has archived. The flag
+ *                             filters on `is_member` alone; archived is a
+ *                             separate axis slackdump never filters on.
  *   SLACK_SKIP_FILES          (bool, default true)
  *
  * PDPP scope mapping:
@@ -286,35 +291,72 @@ export interface ChannelReachability {
 }
 
 /**
+ * Does `-member-only` cause slackdump to skip this channel?
+ *
+ * Mirrors slackdump's own filter exactly. In v4.4.2
+ * (`internal/chunk/control/processors.go`):
+ *
+ *     if c.memberOnly && !structures.IsMember(&ch) { continue }
+ *
+ * and `structures.IsMember` (`internal/structures/conversation.go`):
+ *
+ *     if ChannelType(*ch) != CPublic || (ch.ID != "" && ch.ID[0] != 'C') {
+ *         return true    // member of any non-public channel by assumption
+ *     }
+ *     return ch.IsMember
+ *
+ * Two facts follow, and both were previously stated backwards in this file:
+ *
+ *   1. The filter reads ONLY `is_member`. `is_archived` is never consulted,
+ *      here or anywhere else in slackdump. Archiving a channel does not
+ *      remove the account's membership, so an archived channel the account
+ *      belongs to IS walked under `-member-only` — verified on this owner's
+ *      own Aug-17 archive, where all 15 archived channels were members and
+ *      all 15 finished with 16,173 messages collected.
+ *   2. Only `C`-prefixed public channels can ever be skipped. DMs, MPIMs and
+ *      private channels are unconditionally in scope.
+ *
+ * So `-member-only` excludes exactly: public channels the account has left or
+ * never joined. That is the real axis, and it is orthogonal to archived.
+ */
+export function memberOnlySkipsChannel(id: string, facts: ChannelReachability): boolean {
+  return id.startsWith("C") && !facts.isMember;
+}
+
+/**
  * Split unproven channels by whether this run could ever have walked them.
  *
- * `archive` runs with `-member-only` by default (SLACK_MEMBER_ONLY, see
- * `buildArchiveArgs`), so slackdump only ever requests history for channels
- * the account is a MEMBER of. A channel the account has left — or one Slack
- * has archived — is therefore not a walk that came up short; it is a walk
- * that was never in scope. Reporting the two together produced this owner's
- * "114 channel(s) have unproven history" against an archive that had in fact
- * finished every channel it was allowed to request: 99 of those 114 are
- * non-member and 95 are archived.
+ * `outOfScope` — the run's own configuration guaranteed slackdump would never
+ * request this channel's history, so a re-run changes nothing. Under
+ * `-member-only` that is precisely the public channels the account is not a
+ * member of (see `memberOnlySkipsChannel`). With member-only OFF, nothing is
+ * out of scope: slackdump requests every channel Slack enumerates, archived
+ * included.
  *
- * `outOfScope` — not a member (nothing to retry: joining is an owner action,
- * and re-running changes nothing), or archived.
- * `inScope` — a member of a live channel whose history slackdump still did
- * not finish. This is the only genuinely unexplained bucket, and the only
- * one a re-archive can close.
+ * `inScope` — slackdump was allowed to walk it and still did not finish. This
+ * is the only genuinely unexplained bucket, and the only one a re-archive can
+ * close.
+ *
+ * Being ARCHIVED is deliberately NOT a reason to call a channel out of scope.
+ * Slack's `conversations.list` includes archived channels by default
+ * (`exclude_archived` defaults to false and slackdump never sets it), so an
+ * archived channel that went unwalked is a real gap that must be reported as
+ * one. Treating archived as "explained" is what buried this owner's 95
+ * archived channels behind a message telling him they were absent by design.
  *
  * A channel missing from `reachability` is treated as IN scope: absent
  * evidence must never silently downgrade a gap into "explained".
  */
 export function partitionUnprovenChannels(
   unproven: readonly string[],
-  reachability: ReadonlyMap<string, ChannelReachability>
+  reachability: ReadonlyMap<string, ChannelReachability>,
+  memberOnly: boolean
 ): { inScope: string[]; outOfScope: string[] } {
   const inScope: string[] = [];
   const outOfScope: string[] = [];
   for (const id of unproven) {
     const facts = reachability.get(id);
-    if (facts && (!facts.isMember || facts.isArchived)) {
+    if (memberOnly && facts && memberOnlySkipsChannel(id, facts)) {
       outOfScope.push(id);
     } else {
       inScope.push(id);
@@ -391,7 +433,8 @@ async function emitMissingChannelDiagnostic(
 async function emitUnprovenChannelDiagnostic(
   emit: CollectContext["emit"],
   db: DatabaseSync,
-  messageFamilyRequested: boolean
+  messageFamilyRequested: boolean,
+  memberOnly: boolean
 ): Promise<void> {
   if (!messageFamilyRequested) {
     return;
@@ -405,7 +448,7 @@ async function emitUnprovenChannelDiagnostic(
   if (unproven.length === 0) {
     return;
   }
-  const { inScope, outOfScope } = partitionUnprovenChannels(unproven, archiveChannelReachability(db));
+  const { inScope, outOfScope } = partitionUnprovenChannels(unproven, archiveChannelReachability(db), memberOnly);
   // Split the in-scope gap by whether slackdump ever opened a messages chunk
   // for the channel. Both are gaps, but they have different causes and
   // different fixes, and reporting them as one bucket is what made this
@@ -422,7 +465,7 @@ async function emitUnprovenChannelDiagnostic(
       stream: "messages",
       reason: "channel_history_never_requested",
       message:
-        `${String(neverRequested.length)} joined, unarchived Slack channel(s) hold no message data at all: the ` +
+        `${String(neverRequested.length)} in-scope Slack channel(s) hold no message data at all: the ` +
         "archive's channel enumeration was cut short before it reached them, so their history has never been " +
         "requested even once. This is recoverable — a full archive pass (not a resume) collects them.",
       diagnostics: {
@@ -446,7 +489,7 @@ async function emitUnprovenChannelDiagnostic(
       reason: "channel_history_not_finalized",
       message:
         `Slack archive lists ${String(inventory.size)} channels but slackdump proved a finished message walk for only ` +
-        `${String(finalized.size)}; ${String(startedUnfinished.length)} joined, unarchived channel(s) were walked ` +
+        `${String(finalized.size)}; ${String(startedUnfinished.length)} in-scope channel(s) were walked ` +
         "part-way and never finished. Their messages are partial. A further archive pass is required to close this.",
       diagnostics: {
         inventory_count: inventory.size,
@@ -468,16 +511,17 @@ async function emitUnprovenChannelDiagnostic(
       stream: "messages",
       reason: "channel_history_out_of_member_scope",
       message:
-        `${String(outOfScope.length)} channel(s) in the Slack inventory were never walked because this account is not ` +
-        "a member or the channel is archived. Member-only archiving never requests their history, so their messages " +
-        "are absent by configuration, not lost. Joining a channel (or disabling member-only archiving) is required " +
-        "to collect these.",
+        `${String(outOfScope.length)} public Slack channel(s) were never walked because this account is not a member ` +
+        "of them. This is a setting you control: set the connector's Slack option MEMBER_ONLY to false and run a " +
+        "full archive to collect every channel the workspace lists for you, including channels you have left and " +
+        "channels that have been archived. Their messages are not lost — they have simply never been requested.",
       diagnostics: {
         inventory_count: inventory.size,
         finalized_count: finalized.size,
         out_of_scope_count: outOfScope.length,
         out_of_scope_channel_ids: visibleIds,
         truncated: visibleIds.length < outOfScope.length,
+        collect_by_setting: "SLACK_MEMBER_ONLY=false",
       },
       recovery_hint: {
         // `not_retriable` (not a free-form token) — RECOVERY_ACTIONS is a closed
@@ -3438,7 +3482,7 @@ if (isMainModule(import.meta.url)) {
       // archive's inventory against slackdump's own per-channel
       // end-of-pagination marker — a source-side fact — and so surfaces
       // exactly that never-visited hole.
-      await emitUnprovenChannelDiagnostic(emit, db, messageFamilyRequested);
+      await emitUnprovenChannelDiagnostic(emit, db, messageFamilyRequested, opts.MEMBER_ONLY);
 
       // Register the opt-in __uploads reclaim once every archive this run
       // actually read is known: the base/scoped archive, every scoped archive

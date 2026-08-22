@@ -1534,7 +1534,7 @@
   "reason_display_messages": {
     "channel_history_never_requested": "Some channels you're in have never been collected at all, because the archive stopped before reaching them",
     "channel_history_not_finalized": "Some channels you're in have unproven history, so their messages may be incomplete",
-    "channel_history_out_of_member_scope": "Some channels weren't collected because you're not a member or they're archived",
+    "channel_history_out_of_member_scope": "Some public channels weren't collected because you're not a member of them. Set the Slack option MEMBER_ONLY to false to collect every channel your workspace lists, including ones you've left and ones that are archived",
     "optional_stream_failed": "We couldn't collect one part of your Slack data, so we skipped it",
     "source_partition_missing": "Some previously seen Slack channels are missing from this export, so message coverage is incomplete"
   }
