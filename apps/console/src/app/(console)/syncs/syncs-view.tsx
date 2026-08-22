@@ -28,10 +28,10 @@ import {
   TableHeader,
   TableHeaderRow,
 } from "@pdpp/brand-react";
-import { humanizeFieldLabel } from "@pdpp/display";
+import { formatCoverageAxis, humanizeFieldLabel } from "@pdpp/display";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
-import { formatCoverageAxis } from "../lib/connection-evidence.ts";
+
 import { SOURCE_WORK_GROUP_COPY } from "../lib/source-actionability.ts";
 import {
   type DuplicateSyncGroup,

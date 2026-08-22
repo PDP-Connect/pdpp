@@ -1,0 +1,215 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Tests for the `sources-report` CLI projection.
+ *
+ * The fixtures here are trimmed from a real `/_ref/connectors?sources_
+ * visibility=1` response captured on 2026-08-22, and the expectations are the
+ * verdicts the OWNER read off the `/sources` page on the same day. That makes
+ * this suite the regression guard for the divergence the CLI exists to close:
+ * if the projection ever stops reproducing what the owner sees, these fail.
+ */
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import {
+  type ConnectorSummaryLike,
+  projectSourceRow,
+  uncommittedCompleteStreams,
+} from "../scripts/sources-report-model.ts";
+
+function summary(overrides: Partial<ConnectorSummaryLike>): ConnectorSummaryLike {
+  return { connector_id: "example", display_name: "Example", status: "active", ...overrides };
+}
+
+test("apple contacts: grey pill renders an empty circle and 'Not measured'", () => {
+  const row = projectSourceRow(
+    summary({
+      connection_health: { axes: { coverage: "unknown", freshness: "fresh", outbox: "unknown" } },
+      connector_id: "apple_contacts",
+      display_name: "Apple Contacts",
+      rendered_verdict: {
+        annotations: [{ kind: "freshness", text: "Fresh today." }],
+        forward_statement: "Coverage has not been measured yet.",
+        pill: { label: "Not measured", tone: "grey" },
+        streams: [
+          { collected: 0, considered: 1, coverage: "complete", stream_id: "address_books" },
+          { collected: 0, considered: 0, coverage: "complete", stream_id: "contact_groups" },
+          { collected: 0, considered: null, coverage: "unknown", stream_id: "contacts" },
+        ],
+      },
+    })
+  );
+
+  assert.equal(row.status.dot, "○");
+  assert.equal(row.status.kind, "unknown");
+  assert.equal(row.status.label, "Not measured · Fresh today.");
+  assert.deepEqual(
+    row.streams.map((s) => `${s.stream}=${s.coverageLabel}`),
+    ["address_books=coverage complete", "contact_groups=coverage complete", "contacts=coverage unknown"]
+  );
+  // `contacts` has no denominator; the report must not invent "0 of 0".
+  assert.equal(row.streams[2]?.countsLabel, null);
+  assert.equal(row.streams[0]?.countsLabel, "0 of 1 covered");
+});
+
+test("peregrine Claude Code: red pill renders the interdict glyph and carries the freshness note", () => {
+  const row = projectSourceRow(
+    summary({
+      connection_health: { axes: { coverage: "unknown", freshness: "unknown", outbox: "stalled" } },
+      display_name: "peregrine Claude Code",
+      rendered_verdict: {
+        annotations: [{ kind: "freshness", text: "freshness has not been measured yet" }],
+        pill: { label: "Can't collect", tone: "red" },
+        streams: [
+          { coverage: "unknown", stream_id: "messages" },
+          { coverage: "inventory_only", stream_id: "cache_inventory" },
+          { coverage: "retryable_gap", stream_id: "local-collector/connector_child_failure" },
+        ],
+      },
+    })
+  );
+
+  assert.equal(row.status.dot, "⊘");
+  assert.equal(row.status.kind, "blocked");
+  assert.equal(row.status.label, "Can't collect · freshness has not been measured yet");
+  assert.deepEqual(
+    row.streams.map((s) => s.coverageLabel),
+    ["coverage unknown", "coverage inventory only", "coverage retryable gap"]
+  );
+  assert.equal(row.axes.freshness, "unknown");
+  assert.equal(row.axes.outbox, "stalled");
+});
+
+test('gmail: terminal_gap renders "won\'t backfill", never the wire key', () => {
+  const row = projectSourceRow(
+    summary({
+      display_name: "Gmail",
+      rendered_verdict: {
+        pill: { label: "Degraded", tone: "amber" },
+        streams: [
+          { collected: 4, considered: 4, coverage: "complete", stream_id: "messages" },
+          { coverage: "unknown", stream_id: "message_bodies" },
+          { collected: 0, considered: 0, coverage: "terminal_gap", stream_id: "attachments" },
+        ],
+      },
+    })
+  );
+
+  assert.equal(row.status.dot, "◐");
+  assert.equal(row.streams[2]?.coverageLabel, "coverage won't backfill");
+  assert.equal(row.streams[2]?.coverageKey, "terminal_gap");
+});
+
+test("usaa: complete-with-uncommitted-checkpoint is reported, not hidden (ledger B5)", () => {
+  const row = projectSourceRow(
+    summary({
+      collection_report: [
+        { checkpoint: "not_committed", coverage_condition: "complete", stream: "accounts" },
+        { checkpoint: "committed", coverage_condition: "complete", stream: "account_stats" },
+        {
+          checkpoint: "committed",
+          coverage_condition: "terminal_gap",
+          skipped: "pdf_template_unknown",
+          stream: "transactions",
+        },
+      ],
+      connector_id: "usaa",
+      display_name: "USAA",
+      rendered_verdict: {
+        pill: { label: "Degraded", tone: "amber" },
+        streams: [
+          { collected: 5, considered: 5, coverage: "complete", stream_id: "account_stats" },
+          { collected: 0, considered: 5, coverage: "complete", stream_id: "accounts" },
+          { collected: 2, considered: 4, coverage: "terminal_gap", stream_id: "transactions" },
+        ],
+      },
+    })
+  );
+
+  // The rendered coverage word is unchanged — this CLI reports what the page
+  // shows, it does not editorialize the verdict.
+  const accounts = row.streams.find((s) => s.stream === "accounts");
+  assert.equal(accounts?.coverageLabel, "coverage complete");
+  assert.equal(accounts?.countsLabel, "0 of 5 covered");
+  // ...but the uncommitted checkpoint is now visible rather than invisible.
+  assert.equal(accounts?.checkpoint, "not_committed");
+  assert.equal(row.streams.find((s) => s.stream === "transactions")?.skipped, "pdf_template_unknown");
+
+  assert.deepEqual(uncommittedCompleteStreams([row]), [
+    { countsLabel: "0 of 5 covered", displayName: "USAA", stream: "accounts" },
+  ]);
+});
+
+test("a revoked connection never shows a stale verdict tone as its health", () => {
+  const row = projectSourceRow(
+    summary({
+      display_name: "Venmo",
+      rendered_verdict: { pill: { label: "Healthy", tone: "green" } },
+      status: "revoked",
+    })
+  );
+  assert.equal(row.status.dot, "⊘");
+  assert.equal(row.status.kind, "revoked");
+  assert.equal(row.status.label, "Revoked");
+});
+
+test("a summary with no rendered_verdict reads honest 'Verdict unavailable', never a guess", () => {
+  const row = projectSourceRow(
+    summary({
+      connection_health: { axes: { coverage: "complete", freshness: "fresh", outbox: "idle" }, state: "healthy" },
+    })
+  );
+  // The health snapshot says "healthy" on every axis, but with no verdict the
+  // console renders `○ / unknown` — reconstructing green from raw axes is
+  // exactly the client-side fallback the state-model convergence removed.
+  assert.equal(row.status.dot, "○");
+  assert.equal(row.status.kind, "unknown");
+  assert.equal(row.status.label, "Verdict unavailable");
+});
+
+test("an unrecognized tone from a newer server degrades to unknown rather than throwing", () => {
+  const row = projectSourceRow(summary({ rendered_verdict: { pill: { label: "Sparkling", tone: "chartreuse" } } }));
+  assert.equal(row.status.kind, "unknown");
+  assert.equal(row.status.label, "Verdict unavailable");
+});
+
+test("the tone→glyph table matches the console's VERDICT_TONE_STATUS", () => {
+  // The CLI restates the console's tone table (it drops the CSS tone token,
+  // which is meaningless in a terminal). This asserts the shared part against
+  // the console source so the two cannot drift silently apart.
+  const consoleSource = readFileSync(
+    fileURLToPath(new URL("../../apps/console/src/app/(console)/lib/source-actionability.ts", import.meta.url)),
+    "utf8"
+  );
+  const table = consoleSource.slice(
+    consoleSource.indexOf("const VERDICT_TONE_STATUS"),
+    consoleSource.indexOf("};", consoleSource.indexOf("const VERDICT_TONE_STATUS"))
+  );
+  assert.ok(table.length > 0, "could not locate VERDICT_TONE_STATUS in the console source");
+
+  for (const [tone, expected] of [
+    ["amber", { dot: "◐", kind: "degraded" }],
+    ["green", { dot: "●", kind: "healthy" }],
+    ["grey", { dot: "○", kind: "unknown" }],
+    ["red", { dot: "⊘", kind: "blocked" }],
+  ] as const) {
+    const line = table.split("\n").find((l) => l.trim().startsWith(`${tone}:`));
+    assert.ok(line, `console table has no row for tone "${tone}"`);
+    assert.ok(
+      line.includes(`dot: "${expected.dot}"`),
+      `console draws a different glyph for "${tone}" than the CLI: ${line.trim()}`
+    );
+    assert.ok(
+      line.includes(`kind: "${expected.kind}"`),
+      `console uses a different kind for "${tone}" than the CLI: ${line.trim()}`
+    );
+
+    const row = projectSourceRow(summary({ rendered_verdict: { pill: { label: "x", tone } } }));
+    assert.equal(row.status.dot, expected.dot);
+    assert.equal(row.status.kind, expected.kind);
+  }
+});
