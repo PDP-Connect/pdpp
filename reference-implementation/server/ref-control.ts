@@ -143,6 +143,7 @@ import {
 import { canonicalConnectorKey } from "./connector-key.ts";
 import {
   type HeartbeatRow,
+  OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS,
   projectConnectorOutboxAxisFromHeartbeats,
   projectLocalDeviceProgress,
 } from "./connector-outbox-axis.ts";
@@ -5630,10 +5631,75 @@ export function buildConnectorFreshness({
   return freshness;
 }
 
-function localDeviceFreshnessHeartbeatAt(
+/**
+ * Whether a `stalled`/`dead_letter_backlog` outbox describes a backlog that is
+ * entirely TERMINAL — every remaining row is dead-lettered, with nothing
+ * pending, retrying, or leased.
+ *
+ * A dead-lettered row has exhausted its retries and will never drain on its
+ * own; only an owner-run recovery can move it. That makes it a *settled* fact
+ * about lost records, NOT evidence that the collector stopped working. The two
+ * were conflated: one permanently-rejected record out of 10,001 (peregrine
+ * Claude Code, 2026-08-22) forced `backlog_open: 1` -> heartbeat `blocked` ->
+ * outbox `stalled`, which disqualified the freshness heartbeat and rendered a
+ * 2.5-million-record source as RED "can't collect - freshness has not been
+ * measured yet" while its collector was checking in every few minutes and
+ * every one of its 18,453 ingest batches had been accepted.
+ *
+ * This predicate is deliberately narrow. It requires POSITIVE evidence of a
+ * dead letter and ZERO live work: an unknown (`undefined`) count never
+ * qualifies, so missing diagnostics stay conservative exactly as before. It
+ * does not touch the outbox axis, so `BacklogClear` / `LocalExporterAvailable`
+ * keep reporting `dead_letter_backlog` with its "Recover local collector
+ * uploads" remediation — the lost record stays visible and actionable. All it
+ * decides is that a source whose collector is demonstrably alive should not
+ * also be reported as having unmeasurable freshness.
+ */
+export function hasTerminalOnlyOutboxBacklog(
+  counts: OutboxDiagnosticCounts | null,
+  cause: OutboxStalledCause | null | undefined
+): boolean {
+  if (cause !== "dead_letter_backlog" || !counts) {
+    return false;
+  }
+  return (
+    (counts.dead_letter ?? 0) > 0 &&
+    (counts.pending ?? 0) === 0 &&
+    (counts.retrying ?? 0) === 0 &&
+    (counts.leased ?? 0) === 0 &&
+    (counts.stale_leases ?? 0) === 0
+  );
+}
+
+/**
+ * Whether a heartbeat timestamp is recent enough to prove the collector is
+ * still checking in, on the same 30-minute policy the outbox axis uses
+ * (`OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS`). An unparseable or absent timestamp
+ * is never fresh.
+ *
+ * The terminal-backlog carve-out needs this explicitly: `classifyBlockedHeartbeat`
+ * returns `dead_letter_backlog` BEFORE it consults heartbeat age, so a
+ * dead-lettered outbox reports the same cause whether the collector checked in
+ * two minutes ago or died six months ago. Without this guard the carve-out
+ * would green a long-dead collector.
+ */
+function isHeartbeatFresh(lastHeartbeatAt: string | null, nowIso: string): boolean {
+  if (!lastHeartbeatAt) {
+    return false;
+  }
+  const heartbeatTime = Date.parse(lastHeartbeatAt);
+  const nowTime = Date.parse(nowIso);
+  if (!(Number.isFinite(heartbeatTime) && Number.isFinite(nowTime))) {
+    return false;
+  }
+  return nowTime - heartbeatTime <= OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS;
+}
+
+export function localDeviceFreshnessHeartbeatAt(
   localDeviceProgress: LocalDeviceProgress | null,
-  outbox: { readonly axis: OutboxAxis },
-  manifestGeneration: number | null | undefined = null
+  outbox: { readonly axis: OutboxAxis; readonly cause?: OutboxStalledCause | null },
+  manifestGeneration: number | null | undefined = null,
+  nowIso: string = new Date().toISOString()
 ): string | null {
   if (!localDeviceProgress?.last_heartbeat_at) {
     return null;
@@ -5648,6 +5714,17 @@ function localDeviceFreshnessHeartbeatAt(
     outbox.axis === "idle" &&
     localDeviceProgress.last_heartbeat_status === "healthy" &&
     (isNullish(localDeviceProgress.records_pending) || localDeviceProgress.records_pending === 0)
+  ) {
+    return localDeviceProgress.last_heartbeat_at;
+  }
+  // A stalled outbox whose ONLY remaining work is dead-lettered still proves
+  // the collector is checking in. The stall is real and stays surfaced by the
+  // outbox axis; it just is not evidence that freshness is unmeasurable.
+  if (
+    outbox.axis === "stalled" &&
+    hasTerminalOnlyOutboxBacklog(localDeviceProgress.outbox_counts, outbox.cause) &&
+    (isNullish(localDeviceProgress.records_pending) || localDeviceProgress.records_pending === 0) &&
+    isHeartbeatFresh(localDeviceProgress.last_heartbeat_at, nowIso)
   ) {
     return localDeviceProgress.last_heartbeat_at;
   }
@@ -6215,7 +6292,8 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const freshnessHeartbeatAt = localDeviceFreshnessHeartbeatAt(
     localDeviceProgress,
     outbox,
-    evidence?.manifest_generation ?? null
+    evidence?.manifest_generation ?? null,
+    nowIso
   );
   const freshness = buildConnectorFreshness({
     lastHeartbeatAt: freshnessHeartbeatAt,
