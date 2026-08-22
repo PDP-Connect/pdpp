@@ -535,3 +535,81 @@ test("P1-1 sequence 6: failure -> orphaned active run resolves to the settled fa
   assert.notEqual(snapshot.state, "healthy", "an orphaned active run must never silently promote to healthy");
   assert.equal(snapshot.reason_code, "auth_expired");
 });
+
+// ─── Sequence 7 — the server's own restart must not read as a failure ───────
+//
+// `reconcileOrphanedRunsAtBoot` terminalizes a run the previous process died
+// holding as `status: "abandoned"` / `controller_terminated_before_run_finished`.
+// Nothing observed that run fail — the connector, credential and provider were
+// all fine; a deploy ended it. Before this fix `mapRunStatus` folded
+// `"abandoned"` into `"failed"` and the owner was told "The latest terminal
+// collection run failed."
+//
+// Production evidence (`run_history`, 2026-08-21/22): 28 such runs across
+// 9 Slack, 4 Gmail and 3 YNAB walks in two days — the owner's report that
+// restarting the server turns his data unhealthy.
+//
+// This is the same class as the owner-cancel case in sequence 5: a run that
+// carries no provider evidence defers to the last run that actually observed
+// something.
+
+function abandonedRun(overrides: Partial<ConnectorRunSummary> = {}): ConnectorRunSummary {
+  return {
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: "controller_terminated_before_run_finished",
+    finished_at: NOW_ISO,
+    first_at: NOW_ISO,
+    known_gaps: [],
+    last_at: NOW_ISO,
+    recovery_only: false,
+    run_id: "run_abandoned_by_restart",
+    started_at: NOW_ISO,
+    status: "abandoned",
+    terminal_reason: "controller_terminated_before_run_finished",
+    ...overrides,
+  };
+}
+
+test("P1-1 sequence 7: a run abandoned by a server restart does not read as a connector failure", () => {
+  const priorSuccess = succeededRun();
+  const abandoned = abandonedRun();
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [],
+    freshness: { captured_at: PRIOR_SUCCESS_ISO, status: "current" },
+    lastRun: abandoned,
+    lastSuccessfulRun: priorSuccess,
+    latestSettledRun: abandoned,
+    nowIso: NOW_ISO,
+    schedule: { active_run_id: null, enabled: true },
+  });
+  assert.equal(
+    snapshot.state,
+    "healthy",
+    "a deploy ended this run; the provider evidence from the last real run still stands"
+  );
+  assert.equal(snapshot.last_success_at, PRIOR_SUCCESS_ISO);
+  assert.notEqual(
+    snapshot.reason_code,
+    "controller_terminated_before_run_finished",
+    "the owner must never be shown a controller-termination string as a health reason"
+  );
+});
+
+// The guard that keeps sequence 7 honest: this must hide only the restart, and
+// never a genuine failure sitting in the same position. A connector failure is
+// terminalized as `failed` by the run's own process and is untouched.
+test("P1-1 sequence 7 guard: a real connector failure is still reported after a restart-abandoned run exists", () => {
+  const failure = failedRun({ failure_reason: "auth_expired", run_id: "run_settled_failure" });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [],
+    freshness: { captured_at: PRIOR_SUCCESS_ISO, status: "current" },
+    lastRun: failure,
+    lastSuccessfulRun: succeededRun(),
+    latestSettledRun: failure,
+    nowIso: NOW_ISO,
+    schedule: { active_run_id: null, enabled: true },
+  });
+  assert.notEqual(snapshot.state, "healthy", "a genuine failure must never be masked by the abandoned-run exclusion");
+  assert.equal(snapshot.reason_code, "auth_expired");
+});
