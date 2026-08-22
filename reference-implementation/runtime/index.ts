@@ -64,6 +64,7 @@ import {
   DEFAULT_INGEST_RETRY_POLICY,
   INGEST_SATURATED_FAILURE_REASON,
   type IngestRetryPolicy,
+  isRetryableFetchError,
   isRetryableIngestStatus,
   nextIngestRetryDelayMs,
   parseIngestRetryAfterMs,
@@ -3480,15 +3481,20 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     let lastRetryableBody = "";
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       // biome-ignore lint/performance/noAwaitInLoops: sequential retry is the point — each attempt must observe the previous one's status and wait out its backoff before the next.
-      response = await fetch(url, {
-        body: ndjson,
-        headers: {
-          Authorization: `Bearer ${ownerToken}`,
-          "Content-Type": "application/x-ndjson",
+      response = await fetchWithNetworkRetry(
+        url,
+        {
+          body: ndjson,
+          headers: {
+            Authorization: `Bearer ${ownerToken}`,
+            "Content-Type": "application/x-ndjson",
+          },
+          method: "POST",
+          signal: cancelSignal ?? null,
         },
-        method: "POST",
-        signal: cancelSignal ?? null,
-      });
+        stream,
+        "ingest_retry"
+      );
       if (response.ok || !isRetryableIngestStatus(response.status)) {
         return response;
       }
@@ -3693,6 +3699,52 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     );
   }
 
+  /**
+   * `fetch()` with a bounded retry against a network-level throw only (no
+   * response ever arrived) — the same failure class {@link postIngestBatchWithRetry}
+   * now retries, applied here because {@link commitState}'s PUT had none:
+   * before this existed, a bare `TypeError: fetch failed` on the STATE commit
+   * was uncaught, killing the run with `terminal_reason: runtime_error` after
+   * every record had already been durably accepted, and leaving the
+   * checkpoint `not_staged` for a run whose connector never got a chance to
+   * retry. An HTTP status the response DID carry is left to the caller, same
+   * division of responsibility as the ingest path.
+   */
+  async function fetchWithNetworkRetry(
+    url: string,
+    init: RequestInit,
+    stream: string,
+    progressType: "ingest_retry" | "state_commit_retry"
+  ): Promise<Response> {
+    const maxAttempts = Math.max(1, ingestRetryPolicy.maxAttempts);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        // biome-ignore lint/performance/noAwaitInLoops: sequential retry is the point — each attempt must observe the previous one's failure before the next.
+        return await fetch(url, init);
+      } catch (error) {
+        if (attempt >= maxAttempts || !isRetryableFetchError(error) || terminalStopRequested()) {
+          throw error;
+        }
+        const delayMs = nextIngestRetryDelayMs({
+          attempt,
+          policy: ingestRetryPolicy,
+          random: ingestRetryRandom,
+          retryAfterMs: null,
+        });
+        onProgress({
+          attempt,
+          delay_ms: delayMs,
+          max_attempts: maxAttempts,
+          status: null,
+          stream,
+          type: progressType,
+        });
+        await ingestRetrySleep(delayMs);
+      }
+    }
+    throw new Error("unreachable: fetchWithNetworkRetry loop exited without returning or throwing");
+  }
+
   // Process a STATE message: persist to RS
   async function commitState(stream: string, cursor: unknown): Promise<void> {
     newState[stream] = cursor;
@@ -3705,14 +3757,19 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
     const url = stateUrl.toString();
     try {
-      const resp = await fetch(url, {
-        body: JSON.stringify({ state: { [stream]: cursor } }),
-        headers: {
-          Authorization: `Bearer ${ownerToken}`,
-          "Content-Type": "application/json",
+      const resp = await fetchWithNetworkRetry(
+        url,
+        {
+          body: JSON.stringify({ state: { [stream]: cursor } }),
+          headers: {
+            Authorization: `Bearer ${ownerToken}`,
+            "Content-Type": "application/json",
+          },
+          method: "PUT",
         },
-        method: "PUT",
-      });
+        stream,
+        "state_commit_retry"
+      );
       if (!resp.ok) {
         const body = await resp.text();
         throw buildHttpFailure(`State persistence failed for ${stream}`, resp.status, body);
