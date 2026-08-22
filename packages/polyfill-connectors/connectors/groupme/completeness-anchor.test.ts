@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   groupMessageShortfall,
-  pageContradictsItsOwnCount,
+  pageEndedShortOfProviderCount,
   partitionGroupMessageShortfalls,
   providerMessageCount,
 } from "./index.ts";
@@ -107,17 +107,18 @@ test("groupMessageShortfall reports a gap for an empty walk against a non-zero c
 
 // ─── partitionGroupMessageShortfalls: classify, never subtract ───────────
 //
-// The partition keys on `unprovenBoundary` — whether the walk ended on a page
-// that contradicted its OWN count (`count > 0` alongside `messages: []`).
+// The partition keys on `unprovenBoundary` — whether the walk ran out of
+// servable history before reaching the provider's lifetime total (`count > 0`
+// alongside `messages: []`).
 //
 // It deliberately does NOT key on `walked === 0`. Measured live against this
 // API, an empty page carries no status code, `Retry-After`, or rate-limit
-// header distinguishing "nothing to serve" from "declining to serve", so
-// `walked === 0` is precisely the ambiguous observation. Keying an
+// header distinguishing "these messages are gone" from "not serving them
+// now", so `walked === 0` is precisely the ambiguous observation. Keying an
 // "unrecoverable" verdict on it would let the connector assert a certainty
-// the response cannot support — and throttling produces the identical shape.
+// the response cannot support.
 
-test("partitionGroupMessageShortfalls routes a self-contradicting empty page to unexplained", () => {
+test("partitionGroupMessageShortfalls routes a short-of-total empty page to unexplained", () => {
   const { partial, unexplained } = partitionGroupMessageShortfalls([
     { groupId: "g-alpha", providerCount: 98, unprovenBoundary: true, walked: 0 },
   ]);
@@ -136,7 +137,7 @@ test("partitionGroupMessageShortfalls routes a genuinely partial walk to partial
 });
 
 test("partitionGroupMessageShortfalls does NOT route a zero-message walk to unexplained on walked===0 alone", () => {
-  // The regression guard for the throttle-blindness defect. A walk that saw
+  // The regression guard for the unproven-boundary defect. A walk that saw
   // nothing but ended on a COHERENT page (the provider's own count agreed at
   // zero) is an ordinary shortfall, not an ambiguous one. If this ever routes
   // on `walked === 0` again, the connector is back to inferring a verdict from
@@ -178,45 +179,59 @@ test("partitionGroupMessageShortfalls keeps an unexplained group's messages coun
   );
 });
 
-// ─── pageContradictsItsOwnCount: the throttle-blindness detector ─────────
+// ─── pageEndedShortOfProviderCount: the unproven-boundary detector ─────────
 //
-// GroupMe answers a message page with HTTP 200 and an empty `messages` array
-// in at least two materially different situations: it has nothing more to
-// send, and it is declining to send content it still counts. Measured live,
-// those responses are identical apart from `content-length` — same status,
-// same `meta.code`, no `Retry-After`, no rate-limit header. A status-based
-// retry governor cannot see the difference.
+// `count` is GroupMe's LIFETIME TOTAL for the conversation, not the size of
+// the page just served (see connectors/groupme/docs/groupme-message-count-shortfall.md).
+// So an empty page against a non-zero count is NOT the provider
+// contradicting itself — it means this walk ran out of servable history
+// before reaching everything the total implies, most often because the
+// oldest messages are no longer stored on GroupMe's side.
 //
-// The response's own `count` is the only in-band field that contradicts an
-// empty array, so it is the one thing a walk can check without inventing a
-// heuristic. These tests pin that predicate.
+// It is still ambiguous as to CAUSE: retention and a transient refusal
+// produce byte-identical responses (same status, same `meta.code`, no
+// `Retry-After`, no rate-limit header), so the walk records the boundary as
+// unproven and names no cause. These tests pin that predicate.
 
-test("pageContradictsItsOwnCount flags an empty page served against a non-zero count", () => {
-  assert.equal(pageContradictsItsOwnCount({ count: 29, messages: [] }), true);
+test("pageEndedShortOfProviderCount flags an empty page served against a non-zero count", () => {
+  assert.equal(pageEndedShortOfProviderCount({ count: 29, messages: [] }), true);
 });
 
-test("pageContradictsItsOwnCount accepts a coherent empty page (count agrees at zero)", () => {
+test("pageEndedShortOfProviderCount accepts an empty page whose count agrees at zero", () => {
   // Nothing to serve and the provider says so. An ordinary natural end.
-  assert.equal(pageContradictsItsOwnCount({ count: 0, messages: [] }), false);
+  assert.equal(pageEndedShortOfProviderCount({ count: 0, messages: [] }), false);
 });
 
-test("pageContradictsItsOwnCount never flags a page that actually served messages", () => {
+test("pageEndedShortOfProviderCount never fires on GroupMe's documented 304 terminal page", () => {
+  // GroupMe documents: "If no messages are found (e.g. when filtering with
+  // `before_id`) we return code 304." `fetchMessagesPage` normalizes that
+  // 304 into a SYNTHETIC `{count: 0, messages: []}` — a count GroupMe never
+  // sent. This test pins that the synthesized shape reads as a clean natural
+  // end, so the documented end-of-history signal can never be reported as a
+  // shortfall against the provider. If `fetchMessagesPage` ever synthesizes a
+  // non-zero count, every fully-collected group would be accused of holding
+  // back data.
+  const synthesizedBy304 = { count: 0, messages: [] };
+  assert.equal(pageEndedShortOfProviderCount(synthesizedBy304), false);
+});
+
+test("pageEndedShortOfProviderCount never flags a page that actually served messages", () => {
   // A served page is self-consistent regardless of how `count` compares:
   // `count` describes the conversation, the array describes this page.
   const served = [{ id: "m1" }, { id: "m2" }] as unknown as Parameters<
-    typeof pageContradictsItsOwnCount
+    typeof pageEndedShortOfProviderCount
   >[0]["messages"];
-  assert.equal(pageContradictsItsOwnCount({ count: 900, messages: served }), false);
-  assert.equal(pageContradictsItsOwnCount({ count: 2, messages: served }), false);
+  assert.equal(pageEndedShortOfProviderCount({ count: 900, messages: served }), false);
+  assert.equal(pageEndedShortOfProviderCount({ count: 2, messages: served }), false);
 });
 
-test("pageContradictsItsOwnCount treats a missing/non-numeric count as no contradiction", () => {
+test("pageEndedShortOfProviderCount treats a missing/non-numeric count as no shortfall", () => {
   // Unknown is not a contradiction. An absent count cannot testify against
   // the empty array, so it must not manufacture an ambiguity finding.
-  const noCount = { messages: [] } as unknown as Parameters<typeof pageContradictsItsOwnCount>[0];
-  assert.equal(pageContradictsItsOwnCount(noCount), false);
-  const nullCount = { count: null, messages: [] } as unknown as Parameters<typeof pageContradictsItsOwnCount>[0];
-  assert.equal(pageContradictsItsOwnCount(nullCount), false);
+  const noCount = { messages: [] } as unknown as Parameters<typeof pageEndedShortOfProviderCount>[0];
+  assert.equal(pageEndedShortOfProviderCount(noCount), false);
+  const nullCount = { count: null, messages: [] } as unknown as Parameters<typeof pageEndedShortOfProviderCount>[0];
+  assert.equal(pageEndedShortOfProviderCount(nullCount), false);
 });
 
 test("groupMessageShortfall carries the unproven-boundary flag into the shortfall", () => {
