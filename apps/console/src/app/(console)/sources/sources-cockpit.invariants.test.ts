@@ -33,8 +33,16 @@ const OLD_TOUCHING_PADDING_RE = /\.rr-s-item\s*\{[\s\S]*?padding:\s*10px\s+0\s+1
 const STATE_GEOMETRY_RE =
   /\.rr-s-item(?:\.|[^\n{])*(?:degraded|attention|warning)[^{]*\{[\s\S]*?(?:margin|width|border-radius)\s*:/i;
 const COLLECTION_REPORT_INDEX_RE = /indexCollectionReportByStream\(summary\.collection_report\)/;
-const DUPLICATE_COLLAPSE_RE = /collapseDuplicateFallbackSources\(instances\)/;
+// Collapse runs over the LIVE rows, not every row: an archived source must
+// not be pulled into a duplicate group, whose ordinal relabelling
+// ("account 2") would imply it belongs to a live sibling set it has left.
+const DUPLICATE_COLLAPSE_RE = /collapseDuplicateFallbackSources\(liveInstances\)/;
 const DUPLICATE_GROUP_TESTID_RE = /data-testid="sources-duplicate-group"/;
+const ARCHIVED_GROUP_TESTID_RE = /data-testid="sources-archived-group"/;
+// The group heading must say outright that these are not collecting, so a
+// collapsed group can never be mistaken for healthy live sources.
+const ARCHIVED_GROUP_LABEL_RE = /Archived — not collecting \(\{archivedInstances\.length\}\)/;
+const ARCHIVED_PARTITION_RE = /instances\.filter\(\(i\) => i\.archived\)/;
 const FACTS_UNAVAILABLE_COPY_RE = /Collection facts not available yet/;
 const RECORDS_HEADER_RE = /<TableHeader>records<\/TableHeader>/;
 const STREAM_RECORDS_RE = /summary\.stream_records/;
@@ -86,6 +94,13 @@ test("repeated unnamed same-type sources are collapsed into a review group", asy
   const view = await readFile(VIEW_FILE, "utf8");
   assert.match(view, DUPLICATE_COLLAPSE_RE);
   assert.match(view, DUPLICATE_GROUP_TESTID_RE);
+});
+
+test("archived sources render in their own group, labelled as not collecting", async () => {
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.match(view, ARCHIVED_PARTITION_RE);
+  assert.match(view, ARCHIVED_GROUP_TESTID_RE);
+  assert.match(view, ARCHIVED_GROUP_LABEL_RE);
 });
 
 test("source passport suppresses generic sync for non-owner verdict actions", async () => {

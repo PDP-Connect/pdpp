@@ -73,6 +73,11 @@ export type VerdictTone = "amber" | "green" | "grey" | "red";
  * the owner is interrupted.
  */
 export type VerdictLabel =
+  // Terminal and honest: records preserved, collection finished, nothing will
+  // resume. Applied by the summary projection to an archived source, never
+  // derived from a tone (no `TONE_TO_LABEL` entry maps to it) — a source is
+  // archived because of what it IS, not because of how its axes scored.
+  | "Archived"
   | "Can't collect"
   | "Checking"
   | "Degraded"

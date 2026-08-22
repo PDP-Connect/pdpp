@@ -859,7 +859,23 @@ test("toSourcesView disambiguates duplicate unnamed connections without exposing
   assert.equal(views[2]?.listKind, null);
 });
 
-test("toSourcesView hides a pure recovered historical fragment", () => {
+test("toSourcesView renders a pure recovered historical fragment as an archived row", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_fragment",
+      connector_id: "chase",
+      display_name: "Chase",
+      source_visibility: "archived",
+    }),
+  ]);
+
+  assert.equal(views.length, 1, "an archived source must still appear — its records exist and must be reachable");
+  assert.equal(views[0]?.archived, true, "it must be classified archived, not rendered as a live source");
+});
+
+test("toSourcesView accepts the retired hidden_from_sources spelling as archived", () => {
+  // A console deployed ahead of its reference still receives the old value.
+  // It must classify as archived, never fall through to a live-looking row.
   const views = toSourcesView([
     summary({
       connection_id: "cin_fragment",
@@ -869,7 +885,65 @@ test("toSourcesView hides a pure recovered historical fragment", () => {
     }),
   ]);
 
-  assert.deepEqual(views, [], "a pure recovered fragment must not appear as its own Sources row");
+  assert.equal(views.length, 1);
+  assert.equal(views[0]?.archived, true, "the retired spelling must not read as a live source");
+});
+
+test("an archived source never renders a healthy status, even with a green stored verdict", () => {
+  // The fabricated-green guard: an archived source's LAST run may have
+  // succeeded, so its stored verdict can still be green. Rendering that tone
+  // would tell the owner a source that will never collect again is healthy.
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_fragment",
+      connector_id: "chase",
+      display_name: "Chase",
+      rendered_verdict: renderedVerdict({ pill: { label: "Healthy", tone: "green" } }),
+      source_visibility: "archived",
+    }),
+  ]);
+
+  assert.equal(views[0]?.status.kind, "archived", "a green verdict must not survive archival");
+  assert.notEqual(views[0]?.status.tone, "success", "an archived source must never render a success tone");
+});
+
+test("an archived source offers no Reconnect action — the prompt that leads nowhere", () => {
+  // The verdict carries a real owner-satisfiable Reconnect action, exactly as
+  // a fragment's stored verdict does. Reconnecting mints a NEW connection and
+  // resumes nothing here, so no surface may offer it (the intent dfbbb8843
+  // established). Without a genuinely actionable verdict this assertion would
+  // pass vacuously, so the fixture must carry one.
+  const reconnectVerdict = renderedVerdict({
+    channel: "attention",
+    pill: { label: "Can't collect", tone: "red" },
+    required_actions: [
+      {
+        affects: [],
+        audience: "owner",
+        cta: "Reconnect this account",
+        kind: "reauth",
+        satisfied_when: { kind: "credential_present_and_unrejected" },
+        terminal: false,
+        urgency: "soon",
+      },
+    ],
+  });
+
+  const live = toSourcesView([
+    summary({ connection_id: "cin_live", rendered_verdict: reconnectVerdict, source_visibility: "active" }),
+  ]);
+  assert.equal(
+    live[0]?.primaryVerdictAction?.cta,
+    "Reconnect this account",
+    "control: a LIVE source with this verdict does surface the action"
+  );
+
+  const archived = toSourcesView([
+    summary({ connection_id: "cin_archived", rendered_verdict: reconnectVerdict, source_visibility: "archived" }),
+  ]);
+  assert.equal(archived[0]?.primaryVerdictAction, null, "an archived source must not surface a Reconnect action");
+  assert.equal(archived[0]?.nextAction, null, "nor as a body CTA");
+  assert.equal(archived[0]?.ownerActionCue, null, "nor as a list-row cue");
 });
 
 test("toSourcesView keeps a UAT-transferred historical_archive row visible", () => {
@@ -909,7 +983,7 @@ test("toSourcesView keeps a summary visible when source_visibility is absent (ol
   assert.equal(views.length, 1, "an older reference omitting source_visibility must fail open to visible");
 });
 
-test("toSourcesView filters hidden fragments out of a mixed page while preserving order for the rest", () => {
+test("toSourcesView classifies fragments in a mixed page while preserving order for every row", () => {
   const views = toSourcesView([
     summary({ connection_id: "cin_1", connector_id: "gmail", display_name: "Gmail", source_visibility: "active" }),
     summary({
@@ -935,8 +1009,13 @@ test("toSourcesView filters hidden fragments out of a mixed page while preservin
 
   assert.deepEqual(
     views.map((view) => view.connectionId),
-    ["cin_1", "cin_uat", "cin_2"],
-    "hidden fragments are dropped without disturbing the relative order of visible rows"
+    ["cin_1", "cin_fragment_1", "cin_uat", "cin_fragment_2", "cin_2"],
+    "every row is kept, in input order — archived rows are classified, not dropped"
+  );
+  assert.deepEqual(
+    views.filter((view) => view.archived).map((view) => view.connectionId),
+    ["cin_fragment_1", "cin_fragment_2"],
+    "exactly the fragments are archived; live rows are untouched"
   );
 });
 

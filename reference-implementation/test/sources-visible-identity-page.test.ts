@@ -64,7 +64,7 @@ function uatTransferredBinding(originalId: string): Record<string, unknown> {
   };
 }
 
-test("listSourcesVisibleIdentityPage excludes only a pure recovered fragment, keeping a UAT-transferred historical_archive row and an active connection visible", () => {
+test("listSourcesVisibleIdentityPage RETURNS a pure recovered fragment (rendered as archived), alongside UAT-transferred and active rows", () => {
   initDb();
   try {
     seedSqliteConnector("chase");
@@ -111,8 +111,8 @@ test("listSourcesVisibleIdentityPage excludes only a pure recovered fragment, ke
     const page = store.listSourcesVisibleIdentityPage("owner_1", { limit: 100 });
     assert.deepEqual(
       page.rows.map((row) => row.connectorInstanceId).sort(),
-      ["cin_active", "cin_uat_transfer"],
-      "the pure fragment is excluded; the UAT-transferred and active rows remain"
+      ["cin_active", "cin_pure_fragment", "cin_uat_transfer"],
+      "the pure fragment is RETURNED — the console classifies it archived and renders it in the Archived group; dropping it here made its records visible on no summary surface"
     );
     assert.equal(page.hasMore, false);
 
@@ -122,27 +122,41 @@ test("listSourcesVisibleIdentityPage excludes only a pure recovered fragment, ke
     assert.deepEqual(
       unfilteredPage.rows.map((row) => row.connectorInstanceId).sort(),
       ["cin_active", "cin_pure_fragment", "cin_uat_transfer"],
-      "the shared identity page Explore reads from is untouched by the Sources-only exclusion"
+      "the shared identity page Explore reads from stays unchanged"
     );
   } finally {
     closeDb();
   }
 });
 
-test("listSourcesVisibleIdentityPage keeps hasMore/pagination correct when hidden fragments fill the first page and a visible row sits beyond it", () => {
+test("listSourcesVisibleIdentityPage keeps hasMore/pagination correct when excluded rows fill the first page and a visible row sits beyond it", () => {
   initDb();
   try {
     seedSqliteConnector("chase");
     seedSqliteConnector("gmail");
     const store = createSqliteConnectorInstanceStore();
 
-    // Three pure recovered fragments under "chase" (sorts before "gmail" by
+    // Three GROUPED fragments under "chase" (sorts before "gmail" by
     // connector_id ASC — the identity page's primary sort key), then one
-    // active "gmail" connection. A post-LIMIT filter applied to a limit:3
-    // page would return zero visible rows and (depending on implementation)
-    // could misreport hasMore or silently short the page. The pre-LIMIT
-    // exclusion must instead skip straight past the fragments and return the
-    // one visible row, with hasMore correctly false.
+    // active "gmail" connection. Grouped fragments are the rows this page
+    // still excludes: a grouped child never renders its own Sources row, only
+    // its canonical sibling does.
+    //
+    // A post-LIMIT filter applied to a limit:3 page would return zero rows
+    // and (depending on implementation) could misreport hasMore or silently
+    // short the page. The pre-LIMIT exclusion must instead skip past the
+    // grouped rows inside the query and return the one visible row.
+    store.upsert({
+      connectorId: "chase",
+      connectorInstanceId: "cin_canonical",
+      createdAt: NOW,
+      displayName: "Chase canonical",
+      ownerSubjectId: "owner_2",
+      sourceBindingKey: "default",
+      sourceKind: "account",
+      status: "active",
+      updatedAt: NOW,
+    });
     for (const i of [0, 1, 2]) {
       store.upsert({
         connectorId: "chase",
@@ -150,12 +164,12 @@ test("listSourcesVisibleIdentityPage keeps hasMore/pagination correct when hidde
         createdAt: NOW,
         displayName: `Chase ${i}`,
         ownerSubjectId: "owner_2",
-        sourceBinding: pureFragmentBinding(`cin_fragment_${i}_original`),
-        sourceBindingKey: `historical_archive_cin_fragment_${i}`,
+        sourceBindingKey: `chase_fragment_${i}`,
         sourceKind: "account",
         status: "paused",
         updatedAt: NOW,
       });
+      groupFragment(`cin_fragment_${i}`, "cin_canonical", "owner_2");
     }
     store.upsert({
       connectorId: "gmail",
@@ -169,28 +183,16 @@ test("listSourcesVisibleIdentityPage keeps hasMore/pagination correct when hidde
       updatedAt: NOW,
     });
 
-    // A page whose LIMIT (3) is exactly the count of hidden fragments: if the
-    // exclusion were a post-LIMIT filter, this page would come back with
-    // ZERO rows even though a visible connection exists — the defect this
-    // test pins. The pre-LIMIT exclusion must instead walk past the hidden
-    // rows within the query itself and still surface the visible one.
+    // LIMIT (3) sized so the excluded rows alone would fill it. A post-LIMIT
+    // filter would drop `cin_visible` entirely; the pre-LIMIT exclusion must
+    // walk past the grouped rows within the query and still surface it.
     const page = store.listSourcesVisibleIdentityPage("owner_2", { limit: 3 });
     assert.deepEqual(
       page.rows.map((row) => row.connectorInstanceId),
-      ["cin_visible"],
-      "the visible row beyond the hidden fragments must still surface on a page sized to exactly the hidden count"
+      ["cin_canonical", "cin_visible"],
+      "the visible rows beyond the grouped fragments must still surface on a page sized to exactly the excluded count"
     );
-    assert.equal(page.hasMore, false, "hasMore must reflect the visible-row cursor, not the hidden fragments consumed");
-
-    // Backfill/continuation correctness: paging with limit:1 must reach the
-    // one visible row in a single page, never require the caller to page
-    // through hidden rows that never render.
-    const singleRowPage = store.listSourcesVisibleIdentityPage("owner_2", { limit: 1 });
-    assert.deepEqual(
-      singleRowPage.rows.map((row) => row.connectorInstanceId),
-      ["cin_visible"]
-    );
-    assert.equal(singleRowPage.hasMore, false);
+    assert.equal(page.hasMore, false, "hasMore must reflect the rendered rows, not the excluded rows consumed");
   } finally {
     closeDb();
   }
