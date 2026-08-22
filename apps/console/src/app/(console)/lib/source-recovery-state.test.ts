@@ -67,7 +67,7 @@ function verdict(overrides: Partial<RefRenderedVerdict> = {}): RefRenderedVerdic
     channel: "calm",
     detail: {},
     forward_statement: "The next run is expected to fill the remaining data.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     progress: {
       gaps_drained_last_run: null,
       headline: "Collecting in the background.",

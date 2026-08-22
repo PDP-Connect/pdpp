@@ -143,10 +143,10 @@ function passportField(view: ReturnType<typeof toSourceInstanceView>, key: strin
 }
 
 test("deriveRenderedSourceStatus prefers the server-owned verdict over raw health state", () => {
-  const flag = deriveRenderedSourceStatus(renderedVerdict({ pill: { label: "Degraded", tone: "amber" } }), false);
+  const flag = deriveRenderedSourceStatus(renderedVerdict({ pill: { label: "Missing data", tone: "amber" } }), false);
   assert.equal(flag.kind, "degraded");
   assert.equal(flag.tone, "warning");
-  assert.equal(flag.label, "Degraded");
+  assert.equal(flag.label, "Missing data");
 });
 
 test("deriveRenderedSourceStatus carries freshness annotations from rendered verdict", () => {
@@ -420,7 +420,7 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
       display_name: "Chase",
       rendered_verdict: renderedVerdict({
         annotations: [{ kind: "freshness", text: "Transactions stuck since Apr 22." }],
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           {
             affects: ["transactions"],
@@ -446,7 +446,7 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
       }),
     })
   );
-  assert.equal(chase.status.label, "Degraded · Transactions stuck since Apr 22.");
+  assert.equal(chase.status.label, "Missing data · Transactions stuck since Apr 22.");
   assert.equal(chase.nextAction, null);
   assert.equal(chase.primaryVerdictAction?.cta, "Retry now");
 });

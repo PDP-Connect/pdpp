@@ -877,7 +877,15 @@ export type RefVerdictTone = "amber" | "green" | "grey" | "red";
 export type RefRenderedChannel = "advisory" | "attention" | "calm";
 
 export interface RefVerdictPill {
-  label: "Can't collect" | "Checking" | "Degraded" | "Healthy" | "Needs refresh" | "Not measured" | "Syncing";
+  label:
+    | "Can't collect"
+    | "Checking"
+    | "Healthy"
+    | "Import complete"
+    | "Missing data"
+    | "Needs refresh"
+    | "Not measured"
+    | "Syncing";
   tone: RefVerdictTone;
 }
 

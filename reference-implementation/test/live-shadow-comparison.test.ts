@@ -50,7 +50,7 @@ function classify(summary: ConnectorSummary): Classification {
     return "no_change";
   }
 
-  if (oldLabel === "Needs you" && newLabel === "Degraded") {
+  if (oldLabel === "Needs you" && newLabel === "Missing data") {
     return "fixed_lie";
   }
 
