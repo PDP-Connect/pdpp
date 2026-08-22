@@ -16,3 +16,7 @@ fixtures/*/scrubbed/*/
 # Local data + cache
 .pdpp-data/
 .pdpp-tools/
+
+# connector-dev run-summary output (bin/connector-dev.ts) — local proof
+# artifacts from a developer's own runs, not reviewed/committable fixtures.
+runs/

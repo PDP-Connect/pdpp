@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Unit tests for detectCloudflareChallenge (platform-probes.ts).
+ * Unit tests for detectCloudflareChallenge and detectProviderBlockInterstitial
+ * (platform-probes.ts).
  *
  * Each test builds a minimal fake page / navResponse that exercises exactly
  * the branch under test, verifying oracle-level assertions against the real
@@ -11,8 +12,14 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { CloudflareNavResponse, CloudflarePage, CloudflareSignal } from "./platform-probes.ts";
-import { detectCloudflareChallenge } from "./platform-probes.ts";
+import type {
+  BlockInterstitialPage,
+  BlockInterstitialSignal,
+  CloudflareNavResponse,
+  CloudflarePage,
+  CloudflareSignal,
+} from "./platform-probes.ts";
+import { detectCloudflareChallenge, detectProviderBlockInterstitial } from "./platform-probes.ts";
 
 // ---------------------------------------------------------------------------
 // Fake helpers
@@ -208,5 +215,143 @@ describe("detectCloudflareChallenge", () => {
     assert.equal(verdict.isChallenge, false);
     assert.equal(verdict.confidence, "none");
     assert.deepEqual(verdict.signals as CloudflareSignal[], [] as CloudflareSignal[]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectProviderBlockInterstitial
+// ---------------------------------------------------------------------------
+//
+// Regression coverage for the "evidence collected but claim mislabeled"
+// defect: a browser connector hit a real provider block/bot-mitigation page
+// that was NOT Cloudflare (detectCloudflareChallenge correctly found no
+// Cloudflare signals), and the CLI printed a generic "page may have changed"
+// message instead of naming what the captured page actually showed. Two real
+// observations motivate the two positive cases below:
+//   - heb: https://www.heb.com/my-account/your-orders returned an
+//     Imperva/Incapsula bot-mitigation page — a raw JSON body with
+//     errorCode: "15" plus incident/proxy IDs — instead of a login form.
+//   - reddit: the login page served Reddit's own "You've been blocked by
+//     network security" interstitial (not Cloudflare).
+
+/** Build a minimal fake BlockInterstitialPage. `title`/`content` resolve to
+ *  the given strings; `throwAll: true` makes every method throw
+ *  synchronously (defensive test, mirrors fakePage's throwAll). */
+function fakeBlockPage(opts: { content?: string; throwAll?: boolean; title?: string }): BlockInterstitialPage {
+  const { content = "", throwAll = false, title = "" } = opts;
+  return {
+    content(): Promise<string> {
+      if (throwAll) {
+        throw new Error("content() exploded");
+      }
+      return Promise.resolve(content);
+    },
+    title(): Promise<string> {
+      if (throwAll) {
+        throw new Error("title() exploded");
+      }
+      return Promise.resolve(title);
+    },
+  };
+}
+
+describe("detectProviderBlockInterstitial", () => {
+  // 1. Imperva/Incapsula JSON block body (the heb observation) ──────────────
+  it("imperva_incapsula_json_error: Imperva JSON block body (errorCode + incidentId) fires signal", async () => {
+    // Playwright's page.content() wraps a raw JSON response in a synthetic
+    // <html><body><pre>...</pre></body></html> shell, matching real-browser
+    // rendering of a non-HTML response — the JSON text still appears
+    // verbatim in content(). This is the exact shape observed on the live
+    // heb run: a bare error payload, no HTML challenge widget, no iframe.
+    const content =
+      '<html><head></head><body><pre>{"errorCode":"15","errorDescription":"Incapsula incident ID: 123456789012345678-987654321098765432","incidentId":"123456789012345678-987654321098765432","proxyId":"abcdef12"}</pre></body></html>';
+    const page = fakeBlockPage({ content });
+    const verdict = await detectProviderBlockInterstitial(page);
+    assert.equal(verdict.isBlocked, true);
+    assert.equal(verdict.confidence, "confirmed");
+    assert.ok(
+      verdict.signals.includes("imperva_incapsula_json_error"),
+      `expected imperva_incapsula_json_error in signals, got: ${verdict.signals.join(", ")}`
+    );
+  });
+
+  it("imperva_incapsula_json_error: errorCode alone (no incident/proxy id) does NOT fire — avoids false positive on unrelated API error bodies", async () => {
+    const content = '<html><body><pre>{"errorCode":"42","message":"not found"}</pre></body></html>';
+    const page = fakeBlockPage({ content });
+    const verdict = await detectProviderBlockInterstitial(page);
+    assert.equal(
+      verdict.signals.includes("imperva_incapsula_json_error"),
+      false,
+      `errorCode alone must not fire the Imperva signal; got: ${verdict.signals.join(", ")}`
+    );
+  });
+
+  // 2. Reddit-style "blocked by network security" interstitial ──────────────
+  it('network_security_block_heading: "You\'ve been blocked by network security" title fires signal', async () => {
+    const page = fakeBlockPage({ title: "You've been blocked by network security" });
+    const verdict = await detectProviderBlockInterstitial(page);
+    assert.equal(verdict.isBlocked, true);
+    assert.equal(verdict.confidence, "confirmed");
+    assert.ok(
+      verdict.signals.includes("network_security_block_heading"),
+      `expected network_security_block_heading in signals, got: ${verdict.signals.join(", ")}`
+    );
+  });
+
+  it("network_security_block_heading: also fires from body content, not just title", async () => {
+    const page = fakeBlockPage({
+      content: "<html><body><h1>You've been blocked by network security</h1></body></html>",
+    });
+    const verdict = await detectProviderBlockInterstitial(page);
+    assert.ok(
+      verdict.signals.includes("network_security_block_heading"),
+      `expected network_security_block_heading in signals, got: ${verdict.signals.join(", ")}`
+    );
+  });
+
+  // 3. NEGATIVE control: an ordinary login page must NOT classify as blocked ─
+  it("negative control: an ordinary login page is NOT classified as blocked", async () => {
+    const page = fakeBlockPage({
+      title: "Log in to Reddit",
+      content:
+        '<html><body><form><input name="username"/><input name="password" type="password"/><button type="submit">Log In</button></form></body></html>',
+    });
+    const verdict = await detectProviderBlockInterstitial(page);
+    assert.equal(verdict.isBlocked, false);
+    assert.equal(verdict.confidence, "none");
+    assert.deepEqual(verdict.signals as BlockInterstitialSignal[], [] as BlockInterstitialSignal[]);
+  });
+
+  // 4. A Cloudflare page still classifies as Cloudflare via the OTHER
+  //    detector, not as this one — the two detectors are disjoint by design.
+  it("a Cloudflare 'Just a moment...' page does NOT fire this detector's signals (stays Cloudflare's territory)", async () => {
+    const cfPage: CloudflarePage = {
+      title(): Promise<string> {
+        return Promise.resolve("Just a moment...");
+      },
+      locator(): { count: () => Promise<number> } {
+        return { count: (): Promise<number> => Promise.resolve(0) };
+      },
+    };
+    const cfVerdict = await detectCloudflareChallenge(cfPage);
+    assert.equal(cfVerdict.isChallenge, true);
+    assert.ok(cfVerdict.signals.includes("title_just_a_moment"));
+
+    const blockPage = fakeBlockPage({
+      title: "Just a moment...",
+      content: '<html><body><div id="cf-challenge-running"></div></body></html>',
+    });
+    const blockVerdict = await detectProviderBlockInterstitial(blockPage);
+    assert.equal(blockVerdict.isBlocked, false);
+    assert.deepEqual(blockVerdict.signals as BlockInterstitialSignal[], [] as BlockInterstitialSignal[]);
+  });
+
+  // 5. Defensive: throwing page → returns safe zero-verdict, never throws ───
+  it("defensive: page that throws synchronously on every method → safe zero-verdict", async () => {
+    const page = fakeBlockPage({ throwAll: true });
+    const verdict = await detectProviderBlockInterstitial(page);
+    assert.equal(verdict.isBlocked, false);
+    assert.equal(verdict.confidence, "none");
+    assert.deepEqual(verdict.signals as BlockInterstitialSignal[], [] as BlockInterstitialSignal[]);
   });
 });

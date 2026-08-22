@@ -1,0 +1,6 @@
+{
+  "format": "pdpp.fixture-provenance/1",
+  "class": "synthetic",
+  "labeled_by": "tool:provenance-labeler/1",
+  "labeled_at": "2026-08-13"
+}

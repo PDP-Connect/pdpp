@@ -7,6 +7,7 @@ import { test } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import type { CaptureSession } from "../fixture-capture.ts";
 import { ensureHebSession, probeHebSession } from "./heb.ts";
 
 const ORDERS_URL = "https://www.heb.com/my-account/your-orders";
@@ -28,6 +29,14 @@ const OPTIONAL_LOGIN_HTML = readFileSync(
 );
 const INCAPSULA_HTML = readFileSync(
   new URL("../../connectors/heb/__fixtures__/incapsula-block.html", import.meta.url),
+  "utf8"
+);
+// Live-observed shape: an Imperva/Incapsula JSON block body (errorCode: "15"
+// plus incident/proxy IDs) instead of the empty-shell/iframe challenge
+// widget INCAPSULA_HTML models — see parsers.test.ts's regression coverage
+// for isIncapsulaBlocked's JSON predicate.
+const INCAPSULA_JSON_HTML = readFileSync(
+  new URL("../../connectors/heb/__fixtures__/incapsula-json-block.html", import.meta.url),
   "utf8"
 );
 const PASSKEY_HTML = readFileSync(
@@ -542,7 +551,12 @@ function makePage(initial: FakePageInit = {}): Page {
           state.forms = [];
         } else if (state.view === "incapsula") {
           state.url = SIGNIN_URL;
-          state.html = INCAPSULA_HTML;
+          // Prefer the caller's own initial html (e.g. INCAPSULA_JSON_HTML)
+          // over the default empty-shell/iframe fixture, so a test can
+          // exercise a specific Incapsula block SHAPE through the real
+          // goto(ORDERS_URL) re-fetch instead of always re-snapping to one
+          // hardcoded constant.
+          state.html = initial.html ?? INCAPSULA_HTML;
         } else if (state.view === "passkey") {
           state.url = SIGNIN_URL;
           state.html = PASSKEY_HTML;
@@ -1030,6 +1044,11 @@ test("ensureHebSession hands off passkey, CAPTCHA, Incapsula, and unknown UI to 
     [PASSKEY_HTML, "passkey", PASSKEY_MSG_RE.source],
     [CAPTCHA_HTML, "captcha", CAPTCHA_MSG_RE.source],
     [INCAPSULA_HTML, "incapsula", INCAPSULA_MSG_RE.source],
+    // Regression: the Imperva JSON block body (errorCode + incidentId, no
+    // iframe) must reach the SAME "incapsula" surface/message as the
+    // empty-shell/iframe HTML shape above — this is the exact body a live
+    // run against heb.com's orders page returned.
+    [INCAPSULA_JSON_HTML, "incapsula", INCAPSULA_MSG_RE.source],
     [UNKNOWN_HTML, "unknown", SECURE_BROWSER_MSG_RE.source],
   ];
   for (const [html, view, pattern] of cases) {
@@ -1046,6 +1065,47 @@ test("ensureHebSession hands off passkey, CAPTCHA, Incapsula, and unknown UI to 
     assert.match(harness.requests[0]?.message ?? "", new RegExp(pattern, "i"));
     assert.doesNotMatch(harness.requests[0]?.message ?? "", /owner@example\.com|synthetic-password/);
   }
+});
+
+test("ensureHebSession's Incapsula hand-off message cites the captured DOM artifact path, not a guessed root cause", async () => {
+  const capturedLabels: string[] = [];
+  const fakeCapture: CaptureSession = {
+    baseDir: "/tmp/fixtures/heb/raw/test-run",
+    captureDom: (_page, label): Promise<void> => {
+      capturedLabels.push(label);
+      return Promise.resolve();
+    },
+    captureHttp: (): void => undefined,
+    finalize: (): void => undefined,
+    keepOnSuccess: true,
+    markSucceeded: (): void => undefined,
+    recordRecord: (): void => undefined,
+    runId: "test-run",
+  };
+
+  const page = makePage({ html: INCAPSULA_JSON_HTML, live: false, url: SIGNIN_URL, view: "incapsula" });
+  const harness = makeInteractionHarness();
+  const ok = await ensureHebSession({
+    capture: fakeCapture,
+    page,
+    postSubmitWaitClock: makePostSubmitWaitClock(page),
+    sendInteraction: harness.sendInteraction,
+  });
+
+  assert.equal(ok, true);
+  assert.equal(harness.requests.length, 1);
+  const message = harness.requests[0]?.message ?? "";
+  // Names the vendor/condition the evidence shows...
+  assert.match(message, INCAPSULA_MSG_RE);
+  // ...and points at the real artifact path this exact run captured (not a
+  // fabricated one) — captureDom was actually called with that label.
+  assert.ok(
+    capturedLabels.includes("heb-manual-handoff"),
+    `expected a capture call, got labels: ${capturedLabels.join(", ")}`
+  );
+  assert.match(message, /\/tmp\/fixtures\/heb\/raw\/test-run\/dom\/heb-manual-handoff\.html/);
+  // Never speculates about WHY (IP reputation / fingerprint / rate limit).
+  assert.doesNotMatch(message, /IP reputation|fingerprint|rate limit/i);
 });
 
 test("ensureHebSession hands off when multiple visible login roots are present", async () => {

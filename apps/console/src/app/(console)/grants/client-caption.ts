@@ -1,6 +1,13 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * Shared "client {…}" caption logic for anywhere a raw `client_id` would
+ * otherwise render verbatim (e.g. `cli_8f3a2b1c`). `/grants` had this logic
+ * inline to avoid a bare technical id; the grant-packages pages didn't reuse
+ * it and printed the raw id straight through.
+ */
+
 const TECHNICAL_CLIENT_ID_RE = /^cli_[a-z0-9]+$/i;
 const WWW_PREFIX_RE = /^www\./;
 
@@ -18,6 +25,11 @@ export function clientOriginCaption(value: string): string | null {
   }
 }
 
+/**
+ * Caption for a client identified only by `client_id` (no display name on
+ * the record) — an OAuth client origin renders as its host, a technical id
+ * (`cli_…`) renders as "registered client", anything else renders verbatim.
+ */
 export function technicalClientCaption(clientId: string | null | undefined): string | null {
   const trimmed = clientId?.trim();
   if (!trimmed) {
@@ -28,6 +40,11 @@ export function technicalClientCaption(clientId: string | null | undefined): str
   );
 }
 
+/**
+ * Caption for a client that may carry a display name (`client.client_name`)
+ * in addition to `client_id` — prefers the name, falls back to
+ * `technicalClientCaption`.
+ */
 export function clientCaption(client: {
   client?: { client_name?: string | null } | null;
   client_id?: string | null;

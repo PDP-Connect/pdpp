@@ -687,6 +687,175 @@ test("ChatGPT rejected stored password fails before push approval or browser ass
   );
 });
 
+/**
+ * Builds a fake ChatGPT login page with no matching login inputs (mirrors the
+ * `page` fixture in "ChatGPT fallback keeps owner copy concise...") that ALSO
+ * carries `title()`/`content()` evidence — the page a browser connector
+ * actually lands on when a non-Cloudflare provider block/interstitial is
+ * served instead of the ChatGPT login form. Every CSS/role locator finds
+ * nothing, so `detectCloudflareChallenge` reports no signals for this
+ * fixture (matches the real observed shape: the provider block is not
+ * Cloudflare).
+ */
+function makeChatGptPageWithoutLoginInputsButWithContent(opts: {
+  content?: string;
+  title?: string;
+}): Record<string, unknown> {
+  const emptyLocator = {
+    click: () => Promise.reject(new Error("not visible")),
+    count: () => Promise.resolve(0),
+    fill: () => Promise.resolve(),
+    first() {
+      return emptyLocator;
+    },
+    waitFor: () => Promise.reject(new Error("not visible")),
+  };
+  return {
+    content: () => Promise.resolve(opts.content ?? ""),
+    evaluate: (fn: (...args: never[]) => unknown) => {
+      const source = String(fn);
+      if (source.includes("/api/auth/session")) {
+        return Promise.resolve(null);
+      }
+      if (source.includes("querySelectorAll")) {
+        return Promise.resolve({
+          dom_logged_in: false,
+          has_login_or_signup: true,
+          has_sidebar: false,
+          has_user_menu: false,
+        });
+      }
+      return Promise.resolve(false);
+    },
+    getByRole: () => emptyLocator,
+    goto: () => Promise.resolve(null),
+    locator: () => emptyLocator,
+    title: () => Promise.resolve(opts.title ?? ""),
+    url: () => "https://chatgpt.com/",
+    waitForTimeout: async () => undefined,
+  };
+}
+
+async function expectUnexpectedLoginUiRun(
+  page: Record<string, unknown>,
+  timeoutMsOverride = "1"
+): Promise<{ assistanceMessages: string[]; capturedLabels: string[]; diagnosticMessages: string[] }> {
+  const assistanceMessages: string[] = [];
+  const diagnosticMessages: string[] = [];
+  const capturedLabels: string[] = [];
+  await withEnvValues(
+    {
+      CHATGPT_PASSWORD: "stored password",
+      CHATGPT_USERNAME: "owner@example.test",
+      PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS: timeoutMsOverride,
+      PDPP_RUN_AUTOMATION_MODE: "assisted",
+      PDPP_RUN_TRIGGER_KIND: "manual",
+    },
+    async () => {
+      await assert.rejects(
+        ensureChatGptSession({
+          assist: (req) => {
+            assistanceMessages.push(req.message);
+            return Promise.resolve("assist_1");
+          },
+          capture: {
+            baseDir: "/tmp/fixtures/chatgpt/raw/test-run",
+            captureDom: (_page: unknown, label: string) => {
+              capturedLabels.push(label);
+              return Promise.resolve();
+            },
+            captureHttp: () => undefined,
+            finalize: () => undefined,
+            keepOnSuccess: true,
+            markSucceeded: () => undefined,
+            recordRecord: () => undefined,
+            runId: "test-run",
+          } as never,
+          completeAssistance: (_id, _status, extra) => {
+            if (extra?.message) {
+              diagnosticMessages.push(extra.message);
+            }
+            return Promise.resolve();
+          },
+          context: {} as never,
+          page: page as never,
+          progress: () => Promise.resolve(),
+          sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+        }),
+        /chatgpt_login_unexpected_ui/u
+      );
+    }
+  );
+  return { assistanceMessages, capturedLabels, diagnosticMessages };
+}
+
+// Regression: architecturally identical gap to the reddit.ts fix — a
+// non-Cloudflare provider block/interstitial on the ChatGPT login page fell
+// through to the generic "page may have changed" message even though the
+// page content would prove a block. The diagnostic message must name the
+// detected condition and cite the captured artifact, not guess why.
+test("ChatGPT unexpected-login-UI fallback names a provider block/interstitial and cites the captured artifact", async () => {
+  const page = makeChatGptPageWithoutLoginInputsButWithContent({
+    content:
+      '<html><body><pre>{"errorCode":"15","errorDescription":"Incapsula incident ID: 123456789012345678-987654321098765432","incidentId":"123456789012345678-987654321098765432","proxyId":"abcdef12"}</pre></body></html>',
+  });
+
+  const { capturedLabels, diagnosticMessages } = await expectUnexpectedLoginUiRun(page);
+
+  const message = diagnosticMessages.join("\n");
+  assert.match(message, /provider block\/interstitial/i);
+  assert.match(message, /imperva_incapsula_json_error/);
+  assert.doesNotMatch(message, /Cloudflare challenge confirmed/);
+  assert.doesNotMatch(message, /the login page may have changed/i);
+  assert.ok(
+    capturedLabels.includes("auth-unexpected-login-ui"),
+    `expected a capture call for the blocked page, got labels: ${capturedLabels.join(", ")}`
+  );
+  assert.match(message, /\/tmp\/fixtures\/chatgpt\/raw\/test-run\/dom\/auth-unexpected-login-ui\.html/);
+  // Never speculates about WHY (IP reputation / fingerprint / rate limit).
+  assert.doesNotMatch(message, /IP reputation|fingerprint|rate limit/i);
+});
+
+// A real Cloudflare challenge must still classify as Cloudflare, not as the
+// new provider-block condition — the two detectors are deliberately disjoint
+// (detectCloudflareChallenge owns Cloudflare; the new detector is explicitly
+// for non-Cloudflare provider blocks) and Cloudflare's message takes
+// priority in unexpectedLoginUiMessage.
+test("ChatGPT unexpected-login-UI fallback still classifies a Cloudflare page as Cloudflare, not a provider block", async () => {
+  const page = makeChatGptPageWithoutLoginInputsButWithContent({
+    title: "Just a moment...",
+  });
+
+  const { diagnosticMessages } = await expectUnexpectedLoginUiRun(page);
+
+  const message = diagnosticMessages.join("\n");
+  assert.match(message, /Cloudflare challenge confirmed/);
+  assert.match(message, /title_just_a_moment/);
+  assert.doesNotMatch(message, /provider block\/interstitial/i);
+  assert.doesNotMatch(message, /IP reputation|fingerprint|rate limit/i);
+});
+
+// NEGATIVE control: an ordinary page that just happens to have no matching
+// login inputs (e.g. a genuine UI change) must NOT be misclassified as a
+// provider block — the generic fallback must remain byte-for-byte unchanged.
+test("ChatGPT unexpected-login-UI fallback keeps the generic fallback for an ordinary (non-block) page", async () => {
+  const page = makeChatGptPageWithoutLoginInputsButWithContent({
+    title: "ChatGPT",
+    content: "<html><body><main><h1>Welcome</h1><p>Nothing to see here.</p></main></body></html>",
+  });
+
+  const { diagnosticMessages } = await expectUnexpectedLoginUiRun(page);
+
+  const message = diagnosticMessages.join("\n");
+  assert.match(
+    message,
+    /ChatGPT login inputs were not found and no Cloudflare challenge was detected \(the login page may have changed\)\. Complete login in the streaming companion, or rerun with PDPP_BROWSER_HEADLESS=0 \(or unset it\) on a browser-capable deployment\./
+  );
+  assert.doesNotMatch(message, /provider block\/interstitial/i);
+  assert.doesNotMatch(message, /Cloudflare challenge confirmed/);
+  assert.doesNotMatch(message, /IP reputation|fingerprint|rate limit/i);
+});
+
 test("resolveChatGptPushApprovalTimeoutMs honors a positive env override and falls back otherwise", () => {
   assert.equal(resolveChatGptPushApprovalTimeoutMs({}), 900_000);
   assert.equal(resolveChatGptPushApprovalTimeoutMs({ PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS: "60000" }), 60_000);

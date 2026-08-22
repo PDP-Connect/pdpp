@@ -24,7 +24,8 @@ import type { BrowserContext, Page } from "playwright";
 import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
-import { detectCloudflareChallenge } from "../platform-probes.ts";
+import type { BlockInterstitialVerdict } from "../platform-probes.ts";
+import { detectCloudflareChallenge, detectProviderBlockInterstitial } from "../platform-probes.ts";
 import { locatorIsVisible } from "./locator-helpers.ts";
 
 const LOGIN_URL = "https://www.reddit.com/login/";
@@ -145,11 +146,32 @@ async function clickRedditLoginSubmit(page: Page, onCredentialSubmit?: () => voi
   return false;
 }
 
-function loginBlockedMessage(cfSignals: string[]): string {
+const BLOCKED_LOGIN_DOM_LABEL = "reddit-login-blocked";
+
+/**
+ * Builds the operator-facing message for a Reddit login page that did not
+ * render the expected inputs. Three deterministic outcomes, in priority
+ * order — never a free-text guess about WHY the provider blocked us (IP
+ * reputation vs fingerprint vs rate limit are indistinguishable from the
+ * evidence available here):
+ *
+ *   1. Cloudflare challenge confirmed (detectCloudflareChallenge).
+ *   2. A different provider-served block/interstitial confirmed
+ *      (detectProviderBlockInterstitial — e.g. Reddit's own network-security
+ *      block page, or an Imperva/Incapsula block body). Names the detected
+ *      condition and points at the captured DOM artifact so the claim never
+ *      exceeds the evidence just retained.
+ *   3. Neither detector fired — the prior generic fallback, unchanged.
+ */
+function loginBlockedMessage(cfSignals: string[], block: BlockInterstitialVerdict, domArtifactPath?: string): string {
   if (cfSignals.length > 0) {
     return `Cloudflare challenge confirmed (signals: ${cfSignals.join(", ")}). Complete the "Verify you are human" check on reddit.com in the browser window and re-run.`;
   }
-  return "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the browser window and re-run.";
+  if (block.isBlocked) {
+    const artifact = domArtifactPath ? ` Captured page: ${domArtifactPath}.` : "";
+    return `Reddit login page did not render expected inputs. Evidence shows a provider block/interstitial (signals: ${block.signals.join(", ")}), not a UI change.${artifact} Resolve the block and log in to reddit.com in the browser window, then re-run.`;
+  }
+  return "Reddit login page did not render expected inputs and no Cloudflare challenge or known provider block was detected (the page may have changed). Log in to reddit.com in the browser window and re-run.";
 }
 
 async function ensureRedditManualSession({
@@ -179,7 +201,15 @@ async function recoverRedditBlockedLogin({
   sendInteraction,
 }: Pick<EnsureRedditSessionArgs, "capture" | "page" | "sendInteraction">): Promise<void> {
   const cf = await detectCloudflareChallenge(page);
-  const message = loginBlockedMessage(cf.signals);
+  const block = await detectProviderBlockInterstitial(page);
+  // Capture the exact page the detectors just inspected BEFORE building the
+  // message, so a block-condition message can cite a real artifact path
+  // instead of an assumed one — the evidence bundle and the claim about it
+  // must describe the same capture.
+  await captureLoginState(capture, page, BLOCKED_LOGIN_DOM_LABEL);
+  const domArtifactPath =
+    capture && block.isBlocked ? `${capture.baseDir}/dom/${BLOCKED_LOGIN_DOM_LABEL}.html` : undefined;
+  const message = loginBlockedMessage(cf.signals, block, domArtifactPath);
   if (
     await manualBrowserLogin({
       ...(capture ? { capture } : {}),

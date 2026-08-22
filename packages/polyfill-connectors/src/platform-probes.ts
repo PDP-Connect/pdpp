@@ -15,6 +15,12 @@ export interface CloudflareNavResponse {
   status: () => number;
 }
 
+/** Minimal structural type that detectProviderBlockInterstitial requires from a page. */
+export interface BlockInterstitialPage {
+  content: () => Promise<string>;
+  title: () => Promise<string>;
+}
+
 const AMAZON_SIGNIN_URL = /\/ap\/signin/i;
 const AMAZON_SIGNIN_TITLE = /sign[- ]in/i;
 const USAA_SESSION_COOKIE = /^(LtpaToken2|AST|MemberGlobalSession)$/;
@@ -131,6 +137,88 @@ export async function detectCloudflareChallenge(
 
   const isChallenge = signals.length > 0;
   return { isChallenge, signals, confidence: isChallenge ? "confirmed" : "none" };
+}
+
+/**
+ * A single observed provider-block / bot-mitigation signal — deliberately
+ * NOT Cloudflare-specific (`detectCloudflareChallenge` already owns that
+ * vendor). Each is an independently sufficient marker that the PROVIDER
+ * itself served a block/interstitial page instead of the requested content;
+ * none of them say WHY (IP reputation, fingerprint, rate limit — we don't
+ * know, and this detector must never guess).
+ */
+export type BlockInterstitialSignal = "imperva_incapsula_json_error" | "network_security_block_heading";
+
+export interface BlockInterstitialVerdict {
+  /** "confirmed" when isBlocked, else "none" — so callers never GUESS. */
+  confidence: "confirmed" | "none";
+  /** True iff at least one deterministic block/interstitial marker fired. */
+  isBlocked: boolean;
+  /** The specific signals that fired (for honest, legible diagnostics). */
+  signals: BlockInterstitialSignal[];
+}
+
+// Imperva/Incapsula's JSON block/incident response — observed shape:
+// `{"errorCode":"15","errorDescription":"Incapsula incident ID: ...",
+// "incidentId":"<digits>-<digits>","proxyId":"<hex>"}` (Playwright's
+// `page.content()` wraps a raw JSON/text response body in a synthetic
+// `<html><body><pre>...</pre></body></html>` shell, matching real-browser
+// rendering of a non-HTML response — the JSON text itself still appears
+// verbatim in `content()`). Requires BOTH the errorCode field AND an
+// incident/proxy id field so an unrelated page that merely mentions
+// "errorCode" in passing (e.g. API docs) cannot false-positive.
+const IMPERVA_ERROR_CODE_RE = /"errorCode"\s*:\s*"?\d+"?/;
+const IMPERVA_INCIDENT_ID_RE = /"(incidentId|proxyId|iref)"\s*:/i;
+
+// A provider's own network-security block interstitial — observed verbatim
+// on Reddit's login page when edge/network-security blocked the request
+// (NOT a Cloudflare challenge: detectCloudflareChallenge correctly finds no
+// Cloudflare signals for this page, because it isn't Cloudflare). Anchored
+// to the literal heading text a provider block page renders, not a broad
+// "blocked" guess.
+const NETWORK_SECURITY_BLOCK_RE = /\byou'?ve been blocked by network security\b/i;
+
+/**
+ * Connector-AGNOSTIC detection of a PROVIDER-served block / bot-mitigation
+ * interstitial that is NOT a Cloudflare challenge (see
+ * `detectCloudflareChallenge` for that vendor). Earns the diagnosis from
+ * concrete, deterministic artifacts in the page's own content — never a
+ * free-text guess about root cause (IP reputation vs fingerprint vs rate
+ * limit are indistinguishable from the evidence this tool has, and this
+ * detector does not pretend otherwise).
+ *
+ * READ-ONLY by contract, matching `detectCloudflareChallenge`: inspects
+ * title and body content only, never clicks/types/navigates.
+ *
+ * No rule match returns `isBlocked: false` — callers must fall back to
+ * their existing generic message, never invent a diagnosis.
+ */
+export async function detectProviderBlockInterstitial(page: BlockInterstitialPage): Promise<BlockInterstitialVerdict> {
+  const signals: BlockInterstitialSignal[] = [];
+
+  // Every probe is best-effort: a missing/odd page method (synchronous throw) or
+  // a rejected promise yields the fallback, never an exception out of detection.
+  // Detection must NEVER be the thing that breaks a login flow.
+  const safe = async <T>(fn: () => Promise<T> | T, fallback: T): Promise<T> => {
+    try {
+      return await fn();
+    } catch {
+      return fallback;
+    }
+  };
+
+  const title = await safe(() => page.title(), "");
+  const content = await safe(() => page.content(), "");
+
+  if (IMPERVA_ERROR_CODE_RE.test(content) && IMPERVA_INCIDENT_ID_RE.test(content)) {
+    signals.push("imperva_incapsula_json_error");
+  }
+  if (NETWORK_SECURITY_BLOCK_RE.test(title) || NETWORK_SECURITY_BLOCK_RE.test(content)) {
+    signals.push("network_security_block_heading");
+  }
+
+  const isBlocked = signals.length > 0;
+  return { isBlocked, signals, confidence: isBlocked ? "confirmed" : "none" };
 }
 
 interface ChatGptSession {

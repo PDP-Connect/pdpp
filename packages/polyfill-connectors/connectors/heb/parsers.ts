@@ -661,8 +661,33 @@ export function parseOrderDetailDom(html: string): OrderDetail | null {
 // block/challenge renders as an empty shell — no h3, no breadcrumb nav, no
 // [data-testid], document.body.children.length <= 2, and at least one iframe.
 // `_Incapsula_Resource` alone (present on every page) must NOT count as a block.
+//
+// A second, independently-sufficient shape (LIVE-OBSERVED, real run against
+// https://www.heb.com/my-account/your-orders): Imperva/Incapsula's raw JSON
+// block/incident body — `{"errorCode":"15","errorDescription":"Incapsula
+// incident ID: ...","incidentId":"<digits>-<digits>","proxyId":"<hex>"}` —
+// served with no HTML challenge widget/iframe at all. Playwright's
+// `page.content()` wraps a non-HTML response body in a synthetic
+// `<html><body><pre>...</pre></body></html>` shell (matching real-browser
+// rendering), so the JSON text still appears verbatim in the HTML string
+// this function receives; `parseHTML` does not throw on it. The empty-shell
+// heuristic above requires `hasIframe`, which this body never has, so it
+// silently fell through to "unknown" without this second predicate —
+// exactly the incident this fixes. Requires BOTH the errorCode field AND an
+// incident/proxy id field so a page that merely mentions "errorCode" in
+// passing (e.g. API docs) cannot false-positive.
+
+const IMPERVA_JSON_ERROR_CODE_RE = /"errorCode"\s*:\s*"?\d+"?/;
+const IMPERVA_JSON_INCIDENT_ID_RE = /"(incidentId|proxyId|iref)"\s*:/i;
+
+function isImpervaJsonBlockBody(html: string): boolean {
+  return IMPERVA_JSON_ERROR_CODE_RE.test(html) && IMPERVA_JSON_INCIDENT_ID_RE.test(html);
+}
 
 export function isIncapsulaBlocked(html: string): boolean {
+  if (isImpervaJsonBlockBody(html)) {
+    return true;
+  }
   const { document } = parseHTML(html);
   const { body } = document;
   if (!body) {

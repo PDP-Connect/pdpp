@@ -26,7 +26,8 @@ import type {
   SessionCheckpointFn,
 } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
-import { detectCloudflareChallenge } from "../platform-probes.ts";
+import type { BlockInterstitialVerdict } from "../platform-probes.ts";
+import { detectCloudflareChallenge, detectProviderBlockInterstitial } from "../platform-probes.ts";
 
 interface EnsureChatGptSessionArgs {
   allowInteractiveAuthRepair?: boolean;
@@ -607,6 +608,38 @@ export async function handleBrowserLoginAssistance({
   return await isChatGptSessionActive(page);
 }
 
+const UNEXPECTED_LOGIN_UI_DOM_LABEL = "auth-unexpected-login-ui";
+
+/**
+ * Builds the operator-facing diagnostic for a ChatGPT login page that did not
+ * render the expected inputs. Three deterministic outcomes, in priority
+ * order — never a free-text guess about WHY the provider blocked us (IP
+ * reputation vs fingerprint vs rate limit are indistinguishable from the
+ * evidence available here). Mirrors reddit.ts's `loginBlockedMessage`:
+ *
+ *   1. Cloudflare challenge confirmed (detectCloudflareChallenge).
+ *   2. A different provider-served block/interstitial confirmed
+ *      (detectProviderBlockInterstitial — e.g. an Imperva/Incapsula block
+ *      body, or a provider's own network-security block page). Names the
+ *      detected condition and points at the captured DOM artifact so the
+ *      claim never exceeds the evidence just retained.
+ *   3. Neither detector fired — the prior generic fallback, unchanged.
+ */
+function unexpectedLoginUiMessage(
+  cfSignals: string[],
+  block: BlockInterstitialVerdict,
+  domArtifactPath?: string
+): string {
+  if (cfSignals.length > 0) {
+    return `Cloudflare challenge confirmed (signals: ${cfSignals.join(", ")}). Complete the "Verify you are human" check in the streaming companion, then the run will resume — or rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.`;
+  }
+  if (block.isBlocked) {
+    const artifact = domArtifactPath ? ` Captured page: ${domArtifactPath}.` : "";
+    return `ChatGPT login inputs were not found. Evidence shows a provider block/interstitial (signals: ${block.signals.join(", ")}), not a UI change.${artifact} Resolve the block, then complete login in the streaming companion, or rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.`;
+  }
+  return "ChatGPT login inputs were not found and no Cloudflare challenge was detected (the login page may have changed). Complete login in the streaming companion, or rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.";
+}
+
 /**
  * Hand the unexpected/Cloudflare-challenge login UI to the operator, then
  * re-probe the session. Returns `true` when the operator completed login in
@@ -633,9 +666,15 @@ async function fallbackForUnexpectedLoginUi({
   "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
 >): Promise<boolean> {
   const cf = await detectCloudflareChallenge(page);
-  const diagnosticMessage = cf.isChallenge
-    ? `Cloudflare challenge confirmed (signals: ${cf.signals.join(", ")}). Complete the "Verify you are human" check in the streaming companion, then the run will resume — or rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.`
-    : "ChatGPT login inputs were not found and no Cloudflare challenge was detected (the login page may have changed). Complete login in the streaming companion, or rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.";
+  const block = await detectProviderBlockInterstitial(page);
+  // Capture the exact page the detectors just inspected BEFORE building the
+  // message, so a block-condition message can cite a real artifact path
+  // instead of an assumed one — the evidence bundle and the claim about it
+  // must describe the same capture.
+  await capture?.captureDom(page, UNEXPECTED_LOGIN_UI_DOM_LABEL);
+  const domArtifactPath =
+    capture && block.isBlocked ? `${capture.baseDir}/dom/${UNEXPECTED_LOGIN_UI_DOM_LABEL}.html` : undefined;
+  const diagnosticMessage = unexpectedLoginUiMessage(cf.signals, block, domArtifactPath);
   return await handleBrowserLoginAssistance({
     ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),
