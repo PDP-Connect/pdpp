@@ -197,6 +197,7 @@ import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
   isOwnerVisibleConnectorInstance,
+  RETIRED_SETUP_SHELL_BINDING_KINDS,
 } from "./stores/connector-instance-store.ts";
 import {
   getDefaultDeviceExporterStore,
@@ -908,8 +909,22 @@ export interface ConnectorSummary {
    * collection could resume (see `isArchivedSource` in
    * `source-actionability.ts`). This never removes or mutates the stored
    * connection.
+   *
+   * `"setup_failed"` is reserved for a revoked retired-setup-shell binding
+   * (`browser_enrollment_shell`/`static_secret_draft`/`manual_upload_draft`)
+   * that NEVER had a successful run. Such a row only reaches synthesis at all
+   * because `listSourcesVisibleIdentityPage`'s Sources-only escape (see
+   * `NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE`/`..._POSTGRES` in
+   * `connector-instance-store.ts`) already excludes every setup shell WITH a
+   * successful run — a successful run promotes the connection to its own
+   * `active` row, and that row, not the spent shell, is what should render.
+   * Every setup shell `deriveSourceVisibility` sees is therefore guaranteed
+   * never-succeeded; it does not re-check run history itself. Holds zero
+   * records by construction (no run ever emitted any) and must never render
+   * a "Reconnect" action — there is nothing to reconnect, only a fresh
+   * attempt to make (see `isSetupFailedSource` in `source-actionability.ts`).
    */
-  readonly source_visibility: "active" | "archived";
+  readonly source_visibility: "active" | "archived" | "setup_failed";
   /** Total server-owned work classification derived from `owner_state.resolver`. */
   readonly source_work: SourceWorkGroup;
   readonly status: string | null;
@@ -6407,27 +6422,62 @@ function hasUatTransferMarker(binding: Record<string, unknown>): boolean {
  * `required_actions` is emptied rather than rewritten — there IS no action
  * that resumes an archived source, and inventing one would be the same class
  * of lie in a different sentence.
+ *
+ * A `"setup_failed"` source gets its own honest terminal verdict for the same
+ * reason, applied at the same server layer: its underlying instance is a
+ * revoked `browser_enrollment_shell`/etc., so the BUILT verdict describes a
+ * dead enrollment popup's health, not a source the owner ever had running.
+ * `required_actions` is emptied here too — the honest next step is a FRESH
+ * attempt (a new connection), not an action on THIS one, so the console
+ * synthesizes its own "Try again" CTA (`SETUP_FAILED_CTA_LABEL` in
+ * `source-actionability.ts`) that routes to Add Source, the same way it
+ * synthesizes `SETUP_IN_PROGRESS_CTA_LABEL` for a draft.
  */
-export function archiveRenderedVerdict<T extends RenderedVerdict>(verdict: T, visibility: "active" | "archived"): T {
-  if (visibility !== "archived") {
-    return verdict;
+export function archiveRenderedVerdict<T extends RenderedVerdict>(
+  verdict: T,
+  visibility: "active" | "archived" | "setup_failed"
+): T {
+  if (visibility === "archived") {
+    return {
+      ...verdict,
+      channel: "calm",
+      forward_statement: "This source is archived. Its records are kept and stay searchable.",
+      pill: { label: "Archived", tone: "grey" },
+      progress: { ...verdict.progress, headline: "Collection has finished for this source." },
+      required_actions: [],
+    };
   }
-  return {
-    ...verdict,
-    channel: "calm",
-    forward_statement: "This source is archived. Its records are kept and stay searchable.",
-    pill: { label: "Archived", tone: "grey" },
-    progress: { ...verdict.progress, headline: "Collection has finished for this source." },
-    required_actions: [],
-  };
+  if (visibility === "setup_failed") {
+    return {
+      ...verdict,
+      channel: "calm",
+      forward_statement: "Setup never finished for this source. No records were collected.",
+      pill: { label: "Setup never completed", tone: "grey" },
+      progress: { ...verdict.progress, headline: "This connection attempt did not finish." },
+      required_actions: [],
+    };
+  }
+  return verdict;
 }
 
-function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "archived" {
+function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "archived" | "setup_failed" {
   const binding = instance.sourceBinding;
   if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
     return "active";
   }
   const record = binding as Record<string, unknown>;
+  // A revoked retired-setup-shell row reaches synthesis at all only via the
+  // Sources-only never-succeeded escape (`NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_*`
+  // in `connector-instance-store.ts`), which already excludes every such row
+  // WITH a successful run. Every row seen here is therefore guaranteed
+  // never-succeeded — no run-history re-check needed.
+  if (
+    instance.status === "revoked" &&
+    typeof record.kind === "string" &&
+    RETIRED_SETUP_SHELL_BINDING_KINDS.has(record.kind)
+  ) {
+    return "setup_failed";
+  }
   if (record.kind !== "historical_archive") {
     return "active";
   }

@@ -353,11 +353,26 @@ const GROUPED_FRAGMENT_EXCLUSION_SQLITE = `
     WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
   )`;
 
+// A revoked retired-setup-shell row (`RETIRED_SETUP_SHELL_BINDING_KINDS`) is
+// excluded everywhere by the shared owner-visible predicate above, because a
+// SUCCESSFUL run promotes the connection to its own `active` row elsewhere —
+// the shell is then a spent artifact of setup mechanics, not a connection the
+// owner needs to see. But when every run against that shell failed (or none
+// ran at all past enrollment), no other row exists to represent the attempt:
+// the shell IS the owner's only record of trying, and the shared predicate's
+// blanket exclusion makes a repeatedly-attempted, never-connected source
+// invisible on the one surface — Sources — where the owner would look for it.
+// This ORs a `NOT EXISTS (successful run)` escape onto the shared exclusion,
+// Sources-page-only, replacing the retired-setup-shell predicate's exact
+// text so it cannot drift from `RETIRED_SETUP_SHELL_BINDING_KINDS` above.
+const NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE =
+  "AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft') OR NOT EXISTS (\n    SELECT 1 FROM run_history\n    WHERE run_history.connector_instance_id = connector_instances.connector_instance_id\n      AND run_history.status = 'succeeded'\n  ))";
+
 export const SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL =
   SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL.replace(
-    "\n  AND (\n    ? IS NULL",
-    `${GROUPED_FRAGMENT_EXCLUSION_SQLITE}\n  AND (\n    ? IS NULL`
-  );
+    "AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))",
+    NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE
+  ).replace("\n  AND (\n    ? IS NULL", `${GROUPED_FRAGMENT_EXCLUSION_SQLITE}\n  AND (\n    ? IS NULL`);
 
 export const SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL = `
 SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
@@ -433,7 +448,7 @@ const READ_SURFACE_HIDDEN_STATUSES = new Set(["draft"]);
 // duplicated here (SQL + JS) because `resolveOwnerVisibleConnectionForRoute`'s
 // exact-id point lookup (`ref-control.ts`) bypasses the paged query entirely
 // and must apply the SAME visibility rule to what it reads via `store.get`.
-const RETIRED_SETUP_SHELL_BINDING_KINDS = new Set([
+export const RETIRED_SETUP_SHELL_BINDING_KINDS = new Set([
   "browser_enrollment_shell",
   "static_secret_draft",
   "manual_upload_draft",
@@ -1943,11 +1958,19 @@ const GROUPED_FRAGMENT_EXCLUSION_POSTGRES = `
     WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
   )`;
 
+// Postgres mirror of `NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE` — same
+// never-succeeded escape, Sources-page-only, for the same reason: a revoked
+// setup shell with no successful run is the owner's only record of the
+// attempt, and must not be as invisible on Sources as a promoted shell
+// correctly is everywhere else.
+const NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_POSTGRES =
+  "AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft') OR NOT EXISTS (\n    SELECT 1 FROM run_history\n    WHERE run_history.connector_instance_id = connector_instances.connector_instance_id\n      AND run_history.status = 'succeeded'\n  ))";
+
 export const POSTGRES_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL =
   POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL.replace(
-    "\n  AND (\n    $2::text IS NULL",
-    `${GROUPED_FRAGMENT_EXCLUSION_POSTGRES}\n  AND (\n    $2::text IS NULL`
-  );
+    "AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))",
+    NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_POSTGRES
+  ).replace("\n  AND (\n    $2::text IS NULL", `${GROUPED_FRAGMENT_EXCLUSION_POSTGRES}\n  AND (\n    $2::text IS NULL`);
 
 export const POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL = `
 SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
