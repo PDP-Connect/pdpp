@@ -18,7 +18,7 @@ export interface ScheduleHistoryFacts {
   readonly latestFinishedAt: string | null;
   /** Most recent run that actually started (status in {succeeded, failed}). */
   readonly latestStartedAt: string | null;
-  readonly latestStatus: "cancelled" | "failed" | "skipped" | "succeeded" | null;
+  readonly latestStatus: "abandoned" | "cancelled" | "failed" | "skipped" | "succeeded" | null;
   /** Most recent `succeeded` record's `completedAt`. */
   readonly latestSuccessfulAt: string | null;
   /**
@@ -39,7 +39,7 @@ export interface MutableScheduleHistoryFacts {
   latestErrorCode: string | null;
   latestFinishedAt: string | null;
   latestStartedAt: string | null;
-  latestStatus: "cancelled" | "failed" | "skipped" | "succeeded" | null;
+  latestStatus: "abandoned" | "cancelled" | "failed" | "skipped" | "succeeded" | null;
   latestSuccessfulAt: string | null;
   pendingPressureGaps: PendingPressureGap[];
   recentRuns: SchedulerRunHistoryRecord[];
