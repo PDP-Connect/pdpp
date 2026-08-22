@@ -1314,6 +1314,13 @@ export interface EmitDeps {
    *  durable gap moves to `recovered` instead of being reset to `pending` by
    *  runtime cleanup. Empty on an ordinary run with no served gaps. */
   servedAccountGaps?: ReadonlyMap<string, string> | undefined;
+  /** Pending `statements` PDF gaps the runtime served this run at START,
+   *  keyed by statement `id` → served `gap_id`. When a served statement's
+   *  PDF is hydrated again this run, the connector emits `DETAIL_GAP_RECOVERED`
+   *  with the served `gap_id` so the durable gap moves to `recovered` instead
+   *  of staying `pending` forever. Empty on an ordinary run with no served
+   *  statement gaps. */
+  servedStatementGaps?: ReadonlyMap<string, string> | undefined;
   tmpDir: string;
   /** Per-transaction fingerprint cursor (excludes the run-clock
    *  `fetched_at`). Shared across all accounts for the whole transactions
@@ -1761,6 +1768,8 @@ export async function emitStatementDetailCoverage(
     }
   }
 
+  await recoverServedStatementGaps(deps, hydratedKeys);
+
   await deps.emit(
     buildDetailCoverageMessage({
       stream: "statements",
@@ -1772,6 +1781,82 @@ export async function emitStatementDetailCoverage(
       covered: hydratedKeys.length,
     })
   );
+}
+
+/**
+ * Build the `statement_id → served gap_id` lookup from the pending detail
+ * gaps the runtime served this run at START (`ctx.detailGaps`). Filtered to
+ * Chase statement-PDF gaps — the exact shape `emitStatementDetailCoverage`
+ * writes via `buildDetailGap`: `stream === "statements"`,
+ * `detail_locator.kind === "chase.statement"`, and a non-empty
+ * `statement_id`. Any other served gap (a different connector's locator, a
+ * non-statements stream, a malformed locator) is ignored so the connector can
+ * only ever recover a gap it actually understands. Sourcing the `gap_id` from
+ * the served gap — never synthesizing one — is what guarantees the connector
+ * cannot mark an unrelated or unserved gap recovered.
+ */
+export function buildServedStatementGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
+): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const gap of detailGaps) {
+    if (gap.stream !== "statements" || gap.status !== "pending") {
+      continue;
+    }
+    const locator = gap.detail_locator;
+    if (locator?.kind !== "chase.statement") {
+      continue;
+    }
+    const statementId = locator.statement_id;
+    if (
+      typeof statementId !== "string" ||
+      statementId.length === 0 ||
+      typeof gap.gap_id !== "string" ||
+      !gap.gap_id
+    ) {
+      continue;
+    }
+    // First served gap per statement wins; the runtime serves at most one
+    // pending gap per (instance, stream, record_key) so a duplicate would be
+    // a store anomaly, not an expected state.
+    if (!lookup.has(statementId)) {
+      lookup.set(statementId, gap.gap_id);
+    }
+  }
+  return lookup;
+}
+
+/**
+ * Emit `DETAIL_GAP_RECOVERED` for each served statement gap whose PDF is
+ * hydrated again this run. `hydratedKeys` is the honest input: it is exactly
+ * the set `emitStatementDetailCoverage` already proved hydrated
+ * (`outcome.kind === "hydrated"`, driven by `isHydrated` at the download
+ * site), the same predicate feeding the coverage numerator, so recovery and
+ * coverage cannot drift apart. A statement whose PDF is still missing this
+ * run is left on the `DETAIL_GAP` re-emit path and is never recovered here —
+ * lose-no-data preserved.
+ */
+export async function recoverServedStatementGaps(
+  deps: EmitDeps,
+  hydratedKeys: readonly string[]
+): Promise<void> {
+  const served = deps.servedStatementGaps;
+  if (!served || served.size === 0) {
+    return;
+  }
+  for (const statementId of hydratedKeys) {
+    const gapId = served.get(statementId);
+    if (!gapId) {
+      continue;
+    }
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gapId,
+      stream: "statements",
+      record_key: statementId,
+    });
+  }
 }
 
 /**
@@ -2689,6 +2774,7 @@ if (isMainModule(import.meta.url)) {
         requested,
         resFilters,
         servedAccountGaps: buildServedAccountGapLookup(ctx.detailGaps),
+        servedStatementGaps: buildServedStatementGapLookup(ctx.detailGaps),
         tmpDir,
         txState,
         transactionsFingerprintCursor,
