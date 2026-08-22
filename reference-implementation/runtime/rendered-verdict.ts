@@ -82,6 +82,11 @@ export type VerdictTone = "amber" | "green" | "grey" | "red";
  * than describing the system's internal condition.
  */
 export type VerdictLabel =
+  // Terminal and honest: records preserved, collection finished, nothing will
+  // resume. Applied by the summary projection to an archived source, never
+  // derived from a tone (no `TONE_TO_LABEL` entry maps to it) — a source is
+  // archived because of what it IS, not because of how its axes scored.
+  | "Archived"
   | "Can't collect"
   | "Checking"
   | "Healthy"
@@ -89,6 +94,11 @@ export type VerdictLabel =
   | "Missing data"
   | "Needs refresh"
   | "Not measured"
+  // Terminal and honest, like "Archived": this source never connected, so
+  // there is no collection to describe, only a setup attempt that did not
+  // finish. Applied by the summary projection to a `setup_failed` source,
+  // never derived from a tone — see `archiveRenderedVerdict` in `ref-control.ts`.
+  | "Setup never completed"
   | "Syncing";
 
 export interface VerdictPill {
