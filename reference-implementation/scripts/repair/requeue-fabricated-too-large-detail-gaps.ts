@@ -66,10 +66,15 @@
  * Scope + safety model
  * --------------------
  *   - Dry-run by default; `--apply` is required to write.
- *   - Locked to `--connector-id=gmail` and stream `attachments`: the
+ *   - Locked to one connector/stream pair, named at invocation time via
+ *     `--connector-id` and never hardcoded here (RI production code carries
+ *     no connector identity — see
+ *     `test/ri-zero-connector-knowledge-conformance.test.ts`): the
  *     corroborating size (`records.record_json->>'size_bytes'`) is an
  *     attachment-record shape, and this tool must not guess that shape for a
- *     connector whose records it has not been reasoned about.
+ *     connector whose records it has not been reasoned about. The operator
+ *     asserts the connector by passing it explicitly; the tool never infers
+ *     or defaults it.
  *   - Requires an explicit connector instance id.
  *   - Every write re-checks `status = 'terminal' AND reason = 'too_large'` and
  *     targets one gap id, so a row that changed underneath is skipped rather
@@ -84,7 +89,7 @@
  * Usage:
  *   PDPP_DATABASE_URL=postgres://... \
  *   node reference-implementation/scripts/repair/requeue-fabricated-too-large-detail-gaps.ts \
- *     --connector-instance-id=cin_... \
+ *     --connector-id=... --connector-instance-id=cin_... --stream=... \
  *     [--limit=100] [--apply]
  */
 
@@ -95,19 +100,16 @@ import { pathToFileURL } from "node:url";
 import { classifyTooLargeProof, readClaimedSizeProof } from "../../server/connector-gap-classification.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../../server/postgres-storage.ts";
 
-/** The only connector/stream pair whose corroborating record shape this tool understands. */
-const SUPPORTED_CONNECTOR_ID = "gmail";
-const SUPPORTED_STREAM = "attachments";
 const TARGET_REASON = "too_large";
 
 interface ParsedArgs {
   apply: boolean;
+  connectorId: string | null;
   connectorInstanceId: string | null;
   limit: number;
   /** Value-taking flags given with no value; the tool refuses rather than guessing. */
   missingValueFlags: string[];
-  /** A `--connector-id` naming something other than the supported connector. */
-  wrongConnectorId?: string;
+  stream: string | null;
 }
 
 /**
@@ -117,12 +119,21 @@ interface ParsedArgs {
  * rather than acting on a substituted default.
  */
 function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { apply: false, connectorInstanceId: null, limit: 100, missingValueFlags: [] };
+  const out: ParsedArgs = {
+    apply: false,
+    connectorId: null,
+    connectorInstanceId: null,
+    limit: 100,
+    missingValueFlags: [],
+    stream: null,
+  };
   const applyFlag = (key: string, value: string): void => {
     if (key === "connector-instance-id") {
       out.connectorInstanceId = value;
-    } else if (key === "connector-id" && value !== SUPPORTED_CONNECTOR_ID) {
-      out.wrongConnectorId = value;
+    } else if (key === "connector-id") {
+      out.connectorId = value;
+    } else if (key === "stream") {
+      out.stream = value;
     } else if (key === "limit") {
       const parsed = Number.parseInt(value, 10);
       out.limit = Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 500) : out.limit;
@@ -176,7 +187,11 @@ interface PostgresQueryResult<Row> {
  * must still surface, so it can be reported as `no_corroborating_record`
  * rather than silently dropped from the denominator.
  */
-async function loadCandidates(connectorInstanceId: string): Promise<CandidateRow[]> {
+async function loadCandidates(
+  connectorId: string,
+  connectorInstanceId: string,
+  stream: string
+): Promise<CandidateRow[]> {
   const result: PostgresQueryResult<CandidateRow> = await postgresQuery(
     `
       SELECT g.gap_id,
@@ -196,7 +211,7 @@ async function loadCandidates(connectorInstanceId: string): Promise<CandidateRow
         AND g.reason = $4
       ORDER BY g.gap_id
     `,
-    [SUPPORTED_CONNECTOR_ID, connectorInstanceId, SUPPORTED_STREAM, TARGET_REASON]
+    [connectorId, connectorInstanceId, stream, TARGET_REASON]
   );
   return result.rows;
 }
@@ -272,11 +287,13 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  if (args.wrongConnectorId !== undefined) {
-    console.error(
-      `--connector-id='${args.wrongConnectorId}' is not supported; this tool only adjudicates ` +
-        `'${SUPPORTED_CONNECTOR_ID}' / '${SUPPORTED_STREAM}', whose corroborating size shape it understands`
-    );
+  if (!args.connectorId) {
+    console.error("--connector-id is required (this tool guesses no default; the operator names the connector)");
+    process.exitCode = 2;
+    return;
+  }
+  if (!args.stream) {
+    console.error("--stream is required (this tool guesses no default; the operator names the stream)");
     process.exitCode = 2;
     return;
   }
@@ -294,7 +311,9 @@ async function main(): Promise<void> {
 
   await initPostgresStorage({ backend: "postgres", databaseUrl });
   try {
-    const adjudicated = adjudicateCandidates(await loadCandidates(args.connectorInstanceId));
+    const adjudicated = adjudicateCandidates(
+      await loadCandidates(args.connectorId, args.connectorInstanceId, args.stream)
+    );
     const fabricated = adjudicated.filter((row) => row.verdict === "fabricated_proof");
     const selected = fabricated.slice(0, args.limit);
 
@@ -313,7 +332,7 @@ async function main(): Promise<void> {
       JSON.stringify(
         {
           applied: args.apply,
-          connector_id: SUPPORTED_CONNECTOR_ID,
+          connector_id: args.connectorId,
           connector_instance_id: args.connectorInstanceId,
           limit: args.limit,
           matched: adjudicated.length,
@@ -326,7 +345,7 @@ async function main(): Promise<void> {
             recorded_size_bytes: row.recordedSizeBytes,
             verdict: row.verdict,
           })),
-          stream: SUPPORTED_STREAM,
+          stream: args.stream,
           verdicts: {
             fabricated_proof: fabricated.length,
             no_corroborating_record: adjudicated.filter((row) => row.verdict === "no_corroborating_record").length,
