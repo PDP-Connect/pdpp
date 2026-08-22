@@ -272,6 +272,27 @@ FROM browsers AS core-browser
 
 ARG PDPP_REFERENCE_REVISION=unknown
 
+# Image provenance. Without these the deployed artifact cannot say what source
+# it was built from, and identifying production means md5-diffing files against
+# candidate worktrees. Sampling files that way is actively misleading: a file
+# unchanged between two commits matches BOTH, so a sample that happens to miss
+# the changed files "confirms" the wrong commit. Labels remove the guesswork.
+#
+# PDPP_BUILD_DIRTY must be set from `git status --porcelain` at build time. A
+# silently-dirty build tree is how bad images shipped before, so an unclean
+# tree is recorded in the artifact rather than left to memory.
+ARG PDPP_BUILD_REVISION=unknown
+ARG PDPP_BUILD_SOURCE=unknown
+ARG PDPP_BUILD_CREATED=unknown
+ARG PDPP_BUILD_DIRTY=unknown
+ARG PDPP_BUILD_COMPOSITION=unknown
+
+LABEL org.opencontainers.image.revision="${PDPP_BUILD_REVISION}" \
+      org.opencontainers.image.source="${PDPP_BUILD_SOURCE}" \
+      org.opencontainers.image.created="${PDPP_BUILD_CREATED}" \
+      pdpp.build.dirty="${PDPP_BUILD_DIRTY}" \
+      pdpp.build.composition="${PDPP_BUILD_COMPOSITION}"
+
 # PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT is baked in (unlike the
 # root docker-compose.yml `reference` service, which sets it explicitly in
 # compose env) because this image stage is deployed exclusively through
