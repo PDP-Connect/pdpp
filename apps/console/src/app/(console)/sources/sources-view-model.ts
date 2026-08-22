@@ -189,6 +189,17 @@ export interface SourceInstanceView {
    * resume — the honest next step is a fresh attempt via Add Source.
    */
   setupFailed: boolean;
+  /**
+   * The server's own honest sentence for WHY this setup failed — e.g. "This
+   * setup attempt expired while waiting for you to finish signing in" for a
+   * TTL-expired shell, vs. the generic "Setup never finished" for every other
+   * cause. Server-derived (`archiveRenderedVerdict` in `ref-control.ts`) so
+   * every consumer of `rendered_verdict.forward_statement` — this passport
+   * pane, the `sources-report` CLI, anything else — renders the SAME
+   * specific reason, never a console-local guess. `null` only when
+   * `setupFailed` is false or the mirror predates `rendered_verdict`.
+   */
+  setupFailedForwardStatement: string | null;
   /** Status flag (dot + Endorse) derived from rendered verdict, with legacy fallback. */
   status: SourceStatusFlag;
   /** Stream manifest rows for the passport table. */
@@ -669,6 +680,7 @@ export function toSourceInstanceView(
     primaryVerdictAction,
     revoked,
     setupFailed,
+    setupFailedForwardStatement: setupFailed ? (summary.rendered_verdict?.forward_statement ?? null) : null,
     status,
     streams,
     totalRecords: summary.total_records,

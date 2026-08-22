@@ -2215,7 +2215,12 @@ export function retireExpiredBrowserEnrollmentShellsForMaintenance(
     ) => Promise<readonly EnrollmentShellLike[]> | readonly EnrollmentShellLike[];
     updateStatus: (
       connectorInstanceId: string,
-      args: { status: string; updatedAt: string; revokedAt?: string | null }
+      args: {
+        status: string;
+        updatedAt: string;
+        revokedAt?: string | null;
+        sourceBindingPatch?: Record<string, unknown> | null;
+      }
     ) => Promise<unknown> | unknown;
   };
   return retireExpiredBrowserEnrollmentShells(
@@ -6305,7 +6310,12 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     runtimeOk,
     schedule: localDeviceBacked ? null : schedule,
   });
-  const renderedVerdict = archiveRenderedVerdict(builtRenderedVerdict, deriveSourceVisibility(instance));
+  const sourceVisibility = deriveSourceVisibility(instance);
+  const renderedVerdict = archiveRenderedVerdict(
+    builtRenderedVerdict,
+    sourceVisibility,
+    sourceVisibility === "setup_failed" ? deriveSetupFailedReason(instance, authoritativeLastRun) : null
+  );
   // Owner review, 2026-07-09: reuse `coverageClassifyingRun` — the SAME
   // classifying run health/coverage already resolved to — so an
   // owner-cancelled `lastRun` is excluded exactly like the health/coverage
@@ -6487,7 +6497,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     schedule: localDeviceBacked ? null : schedule,
     source_binding_kind: connectionBindingKind(instance),
     source_kind: instance.sourceKind,
-    source_visibility: deriveSourceVisibility(instance),
+    source_visibility: sourceVisibility,
     source_work: sourceWorkGroupFromOwnerState(ownerState.resolver),
     status: instance.status,
     stream_count: evidence ? evidence.stream_count : streamRecords.length,
@@ -6606,10 +6616,20 @@ function hasUatTransferMarker(binding: Record<string, unknown>): boolean {
  * synthesizes its own "Try again" CTA (`SETUP_FAILED_CTA_LABEL` in
  * `source-actionability.ts`) that routes to Add Source, the same way it
  * synthesizes `SETUP_IN_PROGRESS_CTA_LABEL` for a draft.
+ *
+ * `setupFailedReason` (owner ruling 2026-08-22, quiet-expiry defect) refines
+ * the `"setup_failed"` copy without forking the vocabulary: a TTL sweep that
+ * revoked the shell WHILE the owner was still waiting to finish sign-in must
+ * say so plainly ("expired while waiting for you"), rather than reading as
+ * an anonymous, generic non-completion indistinguishable from the owner
+ * simply walking away. `null`/`"unknown"` falls back to the original generic
+ * copy — the honest choice for a pre-existing revoked row that predates
+ * `revocation_reason` being recorded at all.
  */
 export function archiveRenderedVerdict<T extends RenderedVerdict>(
   verdict: T,
-  visibility: "active" | "archived" | "setup_failed"
+  visibility: "active" | "archived" | "setup_failed",
+  setupFailedReason: SetupFailedReason | null = null
 ): T {
   if (visibility === "archived") {
     return {
@@ -6622,16 +6642,88 @@ export function archiveRenderedVerdict<T extends RenderedVerdict>(
     };
   }
   if (visibility === "setup_failed") {
+    // The self-inflicted-restart case can accompany EITHER cause below (our
+    // restart can kill a run mid-TTL or mid-owner-abandon-race) — checked
+    // first and folded into the sentence as an addendum so the owner never
+    // reads "our restart" as "your failure" or "the provider's failure".
+    const restartAddendum = setupFailedReason?.interruptedByRestart
+      ? " (We restarted our system while you were signing in — this was not something you or the provider did wrong.)"
+      : "";
+    if (setupFailedReason?.cause === "ttl_expired") {
+      return {
+        ...verdict,
+        channel: "calm",
+        forward_statement: `This setup attempt expired while waiting for you to finish signing in. No records were collected.${restartAddendum} Start a fresh attempt when you're ready.`,
+        pill: { label: "Expired while waiting for you", tone: "grey" },
+        progress: { ...verdict.progress, headline: "This connection attempt expired before you finished signing in." },
+        required_actions: [],
+      };
+    }
     return {
       ...verdict,
       channel: "calm",
-      forward_statement: "Setup never finished for this source. No records were collected.",
+      forward_statement: `Setup never finished for this source. No records were collected.${restartAddendum}`,
       pill: { label: "Setup never completed", tone: "grey" },
       progress: { ...verdict.progress, headline: "This connection attempt did not finish." },
       required_actions: [],
     };
   }
   return verdict;
+}
+
+// The recorded (never re-derived when present) cause of a `setup_failed`
+// row's revocation. `"ttl_expired"`/`"owner_abandoned"` come straight from
+// `source_binding.revocation_reason`, stamped at the moment of revocation by
+// `retireExpiredBrowserEnrollmentShells` / the abandon-enrollment route
+// (owner ruling 2026-08-22: "record WHY... do not retrofit a guess at read
+// time if the writer can state the truth"). `"unknown"` is the ONLY derived
+// value here, and only for a row revoked before this change shipped — no
+// `revocation_reason` was ever stamped for it, so nothing is guessed.
+export interface SetupFailedReason {
+  readonly cause: "ttl_expired" | "owner_abandoned" | "unknown";
+  // True when the owner's LATEST run against this shell was killed by our
+  // own controller restart while they were mid-sign-in
+  // (`controller_terminated_while_awaiting_owner_interaction` —
+  // `lib/controller-boot.ts`), not by the provider or the owner. Independent
+  // of `cause`: our restart can precede either a later TTL expiry or a later
+  // owner abandonment, so this is checked separately, never folded into
+  // `cause` itself.
+  readonly interruptedByRestart: boolean;
+}
+
+const SELF_INFLICTED_RESTART_TERMINAL_REASON = "controller_terminated_while_awaiting_owner_interaction";
+
+/**
+ * Reads the true revocation cause a `setup_failed` row's writer already
+ * recorded (see `SetupFailedReason` above) rather than reverse-guessing it
+ * from `revoked_at` timing. Returns `null` when `instance` is not itself a
+ * `setup_failed` row (caller should not call `archiveRenderedVerdict` with a
+ * reason in that case).
+ */
+export function deriveSetupFailedReason(
+  instance: ConnectorInstanceRow,
+  lastRun: ConnectorRunSummary | null
+): SetupFailedReason | null {
+  const binding = instance.sourceBinding;
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    return null;
+  }
+  const record = binding as Record<string, unknown>;
+  if (
+    !(
+      instance.status === "revoked" &&
+      typeof record.kind === "string" &&
+      RETIRED_SETUP_SHELL_BINDING_KINDS.has(record.kind)
+    )
+  ) {
+    return null;
+  }
+  const recorded = record.revocation_reason;
+  const cause = recorded === "ttl_expired" || recorded === "owner_abandoned" ? recorded : "unknown";
+  return {
+    cause,
+    interruptedByRestart: lastRun?.terminal_reason === SELF_INFLICTED_RESTART_TERMINAL_REASON,
+  };
 }
 
 function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "archived" | "setup_failed" {
