@@ -27,8 +27,10 @@
  * unit-testable without a browser harness.
  */
 
-import type { AxisChip, EvidenceTone, ForwardDispositionSummary } from "./connection-evidence.ts";
-import { formatCoverageAxis, formatForwardDisposition } from "./connection-evidence.ts";
+import type { AxisChip, EvidenceTone } from "@pdpp/display";
+import { formatCoverageAxis } from "@pdpp/display";
+import type { ForwardDispositionSummary } from "./connection-evidence.ts";
+import { formatForwardDisposition } from "./connection-evidence.ts";
 import type { RefCollectionReportEntry } from "./ref-client.ts";
 
 export interface StreamCollectionFacts {

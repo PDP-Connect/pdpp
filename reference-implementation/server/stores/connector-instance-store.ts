@@ -287,40 +287,6 @@ function ownerVisibleIdentityPageParams(
   return connectorId === null ? base : [ownerSubjectId, connectorId, ...base.slice(1)];
 }
 
-// The SAME `recovery_reason` string the historical-archive recovery path
-// stamps on a PURE recovered fragment (a `historical_archive` binding
-// restored from record evidence with no surviving connector_instances row and
-// no UAT-transfer marker). Kept as a single named constant, not inlined, so
-// the SQLite/Postgres literal and the app-level predicate below (used by any
-// point-lookup that bypasses this page) can never drift from each other.
-const PURE_RECOVERED_FRAGMENT_RECOVERY_REASON = "connection_metadata_missing";
-
-// Bind-parameter array for the sources-visible unfiltered template: identical
-// cursor tuple to `ownerVisibleIdentityPageParams`'s unfiltered shape, with
-// the pure-recovered-fragment `recovery_reason` literal bound once as its own
-// parameter (never string-interpolated) ahead of the cursor tuple.
-function sourcesVisibleIdentityPageParams(
-  ownerSubjectId: string,
-  after: ConnectorIdentityPageBoundary | null,
-  limit: number
-): (string | number | null)[] {
-  const cursorConnectorId = after ? after.connectorId : null;
-  const cursorCreatedAt = after ? after.createdAt : null;
-  const cursorInstanceId = after ? after.connectorInstanceId : null;
-  return [
-    ownerSubjectId,
-    PURE_RECOVERED_FRAGMENT_RECOVERY_REASON,
-    cursorConnectorId,
-    cursorConnectorId,
-    cursorConnectorId,
-    cursorCreatedAt,
-    cursorConnectorId,
-    cursorCreatedAt,
-    cursorInstanceId,
-    limit + 1,
-  ];
-}
-
 // This is an owner-facing dashboard visibility policy, not a generic status
 // filter: drafts and ordinary revoked connections remain visible, while
 // retired setup shells and system-only connectors do not consume page slots.
@@ -367,6 +333,47 @@ WHERE owner_subject_id = ?
   )
 ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
 LIMIT ?`;
+// Sources-page identity page: the owner-visible unfiltered template plus ONE
+// extra exclusion — a grouped fragment (account-unification canonicalization)
+// never renders its own Sources row, only its canonical sibling does.
+//
+// A pure recovered historical fragment is deliberately NOT excluded here. It
+// is classified `source_visibility: "archived"` and rendered in the Sources
+// list's own Archived group, because dropping it made its records visible on
+// no summary surface at all.
+//
+// Derived from the owner-visible template by string substitution rather than
+// copied, so the two can never drift on the shared predicates (stub-connector
+// exclusions, the revoked-draft rule, the cursor tuple, ordering, LIMIT). The
+// exclusion is applied BEFORE `LIMIT`, keeping `hasMore`/the next cursor
+// authoritative over exactly the rows this page renders.
+const GROUPED_FRAGMENT_EXCLUSION_SQLITE = `
+  AND NOT EXISTS (
+    SELECT 1 FROM connector_instance_groups
+    WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
+  )`;
+
+// A revoked retired-setup-shell row (`RETIRED_SETUP_SHELL_BINDING_KINDS`) is
+// excluded everywhere by the shared owner-visible predicate above, because a
+// SUCCESSFUL run promotes the connection to its own `active` row elsewhere —
+// the shell is then a spent artifact of setup mechanics, not a connection the
+// owner needs to see. But when every run against that shell failed (or none
+// ran at all past enrollment), no other row exists to represent the attempt:
+// the shell IS the owner's only record of trying, and the shared predicate's
+// blanket exclusion makes a repeatedly-attempted, never-connected source
+// invisible on the one surface — Sources — where the owner would look for it.
+// This ORs a `NOT EXISTS (successful run)` escape onto the shared exclusion,
+// Sources-page-only, replacing the retired-setup-shell predicate's exact
+// text so it cannot drift from `RETIRED_SETUP_SHELL_BINDING_KINDS` above.
+const NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE =
+  "AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft') OR NOT EXISTS (\n    SELECT 1 FROM run_history\n    WHERE run_history.connector_instance_id = connector_instances.connector_instance_id\n      AND run_history.status = 'succeeded'\n  ))";
+
+export const SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL =
+  SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL.replace(
+    "AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))",
+    NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE
+  ).replace("\n  AND (\n    ? IS NULL", `${GROUPED_FRAGMENT_EXCLUSION_SQLITE}\n  AND (\n    ? IS NULL`);
+
 export const SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL = `
 SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
        source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
@@ -422,52 +429,6 @@ WHERE owner_subject_id = ?
   )
 ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
 LIMIT ?`;
-// Sources-list-only identity page: EXCLUDES a pure recovered historical
-// fragment before LIMIT (never a post-LIMIT filter — the known
-// filter-after-LIMIT defect this repo avoids everywhere else, see the
-// `RETIRED_SETUP_SHELL_BINDING_KINDS` predicate above). Deliberately a
-// SEPARATE template family from `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_*_SQL`:
-// Explore's connection-facet listing and every other read surface use the
-// unfiltered templates unchanged, so a hidden fragment's already-ingested
-// records stay attributable and reachable there. A `historical_archive`
-// binding that ALSO carries a UAT-transfer marker (`latest_uat_source_instance_id`
-// or `recovery_reason = 'uat_record_transfer'`) is a manual/UAT-imported
-// source, not a bare fragment, and is NOT excluded — the second OR arm below
-// keeps it. The Sources page never scopes by `connectorId` (see
-// `apps/console/.../sources/page.tsx`), so only the unfiltered shape exists;
-// add FILTERED/SET siblings if a future caller needs the scoped form.
-export const SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL = `
-SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
-       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
-FROM connector_instances
-WHERE owner_subject_id = ?
-  AND connector_id NOT LIKE '%manual_action_stub%'
-  AND connector_id NOT LIKE '%manual-action-stub%'
-  AND connector_id NOT LIKE '%stream-test-stub%'
-  AND connector_id NOT LIKE '%pg_runtime_%'
-  AND connector_id NOT LIKE '%pg_canonical_%'
-  AND connector_id NOT LIKE '%pg_expand_%'
-  AND connector_id NOT LIKE '%pg_lexical_backfill_%'
-  AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
-  AND (
-    json_extract(source_binding_json, '$.kind') IS NOT 'historical_archive'
-    OR json_extract(source_binding_json, '$.recovery_reason') IS NOT ?
-    OR json_extract(source_binding_json, '$.latest_uat_source_instance_id') IS NOT NULL
-    OR json_extract(source_binding_json, '$.recovery_reason') IS 'uat_record_transfer'
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM connector_instance_groups
-    WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
-  )
-  AND (
-    ? IS NULL
-    OR connector_id > ?
-    OR (connector_id = ? AND created_at > ?)
-    OR (connector_id = ? AND created_at = ? AND connector_instance_id > ?)
-  )
-ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
-LIMIT ?`;
-
 // `draft` is reserved for static-secret owner-session connection setup: a real
 // connector_instances row that is excluded from every connection read surface
 // until its first successful ingest flips it to `active`. Only the owner-session
@@ -487,7 +448,7 @@ const READ_SURFACE_HIDDEN_STATUSES = new Set(["draft"]);
 // duplicated here (SQL + JS) because `resolveOwnerVisibleConnectionForRoute`'s
 // exact-id point lookup (`ref-control.ts`) bypasses the paged query entirely
 // and must apply the SAME visibility rule to what it reads via `store.get`.
-const RETIRED_SETUP_SHELL_BINDING_KINDS = new Set([
+export const RETIRED_SETUP_SHELL_BINDING_KINDS = new Set([
   "browser_enrollment_shell",
   "static_secret_draft",
   "manual_upload_draft",
@@ -1638,13 +1599,18 @@ export function createSqliteConnectorInstanceStore() {
       return { hasMore, rows: rows.slice(0, limit).map((row) => mapInstanceWithGroups(row, groups)) };
     },
 
-    // Sources-page-only sibling of `listOwnerVisibleIdentityPage`: excludes a
-    // pure recovered historical fragment BEFORE `LIMIT` (see
-    // `SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL`'s comment for the
-    // exact exclusion contract). Every other caller (Explore's facet listing,
-    // Add Source, manual upload) keeps using `listOwnerVisibleIdentityPage`
-    // unchanged, so a hidden fragment's connection facet and records stay
-    // reachable everywhere except this one paginated list.
+    // Sources-page identity page. A pure recovered historical fragment is NO
+    // LONGER excluded here: it is classified `source_visibility: "archived"`
+    // by `deriveSourceVisibility` and rendered in the Sources list's own
+    // Archived group. Dropping it from the query made its records invisible
+    // on every summary surface, which violates the standing principle that
+    // no data known to the system may be invisible in the UI.
+    //
+    // Reading through the SAME unfiltered template `listOwnerVisibleIdentityPage`
+    // uses keeps `hasMore`/the next cursor authoritative over exactly the rows
+    // this page renders — the pre-LIMIT-filter property the previous dedicated
+    // template existed to guarantee. With no row excluded, the unfiltered
+    // template has that property by construction.
     listSourcesVisibleIdentityPage(
       ownerSubjectId: string,
       { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
@@ -1653,11 +1619,15 @@ export function createSqliteConnectorInstanceStore() {
       const rows = Array.from(
         iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(
           SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL,
-          sourcesVisibleIdentityPageParams(ownerSubjectId, after, limit)
+          // Same cast the sibling unfiltered arm applies: the shared params
+          // helper's return type also allows the Postgres `unnest` array form,
+          // which the unfiltered shape never produces.
+          ownerVisibleIdentityPageParams(ownerSubjectId, null, after, limit) as (string | number | null)[]
         )
       );
       const hasMore = rows.length > limit;
-      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+      const groups = loadOwnerConnectorInstanceGroupsSqlite(ownerSubjectId);
+      return { hasMore, rows: rows.slice(0, limit).map((row) => mapInstanceWithGroups(row, groups)) };
     },
 
     // Promotes a temporary setup binding to its durable sibling kind.
@@ -1979,6 +1949,29 @@ WHERE owner_subject_id = $1
   )
 ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
 LIMIT $9`;
+// Postgres mirror of `SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL` —
+// same single added exclusion (grouped fragments), same derive-by-substitution
+// discipline so it cannot drift from its owner-visible parent.
+const GROUPED_FRAGMENT_EXCLUSION_POSTGRES = `
+  AND NOT EXISTS (
+    SELECT 1 FROM connector_instance_groups
+    WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
+  )`;
+
+// Postgres mirror of `NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE` — same
+// never-succeeded escape, Sources-page-only, for the same reason: a revoked
+// setup shell with no successful run is the owner's only record of the
+// attempt, and must not be as invisible on Sources as a promoted shell
+// correctly is everywhere else.
+const NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_POSTGRES =
+  "AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft') OR NOT EXISTS (\n    SELECT 1 FROM run_history\n    WHERE run_history.connector_instance_id = connector_instances.connector_instance_id\n      AND run_history.status = 'succeeded'\n  ))";
+
+export const POSTGRES_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL =
+  POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL.replace(
+    "AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))",
+    NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_POSTGRES
+  ).replace("\n  AND (\n    $2::text IS NULL", `${GROUPED_FRAGMENT_EXCLUSION_POSTGRES}\n  AND (\n    $2::text IS NULL`);
+
 export const POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL = `
 SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
        source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
@@ -2028,43 +2021,6 @@ WHERE ci.owner_subject_id = $1
     OR (ci.connector_id = $7 AND ci.created_at = $8 AND ci.connector_instance_id > $9)
   )
 ORDER BY ci.connector_id ASC, ci.created_at ASC, ci.connector_instance_id ASC
-LIMIT $10`;
-
-// Postgres mirror of `SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL` —
-// see that template's comment for the exclusion contract (pure recovered
-// fragments only; a `historical_archive` binding carrying a UAT-transfer
-// marker stays visible; every other read surface, including Explore's
-// facet listing, keeps using the unfiltered templates above unchanged).
-export const POSTGRES_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL = `
-SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
-       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
-FROM connector_instances
-WHERE owner_subject_id = $1
-  AND connector_id NOT LIKE '%manual_action_stub%'
-  AND connector_id NOT LIKE '%manual-action-stub%'
-  AND connector_id NOT LIKE '%stream-test-stub%'
-  AND connector_id NOT LIKE '%pg_runtime_%'
-  AND connector_id NOT LIKE '%pg_canonical_%'
-  AND connector_id NOT LIKE '%pg_expand_%'
-  AND connector_id NOT LIKE '%pg_lexical_backfill_%'
-  AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
-  AND (
-    COALESCE(source_binding_json->>'kind', '') <> 'historical_archive'
-    OR COALESCE(source_binding_json->>'recovery_reason', '') <> $2
-    OR source_binding_json->>'latest_uat_source_instance_id' IS NOT NULL
-    OR source_binding_json->>'recovery_reason' = 'uat_record_transfer'
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM connector_instance_groups
-    WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
-  )
-  AND (
-    $3::text IS NULL
-    OR connector_id > $4
-    OR (connector_id = $5 AND created_at > $6)
-    OR (connector_id = $7 AND created_at = $8 AND connector_instance_id > $9)
-  )
-ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
 LIMIT $10`;
 
 export function createPostgresConnectorInstanceStore() {
@@ -2454,7 +2410,15 @@ export function createPostgresConnectorInstanceStore() {
     },
 
     // Postgres mirror of the SQLite `listSourcesVisibleIdentityPage` arm
-    // above — same exclusion contract, same LIMIT-time enforcement.
+    // above: a pure recovered historical fragment is classified
+    // `source_visibility: "archived"` and rendered in the Sources list's
+    // Archived group, not excluded from the query.
+    //
+    // Delegating also fixes a latent divergence: the dedicated template this
+    // replaces mapped rows with `mapInstance`, skipping the
+    // `mapInstanceWithGroups` grouping its own sibling applies, so a grouped
+    // connection could project differently on the Sources page than on every
+    // other surface.
     async listSourcesVisibleIdentityPage(
       ownerSubjectId: string,
       { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
@@ -2462,11 +2426,12 @@ export function createPostgresConnectorInstanceStore() {
       assertConnectorIdentityPageLimit(limit);
       const result = await postgresQuery(
         POSTGRES_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL,
-        sourcesVisibleIdentityPageParams(ownerSubjectId, after, limit)
+        ownerVisibleIdentityPageParams(ownerSubjectId, null, after, limit)
       );
       const rows = result.rows as ConnectorInstanceRow[];
       const hasMore = rows.length > limit;
-      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+      const groups = await loadOwnerConnectorInstanceGroupsPostgres(ownerSubjectId);
+      return { hasMore, rows: rows.slice(0, limit).map((row) => mapInstanceWithGroups(row, groups)) };
     },
 
     // Postgres mirror of the SQLite arm above — same `status = 'draft' AND
