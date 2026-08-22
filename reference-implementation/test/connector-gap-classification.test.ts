@@ -5,11 +5,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  classifyTooLargeProof,
   hasTerminalKnownGap,
   isOwnerRecoverableKnownGap,
   isProvenUnfillableGap,
   isRetryableKnownGap,
   isStreamFullyUnfillableAccounted,
+  readClaimedSizeProof,
 } from "../server/connector-gap-classification.ts";
 import type { ConnectorRunSummary } from "../server/ref-control.ts";
 
@@ -107,4 +109,78 @@ test("a stream with 32 proven and 5 unproven terminal gaps is NOT fully accounte
 
 test("an empty terminal-gap list is not accounted for (there is nothing to account for)", () => {
   assert.equal(isStreamFullyUnfillableAccounted([]), false);
+});
+
+// ─── `too_large` proof adjudication (fabricated vs genuine) ──────────────────
+//
+// A `too_large` terminal gap normally carries durable per-item impossibility
+// proof, and the requeue allowlist refuses the reason categorically because of
+// it. That refusal assumes the proof is TRUE.
+//
+// It is forgeable by an ordinary bug. Gmail sized attachments from imapflow's
+// `meta.expectedSize`, which is the FETCH `RFC822.SIZE` — the whole MESSAGE's
+// size, identical for every part of a multipart message. Against a per-part cap
+// that condemned every attachment of a message once their SUM crossed it. Live
+// on the owner's mailbox: 32 terminal rows sharing 7 distinct "observed" sizes,
+// each ≈ the sum of that message's parts, the smallest condemned item being
+// 3,080 bytes against a 26,214,400-byte cap.
+
+const GMAIL_CAP_BYTES = 26_214_400;
+
+/** A row in the exact durable shape `AttachmentTooLargeError` writes. */
+function tooLargeRow(claimedBytes: number) {
+  return {
+    last_error: {
+      class: "too_large",
+      message: `attachment exceeds max size: ${claimedBytes} > ${GMAIL_CAP_BYTES} bytes`,
+    },
+    status: "terminal",
+  };
+}
+
+test("classifyTooLargeProof: a claimed size contradicted by the item's real size is fabricated", () => {
+  // The real 2026-08 row: a 3,080-byte attachment condemned as 29,830,196.
+  assert.equal(classifyTooLargeProof(tooLargeRow(29_830_196), 3080), "fabricated_proof");
+});
+
+test("classifyTooLargeProof: a genuinely oversized item keeps its proof (the safety property)", () => {
+  // This is the case the allowlist refusal exists for. Requeuing it could never
+  // converge, so it must STAY terminal even though the claimed number is also
+  // over the cap.
+  assert.equal(classifyTooLargeProof(tooLargeRow(29_830_196), 29_830_196), "proof_holds");
+  // Exactly at the cap is NOT over it — the hydrator rejects only `> maxBytes`.
+  assert.equal(classifyTooLargeProof(tooLargeRow(29_830_196), GMAIL_CAP_BYTES), "fabricated_proof");
+  assert.equal(classifyTooLargeProof(tooLargeRow(29_830_196), GMAIL_CAP_BYTES + 1), "proof_holds");
+});
+
+test("classifyTooLargeProof: no corroborating record is absence of contradiction, not proof of fabrication", () => {
+  for (const missing of [null, undefined, Number.NaN]) {
+    assert.equal(
+      classifyTooLargeProof(tooLargeRow(29_830_196), missing),
+      "no_corroborating_record",
+      "a row with nothing to compare against must stay terminal, never requeue on missing evidence"
+    );
+  }
+});
+
+test("classifyTooLargeProof: a row carrying no parseable size claim is not adjudicated", () => {
+  // A bare class tag is a hint of where to look, never evidence.
+  assert.equal(
+    classifyTooLargeProof({ last_error: { class: "too_large" }, status: "terminal" }, 3080),
+    "not_a_size_proof"
+  );
+  assert.equal(classifyTooLargeProof({ last_error: null, status: "terminal" }, 3080), "not_a_size_proof");
+  assert.equal(classifyTooLargeProof(null, 3080), "not_a_size_proof");
+});
+
+test("readClaimedSizeProof: extracts both numbers, and isProvenUnfillableGap still reads the same rows", () => {
+  assert.deepEqual(readClaimedSizeProof(tooLargeRow(29_830_196)), {
+    claimedBytes: 29_830_196,
+    limitBytes: GMAIL_CAP_BYTES,
+  });
+  assert.equal(readClaimedSizeProof({ last_error: { message: "no numbers here" } }), null);
+  // Behavior preservation: the shared parser did not change what the health
+  // projection treats as durable proof.
+  assert.equal(isProvenUnfillableGap(tooLargeRow(29_830_196)), true);
+  assert.equal(isProvenUnfillableGap({ last_error: { message: "attachment exceeds max size: 10 > 20 bytes" } }), false);
 });
