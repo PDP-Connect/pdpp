@@ -797,6 +797,29 @@ async function ensureManualSessionWithoutCredentials({
   throw new Error("venmo_login_manual_incomplete");
 }
 
+/**
+ * Hand the browser to the owner, describing what actually happened.
+ *
+ * `phase` is not decoration here — it selects the OPENING CLAUSE, because the
+ * two phases fail for opposite reasons and only one of them is about the form:
+ *
+ *   - `pre_submit`  the connector never got a usable sign-in form. "Venmo did
+ *                   not render the expected sign-in form" is literally true.
+ *   - `post_submit` the form rendered, the identifier advanced, the password
+ *                   screen arrived, the saved password was submitted — and the
+ *                   session still probed dead (typically Venmo's own device
+ *                   approval or verification step). Saying the form "did not
+ *                   render" here is FALSE.
+ *
+ * That falsity had a real cost. Production `run_1787359199254` and its
+ * ~30-minute siblings (`run_1787343675495`, `run_1787164654406`,
+ * `run_1787142025292`) all ended on the post-submit branch, all showed the
+ * owner a form-rendering complaint, and four consecutive investigations
+ * accordingly hunted a selector/markup defect on a sign-in page that had
+ * already been filled and submitted. The owner-facing message is the primary
+ * evidence for both the owner and the next debugger; a message that names the
+ * wrong step sends both to the wrong place.
+ */
 async function requestManualLoginForChallenge({
   capture,
   page,
@@ -807,9 +830,13 @@ async function requestManualLoginForChallenge({
   readonly phase?: VenmoProbePhase;
   readonly reason: string;
 }): Promise<VenmoAccountProbeResult> {
+  const opening =
+    phase === "post_submit"
+      ? `Venmo did not finish signing in automatically (${reason}) — the saved sign-in details were submitted, but Venmo has not granted a session yet, which usually means it wants a device approval or verification step.`
+      : `Venmo did not render the expected sign-in form (${reason}).`;
   return await waitForManualLogin({
     ...(capture ? { capture } : {}),
-    message: `Venmo did not render the expected sign-in form (${reason}). Complete sign-in — including any device approval, CAPTCHA, or verification step — in the secure browser, then respond success.`,
+    message: `${opening} Complete sign-in — including any device approval, CAPTCHA, or verification step — in the secure browser, then respond success.`,
     page,
     phase,
     sendInteraction,

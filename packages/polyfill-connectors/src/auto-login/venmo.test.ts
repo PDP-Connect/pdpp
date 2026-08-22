@@ -2068,3 +2068,107 @@ test("isVenmoSignInUrl: only the https identity host counts as a live sign-in sc
   assert.equal(isVenmoSignInUrl("http://id.venmo.com/signin"), false, "a downgraded origin is not trusted");
   assert.equal(isVenmoSignInUrl("https://id.venmo.com.evil.example/signin"), false, "a lookalike host is rejected");
 });
+
+// ─── Post-submit handoff copy must describe what actually happened ───────
+//
+// Production `run_1787359199254` (2026-08-22) and its three ~30-minute
+// siblings (`run_1787343675495`, `run_1787164654406`, `run_1787142025292`)
+// all end at `venmo_login_incomplete_after_submit` — the LAST branch of
+// `loginWithSavedCredentials`, reached only after the sign-in form rendered,
+// the identifier advanced, the password screen arrived, and the saved
+// password was submitted. The owner-facing prompt for that branch nonetheless
+// opened with "Venmo did not render the expected sign-in form".
+//
+// That sentence is false on this path, and its falsity is load-bearing: it
+// sent four separate investigations hunting a selector/markup defect on the
+// sign-in page, when the page had already been filled and submitted and what
+// actually remained was Venmo's own device-approval / verification step. A
+// handoff message is the only evidence the owner (and the next debugger) gets,
+// so the pre-submit and post-submit phases must not share one sentence that is
+// only true before a submit.
+function makePageWhosePostSubmitProbeStaysDead(): { fillCalls: Record<string, string>; page: Page } {
+  const fillCalls: Record<string, string> = {};
+  const username = makeFillRecordingLocator((value) => {
+    fillCalls.username = value;
+  });
+  const password = makeFillRecordingLocator((value) => {
+    fillCalls.password = value;
+  });
+  let currentUrl = "https://venmo.com/";
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    // Never live: models Venmo accepting the password and then holding the
+    // session behind its own device-approval step.
+    evaluate: (): Promise<unknown> => Promise.resolve({ kind: "dead" }),
+    getByRole: (): Locator => makeLocator(),
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      if (selector === "body") {
+        return makeLocator({ innerText: "Log in" });
+      }
+      if (selector.includes("username") || selector.includes("login_email")) {
+        return username;
+      }
+      if (selector.includes("password")) {
+        return password;
+      }
+      // No OTP box and no step-one control: a genuine one-screen form, so the
+      // flow runs straight through to the post-submit probe.
+      return makeLocator({ count: 0, visible: false });
+    },
+    url: (): string => currentUrl,
+    waitForLoadState: (): ReturnType<Page["waitForLoadState"]> => Promise.resolve(),
+    waitForTimeout: (): ReturnType<Page["waitForTimeout"]> => Promise.resolve(),
+  };
+  return { fillCalls, page: page as Page };
+}
+
+test("ensureVenmoSession: the post-submit handoff must not claim the sign-in form failed to render — the password was already submitted", async () => {
+  await withVenmoCredentials(async () => {
+    const { fillCalls, page } = makePageWhosePostSubmitProbeStaysDead();
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        sendInteraction,
+      }),
+      /venmo_login_incomplete_after_submit/
+    );
+
+    // Proves this IS the post-submit path: both fields were filled.
+    assert.equal(fillCalls.username, "test-user");
+    assert.equal(fillCalls.password, "test-password", "the saved password went out — this is the post-submit branch");
+
+    const handoff = requests.at(-1);
+    assert.ok(handoff, "the owner must be handed the browser");
+    const message = handoff.message ?? "";
+    assert.doesNotMatch(
+      message,
+      /did not render the expected sign-in form/,
+      "the form DID render and was submitted; saying otherwise misdirects the owner and every future investigation"
+    );
+    // Not enough to merely delete the false clause: the replacement has to
+    // carry the two facts the owner acts on. Asserted against the copy this
+    // function OWNS, not against `reason` (which the caller supplies and which
+    // would keep passing this test even if the message became "Venmo hit a
+    // problem"). Substring assertions, so rewording stays free while dropping
+    // either fact fails.
+    assert.match(
+      message,
+      /the saved sign-in details were submitted/i,
+      "the owner must know their stored credentials already went out, so they do not re-enter them or assume the form is broken"
+    );
+    assert.match(
+      message,
+      /device approval or verification step/i,
+      "the owner must know what Venmo is actually waiting on — that is the step only they can complete"
+    );
+    assert.match(message, /respond success/i, "the handoff must still tell the owner how to hand control back");
+  });
+});
