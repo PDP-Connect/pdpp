@@ -148,7 +148,7 @@ The connector process transitions through the following states:
 - A connector that receives INTERACTION_RESPONSE while in `collecting` (no pending INTERACTION) SHOULD treat it as a fatal protocol error, write a diagnostic to stderr, and exit with non-zero status.
 - START is exactly-once. It MUST be the first message sent by the runtime. A connector that receives START while in any state other than `initializing` MUST treat it as a fatal protocol error.
 
-**Runtime behavior on failure:** The runtime MUST NOT persist STATE checkpoints from a run that terminates in the `failed` state, except for the certified stream-scoped failure described under [DONE](#done). State is otherwise persisted only after a successful DONE.
+**Runtime behavior on failure:** The runtime MUST NOT persist STATE checkpoints from a run that terminates in the `failed` state, except for the certified stream-scoped failure described under [DONE](#done) or the restart-abandonment exception described under [Restart abandonment](#restart-abandonment). State is otherwise persisted only after a successful DONE.
 
 SKIP_RESULT is a message emitted while in the `collecting` state. It does not cause a state transition.
 
@@ -495,6 +495,15 @@ For a certified stream-scoped failure, the runtime MAY persist staged STATE for 
 The run's own status remains `failed` regardless of how many checkpoint streams commit under this exception; every named failed data stream, and every checkpoint stream withheld under steps 2–3, remains unproven and eligible for retry on the next run.
 
 A missing or mismatched terminal code, a missing or untargeted skip, an out-of-scope stream, a protocol violation, an invalid terminal count or exit code, a process exit without valid DONE, or cancellation MUST preserve the default fail-closed rule and persist no staged STATE.
+
+<a id="restart-abandonment"></a>
+**Restart abandonment.** A process exit without valid DONE caused by the CONTROLLER being replaced or restarted -- not by the connector failing -- MAY persist a staged STATE checkpoint for a checkpoint stream that satisfies ALL of the following, and MUST persist none otherwise:
+
+1. The run's terminal reason is a controller-lifecycle reason (the controller died; the connector did not report failure).
+2. The checkpoint stream is not a declared detail-coverage parent in the connector's manifest, so it can never face a DONE-time coverage verdict. Eligibility is derived from the MANIFEST alone; a connector MUST NOT be able to declare its own eligibility.
+3. The stream has no pending detail gap and no unproven coverage for the completed prefix.
+
+This exception exists because a walk longer than the interval between controller restarts can otherwise never converge -- it is a completeness failure, not a slowness one. It does not weaken the invariant that a cursor MUST NOT advance past records whose coverage was not proven: a stream that could face such a verdict is excluded by condition 2, and unproven coverage is excluded by condition 3. The run's status remains failed/abandoned and every withheld stream stays eligible for retry.
 
 `error` MAY carry `code` and/or `recovery_hint`, in addition to the required `message` and `retryable`:
 
