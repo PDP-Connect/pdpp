@@ -28,6 +28,7 @@ import {
   type StreamHealthAuthorityResult,
 } from "../../scripts/stream-health-audit/authority.ts";
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../lib/controller-boot.ts";
+import { checkOrphanedRecordsAtBoot } from "../lib/orphaned-record-check.ts";
 import { exec, getOne, referenceQueries, transaction } from "../lib/db.ts";
 import {
   createTraceContext,
@@ -7733,6 +7734,16 @@ export async function startServer(opts: ServerOpts = {}) {
       "boot-time orphan reconciliation: terminalised prior-incarnation orphans and repaired run_history drift"
     );
   }
+
+  // Record-attribution consistency check. Every owner surface enumerates
+  // connections from `connector_instances` and scopes record reads by
+  // `connector_instance_id`, so a live record whose instance row is gone is
+  // reachable from no surface at all. Read-only and non-fatal: it reports a
+  // pre-existing data condition the owner must adjudicate, and refusing to
+  // boot over it would take every VISIBLE record offline too. Runs here, with
+  // the other boot reconciliations and before HTTP routes mount, so a restart
+  // can never leave the system silently inconsistent (P1).
+  await checkOrphanedRecordsAtBoot(logger);
 
   // H5: manual-upload artifacts left stuck at uploaded/validating by a
   // process that died mid-upload/mid-validation (crash, OOM, kill -9, an

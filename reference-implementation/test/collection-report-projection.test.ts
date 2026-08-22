@@ -2165,3 +2165,125 @@ test("batch unfillable read is null (unmeasured) when the store does not impleme
     "a throwing read yields unmeasured, matching every other optional field on this projection"
   );
 });
+
+// ─── B9: a collector-runner failure is not a data stream ─────────────────────
+//
+// The detail-gap store is keyed by stream, but a local-collector gap is not
+// stream-scoped: `connector_child_failure` means the collector's child process
+// died and `policy_budget` means it hit a scan budget. To fit the stream-shaped
+// key, `parseGapBodyBase` (routes/ref-device-exporters.ts) mints a synthetic
+// name like `local-collector/connector_child_failure` and stores it in the
+// `stream` column, alongside a structured
+// `detail_locator: { kind: "local_collector_gap", reason }`.
+//
+// Unfiltered, that pseudo-stream entered the collection report's in-scope
+// stream universe and the console rendered a PROCESS FAILURE as one of the
+// owner's DATA STREAMS (owner: "there's a stream called 'local collector slash
+// connector child failure' which is an odd stream").
+//
+// These tests pin that the report excludes runner conditions while still
+// surfacing every real stream gap. The failure itself keeps reaching the owner
+// through `local_collector_gaps` diagnostics, which is a separate aggregation
+// path (`accumulateGapRow`) that these tests deliberately do not touch.
+
+test("B9: a local-collector runner gap never becomes a stream in the collection report", () => {
+  const entries = report(null, {
+    freshness: "unknown",
+    manifestStreams: [{ name: "messages" }],
+    pendingDetailGaps: [
+      {
+        detail_locator: { kind: "local_collector_gap", reason: "connector_child_failure" },
+        reason: "connector_child_failure",
+        status: "pending",
+        stream: "local-collector/connector_child_failure",
+      },
+    ],
+  });
+  assert.deepEqual(
+    entries.map((e) => e.stream),
+    ["messages"],
+    "a crashed collector child is a run condition, never one of the owner's data streams"
+  );
+});
+
+test("B9: the runner-gap filter keys on detail_locator.kind, not on the stream-name separator", () => {
+  // Two emitters have used different separators (`local-collector/` and
+  // `local_collector/`). The structured locator is the authored field and is
+  // immune to that drift, so it alone must be enough to exclude the row.
+  for (const stream of ["local-collector/connector_child_failure", "local_collector/connector_child_failure"]) {
+    const entries = report(null, {
+      freshness: "unknown",
+      manifestStreams: [{ name: "messages" }],
+      pendingDetailGaps: [
+        {
+          detail_locator: { kind: "local_collector_gap", reason: "connector_child_failure" },
+          reason: "connector_child_failure",
+          status: "pending",
+          stream,
+        },
+      ],
+    });
+    assert.deepEqual(entries.map((e) => e.stream), ["messages"], `separator variant "${stream}" must be excluded`);
+  }
+});
+
+test("B9: the structured locator alone excludes a runner gap, with no help from the name prefix", () => {
+  // Mutation-hardening: every other B9 case carries the `local-collector/`
+  // prefix, so the fallback guard could mask a broken locator check. Here the
+  // stream name is deliberately prefix-free — only `detail_locator.kind` can
+  // classify it. If the locator branch stops working, this is the test that
+  // notices.
+  const entries = report(null, {
+    freshness: "unknown",
+    manifestStreams: [{ name: "messages" }],
+    pendingDetailGaps: [
+      {
+        detail_locator: { kind: "local_collector_gap", reason: "connector_child_failure" },
+        reason: "connector_child_failure",
+        status: "pending",
+        stream: "connector_child_failure",
+      },
+    ],
+  });
+  assert.deepEqual(
+    entries.map((e) => e.stream),
+    ["messages"],
+    "the structured locator must classify a runner gap even when the stream name carries no namespace prefix"
+  );
+});
+
+test("B9: a runner gap with no structured locator still falls back to the name-prefix guard", () => {
+  // Rows written before the locator was populated must not resurrect the
+  // phantom stream.
+  const entries = report(null, {
+    freshness: "unknown",
+    manifestStreams: [{ name: "messages" }],
+    pendingDetailGaps: [
+      { reason: "policy_budget", status: "pending", stream: "local-collector/policy_budget" },
+      { reason: "policy_budget", status: "pending", stream: "local_collector/policy_budget/messages" },
+    ],
+  });
+  assert.deepEqual(entries.map((e) => e.stream), ["messages"]);
+});
+
+test("B9: excluding runner gaps does NOT suppress real stream gaps on the same connection", () => {
+  // The load-bearing negative control: the filter must be narrow. A genuine
+  // per-stream gap sitting next to a runner condition still degrades its stream.
+  const entries = report(null, {
+    freshness: "unknown",
+    manifestStreams: [{ name: "messages" }],
+    pendingDetailGaps: [
+      {
+        detail_locator: { kind: "local_collector_gap", reason: "connector_child_failure" },
+        reason: "connector_child_failure",
+        status: "pending",
+        stream: "local-collector/connector_child_failure",
+      },
+      { reason: "temporary_unavailable", status: "pending", stream: "messages" },
+    ],
+  });
+  assert.deepEqual(entries.map((e) => e.stream), ["messages"]);
+  const messages = entryFor(entries, "messages");
+  assert.equal(messages.pending_detail_gaps, 1, "the real gap is counted, and the runner condition is not counted into it");
+  assert.equal(messages.coverage_condition, "retryable_gap");
+});

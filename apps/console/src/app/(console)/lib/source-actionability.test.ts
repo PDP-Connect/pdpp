@@ -314,7 +314,7 @@ test("source actionability keeps a Degraded pill (no wired owner action) in syst
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Some data from this source can't be collected.",
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           action({
             audience: "maintainer",
@@ -623,7 +623,7 @@ test("source actionability headline counts only needs-owner work and exposes sta
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Some data from this source can't be collected.",
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           action({
             audience: "maintainer",
@@ -730,7 +730,7 @@ test("Sources grouping follows server source_work for degraded wait, passive coo
       },
       rendered_verdict: verdict({
         channel: "calm",
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [],
       }),
     }),
@@ -855,7 +855,7 @@ function deferredRecoveryVerdict(overrides: Partial<RefRenderedVerdict> = {}): R
   return verdict({
     channel: "calm",
     forward_statement: "The next run is expected to fill the remaining data.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     progress: {
       gaps_drained_last_run: null,
       headline: "Collecting in the background.",

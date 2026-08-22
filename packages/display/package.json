@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Framework-independent rules that turn PDPP values and metadata into human-readable display models.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./health": "./src/health/axis-vocabulary.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
