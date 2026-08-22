@@ -3,6 +3,7 @@
 
 import { deriveFailureSummary, type FailureSummary } from "./connection-evidence.ts";
 import { isActiveConnectorRunSummaryStatus } from "./connector-run-summary-status.ts";
+import { type FusedSourceStatus, fuseSourceStatus } from "./fused-source-status.ts";
 import type { FormattedNextAction } from "./next-action.ts";
 import type {
   RefActionRemediation,
@@ -67,6 +68,11 @@ export interface SourceWorkGroups {
 
 export interface SourceActionabilityProjection {
   failureSummary: FailureSummary | null;
+  /**
+   * The single owner-facing status line: state, freshness, and activity fused
+   * under the worst-honest-axis rule. See `fused-source-status.ts`.
+   */
+  fusedStatus: FusedSourceStatus;
   label: string;
   nextAction: FormattedNextAction | null;
   ownerActionByStream: SourceStreamOwnerActionAvailability;
@@ -292,6 +298,34 @@ function freshnessNoteFromVerdict(verdict: RefRenderedVerdict): string | null {
   return verdict.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? null;
 }
 
+/**
+ * The status a verdict alone implies, ignoring lifecycle and activity.
+ *
+ * `deriveRenderedSourceStatus` returns early on `running` (and on
+ * paused/revoked/pending) and throws the verdict away. That is right for the
+ * single-slot dot, but it means an in-flight run hides a "Needs attention" or
+ * "Blocked" verdict entirely. The fused status line needs the discarded
+ * verdict back so activity can be shown ALONGSIDE the real state instead of
+ * replacing it — see `fuseSourceStatus`.
+ *
+ * Returns null when there is no verdict to recover, in which case the caller
+ * should keep whatever `deriveRenderedSourceStatus` decided.
+ */
+export function deriveSourceVerdictStatus(verdict: RefRenderedVerdict | null | undefined): SourceStatusFlag | null {
+  if (!verdict) {
+    return null;
+  }
+  const status = VERDICT_TONE_STATUS[verdict.pill.tone];
+  // `label` is the BARE pill label here, unlike `deriveRenderedSourceStatus`,
+  // which concatenates the freshness note into it. The fused line renders
+  // freshness in its own slot, so pre-concatenating would print it twice.
+  return {
+    ...status,
+    freshnessNote: freshnessNoteFromVerdict(verdict),
+    label: verdict.pill.label,
+  };
+}
+
 function labelWithFreshness(base: string, note: string | null): string {
   return note ? `${base} · ${note}` : base;
 }
@@ -318,6 +352,11 @@ export function deriveRenderedSourceStatus(
   if (running) {
     return { dot: "◌", freshnessNote: null, kind: "pending", label: "Syncing", tone: "muted" };
   }
+  // NOTE: the `running` collapse above intentionally discards the verdict, so a
+  // caller that wants the fused status line must recover it via
+  // `deriveSourceVerdictStatus` and pass it to `fuseSourceStatus` as the
+  // fallback. See `fused-source-status.ts` for why activity must not overwrite
+  // a worse verdict.
   if (terminalSetupDisposition) {
     return {
       dot: "◐",
@@ -635,6 +674,31 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
     paused,
     primaryAction,
     primaryVerdictAction,
+    fusedStatus: fuseSourceStatus(
+      deriveRenderedSourceStatus(
+        connector.rendered_verdict,
+        revoked,
+        pending,
+        terminalSetupDisposition,
+        running,
+        paused
+      ),
+      {
+        hasEverSucceeded: connector.last_successful_run !== null,
+        syncing: running,
+        // Hand back the verdict the `running` collapse discards, so a source
+        // that is syncing AND failing still says it is failing.
+        //
+        // Only for the `running` collapse. `revoked`/`paused`/`pending` are
+        // LIFECYCLE facts that outrank any verdict — a revoked source is
+        // revoked no matter how its last verdict read — and
+        // `deriveRenderedSourceStatus` already ranks them ahead of `running`
+        // for exactly that reason. Passing the verdict for those states would
+        // let a stale "Blocked" overwrite "Revoked".
+        verdictFallback:
+          running && !revoked && !paused && !pending ? deriveSourceVerdictStatus(connector.rendered_verdict) : null,
+      }
+    ),
     renderedStatus: deriveRenderedSourceStatus(
       connector.rendered_verdict,
       revoked,
