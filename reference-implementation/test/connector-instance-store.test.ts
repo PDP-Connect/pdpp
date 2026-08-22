@@ -2103,3 +2103,169 @@ test("Postgres startup migration does not resurrect deleted or revoked local-dev
     await closePostgresStorage();
   }
 });
+
+// Quiet-expiry defect fix (owner ruling 2026-08-22): `updateStatus`'s
+// `sourceBindingPatch` must actually reach `source_binding_json` in the real
+// database, merged onto whatever the shell already carried — not just be
+// accepted as a no-op argument. This is the real SQLite `json_patch` path
+// (`update-status-with-binding-patch.sql`), not the pure in-memory
+// `retireExpiredBrowserEnrollmentShells` unit tests in
+// `browser-enrollment-shell-retirement.test.ts`.
+test("SQLite updateStatus merges sourceBindingPatch into source_binding_json, preserving existing keys", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-update-status-binding-patch-"));
+  const dbPath = join(dir, "pdpp.sqlite");
+  try {
+    initDb(dbPath);
+    await seedSqliteConnector("venmo");
+    const store = createSqliteConnectorInstanceStore();
+    const shell = store.upsert({
+      connectorId: "venmo",
+      createdAt: NOW,
+      displayName: "Venmo",
+      ownerSubjectId: "owner_ttl_test",
+      sourceBinding: {
+        connector_id: "venmo",
+        enrollment_expires_at: "2026-08-21T15:42:00.000Z",
+        kind: "browser_enrollment_shell",
+      },
+      sourceBindingKey: makeConnectorInstanceSourceBindingKey({
+        kind: "browser_enrollment_shell",
+        local_binding_name: "venmo-attempt-1",
+      }),
+      sourceKind: "browser_collector",
+      status: "draft",
+      updatedAt: NOW,
+    });
+    assert.ok(shell, "upsert must return the written row");
+
+    const revoked = store.updateStatus(shell.connectorInstanceId, {
+      revokedAt: LATER,
+      sourceBindingPatch: { revocation_reason: "ttl_expired" },
+      status: "revoked",
+      updatedAt: LATER,
+    });
+
+    assert.equal(revoked?.status, "revoked");
+    assert.equal(
+      (revoked?.sourceBinding as Record<string, unknown> | null)?.revocation_reason,
+      "ttl_expired",
+      "the patch must be readable back through the store's own get/mapInstance path"
+    );
+    assert.equal(
+      (revoked?.sourceBinding as Record<string, unknown> | null)?.enrollment_expires_at,
+      "2026-08-21T15:42:00.000Z",
+      "json_patch must preserve pre-existing keys, not replace the whole binding"
+    );
+    assert.equal(
+      (revoked?.sourceBinding as Record<string, unknown> | null)?.kind,
+      "browser_enrollment_shell",
+      "the binding kind itself must survive the patch"
+    );
+
+    // Confirm the merge is durable, not an artifact of the in-process cache.
+    closeDb();
+    initDb(dbPath);
+    const reopened = createSqliteConnectorInstanceStore();
+    const afterRestart = reopened.get(shell.connectorInstanceId);
+    assert.equal((afterRestart?.sourceBinding as Record<string, unknown> | null)?.revocation_reason, "ttl_expired");
+  } finally {
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("SQLite updateStatus without sourceBindingPatch leaves source_binding_json completely untouched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-update-status-no-patch-"));
+  const dbPath = join(dir, "pdpp.sqlite");
+  try {
+    initDb(dbPath);
+    await seedSqliteConnector("venmo");
+    const store = createSqliteConnectorInstanceStore();
+    const shell = store.upsert({
+      connectorId: "venmo",
+      createdAt: NOW,
+      displayName: "Venmo",
+      ownerSubjectId: "owner_abandon_test",
+      sourceBinding: {
+        connector_id: "venmo",
+        enrollment_expires_at: "2026-08-21T15:42:00.000Z",
+        kind: "browser_enrollment_shell",
+      },
+      sourceBindingKey: makeConnectorInstanceSourceBindingKey({
+        kind: "browser_enrollment_shell",
+        local_binding_name: "venmo-attempt-2",
+      }),
+      sourceKind: "browser_collector",
+      status: "draft",
+      updatedAt: NOW,
+    });
+    assert.ok(shell);
+
+    const revoked = store.updateStatus(shell.connectorInstanceId, {
+      revokedAt: LATER,
+      status: "revoked",
+      updatedAt: LATER,
+    });
+
+    assert.equal(revoked?.status, "revoked");
+    assert.deepEqual(
+      revoked?.sourceBinding,
+      { connector_id: "venmo", enrollment_expires_at: "2026-08-21T15:42:00.000Z", kind: "browser_enrollment_shell" },
+      "a caller that passes no sourceBindingPatch must not alter source_binding_json at all"
+    );
+  } finally {
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("Postgres updateStatus merges sourceBindingPatch into source_binding_json via jsonb ||, preserving existing keys", {
+  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+}, async () => {
+  const ownerSubjectId = "owner_pg_ttl_patch_test";
+  await initPostgresStorage({ backend: "postgres", databaseUrl: configuredPostgresUrl() });
+  try {
+    await postgresQuery("DELETE FROM connector_instances WHERE owner_subject_id = $1", [ownerSubjectId]);
+    await seedPostgresConnector("venmo");
+    const store = createPostgresConnectorInstanceStore();
+    const shell = await store.upsert({
+      connectorId: "venmo",
+      createdAt: NOW,
+      displayName: "Venmo",
+      ownerSubjectId,
+      sourceBinding: {
+        connector_id: "venmo",
+        enrollment_expires_at: "2026-08-21T15:42:00.000Z",
+        kind: "browser_enrollment_shell",
+      },
+      sourceBindingKey: makeConnectorInstanceSourceBindingKey({
+        kind: "browser_enrollment_shell",
+        local_binding_name: "venmo-pg-attempt-1",
+      }),
+      sourceKind: "browser_collector",
+      status: "draft",
+      updatedAt: NOW,
+    });
+    assert.ok(shell, "upsert must return the written row");
+
+    const revoked = await store.updateStatus(shell.connectorInstanceId, {
+      revokedAt: LATER,
+      sourceBindingPatch: { revocation_reason: "ttl_expired" },
+      status: "revoked",
+      updatedAt: LATER,
+    });
+
+    assert.equal(revoked?.status, "revoked");
+    assert.equal((revoked?.sourceBinding as Record<string, unknown> | null)?.revocation_reason, "ttl_expired");
+    assert.equal(
+      (revoked?.sourceBinding as Record<string, unknown> | null)?.enrollment_expires_at,
+      "2026-08-21T15:42:00.000Z",
+      "jsonb || must preserve pre-existing keys, not replace the whole binding"
+    );
+    assert.equal((revoked?.sourceBinding as Record<string, unknown> | null)?.kind, "browser_enrollment_shell");
+  } finally {
+    await postgresQuery("DELETE FROM connector_instances WHERE owner_subject_id = $1", [ownerSubjectId]);
+    await postgresQuery("DELETE FROM connectors WHERE connector_id = 'venmo'");
+    await closePostgresStorage();
+  }
+});

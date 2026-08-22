@@ -117,3 +117,25 @@ test("stream manifest columns respond to the panel's own width, so the stream na
     "the stream-column breakpoint must not key on viewport width — the panel is far narrower than the viewport"
   );
 });
+
+// Quiet-expiry defect fix (owner ruling 2026-08-22): the setup-failed
+// passport note must render the server's specific `forward_statement`
+// (`setupFailedForwardStatement`) rather than always showing the same
+// generic sentence regardless of WHY setup failed — that generic-only
+// behavior is exactly the pre-fix defect (a TTL-expired attempt reading
+// identically to an owner-abandoned one).
+const SETUP_FAILED_NOTE_RE =
+  /instance\.setupFailedForwardStatement\s*\?\?\s*\n?\s*"This connection attempt never finished setup\. No records were collected/;
+
+test("SourcesView's setup-failed passport note prefers the server's specific forward_statement over the generic fallback", async () => {
+  const src = await readFile(SOURCES_VIEW_FILE, "utf8");
+  const block = src.slice(
+    src.indexOf("{instance.setupFailed ? ("),
+    src.indexOf("{instance.revoked && !instance.setupFailed ? (")
+  );
+  assert.match(
+    block,
+    SETUP_FAILED_NOTE_RE,
+    "the passport note must read setupFailedForwardStatement first, falling back to the generic sentence only when absent"
+  );
+});
