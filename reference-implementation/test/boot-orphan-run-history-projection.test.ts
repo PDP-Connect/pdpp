@@ -80,9 +80,17 @@ function readRunHistory(dbPath: string, runId: string) {
   const raw = new Database(dbPath);
   try {
     return raw
-      .prepare("SELECT status, terminal_reason, completed_at, records_emitted FROM run_history WHERE run_id = ?")
+      .prepare(
+        "SELECT status, terminal_reason, completed_at, records_emitted, facts_json FROM run_history WHERE run_id = ?"
+      )
       .get(runId) as
-      | { completed_at: string | null; records_emitted: number; status: string; terminal_reason: string | null }
+      | {
+          completed_at: string | null;
+          facts_json: string | null;
+          records_emitted: number;
+          status: string;
+          terminal_reason: string | null;
+        }
       | undefined;
   } finally {
     raw.close();
@@ -107,6 +115,45 @@ test("boot reconciliation terminalises an orphaned run_history row with a typed 
     // Honest and typed — never silently deleted, never left running.
     assert.equal(row.terminal_reason, "controller_terminated_before_run_finished");
     assert.ok(row.completed_at, "a terminalised run must carry a completion timestamp");
+  } finally {
+    closeDb();
+    clearCurrentBootEpoch();
+  }
+});
+
+// Investigation 2026-08-22 (run_1787406305278): the terminal reason alone
+// is an unverifiable claim from run_history — confirming a real controller
+// restart happened required correlating raw spine events against container
+// logs across a deploy. The boot-abandon event already carries the epoch
+// transition as evidence (original_boot_epoch !== reconciled_by_boot_epoch);
+// this asserts it survives the projection into facts_json so a reader can
+// confirm the claim from the row alone.
+test("boot reconciliation projects boot-epoch provenance into facts_json", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    seedRunningRun(dbPath, { event_id: "evt_orphan_provenance_1", run_id: "run_orphan_provenance_1" });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-epoch-provenance-new",
+      controllerId: "host-test",
+    });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    const row = readRunHistory(dbPath, "run_orphan_provenance_1");
+    assert.ok(row, "seeded run_history row should still exist");
+    assert.ok(row.facts_json, "an abandoned run must carry facts_json with its provenance");
+    const facts = JSON.parse(row.facts_json ?? "{}");
+    // seedRunningRun's run.started carries no boot_epoch (legacy shape), so
+    // the orphan's original epoch is honestly null — the reconciling boot's
+    // epoch is what proves a real transition happened.
+    assert.equal(facts.original_boot_epoch, null);
+    assert.equal(
+      facts.reconciled_by_boot_epoch,
+      "boot-epoch-provenance-new",
+      "must record which boot adjudicated this orphan, so the claim is verifiable from the row alone"
+    );
+    assert.equal(facts.source, "recovery_worker");
   } finally {
     closeDb();
     clearCurrentBootEpoch();

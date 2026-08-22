@@ -457,14 +457,15 @@ export async function adjudicateOrphans({
         // biome-ignore lint/performance/noAwaitInLoops: See above -- ordered within the single transaction.
         const projected = await client.query(
           `UPDATE run_history
-              SET status = $1, completed_at = $2, terminal_reason = $3
-            WHERE run_id = $4
-              AND connector_instance_id = $5
+              SET status = $1, completed_at = $2, terminal_reason = $3, facts_json = $4::jsonb
+            WHERE run_id = $5
+              AND connector_instance_id = $6
               AND status = 'running'`,
           [
             ABANDONED_RUN_HISTORY_STATUS,
             occurredAt,
             ABANDONED_AT_BOOT_REASON,
+            dataJson,
             orphan.run_id,
             orphan.connector_instance_id,
           ]
