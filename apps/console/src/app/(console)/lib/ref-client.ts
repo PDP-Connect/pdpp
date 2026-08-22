@@ -891,6 +891,7 @@ export type RefRenderedChannel = "advisory" | "attention" | "calm";
 
 export interface RefVerdictPill {
   label:
+    | "Archived"
     | "Can't collect"
     | "Checking"
     | "Healthy"
@@ -898,6 +899,7 @@ export interface RefVerdictPill {
     | "Missing data"
     | "Needs refresh"
     | "Not measured"
+    | "Setup never completed"
     | "Syncing";
   tone: RefVerdictTone;
 }
