@@ -400,6 +400,22 @@ function InstanceListItem({
           panel, while the list shows only the owner label, retained facts, and
           health. */}
       <span className="rr-s-item__line">{instance.accountLine}</span>
+      {/*
+       * The fused status line: what it is, when it last updated, and whether
+       * it is syncing right now — one string, worst honest axis first. Before
+       * this, the row showed only a colored glyph (label sr-only), so an owner
+       * could not tell a fresh source from a stale one, or a syncing source
+       * from a stuck one, without opening the detail panel. See
+       * design-notes/fused-source-status-2026-08-22.md.
+       */}
+      <span
+        className="rr-s-item__status rr-s-status"
+        data-syncing={instance.fusedStatus.syncing ? "true" : undefined}
+        data-testid="sources-fused-status"
+        data-tone={instance.fusedStatus.tone}
+      >
+        {instance.fusedStatus.line}
+      </span>
       {instance.ownerActionCue ? (
         <span
           className="rr-s-item__cue"
@@ -410,13 +426,14 @@ function InstanceListItem({
         </span>
       ) : null}
       <span className="rr-s-item__flag">
-        {/* The dot is a decorative reinforcement of the status; the textual
-            label is announced via the sr-only span so color is never the sole
-            signal and the glyph itself carries no a11y burden. */}
+        {/* The dot is a decorative reinforcement of the status. The textual
+            status now renders visibly in `.rr-s-item__status`, so color is
+            never the sole signal and this glyph carries no a11y burden — a
+            second sr-only copy here would make screen readers announce the
+            status twice per row. */}
         <span aria-hidden="true" className="rr-s-dot" data-tone={instance.status.tone} title={instance.status.label}>
           {instance.status.dot}
         </span>
-        <span className="sr-only">{instance.status.label}</span>
       </span>
     </>
   );
