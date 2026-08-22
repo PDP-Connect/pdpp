@@ -187,7 +187,8 @@ async function withSchema<T>(fn: (pool: pg.Pool, schema: string) => Promise<T>):
     await pool.query(`
       CREATE TABLE "${schema}".run_history (
         run_id TEXT, connector_instance_id TEXT, status TEXT NOT NULL,
-        completed_at TEXT, terminal_reason TEXT, records_emitted INTEGER
+        completed_at TEXT, terminal_reason TEXT, records_emitted INTEGER,
+        facts_json JSONB
       )`);
     return await fn(pool, schema);
   } finally {
@@ -321,11 +322,16 @@ dbTest("apply writes run.abandoned, never run.failed, and re-projects run_histor
     assert.equal(failed[0].n, 0, "an interrupted run must never be recorded as a failure");
 
     const { rows: hist } = await pool.query(
-      `SELECT status, terminal_reason, records_emitted FROM "${schema}".run_history WHERE run_id = 'run_1'`
+      `SELECT status, terminal_reason, records_emitted, facts_json FROM "${schema}".run_history WHERE run_id = 'run_1'`
     );
     assert.equal(hist[0].status, "abandoned");
     assert.equal(hist[0].terminal_reason, ABANDONED_AT_BOOT_REASON);
     assert.equal(hist[0].records_emitted, 4321, "records validly ingested before the death stay committed");
+    // The terminal reason alone is an unverifiable claim; facts_json must
+    // carry the same epoch-transition evidence as the spine event so a
+    // reader can confirm it from the row.
+    assert.equal(hist[0].facts_json.original_controller_id, "container-dead");
+    assert.equal(hist[0].facts_json.source, "repair_script");
   });
 });
 
