@@ -250,13 +250,13 @@ const FIXTURES: Fixture[] = [
   // ── Chase: one pending retryable gap, frozen ~2 months ───────────────────
   //
   // Old headline: "Needs you" (state:degraded → "Needs you")
-  // New headline: "Degraded" (degraded with resumable disposition)
+  // New headline: "Missing data" (degraded with resumable disposition)
   // Classification: fixed_lie — old used owner-urgent wording for an advisory
   // retryable gap. New verdict adds the retry affordance without raising attention.
   {
     assertions: (verdict) => {
       assert.equal(verdict.pill.tone, "amber", "Chase: amber health tone");
-      assert.equal(verdict.pill.label, "Degraded", "Chase: Degraded label");
+      assert.equal(verdict.pill.label, "Missing data", "Chase: Missing data label");
       assert.equal(verdict.channel, "advisory", "Chase: channel advisory (owner can retry manual connector)");
       const retry = verdict.required_actions.find((a) => a.kind === "retry_gap");
       assert.ok(retry, "Chase: retry_gap action present");
@@ -274,7 +274,7 @@ const FIXTURES: Fixture[] = [
     id: "chase_retryable_gap",
     manifestStreams: [{ name: "transactions", required: true }],
     progress: null,
-    reason: "Fixed false urgency: retryable degraded gap is Degraded/advisory with Retry now, not Needs you",
+    reason: "Fixed false urgency: retryable degraded gap is Missing data/advisory with Retry now, not Needs you",
     refresh: { backgroundSafe: false, recommendedMode: "manual" },
     report: [
       {
