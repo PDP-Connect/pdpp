@@ -202,6 +202,25 @@ function connectorErrorJsonFromTerminalData(data: Record<string, unknown>): stri
 }
 
 /**
+ * The owning process's epoch, read from the event that created the run.
+ *
+ * `run_history.owner_epoch` is the fence every transition in
+ * runtime/run-lifecycle.ts compares against, and until this writer set it the
+ * column was uniformly NULL in production — which makes the adjudication
+ * predicate's `owner_epoch IS NULL` arm match live runs, not just legacy
+ * ones. Stamping at creation is what makes the fence discriminate.
+ *
+ * `data.boot_epoch` is a guaranteed input rather than a hopeful one:
+ * lib/spine.ts's `assertRunStartedIsStamped` rejects any `run.started`
+ * emission that lacks it. The `?? null` arm therefore covers only the
+ * non-run.started callers that share this helper, never a real started run.
+ */
+function ownerEpochFrom(data: Record<string, unknown>): string | null {
+  const epoch = data.boot_epoch;
+  return typeof epoch === "string" && epoch.length > 0 ? epoch : null;
+}
+
+/**
  * Best-effort record of the run.started `data` payload for the eventual
  * `insert-finalized-run-history` fallback (a terminal event arriving with
  * no prior started row). Kept intentionally minimal — the source_json
@@ -278,6 +297,7 @@ function writeSqliteRunHistoryWith(event: RunHistorySpineEvent, execute: SqliteR
       typeof event.data.trigger_kind === "string" ? event.data.trigger_kind : null,
       sourceJsonForStart(event.data),
       event.occurredAt,
+      ownerEpochFrom(event.data),
     ]);
     return;
   }
@@ -355,11 +375,16 @@ export async function writePostgresRunHistoryForSpineEvent(
   }
 
   if (event.eventType === RUN_STARTED_EVENT_TYPE) {
+    // `owner_epoch` is $7 here and the 7th positional `?` on SQLite. The two
+    // dialects bind differently enough that this has already produced a real
+    // defect in this program (PostgreSQL can reference one parameter twice;
+    // SQLite consumes a fresh value per `?`), so the two INSERTs are kept in
+    // the same column order and parameter count deliberately.
     await client.query(
       `INSERT INTO run_history(
          run_id, connector_instance_id, connector_id, trigger_kind, source_json,
-         status, known_gaps_json, started_at, attempt
-       ) VALUES($1, $2, $3, $4, $5::jsonb, 'running', '[]'::jsonb, $6, 1)
+         status, known_gaps_json, started_at, attempt, owner_epoch
+       ) VALUES($1, $2, $3, $4, $5::jsonb, 'running', '[]'::jsonb, $6, 1, $7)
        ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO NOTHING`,
       [
         event.runId,
@@ -368,6 +393,7 @@ export async function writePostgresRunHistoryForSpineEvent(
         typeof event.data.trigger_kind === "string" ? event.data.trigger_kind : null,
         sourceJsonForStart(event.data),
         event.occurredAt,
+        ownerEpochFrom(event.data),
       ]
     );
     return;

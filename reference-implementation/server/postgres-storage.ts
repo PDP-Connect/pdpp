@@ -3037,6 +3037,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresSchedulerInstanceColumns(client);
     await migratePostgresRunHistoryRename(client);
     await migratePostgresRunHistoryCompletedAtNullable(client);
+    await migratePostgresRunHistoryOwnerEpoch(client);
     await migratePostgresConnectorMaintenanceCursorNameCheck(client);
     await migratePostgresRecordsBlobSearchInstanceColumns(client);
     await migratePostgresClientEventSubscriptionAuthority(client);
@@ -4307,6 +4308,35 @@ async function migratePostgresRunHistoryCompletedAtNullable(client: PoolClient):
     return;
   }
   await client.query("ALTER TABLE run_history ALTER COLUMN completed_at DROP NOT NULL");
+}
+
+// `run_history.owner_epoch` — the durable fence for every run-state
+// transition (D2), repaired unconditionally for the same reason
+// migratePostgresRunHistoryCompletedAtNullable above is unconditional.
+//
+// The column is declared in the CREATE TABLE and added by an ALTER inside
+// the schema bootstrap, which covers fresh databases and databases that
+// never had a legacy table. It does NOT cover a database arriving through
+// migratePostgresRunHistoryRename: those branches RENAME
+// scheduler_run_history into place and then add exactly the columns that
+// existed when the rename was written (trigger_kind, facts_json,
+// scheduler_managed). A column introduced after that list — as owner_epoch
+// is — is simply absent, and every run.started INSERT then fails with
+// 42703 on that database forever.
+//
+// That is not a hypothetical: it is the identical shape as the completed_at
+// incident documented above, where a repair gated on `legacyExists` never
+// reached the databases that needed it. Adding a fourth ALTER inside the
+// gated branches would repeat the mistake for the NEXT column. An
+// unconditional, idempotent repair does not.
+//
+// Idempotent (ADD COLUMN IF NOT EXISTS) and a no-op on fresh installs.
+async function migratePostgresRunHistoryOwnerEpoch(client: PoolClient): Promise<void> {
+  const runHistoryExists = await hasPostgresTable(client, "run_history");
+  if (!runHistoryExists) {
+    return;
+  }
+  await client.query("ALTER TABLE run_history ADD COLUMN IF NOT EXISTS owner_epoch TEXT");
 }
 
 // Widens `connector_maintenance_cursor.name`'s CHECK to admit the

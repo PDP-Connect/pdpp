@@ -10,6 +10,16 @@
 -- generalize-run-history-write-authority and
 -- openspec/changes/run-history-backfill-list-cutover (duplicate-safe
 -- identity fix).
+--
+-- `owner_epoch` is the fence every run-state transition compares against
+-- (runtime/run-lifecycle.ts). It is stamped HERE, at run creation, from the
+-- emitting process's `data.boot_epoch` — the same value lib/spine.ts's
+-- assertRunStartedIsStamped already requires on every run.started, so the
+-- writer persists a guaranteed value rather than a best-effort one.
+-- Claiming the row at creation is what lets successor adjudication tell live
+-- work from an orphan: with the column NULL, the adjudication predicate's
+-- `owner_epoch IS NULL` arm matches every row, including runs a live process
+-- started seconds ago.
 INSERT INTO run_history(
   run_id,
   connector_instance_id,
@@ -19,6 +29,7 @@ INSERT INTO run_history(
   status,
   known_gaps_json,
   started_at,
-  attempt
-) VALUES(?, ?, ?, ?, ?, 'running', '[]', ?, 1)
+  attempt,
+  owner_epoch
+) VALUES(?, ?, ?, ?, ?, 'running', '[]', ?, 1, ?)
 ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO NOTHING
