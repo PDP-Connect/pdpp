@@ -157,7 +157,7 @@ test("one health authority discriminates failure, passive cooling, owner action,
     [stream({ coverage: "partial", gap_retryable: true })]
   );
   assert.equal(failed.snapshot.state, "degraded");
-  assert.equal(failed.verdict.pill.label, "Degraded");
+  assert.equal(failed.verdict.pill.label, "Missing data");
   assert.equal(failed.verdict.channel, "calm");
   assert.ok(failed.verdict.required_actions.some((action) => action.audience === "none" && action.kind === "wait"));
   assert.equal(failed.ownerState.resolver, "system_degraded");
@@ -189,7 +189,7 @@ test("one health authority discriminates failure, passive cooling, owner action,
     })
   );
   assert.equal(stale.snapshot.state, "degraded");
-  assert.equal(stale.verdict.pill.label, "Degraded");
+  assert.equal(stale.verdict.pill.label, "Missing data");
   assert.equal(stale.ownerState.resolver, "system_degraded");
   assert.equal(sourceWorkGroupFromOwnerState(stale.ownerState.resolver), "system_issue");
   const staleFleet = fleetFor("stale-backoff", stale);
