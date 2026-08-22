@@ -567,6 +567,59 @@ test("tone: unknown coverage renders Not measured and no retry action", () => {
   assert.notEqual(v.forward_statement, "The next run is expected to fill the remaining data.");
 });
 
+test("tone: unknown coverage on a finished one-time import never says 'not measured YET' (B10)", () => {
+  // Production shape (owner ledger 2026-08-22, Google Maps Timeline Import
+  // cin_50f5bf4b7ecbc7acd6f4c254): a one-time import whose only run died
+  // before it could emit DETAIL_COVERAGE. `freshnessNotApplicable` is true
+  // (a completed one-time import has no future capture to age — see
+  // `connection-health-completed-import.test.ts`), so there is no future run
+  // that could ever measure this stream. The generic "has not been measured
+  // YET" copy implies one is coming; for this shape that implication is false
+  // and must not render.
+  const notApplicableFresh = condition({
+    id: "Fresh:freshness_not_applicable_complete",
+    reason: CONNECTION_CONDITION_REASONS.FRESHNESS_NOT_APPLICABLE_COMPLETE,
+    status: "not_applicable",
+    type: "Fresh",
+  });
+  const snap = snapshot({
+    axes: { coverage: "unknown", freshness: "unknown" },
+    conditions: [notApplicableFresh, collectionSucceededCondition()],
+    forward_disposition: "unmeasured",
+    state: "idle",
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: "unknown", priority: "optional", stream_id: "timeline_points" })],
+    null,
+    true
+  );
+  assert.notEqual(v.forward_statement, "Coverage has not been measured yet.");
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(v.forward_statement, /will not run again|ended before/i);
+  assert.notEqual(v.streams[0]?.statement, "Coverage has not been measured yet.");
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(v.streams[0]?.statement ?? "", /can't be measured/i);
+  const maintainerAction = v.required_actions.find((a) => a.audience === "maintainer");
+  assert.notEqual(maintainerAction?.cta, "Some data from this source isn't being measured yet");
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(maintainerAction?.cta ?? "", /will not run again/i);
+});
+
+test("tone: unknown coverage on an ordinary (still-refreshing) source keeps the YET copy", () => {
+  // Control: the SAME unknown-coverage shape without the one-time-import
+  // condition must keep the existing "yet" wording — most connectors really
+  // will measure it on their next scheduled run.
+  const snap = snapshot({
+    axes: { coverage: "unknown", freshness: "fresh" },
+    forward_disposition: "unmeasured",
+    state: "idle",
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream({ coverage: "unknown" })], null, true);
+  assert.equal(v.forward_statement, "Coverage has not been measured yet.");
+  assert.equal(v.streams[0]?.statement, "Coverage has not been measured yet.");
+});
+
 test("tone: active unknown coverage renders Checking because work is active", () => {
   const snap = snapshot({
     axes: { coverage: "unknown", freshness: "fresh" },
