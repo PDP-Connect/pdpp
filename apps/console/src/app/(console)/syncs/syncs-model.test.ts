@@ -203,7 +203,7 @@ test("source-pressure cooldown produces a WAIT card, never a reconnect prompt", 
           channel: "advisory",
           forward_statement:
             "The source is throttling this connection, so the scheduler is spacing out automatic attempts.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               audience: "none",
@@ -258,7 +258,7 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
           channel: "advisory",
           forward_statement:
             "The source is throttling this connection, so the scheduler is spacing out automatic attempts.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               audience: "none",
@@ -834,7 +834,7 @@ test("failure cards bind retryable gaps to the rendered Retry now action", () =>
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Retry now to give the recoverable gap another run.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [action()],
         }),
       }),
@@ -908,7 +908,7 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "Check the collector before this source can make progress.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               cta: "Check the collector",
@@ -949,7 +949,7 @@ test("device-local recovery counts as need-your-hand while navigating to recover
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "The local collector has saved records on its host that did not upload to this server.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               cta: "Run local recovery",
@@ -1028,7 +1028,7 @@ test("failure cards carry shared source-work groups for Runs presentation", () =
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Latest collection completed with known coverage gaps.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               audience: "maintainer",
@@ -1139,7 +1139,7 @@ test("syncs overview collapses repeated unnamed fallback sources", () => {
   const amazonAdvisory = renderedVerdict({
     channel: "advisory",
     forward_statement: "Retry now to give the recoverable gap another run.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     required_actions: [action()],
   });
   const model = buildSyncsViewModel({
@@ -1279,7 +1279,7 @@ test("syncs overview shows ALL review cards (no cap) and the band counts the ful
   const advisoryVerdict = renderedVerdict({
     channel: "advisory",
     forward_statement: "Run a refresh to bring this up to date.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     required_actions: [action({ cta: "Refresh now", kind: "retry_gap" })],
   });
   const connectors = Array.from({ length: 8 }, (_, index) =>
@@ -1326,7 +1326,7 @@ test("syncs cross-surface: rendered review-card count equals the failure cards b
   const advisoryVerdict = renderedVerdict({
     channel: "advisory",
     forward_statement: "Run a refresh to bring this up to date.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     required_actions: [action({ cta: "Refresh now", kind: "retry_gap" })],
   });
   const model = buildSyncsViewModel({
@@ -1361,7 +1361,7 @@ test("syncs cross-surface: an inactive queued recovery card is passive progress,
   const deferredRecoveryVerdict = renderedVerdict({
     channel: "calm",
     forward_statement: "The next run is expected to fill the remaining data.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     progress: {
       gaps_drained_last_run: null,
       headline: "Collecting in the background.",

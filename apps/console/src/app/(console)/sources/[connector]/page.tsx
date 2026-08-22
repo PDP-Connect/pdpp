@@ -788,7 +788,7 @@ function ConnectorPageView({
       <Section
         description={
           collectionFactsByStream.size > 0
-            ? "Record counts show what this source currently retains. Coverage and next-run disposition come from the latest collection report; an unknown denominator reads unknown, never complete."
+            ? "Record counts show what this source currently retains. Coverage and next-run disposition come from the latest collection report; when the total is unmeasured, coverage reads \"not measured\", never complete."
             : undefined
         }
         title={`Streams (${streams.length})`}

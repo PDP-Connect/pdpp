@@ -25,6 +25,7 @@ import {
   buildSourcesChurnAdvisory,
   buildSourcesRuntimeAdvisory,
   collapseDuplicateFallbackSources,
+  collapseSetupFailedSources,
   exploreHrefFor,
   formatSchedule,
   manualUploadHrefForSource,
@@ -143,10 +144,10 @@ function passportField(view: ReturnType<typeof toSourceInstanceView>, key: strin
 }
 
 test("deriveRenderedSourceStatus prefers the server-owned verdict over raw health state", () => {
-  const flag = deriveRenderedSourceStatus(renderedVerdict({ pill: { label: "Degraded", tone: "amber" } }), false);
+  const flag = deriveRenderedSourceStatus(renderedVerdict({ pill: { label: "Missing data", tone: "amber" } }), false);
   assert.equal(flag.kind, "degraded");
   assert.equal(flag.tone, "warning");
-  assert.equal(flag.label, "Degraded");
+  assert.equal(flag.label, "Missing data");
 });
 
 test("deriveRenderedSourceStatus carries freshness annotations from rendered verdict", () => {
@@ -420,7 +421,7 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
       display_name: "Chase",
       rendered_verdict: renderedVerdict({
         annotations: [{ kind: "freshness", text: "Transactions stuck since Apr 22." }],
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           {
             affects: ["transactions"],
@@ -446,7 +447,7 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
       }),
     })
   );
-  assert.equal(chase.status.label, "Degraded · Transactions stuck since Apr 22.");
+  assert.equal(chase.status.label, "Missing data · Transactions stuck since Apr 22.");
   assert.equal(chase.nextAction, null);
   assert.equal(chase.primaryVerdictAction?.cta, "Retry now");
 });
@@ -859,7 +860,23 @@ test("toSourcesView disambiguates duplicate unnamed connections without exposing
   assert.equal(views[2]?.listKind, null);
 });
 
-test("toSourcesView hides a pure recovered historical fragment", () => {
+test("toSourcesView renders a pure recovered historical fragment as an archived row", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_fragment",
+      connector_id: "chase",
+      display_name: "Chase",
+      source_visibility: "archived",
+    }),
+  ]);
+
+  assert.equal(views.length, 1, "an archived source must still appear — its records exist and must be reachable");
+  assert.equal(views[0]?.archived, true, "it must be classified archived, not rendered as a live source");
+});
+
+test("toSourcesView accepts the retired hidden_from_sources spelling as archived", () => {
+  // A console deployed ahead of its reference still receives the old value.
+  // It must classify as archived, never fall through to a live-looking row.
   const views = toSourcesView([
     summary({
       connection_id: "cin_fragment",
@@ -869,7 +886,195 @@ test("toSourcesView hides a pure recovered historical fragment", () => {
     }),
   ]);
 
-  assert.deepEqual(views, [], "a pure recovered fragment must not appear as its own Sources row");
+  assert.equal(views.length, 1);
+  assert.equal(views[0]?.archived, true, "the retired spelling must not read as a live source");
+});
+
+test("an archived source never renders a healthy status, even with a green stored verdict", () => {
+  // The fabricated-green guard: an archived source's LAST run may have
+  // succeeded, so its stored verdict can still be green. Rendering that tone
+  // would tell the owner a source that will never collect again is healthy.
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_fragment",
+      connector_id: "chase",
+      display_name: "Chase",
+      rendered_verdict: renderedVerdict({ pill: { label: "Healthy", tone: "green" } }),
+      source_visibility: "archived",
+    }),
+  ]);
+
+  assert.equal(views[0]?.status.kind, "archived", "a green verdict must not survive archival");
+  assert.notEqual(views[0]?.status.tone, "success", "an archived source must never render a success tone");
+});
+
+test("an archived source offers no Reconnect action — the prompt that leads nowhere", () => {
+  // The verdict carries a real owner-satisfiable Reconnect action, exactly as
+  // a fragment's stored verdict does. Reconnecting mints a NEW connection and
+  // resumes nothing here, so no surface may offer it (the intent dfbbb8843
+  // established). Without a genuinely actionable verdict this assertion would
+  // pass vacuously, so the fixture must carry one.
+  const reconnectVerdict = renderedVerdict({
+    channel: "attention",
+    pill: { label: "Can't collect", tone: "red" },
+    required_actions: [
+      {
+        affects: [],
+        audience: "owner",
+        cta: "Reconnect this account",
+        kind: "reauth",
+        satisfied_when: { kind: "credential_present_and_unrejected" },
+        terminal: false,
+        urgency: "soon",
+      },
+    ],
+  });
+
+  const live = toSourcesView([
+    summary({ connection_id: "cin_live", rendered_verdict: reconnectVerdict, source_visibility: "active" }),
+  ]);
+  assert.equal(
+    live[0]?.primaryVerdictAction?.cta,
+    "Reconnect this account",
+    "control: a LIVE source with this verdict does surface the action"
+  );
+
+  const archived = toSourcesView([
+    summary({ connection_id: "cin_archived", rendered_verdict: reconnectVerdict, source_visibility: "archived" }),
+  ]);
+  assert.equal(archived[0]?.primaryVerdictAction, null, "an archived source must not surface a Reconnect action");
+  assert.equal(archived[0]?.nextAction, null, "nor as a body CTA");
+  assert.equal(archived[0]?.ownerActionCue, null, "nor as a list-row cue");
+});
+
+test("toSourcesView classifies a never-succeeded revoked setup shell as setupFailed, not archived or a live revoked row", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_venmo_shell",
+      connector_id: "venmo",
+      display_name: "Venmo",
+      revoked_at: "2026-08-21T15:42:36.412Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+
+  assert.equal(views.length, 1, "a setup-failed source must still appear — it is the owner's only record of trying");
+  assert.equal(views[0]?.setupFailed, true);
+  assert.equal(views[0]?.archived, false, "setup-failed is distinct from archived — nothing was ever collected");
+});
+
+test("a setup-failed source never renders a healthy status, even with a green stored verdict", () => {
+  const views = toSourcesView([
+    summary({
+      connector_id: "venmo",
+      rendered_verdict: renderedVerdict({ pill: { label: "Healthy", tone: "green" } }),
+      revoked_at: "2026-08-21T15:42:36.412Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+
+  assert.equal(views[0]?.status.kind, "setup_failed", "a green verdict must not survive setup-failure classification");
+  assert.notEqual(views[0]?.status.tone, "success", "a setup-failed source must never render a success tone");
+});
+
+test("a setup-failed source offers no action — no Reconnect, no Try-again CTA on the row, no list cue", () => {
+  const reconnectVerdict = renderedVerdict({
+    channel: "attention",
+    pill: { label: "Can't collect", tone: "red" },
+    required_actions: [
+      {
+        affects: [],
+        audience: "owner",
+        cta: "Reconnect this account",
+        kind: "reauth",
+        satisfied_when: { kind: "credential_present_and_unrejected" },
+        terminal: false,
+        urgency: "soon",
+      },
+    ],
+  });
+
+  const setupFailed = toSourcesView([
+    summary({
+      connector_id: "venmo",
+      rendered_verdict: reconnectVerdict,
+      revoked_at: "2026-08-21T15:42:36.412Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+  assert.equal(
+    setupFailed[0]?.primaryVerdictAction,
+    null,
+    "a setup-failed source must not surface a Reconnect action — there is no connection to reconnect"
+  );
+  assert.equal(setupFailed[0]?.nextAction, null, "nor as a body CTA — the row's own detail page has nothing to offer");
+  assert.equal(setupFailed[0]?.ownerActionCue, null, "nor as a list-row cue");
+});
+
+test("collapseSetupFailedSources coalesces every setup-failed attempt for a connector into one representative row", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_venmo_1",
+      connector_id: "venmo",
+      display_name: "Venmo",
+      revoked_at: "2026-08-21T15:42:36.412Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+    summary({
+      connection_id: "cin_venmo_2",
+      connector_id: "venmo",
+      display_name: "Venmo",
+      revoked_at: "2026-08-21T22:22:07.510Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+    summary({
+      connection_id: "cin_venmo_3",
+      connector_id: "venmo",
+      display_name: "Venmo",
+      revoked_at: "2026-08-22T02:40:11.560Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+
+  assert.equal(views.length, 3, "toSourcesView itself does not merge rows — every attempt is still classified");
+
+  const { setupFailedGroups } = collapseSetupFailedSources(views);
+  assert.equal(setupFailedGroups.length, 1, "three attempts against the same connector collapse to one UI row");
+  assert.equal(setupFailedGroups[0]?.attemptCount, 3);
+  assert.equal(
+    setupFailedGroups[0]?.representative.connectionId,
+    "cin_venmo_3",
+    "the most recent attempt (last in created_at-ordered input) is the representative"
+  );
+});
+
+test("collapseSetupFailedSources keeps a single attempt as its own one-item group — coalescing does not require a minimum count", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_amazon_1",
+      connector_id: "amazon",
+      revoked_at: "2026-08-18T05:28:03.111Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+
+  const { setupFailedGroups } = collapseSetupFailedSources(views);
+  assert.equal(setupFailedGroups.length, 1);
+  assert.equal(setupFailedGroups[0]?.attemptCount, 1);
 });
 
 test("toSourcesView keeps a UAT-transferred historical_archive row visible", () => {
@@ -909,7 +1114,7 @@ test("toSourcesView keeps a summary visible when source_visibility is absent (ol
   assert.equal(views.length, 1, "an older reference omitting source_visibility must fail open to visible");
 });
 
-test("toSourcesView filters hidden fragments out of a mixed page while preserving order for the rest", () => {
+test("toSourcesView classifies fragments in a mixed page while preserving order for every row", () => {
   const views = toSourcesView([
     summary({ connection_id: "cin_1", connector_id: "gmail", display_name: "Gmail", source_visibility: "active" }),
     summary({
@@ -935,8 +1140,13 @@ test("toSourcesView filters hidden fragments out of a mixed page while preservin
 
   assert.deepEqual(
     views.map((view) => view.connectionId),
-    ["cin_1", "cin_uat", "cin_2"],
-    "hidden fragments are dropped without disturbing the relative order of visible rows"
+    ["cin_1", "cin_fragment_1", "cin_uat", "cin_fragment_2", "cin_2"],
+    "every row is kept, in input order — archived rows are classified, not dropped"
+  );
+  assert.deepEqual(
+    views.filter((view) => view.archived).map((view) => view.connectionId),
+    ["cin_fragment_1", "cin_fragment_2"],
+    "exactly the fragments are archived; live rows are untouched"
   );
 });
 
