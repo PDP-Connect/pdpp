@@ -690,14 +690,27 @@ export interface RefConnectorSummary {
   source_kind?: string;
   /**
    * Provider-neutral Sources-list visibility (mirrors server `ConnectorSummary
-   * .source_visibility`). `"hidden_from_sources"` marks a PURE recovered
-   * historical fragment — never a UAT-transferred/manual-import row or an
-   * active promoted connection, both of which read `"active"`. Optional: a
-   * reference predating this field omits it, in which case the console shows
-   * the row (fails open to visible, the pre-existing behavior) rather than
-   * hiding rows an older reference never classified.
+   * .source_visibility`). `"archived"` marks a PURE recovered historical
+   * fragment — preserved records, no collection, never resuming — and never a
+   * UAT-transferred/manual-import row or an active promoted connection, both
+   * of which read `"active"`.
+   *
+   * `"hidden_from_sources"` is the retired spelling of `"archived"`, accepted
+   * so a console deployed ahead of its reference keeps classifying those rows
+   * as archived instead of silently rendering them as live sources.
+   *
+   * `"setup_failed"` marks a revoked retired-setup-shell binding
+   * (`browser_enrollment_shell`/etc.) that never had a successful run —
+   * repeated failed setup, zero records, the owner's only evidence a
+   * connector was ever attempted. A shell whose run DID succeed is not
+   * classified this way at all; it is excluded from the Sources page
+   * entirely, because a promoted `"active"` row already represents it.
+   *
+   * Optional: a reference predating this field omits it, in which case the
+   * row is treated as `"active"` (fails open to visible, the pre-existing
+   * behavior) rather than hiding rows an older reference never classified.
    */
-  source_visibility?: "active" | "hidden_from_sources" | null;
+  source_visibility?: "active" | "archived" | "hidden_from_sources" | "setup_failed" | null;
   /**
    * Server-owned work classification derived from `owner_state.resolver`.
    * Optional only for references predating this field; the console fails closed
@@ -877,7 +890,15 @@ export type RefVerdictTone = "amber" | "green" | "grey" | "red";
 export type RefRenderedChannel = "advisory" | "attention" | "calm";
 
 export interface RefVerdictPill {
-  label: "Can't collect" | "Checking" | "Degraded" | "Healthy" | "Needs refresh" | "Not measured" | "Syncing";
+  label:
+    | "Can't collect"
+    | "Checking"
+    | "Healthy"
+    | "Import complete"
+    | "Missing data"
+    | "Needs refresh"
+    | "Not measured"
+    | "Syncing";
   tone: RefVerdictTone;
 }
 

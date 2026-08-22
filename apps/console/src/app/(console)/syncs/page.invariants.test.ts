@@ -222,7 +222,11 @@ test("recent syncs pager links to the next cursor the server returned, never a f
   assert.match(src, RECENT_PAGER_NEXT_HREF_RE, "the older-syncs link must carry the real next_cursor from the server");
 });
 
-const COVERAGE_HUMANIZER_IMPORT_RE = /formatCoverageAxis[\s\S]{0,40}from "\.\.\/lib\/connection-evidence\.ts"/;
+// The shared humanizer moved from the console-local `connection-evidence.ts`
+// into `@pdpp/display` so the headless `sources-report` CLI renders the SAME
+// coverage words this view does. The invariant is unchanged — coverage copy
+// must go through the shared humanizer, never interpolate the raw axis key.
+const COVERAGE_HUMANIZER_IMPORT_RE = /formatCoverageAxis[\s\S]{0,40}from "@pdpp\/display"/;
 const COVERAGE_HUMANIZER_CALL_RE = /formatCoverageAxis\(condition\)\.value/;
 const RAW_COVERAGE_INTERPOLATION_RE = /`\s*·\s*\$\{condition\}`/;
 

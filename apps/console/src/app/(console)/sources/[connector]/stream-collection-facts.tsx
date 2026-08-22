@@ -1,8 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import type { EvidenceTone } from "@pdpp/display";
 import { type StreamCollectionFacts, streamOwnerActionCueNeeded } from "../../lib/collection-report.ts";
-import type { EvidenceTone } from "../../lib/connection-evidence.ts";
 
 /**
  * Per-stream collection facts rendered under a stream row on the connector

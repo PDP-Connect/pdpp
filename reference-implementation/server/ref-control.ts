@@ -135,12 +135,12 @@ import {
   isStreamFullyUnfillableAccounted,
   type TerminalGapProofRow,
 } from "./connector-gap-classification.ts";
-import { canonicalConnectorKey } from "./connector-key.ts";
 import {
   loadOwnerConnectorInstanceGroupsPostgres,
   loadOwnerConnectorInstanceGroupsSqlite,
   resolveCanonicalConnectorInstanceId,
 } from "./connector-instance-canonicalization.ts";
+import { canonicalConnectorKey } from "./connector-key.ts";
 import {
   type HeartbeatRow,
   projectConnectorOutboxAxisFromHeartbeats,
@@ -171,6 +171,7 @@ import {
   listRetainedSizeStreams,
   listRetainedSizeStreamsByInstanceIds,
 } from "./retained-size-read-model.ts";
+import { staticSecretVerifiedIdentityFromBinding } from "./static-secret-identity.ts";
 import {
   parseCollectionRatePayload,
   readCollectionFactsFromTerminalData,
@@ -197,6 +198,7 @@ import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
   isOwnerVisibleConnectorInstance,
+  RETIRED_SETUP_SHELL_BINDING_KINDS,
 } from "./stores/connector-instance-store.ts";
 import {
   getDefaultDeviceExporterStore,
@@ -564,6 +566,13 @@ export interface PendingDetailGapSummary {
    */
   readonly attempt_count?: unknown;
   readonly connector_instance_id?: unknown;
+  /**
+   * Durable `connector_detail_gaps.detail_locator_json`, as parsed by
+   * `rowToGap`. Optional/`unknown` because not every gap projection populates
+   * it. Read by {@link isLocalCollectorRunnerGap} to tell a local-collector
+   * runner condition (`kind: "local_collector_gap"`) from a real stream gap.
+   */
+  readonly detail_locator?: unknown;
   readonly last_attempt_at?: unknown;
   /**
    * Durable `connector_detail_gaps.last_error_json`, as parsed by `rowToGap`.
@@ -888,18 +897,42 @@ export interface ConnectorSummary {
   readonly source_kind: string;
   /**
    * Provider-neutral Sources-list visibility, derived from `source_binding`
-   * by `deriveSourceVisibility`. `"hidden_from_sources"` is reserved for a
-   * PURE recovered historical fragment: a `historical_archive` binding whose
+   * by `deriveSourceVisibility`. `"archived"` is reserved for a PURE
+   * recovered historical fragment: a `historical_archive` binding whose
    * `recovery_reason` is exactly `"connection_metadata_missing"` AND that
    * carries no UAT-transfer marker. Every other row — including a
    * `historical_archive` binding that DOES carry a UAT-transfer marker (a
    * manual/UAT-imported source, not a bare recovered fragment) and every
-   * active/promoted connection — is `"active"`. This never removes or
-   * mutates the stored connection; Explore and other record-read paths do
-   * not consult this field, so hidden fragments' records stay reachable
-   * there.
+   * active/promoted connection — is `"active"`.
+   *
+   * `"archived"` means PRESERVED BUT NOT COLLECTING: the records are real
+   * and readable, and no collection will ever resume for this row. It is
+   * NOT a hidden state. The Sources list renders these under their own
+   * "Archived" group (`sources-view-model.ts`), because a record that
+   * exists and is shown nowhere violates the standing principle that no
+   * data known to the system may be invisible in the UI.
+   *
+   * The distinction that must not be lost: an archived source is dead, so
+   * no surface may give it a live-looking verdict or an action that implies
+   * collection could resume (see `isArchivedSource` in
+   * `source-actionability.ts`). This never removes or mutates the stored
+   * connection.
+   *
+   * `"setup_failed"` is reserved for a revoked retired-setup-shell binding
+   * (`browser_enrollment_shell`/`static_secret_draft`/`manual_upload_draft`)
+   * that NEVER had a successful run. Such a row only reaches synthesis at all
+   * because `listSourcesVisibleIdentityPage`'s Sources-only escape (see
+   * `NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE`/`..._POSTGRES` in
+   * `connector-instance-store.ts`) already excludes every setup shell WITH a
+   * successful run — a successful run promotes the connection to its own
+   * `active` row, and that row, not the spent shell, is what should render.
+   * Every setup shell `deriveSourceVisibility` sees is therefore guaranteed
+   * never-succeeded; it does not re-check run history itself. Holds zero
+   * records by construction (no run ever emitted any) and must never render
+   * a "Reconnect" action — there is nothing to reconnect, only a fresh
+   * attempt to make (see `isSetupFailedSource` in `source-actionability.ts`).
    */
-  readonly source_visibility: "active" | "hidden_from_sources";
+  readonly source_visibility: "active" | "archived" | "setup_failed";
   /** Total server-owned work classification derived from `owner_state.resolver`. */
   readonly source_work: SourceWorkGroup;
   readonly status: string | null;
@@ -3811,10 +3844,168 @@ export function projectCollectionReport(input: {
   });
 }
 
+/**
+ * Normalize a label for containment testing: lowercase, non-alphanumerics
+ * collapsed to single spaces. Mirrors the console's `normalizeLabelForContainment`
+ * so both sides agree on when a connector name is already present in a label.
+ */
+function normalizeLabelForContainment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Append `qualifier` to `label` unless the label already says it.
+ *
+ * Containment is normalized (case- and punctuation-insensitive) so a label the
+ * owner already qualified by hand is never doubled — "peregrine Codex" stays
+ * "peregrine Codex", not "peregrine Codex Codex".
+ */
+function qualifyLabel(label: string, qualifier: string, join: string): string {
+  const trimmedQualifier = qualifier.trim();
+  if (!trimmedQualifier) {
+    return label;
+  }
+  const normalizedQualifier = normalizeLabelForContainment(trimmedQualifier);
+  if (!normalizedQualifier || normalizeLabelForContainment(label).includes(normalizedQualifier)) {
+    return label;
+  }
+  return `${label}${join}${trimmedQualifier}`;
+}
+
+/**
+ * The owner-facing display name for one configured connection.
+ *
+ * B8 (owner ledger 2026-08-22). ONE RULE, stated once: **a source's label must
+ * identify WHICH source it is.** Two owner complaints are the same defect:
+ *
+ *   1. A local-device source's stored `display_name` is whatever the owner typed
+ *      into the enrollment form's free-text field, passed through verbatim as
+ *      `--device-label`. Nothing ever composed the connector name into it, so
+ *      the owner typed "peregrine Codex" by hand but only "peregrine" for
+ *      Signal — a bare hostname saying nothing about WHAT it collects.
+ *      (Owner: "it should have been called 'signal' then".)
+ *
+ *   2. Two Amazon connections both rendered as literally "Amazon", so the owner
+ *      could not tell which account survived a tombstoning.
+ *      (Owner: "I only see one Amazon source... I don't know which one remains,
+ *      and I don't know where the other one went.")
+ *
+ * Both are answered by the same composition, applied in identity order —
+ * the label carries the connector, then whatever distinguishes this connection
+ * from its siblings of the same connector:
+ *
+ *   - device-backed  →  "<device> <Connector>"        e.g. "peregrine Signal"
+ *   - account-backed →  "<Connector> - <account>"     e.g. "H-E-B - a@b.com"
+ *
+ * The account identifier is the manifest-declared, NON-SECRET identity field
+ * (`verified_identity` on `source_binding`, read via the provider-neutral
+ * `staticSecretVerifiedIdentityFromBinding`). The `identity: true` +
+ * `secret: false` pair is the manifest's own declaration that a field is a safe
+ * account label rather than a credential — so a connector that marks its
+ * username `secret: true` (H-E-B does) can never leak it through this path.
+ * Provider-neutral: no connector is named here.
+ *
+ * HONESTY / SCOPE: when a connection exposes no declared account identity this
+ * does NOT invent one, and it does NOT decorate the label with an opaque id by
+ * default. Most connectors (including Amazon) declare no identity field today,
+ * so the honest fix for two identically-named Amazon rows is upstream — the
+ * connector must declare an identity field, or the owner renames the
+ * connection. Inventing a distinguishing suffix here would manufacture the
+ * appearance of identity the system does not actually have. See the report for
+ * what this does and does not close.
+ *
+ * Derived at RENDER time, never stored, because:
+ *   1. The owner's typed label is their data. Rewriting
+ *      `connector_instances.display_name` would silently restate an
+ *      owner-authored name and make the owner's own rename
+ *      (`owner-connections.ts` `setDisplayName`) indistinguishable from a
+ *      machine edit.
+ *   2. It fixes EXISTING rows and future enrollments in one step — no
+ *      migration, nothing to reverse.
+ *   3. Every input is already on the projected row; no join, no extra read.
+ *
+ * PII: an account identifier in a display name is the existing shipped pattern
+ * (H-E-B). It stays confined to this owner-facing label — never logs, never
+ * diagnostics.
+ */
+function projectedConnectionDisplayName(input: {
+  readonly connectorDisplayName: string;
+  readonly sourceBinding: unknown;
+  readonly sourceKind: string | null | undefined;
+  readonly storedDisplayName: string | null | undefined;
+}): string {
+  const stored = typeof input.storedDisplayName === "string" ? input.storedDisplayName.trim() : "";
+  const connectorName = input.connectorDisplayName.trim();
+
+  // Device-backed: the stored label is a DEVICE name, so the connector is the
+  // qualifier that says what this source collects.
+  if (input.sourceKind === "local_device" || input.sourceKind === "browser_collector") {
+    return stored ? qualifyLabel(stored, connectorName, " ") : connectorName;
+  }
+
+  // Account-backed and everything else is connector-first: the base is the
+  // owner's label when they set one, qualified by the declared account identity
+  // when the manifest exposes a non-secret one.
+  const base = stored || connectorName;
+  const accountIdentity = staticSecretVerifiedIdentityFromBinding(input.sourceBinding);
+  return accountIdentity ? qualifyLabel(base, accountIdentity, " - ") : base;
+}
+
+/**
+ * Whether a pending detail gap is a **local-collector runner condition** rather
+ * than a real stream gap.
+ *
+ * B9 (owner ledger 2026-08-22): the detail-gap store is keyed by stream, but a
+ * local-collector gap is not stream-scoped — `connector_child_failure` means the
+ * collector's child process died, and `policy_budget` means it hit a scan
+ * budget. Neither has a stream. To fit the stream-shaped primary key,
+ * `parseGapBodyBase` (`routes/ref-device-exporters.ts`) mints a synthetic name
+ * like `local-collector/connector_child_failure` and stores it in the `stream`
+ * column. Unfiltered, that pseudo-stream flowed into the collection report's
+ * in-scope universe and the console rendered a PROCESS FAILURE as one of the
+ * owner's DATA STREAMS.
+ *
+ * The gap already carries the structured discriminator the route wrote next to
+ * the synthetic name: `detail_locator.kind === "local_collector_gap"`. We key on
+ * that (not on the stream-name prefix) because it is the authored field and is
+ * immune to separator drift between emitters.
+ *
+ * This ONLY removes the failure from the per-stream data list. The failure still
+ * reaches the owner through the channel that already carries it: the
+ * `local_collector_gaps` diagnostics block, which aggregates the pending count
+ * and the `reasons` array and renders with a warning tone
+ * (`routes/ref-device-exporters.ts` → `connection-diagnostics.tsx`).
+ */
+function isLocalCollectorRunnerGap(gap: PendingDetailGapSummary): boolean {
+  const locator = gap.detail_locator;
+  if (
+    locator &&
+    typeof locator === "object" &&
+    !Array.isArray(locator) &&
+    (locator as { kind?: unknown }).kind === "local_collector_gap"
+  ) {
+    return true;
+  }
+  // Fallback for rows written before the locator was populated, and as a guard
+  // against separator drift (`local-collector/` vs `local_collector/`).
+  const stream = typeof gap.stream === "string" ? gap.stream : "";
+  return stream.startsWith("local-collector/") || stream.startsWith("local_collector/");
+}
+
 function pendingDetailGapCountsByStream(gaps: readonly PendingDetailGapSummary[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const gap of gaps) {
     if (!gap || typeof gap !== "object" || Array.isArray(gap) || gap.status !== "pending") {
+      continue;
+    }
+    // B9: a collector-runner condition is not a data stream. Excluded here so it
+    // never enters the collection report's in-scope stream universe; it stays
+    // visible to the owner via the local_collector_gaps diagnostics block.
+    if (isLocalCollectorRunnerGap(gap)) {
       continue;
     }
     const stream = typeof gap.stream === "string" ? gap.stream : "";
@@ -6100,7 +6291,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       ? evidence.total_records
       : null
     : liveRetainedRecordsOrNull(live);
-  const renderedVerdict = buildRenderedVerdictForSummary({
+  const builtRenderedVerdict = buildRenderedVerdictForSummary({
     attentionRecords: attention.records,
     collectionReport,
     connectionHealth,
@@ -6114,6 +6305,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     runtimeOk,
     schedule: localDeviceBacked ? null : schedule,
   });
+  const renderedVerdict = archiveRenderedVerdict(builtRenderedVerdict, deriveSourceVisibility(instance));
   // Owner review, 2026-07-09: reuse `coverageClassifyingRun` — the SAME
   // classifying run health/coverage already resolved to — so an
   // owner-cancelled `lastRun` is excluded exactly like the health/coverage
@@ -6253,7 +6445,15 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     connector_display_name: connectorDisplayName,
     connector_id: connectorId,
     connector_instance_id: connectorInstanceId,
-    display_name: instance.displayName || connectorDisplayName,
+    // B8: a source's label must identify WHICH source it is — the device for a
+    // device-backed source, the account for an account-backed one. Derived,
+    // never stored.
+    display_name: projectedConnectionDisplayName({
+      connectorDisplayName,
+      sourceBinding: instance.sourceBinding,
+      sourceKind: instance.sourceKind,
+      storedDisplayName: instance.displayName,
+    }),
     freshness,
     last_run: authoritativeLastRun,
     last_successful_run: authoritativeLastSuccessfulRun,
@@ -6364,21 +6564,94 @@ function hasUatTransferMarker(binding: Record<string, unknown>): boolean {
 }
 
 /**
- * Provider-neutral Sources-list visibility predicate. Hides ONLY a pure
- * recovered historical fragment: `source_binding.kind === "historical_archive"`
- * with `recovery_reason === "connection_metadata_missing"` and no UAT-transfer
+ * Provider-neutral Sources-list visibility predicate. Marks as `"archived"`
+ * ONLY a pure recovered historical fragment:
+ * `source_binding.kind === "historical_archive"` with
+ * `recovery_reason === "connection_metadata_missing"` and no UAT-transfer
  * marker. A `historical_archive` binding that DOES carry a UAT-transfer marker
  * (e.g. a UAT-imported Google Maps/WhatsApp source) is a manual/transferred
  * source, not a bare fragment, and stays `"active"` — as does every other
  * binding kind, including active promoted connections. Never inspects
  * `connector_id`/`source_kind` — no connector-specific branching.
+ *
+ * `"archived"` classifies; it does not hide. The Sources list renders these
+ * rows in a distinct, clearly-dead group rather than dropping them.
  */
-function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "hidden_from_sources" {
+/**
+ * Replace an archived source's verdict with an honest terminal one.
+ *
+ * An ARCHIVED source is terminal: records preserved, collection finished,
+ * nothing will resume. Its underlying instance is typically `paused`, so the
+ * BUILT verdict describes a live-but-stopped connection and carries
+ * "Reconnect this account and collection resumes" — a promise that leads
+ * nowhere, since reconnecting mints a NEW connection and resumes nothing here
+ * (the intent `dfbbb8843` established for these rows).
+ *
+ * Applied on the SERVER, not in the console, so every consumer of
+ * `rendered_verdict` gets the same answer. That placement is not a
+ * preference: a console-only fix left the `sources-report` CLI rendering
+ * "Paused · Reconnect this account" for the same row, which is how this gap
+ * was found. Any future reader inherits the honest verdict for free.
+ *
+ * `required_actions` is emptied rather than rewritten — there IS no action
+ * that resumes an archived source, and inventing one would be the same class
+ * of lie in a different sentence.
+ *
+ * A `"setup_failed"` source gets its own honest terminal verdict for the same
+ * reason, applied at the same server layer: its underlying instance is a
+ * revoked `browser_enrollment_shell`/etc., so the BUILT verdict describes a
+ * dead enrollment popup's health, not a source the owner ever had running.
+ * `required_actions` is emptied here too — the honest next step is a FRESH
+ * attempt (a new connection), not an action on THIS one, so the console
+ * synthesizes its own "Try again" CTA (`SETUP_FAILED_CTA_LABEL` in
+ * `source-actionability.ts`) that routes to Add Source, the same way it
+ * synthesizes `SETUP_IN_PROGRESS_CTA_LABEL` for a draft.
+ */
+export function archiveRenderedVerdict<T extends RenderedVerdict>(
+  verdict: T,
+  visibility: "active" | "archived" | "setup_failed"
+): T {
+  if (visibility === "archived") {
+    return {
+      ...verdict,
+      channel: "calm",
+      forward_statement: "This source is archived. Its records are kept and stay searchable.",
+      pill: { label: "Archived", tone: "grey" },
+      progress: { ...verdict.progress, headline: "Collection has finished for this source." },
+      required_actions: [],
+    };
+  }
+  if (visibility === "setup_failed") {
+    return {
+      ...verdict,
+      channel: "calm",
+      forward_statement: "Setup never finished for this source. No records were collected.",
+      pill: { label: "Setup never completed", tone: "grey" },
+      progress: { ...verdict.progress, headline: "This connection attempt did not finish." },
+      required_actions: [],
+    };
+  }
+  return verdict;
+}
+
+function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "archived" | "setup_failed" {
   const binding = instance.sourceBinding;
   if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
     return "active";
   }
   const record = binding as Record<string, unknown>;
+  // A revoked retired-setup-shell row reaches synthesis at all only via the
+  // Sources-only never-succeeded escape (`NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_*`
+  // in `connector-instance-store.ts`), which already excludes every such row
+  // WITH a successful run. Every row seen here is therefore guaranteed
+  // never-succeeded — no run-history re-check needed.
+  if (
+    instance.status === "revoked" &&
+    typeof record.kind === "string" &&
+    RETIRED_SETUP_SHELL_BINDING_KINDS.has(record.kind)
+  ) {
+    return "setup_failed";
+  }
   if (record.kind !== "historical_archive") {
     return "active";
   }
@@ -6388,7 +6661,7 @@ function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "hid
   if (hasUatTransferMarker(record)) {
     return "active";
   }
-  return "hidden_from_sources";
+  return "archived";
 }
 
 function connectionIsBrowserSessionBound(instance: ConnectorInstanceRow): boolean {
@@ -7406,7 +7679,12 @@ async function projectConnectorIdentityInventoryPage(
         connector_display_name: connectorDisplayName,
         connector_id: instance.connectorId,
         connector_instance_id: instance.connectorInstanceId,
-        display_name: instance.displayName || connectorDisplayName,
+        display_name: projectedConnectionDisplayName({
+          connectorDisplayName,
+          sourceBinding: instance.sourceBinding,
+          sourceKind: instance.sourceKind,
+          storedDisplayName: instance.displayName,
+        }),
         membership_state: evidence ? "complete" : "pending",
         streams,
       },
@@ -7619,7 +7897,12 @@ async function projectConnectorRetainedCountSummaryPage(
         connector_display_name: connectorDisplayName,
         connector_id: instance.connectorId,
         connector_instance_id: instance.connectorInstanceId,
-        display_name: instance.displayName || connectorDisplayName,
+        display_name: projectedConnectionDisplayName({
+          connectorDisplayName,
+          sourceBinding: instance.sourceBinding,
+          sourceKind: instance.sourceKind,
+          storedDisplayName: instance.displayName,
+        }),
         revoked_at: instance.revokedAt ?? null,
         status: instance.status,
         total_records: totalRecords,

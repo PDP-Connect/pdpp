@@ -66,20 +66,39 @@ export type VerdictTone = "amber" | "green" | "grey" | "red";
  * `amber` tone splits into two labels (`labelForPill`): "Needs refresh" is
  * reserved for a connection that is otherwise working but not current —
  * idle-with-prior-success, stale freshness, or `owner_refresh_due` — where the
- * owner action is a routine nudge, not a fix. "Degraded" is reserved for real
+ * owner action is a routine nudge, not a fix. "Missing data" is reserved for real
  * collection trouble: coverage gaps, attention, or a stalled outbox. Both
  * labels can carry `channel: "advisory"`; the label distinguishes "needs a
  * routine refresh" from "something is actually wrong" without changing whether
  * the owner is interrupted.
+ *
+ * B3 (owner ledger 2026-08-22): this label was "Degraded", which is engineering
+ * jargon — the owner said it "means nothing to a user". "Missing data" is the
+ * plain-English claim that is true across EVERY case this amber rollup covers:
+ * a coverage gap means some data was not collected; open attention means
+ * collection is blocked so data is not arriving; a stalled outbox means
+ * collected data is stuck on the device and has not landed. It is deliberately
+ * NOT cheerier than "Degraded" — it names the actual loss to the owner rather
+ * than describing the system's internal condition.
  */
 export type VerdictLabel =
+  // Terminal and honest: records preserved, collection finished, nothing will
+  // resume. Applied by the summary projection to an archived source, never
+  // derived from a tone (no `TONE_TO_LABEL` entry maps to it) — a source is
+  // archived because of what it IS, not because of how its axes scored.
+  | "Archived"
   | "Can't collect"
   | "Checking"
-  | "Degraded"
   | "Healthy"
   | "Import complete"
+  | "Missing data"
   | "Needs refresh"
   | "Not measured"
+  // Terminal and honest, like "Archived": this source never connected, so
+  // there is no collection to describe, only a setup attempt that did not
+  // finish. Applied by the summary projection to a `setup_failed` source,
+  // never derived from a tone — see `archiveRenderedVerdict` in `ref-control.ts`.
+  | "Setup never completed"
   | "Syncing";
 
 export interface VerdictPill {
@@ -397,7 +416,7 @@ export interface ScheduleEvidence {
 const TONE_RANK: Record<VerdictTone, number> = { amber: 2, green: 0, grey: 1, red: 3 };
 
 const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
-  amber: "Degraded",
+  amber: "Missing data",
   green: "Healthy",
   grey: "Not measured",
   red: "Can't collect",
@@ -425,7 +444,7 @@ const NON_DEGRADING_AMBER_STATES = new Set(["idle", "cooling_off"]);
  * idle` (with a prior success), `state: cooling_off`, `freshness: stale`, or `disposition:
  * owner_refresh_due`. Any other axis reaching amber-or-worse — or `state`
  * being outside those non-degrading states, or `disposition` being anything
- * other than `owner_refresh_due` — means real trouble, so it stays "Degraded".
+ * other than `owner_refresh_due` — means real trouble, so it stays "Missing data".
  */
 function amberLabel(
   snapshot: ConnectionHealthSnapshot,
@@ -440,7 +459,7 @@ function amberLabel(
   const hasDegradingAxis = toneInputs.some(
     (input) => DEGRADING_AXES.has(input.axis) && TONE_RANK[input.tone] >= TONE_RANK.amber
   );
-  return stateIsBroken || dispositionIsBroken || hasDegradingAxis ? "Degraded" : "Needs refresh";
+  return stateIsBroken || dispositionIsBroken || hasDegradingAxis ? "Missing data" : "Needs refresh";
 }
 
 function labelForPill(
@@ -470,7 +489,7 @@ function labelForPill(
     // owner_refresh_due) AND a run is currently advancing, the connection is
     // already doing the thing the nudge would ask for — render `Syncing`
     // like the green/active-outbox case, not `Needs refresh`. Real trouble
-    // (`Degraded`) is never softened this way; active work does not mask a
+    // (`Missing data`) is never softened this way; active work does not mask a
     // genuine defect.
     if (label === "Needs refresh" && snapshot.badges.syncing) {
       return "Syncing";

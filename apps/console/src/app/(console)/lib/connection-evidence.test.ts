@@ -14,6 +14,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { formatCoverageAxis, formatFreshnessAxis, formatOutboxAxis } from "@pdpp/display";
 import {
   deriveAutoPausedBanner,
   deriveConnectionNextStep,
@@ -22,12 +23,9 @@ import {
   derivePrimaryRowAction,
   deriveStreakDots,
   formatCollectionRateReadout,
-  formatCoverageAxis,
   formatDominantCondition,
   formatForwardDisposition,
-  formatFreshnessAxis,
   formatLastDurableProgress,
-  formatOutboxAxis,
   formatProjectionFreshness,
   formatSourceHeartbeat,
   formatSourceOutboxState,
@@ -110,7 +108,11 @@ function baseOverview(overrides: Partial<ConnectorOverview> = {}): ConnectorOver
 
 test("coverage axis never labels 'unknown' as 'complete'", () => {
   assert.equal(formatCoverageAxis("unknown").tone, "neutral");
-  assert.equal(formatCoverageAxis("unknown").label.toLowerCase().includes("unknown"), true);
+  // B2: the `unknown` axis renders as "not measured" — never as "complete",
+  // and never as the bare word "unknown" that competed with the disposition
+  // line's "not measured" for the same underlying state.
+  assert.equal(formatCoverageAxis("unknown").value, "not measured");
+  assert.equal(formatCoverageAxis("unknown").label.toLowerCase().includes("complete"), false);
   assert.equal(formatCoverageAxis("complete").tone, "success");
   assert.equal(formatCoverageAxis("gaps").tone, "warning");
   assert.equal(formatCoverageAxis("partial").tone, "warning");
@@ -195,14 +197,23 @@ test("the visible deferred pill reads optional/not-collected, not policy jargon 
   assert.equal(chip.tone, "neutral");
 });
 
-test("inventory_only, unavailable, and unsupported visible labels are unchanged (not demonstrably misleading)", () => {
-  // Only the deferred pill's visible value/label was demonstrably misleading
-  // (read as queued work). The sibling accepted-absence labels already read
-  // as plain, settled facts ("inventory only", "unavailable", "unsupported")
-  // with no queued-work connotation, so their visible value/label are left
-  // untouched per the owner-gate scope; only their titles were sharpened.
-  assert.equal(formatCoverageAxis("inventory_only").value, "inventory only");
-  assert.equal(formatCoverageAxis("inventory_only").label, "Coverage · inventory only");
+test("inventory_only says plainly that it is complete by design, and stays neutral", () => {
+  // B4 (owner ledger 2026-08-22): the owner asked whether the neutral/green tone
+  // on `inventory only` was intentional. It IS, and it is honest —
+  // `inventory_only` is an AcceptedAbsencePolicy that `hasOutstandingGap`
+  // excludes and `deriveForwardDisposition` resolves to `complete`, so the
+  // connection genuinely owes no further data. The tone therefore stays
+  // neutral. What changed is the WORD: "inventory only" read as a limitation
+  // the owner might have to act on, so the value now states that this is a
+  // finished state by design.
+  const chip = formatCoverageAxis("inventory_only");
+  assert.equal(chip.tone, "neutral");
+  assert.match(chip.value, /complete/i);
+  assert.match(chip.value, /design/i);
+  assert.equal(chip.label.startsWith("Coverage"), true);
+  // It must NOT read as an unmeasured or gapped state — those are real defects
+  // and this is not one.
+  assert.doesNotMatch(chip.value, /not measured|unknown|gap|missing/i);
   assert.equal(formatCoverageAxis("unavailable").value, "unavailable");
   assert.equal(formatCoverageAxis("unavailable").label, "Coverage · unavailable");
   assert.equal(formatCoverageAxis("unsupported").value, "unsupported");
@@ -221,7 +232,7 @@ test("axis chips degrade safely when runtime axes are missing or novel", () => {
   assert.equal(out.length, 2);
   assert.deepEqual(
     out.map((c) => c.label),
-    ["Coverage · unknown", "Freshness · unknown"]
+    ["Coverage · not measured", "Freshness · not measured"]
   );
   assert.equal(
     out.every((c) => c.tone === "neutral"),
@@ -243,7 +254,7 @@ test("axis chips: a novel outbox value still degrades to neutral 'unknown' for a
   // degrades through formatOutboxAxis to the neutral unknown fallback chip; the
   // "evidence unavailable" sharpening only applies to a literal `unknown` axis.
   assert.equal(out.length, 3);
-  assert.equal(out[2]?.label, "Outbox · unknown");
+  assert.equal(out[2]?.label, "Outbox · not measured");
   assert.equal(out[2]?.tone, "neutral");
 });
 
@@ -1963,7 +1974,7 @@ test("deriveFailureSummary uses the server wait verdict even when raw health say
     renderedVerdict({
       channel: "advisory",
       forward_statement: "The source is throttling this connection; it will retry automatically.",
-      pill: { label: "Degraded", tone: "amber" },
+      pill: { label: "Missing data", tone: "amber" },
       required_actions: [
         {
           affects: [],
