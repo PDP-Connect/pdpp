@@ -77,7 +77,7 @@
  * scrub pass).
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalJson } from "@pdpp/collector-runtime";
@@ -1387,7 +1387,15 @@ async function main(): Promise<void> {
       }
       throw err;
     }
-    const preloadPath = writeBrowserHarReplayPreload(evidence, isolationWorkspace);
+    // Written into this package's own gitignored tmp/, NOT isolationWorkspace
+    // — see browser-har-replay.ts's module doc comment on `packageScratchDir`
+    // for why: this preload's generated `import("patchright")` needs
+    // package-tree resolution, which isolationWorkspace's os.tmpdir()-rooted
+    // mkdtemp directory can never provide. Cleaned up in the `finally` below
+    // (mirrors 2b674fdf1's cleanup discipline for the same defect class in
+    // bin/scenario-cli.test.ts) since, unlike isolationWorkspace, nothing
+    // else owns removing it.
+    const preloadPath = writeBrowserHarReplayPreload(evidence);
     let result: { code: number | null; messages: ProtocolMessage[]; stderr: string };
     try {
       result = await runReplaySubprocess({
@@ -1406,6 +1414,8 @@ async function main(): Promise<void> {
         watchdogTimeout = err;
       }
       throw err;
+    } finally {
+      rmSync(preloadPath, { force: true });
     }
     emitReplayResult(runIndex, result, collectorArgs.emit);
   };

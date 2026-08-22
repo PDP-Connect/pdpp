@@ -127,14 +127,67 @@
  * BECAUSE this module refuses to paper over the problem automatically.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ScenarioRun } from "./format.ts";
-import {
-  PDPP_SCENARIO_CLOCK_FIXED_NOW_ENV,
-  REPLAY_TIME_SCALE,
-  type ScenarioEvidenceWorkspace,
-} from "./subprocess-fetch-preloads.ts";
+import { PDPP_SCENARIO_CLOCK_FIXED_NOW_ENV, REPLAY_TIME_SCALE } from "./subprocess-fetch-preloads.ts";
+
+/**
+ * Generated module written by `writeBrowserHarReplayPreload` below does
+ * `await import("patchright")` — a BARE specifier, unlike every other
+ * preload this package generates (subprocess-fetch-preloads.ts's preloads
+ * only import `node:*` builtins, which need no package resolution at all).
+ * Node resolves a bare specifier by walking UP from the IMPORTING module's
+ * own path looking for the nearest `node_modules` containing it. Writing
+ * this file into `workspace.dir` (a `mkdtempSync(join(tmpdir(), ...))`
+ * directory — see subprocess-fetch-preloads.ts's `createScenarioEvidenceWorkspace`)
+ * would put it under `os.tmpdir()`, OUTSIDE this package tree entirely: that
+ * walk reaches `/` and never finds this package's `node_modules/patchright`,
+ * so the generated preload's own `import("patchright")` dies with
+ * `ERR_MODULE_NOT_FOUND` before any of its patching ever runs. Reproduced
+ * directly; not a hypothetical.
+ *
+ * This is the IDENTICAL defect class commit 2b674fdf1 fixed for
+ * bin/scenario-cli.test.ts's generated connector fixtures (which import
+ * src/connector-runtime.ts -> @pdpp/connector-protocol and hit the same
+ * resolution walk, failing with ERR_PACKAGE_PATH_NOT_EXPORTED instead). That
+ * fix's convention is reused verbatim here: write the file inside THIS
+ * package tree, under the repo's existing gitignored `tmp/` (root
+ * `.gitignore`'s bare `tmp/` line already matches
+ * `packages/polyfill-connectors/tmp/`), with unique per-run naming so
+ * concurrent runs never collide, and 0600 permissions matching this
+ * function's existing security posture (this evidence is
+ * `capture.privacy_class: "local-only"` — see subprocess-fetch-preloads.ts's
+ * "Secure evidence workspace" module doc comment). Deliberately NARROWER
+ * than that precedent: only THIS preload file moves — `workspace` (the 0700
+ * mkdtemp evidence workspace) is untouched and still holds the HAR/
+ * storage-state paths' resolution base, the UDS bridge socket, and
+ * everything `runReplaySubprocess`'s network-namespace isolation binds —
+ * none of which import anything and so none of which need to live inside
+ * the package tree.
+ *
+ * ALTERNATIVE CONSIDERED — resolve patchright's absolute path in the PARENT
+ * process (where resolution already works) and bake that path into the
+ * generated `import(...)` call instead of moving the file: rejected in favor
+ * of relocation. Baking in an absolute path freezes today's install layout
+ * (e.g. pnpm's `.pnpm/patchright@<version>/node_modules/patchright/...`)
+ * into generated source; a different install layout (npm/yarn classic
+ * flat node_modules, a different pnpm hoist config, Yarn PnP where
+ * `import.meta.resolve` behaves differently or virtual paths are involved)
+ * could resolve to something this preload's baked-in path no longer matches,
+ * or that patchright's own internal asset/binary lookups (relative to ITS
+ * own module location) don't expect to be imported from. Writing the file
+ * inside the package tree instead lets Node's ordinary resolution algorithm
+ * do the work fresh every run, in every environment — no dependency on how
+ * the parent process happened to resolve it.
+ */
+const PACKAGE_TMP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "tmp");
+
+function packageScratchDir(): string {
+  mkdirSync(PACKAGE_TMP_DIR, { recursive: true });
+  return PACKAGE_TMP_DIR;
+}
 
 /**
  * Thrown when a `recorded-browser` run's `environment.network` is missing
@@ -297,11 +350,16 @@ export function resolveBrowserEvidence(scenarioDir: string, run: ScenarioRun): R
  *      calls `context.clock.install({ time: fixedNowIso })` so in-page date
  *      reads are pinned to the same instant the Node-process clock patch
  *      pins Date.now() to.
+ *
+ * Written into this package's own gitignored `tmp/` (via `packageScratchDir`
+ * above), NOT into the caller's `ScenarioEvidenceWorkspace` — see this file's
+ * module doc comment for why. `workspace` is therefore no longer a parameter
+ * here (it would be unused — this package's `noUnusedParameters` tsconfig
+ * option rejects that); the HAR/storage-state paths already come fully
+ * resolved via `evidence`, so nothing else about this function's contract
+ * depended on the workspace directory.
  */
-export function writeBrowserHarReplayPreload(
-  evidence: ResolvedBrowserEvidence,
-  workspace: ScenarioEvidenceWorkspace
-): string {
+export function writeBrowserHarReplayPreload(evidence: ResolvedBrowserEvidence): string {
   const preloadFileName = `browser-har-replay-preload-${String(process.pid)}-${String(Date.now())}.mjs`;
   const src = `
 const HAR_PATH = ${JSON.stringify(evidence.harPath)};
@@ -390,11 +448,15 @@ import("patchright").then((patchright) => {
   };
 });
 `;
-  // 0600, inside the 0700 mkdtemp evidence workspace — same security posture
-  // as every other generated preload this package writes (see
-  // subprocess-fetch-preloads.ts's "Secure evidence workspace" module doc
-  // comment): never loose in the shared OS tmpdir root.
-  const path = join(workspace.dir, preloadFileName);
+  // 0600, inside this package's own gitignored tmp/ — NOT the 0700 mkdtemp
+  // evidence workspace every other generated preload uses (see this file's
+  // module doc comment on why: this preload's generated `import("patchright")`
+  // needs package-tree resolution, which os.tmpdir() can never provide).
+  // Still never loose in the shared OS tmpdir root, and still 0600 — same
+  // content-confidentiality posture subprocess-fetch-preloads.ts's "Secure
+  // evidence workspace" module doc comment establishes, just a different
+  // parent directory.
+  const path = join(packageScratchDir(), preloadFileName);
   writeFileSync(path, src, { mode: 0o600 });
   return path;
 }

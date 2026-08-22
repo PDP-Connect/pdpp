@@ -1840,7 +1840,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/connector-runtime.ts",
-    line: 1477,
+    line: 1527,
     column: 9,
     category: "shared_mutable_accumulator",
     note: "closeBrowserPage(): loop body mutates a shared accumulator the next iteration reads",
@@ -1921,6 +1921,13 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
     column: 7,
     category: "devtool_sequential_output",
     note: "registerManifest(): manual dev-tool script printing ordered per-item console output",
+  },
+  {
+    path: "src/test-fixtures/browser-har-replay-e2e-connector.ts",
+    line: 73,
+    column: 7,
+    category: "ordered_protocol_emission",
+    note: "collect(): stub items are emitted as RECORDs in fetched-response order, mirroring scenario-cli-stub-connector.ts's identical loop",
   },
   {
     path: "src/test-fixtures/connector-dev-scope-state-fixture.ts",
