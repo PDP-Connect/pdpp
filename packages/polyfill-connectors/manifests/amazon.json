@@ -296,6 +296,7 @@
     }
   ],
   "reason_display_messages": {
+    "amazon_empty_history_after_prior_orders": "Amazon reported no order history for a year in which we previously collected orders. Your stored orders are retained and untouched. We stopped this run instead of recording an empty history, because a page showing no orders can't prove those orders are gone",
     "empty_first_page_without_diagnostics": "The first page came back empty and we couldn't tell why",
     "item_count_shortfall": "An order lists more items than we could save",
     "empty_first_page_without_terminal_signal": "The first page came back empty with no sign it was really the end",

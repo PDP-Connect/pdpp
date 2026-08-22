@@ -53,6 +53,7 @@ import {
   type OrderItemsCoverage,
   type OrdersCoverage,
   planIncrementalYears,
+  priorOrdersEvidenceForYear,
   processListOrder,
   type RunFlags,
   readPageContentWithin,
@@ -597,6 +598,241 @@ test("scrapeListPage: a page-2 renderer diagnostic failure aborts without STATE 
     "renderer failure must not emit durable progress or coverage"
   );
   assert.doesNotMatch(JSON.stringify(messages), /private renderer|owner label|amazon\.com/);
+});
+
+// ─── Proven-empty regression guard (prior-orders evidence) ────────────────
+//
+// A YEAR that has already yielded orders must never be able to complete a run
+// as "proven empty". Amazon's own year-scoped empty copy is trustworthy for a
+// year the owner did not shop; for a year we have already measured, the same
+// page is a contradiction, not a result.
+//
+// The evidence is PER-YEAR, unlike H-E-B's account-wide checkpoint, because
+// Amazon is year-partitioned: an account with thousands of orders legitimately
+// renders "Looks like you didn't place an order in 2015." for an unshopped
+// year, and that year must keep reporting empty forever.
+
+const RESOLVED_EMPTY_YEAR_DIAG = (): ListPageDiagnostics => makeEmptyPageDiagnostics({ no_orders_text: "true" });
+
+/**
+ * A Page stub serving Amazon's real captured empty-year list page. `content()`
+ * feeds the DOM parser (which finds no order cards, the trigger for the
+ * empty-page branch) and `evaluate()` returns diagnostics derived from the
+ * SAME fixture text, so `no_orders_text` is decided by Amazon's own copy
+ * rather than asserted by the test.
+ */
+function makeEmptyYearPageStub(): Page {
+  const html = readFileSync(AMAZON_EMPTY_YEAR_FIXTURE, "utf8");
+  const visibleText = html.replace(/<[^>]+>/g, " ");
+  return Object.assign({} as Page, {
+    content: (): Promise<string> => Promise.resolve(html),
+    evaluate: (): Promise<ListPageDiagnostics> =>
+      Promise.resolve(
+        makeEmptyPageDiagnostics({
+          no_orders_text: new RegExp(AMAZON_NO_ORDERS_TEXT_PATTERN, "i").test(visibleText).toString(),
+        })
+      ),
+    goto: (): Promise<null> => Promise.resolve(null),
+    locator: (): { first: () => { waitFor: () => Promise<null> } } => ({
+      first: () => ({ waitFor: (): Promise<null> => Promise.resolve(null) }),
+    }),
+    screenshot: (): Promise<null> => Promise.resolve(null),
+  });
+}
+
+test("classifyEmptyListPageDiagnostics: source-reported empty for a year with NO prior orders stays proven-empty", () => {
+  // Preserves existing behavior. A year the owner did not shop is the case
+  // where zero coverage is an honest measurement.
+  assert.deepEqual(classifyEmptyListPageDiagnostics(RESOLVED_EMPTY_YEAR_DIAG(), 0, { hasPriorOrders: false }), {
+    action: "terminal",
+    reason: "no_orders_text",
+  });
+});
+
+test("classifyEmptyListPageDiagnostics: the prior-orders argument defaults to absent, so callers cannot silently opt in", () => {
+  assert.deepEqual(classifyEmptyListPageDiagnostics(RESOLVED_EMPTY_YEAR_DIAG(), 0), {
+    action: "terminal",
+    reason: "no_orders_text",
+  });
+});
+
+test("classifyEmptyListPageDiagnostics: source-reported empty for a year WITH prior orders aborts instead of proving zero", () => {
+  // The defect this guard closes: without it, this exact input returned
+  // {action:"terminal", reason:"no_orders_text"}, letting a year holding
+  // hundreds of stored orders advance its cursor on a fabricated proven-zero.
+  assert.deepEqual(classifyEmptyListPageDiagnostics(RESOLVED_EMPTY_YEAR_DIAG(), 0, { hasPriorOrders: true }), {
+    action: "abort",
+    reason: "amazon_empty_history_after_prior_orders",
+  });
+});
+
+test("classifyEmptyListPageDiagnostics: a legitimately empty year on an account with orders in OTHER years stays terminal", () => {
+  // THE year-partition requirement, driven through Amazon's real 2015
+  // empty-year capture. `priorOrdersEvidenceForYear` scopes evidence to the
+  // year being scraped, so 2015 carries `hasPriorOrders: false` even though
+  // 2024 and 2026 hold orders. Account-wide evidence would abort this year on
+  // every run forever and break the incremental year sweep.
+  const yearsState = {
+    "2024": { frozen: true, last_scraped: "2026-08-01T00:00:00.000Z", order_count: 312 },
+    "2026": { frozen: false, last_scraped: "2026-08-01T00:00:00.000Z", order_count: 44 },
+  };
+  const html = readFileSync(AMAZON_EMPTY_YEAR_FIXTURE, "utf8");
+  const visibleText = html.replace(/<[^>]+>/g, " ");
+  const noOrdersRe = new RegExp(AMAZON_NO_ORDERS_TEXT_PATTERN, "i");
+  assert.match(visibleText, noOrdersRe, "the fixture must still carry Amazon's year-scoped empty copy");
+
+  assert.deepEqual(priorOrdersEvidenceForYear(yearsState, 2015), { hasPriorOrders: false });
+  assert.deepEqual(
+    classifyEmptyListPageDiagnostics(
+      makeEmptyPageDiagnostics({ any_card: 1, no_orders_text: "true", order_cards: 1 }),
+      0,
+      priorOrdersEvidenceForYear(yearsState, 2015)
+    ),
+    { action: "terminal", reason: "no_orders_text" },
+    "an unshopped year must stay proven-empty on an account with orders elsewhere"
+  );
+
+  // Same account, same run, a year that DID yield orders: opposite verdict.
+  assert.deepEqual(priorOrdersEvidenceForYear(yearsState, 2024), { hasPriorOrders: true });
+  assert.deepEqual(
+    classifyEmptyListPageDiagnostics(RESOLVED_EMPTY_YEAR_DIAG(), 0, priorOrdersEvidenceForYear(yearsState, 2024)),
+    { action: "abort", reason: "amazon_empty_history_after_prior_orders" }
+  );
+});
+
+test("classifyEmptyListPageDiagnostics: an auth/challenge page keeps its own reason even when the year has prior orders", () => {
+  // Ordering guard, upper half. The auth check stays ABOVE the new branch:
+  // when a challenge is actually established, that is the more specific and
+  // more actionable diagnosis, and it must not be relabelled.
+  const authOverrides: Partial<ListPageDiagnostics>[] = [{ captcha: "true" }, { sign_in_form: true }];
+  for (const override of authOverrides) {
+    assert.deepEqual(
+      classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics({ no_orders_text: "true", ...override }), 0, {
+        hasPriorOrders: true,
+      }),
+      { action: "abort", reason: "source_auth_or_challenge" }
+    );
+  }
+});
+
+test("classifyEmptyListPageDiagnostics: selector drift keeps its own reason even when the year has prior orders", () => {
+  // Ordering guard, middle. Real markup change stays diagnosable as drift.
+  assert.deepEqual(
+    classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics({ any_order_header: 2, no_orders_text: "true" }), 0, {
+      hasPriorOrders: true,
+    }),
+    { action: "abort", reason: "selector_drift" }
+  );
+});
+
+test("classifyEmptyListPageDiagnostics: prior orders do not relabel a page that never claimed to be empty", () => {
+  // Ordering guard, lower half. The new branch is gated on `no_orders_text`,
+  // so the existing terminal/abort verdicts for pages that make no empty claim
+  // are untouched — the guard adds a failure mode, it does not swallow others.
+  assert.deepEqual(classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics(), 10, { hasPriorOrders: true }), {
+    action: "terminal",
+    reason: "pagination_exhausted",
+  });
+  assert.deepEqual(classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics(), 0, { hasPriorOrders: true }), {
+    action: "abort",
+    reason: "empty_first_page_without_terminal_signal",
+  });
+});
+
+test("classifyEmptyListPageDiagnostics: a later empty page in a year that just yielded orders is ordinary exhaustion", () => {
+  // The guard is scoped to startIndex === 0 because only the FIRST page of a
+  // year claims the year is empty. Amazon can serve its empty-state copy on a
+  // trailing page; the rows before it were collected on THIS run, so this is
+  // pagination exhaustion, not a contradiction. Without the startIndex scope,
+  // every incremental run over a year with prior orders would abort on its
+  // last page — the guard would break the connector for exactly the accounts
+  // it exists to protect.
+  assert.deepEqual(classifyEmptyListPageDiagnostics(RESOLVED_EMPTY_YEAR_DIAG(), 10, { hasPriorOrders: true }), {
+    action: "terminal",
+    reason: "no_orders_text",
+  });
+});
+
+test("priorOrdersEvidenceForYear: a prior year order_count > 0 is what arms the guard", () => {
+  // Pins the year-state-to-evidence link that collect() depends on. Without
+  // this test, hardcoding `hasPriorOrders: false` in collect() would disarm
+  // the guard for every connection while every other test still passed.
+  const yearsState = {
+    "2019": { frozen: true, last_scraped: "2026-08-01T00:00:00.000Z", order_count: 0 },
+    "2024": { frozen: true, last_scraped: "2026-08-01T00:00:00.000Z", order_count: 312 },
+  };
+  assert.deepEqual(priorOrdersEvidenceForYear(yearsState, 2024), { hasPriorOrders: true });
+  // A year scraped and found genuinely empty commits `order_count: 0`. It must
+  // stay free to report empty again — this is the year-partition case that
+  // makes count, not cursor existence, the right evidence.
+  assert.deepEqual(priorOrdersEvidenceForYear(yearsState, 2019), { hasPriorOrders: false });
+  // A never-scraped year has no cursor at all.
+  assert.deepEqual(priorOrdersEvidenceForYear(yearsState, 2015), { hasPriorOrders: false });
+});
+
+test("scrapeListPage: Amazon's empty-year page aborts when this year already yielded orders", async () => {
+  // Integration half, through the same live empty-year capture the
+  // proven-empty test uses. Same page, same markup, opposite verdict — the
+  // only difference is that this year has a prior non-zero order count.
+  const messages: EmittedMessage[] = [];
+  const page = makeEmptyYearPageStub();
+
+  await assert.rejects(
+    scrapeListPage(
+      page,
+      null,
+      2024,
+      0,
+      (message) => {
+        messages.push(message);
+        return Promise.resolve();
+      },
+      { hasPriorOrders: true }
+    ),
+    /amazon_empty_list_page_amazon_empty_history_after_prior_orders/,
+    "a year with prior orders cannot be proven empty by a page render"
+  );
+
+  // The failure must be legible to the owner, and must not blame anything the
+  // page does not establish.
+  const skip = messages.find(
+    (message) => message.type === "SKIP_RESULT" && message.reason === "amazon_empty_history_after_prior_orders"
+  ) as { diagnostics: Record<string, unknown>; message: string } | undefined;
+  assert.ok(skip, "the abort must surface a SKIP_RESULT the owner can read");
+  assert.match(skip.message, /previously collected orders/);
+  assert.match(skip.message, /retained and untouched/);
+  assert.doesNotMatch(skip.message, /selector|drift/i, "selector drift is not established and must not be blamed");
+  assert.doesNotMatch(skip.message, /block|bot|captcha/i, "a bot block is not established and must not be blamed");
+  assert.equal(skip.diagnostics.has_prior_orders, true);
+  assert.equal(skip.diagnostics.year, 2024);
+
+  // Nothing may be recorded, no cursor advanced, no coverage claimed. The
+  // connector protocol has no delete or tombstone message, so proving it
+  // emitted no RECORD and no STATE proves the stored copy and the prior year
+  // cursor are both untouched.
+  assert.deepEqual(
+    [...new Set(messages.map((message) => message.type))].sort(),
+    ["SKIP_RESULT"],
+    "the abort's only durable output is the owner-facing SKIP_RESULT"
+  );
+});
+
+test("scrapeListPage: the same empty-year page still succeeds as proven-empty for a year with no prior orders", async () => {
+  // The preservation half of the pair above: identical page, no prior orders,
+  // no throw, no diagnostic. A first-ever run on a genuinely empty year is
+  // unaffected by the guard.
+  const messages: EmittedMessage[] = [];
+  const orders = await scrapeListPage(makeEmptyYearPageStub(), null, 2015, 0, (message) => {
+    messages.push(message);
+    return Promise.resolve();
+  });
+
+  assert.deepEqual(orders, [], "an empty year yields no orders and does not throw");
+  assert.equal(
+    messages.some((message) => message.type === "SKIP_RESULT"),
+    false,
+    "a proven-empty year emits no skip diagnostic"
+  );
 });
 
 // ─── planIncrementalYears ─────────────────────────────────────────────────
