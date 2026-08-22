@@ -214,6 +214,17 @@ function narrowState(state: unknown): Record<string, unknown> | null {
   return null;
 }
 
+// `onProgress` is typed `unknown` at this boundary (see RunConnectorCall);
+// only `phase_boundary` is read from it, so narrowing is intentionally this
+// narrow rather than casting the whole payload to a wider connector-message type.
+function extractPhaseBoundary(msg: unknown): { phase_boundary?: string } | undefined {
+  const record = narrowState(msg);
+  if (!record || typeof record.phase_boundary !== "string") {
+    return;
+  }
+  return { phase_boundary: record.phase_boundary };
+}
+
 function displayNameForScheduledConnector(manifest: SchedulerManifest, connectorId: string): string {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return typeof manifest?.display_name === "string" && manifest.display_name.trim()
@@ -281,7 +292,13 @@ interface RunConnectorCall {
   connectorPath: string;
   manifest: SchedulerManifest;
   onInteraction: InteractionHandler;
-  onProgress: () => void;
+  // `runtime/index.ts` (still JS) always calls this with the connector's raw
+  // PROGRESS payload, typed `unknown` here to match RuntimeRunConnectorOptions
+  // (runtime/index.d.ts). `msg.phase_boundary` (see
+  // connector-protocol-phase-boundary.d.ts) is the only field this layer
+  // reads from it, via the watchdog wrapper in createActiveRunAttemptLease,
+  // which narrows before use.
+  onProgress: (msg?: unknown) => void;
   onStarted?: (run: { run_id?: string | null; scenario_id?: string | null; trace_id?: string | null }) => void;
   ownerSubjectId: string;
   ownerToken: string;
@@ -335,7 +352,12 @@ async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorR
 interface AttemptWatchdog {
   cancel: () => void;
   clear: () => void;
-  markProgress: () => void;
+  /**
+   * Called on every PROGRESS message. `extra` carries the connector's
+   * `phase_boundary` marker (see connector-protocol-phase-boundary.d.ts) when
+   * present — used to detect the local-only-phase transition below.
+   */
+  markProgress: (extra?: { phase_boundary?: string }) => void;
   readonly signal: AbortSignal;
   timedOut: () => boolean;
 }
@@ -351,9 +373,20 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
   const cancellation = new AbortController();
   let timedOut = false;
   let timer: NodeJS.Timeout | null = null;
+  // Set once a connector reports `phase_boundary: "local_only_phase_started"`
+  // and never cleared for the rest of this attempt. `maxRunWallClockMs` is
+  // sized for provider-rate-limited walks (external API pagination); once a
+  // connector declares it has moved to purely local work (e.g. reading its
+  // own already-downloaded archive into the store), that budget no longer
+  // describes what the run is bound by, and re-arming the timer against it
+  // would truncate durable local work exactly like the provider walk it was
+  // never meant to bound. See run_1787407222861 (a Slack local sqlite→Postgres
+  // ingest killed by this timer after slackdump's own external walk had
+  // already finished).
+  let localOnlyPhase = false;
 
   const arm = () => {
-    if (!isBoundedWallClock(maxRunWallClockMs) || timedOut || cancellation.signal.aborted) {
+    if (!isBoundedWallClock(maxRunWallClockMs) || timedOut || localOnlyPhase || cancellation.signal.aborted) {
       return;
     }
     if (timer) {
@@ -382,7 +415,15 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
         timer = null;
       }
     },
-    markProgress() {
+    markProgress(extra) {
+      if (extra?.phase_boundary === "local_only_phase_started" && !localOnlyPhase) {
+        localOnlyPhase = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        return;
+      }
       arm();
     },
     signal: cancellation.signal,
@@ -395,9 +436,22 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
 function runTimedOutError(result: RunConnectorResult, maxRunWallClockMs: number): RunConnectorError {
   const message = `Scheduler run exceeded the ${maxRunWallClockMs}ms progress watchdog budget.`;
   return {
+    // `result` is the connector's actual terminal RunConnectorResult at the
+    // moment the watchdog killed it — runtime/index.ts's buildClosedRunResult
+    // already computed real records_emitted/known_gaps/checkpoint_summary from
+    // durable ingest accounting before resolving. A prior revision of this
+    // function synthesized a fresh object carrying only classification fields
+    // (failure_reason/terminal_reason/message/run_id/trace_id), which silently
+    // discarded those already-correct counts and reported records_emitted: 0 /
+    // known_gaps: [] / checkpoint_summary: null on every timed-out run
+    // regardless of how much work it durably completed before being killed.
+    checkpoint_summary: result.checkpoint_summary || null,
     connector_error: result.connector_error || { message },
     failure_reason: "run_timed_out",
+    known_gaps: result.known_gaps || null,
     message,
+    records_emitted: result.records_emitted ?? 0,
+    reported_records_emitted: result.reported_records_emitted ?? null,
     run_id: result.run_id ?? null,
     terminal_reason: "run_timed_out",
     trace_id: result.trace_id ?? null,
@@ -902,9 +956,9 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     const leasedCall: RunConnectorCall = {
       ...call,
       cancelSignal: watchdog.signal,
-      onProgress: () => {
-        watchdog.markProgress();
-        originalOnProgress();
+      onProgress: (msg) => {
+        watchdog.markProgress(extractPhaseBoundary(msg));
+        originalOnProgress(msg);
       },
       onStarted: registerAttemptCancellation(
         call.onStarted,
