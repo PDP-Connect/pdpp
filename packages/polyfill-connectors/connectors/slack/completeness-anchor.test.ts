@@ -143,32 +143,99 @@ test("emitMessagesPass still emits the record for an unparseable-ts row", async 
   assert.equal(emitted.length, 1, "the row is preserved even though it is not covered");
 });
 
-// ─── partitionUnprovenChannels: member scope is not a coverage gap ───────
+// ─── partitionUnprovenChannels: member scope, and ONLY member scope ──────
 //
-// `archive` runs with `-member-only` by default (SLACK_MEMBER_ONLY), so
-// slackdump only ever requests history for channels the account belongs to.
-// Live evidence from this owner's archive: 119 inventoried channels, 5 with
-// a finished walk, 114 "unproven" — but 99 of those 114 are channels the
-// account is not a member of and 95 are archived. Only 12 are joined and
-// live. Reporting all 114 as unproven history overstated the gap by ~10x and
-// pointed the owner at a re-archive that provably cannot fix 102 of them.
+// `-member-only` filters on `is_member` and nothing else. slackdump v4.4.2,
+// `internal/chunk/control/processors.go`:
+//
+//     if c.memberOnly && !structures.IsMember(&ch) { continue }
+//
+// and `internal/structures/conversation.go`:
+//
+//     if ChannelType(*ch) != CPublic || (ch.ID != "" && ch.ID[0] != 'C') {
+//         return true
+//     }
+//     return ch.IsMember
+//
+// `is_archived` is never read — not there, not anywhere in slackdump. Slack's
+// `conversations.list` includes archived channels by default and slackdump
+// never sends `exclude_archived`. So an ARCHIVED channel is collected exactly
+// like a live one, and an unwalked archived channel is a REAL gap.
+//
+// This was previously inverted: archived was treated as out of scope, which
+// told this owner his 95 archived channels were absent by design. Live proof
+// they are collectable: his Aug-17 archive holds 15 archived channels, all 15
+// of which he is a member of, all 15 finalized, 16,173 messages collected —
+// under `-member-only`.
 
-test("partitionUnprovenChannels puts a non-member channel out of scope", () => {
+/** Order-insensitive comparison with an explicit comparator (Biome-clean). */
+function sorted(ids: readonly string[]): string[] {
+  return [...ids].sort((a, b) => a.localeCompare(b));
+}
+
+test("partitionUnprovenChannels puts a non-member public channel out of scope", () => {
   const { inScope, outOfScope } = partitionUnprovenChannels(
     ["C016HTUEMHD"],
-    new Map([["C016HTUEMHD", { isArchived: false, isMember: false }]])
+    new Map([["C016HTUEMHD", { isArchived: false, isMember: false }]]),
+    true
   );
   assert.deepEqual(outOfScope, ["C016HTUEMHD"]);
   assert.deepEqual(inScope, []);
 });
 
-test("partitionUnprovenChannels puts an archived channel out of scope even when joined", () => {
+test("partitionUnprovenChannels keeps an ARCHIVED joined channel IN scope", () => {
+  // The D8 regression guard. `-member-only` does not filter on is_archived,
+  // so an archived channel the account belongs to was requestable and its
+  // absence is an unexplained gap, not a configuration choice.
   const { inScope, outOfScope } = partitionUnprovenChannels(
     ["C016S03HPHU"],
-    new Map([["C016S03HPHU", { isArchived: true, isMember: true }]])
+    new Map([["C016S03HPHU", { isArchived: true, isMember: true }]]),
+    true
   );
-  assert.deepEqual(outOfScope, ["C016S03HPHU"]);
+  assert.deepEqual(inScope, ["C016S03HPHU"]);
+  assert.deepEqual(outOfScope, []);
+});
+
+test("partitionUnprovenChannels puts an archived NON-member public channel out of scope under member-only", () => {
+  // 91 of this owner's 94 archived channels are public and not joined: they
+  // are out of scope because of membership, never because of archiving.
+  const { inScope, outOfScope } = partitionUnprovenChannels(
+    ["C0ARCHNOMEM"],
+    new Map([["C0ARCHNOMEM", { isArchived: true, isMember: false }]]),
+    true
+  );
+  assert.deepEqual(outOfScope, ["C0ARCHNOMEM"]);
   assert.deepEqual(inScope, []);
+});
+
+test("partitionUnprovenChannels puts NOTHING out of scope when member-only is off", () => {
+  // With MEMBER_ONLY=false slackdump requests every enumerated channel, so
+  // there is no configuration excuse left for any unwalked channel.
+  const { inScope, outOfScope } = partitionUnprovenChannels(
+    ["C0ARCHNOMEM", "C016HTUEMHD"],
+    new Map([
+      ["C0ARCHNOMEM", { isArchived: true, isMember: false }],
+      ["C016HTUEMHD", { isArchived: false, isMember: false }],
+    ]),
+    false
+  );
+  assert.deepEqual(outOfScope, []);
+  assert.deepEqual(sorted(inScope), sorted(["C016HTUEMHD", "C0ARCHNOMEM"]));
+});
+
+test("partitionUnprovenChannels keeps a non-member DM/MPIM/private channel in scope", () => {
+  // slackdump's IsMember returns true for every non-`C` id regardless of the
+  // is_member flag, so member-only never explains a missing DM.
+  const { inScope, outOfScope } = partitionUnprovenChannels(
+    ["D01DIRECT01", "G01PRIVATE1"],
+    new Map([
+      ["D01DIRECT01", { isArchived: false, isMember: false }],
+      ["G01PRIVATE1", { isArchived: true, isMember: false }],
+    ]),
+    true
+  );
+  assert.deepEqual(sorted(inScope), sorted(["D01DIRECT01", "G01PRIVATE1"]));
+  assert.deepEqual(outOfScope, []);
 });
 
 test("partitionUnprovenChannels keeps a joined, unarchived channel in scope", () => {
@@ -176,7 +243,8 @@ test("partitionUnprovenChannels keeps a joined, unarchived channel in scope", ()
   // request and slackdump still did not finish.
   const { inScope, outOfScope } = partitionUnprovenChannels(
     ["C021ZPKLP7G"],
-    new Map([["C021ZPKLP7G", { isArchived: false, isMember: true }]])
+    new Map([["C021ZPKLP7G", { isArchived: false, isMember: true }]]),
+    true
   );
   assert.deepEqual(inScope, ["C021ZPKLP7G"]);
   assert.deepEqual(outOfScope, []);
@@ -185,7 +253,7 @@ test("partitionUnprovenChannels keeps a joined, unarchived channel in scope", ()
 test("partitionUnprovenChannels treats a channel with NO reachability evidence as in scope", () => {
   // Absent evidence must never downgrade a gap into "explained" — the same
   // rule the finalized-set read follows when CHUNK is missing.
-  const { inScope, outOfScope } = partitionUnprovenChannels(["C0UNKNOWN01"], new Map());
+  const { inScope, outOfScope } = partitionUnprovenChannels(["C0UNKNOWN01"], new Map(), true);
   assert.deepEqual(inScope, ["C0UNKNOWN01"]);
   assert.deepEqual(outOfScope, []);
 });
@@ -198,7 +266,8 @@ test("partitionUnprovenChannels accounts for every unproven channel exactly once
       ["C0AAA", { isArchived: false, isMember: false }],
       ["C0BBB", { isArchived: true, isMember: true }],
       ["C0CCC", { isArchived: false, isMember: true }],
-    ])
+    ]),
+    true
   );
   assert.equal(inScope.length + outOfScope.length, unproven.length);
   assert.deepEqual([...inScope, ...outOfScope].sort(), [...unproven].sort());

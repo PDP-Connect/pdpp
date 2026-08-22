@@ -60,6 +60,18 @@ const PLATFORM_KEYS = [
   "SLACKDUMP_PROGRESS_INTERVAL_MS",
   "SLACKDUMP_TIMEOUT_MS",
   "PDPP_SLACK_SKIP_SLACKDUMP",
+  // Slack collection-scope options (connectors/slack/index.ts readSlackOptions).
+  // SLACK_MEMBER_ONLY=false widens the archive from "public channels I am a
+  // member of" to every channel the workspace lists for this account —
+  // including channels the owner has left and channels Slack has archived.
+  // Without these on the allowlist the connector child could never see them,
+  // so the option existed but was unreachable from the deployment.
+  "SLACK_MEMBER_ONLY",
+  "SLACK_LOOKBACK_DAYS",
+  "SLACK_CHANNEL_ALLOWLIST",
+  "SLACK_CHANNEL_TYPES",
+  "SLACK_SKIP_FILES",
+  "SLACK_RECLAIM_UPLOADS",
   "PDPP_AMAZON_YEARS",
   "PDPP_AMAZON_SKIP_DETAIL",
   "WHATSAPP_MAX_ARCHIVE_BYTES",
