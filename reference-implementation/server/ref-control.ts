@@ -135,12 +135,12 @@ import {
   isStreamFullyUnfillableAccounted,
   type TerminalGapProofRow,
 } from "./connector-gap-classification.ts";
-import { canonicalConnectorKey } from "./connector-key.ts";
 import {
   loadOwnerConnectorInstanceGroupsPostgres,
   loadOwnerConnectorInstanceGroupsSqlite,
   resolveCanonicalConnectorInstanceId,
 } from "./connector-instance-canonicalization.ts";
+import { canonicalConnectorKey } from "./connector-key.ts";
 import {
   type HeartbeatRow,
   projectConnectorOutboxAxisFromHeartbeats,
@@ -888,18 +888,28 @@ export interface ConnectorSummary {
   readonly source_kind: string;
   /**
    * Provider-neutral Sources-list visibility, derived from `source_binding`
-   * by `deriveSourceVisibility`. `"hidden_from_sources"` is reserved for a
-   * PURE recovered historical fragment: a `historical_archive` binding whose
+   * by `deriveSourceVisibility`. `"archived"` is reserved for a PURE
+   * recovered historical fragment: a `historical_archive` binding whose
    * `recovery_reason` is exactly `"connection_metadata_missing"` AND that
    * carries no UAT-transfer marker. Every other row — including a
    * `historical_archive` binding that DOES carry a UAT-transfer marker (a
    * manual/UAT-imported source, not a bare recovered fragment) and every
-   * active/promoted connection — is `"active"`. This never removes or
-   * mutates the stored connection; Explore and other record-read paths do
-   * not consult this field, so hidden fragments' records stay reachable
-   * there.
+   * active/promoted connection — is `"active"`.
+   *
+   * `"archived"` means PRESERVED BUT NOT COLLECTING: the records are real
+   * and readable, and no collection will ever resume for this row. It is
+   * NOT a hidden state. The Sources list renders these under their own
+   * "Archived" group (`sources-view-model.ts`), because a record that
+   * exists and is shown nowhere violates the standing principle that no
+   * data known to the system may be invisible in the UI.
+   *
+   * The distinction that must not be lost: an archived source is dead, so
+   * no surface may give it a live-looking verdict or an action that implies
+   * collection could resume (see `isArchivedSource` in
+   * `source-actionability.ts`). This never removes or mutates the stored
+   * connection.
    */
-  readonly source_visibility: "active" | "hidden_from_sources";
+  readonly source_visibility: "active" | "archived";
   /** Total server-owned work classification derived from `owner_state.resolver`. */
   readonly source_work: SourceWorkGroup;
   readonly status: string | null;
@@ -6100,7 +6110,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       ? evidence.total_records
       : null
     : liveRetainedRecordsOrNull(live);
-  const renderedVerdict = buildRenderedVerdictForSummary({
+  const builtRenderedVerdict = buildRenderedVerdictForSummary({
     attentionRecords: attention.records,
     collectionReport,
     connectionHealth,
@@ -6114,6 +6124,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     runtimeOk,
     schedule: localDeviceBacked ? null : schedule,
   });
+  const renderedVerdict = archiveRenderedVerdict(builtRenderedVerdict, deriveSourceVisibility(instance));
   // Owner review, 2026-07-09: reuse `coverageClassifyingRun` — the SAME
   // classifying run health/coverage already resolved to — so an
   // owner-cancelled `lastRun` is excluded exactly like the health/coverage
@@ -6364,16 +6375,54 @@ function hasUatTransferMarker(binding: Record<string, unknown>): boolean {
 }
 
 /**
- * Provider-neutral Sources-list visibility predicate. Hides ONLY a pure
- * recovered historical fragment: `source_binding.kind === "historical_archive"`
- * with `recovery_reason === "connection_metadata_missing"` and no UAT-transfer
+ * Provider-neutral Sources-list visibility predicate. Marks as `"archived"`
+ * ONLY a pure recovered historical fragment:
+ * `source_binding.kind === "historical_archive"` with
+ * `recovery_reason === "connection_metadata_missing"` and no UAT-transfer
  * marker. A `historical_archive` binding that DOES carry a UAT-transfer marker
  * (e.g. a UAT-imported Google Maps/WhatsApp source) is a manual/transferred
  * source, not a bare fragment, and stays `"active"` — as does every other
  * binding kind, including active promoted connections. Never inspects
  * `connector_id`/`source_kind` — no connector-specific branching.
+ *
+ * `"archived"` classifies; it does not hide. The Sources list renders these
+ * rows in a distinct, clearly-dead group rather than dropping them.
  */
-function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "hidden_from_sources" {
+/**
+ * Replace an archived source's verdict with an honest terminal one.
+ *
+ * An ARCHIVED source is terminal: records preserved, collection finished,
+ * nothing will resume. Its underlying instance is typically `paused`, so the
+ * BUILT verdict describes a live-but-stopped connection and carries
+ * "Reconnect this account and collection resumes" — a promise that leads
+ * nowhere, since reconnecting mints a NEW connection and resumes nothing here
+ * (the intent `dfbbb8843` established for these rows).
+ *
+ * Applied on the SERVER, not in the console, so every consumer of
+ * `rendered_verdict` gets the same answer. That placement is not a
+ * preference: a console-only fix left the `sources-report` CLI rendering
+ * "Paused · Reconnect this account" for the same row, which is how this gap
+ * was found. Any future reader inherits the honest verdict for free.
+ *
+ * `required_actions` is emptied rather than rewritten — there IS no action
+ * that resumes an archived source, and inventing one would be the same class
+ * of lie in a different sentence.
+ */
+export function archiveRenderedVerdict<T extends RenderedVerdict>(verdict: T, visibility: "active" | "archived"): T {
+  if (visibility !== "archived") {
+    return verdict;
+  }
+  return {
+    ...verdict,
+    channel: "calm",
+    forward_statement: "This source is archived. Its records are kept and stay searchable.",
+    pill: { label: "Archived", tone: "grey" },
+    progress: { ...verdict.progress, headline: "Collection has finished for this source." },
+    required_actions: [],
+  };
+}
+
+function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "archived" {
   const binding = instance.sourceBinding;
   if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
     return "active";
@@ -6388,7 +6437,7 @@ function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "hid
   if (hasUatTransferMarker(record)) {
     return "active";
   }
-  return "hidden_from_sources";
+  return "archived";
 }
 
 function connectionIsBrowserSessionBound(instance: ConnectorInstanceRow): boolean {

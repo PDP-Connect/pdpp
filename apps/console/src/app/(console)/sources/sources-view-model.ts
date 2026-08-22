@@ -52,6 +52,7 @@ import type {
 } from "../lib/ref-client.ts";
 import { scheduleEnabled, scheduleIntervalSeconds } from "../lib/schedule-evidence.ts";
 import {
+  isArchivedSource,
   isRevokedConnector,
   isSetupInProgressConnector,
   projectSourceActionability,
@@ -130,6 +131,14 @@ export interface SourcePassportField {
 export interface SourceInstanceView {
   /** Human account/identity line for the list (display name vs. type). */
   accountLine: string;
+  /**
+   * Preserved records, no collection, never resuming. Derived from the
+   * server's `source_visibility`. An archived source renders in its own
+   * Sources group and must never read as healthy or current: the list row
+   * shows no live status dot and offers no action implying collection could
+   * resume.
+   */
+  archived: boolean;
   /** Stable connection selector for routing + revoke (connection_id). */
   connectionId: string | null;
   /** Connector type id (e.g. "gmail"), used for sync + add-source. */
@@ -503,6 +512,7 @@ export function toSourceInstanceView(
   // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connectionId ?? connectorInstanceId ?? actionability.routeId;
   const revoked = isRevokedConnector(summary);
+  const archived = isArchivedSource(summary);
   // Modality is persisted server authority. A missing heartbeat must not
   // resurrect remote Sync controls for a local-device connection.
   const isLocalDevicePush = summary.source_kind === "local_device";
@@ -630,6 +640,7 @@ export function toSourceInstanceView(
     needsOwnerLabel: hasFallbackLabel,
     nextAction,
     ownerActionCue,
+    archived,
     passportFields,
     primaryVerdictAction,
     revoked,
@@ -713,22 +724,20 @@ export function collapseDuplicateFallbackSources(instances: readonly SourceInsta
 }
 
 /**
- * A pure recovered historical fragment must never render as its own row on
- * the owner Sources list — its records stay reachable through Explore and
- * other read paths, which do not consult this field. Every other row,
- * including a UAT-transferred/manual-import source or an active promoted
- * connection, is unaffected: this only excludes `"hidden_from_sources"`.
+ * Map a list of summaries into the Sources view, preserving input order.
+ *
+ * Every summary maps to a row, including archived ones. The list previously
+ * dropped pure recovered historical fragments here; that made their records
+ * — 163,966 of them on the owner's instance — visible on no summary surface
+ * at all, violating the standing principle that no data known to the system
+ * may be invisible in the UI. They are now classified (`archived`) and
+ * rendered in their own group rather than filtered away.
  */
-function isVisibleOnSourcesList(summary: RefConnectorSummary): boolean {
-  return summary.source_visibility !== "hidden_from_sources";
-}
-
-/** Map a list of summaries into the Sources view, preserving input order. */
 export function toSourcesView(
   summaries: RefConnectorSummary[],
   options: { manifests?: readonly SourceManifestLike[] } = {}
 ): SourceInstanceView[] {
-  const visibleSummaries = summaries.filter(isVisibleOnSourcesList);
+  const visibleSummaries = summaries;
   const fallbackCountByConnector = new Map<string, number>();
   for (const summary of visibleSummaries) {
     if (
