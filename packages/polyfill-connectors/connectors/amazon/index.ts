@@ -134,6 +134,39 @@ interface EmptyListPageClassification {
   reason: string;
 }
 
+/**
+ * What this connection already knows about the order history OF THE YEAR
+ * currently being scraped, threaded explicitly into the otherwise-pure
+ * empty-page classifier.
+ *
+ * `hasPriorOrders` is true when a prior run committed a `years[<year>]`
+ * cursor whose `order_count` is greater than zero — the in-connector proof
+ * that Amazon once listed orders for this account IN THIS YEAR.
+ *
+ * PER-YEAR, not per-account, and that is the whole difference from H-E-B.
+ * H-E-B's list is one globally reverse-chronological feed, so any committed
+ * checkpoint contradicts any empty page. Amazon is year-partitioned: it
+ * renders a genuine, year-scoped "Looks like you didn't place an order in
+ * 2015." for a year the owner simply did not shop, on an account holding
+ * thousands of orders in other years. Account-wide evidence would abort every
+ * such year forever and break the incremental year sweep. Only the SAME
+ * year's own prior `order_count` can contradict that year's empty page.
+ */
+export interface PriorOrdersEvidence {
+  hasPriorOrders: boolean;
+}
+
+/** Owner-facing message for the one classification whose whole point is to be
+ *  read by a person. Says exactly what was observed and what was NOT
+ *  concluded: neither selector drift nor a bot block is established, so
+ *  neither is named. Stored records are untouched — this connector never
+ *  deletes, tombstones, or overwrites on an empty page; it only declines to
+ *  advance the year cursor. */
+export const AMAZON_EMPTY_AFTER_PRIOR_ORDERS_MESSAGE =
+  "Amazon reported no order history for a year in which PDPP previously collected orders. " +
+  "Your stored orders are retained and untouched. This run was stopped instead of recording " +
+  "an empty history, because a page showing no orders cannot prove those orders are gone.";
+
 // Navigation timeouts + pacing knobs
 const NAV_TIMEOUT_MS = 30_000;
 const DEEP_PROBE_WAIT_MS = 15_000;
@@ -1118,7 +1151,13 @@ async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<Lis
  * + screenshot when the page clearly has order-like elements but our
  * selectors matched nothing.
  */
-async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: number, emit: EmitFn): Promise<void> {
+async function reportEmptyPageDiagnostics(
+  page: Page,
+  year: number,
+  startIndex: number,
+  emit: EmitFn,
+  priorOrdersEvidence: PriorOrdersEvidence
+): Promise<void> {
   let diag: ListPageDiagnostics;
   try {
     diag = await page.evaluate((noOrdersTextPattern): ListPageDiagnostics => {
@@ -1149,7 +1188,7 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
     });
     throw new Error("amazon_empty_list_page_renderer_diagnostics_failed", { cause: error });
   }
-  const classification = classifyEmptyListPageDiagnostics(diag, startIndex);
+  const classification = classifyEmptyListPageDiagnostics(diag, startIndex, priorOrdersEvidence);
   if (classification.action === "terminal") {
     return;
   }
@@ -1175,8 +1214,13 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       type: "SKIP_RESULT",
       stream: "orders",
       reason: classification.reason,
-      message: `Year ${year} startIndex=${startIndex}: empty Amazon list page is not a proven terminal page; refusing to advance the cursor.`,
-      diagnostics: diag ? redactAmazonListPageDiagnostics(diag) : { missing_diagnostics: true },
+      message:
+        classification.reason === "amazon_empty_history_after_prior_orders"
+          ? AMAZON_EMPTY_AFTER_PRIOR_ORDERS_MESSAGE
+          : `Year ${year} startIndex=${startIndex}: empty Amazon list page is not a proven terminal page; refusing to advance the cursor.`,
+      diagnostics: diag
+        ? { ...redactAmazonListPageDiagnostics(diag), has_prior_orders: priorOrdersEvidence.hasPriorOrders, year }
+        : { missing_diagnostics: true },
     });
   }
   throw new Error(`amazon_empty_list_page_${classification.reason}`);
@@ -1190,7 +1234,8 @@ export function redactAmazonListPageDiagnostics(diag: ListPageDiagnostics): List
 
 export function classifyEmptyListPageDiagnostics(
   diag: ListPageDiagnostics | null,
-  startIndex: number
+  startIndex: number,
+  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
 ): EmptyListPageClassification {
   if (!diag) {
     return { action: "abort", reason: "renderer_diagnostics_failed" };
@@ -1201,6 +1246,35 @@ export function classifyEmptyListPageDiagnostics(
   }
   if ((diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
     return { action: "abort", reason: "selector_drift" };
+  }
+  // A year that has already yielded orders can never prove itself empty.
+  // `hasPriorOrders` is this connection's own prior `years[<year>].order_count`
+  // for the SAME year being scraped — durable evidence that Amazon previously
+  // listed orders there — threaded in explicitly by `scrapeListPage` rather
+  // than read from ambient state, so this branch stays pure and unit-testable.
+  //
+  // Without this check, a year holding hundreds of stored orders could finish
+  // as {action:"terminal", reason:"no_orders_text"}, letting the run advance
+  // the year cursor and report covered:0/considered:0 — replacing a measured
+  // coverage claim with a fabricated proven-zero. The two causes are
+  // indistinguishable from the page alone: Amazon may have purged the history
+  // upstream (making our stored copy the only copy), or the page may render
+  // empty for a degraded session. So the run fails loudly and lets a human
+  // decide, rather than guessing.
+  //
+  // Scoped to `startIndex === 0` because only the FIRST page of a year makes
+  // the claim "this year is empty". A later page coming back empty is ordinary
+  // pagination exhaustion on a year that plainly did yield orders — the rows
+  // preceding it were just collected on this very run — and must keep falling
+  // through to `pagination_exhausted` below.
+  //
+  // Ordering: BELOW the auth/challenge and selector-drift checks (an
+  // established block or a real markup change is the more specific and more
+  // actionable diagnosis, and must not be relabelled), and ABOVE the
+  // `no_orders_text` branch, so Amazon's own empty-state copy cannot
+  // short-circuit past it.
+  if (startIndex === 0 && diag.no_orders_text === "true" && priorOrdersEvidence.hasPriorOrders) {
+    return { action: "abort", reason: "amazon_empty_history_after_prior_orders" };
   }
   if (diag.no_orders_text === "true") {
     return { action: "terminal", reason: "no_orders_text" };
@@ -1221,7 +1295,8 @@ export async function scrapeListPage(
   capture: CaptureDep,
   year: number,
   startIndex: number,
-  emit: EmitFn
+  emit: EmitFn,
+  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
 ): Promise<ListPageOrder[]> {
   const url = `https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=${startIndex}`;
   try {
@@ -1253,7 +1328,7 @@ export async function scrapeListPage(
   }
   const orders = await extractAndShapeCheckOrders(page, emit);
   if (orders.length === 0) {
-    await reportEmptyPageDiagnostics(page, year, startIndex, emit);
+    await reportEmptyPageDiagnostics(page, year, startIndex, emit, priorOrdersEvidence);
   }
   return orders;
 }
@@ -1496,18 +1571,42 @@ export function shouldEmitTrailingOrdersState(
 }
 
 /**
+ * Derive the prior-orders evidence for ONE year from this connection's stored
+ * `years` cursor. Exported and pure because `collect()` lives inside the
+ * `isMainModule` block and cannot be driven from a test — without this seam
+ * the year-state-to-evidence link would be the one untested link in the
+ * chain, and a mutation that hardcodes `false` here (silently disarming the
+ * guard for every connection) would go unnoticed.
+ *
+ * The evidence is `order_count > 0`, not the mere existence of a year cursor.
+ * A year that was scraped and legitimately held zero orders commits a cursor
+ * with `order_count: 0`; that year must stay free to report empty again on
+ * every later run. Only a year that actually yielded orders can contradict a
+ * later "no orders" page.
+ */
+export function priorOrdersEvidenceForYear(yearsState: YearsCursor, year: number): PriorOrdersEvidence {
+  return { hasPriorOrders: (yearsState[String(year)]?.order_count ?? 0) > 0 };
+}
+
+/**
  * Scrape every list page for one year and emit records. Returns both the total
  * order count seen for the year (used for freeze-once-stable policy) and the
  * count of rows we could not emit because their order date was unparseable.
  */
-async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number): Promise<YearRunResult> {
+async function runYear(
+  page: Page,
+  deps: EmitDeps,
+  flags: RunFlags,
+  year: number,
+  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
+): Promise<YearRunResult> {
   let startIndex = 0;
   let pageCount = 0;
   let yearOrderCount = 0;
   let unparseableDateCount = 0;
   while (pageCount < PAGE_LIMIT) {
     await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
-    const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit);
+    const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit, priorOrdersEvidence);
     if (orders.length === 0) {
       await deps.progress(`Amazon year ${year}: no more orders after ${yearOrderCount} seen`, { stream: "orders" });
       break;
@@ -1760,7 +1859,18 @@ if (isMainModule(import.meta.url)) {
           continue;
         }
 
-        const { orderCount: yearOrderCount, unparseableDateCount } = await runYear(page, deps, flags, year);
+        // A prior `years[<year>].order_count > 0` is this connection's own
+        // record that Amazon has listed orders for this account in THIS year
+        // before. It is what makes a later "no orders in <year>" page a
+        // contradiction to escalate rather than a result to trust. Read here,
+        // next to the year cursor it derives from, and passed down explicitly.
+        const { orderCount: yearOrderCount, unparseableDateCount } = await runYear(
+          page,
+          deps,
+          flags,
+          year,
+          priorOrdersEvidenceForYear(yearsState, year)
+        );
 
         await applyYearCompletionState({
           newYearsState,
