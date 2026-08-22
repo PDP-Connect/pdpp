@@ -37,10 +37,7 @@ import {
   initiateOwnerDeviceAuthorization,
 } from "../server/auth.ts";
 import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
-import {
-  getConnectorSummaryEvidence,
-  reconcileDirtyConnectorSummaryEvidence,
-} from "../server/connector-summary-read-model.ts";
+import { getConnectorSummaryEvidence } from "../server/connector-summary-read-model.ts";
 import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.ts";
 import { getSyncState } from "../server/records.ts";
 import type { BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
@@ -3425,13 +3422,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
   // Forward-evidence-debt probe for `resolveEffectiveRecoveryOnly` (mirrors
   // the scheduler dispatch governor's own probe of the same predicate —
-  // `hasForwardEvidenceDebt`, recovery-decision.ts). Reconciles just this one
-  // connection (the same scoped, cheap repair every other single-connection
-  // read in this module uses) so the debt predicate reads a genuinely
-  // current evidence row, then passes the WHOLE row through alongside the
-  // connection's own schedule interval — the predicate itself derives the
-  // newest per-stream `evidence_as_of` from `stream_latest_facts`, never the
+  // `hasForwardEvidenceDebt`, recovery-decision.ts). Reads the evidence row
+  // AS IT STANDS and passes the WHOLE row through alongside the connection's
+  // own schedule interval — the predicate itself derives the newest
+  // per-stream `evidence_as_of` from `stream_latest_facts`, never the
   // observation-timestamp `terminal_facts.as_of`.
+  //
+  // Like its scheduler-side twin (server/index.ts `getForwardEvidenceDebt`),
+  // this probe used to call `reconcileDirtyConnectorSummaryEvidence` first.
+  // That reconcile takes `withConnectorInstanceWrite` — the per-instance
+  // mutex an in-flight run holds — which is the GroupMe 503 mechanism, and
+  // D4/F1 forbids side-effecting reads rather than merely direct writes.
+  //
+  // This copy was the more dangerous of the two: the scheduler's probe was at
+  // least suppressed for known-active runs by `runtime.activeRuns`
+  // (runtime/scheduler.ts), while this one — on the `runNow` path — had no
+  // analogous guard at all and reconciled on every manual run.
+  //
+  // Evidence currency is unaffected: the connector-maintenance sweep
+  // reconciles dirty evidence on its own timer. A stale row reads as debt,
+  // and this probe already fails CLOSED to `false`.
   //
   // Fail-CLOSED to `false` (no debt) on error: a false positive would divert
   // this run to forward collection instead of draining recovery, which is a
@@ -3441,7 +3451,6 @@ export function createController(opts: ControllerOptions = {}): Controller {
     try {
       const schedule = await getScheduleRecord(connectorInstanceId);
       const scheduleIntervalMs = Math.max(1, schedule?.interval_seconds ?? 1) * 1000;
-      await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
       const evidence = await getConnectorSummaryEvidence(connectorInstanceId);
       return hasForwardEvidenceDebt(evidence, Date.now(), scheduleIntervalMs);
     } catch (err) {

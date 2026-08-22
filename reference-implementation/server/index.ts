@@ -9062,12 +9062,35 @@ function createReferenceSchedulerManager({
         // non-pressure recovery backlog can never starve forward (fact-
         // carrying) collection indefinitely.
         //
-        // Reconciles just this one connection (the same scoped, cheap repair
-        // every other single-connection read uses) so the debt predicate
-        // reads a genuinely current evidence row, then passes the WHOLE row
+        // Reads the evidence row AS IT STANDS and passes the WHOLE row
         // through — the predicate itself derives the newest per-stream
         // `evidence_as_of` from `stream_latest_facts`, never the
         // observation-timestamp `terminal_facts.as_of`.
+        //
+        // This probe used to call `reconcileDirtyConnectorSummaryEvidence`
+        // first, "so the debt predicate reads a genuinely current evidence
+        // row". That reconcile is the GroupMe 503 mechanism (live UAT
+        // incident run_1786410860909_1): it takes
+        // `withConnectorInstanceWrite` — the same per-instance mutex the
+        // in-flight run holds — plus a Postgres advisory lock, so a
+        // dispatch-eligibility READ contended with the run's own writes and
+        // turned committed batches into retryable `connector_instance_busy` /
+        // `ingest_batch_storage_error` failures.
+        //
+        // D4/F1 forbids SIDE-EFFECTING READS, not merely direct writes: a
+        // planner that "only reads" but whose read reconciles is a writer.
+        // The prior mitigation (`runtime.activeRuns` in runtime/scheduler.ts)
+        // only SUPPRESSED the call, and only for runs this process knows
+        // about — an in-process `Set` cannot see a run owned by another
+        // process or surviving a restart. Removing the side effect is what
+        // makes the guard unnecessary rather than load-bearing.
+        //
+        // Evidence currency is not lost: `runBoundedSummaryEvidenceSweep`
+        // (wired on CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS above) is an
+        // independent, bounded maintenance path that reconciles dirty
+        // evidence on its own timer. The reconcile here was an acceleration,
+        // never the sole source of currency. A stale row reads as debt, and
+        // debt fails CLOSED to `false` below.
         //
         // Fail-CLOSED to `false` (no debt) on error: a false positive would
         // divert every failing tick to forward collection instead of
@@ -9075,7 +9098,6 @@ function createReferenceSchedulerManager({
         // occasionally missing one debt-bounded forward run.
         try {
           const instanceId = connectorInstanceId || connectorId;
-          await reconcileDirtyConnectorSummaryEvidence([instanceId]);
           const evidence = await getConnectorSummaryEvidence(instanceId);
           return hasForwardEvidenceDebt(evidence, Date.now(), scheduleIntervalMs);
         } catch (err) {
