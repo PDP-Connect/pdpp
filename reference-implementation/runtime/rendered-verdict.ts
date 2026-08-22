@@ -1112,6 +1112,18 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
 }
 
 /**
+ * CTA for the maintainer `code_fix` action naming resting-unmeasured required
+ * streams. "isn't being measured YET" implies a future run will measure it —
+ * B10 (owner ledger 2026-08-22): a one-time import that will never run again
+ * (`freshnessNotApplicable`) has no future run to make that promise.
+ */
+function unmeasuredRequiredStreamsCta(snapshot: ConnectionHealthSnapshot): string {
+  return freshnessNotApplicable(snapshot)
+    ? "Some data from this source ended before it could be measured, and this one-time import will not run again"
+    : "Some data from this source isn't being measured yet";
+}
+
+/**
  * Build the ordered `required_actions[]`. Zero-or-many (design D8): a connection may
  * need BOTH `refresh_now` AND `reauth`. Every action's `terminal` is DERIVED from the
  * connection disposition through the sole oracle. The `wait` kind is the single
@@ -1161,7 +1173,7 @@ function buildRequiredActions(
     actions.push({
       affects: unmeasuredRequiredStreamIds(streams),
       audience: "maintainer",
-      cta: "Some data from this source isn't being measured yet",
+      cta: unmeasuredRequiredStreamsCta(snapshot),
       kind: "code_fix",
       satisfied_when: { kind: "none" },
       surface: { kind: "maintainer" },
@@ -1599,6 +1611,20 @@ function terminalForwardStatement(
 }
 
 /**
+ * Forward statement for `checking`/`unmeasured` disposition. B10 (owner
+ * ledger 2026-08-22): "not measured YET" implies a future run will resolve
+ * it. A one-time import that will never run again (see
+ * `freshnessNotApplicable`) has no future run to make that promise — the
+ * same honest distinction `buildForwardStatement`'s `default` branch already
+ * draws for the connection-level statement.
+ */
+function unmeasuredCoverageForwardStatement(snapshot: ConnectionHealthSnapshot): string {
+  return freshnessNotApplicable(snapshot)
+    ? "Coverage can't be measured — this one-time import ended before it finished a full pass, and it will not run again."
+    : "Coverage has not been measured yet.";
+}
+
+/**
  * Single sentence DERIVED from disposition + primary action. NEVER claims resumed
  * collection while the disposition is terminal (honesty invariant 3 / spec scenario).
  */
@@ -1642,7 +1668,7 @@ function buildForwardStatement(
   switch (disposition) {
     case "checking":
     case "unmeasured":
-      return "Coverage has not been measured yet.";
+      return unmeasuredCoverageForwardStatement(snapshot);
     case "resumable":
       return "The next run is expected to fill the remaining data.";
     case "owner_refresh_due":
@@ -1796,7 +1822,7 @@ function buildStreamRows(
       considered: stream.considered,
       coverage: stream.coverage,
       disposition,
-      statement: streamStatement(disposition, snapshot.badges.syncing),
+      statement: streamStatement(disposition, snapshot.badges.syncing, freshnessNotApplicable(snapshot)),
       stream_id: stream.stream_id,
     };
   });
@@ -1822,13 +1848,21 @@ function actionRefFor(
   return null;
 }
 
-function streamStatement(disposition: ForwardDisposition, activeRunSyncing = false): string {
+function streamStatement(
+  disposition: ForwardDisposition,
+  activeRunSyncing = false,
+  oneTimeImportFinished = false
+): string {
   switch (disposition) {
     case "complete":
       return "Complete.";
     case "checking":
     case "unmeasured":
-      return "Coverage has not been measured yet.";
+      // B10: mirrors `buildForwardStatement`'s same distinction — a one-time
+      // import that will never run again cannot resolve "yet".
+      return oneTimeImportFinished
+        ? "Can't be measured — this one-time import ended before a full pass finished."
+        : "Coverage has not been measured yet.";
     case "resumable":
       return "The next run is expected to fill the rest.";
     case "owner_refresh_due":

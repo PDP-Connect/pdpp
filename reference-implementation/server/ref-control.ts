@@ -3297,26 +3297,57 @@ interface EffectiveStreamFact {
 }
 
 /**
+ * Whether a stream fact carries a MEASURED enumeration boundary — a
+ * `considered` denominator the connector measured at the enumeration site.
+ *
+ * Mirrors `factCarriesMeasuredBoundary` in `connector-summary-read-model.ts`
+ * (the store-layer fold's second, INDEPENDENT floor). That floor exists
+ * because `checkpointProvesStreamCoverage` alone is not proof: an
+ * incremental change-feed pass can commit its checkpoint honestly while
+ * withholding coverage keys entirely (its `considered` would count only
+ * CHANGED resources), so a checkpoint-only re-measurement must never be
+ * treated as strong enough to erase a stream's prior measured proof. This is
+ * a test of PRESENCE, never magnitude — even a genuine zero counts.
+ */
+function factCarriesMeasuredBoundary(fact: RuntimeCollectionFact): boolean {
+  return typeof fact.considered === "number" && Number.isFinite(fact.considered) && fact.considered >= 0;
+}
+
+/**
  * Resolve each stream's effective fact: the classifying run's own facts,
  * overlaid onto the durable latest-attempt store. The classifying run wins
  * for streams it attempted (it is the newest terminal run, so its fact is
  * the newest attempt even when the fold has not caught up) UNLESS doing so
  * would erase durable proof with an attempt that proves nothing — the same
- * monotonic durable-proof floor `mergeEventStreamFacts`
+ * TWO monotonic durable-proof floors `mergeEventStreamFacts`
  * (`connector-summary-read-model.ts`) already enforces at the store layer:
- * once a stream's STORED fact proves durable coverage
- * (`checkpointProvesStreamCoverage`), a classifying attempt whose OWN fact
- * does not also prove durable coverage keeps the existing (stronger) stored
- * fact and its provenance instead of shadowing it. A classifying fact that
- * itself proves durable coverage (a genuine `committed`/`disabled`
- * re-measurement) still replaces the stored fact normally — forward
- * progress is unaffected. A stream with no durably-proven stored fact is
- * unaffected by the floor: the classifying run's attempt — resolved or not
- * — still wins, so a never-proven stream keeps surfacing its newest
- * (possibly unresolved) attempt. The store fills streams the classifying
- * run did not attempt at all. Stored run-local pending-gap counts are
- * dropped — the durable gap store is the current retry contract, and a stale
- * stored count must not fabricate a retryable gap.
+ *
+ *   1. Checkpoint floor: once a stream's STORED fact proves durable coverage
+ *      (`checkpointProvesStreamCoverage`), a classifying attempt whose OWN
+ *      fact does not also prove durable coverage keeps the existing
+ *      (stronger) stored fact and its provenance instead of shadowing it.
+ *   2. Measured-boundary floor (independent of #1): once a stream's STORED
+ *      fact carries a measured `considered` denominator
+ *      (`factCarriesMeasuredBoundary`), a classifying attempt that carries
+ *      none does not replace it — a checkpoint can commit honestly on a run
+ *      that structurally cannot measure (e.g. an incremental change-feed
+ *      pass), and letting that checkpoint-only attempt win would silently
+ *      regress a proven stream back to "not measured" (ledger item B7: Apple
+ *      Contacts' `contacts` stream measured `considered: 1, covered: 1` on
+ *      one run, then a later run committed the same checkpoint with no
+ *      `considered` at all — the checkpoint floor alone let the weaker
+ *      attempt win and shadow the durable store's still-correct proof).
+ *
+ * A classifying fact that itself clears BOTH floors (a genuine
+ * `committed`/`disabled` re-measurement that also measures a boundary)
+ * still replaces the stored fact normally — forward progress is unaffected.
+ * A stream with no durably-proven stored fact is unaffected by either floor:
+ * the classifying run's attempt — resolved or not — still wins, so a
+ * never-proven stream keeps surfacing its newest (possibly unresolved)
+ * attempt. The store fills streams the classifying run did not attempt at
+ * all. Stored run-local pending-gap counts are dropped — the durable gap
+ * store is the current retry contract, and a stale stored count must not
+ * fabricate a retryable gap.
  *
  * A recovery-only classifying run's `collection_facts` is always `null`
  * (see `buildCollectionFacts`'s `recoveryOnly` handling in
@@ -3347,22 +3378,30 @@ function resolveEffectiveStreamFacts(input: {
       continue;
     }
     const classifying = factByStream.get(stream);
+    const storedProvesDurableCoverage = checkpointProvesStreamCoverage(record.fact.checkpoint);
+    const classifyingProvesDurableCoverage = classifying
+      ? checkpointProvesStreamCoverage(classifying.fact.checkpoint)
+      : false;
+    const storedCarriesMeasuredBoundary = factCarriesMeasuredBoundary(record.fact);
+    const classifyingCarriesMeasuredBoundary = classifying ? factCarriesMeasuredBoundary(classifying.fact) : false;
     if (
       classifying &&
-      (!checkpointProvesStreamCoverage(record.fact.checkpoint) ||
-        checkpointProvesStreamCoverage(classifying.fact.checkpoint))
+      (!storedProvesDurableCoverage || classifyingProvesDurableCoverage) &&
+      (!storedCarriesMeasuredBoundary || classifyingCarriesMeasuredBoundary)
     ) {
-      // A classifying attempt exists for this stream and either the stored
-      // fact does not prove durable coverage (nothing durable to protect),
-      // or the classifying fact proves durable coverage too (forward
-      // progress) — the classifying run's own newest attempt wins as usual.
+      // A classifying attempt exists for this stream and it clears BOTH
+      // floors relative to the stored fact — either the stored fact has
+      // nothing durable to protect on that floor, or the classifying fact
+      // matches its strength — so the classifying run's own newest attempt
+      // wins as usual.
       continue;
     }
-    // No classifying attempt shadows this stream, OR the stored fact proves
-    // durable coverage while the classifying run's own attempt for this
-    // stream does not: keep the stronger, already-proven stored fact and its
-    // provenance — do not let a newer, weaker attempt regress it (mirrors
-    // `mergeEventStreamFacts`'s monotonicity guard).
+    // No classifying attempt shadows this stream, OR the stored fact clears a
+    // floor (durable checkpoint proof, or a measured boundary) that the
+    // classifying run's own attempt for this stream does not: keep the
+    // stronger, already-proven stored fact and its provenance — do not let a
+    // newer, weaker attempt regress it (mirrors `mergeEventStreamFacts`'s
+    // two independent monotonicity guards).
     factByStream.set(stream, {
       evidenceAsOf: record.evidenceAsOf,
       fact: { ...record.fact, pending_detail_gaps: 0 },
