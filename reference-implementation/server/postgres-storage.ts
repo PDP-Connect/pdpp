@@ -1351,6 +1351,44 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
         ON connector_instance_credentials(owner_subject_id, status);
 
+      -- Durable, provenance-bearing connector configuration: immutable
+      -- per-connection revision ledger + current-pointer. See the matching
+      -- comment above connector_instance_config_revisions in db.ts
+      -- (SQLite) for the full rationale; kept in sync by hand across both
+      -- backends.
+      CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
+        connector_instance_id TEXT NOT NULL
+          REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        revision BIGINT NOT NULL,
+        config_json JSONB NOT NULL,
+        config_contract_id TEXT NOT NULL,
+        config_contract_version BIGINT NOT NULL,
+        option_kind TEXT NOT NULL CHECK (option_kind IN ('collection_scope', 'transport')),
+        origin TEXT NOT NULL CHECK (origin IN ('owner', 'agent', 'migration', 'default')),
+        is_explicit BOOLEAN NOT NULL,
+        status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+        collection_boundary_fingerprint TEXT,
+        source_of_change TEXT NOT NULL,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        confirmed_by TEXT,
+        confirmed_at TEXT,
+        PRIMARY KEY (connector_instance_id, revision)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_config_revisions_instance
+        ON connector_instance_config_revisions(connector_instance_id, revision);
+
+      CREATE TABLE IF NOT EXISTS connector_instance_config_current (
+        connector_instance_id TEXT PRIMARY KEY
+          REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        active_revision BIGINT NOT NULL,
+        storage_epoch BIGINT NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (connector_instance_id, active_revision)
+          REFERENCES connector_instance_config_revisions(connector_instance_id, revision)
+      );
+
       -- Existing Postgres deployments may have the original active/revoked
       -- credential status CHECK. Widen it in place so rejected credentials
       -- preserve the same lifecycle contract as the SQLite store.
