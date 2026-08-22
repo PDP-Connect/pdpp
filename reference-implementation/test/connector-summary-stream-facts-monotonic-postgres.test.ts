@@ -69,7 +69,7 @@ let seededEventSeq = 1_000_000;
 interface StoredStreamFactEntry {
   event_seq: number;
   evidence_as_of: string | null;
-  fact: { checkpoint: string; collected: number; stream: string };
+  fact: { checkpoint: string; collected: number; considered?: number; covered?: number; stream: string };
   run_id: string | null;
 }
 
@@ -104,7 +104,7 @@ async function seedTerminalEvent({
   runId: string;
   occurredAt: string;
   connectorInstanceId: string;
-  streams: Array<{ stream: string; collected: number; checkpoint: string }>;
+  streams: Array<{ stream: string; collected: number; checkpoint: string; considered?: number; covered?: number }>;
   eventType?: string;
 }) {
   seededEventSeq += 1;
@@ -411,8 +411,13 @@ test("real PostgreSQL: existing-row self-heal — a row pre-seeded in the exact 
     ).rows;
     const [healedRow] = healedRows;
     assert.ok(healedRow, "healed evidence row exists");
+    // A lower bound, not a literal: this asserts the row was re-stamped by a
+    // CURRENT fold (the healing this test exists to prove) without pinning
+    // the test to one specific version number, which every later
+    // fold-semantics bump would otherwise falsify. The SQLite sibling's
+    // self-heal test uses the same `>=` form for the same reason.
     assert.ok(
-      Number(healedRow.stream_facts_fold_version) === 5,
+      Number(healedRow.stream_facts_fold_version) >= 5,
       "the row is stamped current under the new fold-logic version after healing"
     );
     const healedFacts = await factsFor();
@@ -480,6 +485,92 @@ test("real PostgreSQL: recompute/self-heal — a full rebuild from existing even
       "a follow-up fold pass reproduces the same monotonic result, not the corrupted one"
     );
     assert.equal(recomputed.messages.run_id, "run_success_recompute_pg");
+  } finally {
+    await cleanup();
+    await closePostgresStorage();
+  }
+});
+
+// Measured-boundary guard on the real Postgres fold path. The SQLite-host
+// tests cannot reach the dialect-split SQL (JSONB COALESCE, the
+// `IS NOT DISTINCT FROM` CAS predicates) that the Postgres branch of
+// `createStreamFactsFoldStore()` uses to persist and re-read these facts, so
+// the same semantics are proven again here against a real server.
+test("real PostgreSQL: an incremental committed run carrying no coverage keys must not erase a measured proof", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  await initPostgresStorage(postgresStorageConfig());
+  try {
+    await cleanup();
+    await seedConnector();
+    await seedInstance();
+    await rebuildConnectorSummaryEvidence();
+
+    await seedTerminalEvent({
+      connectorInstanceId: INSTANCE_ID,
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T20:21:10.660Z",
+      runId: "run_full_refresh_pg",
+      streams: [{ checkpoint: "committed", collected: 0, considered: 1, covered: 1, stream: "messages" }],
+    });
+    await seedTerminalEvent({
+      connectorInstanceId: INSTANCE_ID,
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T22:08:21.673Z",
+      runId: "run_incremental_pg",
+      streams: [{ checkpoint: "committed", collected: 0, stream: "messages" }],
+    });
+
+    await reconcileDirtyConnectorSummaryEvidence();
+    const facts = await factsFor();
+    assert.ok(facts, "evidence row must exist after reconcile");
+    assert.ok(facts.messages, "messages stream fact must exist");
+    assert.equal(facts.messages.fact.considered, 1, "the measured denominator must survive on real PostgreSQL");
+    assert.equal(facts.messages.fact.covered, 1, "the measured numerator must survive on real PostgreSQL");
+    assert.equal(facts.messages.run_id, "run_full_refresh_pg", "provenance stays with the run that measured");
+    assert.equal(facts.messages.evidence_as_of, "2026-08-21T20:21:10.660Z");
+  } finally {
+    await cleanup();
+    await closePostgresStorage();
+  }
+});
+
+test("real PostgreSQL: a genuine measured zero still replaces a larger prior proof (a truthful zero stays expressible)", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  await initPostgresStorage(postgresStorageConfig());
+  try {
+    await cleanup();
+    await seedConnector();
+    await seedInstance();
+    await rebuildConnectorSummaryEvidence();
+
+    await seedTerminalEvent({
+      connectorInstanceId: INSTANCE_ID,
+      eventType: "run.completed",
+      occurredAt: "2026-08-20T00:00:00.000Z",
+      runId: "run_had_five_pg",
+      streams: [{ checkpoint: "committed", collected: 5, considered: 5, covered: 5, stream: "messages" }],
+    });
+    await seedTerminalEvent({
+      connectorInstanceId: INSTANCE_ID,
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T00:00:00.000Z",
+      runId: "run_now_empty_pg",
+      streams: [{ checkpoint: "committed", collected: 0, considered: 0, covered: 0, stream: "messages" }],
+    });
+
+    await reconcileDirtyConnectorSummaryEvidence();
+    const facts = await factsFor();
+    assert.ok(facts, "evidence row must exist after reconcile");
+    assert.ok(facts.messages, "messages stream fact must exist");
+    assert.equal(facts.messages.fact.considered, 0, "a measured zero must replace the stale larger proof");
+    assert.equal(facts.messages.fact.covered, 0, "a measured zero numerator must replace the stale larger one");
+    assert.equal(
+      facts.messages.run_id,
+      "run_now_empty_pg",
+      "the newest MEASURING run owns the fact on real PostgreSQL too"
+    );
   } finally {
     await cleanup();
     await closePostgresStorage();
