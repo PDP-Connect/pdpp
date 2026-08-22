@@ -184,10 +184,17 @@ async function withSchema<T>(fn: (pool: pg.Pool, schema: string) => Promise<T>):
          ON "${schema}".spine_events ((data_json->>'caused_by_event_id'))
        WHERE event_type = 'run.abandoned'`
     );
+    // `owner_epoch` is part of the minimal shape now: the tool renders its
+    // re-projection from buildAdjudicationStatement (D6), which both fences
+    // on and stamps the column. A fixture missing it would fail with 42703
+    // rather than exercise the fence — and a fixture that merely HAS it
+    // proves nothing on its own, so the assertions below check that a
+    // current-epoch row survives.
     await pool.query(`
       CREATE TABLE "${schema}".run_history (
         run_id TEXT, connector_instance_id TEXT, status TEXT NOT NULL,
-        completed_at TEXT, terminal_reason TEXT, records_emitted INTEGER
+        completed_at TEXT, terminal_reason TEXT, records_emitted INTEGER,
+        owner_epoch TEXT
       )`);
     return await fn(pool, schema);
   } finally {

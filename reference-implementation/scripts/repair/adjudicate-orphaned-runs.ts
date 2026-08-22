@@ -100,6 +100,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import pg from "pg";
+import { buildAdjudicationStatement } from "../../runtime/run-lifecycle.ts";
 import { TERMINAL_RUN_EVENT_TYPE_LIST } from "../../runtime/run-lifecycle-states.ts";
 
 const { Pool } = pg;
@@ -119,6 +120,16 @@ export const ABANDONED_AT_BOOT_REASON = "controller_terminated_before_run_finish
 
 /** The `run_history.status` the generic writer derives for `run.abandoned`. */
 export const ABANDONED_RUN_HISTORY_STATUS = "abandoned";
+
+/**
+ * Stand-in `myEpoch` for a spine with no `controller.booted` event at all.
+ *
+ * Deliberately not a UUID and not timestamp-shaped: it must be recognizable
+ * as "no live epoch" rather than pass for one a process actually held. It is
+ * only ever compared against, never stored as a claim on a row the fence
+ * spares, so it cannot be mistaken for provenance later.
+ */
+const NO_LIVE_EPOCH = "__no_live_boot_epoch__";
 
 /**
  * The spine's canonical terminal set, derived from the single declaration in
@@ -336,6 +347,27 @@ export async function planOrphans(
   return rows;
 }
 
+/**
+ * The newest `controller.booted` epoch — the adjudicating identity.
+ *
+ * `planOrphans` already excludes this epoch when SELECTING orphans; reading
+ * it here lets the WRITE carry the same fence, so the two halves cannot
+ * disagree. Returns null when the spine has no boot event at all (a database
+ * old enough to predate epoch stamping), which the caller treats as "no live
+ * epoch to protect" — every row is then legitimately adjudicable, exactly as
+ * the pre-fence behavior was.
+ */
+export async function readNewestBootEpoch(pool: pg.Pool): Promise<string | null> {
+  const { rows } = await pool.query<{ epoch: string | null }>(
+    `SELECT b.data_json->>'epoch' AS epoch
+       FROM spine_events b
+      WHERE b.event_type = 'controller.booted'
+      ORDER BY b.event_seq DESC
+      LIMIT 1`
+  );
+  return rows[0]?.epoch ?? null;
+}
+
 // Apply
 
 export interface AdjudicateResult {
@@ -386,6 +418,10 @@ export async function adjudicateOrphans({
   result.backupTable = backupTable;
   const eventIds = rows.map((r) => r.event_id);
   const runIds = rows.map((r) => r.run_id);
+  // Read inside the function rather than taking it as a parameter: a caller
+  // that forgot to pass it would silently lose the fence, and this is a tool
+  // an operator points at production.
+  const newestBootEpoch = await readNewestBootEpoch(pool);
 
   const client = await pool.connect();
   try {
@@ -449,26 +485,39 @@ export async function adjudicateOrphans({
       }
       result.adjudicated += 1;
 
-      // Re-project, fenced on both the run identity pair and `running`, so
-      // this cannot finalize a run some other path already terminalised.
+      // Re-project through the machine (D6), so this tool and the boot
+      // reconciler share ONE statement definition rather than two copies
+      // that agree until they do not. Fenced on the run identity pair,
+      // `running`, and now the owner epoch, so it cannot finalize a run
+      // some other path already terminalised or one a live epoch owns.
       // `records_emitted` is deliberately untouched: records validly
       // ingested before the controller died stay committed.
+      //
+      // `myEpoch` is the newest boot epoch — the same value planOrphans
+      // excludes on — so the fence's `owner_epoch <> myEpoch` arm spares
+      // exactly the live-work rows that query already refuses to select.
+      //
+      // When the spine carries no boot event at all, `readNewestBootEpoch`
+      // returns null and `NO_LIVE_EPOCH` stands in. That sentinel is not a
+      // fabricated identity: it can never equal a real row's owner_epoch, so
+      // the fence degrades to "adjudicate any row not claimed by a real
+      // epoch" — the pre-fence behavior, which is correct precisely because
+      // there is no live epoch to protect. Minting a plausible-looking epoch
+      // here would instead write a claim that no process ever held.
       if (orphan.connector_instance_id) {
-        // biome-ignore lint/performance/noAwaitInLoops: See above -- ordered within the single transaction.
-        const projected = await client.query(
-          `UPDATE run_history
-              SET status = $1, completed_at = $2, terminal_reason = $3
-            WHERE run_id = $4
-              AND connector_instance_id = $5
-              AND status = 'running'`,
-          [
-            ABANDONED_RUN_HISTORY_STATUS,
-            occurredAt,
-            ABANDONED_AT_BOOT_REASON,
-            orphan.run_id,
-            orphan.connector_instance_id,
-          ]
+        const statement = buildAdjudicationStatement(
+          {
+            completedAt: occurredAt,
+            connectorInstanceId: orphan.connector_instance_id,
+            expectedState: "running",
+            myEpoch: newestBootEpoch ?? NO_LIVE_EPOCH,
+            runId: orphan.run_id,
+            terminalReason: ABANDONED_AT_BOOT_REASON,
+          },
+          "postgres"
         );
+        // biome-ignore lint/performance/noAwaitInLoops: See above -- ordered within the single transaction.
+        const projected = await client.query(statement.sql, statement.params as unknown[]);
         result.reprojected += projected.rowCount ?? 0;
       }
     }

@@ -19,10 +19,11 @@
 
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import { buildAdjudicationStatement } from "../runtime/run-lifecycle.ts";
+import { terminalRunEventTypesSqlGroup, terminalRunEventTypesSqlList } from "../runtime/run-lifecycle-states.ts";
 import { getDb } from "../server/db.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../server/postgres-storage.ts";
 import { type BootEpoch, emitSpineEvent, setCurrentBootEpoch } from "./spine.ts";
-import { terminalRunEventTypesSqlGroup, terminalRunEventTypesSqlList } from "../runtime/run-lifecycle-states.ts";
 
 export interface BootControllerOpts {
   /** Override for testing; defaults to randomUUID. */
@@ -546,7 +547,7 @@ async function emitRunAbandoned(
         dataJson,
       ]
     );
-    await projectAbandonedRunHistoryPostgres(client, orphan, occurredAt);
+    await projectAbandonedRunHistoryPostgres(client, orphan, occurredAt, epoch);
     return true;
   } catch (err) {
     // Idempotency: a prior reconciler already abandoned this orphan.
@@ -606,7 +607,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
       orphan.run_id,
       dataJson
     );
-    projectAbandonedRunHistorySqlite(orphan, occurredAt);
+    projectAbandonedRunHistorySqlite(orphan, occurredAt, epoch);
     return true;
   } catch (err) {
     // Idempotency on SQLite: better-sqlite3 throws SqliteError with
@@ -655,22 +656,34 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
 // on the generic writer: run_id alone is not unique across connections.
 // ─────────────────────────────────────────────────────────────────────────
 
-async function projectAbandonedRunHistoryPostgres(client: PgClient, orphan: OrphanRow, at: string): Promise<void> {
+async function projectAbandonedRunHistoryPostgres(
+  client: PgClient,
+  orphan: OrphanRow,
+  at: string,
+  epoch: BootEpoch
+): Promise<void> {
   if (!(orphan.run_id && orphan.connector_instance_id)) {
     // No connection identity on the started event means no row can be
     // matched without guessing. Leave it rather than fence on run_id alone.
     return;
   }
-  await client.query(
-    `UPDATE run_history
-     SET status = $1,
-         completed_at = $2,
-         terminal_reason = $3
-     WHERE run_id = $4
-       AND connector_instance_id = $5
-       AND status = 'running'`,
-    [ABANDONED_RUN_HISTORY_STATUS, at, terminalReasonFor(orphan), orphan.run_id, orphan.connector_instance_id]
+  // D6: rendered from the machine, so both backends project an abandon
+  // through ONE statement definition. The two hand-written copies this
+  // replaces had already drifted apart elsewhere in this file (the
+  // drift-repair pair fenced on different identities), which is the
+  // recurring cost of a statement written twice.
+  const statement = buildAdjudicationStatement(
+    {
+      completedAt: at,
+      connectorInstanceId: orphan.connector_instance_id,
+      expectedState: "running",
+      myEpoch: epoch.boot_epoch,
+      runId: orphan.run_id,
+      terminalReason: terminalReasonFor(orphan),
+    },
+    "postgres"
   );
+  await client.query(statement.sql, statement.params as unknown[]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -859,7 +872,7 @@ async function repairTerminalRunHistoryDriftPostgres(client: PgClient): Promise<
   return rowCount ?? 0;
 }
 
-function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string): void {
+function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string, epoch: BootEpoch): void {
   if (!(orphan.run_id && orphan.connector_instance_id)) {
     return;
   }
@@ -871,15 +884,21 @@ function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string): void {
   const raw = db as unknown as {
     prepare: (sql: string) => { run: (...args: unknown[]) => { changes: number } };
   };
-  raw
-    .prepare(
-      `UPDATE run_history
-       SET status = ?,
-           completed_at = ?,
-           terminal_reason = ?
-       WHERE run_id = ?
-         AND connector_instance_id = ?
-         AND status = 'running'`
-    )
-    .run(ABANDONED_RUN_HISTORY_STATUS, at, terminalReasonFor(orphan), orphan.run_id, orphan.connector_instance_id);
+  // D6: rendered from the machine, not hand-written. The statement adds the
+  // owner-epoch fence the hand-written copy lacked, so a stale predecessor
+  // that wakes mid-adjudication fails at the database rather than by hope
+  // (D2). `records_emitted` stays out of the SET list — records durably
+  // ingested before the interruption stay committed.
+  const statement = buildAdjudicationStatement(
+    {
+      completedAt: at,
+      connectorInstanceId: orphan.connector_instance_id,
+      expectedState: "running",
+      myEpoch: epoch.boot_epoch,
+      runId: orphan.run_id,
+      terminalReason: terminalReasonFor(orphan),
+    },
+    "sqlite"
+  );
+  raw.prepare(statement.sql).run(...statement.params);
 }
