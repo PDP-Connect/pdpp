@@ -31,6 +31,7 @@ interface StoredStreamFactEntry {
     collected: number;
     checkpoint: string;
     considered?: number;
+    covered?: number;
     skipped?: { reason: string };
   };
   run_id: string | null;
@@ -82,6 +83,7 @@ interface TerminalEventStreamFact {
   checkpoint: string;
   collected: number;
   considered?: number;
+  covered?: number;
   skipped?: { reason: string };
   stream: string;
 }
@@ -1207,5 +1209,214 @@ test("fold: an ALREADY-STRANDED checkpoint-0 historical row (production shape) r
       0,
       "a later dirty-mark with a nonzero checkpoint follows the ordinary lag predicate, not the stranded-recovery carve-out"
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Measured-boundary guard (apple_contacts cin_d344ba53d6d95c7dd343393d,
+// run_1787343668906 proved `contacts covered 1 / considered 1`; the next
+// incremental run erased it).
+//
+// The checkpoint floor above cannot catch this class: an incremental
+// `sync-collection` pass genuinely COMMITS its checkpoint (it really did make
+// durable cursor progress), so its fact clears `factCheckpointProvesDurableCoverage`
+// and replaced a measured proof with one carrying no coverage keys at all.
+// A change feed's `considered` counts only CHANGED resources, so the
+// connector deliberately WITHHOLDS the coverage keys rather than emit a
+// fabricated `0/0` (RFC 6578; pinned by
+// `connectors/_conformance/change-feed-is-not-inventory.test.ts`). The fold
+// must therefore treat a measured enumeration boundary as its own floor,
+// independent of the checkpoint.
+//
+// The distinction is PRESENCE of the measurement, never its magnitude: a
+// genuine measured zero (`considered: 0`) is a positive statement ("I
+// enumerated the boundary and it held nothing") and MUST still be able to
+// replace a larger prior proof, or upstream deletions would be frozen out
+// of the read model forever.
+// ---------------------------------------------------------------------------
+
+test("measured-boundary guard: an incremental committed run carrying no coverage keys must not erase a measured proof", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+    // A genuine full_refresh run: a real enumeration boundary, 1 contact.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T20:21:10.660Z",
+      runId: "run_full_refresh",
+      streams: [{ checkpoint: "committed", collected: 0, considered: 1, covered: 1, stream: "contacts" }],
+    });
+    // The incremental sync-collection pass: checkpoint genuinely committed,
+    // but coverage keys deliberately withheld (a quiet change feed).
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T22:08:21.673Z",
+      runId: "run_incremental",
+      streams: [{ checkpoint: "committed", collected: 0, stream: "contacts" }],
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const contacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac")), "contacts");
+    // Assert the REASON the proof survived, not merely that some fact exists:
+    // the surviving fact must be the measured one, from the run that measured
+    // it, carrying both coverage keys intact.
+    assert.equal(contacts.fact.considered, 1, "the measured denominator must survive the non-measuring run");
+    assert.equal(contacts.fact.covered, 1, "the measured numerator must survive the non-measuring run");
+    assert.equal(contacts.run_id, "run_full_refresh", "provenance stays with the run that actually measured");
+    assert.equal(
+      contacts.evidence_as_of,
+      "2026-08-21T20:21:10.660Z",
+      "evidence_as_of stays with the measuring run, not the erasing one"
+    );
+  });
+});
+
+test("measured-boundary guard: a genuine measured zero still replaces a larger prior proof (a truthful zero stays expressible)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-20T00:00:00.000Z",
+      runId: "run_had_five",
+      streams: [{ checkpoint: "committed", collected: 5, considered: 5, covered: 5, stream: "contacts" }],
+    });
+    // Upstream deletion: a later FULL enumeration honestly measures zero.
+    // This is a measurement, not a silence, so it MUST win — retaining the
+    // stale 5/5 here would be the mirror-image defect.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T00:00:00.000Z",
+      runId: "run_now_empty",
+      streams: [{ checkpoint: "committed", collected: 0, considered: 0, covered: 0, stream: "contacts" }],
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const contacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac")), "contacts");
+    assert.equal(contacts.fact.considered, 0, "a measured zero denominator must replace the stale larger one");
+    assert.equal(contacts.fact.covered, 0, "a measured zero numerator must replace the stale larger one");
+    assert.equal(contacts.run_id, "run_now_empty", "the newest MEASURING run owns the fact, regardless of magnitude");
+  });
+});
+
+test("measured-boundary guard: a later smaller measurement replaces a larger one (newest measurement wins, not the maximum)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-20T00:00:00.000Z",
+      runId: "run_ten",
+      streams: [{ checkpoint: "committed", collected: 10, considered: 10, covered: 10, stream: "contacts" }],
+    });
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T00:00:00.000Z",
+      runId: "run_three",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 3, covered: 3, stream: "contacts" }],
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const contacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac")), "contacts");
+    assert.equal(contacts.fact.considered, 3, "the fold keeps the NEWEST measurement, never the largest");
+    assert.equal(contacts.run_id, "run_three");
+  });
+});
+
+test("measured-boundary guard: a stream never measured still tracks its newest attempt (absence of proof is never masked)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+    // No run here ever measured a boundary; the guard must not freeze the
+    // first non-measuring fact in place and hide later attempts.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-20T00:00:00.000Z",
+      runId: "run_a",
+      streams: [{ checkpoint: "committed", collected: 1, stream: "contacts" }],
+    });
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T00:00:00.000Z",
+      runId: "run_b",
+      streams: [{ checkpoint: "committed", collected: 2, stream: "contacts" }],
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const contacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac")), "contacts");
+    assert.equal(contacts.fact.collected, 2, "a never-measured stream still advances to its newest attempt");
+    assert.equal(contacts.run_id, "run_b");
+    assert.equal(contacts.fact.considered, undefined, "and it is still honestly unmeasured, not synthesized");
+  });
+});
+
+test("existing-row self-heal: a row already folded under v5 with its proof ERASED recovers the measured proof from retained history", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac_stale", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+
+    // The real production history: a full enumeration that measured 1/1,
+    // then an incremental change-feed pass that committed its checkpoint
+    // while carrying no coverage keys.
+    const measuringSeq = seedTerminalEvent({
+      connectorInstanceId: "cin_ac_stale",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T20:21:10.660Z",
+      runId: "run_1787343668906",
+      streams: [{ checkpoint: "committed", collected: 0, considered: 1, covered: 1, stream: "contacts" }],
+    });
+    const erasingSeq = seedTerminalEvent({
+      connectorInstanceId: "cin_ac_stale",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T22:08:21.673Z",
+      runId: "run_1787350099989",
+      streams: [{ checkpoint: "committed", collected: 0, stream: "contacts" }],
+    });
+    assert.ok(erasingSeq > measuringSeq);
+
+    // Park the row in the EXACT shape the shipped v5 fold leaves behind: the
+    // proof already erased, the checkpoint durably parked AT the erasing
+    // event, and the row clean/current. Without a fold-version bump, this
+    // row is frozen — `readTerminalFactEvents` never re-reads at or below
+    // that checkpoint, so the destroyed proof would stay destroyed forever
+    // even with the merge fix in place. `stream_facts_fold_version = 5` is
+    // what makes this test discriminate the version bump specifically
+    // (a NULL version would heal under the pre-existing NULL carve-out).
+    const erasedFacts = {
+      contacts: {
+        event_seq: erasingSeq,
+        evidence_as_of: "2026-08-21T22:08:21.673Z",
+        fact: { checkpoint: "committed", collected: 0, stream: "contacts" },
+        run_id: "run_1787350099989",
+      },
+    };
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET stream_latest_facts_json = ?,
+                stream_facts_event_seq = ?,
+                stream_facts_fold_version = 5,
+                terminal_facts_state = 'current',
+                terminal_facts_reason_code = NULL,
+                dirty = 0,
+                state = 'fresh'
+          WHERE connector_instance_id = ?`
+      )
+      .run(JSON.stringify(erasedFacts), erasingSeq, "cin_ac_stale");
+
+    const preFix = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac_stale")), "contacts");
+    assert.equal(preFix.fact.considered, undefined, "precondition: the stored row really is in the erased shape");
+
+    // An ordinary reconcile — no connector-specific mutation, no manual repair.
+    await reconcileDirtyConnectorSummaryEvidence();
+
+    const healed = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac_stale")), "contacts");
+    assert.equal(healed.fact.considered, 1, "the measured denominator is recovered from retained event history");
+    assert.equal(healed.fact.covered, 1, "the measured numerator is recovered too");
+    assert.equal(healed.run_id, "run_1787343668906", "provenance points back at the run that actually measured");
   });
 });

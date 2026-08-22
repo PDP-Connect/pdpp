@@ -18,6 +18,7 @@ import {
   foldConnectorSummaryStreamFacts,
   getConnectorSummaryEvidence,
   rebuildConnectorSummaryEvidence,
+  STREAM_FACTS_FOLD_LOGIC_VERSION,
 } from "../server/connector-summary-read-model.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
@@ -152,7 +153,7 @@ test("real PostgreSQL: a bounded pass (maxEvents:1) processes AT MOST one event 
     assert.equal(row.terminal_facts_reason_code, "terminal_fold_incomplete");
     assert.equal(
       Number(row.stream_facts_fold_version),
-      4,
+      STREAM_FACTS_FOLD_LOGIC_VERSION,
       "the version is already stamped current from the first partial write"
     );
     const facts = row.stream_latest_facts_json;
