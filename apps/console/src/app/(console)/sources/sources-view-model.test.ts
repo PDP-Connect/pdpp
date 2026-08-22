@@ -965,6 +965,45 @@ test("toSourcesView classifies a never-succeeded revoked setup shell as setupFai
   assert.equal(views[0]?.archived, false, "setup-failed is distinct from archived — nothing was ever collected");
 });
 
+test("a setup-failed source carries the server's specific forward_statement (quiet-expiry defect fix, owner ruling 2026-08-22)", () => {
+  const views = toSourcesView([
+    summary({
+      connector_id: "venmo",
+      rendered_verdict: renderedVerdict({
+        forward_statement:
+          "This setup attempt expired while waiting for you to finish signing in. No records were collected. Start a fresh attempt when you're ready.",
+      }),
+      revoked_at: "2026-08-21T15:42:36.412Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+
+  assert.equal(
+    views[0]?.setupFailedForwardStatement,
+    "This setup attempt expired while waiting for you to finish signing in. No records were collected. Start a fresh attempt when you're ready.",
+    "the console must render the server's TTL-specific sentence, not a generic fallback"
+  );
+});
+
+test("setupFailedForwardStatement is null for a non-setup-failed source, even if rendered_verdict carries a forward_statement", () => {
+  const views = toSourcesView([
+    summary({
+      connector_id: "venmo",
+      rendered_verdict: renderedVerdict({ forward_statement: "Collection is current." }),
+      status: "active",
+      total_records: 10,
+    }),
+  ]);
+
+  assert.equal(
+    views[0]?.setupFailedForwardStatement,
+    null,
+    "the field must only ever surface for a setup-failed row, never leak an unrelated verdict's prose"
+  );
+});
+
 test("a setup-failed source never renders a healthy status, even with a green stored verdict", () => {
   const views = toSourcesView([
     summary({

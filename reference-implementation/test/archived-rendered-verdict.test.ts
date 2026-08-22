@@ -18,9 +18,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RenderedVerdict } from "../runtime/rendered-verdict.ts";
-import { archiveRenderedVerdict } from "../server/ref-control.ts";
+import {
+  archiveRenderedVerdict,
+  type ConnectorInstanceRow,
+  type ConnectorRunSummary,
+  deriveSetupFailedReason,
+} from "../server/ref-control.ts";
 
 const RECONNECT_RE = /reconnect/i;
+const EXPIRED_WHILE_WAITING_RE = /expired while waiting for you to finish signing in/i;
+const NOT_EXPIRED_WHILE_WAITING_RE = /expired while waiting for you/i;
+const RESTARTED_ADDENDUM_RE = /we restarted our system while you were signing in/i;
+const OWNER_BLAME_RE = /you (did not|didn't|failed to)/i;
 
 // A verdict that reads healthy AND actionable — the shape whose survival into
 // an archived row would be the fabricated-green defect.
@@ -127,4 +136,196 @@ test("a setup-failed source is distinct from archived — both terminal, differe
     setupFailed.pill.label,
     "archived means records were once collected; setup-failed means none ever were — the labels must not collapse into one"
   );
+});
+
+// Quiet-expiry defect fix (owner ruling 2026-08-22): a setup that expired
+// while the owner was mid-signin must never render as an anonymous, generic
+// "Setup never completed" indistinguishable from the owner simply walking
+// away. These tests pin the TTL-specific copy against the SAME
+// green/actionable fixture as the tests above, so nothing here can pass
+// vacuously either.
+
+test("a TTL-expired setup-failed source states plainly that it expired while waiting for the owner", () => {
+  const ttlExpired = archiveRenderedVerdict(livingVerdict(), "setup_failed", {
+    cause: "ttl_expired",
+    interruptedByRestart: false,
+  });
+
+  assert.equal(ttlExpired.pill.label, "Expired while waiting for you");
+  assert.match(ttlExpired.forward_statement, EXPIRED_WHILE_WAITING_RE);
+  assert.equal(ttlExpired.channel, "calm");
+  assert.deepEqual(ttlExpired.required_actions, [], "the honest next step is a fresh attempt, not an action here");
+});
+
+test("an owner-abandoned setup-failed source keeps the original generic copy, not the TTL-specific sentence", () => {
+  const abandoned = archiveRenderedVerdict(livingVerdict(), "setup_failed", {
+    cause: "owner_abandoned",
+    interruptedByRestart: false,
+  });
+
+  assert.equal(abandoned.pill.label, "Setup never completed");
+  assert.doesNotMatch(
+    abandoned.forward_statement,
+    NOT_EXPIRED_WHILE_WAITING_RE,
+    "an explicit owner dismissal must not be reworded as a TTL expiry"
+  );
+});
+
+test("an 'unknown' cause (pre-existing revoked row with no recorded reason) falls back to the original generic copy", () => {
+  const unknown = archiveRenderedVerdict(livingVerdict(), "setup_failed", {
+    cause: "unknown",
+    interruptedByRestart: false,
+  });
+
+  assert.equal(
+    unknown.pill.label,
+    "Setup never completed",
+    "an unrecorded cause must fall back to the pre-existing honest label, never guess TTL-expired"
+  );
+});
+
+test("a null reason (legacy call site) behaves exactly like the pre-fix generic setup_failed copy", () => {
+  const legacy = archiveRenderedVerdict(livingVerdict(), "setup_failed");
+  assert.equal(legacy.pill.label, "Setup never completed");
+  assert.equal(legacy.forward_statement, "Setup never finished for this source. No records were collected.");
+});
+
+test("a self-inflicted-restart addendum is appended without being mistaken for owner or provider failure", () => {
+  const interrupted = archiveRenderedVerdict(livingVerdict(), "setup_failed", {
+    cause: "ttl_expired",
+    interruptedByRestart: true,
+  });
+
+  assert.match(
+    interrupted.forward_statement,
+    RESTARTED_ADDENDUM_RE,
+    "the restart must be named as OUR action, not folded into silence"
+  );
+  assert.doesNotMatch(
+    interrupted.forward_statement,
+    OWNER_BLAME_RE,
+    "the addendum must not imply the owner did anything wrong"
+  );
+});
+
+test("the restart addendum is independent of cause — it can accompany owner_abandoned too", () => {
+  const interrupted = archiveRenderedVerdict(livingVerdict(), "setup_failed", {
+    cause: "owner_abandoned",
+    interruptedByRestart: true,
+  });
+
+  assert.match(interrupted.forward_statement, RESTARTED_ADDENDUM_RE);
+});
+
+// deriveSetupFailedReason: the server-side reader that trusts the WRITER's
+// recorded `revocation_reason` rather than reverse-guessing it. Fixtures
+// mirror `connector-instance-store.ts`'s row shape after
+// `NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_*` — every row this function sees is
+// already guaranteed revoked + a retired-setup-shell binding kind.
+
+function revokedShellInstance(bindingOverrides: Record<string, unknown> = {}): ConnectorInstanceRow {
+  return {
+    connectorId: "venmo",
+    connectorInstanceId: "cin_test",
+    displayName: "Venmo",
+    ownerSubjectId: "owner_1",
+    revokedAt: "2026-08-21T15:42:00.000Z",
+    sourceBinding: {
+      connector_id: "venmo",
+      enrollment_expires_at: "2026-08-21T15:42:00.000Z",
+      kind: "browser_enrollment_shell",
+      ...bindingOverrides,
+    },
+    sourceKind: "browser_collector",
+    status: "revoked",
+  };
+}
+
+function runSummary(overrides: Partial<ConnectorRunSummary> = {}): ConnectorRunSummary {
+  return {
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: null,
+    finished_at: "2026-08-21T15:42:00.000Z",
+    first_at: "2026-08-21T15:41:00.000Z",
+    known_gaps: [],
+    last_at: "2026-08-21T15:42:00.000Z",
+    recovery_only: false,
+    run_id: "run_test",
+    started_at: "2026-08-21T15:41:00.000Z",
+    status: "failed",
+    terminal_reason: null,
+    ...overrides,
+  };
+}
+
+test("deriveSetupFailedReason reads the recorded ttl_expired reason rather than guessing it", () => {
+  const instance = revokedShellInstance({ revocation_reason: "ttl_expired" });
+  const reason = deriveSetupFailedReason(instance, null);
+
+  assert.deepEqual(reason, { cause: "ttl_expired", interruptedByRestart: false });
+});
+
+test("deriveSetupFailedReason reads the recorded owner_abandoned reason", () => {
+  const instance = revokedShellInstance({ revocation_reason: "owner_abandoned" });
+  const reason = deriveSetupFailedReason(instance, null);
+
+  assert.deepEqual(reason, { cause: "owner_abandoned", interruptedByRestart: false });
+});
+
+test("deriveSetupFailedReason falls back to 'unknown' for a pre-existing row with no recorded reason — never guesses", () => {
+  const instance = revokedShellInstance();
+  const reason = deriveSetupFailedReason(instance, null);
+
+  assert.deepEqual(
+    reason,
+    { cause: "unknown", interruptedByRestart: false },
+    "absent revocation_reason must read as unknown, not be reverse-derived from revoked_at timing"
+  );
+});
+
+test("deriveSetupFailedReason ignores an unrecognized revocation_reason value — treats it as unknown, not a crash", () => {
+  const instance = revokedShellInstance({ revocation_reason: "some_future_reason_this_code_predates" });
+  const reason = deriveSetupFailedReason(instance, null);
+
+  assert.equal(reason?.cause, "unknown");
+});
+
+test("deriveSetupFailedReason returns null for a non-setup-shell revoked row (ordinary revocation)", () => {
+  const instance: ConnectorInstanceRow = {
+    ...revokedShellInstance(),
+    sourceBinding: { kind: "browser_collector" },
+  };
+  assert.equal(deriveSetupFailedReason(instance, null), null);
+});
+
+test("deriveSetupFailedReason returns null for an active (non-revoked) instance", () => {
+  const instance: ConnectorInstanceRow = { ...revokedShellInstance(), status: "active" };
+  assert.equal(deriveSetupFailedReason(instance, null), null);
+});
+
+test("deriveSetupFailedReason detects the self-inflicted restart via the run's terminal_reason", () => {
+  const instance = revokedShellInstance({ revocation_reason: "ttl_expired" });
+  const lastRun = runSummary({ terminal_reason: "controller_terminated_while_awaiting_owner_interaction" });
+
+  const reason = deriveSetupFailedReason(instance, lastRun);
+  assert.deepEqual(reason, { cause: "ttl_expired", interruptedByRestart: true });
+});
+
+test("deriveSetupFailedReason does not flag an ordinary connector failure as a self-inflicted restart", () => {
+  const instance = revokedShellInstance({ revocation_reason: "ttl_expired" });
+  const lastRun = runSummary({ terminal_reason: "connector_reported_failed" });
+
+  const reason = deriveSetupFailedReason(instance, lastRun);
+  assert.deepEqual(
+    reason,
+    { cause: "ttl_expired", interruptedByRestart: false },
+    "a genuine connector failure must never be mislabeled as our own restart"
+  );
+});
+
+test("deriveSetupFailedReason treats a null lastRun as never interrupted by our restart", () => {
+  const instance = revokedShellInstance({ revocation_reason: "ttl_expired" });
+  const reason = deriveSetupFailedReason(instance, null);
+  assert.equal(reason?.interruptedByRestart, false);
 });
