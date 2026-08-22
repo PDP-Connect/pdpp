@@ -225,6 +225,102 @@ test("parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates
   }
 });
 
+// A cancelled Subscribe & Save order never ships, so its list card has no
+// `.item-box`/`.yohtmlc-product-title` (no items to show) and no parseable
+// `$N.NN` total (nothing was charged). `.yohtmlc-shipment-status-primaryText`
+// carries the literal text "Cancelled" — confirmed against a real captured
+// list page, where Amazon's own inline per-card script string-matches that
+// exact class + text to decide whether to hide the "Ask Alexa" pill. Order
+// header structure (`.yohtmlc-order-id`, `.order-header__header-list-item`)
+// is unchanged from a normal card.
+const CANCELLED_LIST_CARD_HTML = `<!doctype html>
+<html>
+  <body>
+    <div id="ordersContainer">
+      <div class="order-card js-order-card">
+        <div class="order-header">
+          <ul>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Order placed</span>
+                <span>October 17, 2023</span>
+              </div>
+            </li>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Order #</span>
+              </div>
+              <div class="yohtmlc-order-id">
+                <span class="a-color-secondary a-text-caps">Order #</span>
+                <span class="a-color-secondary" dir="ltr">114-8946969-6494660</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+        <div class="delivery-box">
+          <div class="delivery-box__primary-text yohtmlc-shipment-status-primaryText">
+            Cancelled
+          </div>
+        </div>
+      </div>
+      <div class="order-card js-order-card">
+        <div class="order-header">
+          <ul>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Order placed</span>
+                <span>October 17, 2023</span>
+              </div>
+            </li>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Total</span>
+                <span>$14.99</span>
+              </div>
+            </li>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Order #</span>
+              </div>
+              <div class="yohtmlc-order-id">
+                <span class="a-color-secondary a-text-caps">Order #</span>
+                <span class="a-color-secondary" dir="ltr">114-0000000-0000000</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+        <div class="delivery-box">
+          <div class="delivery-box__primary-text yohtmlc-shipment-status-primaryText">
+            Delivered October 19
+          </div>
+        </div>
+        <div class="item-box">
+          <div class="a-fixed-left-grid">
+            <a href="/dp/B0REALSH1A?ref=fake">
+              <img src="https://example.com/img.jpg" />
+            </a>
+            <span class="yohtmlc-product-title">Synthetic Widget Model A</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
+
+test("parseOrdersListDom: cancelled order (no items, no total) parses alongside a normal order on the same page", () => {
+  const orders = parseOrdersListDom(CANCELLED_LIST_CARD_HTML);
+  assert.equal(orders.length, 2, "both the cancelled card and the normal card must be extracted");
+  const [cancelled, normal] = orders;
+  assert.ok(cancelled);
+  assert.equal(cancelled.orderId, "114-8946969-6494660");
+  assert.equal(cancelled.orderDateRaw, "October 17, 2023");
+  assert.equal(cancelled.orderTotal, null);
+  assert.equal(cancelled.deliveryStatus, "Cancelled");
+  assert.deepEqual(cancelled.items, []);
+  assert.ok(normal);
+  assert.equal(normal.orderId, "114-0000000-0000000");
+});
+
 // ─── parseOrderDetailDom ─────────────────────────────────────────────────
 
 test("parseOrderDetailDom: synthetic-minimal fixture parses full OrderDetail", () => {
