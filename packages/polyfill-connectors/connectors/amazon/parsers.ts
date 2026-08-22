@@ -568,6 +568,29 @@ export function parseOrdersListDom(html: string): ListPageOrder[] {
   return results;
 }
 
+/**
+ * Count `.order-card`/`.js-order-card` elements that `parseOrdersListDom`
+ * silently drops because `findOrderId` found no `.yohtmlc-order-id` span
+ * matching the canonical order-id shape. `parseOrderCard`'s `if (!orderId)
+ * return null` (and `parseOrdersListDom`'s discard of that `null`) leaves no
+ * other trace: the card never reaches the shape-check, so it never produces
+ * a SKIP_RESULT, a coverage-considered id, or a rejection — a page can lose
+ * cards here with zero connector-visible evidence. Called alongside
+ * `parseOrdersListDom` so a caller can detect and report the gap the parse
+ * step itself cannot see (it only ever sees what survived).
+ */
+export function countOrderCardsWithoutOrderId(html: string): number {
+  const { document } = parseHTML(html);
+  const cards = document.querySelectorAll<HTMLElement>(".order-card, .js-order-card");
+  let dropped = 0;
+  for (const card of cards) {
+    if (!findOrderId(card)) {
+      dropped += 1;
+    }
+  }
+  return dropped;
+}
+
 export function parseOrderDate(raw: string | null | undefined): string | null {
   if (!raw) {
     return null;

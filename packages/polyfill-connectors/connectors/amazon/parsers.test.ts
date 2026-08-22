@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildOrderItemRecord,
   buildOrderRecord,
+  countOrderCardsWithoutOrderId,
   itemId,
   mergeDetailByKey,
   mergeOrderItems,
@@ -150,6 +151,62 @@ test("parseOrdersListDom: scrubbed real-shape fixture extracts full orders", () 
 test("parseOrdersListDom: empty page returns []", () => {
   assert.deepEqual(parseOrdersListDom("<!doctype html><html><body><div>no orders</div></body></html>"), []);
   assert.deepEqual(parseOrdersListDom(""), []);
+});
+
+// A card that matches `.order-card`/`.js-order-card` but has no
+// `.yohtmlc-order-id` (e.g. a never-shipped/cancelled Subscribe & Save order
+// rendering under a variant Amazon uses for that order type) is dropped by
+// `parseOrdersListDom` with no signal anywhere else in the connector: it
+// never reaches the shape-check, so it produces no SKIP_RESULT, no
+// coverage-considered id, and no rejection. `countOrderCardsWithoutOrderId`
+// is the one place that gap becomes visible.
+const NORMAL_CARD_HTML = `
+  <div class="order-card js-order-card">
+    <div class="order-header">
+      <ul>
+        <li class="order-header__header-list-item">
+          <span class="a-color-secondary a-text-caps">Order placed</span>
+          <span>October 17, 2023</span>
+        </li>
+        <li class="order-header__header-list-item">
+          <span class="a-color-secondary a-text-caps">Order #</span>
+          <div class="yohtmlc-order-id">
+            <span class="a-color-secondary a-text-caps">Order #</span>
+            <span dir="ltr">114-0000000-0000000</span>
+          </div>
+        </li>
+      </ul>
+    </div>
+  </div>`;
+const CARD_WITHOUT_ORDER_ID_HTML = `
+  <div class="order-card js-order-card">
+    <div class="order-header">
+      <ul>
+        <li class="order-header__header-list-item">
+          <span class="a-color-secondary a-text-caps">Order placed</span>
+          <span>October 17, 2023</span>
+        </li>
+      </ul>
+    </div>
+    <div class="delivery-box">
+      <div class="delivery-box__primary-text yohtmlc-shipment-status-primaryText">Cancelled</div>
+    </div>
+  </div>`;
+
+test("countOrderCardsWithoutOrderId: 0 when every card has a .yohtmlc-order-id", () => {
+  const html = `<!doctype html><html><body><div id="ordersContainer">${NORMAL_CARD_HTML}</div></body></html>`;
+  assert.equal(countOrderCardsWithoutOrderId(html), 0);
+  assert.equal(parseOrdersListDom(html).length, 1);
+});
+
+test("countOrderCardsWithoutOrderId: counts a card with no .yohtmlc-order-id that parseOrdersListDom silently drops", () => {
+  const html = `<!doctype html><html><body><div id="ordersContainer">${NORMAL_CARD_HTML}${CARD_WITHOUT_ORDER_ID_HTML}</div></body></html>`;
+  // The card without an order id vanishes from parseOrdersListDom's output —
+  // this is the pre-existing, unfixed behavior of parseOrderCard/findOrderId.
+  const orders = parseOrdersListDom(html);
+  assert.equal(orders.length, 1, "only the normal card survives parseOrdersListDom");
+  // countOrderCardsWithoutOrderId is what makes that loss visible.
+  assert.equal(countOrderCardsWithoutOrderId(html), 1);
 });
 
 test("parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates", {

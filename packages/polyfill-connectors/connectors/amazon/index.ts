@@ -36,6 +36,7 @@ import { type FingerprintCursor, openFingerprintCursor, recordFingerprint } from
 import {
   buildOrderItemRecord,
   buildOrderRecord,
+  countOrderCardsWithoutOrderId,
   mergeOrderItems,
   parseOrderDate,
   parseOrderDetailDom,
@@ -479,12 +480,17 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
 }
 
 // ─── Per-page order extraction ────────────────────────────────────────────
-async function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
+interface PageExtractionResult {
+  droppedCardCount: number;
+  orders: ListPageOrder[];
+}
+
+async function extractOrdersOnPage(page: Page): Promise<PageExtractionResult> {
   try {
     const html = await readPageContentWithin(page);
-    return parseOrdersListDom(html);
+    return { droppedCardCount: countOrderCardsWithoutOrderId(html), orders: parseOrdersListDom(html) };
   } catch {
-    return [];
+    return { droppedCardCount: 0, orders: [] };
   }
 }
 
@@ -1124,7 +1130,27 @@ async function emitItemCountReconciliation(
  * returned in source order.
  */
 async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<ListPageOrder[]> {
-  const rawOrders = await extractOrdersOnPage(page);
+  const { droppedCardCount, orders: rawOrders } = await extractOrdersOnPage(page);
+  // Only report when the page also proved at least one real order: `.order-card`/
+  // `.js-order-card` is reused by Amazon's "Buy it again" recommendation carousel on
+  // a genuinely empty year (see the `orders-list-empty-year-with-carousel` fixture),
+  // so a page with ZERO real orders and only carousel cards is not evidence of loss —
+  // `reportEmptyPageDiagnostics` already owns that case. Gating on `rawOrders.length
+  // > 0` keeps this diagnostic scoped to "some cards parsed, but not all of them."
+  if (droppedCardCount > 0 && rawOrders.length > 0) {
+    // A card matched `.order-card`/`.js-order-card` but `parseOrderCard`
+    // could not find a `.yohtmlc-order-id` on it, so it never became a raw
+    // order and never reached the shape-check below — with no fix here that
+    // card is lost with zero trace (no SKIP_RESULT, no coverage-considered
+    // id, no rejection). This is the only signal that loss ever happened.
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "list_page_order_id_not_found",
+      message: `${droppedCardCount} order card(s) on this page had no parseable .yohtmlc-order-id and were dropped before the shape-check`,
+      diagnostics: { dropped_card_count: droppedCardCount },
+    });
+  }
   const orders: ListPageOrder[] = [];
   for (const r of rawOrders) {
     const parsed = listPageOrderShape.safeParse(r);
