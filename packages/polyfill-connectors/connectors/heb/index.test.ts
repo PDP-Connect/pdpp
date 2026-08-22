@@ -31,6 +31,7 @@ import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  classifyEmptyListPage,
   classifyHebDetailFailure,
   type EmitDeps,
   emitOrderItemsCoverage,
@@ -45,6 +46,7 @@ import {
   newOrdersCoverage,
   type OrderItemsCoverage,
   type OrdersCoverage,
+  priorOrdersEvidenceFromState,
   processListOrder,
   type RepairDeps,
   type RunFlags,
@@ -56,7 +58,7 @@ import {
   runForwardScan,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
-import type { ListPageOrder } from "./types.ts";
+import type { ListPageDiagnostics, ListPageOrder } from "./types.ts";
 
 const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__");
 
@@ -1290,6 +1292,157 @@ test("runForwardScan: an Imperva block is never laundered into a proven-empty re
     () => runForwardScan(page, deps, makeRunFlags(), null),
     /heb_empty_list_page_source_auth_or_challenge/,
     "bot protection must outrank the empty-state marker"
+  );
+});
+
+// ─── Proven-empty regression guard (prior-orders evidence) ────────────────
+//
+// A connection that has already collected orders must never be able to
+// complete a run as "proven empty". The source-authored empty state is
+// trustworthy for an account that never had orders; for an account we have
+// already measured, the same page is a contradiction, not a result.
+
+const EMPTY_STATE_DIAG: ListPageDiagnostics = {
+  any_card: 4,
+  body_preview: "",
+  empty_state: true,
+  incapsula_block: false,
+  order_cards: 0,
+  password_form: false,
+  title: "",
+  url: "",
+};
+
+const RESOLVED_MAX_PAGE = { kind: "resolved", source: "dom", value: 1 } as const;
+
+test("classifyEmptyListPage: source-reported empty on a connection with NO prior orders stays proven-empty", () => {
+  // Preserves efc601bb7. A first-ever run on a genuinely empty account is the
+  // one case where zero coverage is an honest measurement.
+  assert.deepEqual(classifyEmptyListPage(EMPTY_STATE_DIAG, 1, RESOLVED_MAX_PAGE, { hasPriorOrders: false }), {
+    action: "terminal",
+    reason: "source_reported_empty",
+  });
+});
+
+test("classifyEmptyListPage: the prior-orders argument defaults to absent, so callers cannot silently opt in", () => {
+  assert.deepEqual(classifyEmptyListPage(EMPTY_STATE_DIAG, 1, RESOLVED_MAX_PAGE), {
+    action: "terminal",
+    reason: "source_reported_empty",
+  });
+});
+
+test("classifyEmptyListPage: source-reported empty on a connection WITH prior orders aborts instead of proving zero", () => {
+  // The defect this guard closes: without it, this exact input returned
+  // {action:"terminal", reason:"source_reported_empty"}, letting a connection
+  // holding 41 orders commit covered:0/considered:0 as a measured result.
+  assert.deepEqual(classifyEmptyListPage(EMPTY_STATE_DIAG, 1, RESOLVED_MAX_PAGE, { hasPriorOrders: true }), {
+    action: "abort",
+    reason: "heb_empty_history_after_prior_orders",
+  });
+});
+
+test("classifyEmptyListPage: an auth/challenge page keeps its own reason even when prior orders exist", () => {
+  // Ordering guard, upper half. The block check stays ABOVE the new branch:
+  // when a challenge is actually established, that is the more specific and
+  // more actionable diagnosis, and it must not be relabelled.
+  assert.deepEqual(
+    classifyEmptyListPage({ ...EMPTY_STATE_DIAG, incapsula_block: true }, 1, RESOLVED_MAX_PAGE, {
+      hasPriorOrders: true,
+    }),
+    { action: "abort", reason: "source_auth_or_challenge" }
+  );
+  assert.deepEqual(
+    classifyEmptyListPage({ ...EMPTY_STATE_DIAG, password_form: true }, 1, RESOLVED_MAX_PAGE, {
+      hasPriorOrders: true,
+    }),
+    { action: "abort", reason: "source_auth_or_challenge" }
+  );
+});
+
+test("classifyEmptyListPage: prior orders do not relabel a page that never claimed to be empty", () => {
+  // Ordering guard, lower half. The new branch is gated on `empty_state`, so
+  // real selector drift keeps reporting as drift regardless of prior orders —
+  // the guard adds a failure mode, it does not swallow the existing ones.
+  assert.deepEqual(
+    classifyEmptyListPage({ ...EMPTY_STATE_DIAG, empty_state: false }, 1, RESOLVED_MAX_PAGE, {
+      hasPriorOrders: true,
+    }),
+    { action: "abort", reason: "selector_drift" }
+  );
+});
+
+test("priorOrdersEvidenceFromState: a committed orders checkpoint is what arms the guard", () => {
+  // Pins the checkpoint-to-evidence link that collect() depends on. Without
+  // this test, hardcoding `hasPriorOrders: false` in collect() would disarm
+  // the guard for every connection while every other test still passed.
+  assert.deepEqual(priorOrdersEvidenceFromState({ checkpoint: "2026-08-17" }), { hasPriorOrders: true });
+  // A never-collected connection stores no checkpoint at all. `exactOptional
+  // PropertyTypes` makes an explicitly-undefined checkpoint unrepresentable,
+  // so the absent-property case is the only "no prior orders" shape there is.
+  assert.deepEqual(priorOrdersEvidenceFromState({}), { hasPriorOrders: false });
+});
+
+test("runForwardScan: H-E-B's real 'No past orders' page aborts when this connection already collected orders", async () => {
+  // Integration half, through the same live 2026-08-21 capture the
+  // proven-empty test uses. Same page, same markup, opposite verdict — the
+  // only difference is that this connection has a prior orders checkpoint.
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ ordersCoverage, wantsItems: false, wantsOrders: true });
+  const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  await assert.rejects(
+    () => runForwardScan(page, deps, makeRunFlags(), "2026-08-01", { hasPriorOrders: true }),
+    /heb_empty_list_page_heb_empty_history_after_prior_orders/,
+    "an account with prior orders cannot be proven empty by a page render"
+  );
+
+  // The failure must be legible to the owner, and must not blame anything the
+  // page does not establish.
+  const skip = protocolMessages.find(
+    (m) => m.type === "SKIP_RESULT" && (m as { reason: string }).reason === "heb_empty_history_after_prior_orders"
+  ) as { message: string; diagnostics: Record<string, unknown> } | undefined;
+  assert.ok(skip, "the abort must surface a SKIP_RESULT the owner can read");
+  assert.match(skip.message, /previously collected orders/);
+  assert.match(skip.message, /retained and untouched/);
+  assert.doesNotMatch(skip.message, /selector|drift/i, "selector drift is not established and must not be blamed");
+  assert.doesNotMatch(skip.message, /block|bot|captcha/i, "a bot block is not established and must not be blamed");
+  assert.equal(skip.diagnostics.empty_state, true);
+  assert.equal(skip.diagnostics.has_prior_orders, true);
+
+  // Nothing may be recorded as covered, and no proven-zero coverage may be
+  // claimed: the scan threw before any coverage accounting ran.
+  assert.equal(ordersCoverage.considered.length, 0);
+  assert.equal(ordersCoverage.covered.length, 0);
+  assert.equal(findDetailCoverage(protocolMessages), undefined, "an aborted run must claim no coverage at all");
+});
+
+test("runForwardScan: the empty-history abort emits no records and no STATE cursor", async () => {
+  // Requirement: the guard must not delete, tombstone, or overwrite stored
+  // records, and must not advance or clear the orders cursor. The connector's
+  // only durable writes are protocol messages, so proving it emitted no
+  // RECORD and no STATE proves the stored copy and the prior checkpoint are
+  // both untouched.
+  const { deps, emitted, protocolMessages } = makeRecordingDeps({ wantsItems: false, wantsOrders: true });
+  const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  await assert.rejects(() => runForwardScan(page, deps, makeRunFlags(), "2026-08-01", { hasPriorOrders: true }));
+
+  assert.equal(emitted.length, 0, "no records may be written on a contradicted-empty run");
+  assert.equal(
+    protocolMessages.filter((m) => m.type === "STATE").length,
+    0,
+    "the orders cursor must not be advanced or cleared"
+  );
+  // Deletion needs no assertion: the connector protocol has no delete or
+  // tombstone message, so a connector cannot remove a stored record even in
+  // principle. The only durable writes available here are RECORD and STATE,
+  // and both are asserted absent above.
+  assert.deepEqual(
+    [...new Set(protocolMessages.map((m) => m.type))].sort(),
+    ["SKIP_RESULT"],
+    "the abort's only durable output is the owner-facing SKIP_RESULT"
   );
 });
 

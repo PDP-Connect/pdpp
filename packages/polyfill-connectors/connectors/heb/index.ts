@@ -298,6 +298,29 @@ interface EmptyListPageClassification {
 }
 
 /**
+ * What this connection already knows about its own order history, threaded
+ * explicitly into the otherwise-pure empty-page classifier.
+ *
+ * `hasPriorOrders` is true when a prior run committed an `orders` checkpoint —
+ * the in-connector proof that H-E-B once listed orders for this account. It is
+ * durable evidence about the CONNECTION, which no single page render can
+ * retract.
+ */
+export interface PriorOrdersEvidence {
+  hasPriorOrders: boolean;
+}
+
+/** Owner-facing message for the one classification whose whole point is to be
+ *  read by a person. Says exactly what was observed and what was NOT concluded:
+ *  neither selector drift nor a bot block is established, so neither is named.
+ *  Stored records are untouched — this connector never deletes, tombstones, or
+ *  overwrites on an empty page; it only declines to advance. */
+export const HEB_EMPTY_AFTER_PRIOR_ORDERS_MESSAGE =
+  "H-E-B reported no order history, but PDPP previously collected orders for this account. " +
+  "Your stored orders are retained and untouched. This run was stopped instead of recording " +
+  "an empty history, because a page showing no orders cannot prove the history is gone.";
+
+/**
  * Classify a zero-order list page: distinguish a genuine end-of-list from
  * selector drift, an auth/challenge block, or missing/contradictory
  * pagination metadata. Pure so the branch is unit-testable without driving
@@ -317,10 +340,31 @@ interface EmptyListPageClassification {
 export function classifyEmptyListPage(
   diag: ListPageDiagnostics,
   pageNum: number,
-  maxPageResolution: MaxPageResolution
+  maxPageResolution: MaxPageResolution,
+  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
 ): EmptyListPageClassification {
   if (diag.incapsula_block || diag.password_form) {
     return { action: "abort", reason: "source_auth_or_challenge" };
+  }
+  // A connection that has already collected orders can never prove itself
+  // empty. `hasPriorOrders` is this connection's own prior `orders` checkpoint
+  // — durable evidence that H-E-B previously listed orders for this account —
+  // threaded in explicitly by `collect()` rather than read from ambient state,
+  // so this branch stays pure and unit-testable.
+  //
+  // Without this check, a connection holding 41 orders could complete a run as
+  // "succeeded, considered:0, covered:0, checkpoint committed", replacing a
+  // measured coverage claim with a fabricated proven-zero. The two causes are
+  // indistinguishable from the page alone — H-E-B may have purged the history
+  // upstream (making our stored copy the only copy), or the page may render
+  // empty for a degraded session — so the run fails loudly and lets a human
+  // decide, rather than guessing.
+  //
+  // Ordering: BELOW the block/auth check (an established block is the more
+  // specific diagnosis and keeps its own reason), and ABOVE the empty_state
+  // branch, so a source-authored empty state cannot short-circuit past it.
+  if (diag.empty_state && priorOrdersEvidence.hasPriorOrders) {
+    return { action: "abort", reason: "heb_empty_history_after_prior_orders" };
   }
   // H-E-B's own empty-state component, rendered inside the order-results
   // container, is the source asserting the history is empty. Trust it as
@@ -362,12 +406,13 @@ export function classifyEmptyListPage(
 async function reportEmptyPageDiagnostics(
   page: Page,
   pageNum: number,
-  emit: BrowserCollectContext["emit"]
+  emit: BrowserCollectContext["emit"],
+  priorOrdersEvidence: PriorOrdersEvidence
 ): Promise<EmptyListPageClassification> {
   const html = await page.content().catch((): string => "");
   const diag = diagnoseEmptyListPage(html, page.url());
   const maxPageResolution = resolveMaxPage(html);
-  const classification = classifyEmptyListPage(diag, pageNum, maxPageResolution);
+  const classification = classifyEmptyListPage(diag, pageNum, maxPageResolution, priorOrdersEvidence);
   if (classification.action === "terminal") {
     return classification;
   }
@@ -375,10 +420,15 @@ async function reportEmptyPageDiagnostics(
     type: "SKIP_RESULT",
     stream: "orders",
     reason: classification.reason,
-    message: `H-E-B list page ${pageNum}: empty page is not a proven terminal page (${classification.reason}).`,
+    message:
+      classification.reason === "heb_empty_history_after_prior_orders"
+        ? HEB_EMPTY_AFTER_PRIOR_ORDERS_MESSAGE
+        : `H-E-B list page ${pageNum}: empty page is not a proven terminal page (${classification.reason}).`,
     diagnostics: {
       any_card: diag.any_card,
       body_preview: "",
+      empty_state: diag.empty_state,
+      has_prior_orders: priorOrdersEvidence.hasPriorOrders,
       incapsula_block: diag.incapsula_block,
       max_page_resolution: maxPageResolution,
       order_cards: diag.order_cards,
@@ -869,7 +919,8 @@ export async function runForwardScan(
   page: Page,
   deps: EmitDeps,
   flags: RunFlags,
-  boundary: string | null
+  boundary: string | null,
+  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
 ): Promise<string | null> {
   let newestOrderDate: string | null = null;
   let pageNum = 1;
@@ -879,7 +930,7 @@ export async function runForwardScan(
   // list/item records and two DETAIL_GAPs for one logical order (S5).
   const seenOrderIds = new Set<string>();
   while (pageNum <= MAX_LIST_PAGES) {
-    const listPage = await loadListPage(page, pageNum, deps.emit, deps.waitForHydration);
+    const listPage = await loadListPage(page, pageNum, deps.emit, priorOrdersEvidence, deps.waitForHydration);
     if (listPage === "terminal") {
       break;
     }
@@ -947,6 +998,7 @@ async function loadListPage(
   page: Page,
   pageNum: number,
   emit: BrowserCollectContext["emit"],
+  priorOrdersEvidence: PriorOrdersEvidence,
   waitForHydration?: () => Promise<void>
 ): Promise<LoadedListPage | "terminal"> {
   const url = `https://www.heb.com/my-account/your-orders?page=${pageNum}`;
@@ -990,7 +1042,7 @@ async function loadListPage(
     }
     return { maxPage: maxPageResolution.value, orders };
   }
-  const classification = await reportEmptyPageDiagnostics(page, pageNum, emit);
+  const classification = await reportEmptyPageDiagnostics(page, pageNum, emit, priorOrdersEvidence);
   if (classification.action === "terminal") {
     return "terminal";
   }
@@ -1052,6 +1104,22 @@ export async function emitOrdersCoverage(deps: EmitDeps, coverage: OrdersCoverag
 interface OrdersStateShape {
   checkpoint?: string;
   fingerprints?: Record<string, string>;
+}
+
+/**
+ * Derive the prior-orders evidence from this connection's stored `orders`
+ * state. Exported and pure because `collect()` lives inside the
+ * `isMainModule` block and cannot be driven from a test — without this seam
+ * the checkpoint-to-evidence link would be the one untested link in the
+ * chain, and a mutation that hardcodes `false` here (silently disarming the
+ * guard for every connection) would go unnoticed.
+ *
+ * Any committed checkpoint counts, including one recorded by a run that
+ * emitted no new records: the checkpoint's existence is the claim that H-E-B
+ * once listed orders for this account.
+ */
+export function priorOrdersEvidenceFromState(ordersState: { checkpoint?: string }): PriorOrdersEvidence {
+  return { hasPriorOrders: Boolean(ordersState.checkpoint) };
 }
 
 /**
@@ -1120,6 +1188,12 @@ if (isMainModule(import.meta.url)) {
 
       const ordersState = (state.orders ?? {}) as OrdersStateShape;
       const boundary = resumeBoundary(ordersState.checkpoint);
+      // A committed `orders` checkpoint is this connection's own record that
+      // H-E-B has listed orders for this account before. It is what makes a
+      // later "no order history" page a contradiction to escalate rather than
+      // a result to trust. Read here, next to the checkpoint it derives from,
+      // and passed down explicitly.
+      const priorOrdersEvidence = priorOrdersEvidenceFromState(ordersState);
 
       const ordersFingerprintCursor = wantsOrders
         ? openFingerprintCursor(state.orders, { excludeFromFingerprint: ["fetched_at"] })
@@ -1178,7 +1252,7 @@ if (isMainModule(import.meta.url)) {
 
       await progress("H-E-B session verified; scanning order history");
 
-      const newestOrderDate = await runForwardScan(page, deps, flags, boundary);
+      const newestOrderDate = await runForwardScan(page, deps, flags, boundary, priorOrdersEvidence);
 
       if (wantsOrders) {
         const cursor = buildOrdersStateCursor(newestOrderDate, ordersState, ordersFingerprintCursor);
