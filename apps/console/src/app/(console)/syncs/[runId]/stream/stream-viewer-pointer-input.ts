@@ -67,3 +67,36 @@ export function readablePointerInput(event: ReadablePointerEventLike): ReadableP
   }
   return { pointerType, type };
 }
+
+/**
+ * Normalizes `PointerEvent.button` into a primary-contact button index that is
+ * safe to forward, for touch and pen only.
+ *
+ * The gate above stopped *dropping* touch events with a non-zero `button`, but
+ * the raw value is still forwarded in the wire payload — and downstream it is
+ * arithmetic, not a filter. `NekoPointerController.handle` (remote-surface
+ * 1.5.2, `controllers/neko-pointer-controller.js`) computes the X11 button as
+ * `(event.button ?? 0) + 1`, where X11 button 1 is primary. A touch
+ * `pointerdown` reporting `button === -1` — the same non-spec value this
+ * module's own comment above documents as real on touch input paths —
+ * therefore becomes X11 button **0**, which is not a button at all, so neko
+ * presses nothing and the tap never clicks.
+ *
+ * Verified against the installed controller by replaying the exact client
+ * payload shape: `button: 0` on down yields `buttonDown(1)`, while
+ * `button: -1` on down yields `buttonDown(0)`.
+ *
+ * `pointerup` was already safe by luck — the controller prefers the remembered
+ * press button over the event's own — but `pointerdown` has nothing to fall
+ * back to, so it must be normalized here at the payload boundary.
+ *
+ * Touch and pen have no secondary button, so pinning them to primary loses no
+ * information. Mouse is passed through untouched: its `button` is meaningful
+ * (middle/right/back/forward) and must survive.
+ */
+export function normalizedPointerButton(button: number, pointerType: RemotePointerType): number {
+  if (pointerType === "mouse") {
+    return button;
+  }
+  return button < 0 ? 0 : button;
+}
