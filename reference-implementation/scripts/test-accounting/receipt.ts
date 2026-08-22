@@ -91,6 +91,7 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "Postgres sort repair fences all manifest streams for an instance and blob binding respects the same fence",
   "Postgres startup does not require pg_search and keeps native FTS as fallback",
   "Postgres store factory is consistent with the resolver",
+  "Postgres updateStatus merges sourceBindingPatch into source_binding_json via jsonb ||, preserving existing keys",
   "PostgreSQL manifest receipt changes once and BIGINT exhaustion remains canonical",
   "PostgreSQL projection faults preserve canonical record, schedule, and lifecycle writes, then repair passes after recovery",
   "PostgreSQL trigger omission fails before migration and a live writer waits for the atomic reinstall",

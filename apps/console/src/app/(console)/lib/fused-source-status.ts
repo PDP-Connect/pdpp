@@ -40,6 +40,8 @@ import type { SourceStatusFlag, SourceStatusKind, SourceStatusTone } from "./sou
  * the worst axis can be selected by comparison rather than by branch order.
  */
 const SEVERITY_BY_KIND: Record<SourceStatusKind, number> = {
+  archived: 0,
+  setup_failed: 0,
   blocked: 0,
   degraded: 1,
   unknown: 2,

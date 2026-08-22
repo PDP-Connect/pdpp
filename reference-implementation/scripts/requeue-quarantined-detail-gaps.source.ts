@@ -101,7 +101,15 @@ test("a space-separated --reason value is read, not replaced with 'true'", () =>
   );
   const result = spawnSync(
     process.execPath,
-    [relativeCliPath, "--connector-id", "gmail", "--connector-instance-id", "cin_test", "--reason", "too_large"],
+    [
+      relativeCliPath,
+      "--connector-id",
+      "test-connector",
+      "--connector-instance-id",
+      "cin_test",
+      "--reason",
+      "too_large",
+    ],
     { cwd: repoRoot, encoding: "utf8", env }
   );
 
@@ -124,7 +132,7 @@ test("space-separated required arguments satisfy validation", () => {
   );
   const result = spawnSync(
     process.execPath,
-    [relativeCliPath, "--connector-id", "gmail", "--connector-instance-id", "cin_test"],
+    [relativeCliPath, "--connector-id", "test-connector", "--connector-instance-id", "cin_test"],
     { cwd: repoRoot, encoding: "utf8", env }
   );
 
@@ -144,7 +152,7 @@ test("a value-taking flag given no value is refused, never defaulted", () => {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => key !== "PDPP_DATABASE_URL" && key !== "PDPP_TEST_POSTGRES_URL")
   );
-  const result = spawnSync(process.execPath, [relativeCliPath, "--connector-id", "gmail", "--reason"], {
+  const result = spawnSync(process.execPath, [relativeCliPath, "--connector-id", "test-connector", "--reason"], {
     cwd: repoRoot,
     encoding: "utf8",
     env,
@@ -163,7 +171,7 @@ test("--apply does not consume the following flag's value", () => {
   );
   const result = spawnSync(
     process.execPath,
-    [relativeCliPath, "--apply", "--connector-id", "gmail", "--connector-instance-id", "cin_test"],
+    [relativeCliPath, "--apply", "--connector-id", "test-connector", "--connector-instance-id", "cin_test"],
     { cwd: repoRoot, encoding: "utf8", env }
   );
 
