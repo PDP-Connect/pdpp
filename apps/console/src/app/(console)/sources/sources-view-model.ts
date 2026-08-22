@@ -41,6 +41,7 @@ import {
 } from "pdpp-reference-implementation/connection-setup-plan";
 import { formatStreamCollectionFacts, indexCollectionReportByStream } from "../lib/collection-report.ts";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
+import type { FusedSourceStatus } from "../lib/fused-source-status.ts";
 import type { FormattedNextAction } from "../lib/next-action.ts";
 import type {
   RefConnectorRunSummary,
@@ -140,6 +141,11 @@ export interface SourceInstanceView {
   detailHref: string;
   /** Owner-facing display name (passport + list title). */
   displayName: string;
+  /**
+   * The fused owner-facing status line (state · last updated · syncing now).
+   * Never cheerier than its worst axis; see `lib/fused-source-status.ts`.
+   */
+  fusedStatus: FusedSourceStatus;
   /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
   icon?: SourceManifestLike["icon"];
   /** Stable React key + route id. */
@@ -552,6 +558,7 @@ export function toSourceInstanceView(
   const nextAction = primaryVerdictAction?.ownerRunnable ? null : actionability.nextAction;
   const { ownerActionCue } = actionability;
   const status = actionability.renderedStatus;
+  const { fusedStatus } = actionability;
 
   const manifest = options.manifests
     ? options.manifests.find((candidate) => manifestMatchesConnectorId(candidate, connectorId))
@@ -633,6 +640,7 @@ export function toSourceInstanceView(
     passportFields,
     primaryVerdictAction,
     revoked,
+    fusedStatus,
     status,
     streams,
     totalRecords: summary.total_records,

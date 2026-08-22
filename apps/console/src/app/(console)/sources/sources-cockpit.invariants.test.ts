@@ -104,3 +104,31 @@ test("source list shows advisory owner-action cues as non-mutating review copy",
   assert.doesNotMatch(cueElement, BUTTON_TAG_RE);
   assert.doesNotMatch(cueElement, MUTATING_ACTION_RE);
 });
+
+// The fused status line must actually reach the owner's eyes. Before it landed,
+// the row's only status signal was a colored glyph whose label was `sr-only`,
+// so a sighted owner could not tell fresh from stale, or syncing from stuck,
+// without opening the detail panel. See
+// design-notes/fused-source-status-2026-08-22.md.
+const FUSED_STATUS_TESTID_RE = /data-testid="sources-fused-status"/;
+const FUSED_STATUS_RENDERS_LINE_RE = /\{instance\.fusedStatus\.line\}/;
+const FUSED_STATUS_TONE_RE = /data-tone=\{instance\.fusedStatus\.tone\}/;
+// The old sr-only duplicate: with the status visible, keeping it would make
+// screen readers announce every row's status twice.
+const SR_ONLY_STATUS_DUPLICATE_RE = /<span className="sr-only">\{instance\.status\.label\}<\/span>/;
+
+test("the source row renders the fused status line visibly", async () => {
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.match(view, FUSED_STATUS_TESTID_RE);
+  assert.match(view, FUSED_STATUS_RENDERS_LINE_RE);
+  assert.match(view, FUSED_STATUS_TONE_RE);
+});
+
+test("the visible fused status replaces the sr-only status rather than doubling it", async () => {
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.doesNotMatch(
+    view,
+    SR_ONLY_STATUS_DUPLICATE_RE,
+    "the status is now visible text, so the sr-only copy would be announced twice"
+  );
+});

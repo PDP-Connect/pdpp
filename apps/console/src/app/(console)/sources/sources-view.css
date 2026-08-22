@@ -110,8 +110,79 @@ a.rr-s-item {
   white-space: nowrap;
 }
 
-.rr-s-item__cue {
+/* The fused status line (state · last updated · syncing now). Sits directly
+   under the account line and above the owner-action cue, so the row reads
+   identity → facts → status → action. Tone is carried by the text color, the
+   same vocabulary the status dot uses, so the two can never disagree. */
+.rr-s-item__status {
   grid-row: 3;
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* Syncing is additive context, so it gets a quiet pulse rather than a color of
+   its own — the color slot stays owned by the worst honest axis.
+   The dot's box is declared unconditionally below so that toggling the syncing
+   state changes only opacity/animation, never geometry (see the
+   "status state does not create separate row geometry" invariant). */
+.rr-s-status::after {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+  content: "";
+  background: currentcolor;
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.rr-s-status[data-syncing="true"]::after {
+  opacity: 0.55;
+  animation: rr-s-status-pulse 1.6s ease-in-out infinite;
+}
+
+/* State changes COLOR ONLY — never box metrics. Keeping these rules to `color`
+   is what upholds the "status state does not create separate row geometry"
+   invariant: every row occupies identical space whatever its state, so the list
+   never reflows as sources change health. */
+.rr-s-status[data-tone="success"] {
+  color: var(--muted-foreground);
+}
+
+.rr-s-status[data-tone="warning"] {
+  color: var(--warning-foreground, var(--foreground));
+}
+
+.rr-s-status[data-tone="destructive"] {
+  color: var(--destructive-foreground, var(--destructive));
+}
+
+@keyframes rr-s-status-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rr-s-status[data-syncing="true"]::after {
+    opacity: 0.7;
+    animation: none;
+  }
+}
+
+.rr-s-item__cue {
+  grid-row: 4;
   grid-column: 1 / -1;
   width: fit-content;
   padding: 2px 7px;
