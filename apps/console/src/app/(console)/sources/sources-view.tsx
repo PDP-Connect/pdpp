@@ -513,8 +513,17 @@ function InstancePassport({
         ) : null}
         {instance.setupFailed ? (
           <p className="rr-s-revoked-note">
-            This connection attempt never finished setup. No records were collected — start a new attempt from Add a
-            source.
+            {/* Server-owned sentence so a TTL-expired attempt says so plainly
+                ("expired while waiting for you to finish signing in")
+                instead of collapsing into the same generic sentence an
+                owner-abandoned or connector-failed attempt gets — see
+                `archiveRenderedVerdict` in `server/ref-control.ts`. The
+                fallback (pre-existing generic copy, own CTA appended) applies
+                only when the mirror predates `rendered_verdict` — never for a
+                live reference, whose forward_statement always names the next
+                step itself. */}
+            {instance.setupFailedForwardStatement ??
+              "This connection attempt never finished setup. No records were collected — start a new attempt from Add a source."}
           </p>
         ) : null}
         {instance.revoked && !instance.setupFailed ? (

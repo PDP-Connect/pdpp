@@ -294,6 +294,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstancesUpdateDisplayName: MutationQuery;
   readonly connectorInstancesUpdateStaticSecretBinding: MutationQuery;
   readonly connectorInstancesUpdateStatus: MutationQuery;
+  readonly connectorInstancesUpdateStatusWithBindingPatch: MutationQuery;
   readonly connectorSummaryEvidenceMarkDirtyByConnectorInstance: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
   readonly controllerDeleteSchedule: MutationQuery;

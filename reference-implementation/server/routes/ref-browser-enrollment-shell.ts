@@ -113,7 +113,12 @@ interface ConnectorInstanceStore {
   get: (id: string) => Promise<ConnectorInstance | null> | ConnectorInstance | null;
   updateStatus: (
     connectorInstanceId: string,
-    args: { status: string; updatedAt: string; revokedAt?: string | null }
+    args: {
+      status: string;
+      updatedAt: string;
+      revokedAt?: string | null;
+      sourceBindingPatch?: Record<string, unknown> | null;
+    }
   ) => Promise<ConnectorInstance | null> | ConnectorInstance | null;
   upsert: (record: {
     ownerSubjectId: string;
@@ -420,6 +425,12 @@ export function mountRefBrowserEnrollmentShell(app: AppLike, ctx: MountRefBrowse
         const now = ctx.now ? ctx.now() : new Date().toISOString();
         await store.updateStatus(connectorInstanceId, {
           revokedAt: now,
+          // Distinguishes an owner's explicit dismissal from the TTL sweep's
+          // `ttl_expired` (browser-enrollment-shell-retirement.ts) — an owner
+          // who clicks away mid-setup is not the same story as a setup that
+          // expired while genuinely waiting on them, and `deriveSourceVisibility`
+          // (ref-control.ts) renders each honestly.
+          sourceBindingPatch: { revocation_reason: "owner_abandoned" },
           status: "revoked",
           updatedAt: now,
         });
