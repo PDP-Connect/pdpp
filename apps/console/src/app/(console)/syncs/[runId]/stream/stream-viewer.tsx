@@ -141,7 +141,7 @@ import {
   readViewerViewport,
   viewportLayoutFromInfo,
 } from "./stream-viewer-geometry.ts";
-import { readablePointerInput } from "./stream-viewer-pointer-input.ts";
+import { normalizedPointerButton, readablePointerInput } from "./stream-viewer-pointer-input.ts";
 import { parseAttachedMessage } from "./stream-viewer-protocol.ts";
 import {
   createPdppRemoteSurfaceTransport,
@@ -4192,7 +4192,11 @@ function NekoSurface({
       }
       const pointerIntent: Extract<RemoteSurfaceInputPayload, { type: "pointer" }> = {
         action: type,
-        button: event.button,
+        // Touch/pen `button` is normalized to primary before it leaves the
+        // client: neko turns this into an X11 button by adding 1, so a raw
+        // `-1` from a touch pointerdown would press X11 button 0 (no button)
+        // and the tap would never click. See `normalizedPointerButton`.
+        button: normalizedPointerButton(event.button, pointerType),
         buttons: event.buttons,
         clickCount: event.detail,
         pointerId: event.pointerId,
