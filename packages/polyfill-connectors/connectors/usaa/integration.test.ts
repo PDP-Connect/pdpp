@@ -63,6 +63,7 @@ import {
   type HydrationSummary,
   hydrationSuccess,
   isNoDataExportMessage,
+  resolveUsaaOfferInterstitialEscape,
   runSingleLadderAttempt,
   shouldParseStatementTitle,
   USAA_RETRYABLE_PATTERN,
@@ -572,6 +573,214 @@ test("classifyUsaaNoExportRoute requires both a closed account route and structu
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/logon", true), "interstitial");
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/dashboard", true), "unknown");
   assert.equal(classifyUsaaNoExportRoute("https://private.example/my/checking", true), "unknown");
+});
+
+/**
+ * USAA serves a marketing offer in front of an account page. The session is
+ * alive; the member is simply being shown "Depositing cash just got more
+ * convenient!" before the page they asked for.
+ *
+ * Regression (owner-reported, USAA `transactions` stuck at 2 of 4 accounts):
+ * BOTH checking accounts landed on
+ * `/my/banking-offer/atm-deposit?...&accountType=checking&goto=...` instead of
+ * `/my/checking`, so no Export button was found and the run reported
+ * `source_structure_changed` — "USAA changed their UI" — for two accounts that
+ * were perfectly fine. Credit cards, which are not offered ATM deposits,
+ * exported normally. Captured live 2026-07-14 (page title "Find an ATM | USAA").
+ */
+test("resolveUsaaOfferInterstitialEscape: prefers the offer page's own goto target", () => {
+  assert.equal(
+    resolveUsaaOfferInterstitialEscape(
+      "https://www.usaa.com/my/banking-offer/atm-deposit?accountId=private&accountType=checking&goto=https://www.usaa.com/my/checking%3FaccountId%3Dprivate",
+      "https://www.usaa.com/my/checking?accountId=fallback"
+    ),
+    "https://www.usaa.com/my/checking?accountId=private",
+    "the offer page states where the member was headed; that is the honest way back"
+  );
+});
+
+test("resolveUsaaOfferInterstitialEscape: falls back to the requested account URL", () => {
+  // A `goto` that is off-host or points somewhere other than an account detail
+  // route is REFUSED, so a redirect chain cannot steer the connector.
+  for (const goto of [
+    "https://www.usaa.com/inet/ent_home/CpHome",
+    "https://evil.example/my/checking",
+    "%%not-a-url%%",
+  ]) {
+    assert.equal(
+      resolveUsaaOfferInterstitialEscape(
+        `https://www.usaa.com/my/banking-offer/atm-deposit?goto=${encodeURIComponent(goto)}`,
+        "https://www.usaa.com/my/checking?accountId=private"
+      ),
+      "https://www.usaa.com/my/checking?accountId=private",
+      `goto=${goto} must not be followed`
+    );
+  }
+});
+
+test("resolveUsaaOfferInterstitialEscape: only offer routes escape, and never into a loop", () => {
+  // Pages that are already the destination, or that this function has no
+  // honest opinion about, must NOT trigger a re-navigation.
+  for (const finalUrl of [
+    "https://www.usaa.com/my/checking?accountId=private",
+    "https://www.usaa.com/challenge/step",
+    "https://www.usaa.com/my/dashboard",
+    "https://evil.example/my/banking-offer/atm-deposit",
+    "not-a-url",
+  ]) {
+    assert.equal(
+      resolveUsaaOfferInterstitialEscape(finalUrl, "https://www.usaa.com/my/checking?accountId=private"),
+      null,
+      `${finalUrl} must not be treated as an escapable offer interstitial`
+    );
+  }
+  // A self-referential offer page cannot produce an infinite retry.
+  assert.equal(
+    resolveUsaaOfferInterstitialEscape(
+      "https://www.usaa.com/my/banking-offer/atm-deposit",
+      "https://www.usaa.com/my/banking-offer/atm-deposit"
+    ),
+    null,
+    "an escape target identical to the page just loaded must be refused"
+  );
+});
+
+/** A page that serves the ATM-deposit offer first and the real account page
+ *  (with a working Export button) only after the connector navigates through
+ *  it — exactly the live sequence. Records every `goto` so the test proves the
+ *  connector actually navigated rather than merely tolerating the offer. */
+function makeOfferInterstitialPage(visited: string[]): Page {
+  const offerUrl =
+    "https://www.usaa.com/my/banking-offer/atm-deposit?accountId=private&accountType=checking" +
+    "&goto=https%3A%2F%2Fwww.usaa.com%2Fmy%2Fchecking%3FaccountId%3Dprivate";
+  return Object.assign({} as Page, {
+    evaluate() {
+      return Promise.resolve({
+        account_detail_marker_count: 0,
+        navigation_marker_count: 0,
+        target_count: 0,
+        transaction_marker_count: 0,
+      });
+    },
+    goto(target: string) {
+      visited.push(target);
+      return Promise.resolve(null);
+    },
+    keyboard: {
+      press: () => Promise.resolve(),
+    },
+    locator(selector: string) {
+      // The Export button exists ONLY once we are off the offer page.
+      const onAccountPage = visited.length > 1;
+      if (selector === "button.ent-as-utility-bar__item.export" && onAccountPage) {
+        return {
+          click: () => Promise.resolve(),
+          count: () => Promise.resolve(1),
+          first() {
+            return this;
+          },
+        };
+      }
+      return {
+        count: () => Promise.resolve(0),
+        filter() {
+          return this;
+        },
+        first() {
+          return this;
+        },
+        innerHTML: () => Promise.reject(new Error("no dialog")),
+        waitFor: () => Promise.reject(new Error("timeout waiting for select")),
+      };
+    },
+    url() {
+      return visited.length > 1 ? "https://www.usaa.com/my/checking?accountId=private" : offerUrl;
+    },
+  });
+}
+
+test("driveExport navigates through the ATM-deposit offer instead of reporting a missing export affordance", async () => {
+  const visited: string[] = [];
+  const diagnostics: DiagnosticInfo[] = [];
+  await driveExport(makeOfferInterstitialPage(visited), "https://www.usaa.com/my/checking?accountId=private", {
+    onDiagnostics: (info) => diagnostics.push(info),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  });
+
+  assert.deepEqual(
+    visited,
+    ["https://www.usaa.com/my/checking?accountId=private", "https://www.usaa.com/my/checking?accountId=private"],
+    "the connector must re-navigate to the account page after landing on the offer"
+  );
+  // The point of the fix: this account is NOT reported as a structural change.
+  assert.equal(
+    diagnostics.find((info) => info.phase === "no_export_affordance"),
+    undefined,
+    "an offer interstitial must never be reported as a missing export affordance — that is the false " +
+      "`source_structure_changed` that held USAA transactions at 2 of 4 accounts"
+  );
+});
+
+/**
+ * The offer page can itself bounce to logon — the session may die DURING the
+ * escape hop, not only before it. That must surface as the existing
+ * session-dead outcome (which triggers re-auth and excludes the account from
+ * the coverage denominator), never as a missing export affordance, which would
+ * blame the source's UI for an expired session.
+ */
+test("driveExport reports a session death that happens during the offer escape, not a missing affordance", async () => {
+  const visited: string[] = [];
+  const diagnostics: DiagnosticInfo[] = [];
+  const offerUrl =
+    "https://www.usaa.com/my/banking-offer/atm-deposit?goto=https%3A%2F%2Fwww.usaa.com%2Fmy%2Fchecking%3FaccountId%3Dprivate";
+  const page = Object.assign({} as Page, {
+    evaluate: () =>
+      Promise.resolve({
+        account_detail_marker_count: 0,
+        navigation_marker_count: 0,
+        target_count: 0,
+        transaction_marker_count: 0,
+      }),
+    goto(target: string) {
+      visited.push(target);
+      return Promise.resolve(null);
+    },
+    keyboard: { press: () => Promise.resolve() },
+    locator: () => ({
+      count: () => Promise.resolve(0),
+      filter() {
+        return this;
+      },
+      first() {
+        return this;
+      },
+    }),
+    // First load lands on the offer; the escape hop lands on logon.
+    url: () => (visited.length > 1 ? "https://www.usaa.com/my/logon" : offerUrl),
+  });
+
+  const outcome = await driveExport(page, "https://www.usaa.com/my/checking?accountId=private", {
+    onDiagnostics: (info) => diagnostics.push(info),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  }).then(
+    () => "resolved",
+    (err: unknown) => (err instanceof Error ? err.message : String(err))
+  );
+
+  assert.equal(
+    outcome,
+    "session_dead_redirect_to_logon",
+    "a logon bounce during the escape hop must raise the session-dead signal"
+  );
+  assert.equal(
+    diagnostics.find((info) => info.phase === "no_export_affordance"),
+    undefined,
+    "an expired session must never be reported as USAA changing their export UI"
+  );
 });
 
 test("driveExport records account, challenge, and unrelated routes through the actual no-export path", async () => {
