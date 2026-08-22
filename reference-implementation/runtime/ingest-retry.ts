@@ -199,6 +199,43 @@ export function isRetryableIngestStatus(status: number): boolean {
 }
 
 /**
+ * Structured error codes that mean "the TCP/TLS connection to the RS never
+ * produced a response" — as opposed to a response the RS chose to send (a
+ * status code, handled by {@link isRetryableIngestStatus}). Node's `fetch`
+ * (undici) throws `TypeError: fetch failed` for this whole class, with the
+ * actual cause nested one level down in `error.cause.code`; this reads that
+ * structured field, never the outer message string, for the same reason
+ * {@link isRetryableIngestStatus} reads a numeric status and nothing else.
+ *
+ * This is a distinct failure mode from every case this module already
+ * retries: no HTTP response ever arrived, so there is no status and no body
+ * to inspect. Before this exists, a `fetch()` throw here is UNCAUGHT — it
+ * propagates straight past the retry loop and kills the whole run,
+ * discarding every buffered record and, worse, every stream's staged
+ * checkpoint if the throw lands on the terminal STATE commit instead of a
+ * mid-run batch. Retrying it is safe for the same idempotency reason
+ * {@link isRetryableIngestStatus} is retried: ingest is an upsert on
+ * `(connector_instance_id, stream, record_key)`, and the STATE PUT overwrites
+ * the same cursor row every time.
+ */
+export function isRetryableFetchError(error: unknown): boolean {
+  if (!(error instanceof TypeError)) {
+    return false;
+  }
+  const { cause } = error as { cause?: unknown };
+  const code = cause && typeof cause === "object" ? (cause as { code?: unknown }).code : undefined;
+  return (
+    code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT" ||
+    code === "EAI_AGAIN" ||
+    code === "ENOTFOUND" ||
+    code === "EPIPE" ||
+    code === "UND_ERR_SOCKET"
+  );
+}
+
+/**
  * Parse a `Retry-After` header value into milliseconds.
  *
  * Accepts both RFC 9110 forms: delta-seconds, and an HTTP-date (converted to a
