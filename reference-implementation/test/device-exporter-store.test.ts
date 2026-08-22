@@ -206,6 +206,51 @@ async function runConformance(
   assert.equal(heartbeated.lastHeartbeatStatus, "healthy");
   assert.equal(heartbeated.recordsPending, 7);
 
+  // Dead-letter detail must survive a later heartbeat that omits `last_error`
+  // while the outbox still reports the same dead letter unresolved (the local
+  // collector's "starting"/skip-scan heartbeats never resend `last_error` —
+  // only its completion/corrective heartbeat does). Losing the detail here
+  // hides the one lost record behind a bare "1 failed upload" count with no
+  // way to see what it was (2026-08-22 peregrine Claude Code investigation).
+  await driver.call("markSourceInstanceHeartbeat", "dev_1", "src_1", {
+    lastError: { kind: "dead_letter_backlog", top_dead_letter_classes: [{ count: 1, error_class: "schema_invalid" }] },
+    outboxDiagnostics: { dead_letter: 1, succeeded: 10_000, total: 10_001 },
+    receivedAt: LATER,
+    recordsPending: 0,
+    status: "blocked",
+  });
+  const withDeadLetter = asRecord(await driver.call("getSourceInstance", "dev_1", "src_1"));
+  assert.deepEqual(withDeadLetter.lastError, {
+    kind: "dead_letter_backlog",
+    top_dead_letter_classes: [{ count: 1, error_class: "schema_invalid" }],
+  });
+
+  await driver.call("markSourceInstanceHeartbeat", "dev_1", "src_1", {
+    lastError: null,
+    outboxDiagnostics: { dead_letter: 1, succeeded: 10_000, total: 10_001 },
+    receivedAt: LATER,
+    recordsPending: 0,
+    status: "blocked",
+  });
+  const stillDeadLettered = asRecord(await driver.call("getSourceInstance", "dev_1", "src_1"));
+  assert.deepEqual(stillDeadLettered.lastError, {
+    kind: "dead_letter_backlog",
+    top_dead_letter_classes: [{ count: 1, error_class: "schema_invalid" }],
+  });
+
+  // Once the outbox reports the dead letter cleared (count back to 0), a
+  // heartbeat with no `last_error` must clear the stale detail rather than
+  // leave a resolved failure permanently visible.
+  await driver.call("markSourceInstanceHeartbeat", "dev_1", "src_1", {
+    lastError: null,
+    outboxDiagnostics: { dead_letter: 0, succeeded: 10_001, total: 10_001 },
+    receivedAt: LATER,
+    recordsPending: 0,
+    status: "healthy",
+  });
+  const recovered = asRecord(await driver.call("getSourceInstance", "dev_1", "src_1"));
+  assert.equal(recovered.lastError, null);
+
   // Unrecognized status values must NOT be persisted: only the enum we
   // accept on the heartbeat contract is stored.
   await driver.call("markSourceInstanceHeartbeat", "dev_1", "src_1", {

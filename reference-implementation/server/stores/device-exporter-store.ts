@@ -683,13 +683,18 @@ export function createSqliteDeviceExporterStore() {
     },
 
     markSourceInstanceHeartbeat(deviceId: string, sourceInstanceId: string, record: Row) {
+      const lastErrorJson =
+        record.lastError === undefined || record.lastError === null ? null : JSON.stringify(record.lastError);
+      const outboxDiagnosticsJson = serializeOutboxDiagnostics(record.outboxDiagnostics);
       return exec(referenceQueries.deviceExportersUpdateSourceInstanceHeartbeat, [
         record.receivedAt,
-        record.lastError === undefined ? null : JSON.stringify(record.lastError),
+        lastErrorJson,
+        lastErrorJson,
+        outboxDiagnosticsJson,
         record.receivedAt,
         normalizeHeartbeatStatus(record.status),
         normalizeRecordsPending(record.recordsPending),
-        serializeOutboxDiagnostics(record.outboxDiagnostics),
+        outboxDiagnosticsJson,
         deviceId,
         sourceInstanceId,
       ]).changes;
@@ -1205,23 +1210,30 @@ export function createPostgresDeviceExporterStore() {
     },
 
     async markSourceInstanceHeartbeat(deviceId: string, sourceInstanceId: string, record: Row) {
+      const lastErrorJson =
+        record.lastError === undefined || record.lastError === null ? null : JSON.stringify(record.lastError);
+      const outboxDiagnosticsJson = serializeOutboxDiagnostics(record.outboxDiagnostics);
       const result = await postgresQuery(
         `UPDATE device_source_instances
             SET updated_at = $1,
-                last_error_json = $2::jsonb,
-                last_heartbeat_at = $3,
-                last_heartbeat_status = $4,
-                records_pending = $5,
-                outbox_diagnostics_json = $6::jsonb,
+                last_error_json = CASE
+                  WHEN $2::jsonb IS NOT NULL THEN $2::jsonb
+                  WHEN ($3::jsonb ->> 'dead_letter')::int > 0 THEN last_error_json
+                  ELSE NULL
+                END,
+                last_heartbeat_at = $4,
+                last_heartbeat_status = $5,
+                records_pending = $6,
+                outbox_diagnostics_json = $3::jsonb,
                 manifest_generation = (SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = device_source_instances.connector_instance_id)
           WHERE device_id = $7 AND source_instance_id = $8 AND status = 'active'`,
         [
           record.receivedAt,
-          record.lastError === undefined ? null : JSON.stringify(record.lastError),
+          lastErrorJson,
+          outboxDiagnosticsJson,
           record.receivedAt,
           normalizeHeartbeatStatus(record.status),
           normalizeRecordsPending(record.recordsPending),
-          serializeOutboxDiagnostics(record.outboxDiagnostics),
           deviceId,
           sourceInstanceId,
         ]
