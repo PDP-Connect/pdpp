@@ -24,6 +24,7 @@ export type SourceStatusKind =
   | "paused"
   | "pending"
   | "revoked"
+  | "setup_failed"
   | "unknown";
 
 export type SourceStatusTone = "destructive" | "muted" | "success" | "warning";
@@ -311,7 +312,8 @@ export function deriveRenderedSourceStatus(
   terminalSetupDisposition: RefTerminalSetupDisposition | null = null,
   running = false,
   paused = false,
-  archived = false
+  archived = false,
+  setupFailed = false
 ): SourceStatusFlag {
   // Ranked FIRST, ahead of every verdict-derived tone. An archived source's
   // last run may well have succeeded, so its stored verdict can still be
@@ -321,6 +323,15 @@ export function deriveRenderedSourceStatus(
   // collection is over, and no tone implies otherwise.
   if (archived) {
     return { dot: "⊘", freshnessNote: null, kind: "archived", label: "Archived · not collecting", tone: "muted" };
+  }
+  // Ranked alongside archived, ahead of plain `revoked`: a setup-failed
+  // source is a MORE SPECIFIC terminal state than "Revoked" — it says the
+  // connection never worked in the first place, not that a working one was
+  // taken away. Muted, never a warning/destructive tone: the owner already
+  // knows this attempt did not finish (server-side `archiveRenderedVerdict`
+  // built this label), so there is nothing new to flag as a problem here.
+  if (setupFailed) {
+    return { dot: "⊘", freshnessNote: null, kind: "setup_failed", label: "Setup never completed", tone: "muted" };
   }
   if (revoked) {
     return { dot: "⊘", freshnessNote: null, kind: "revoked", label: "Revoked", tone: "muted" };
@@ -555,11 +566,28 @@ export function isArchivedSource(connector: RefConnectorSummary): boolean {
   return connector.source_visibility === "archived" || connector.source_visibility === "hidden_from_sources";
 }
 
+/**
+ * A SETUP-FAILED source: a revoked retired-setup-shell binding
+ * (`browser_enrollment_shell`/etc.) that never had a successful run.
+ * Server-derived in `deriveSourceVisibility` (`ref-control.ts`) as
+ * `source_visibility: "setup_failed"`.
+ *
+ * Holds zero records by construction — no run against this shell ever
+ * emitted any. Distinct from {@link isArchivedSource}: an archived source
+ * once collected and is now terminal; a setup-failed source never collected
+ * at all. It must never generate owner-facing work on `/syncs`/the
+ * dashboard for the same reason an archived source does not — there is no
+ * live connection behind it, only spent setup mechanics.
+ */
+export function isSetupFailedSource(connector: RefConnectorSummary): boolean {
+  return connector.source_visibility === "setup_failed";
+}
+
 /** The one owner-facing CTA label for resuming a paused connection. */
 export const RESUME_PAUSED_CTA_LABEL = "Resume";
 
 export function sourceWorkItemFromConnector(connector: RefConnectorSummary): SourceWorkItem | null {
-  if (isRevokedConnector(connector) || isArchivedSource(connector)) {
+  if (isRevokedConnector(connector) || isArchivedSource(connector) || isSetupFailedSource(connector)) {
     return null;
   }
 
@@ -636,29 +664,37 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
   const label = connectorLabel(connector);
   const revoked = isRevokedConnector(connector);
   const archived = isArchivedSource(connector);
+  const setupFailed = isSetupFailedSource(connector);
   const paused = !revoked && isPausedConnector(connector);
   const terminalSetupDisposition = connector.terminal_setup_disposition ?? null;
   const pending = !revoked && isSetupInProgressConnector(connector) && terminalSetupDisposition === null;
   const running = connector.last_run !== null && isActiveConnectorRunSummaryStatus(connector.last_run.status);
-  // An archived source offers NO action. Its stored verdict still carries the
-  // required actions from when it was live — typically "Reconnect this account
-  // and collection resumes", which leads nowhere: reconnecting mints a new
-  // connection and resumes nothing here. Suppressing at the projection root
-  // keeps that promise off every surface at once (list cue, passport foot,
-  // /syncs), which is the intent `dfbbb8843` established for these rows.
-  const primaryAction = pending || archived ? null : primaryRequiredAction(connector.rendered_verdict);
-  const primaryVerdictAction = archived
+  // An archived or setup-failed source offers NO action ON THIS ROW. An
+  // archived source's stored verdict still carries the required actions from
+  // when it was live — typically "Reconnect this account and collection
+  // resumes", which leads nowhere: reconnecting mints a new connection and
+  // resumes nothing here. A setup-failed source never had a credential or
+  // schedule to begin with, so its detail page has nothing actionable either
+  // — `NextActionCta` (`sources-view.tsx`) always links to THIS row's detail
+  // page, and that would be a dead end. The honest next step for both is a
+  // fresh attempt, which the page's own "add a source" link already offers.
+  // Suppressing at the projection root keeps every surface (list cue,
+  // passport foot, /syncs) consistent, the same intent `dfbbb8843`
+  // established for archived rows.
+  const noVerdictAction = archived || setupFailed;
+  const primaryAction = pending || noVerdictAction ? null : primaryRequiredAction(connector.rendered_verdict);
+  const primaryVerdictAction = noVerdictAction
     ? null
     : formatPrimaryVerdictAction(connector.rendered_verdict, pending, terminalSetupDisposition);
   return {
     // A failure summary is display formatting for a server verdict. Never use
     // the raw health snapshot as a classifier when the verdict is absent.
     failureSummary:
-      pending || archived || !connector.rendered_verdict
+      pending || noVerdictAction || !connector.rendered_verdict
         ? null
         : deriveFailureSummary(connector.connection_health, connector.rendered_verdict),
     label,
-    nextAction: archived
+    nextAction: noVerdictAction
       ? null
       : formatRenderedRequiredAction(connector.rendered_verdict, pending, terminalSetupDisposition),
     ownerActionByStream: pending ? {} : ownerActionAvailabilityByStream(connector.rendered_verdict ?? null),
@@ -673,7 +709,8 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
       terminalSetupDisposition,
       running,
       paused,
-      isArchivedSource(connector)
+      archived,
+      setupFailed
     ),
     revoked,
     routeId,

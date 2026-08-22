@@ -25,6 +25,7 @@ import {
   buildSourcesChurnAdvisory,
   buildSourcesRuntimeAdvisory,
   collapseDuplicateFallbackSources,
+  collapseSetupFailedSources,
   exploreHrefFor,
   formatSchedule,
   manualUploadHrefForSource,
@@ -944,6 +945,136 @@ test("an archived source offers no Reconnect action — the prompt that leads no
   assert.equal(archived[0]?.primaryVerdictAction, null, "an archived source must not surface a Reconnect action");
   assert.equal(archived[0]?.nextAction, null, "nor as a body CTA");
   assert.equal(archived[0]?.ownerActionCue, null, "nor as a list-row cue");
+});
+
+test("toSourcesView classifies a never-succeeded revoked setup shell as setupFailed, not archived or a live revoked row", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_venmo_shell",
+      connector_id: "venmo",
+      display_name: "Venmo",
+      revoked_at: "2026-08-21T15:42:36.412Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+
+  assert.equal(views.length, 1, "a setup-failed source must still appear — it is the owner's only record of trying");
+  assert.equal(views[0]?.setupFailed, true);
+  assert.equal(views[0]?.archived, false, "setup-failed is distinct from archived — nothing was ever collected");
+});
+
+test("a setup-failed source never renders a healthy status, even with a green stored verdict", () => {
+  const views = toSourcesView([
+    summary({
+      connector_id: "venmo",
+      rendered_verdict: renderedVerdict({ pill: { label: "Healthy", tone: "green" } }),
+      revoked_at: "2026-08-21T15:42:36.412Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+
+  assert.equal(views[0]?.status.kind, "setup_failed", "a green verdict must not survive setup-failure classification");
+  assert.notEqual(views[0]?.status.tone, "success", "a setup-failed source must never render a success tone");
+});
+
+test("a setup-failed source offers no action — no Reconnect, no Try-again CTA on the row, no list cue", () => {
+  const reconnectVerdict = renderedVerdict({
+    channel: "attention",
+    pill: { label: "Can't collect", tone: "red" },
+    required_actions: [
+      {
+        affects: [],
+        audience: "owner",
+        cta: "Reconnect this account",
+        kind: "reauth",
+        satisfied_when: { kind: "credential_present_and_unrejected" },
+        terminal: false,
+        urgency: "soon",
+      },
+    ],
+  });
+
+  const setupFailed = toSourcesView([
+    summary({
+      connector_id: "venmo",
+      rendered_verdict: reconnectVerdict,
+      revoked_at: "2026-08-21T15:42:36.412Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+  assert.equal(
+    setupFailed[0]?.primaryVerdictAction,
+    null,
+    "a setup-failed source must not surface a Reconnect action — there is no connection to reconnect"
+  );
+  assert.equal(setupFailed[0]?.nextAction, null, "nor as a body CTA — the row's own detail page has nothing to offer");
+  assert.equal(setupFailed[0]?.ownerActionCue, null, "nor as a list-row cue");
+});
+
+test("collapseSetupFailedSources coalesces every setup-failed attempt for a connector into one representative row", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_venmo_1",
+      connector_id: "venmo",
+      display_name: "Venmo",
+      revoked_at: "2026-08-21T15:42:36.412Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+    summary({
+      connection_id: "cin_venmo_2",
+      connector_id: "venmo",
+      display_name: "Venmo",
+      revoked_at: "2026-08-21T22:22:07.510Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+    summary({
+      connection_id: "cin_venmo_3",
+      connector_id: "venmo",
+      display_name: "Venmo",
+      revoked_at: "2026-08-22T02:40:11.560Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+
+  assert.equal(views.length, 3, "toSourcesView itself does not merge rows — every attempt is still classified");
+
+  const { setupFailedGroups } = collapseSetupFailedSources(views);
+  assert.equal(setupFailedGroups.length, 1, "three attempts against the same connector collapse to one UI row");
+  assert.equal(setupFailedGroups[0]?.attemptCount, 3);
+  assert.equal(
+    setupFailedGroups[0]?.representative.connectionId,
+    "cin_venmo_3",
+    "the most recent attempt (last in created_at-ordered input) is the representative"
+  );
+});
+
+test("collapseSetupFailedSources keeps a single attempt as its own one-item group — coalescing does not require a minimum count", () => {
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_amazon_1",
+      connector_id: "amazon",
+      revoked_at: "2026-08-18T05:28:03.111Z",
+      source_visibility: "setup_failed",
+      status: "revoked",
+      total_records: 0,
+    }),
+  ]);
+
+  const { setupFailedGroups } = collapseSetupFailedSources(views);
+  assert.equal(setupFailedGroups.length, 1);
+  assert.equal(setupFailedGroups[0]?.attemptCount, 1);
 });
 
 test("toSourcesView keeps a UAT-transferred historical_archive row visible", () => {

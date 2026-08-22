@@ -37,6 +37,18 @@ function groupFragment(
   ]);
 }
 
+function insertRun(connectorInstanceId: string, connectorId: string, status: string, startedAt: string): void {
+  getDb()
+    .prepare(
+      "INSERT INTO run_history(run_id, connector_instance_id, connector_id, source_json, status, started_at, attempt) VALUES (?, ?, ?, '{}', ?, ?, 1)"
+    )
+    .run(`run_${connectorInstanceId}_${startedAt}`, connectorInstanceId, connectorId, status, startedAt);
+}
+
+function enrollmentShellBinding(): Record<string, unknown> {
+  return { kind: "browser_enrollment_shell" };
+}
+
 const NOW = "2026-06-10T18:00:00.000Z";
 
 function seedSqliteConnector(connectorId: string): void {
@@ -264,6 +276,90 @@ test("listSourcesVisibleIdentityPage excludes a grouped fragment (account-unific
       githubRow?.canonicalConnectorInstanceId,
       "cin_github_unresolved",
       "an ungrouped row's canonical id is itself (identity function)"
+    );
+  } finally {
+    closeDb();
+  }
+});
+
+test("listSourcesVisibleIdentityPage returns a revoked browser-enrollment shell that never had a successful run — repeated failed setup is the owner's only record of the attempt", () => {
+  initDb();
+  try {
+    seedSqliteConnector("venmo");
+    const store = createSqliteConnectorInstanceStore();
+
+    store.upsert({
+      connectorId: "venmo",
+      connectorInstanceId: "cin_venmo_shell",
+      createdAt: NOW,
+      displayName: "Venmo",
+      ownerSubjectId: "owner_4",
+      revokedAt: NOW,
+      sourceBinding: enrollmentShellBinding(),
+      sourceBindingKey: "browser_shell_venmo",
+      sourceKind: "browser_collector",
+      status: "revoked",
+      updatedAt: NOW,
+    });
+    insertRun("cin_venmo_shell", "venmo", "failed", "2026-06-10T17:00:00.000Z");
+    insertRun("cin_venmo_shell", "venmo", "abandoned", "2026-06-10T17:30:00.000Z");
+
+    const page = store.listSourcesVisibleIdentityPage("owner_4", { limit: 100 });
+    assert.deepEqual(
+      page.rows.map((row) => row.connectorInstanceId),
+      ["cin_venmo_shell"],
+      "a never-succeeded revoked setup shell must surface on Sources — no other row represents the attempt"
+    );
+
+    const explorePage = store.listOwnerVisibleIdentityPage("owner_4", { limit: 100 });
+    assert.deepEqual(
+      explorePage.rows,
+      [],
+      "the shared owner-visible predicate is UNCHANGED — the never-succeeded escape is Sources-only, not a general policy change"
+    );
+  } finally {
+    closeDb();
+  }
+});
+
+test("listSourcesVisibleIdentityPage still excludes a revoked browser-enrollment shell that DID succeed — its promoted row is the connection to show, not the spent shell", () => {
+  initDb();
+  try {
+    seedSqliteConnector("amazon");
+    const store = createSqliteConnectorInstanceStore();
+
+    store.upsert({
+      connectorId: "amazon",
+      connectorInstanceId: "cin_amazon_shell",
+      createdAt: NOW,
+      displayName: "Amazon",
+      ownerSubjectId: "owner_5",
+      revokedAt: NOW,
+      sourceBinding: enrollmentShellBinding(),
+      sourceBindingKey: "browser_shell_amazon",
+      sourceKind: "browser_collector",
+      status: "revoked",
+      updatedAt: NOW,
+    });
+    store.upsert({
+      connectorId: "amazon",
+      connectorInstanceId: "cin_amazon_promoted",
+      createdAt: NOW,
+      displayName: "Amazon",
+      ownerSubjectId: "owner_5",
+      sourceBindingKey: "default",
+      sourceKind: "account",
+      status: "active",
+      updatedAt: NOW,
+    });
+    insertRun("cin_amazon_shell", "amazon", "failed", "2026-06-10T17:00:00.000Z");
+    insertRun("cin_amazon_shell", "amazon", "succeeded", "2026-06-10T17:30:00.000Z");
+
+    const page = store.listSourcesVisibleIdentityPage("owner_5", { limit: 100 });
+    assert.deepEqual(
+      page.rows.map((row) => row.connectorInstanceId),
+      ["cin_amazon_promoted"],
+      "a shell with a successful run stays excluded — the promoted row already represents this connection"
     );
   } finally {
     closeDb();
