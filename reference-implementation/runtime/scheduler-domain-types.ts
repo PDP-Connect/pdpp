@@ -31,11 +31,31 @@ import type { PendingPressureGap } from "./scheduler-source-pressure-cooldown.ts
  */
 export type TerminalGrantFailureReason = "grant_consumed" | "grant_expired" | "grant_invalid" | "grant_revoked";
 
+/**
+ * `controller_restarted` and `controller_terminated_before_run_finished` are
+ * the two reasons written by restart reconciliation, when a process died
+ * holding an in-flight run. They describe a decision made ABOUT the run (the
+ * server stopped) rather than an outcome OF the run: nothing observed the
+ * connector, the credential, or the upstream fail.
+ *
+ * They were already being written to `run_history` — 45 rows since 2026-08-15
+ * (28 and 17 respectively) — but were missing from this union, so no caller
+ * could name them without a cast. Adding them is a type-honesty fix, not a new
+ * behaviour: `runtime/controller.ts` and `lib/controller-boot.ts` have emitted
+ * both strings for some time.
+ *
+ * Note they are stored with DIFFERENT statuses —
+ * `controller_terminated_before_run_finished` with `status='abandoned'` and
+ * `controller_restarted` with `status='failed'` — so code distinguishing
+ * restart-ended runs must key on the REASON, not the status.
+ */
 export type TerminalNonGrantReason =
   | "authentication_error"
   | "connector_protocol_violation"
   | "connector_reported_cancelled"
   | "connector_reported_failed"
+  | "controller_restarted"
+  | "controller_terminated_before_run_finished"
   | "owner_cancel_forced"
   | "owner_cancelled"
   | "run_timed_out"
@@ -44,7 +64,14 @@ export type TerminalNonGrantReason =
 
 export type TerminalReason = TerminalGrantFailureReason | TerminalNonGrantReason;
 
-export type RunStatus = "cancelled" | "failed" | "skipped" | "succeeded";
+/**
+ * `abandoned` is the status restart reconciliation writes for a run whose
+ * owning process died before it could terminalize (`run-history-writer.ts`
+ * derives it; `lib/controller-boot.ts` inserts it). It was already the stored
+ * value for 28 production rows but was missing from this union, so history
+ * hydrated from the store carried a status the type said was impossible.
+ */
+export type RunStatus = "abandoned" | "cancelled" | "failed" | "skipped" | "succeeded";
 
 export type GrantAccessMode = "continuous" | "single_use";
 

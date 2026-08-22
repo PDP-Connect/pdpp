@@ -145,7 +145,14 @@ export interface SchedulerRunHistoryRecord {
   readonly runId?: string | null;
   readonly source: Record<string, unknown>;
   readonly startedAt: string;
-  readonly status: "cancelled" | "failed" | "skipped" | "succeeded";
+  /**
+   * Includes `"abandoned"` — the status restart reconciliation writes for a run
+   * whose owning process died before terminalizing it (derived in
+   * `run-history-writer.ts`, inserted by `lib/controller-boot.ts`). These rows
+   * were always readable through this interface (28 in production); the union
+   * simply did not admit the value it was already carrying.
+   */
+  readonly status: "abandoned" | "cancelled" | "failed" | "skipped" | "succeeded";
   readonly terminalReason?: string | null;
   readonly traceId?: string | null;
 }
