@@ -77,11 +77,20 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
   },
   inventory_only: {
     dimension: "Coverage",
-    label: "Coverage · inventory only",
+    label: "Coverage · complete (list only, by design)",
     title:
-      "The manifest declares that only inventory/discovery evidence is ever required here, not full detail. This is a settled, complete state for this stream — not partial progress.",
+      "The manifest declares that this stream only ever lists what exists, rather than downloading each item's full detail. Everything it is designed to collect has been collected, so nothing is missing and nothing is owed. This is a settled, finished state — not partial progress.",
     tone: "neutral",
-    value: "inventory only",
+    // B4 (owner ledger 2026-08-22): the owner asked whether the green/neutral
+    // tone here was intentional. It is, and it is honest: `inventory_only` is an
+    // AcceptedAbsencePolicy (packages/reference-contract/src/evidence/
+    // coherence.ts) that the manifest declares, `hasOutstandingGap` excludes,
+    // and `deriveForwardDisposition` resolves to `complete` — the connection
+    // genuinely owes no further data. Tone therefore stays `neutral`. What was
+    // wrong was the WORD: "inventory only" reads as a limitation the owner
+    // might need to act on, so the value now states plainly that this is
+    // complete by design.
+    value: "complete (list only, by design)",
   },
   partial: {
     dimension: "Coverage",
@@ -124,10 +133,19 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
   },
   unknown: {
     dimension: "Coverage",
-    label: "Coverage · unknown",
-    title: "No durable coverage evidence is available yet.",
+    label: "Coverage · not measured",
+    title:
+      "Nothing has measured how much of this stream was collected, so we can't say whether it is complete. This is missing measurement, not proven missing data — records already collected stay valid.",
     tone: "neutral",
-    value: "unknown",
+    // B2 (owner ledger 2026-08-22): the chip said "unknown" while the adjacent
+    // forward-disposition line said "not measured" for the SAME underlying
+    // state, so the owner read two vocabularies for one thing. The axis key
+    // stays `unknown` (durable wire contract); the owner-facing word is now
+    // "not measured" everywhere, matching FORWARD_DISPOSITION_LABELS.unmeasured
+    // and SOURCE_WORK_GROUP_COPY.notMeasured. Tone stays `neutral` because
+    // `reference-surface-topology` requires that unknown alone SHALL NOT
+    // produce degraded tone — this is an absence of measurement, not a defect.
+    value: "not measured",
   },
   unsupported: {
     dimension: "Coverage",
@@ -156,10 +174,12 @@ const FRESHNESS_LABELS: Record<RefConnectionHealthSnapshot["axes"]["freshness"],
   },
   unknown: {
     dimension: "Freshness",
-    label: "Freshness · unknown",
-    title: "Freshness cannot be derived from current evidence.",
+    label: "Freshness · not measured",
+    title: "Nothing has measured how recent this data is, so we can't say whether it is up to date.",
     tone: "neutral",
-    value: "unknown",
+    // B2: same one-word rule as the coverage axis — "not measured" is the
+    // single owner-facing word for "no evidence has been taken", on every axis.
+    value: "not measured",
   },
 };
 
@@ -194,10 +214,11 @@ const OUTBOX_LABELS: Record<RefConnectionHealthSnapshot["axes"]["outbox"], AxisC
   },
   unknown: {
     dimension: "Outbox",
-    label: "Outbox · unknown",
-    title: "Outbox state cannot be read from durable evidence.",
+    label: "Outbox · not measured",
+    title: "Nothing has measured the upload queue on this device, so we can't say whether it is keeping up.",
     tone: "neutral",
-    value: "unknown",
+    // B2: one word for "no evidence taken" across every axis.
+    value: "not measured",
   },
 };
 
@@ -255,10 +276,10 @@ export function formatAttentionAxis(
   }
   return {
     dimension: "Attention",
-    label: "Attention · unknown",
-    title: `Unknown attention axis "${axis}" from the reference server.`,
+    label: "Attention · not measured",
+    title: `This console does not recognize the attention state "${axis}" reported by the reference server, so it cannot say whether anything needs you.`,
     tone: "neutral",
-    value: "unknown",
+    value: "not measured",
   };
 }
 
@@ -278,8 +299,10 @@ function formatKnownAxis<T extends string>(
   return {
     ...fallbackChip,
     dimension: labelPrefix,
-    title: `Unknown ${labelPrefix.toLowerCase()} axis "${axis}" from the reference server.`,
-    value: "unknown",
+    title: `This console does not recognize the ${labelPrefix.toLowerCase()} state "${axis}" reported by the reference server, so it cannot say what was measured.`,
+    // B2: an unrecognized axis is still "we have no usable measurement", so it
+    // uses the same one word rather than introducing a third vocabulary.
+    value: "not measured",
   };
 }
 
@@ -740,7 +763,7 @@ export function summarizeOutboxForRow(
     case "active":
       return { label: "Outbox active", tone: "neutral" };
     case "unknown":
-      return { label: "Outbox unknown", tone: "neutral" };
+      return { label: "Outbox not measured", tone: "neutral" };
     case "idle":
       return null;
     default:
@@ -1032,10 +1055,23 @@ export function formatSourceOutboxState(
       return { dimension: "Outbox", label: "Outbox · backlog", title: counts, tone: "warning", value: "backlog" };
     case "drained":
       return { dimension: "Outbox", label: "Outbox · drained", title: counts, tone: "success", value: "drained" };
+    // B2: "no evidence taken" uses ONE owner-facing word everywhere.
     case "unknown":
-      return { dimension: "Outbox", label: "Outbox · unknown", title: counts, tone: "neutral", value: "unknown" };
+      return {
+        dimension: "Outbox",
+        label: "Outbox · not measured",
+        title: counts,
+        tone: "neutral",
+        value: "not measured",
+      };
     default:
-      return { dimension: "Outbox", label: "Outbox · unknown", title: counts, tone: "neutral", value: "unknown" };
+      return {
+        dimension: "Outbox",
+        label: "Outbox · not measured",
+        title: counts,
+        tone: "neutral",
+        value: "not measured",
+      };
   }
 }
 
@@ -1264,7 +1300,10 @@ export function deriveConnectionStatusDisplay(input: {
       }
       const partial = health.axes.coverage === "gaps" || health.axes.coverage === "partial";
       return {
-        label: partial ? "Partial" : "Degraded",
+        // B3: "Degraded" was jargon. This is the same rollup the server pill
+        // names "Missing data" (rendered-verdict.ts) — kept identical so the
+        // two surfaces never speak different words for one state.
+        label: partial ? "Partial" : "Missing data",
         shape: "diamond",
         // biome-ignore lint/suspicious/noUnnecessaryConditions: dominant is string | undefined (formatDominantCondition(health)?.title); tsc rejects removing this guard.
         title: dominant ?? `Useful data may exist, but coverage or freshness is incomplete${reason}.`,

@@ -131,7 +131,7 @@ export function ConnectionDiagnostics({
       : null;
   return (
     <Section
-      description="Technical detail for troubleshooting. Anything not measured yet shows as unknown, never a guess."
+      description="Technical detail for troubleshooting. Anything nothing has measured yet reads &quot;not measured&quot;, never a guess."
       title="Diagnostics"
     >
       {renderedVerdict ? <RenderedVerdictSummary verdict={renderedVerdict} /> : null}
@@ -861,11 +861,34 @@ function LocalCollectorGapDiagnostics({ source }: { source: DeviceSourceInstance
     <span
       className={["pdpp-caption tabular-nums", localCollectorGapToneClass(gaps)].join(" ")}
       data-testid="diagnostics-local-gaps"
-      title={gaps.reasons.length > 0 ? `Reasons: ${gaps.reasons.join(", ")}` : undefined}
+      title={
+        gaps.reasons.length > 0
+          ? `Reasons: ${gaps.reasons.map(localCollectorGapReasonLabel).join(", ")}`
+          : undefined
+      }
     >
       {formatLocalCollectorGaps(gaps)}
     </span>
   );
+}
+
+/**
+ * Plain-English copy for the local-collector gap reasons.
+ *
+ * B9 (owner ledger 2026-08-22): these reason codes used to reach the owner
+ * verbatim — the owner saw `connector_child_failure` and called it "an odd
+ * stream". It is not a stream (that leak is fixed in `ref-control.ts`
+ * `pendingDetailGapCountsByStream`), but this IS the channel that legitimately
+ * carries it, so the wording has to mean something here. Both replacements stay
+ * as bad as the codes they replace — a crash still reads as a crash.
+ */
+const LOCAL_COLLECTOR_GAP_REASON_COPY: Readonly<Record<string, string>> = Object.freeze({
+  connector_child_failure: "the collector crashed while gathering this data",
+  policy_budget: "the collector stopped at its scan limit",
+});
+
+function localCollectorGapReasonLabel(reason: string): string {
+  return LOCAL_COLLECTOR_GAP_REASON_COPY[reason] ?? reason.replace(/[_-]+/g, " ");
 }
 
 function formatLocalCollectorGaps(gaps: NonNullable<DeviceSourceInstance["local_collector_gaps"]>): string {
@@ -873,7 +896,8 @@ function formatLocalCollectorGaps(gaps: NonNullable<DeviceSourceInstance["local_
     return "Local gap diagnostics unreliable.";
   }
   if (gaps.pending_count > 0) {
-    const reason = gaps.reasons.length > 0 ? ` · ${gaps.reasons.join(", ")}` : "";
+    const reason =
+      gaps.reasons.length > 0 ? ` · ${gaps.reasons.map(localCollectorGapReasonLabel).join(", ")}` : "";
     return `${gaps.pending_count.toLocaleString()} local detail gap${
       gaps.pending_count === 1 ? "" : "s"
     } pending${reason}.`;

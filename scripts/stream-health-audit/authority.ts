@@ -306,8 +306,9 @@ const KNOWN_ACTION_URGENCIES = new Set(["now", "overdue", "soon", "verifying"]);
 const KNOWN_VERDICT_LABELS = new Set([
   "Can't collect",
   "Checking",
-  "Degraded",
   "Healthy",
+  "Import complete",
+  "Missing data",
   "Needs refresh",
   "Not measured",
   "Syncing",

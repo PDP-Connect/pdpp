@@ -944,9 +944,9 @@ function StreamManifestRow({
           <span
             className="rr-s-stream-chip"
             data-tone="neutral"
-            title="The reference has not produced a per-stream collection report for this stream yet."
+            title="Nothing has measured this stream yet — the reference has not produced a collection report for it, so we can't say whether it is complete."
           >
-            Unknown
+            Not measured
           </span>
         )}
         {collection?.dispositionLabel ? (

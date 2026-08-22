@@ -621,7 +621,7 @@ test("dashboard source-trust oracle covers zero, multiple, stale-projection, and
         rendered_verdict: {
           channel: "advisory",
           forward_statement: "First source needs attention.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [],
         },
       },
@@ -2374,7 +2374,7 @@ test("live semantic probe accepts partial source detail copy when collection gap
               rendered_verdict: {
                 channel: "advisory",
                 forward_statement: "The next run is expected to fill the remaining data.",
-                pill: { label: "Degraded", tone: "amber" },
+                pill: { label: "Missing data", tone: "amber" },
                 required_actions: [{ audience: "owner", satisfied_when: { kind: "manual" } }],
               },
             },
