@@ -415,6 +415,75 @@ test("ensureVenmoSession: onCredentialSubmit does NOT fire on session reuse — 
   assert.equal(markerCount, 0);
 });
 
+// ─── Durable credential-submit progress marker ──────────────────────────────
+//
+// `onCredentialSubmit` (above) only flips an in-process flag consumed by
+// session-establish.ts's retry classification — it was never itself visible
+// in the run's spine_events, so a run record could not distinguish "the saved
+// password was submitted and Venmo rejected it" from "the flow never reached
+// that point". These tests pin the fix: a `run.progress_reported`-shaped
+// message fires at the same instant `onCredentialSubmit` does.
+
+test("ensureVenmoSession: progress emits a durable credential-submit marker exactly when the saved password is submitted", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makePageWithWorkingLoginForm();
+    const { sendInteraction } = recordingSendInteraction();
+    const progressMessages: string[] = [];
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      // biome-ignore lint/suspicious/useAwait: mirrors the runtime's Promise-returning progress signature
+      progress: async (message) => {
+        progressMessages.push(message);
+      },
+      sendInteraction,
+    });
+    assert.equal(result.live, true);
+    const marker = progressMessages.filter((m) => m.startsWith("venmo_credential_submit"));
+    assert.equal(marker.length, 1, "exactly one durable marker for one credential submission");
+    assert.doesNotMatch(
+      marker[0] ?? "",
+      /test-password|test-user/,
+      "the marker must never carry the credential value itself"
+    );
+  });
+});
+
+test("ensureVenmoSession: progress does NOT emit the credential-submit marker on session reuse — no credential went out", async () => {
+  const { page } = makeProbePage(true);
+  const { sendInteraction } = recordingSendInteraction();
+  const progressMessages: string[] = [];
+  const result = await ensureVenmoSession({
+    page,
+    // biome-ignore lint/suspicious/useAwait: mirrors the runtime's Promise-returning progress signature
+    progress: async (message) => {
+      progressMessages.push(message);
+    },
+    sendInteraction,
+  });
+  assert.equal(result.live, true);
+  assert.equal(
+    progressMessages.filter((m) => m.startsWith("venmo_credential_submit")).length,
+    0,
+    "a reused, already-live session never submits a credential"
+  );
+});
+
+// Mutation-kill twin: proves the first test's assertion is load-bearing on the
+// fix, not vacuously true because `progress` was never called at all.
+test("mutation-kill twin: omitting progress from ensureVenmoSession still succeeds (the hook is additive, not load-bearing for login control flow)", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makePageWithWorkingLoginForm();
+    const { sendInteraction } = recordingSendInteraction();
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
+    assert.equal(result.live, true, "ensureVenmoSession must not require a progress callback to function");
+  });
+});
+
 // ─── OTP handoff ─────────────────────────────────────────────────────────
 
 test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, never asking for the password again", async () => {

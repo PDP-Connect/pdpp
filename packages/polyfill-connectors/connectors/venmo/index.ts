@@ -494,6 +494,7 @@ if (isMainModule(import.meta.url)) {
       credentials,
       onCredentialSubmit,
       page,
+      progress,
       sendInteraction,
     }): Promise<void> {
       await ensureVenmoSession({
@@ -502,6 +503,7 @@ if (isMainModule(import.meta.url)) {
         credentials,
         onCredentialSubmit,
         page,
+        progress,
         sendInteraction,
       });
     },
