@@ -19,6 +19,7 @@ import {
   riConfiguredNamedSkipMappingIdentities,
   structuredNodeSummary,
 } from "../../scripts/test-accounting/receipt.ts";
+import { provisionTestDatabase } from "../server/postgres-test-database-guard.ts";
 import {
   dedicatedPostgresTestUrl,
   isDedicatedPostgresTestDatabaseName,
@@ -250,6 +251,19 @@ async function allocateTestDb(filePath: string, baseUrl: string): Promise<TestDb
   const testUrl = new URL(baseUrl);
   testUrl.pathname = `/${dbName}`;
 
+  // Stamp the freshly-created (therefore empty) database with the test
+  // sentinel. Without this the in-process guard in initPostgresStorage
+  // refuses the database, which is the intended fail-closed default: a
+  // database is admissible only because it was explicitly provisioned here.
+  try {
+    await provisionTestDatabase(testUrl.toString());
+  } catch (err) {
+    process.stderr.write(
+      `[run-tests] WARN: could not provision test sentinel on ${dbName}: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    return;
+  }
+
   let releasePromise: Promise<void> | undefined;
   const allocation: TestDbAllocation = {
     release: () => {
@@ -307,6 +321,18 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
   let allocation: TestDbAllocation | undefined;
   if (baseUrl) {
     allocation = await allocateTestDb(filePath, baseUrl);
+    if (!allocation) {
+      // Fail loudly instead of falling back to the SHARED base database. The
+      // old fallback handed the child the operator-supplied base URL, so a
+      // failed allocation silently downgraded per-file isolation to "every
+      // test writes the same shared database". The in-process sentinel guard
+      // would now refuse that database anyway; refusing here names the real
+      // cause (allocation failed) rather than surfacing it as a confusing
+      // per-test admission error.
+      throw new Error(
+        `could not allocate a dedicated Postgres test database for ${filePath}; refusing to fall back to the shared base database`
+      );
+    }
   }
 
   const childEnvBase: ProcessEnvLike = allocation ? { ...baseEnv, PDPP_TEST_POSTGRES_URL: allocation.url } : baseEnv;
