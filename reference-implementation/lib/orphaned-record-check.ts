@@ -87,17 +87,30 @@ GROUP BY r.connector_instance_id
 ORDER BY live_records DESC, r.connector_instance_id ASC
 LIMIT ?`;
 
+// Postgres shape differs from SQLite's deliberately, for cost. The natural
+// `LEFT JOIN ... GROUP BY` over `records` makes the planner hash-anti-join and
+// then SORT every live row: measured at 49s on a real 5.6M-row instance, which
+// would stall boot (this check runs before HTTP routes mount). Resolving the
+// tiny DISTINCT orphan-id set FIRST, then aggregating per id through
+// `idx_pg_records_canonical_count (connector_instance_id, deleted, stream)`,
+// reads the same numbers in ~5s because the per-id aggregates touch only the
+// stranded rows. Same result, different access path.
 const ORPHAN_GROUPS_SQL_POSTGRES = `
-SELECT r.connector_instance_id AS connector_instance_id,
-       COUNT(*) AS live_records,
-       COUNT(DISTINCT r.stream) AS streams
-FROM records r
-LEFT JOIN connector_instances ci
-  ON ci.connector_instance_id = r.connector_instance_id
-WHERE NOT r.deleted
-  AND ci.connector_instance_id IS NULL
-GROUP BY r.connector_instance_id
-ORDER BY live_records DESC, r.connector_instance_id ASC
+WITH orphan_ids AS (
+  SELECT DISTINCT r.connector_instance_id
+  FROM records r
+  WHERE NOT EXISTS (
+    SELECT 1 FROM connector_instances ci
+    WHERE ci.connector_instance_id = r.connector_instance_id
+  )
+)
+SELECT o.connector_instance_id AS connector_instance_id,
+       (SELECT COUNT(*) FROM records x
+         WHERE x.connector_instance_id = o.connector_instance_id AND NOT x.deleted) AS live_records,
+       (SELECT COUNT(DISTINCT x.stream) FROM records x
+         WHERE x.connector_instance_id = o.connector_instance_id AND NOT x.deleted) AS streams
+FROM orphan_ids o
+ORDER BY live_records DESC, o.connector_instance_id ASC
 LIMIT $1`;
 
 const ORPHAN_TOTALS_SQL_SQLITE = `
@@ -109,14 +122,25 @@ LEFT JOIN connector_instances ci
 WHERE r.deleted = 0
   AND ci.connector_instance_id IS NULL`;
 
+// Same orphan-id-first shape as the groups query above, for the same reason.
 const ORPHAN_TOTALS_SQL_POSTGRES = `
-SELECT COUNT(*) AS live_records,
-       COUNT(DISTINCT r.connector_instance_id) AS instances
-FROM records r
-LEFT JOIN connector_instances ci
-  ON ci.connector_instance_id = r.connector_instance_id
-WHERE NOT r.deleted
-  AND ci.connector_instance_id IS NULL`;
+WITH orphan_ids AS (
+  SELECT DISTINCT r.connector_instance_id
+  FROM records r
+  WHERE NOT EXISTS (
+    SELECT 1 FROM connector_instances ci
+    WHERE ci.connector_instance_id = r.connector_instance_id
+  )
+)
+SELECT COALESCE(SUM(
+         (SELECT COUNT(*) FROM records x
+           WHERE x.connector_instance_id = o.connector_instance_id AND NOT x.deleted)
+       ), 0) AS live_records,
+       COUNT(*) FILTER (WHERE EXISTS (
+         SELECT 1 FROM records x
+          WHERE x.connector_instance_id = o.connector_instance_id AND NOT x.deleted
+       )) AS instances
+FROM orphan_ids o`;
 
 type CountValue = number | string | bigint;
 
