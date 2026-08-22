@@ -52,6 +52,7 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   buildIndexRows,
   buildPdfTemplateUnknownDiagnostics,
+  buildServedStatementGapLookup,
   classifyUsaaNoExportRoute,
   DEFERRED_STREAMS,
   driveExport,
@@ -59,6 +60,7 @@ import {
   emitAccountsStream,
   emitDeferredStreams,
   emitExportFailure,
+  emitStatementCoverage,
   emitStatementRecords,
   type HydrationSummary,
   hydrationSuccess,
@@ -573,6 +575,120 @@ test("classifyUsaaNoExportRoute requires both a closed account route and structu
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/logon", true), "interstitial");
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/dashboard", true), "unknown");
   assert.equal(classifyUsaaNoExportRoute("https://private.example/my/checking", true), "unknown");
+});
+
+const STATEMENT_HYDRATED = {
+  document_url: "file:///home/user/.pdpp/usaa-statements/chk/2026-04-aaaaaaaa.pdf",
+  pdf_path: "/home/user/.pdpp/usaa-statements/chk/2026-04-aaaaaaaa.pdf",
+  pdf_sha256: "aa".repeat(32),
+};
+const STATEMENT_NOT_HYDRATED = { document_url: null, pdf_path: null, pdf_sha256: null };
+
+/** A served pending `statements` gap in the shape the runtime supplies. */
+function servedStatementGap(statementId: string, gapId: string) {
+  return {
+    gap_id: gapId,
+    record_key: statementId,
+    status: "pending",
+    stream: "statements",
+    detail_locator: { kind: "usaa.statement", statement_id: statementId },
+  };
+}
+
+/**
+ * A pending detail gap only leaves `pending` on an explicit
+ * `DETAIL_GAP_RECOVERED`. This connector emitted that for `transactions` and
+ * the credit-card streams but never for `statements`, so a statement PDF that
+ * failed once and downloaded fine afterwards kept its gap forever.
+ *
+ * Owner-visible symptom: 4 `statements` gaps pending from a 2026-08-04 run
+ * (three never even re-attempted, `attempt_count = 0`) while the same stream
+ * reported `covered: 10 / considered: 10, checkpoint: committed` — and all four
+ * of those statements had a durable `pdf_sha256` on their record. Fully
+ * collected and showing a retryable gap at the same time.
+ */
+test("emitStatementCoverage: recovers a served statement gap once the PDF is present again", async () => {
+  const { deps, messages } = makeHarness();
+  await emitStatementCoverage(
+    {
+      ...deps,
+      servedStatementGaps: new Map([["stmt-recovered", "gap-recovered"]]),
+    },
+    [{ id: "stmt-recovered", isCandidate: true, pointers: STATEMENT_HYDRATED }]
+  );
+
+  assert.deepEqual(
+    messages.filter((m) => m.type === "DETAIL_GAP_RECOVERED"),
+    [
+      {
+        type: "DETAIL_GAP_RECOVERED",
+        reference_only: true,
+        gap_id: "gap-recovered",
+        stream: "statements",
+        record_key: "stmt-recovered",
+      },
+    ],
+    "a statement whose PDF is present again must close its served gap, or the gap stays pending forever"
+  );
+});
+
+test("emitStatementCoverage: never closes a gap for a statement still missing its PDF", async () => {
+  const { deps, messages } = makeHarness();
+  await emitStatementCoverage(
+    {
+      ...deps,
+      // Both ids are served, but only one statement actually has its PDF.
+      servedStatementGaps: new Map([
+        ["stmt-have", "gap-have"],
+        ["stmt-missing", "gap-missing"],
+      ]),
+    },
+    [
+      { id: "stmt-have", isCandidate: true, pointers: STATEMENT_HYDRATED },
+      { id: "stmt-missing", isCandidate: true, pointers: STATEMENT_NOT_HYDRATED },
+    ]
+  );
+
+  assert.deepEqual(
+    messages.filter((m) => m.type === "DETAIL_GAP_RECOVERED").map((m) => m.gap_id),
+    ["gap-have"],
+    "recovery must follow the hydration proof, never merely the fact that a gap was served"
+  );
+  assert.ok(
+    messages.some((m) => m.type === "DETAIL_GAP" && m.record_key === "stmt-missing"),
+    "the still-missing statement must keep a pending gap"
+  );
+});
+
+test("emitStatementCoverage: only closes gaps the runtime actually served", async () => {
+  const { deps, messages } = makeHarness();
+  await emitStatementCoverage({ ...deps, servedStatementGaps: new Map() }, [
+    { id: "stmt-unserved", isCandidate: true, pointers: STATEMENT_HYDRATED },
+  ]);
+
+  assert.deepEqual(
+    messages.filter((m) => m.type === "DETAIL_GAP_RECOVERED"),
+    [],
+    "a gap id the runtime did not serve must never be synthesized — that could close unrelated work"
+  );
+});
+
+test("buildServedStatementGapLookup: accepts only well-formed pending usaa.statement gaps", () => {
+  const lookup = buildServedStatementGapLookup([
+    servedStatementGap("stmt-ok", "gap-ok"),
+    // Wrong stream, wrong locator kind, non-pending, and a locator/record_key
+    // disagreement must all be refused.
+    { ...servedStatementGap("stmt-other-stream", "gap-x"), stream: "transactions" },
+    { ...servedStatementGap("stmt-bad-kind", "gap-y"), detail_locator: { kind: "usaa.account", account_id: "a" } },
+    { ...servedStatementGap("stmt-recovered", "gap-z"), status: "recovered" },
+    { ...servedStatementGap("stmt-mismatch", "gap-w"), record_key: "different-id" },
+  ] as never);
+
+  assert.deepEqual(
+    [...lookup.entries()],
+    [["stmt-ok", "gap-ok"]],
+    "only a pending usaa.statement gap whose locator agrees with its record_key may be recoverable"
+  );
 });
 
 /**
