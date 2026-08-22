@@ -27,6 +27,7 @@ import {
   connectorInstanceLockWaitMs,
 } from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import { assertTestDatabase, testDatabaseGuardActive } from "./postgres-test-database-guard.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
@@ -1083,6 +1084,20 @@ export async function initPostgresStorage(
     activeBackend = "sqlite";
     return null;
   }
+
+  // Test-lane admission. Every Postgres-backed test path -- whether it goes
+  // through the RI test runner or is invoked directly as `node --test file` --
+  // reaches Postgres through THIS function, so this is the one chokepoint
+  // where a test can be stopped before it writes into a real database. A test
+  // lane must prove its target is a provisioned scratch database; an unmarked
+  // database (production included) is refused loudly. Product/production boots
+  // do not set the test env vars and are untouched.
+  // See server/postgres-test-database-guard.ts for why this is a sentinel
+  // rather than a production-URL blacklist.
+  if (testDatabaseGuardActive()) {
+    await assertTestDatabase(config.databaseUrl);
+  }
+
   if (pool) {
     await closePostgresStorage();
   }
