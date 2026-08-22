@@ -1414,10 +1414,60 @@ export async function selectBrowserPageForRun(
   return await context.newPage();
 }
 
+/**
+ * Mirrors `browser-launch.ts`'s `HAR_RECORD_PATH_ENV`/
+ * `STORAGE_STATE_RECORD_PATH_ENV` string values as literals rather than a
+ * static import — this module dynamically `import()`s `browser-launch.ts`
+ * only inside `acquireBrowser` specifically so a fetch-only connector never
+ * pays for pulling in `patchright`/`playwright` at load time (see that
+ * call site). Same string-literal-mirror precedent as
+ * `publishCdpEndpointToEnv`'s doc comment in browser-launch.ts (mirrored in
+ * the other direction here). Kept in sync by hand; a mismatch here would
+ * only make `browserRecordingRequested` under-detect (never over-detect),
+ * since a wrong name simply reads `undefined` from `process.env`.
+ */
+const HAR_RECORD_PATH_ENV_MIRROR = "PDPP_SCENARIO_HAR_RECORD_PATH";
+const STORAGE_STATE_RECORD_PATH_ENV_MIRROR = "PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH";
+
+/**
+ * True when `bin/scenario-record.ts --record-har` requested HAR and/or
+ * storageState capture for this run — the same env-var presence check
+ * `acquireBrowserForConnector` uses to decide whether to pass `recordHar`/
+ * a storageState snapshot to Playwright at all.
+ *
+ * BUG THIS GUARDS AGAINST (found live against a real reddit `--record-har`
+ * run: HAR flushed with entries, storageState never did): Patchright's
+ * `launchPersistentContext` ties the whole context's CDP transport to its
+ * pages — closing the connector's LAST open page tears the context down
+ * enough that a subsequent `context.storageState()` throws "Target page,
+ * context or browser has been closed", even though `context.close()`
+ * itself hasn't run yet. `runInBrowser`'s teardown was closing the page
+ * BEFORE calling `release()` (whose `storageState()` read happens just
+ * before `context.close()`), so a recording run always lost storageState
+ * silently — `writeStorageStateBestEffort` swallows the error and only
+ * logs to the subprocess's own stderr, which `bin/scenario-record.ts`
+ * discards on a successful run. HAR still flushed because network-event
+ * buffering is independent of page lifecycle, which is why the two
+ * artifacts diverged instead of failing together.
+ */
+function browserRecordingRequested(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env[HAR_RECORD_PATH_ENV_MIRROR]?.trim() || env[STORAGE_STATE_RECORD_PATH_ENV_MIRROR]?.trim());
+}
+
 export function shouldCloseBrowserPageAfterRun(
   browser: Pick<BrowserConfig, "preservePageOnFailure" | "preservePageOnSuccess">,
-  runSucceeded: boolean
+  runSucceeded: boolean,
+  env: NodeJS.ProcessEnv = process.env
 ): boolean {
+  // A `--record-har` run needs the context's last page to stay open until
+  // `release()` reads `storageState()` — see `browserRecordingRequested`'s
+  // doc comment. `release()`'s own `context.close()` closes the page right
+  // afterward, so skipping this pre-release close costs nothing on a
+  // recording run; it is a no-op change in shape (close happens a moment
+  // later, inside `release()`, instead of here).
+  if (browserRecordingRequested(env)) {
+    return false;
+  }
   if (runSucceeded && browser.preservePageOnSuccess) {
     return false;
   }
