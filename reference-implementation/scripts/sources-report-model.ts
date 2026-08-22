@@ -41,7 +41,7 @@ export type VerdictTone = "amber" | "green" | "grey" | "red";
 export interface SourceStatusFlag {
   /** The glyph the console draws for this tone. */
   dot: string;
-  kind: "blocked" | "degraded" | "healthy" | "pending" | "revoked" | "unknown";
+  kind: "archived" | "blocked" | "degraded" | "healthy" | "pending" | "revoked" | "unknown";
   label: string;
 }
 
@@ -97,6 +97,7 @@ export interface ConnectorSummaryLike {
   readonly connector_id?: string | null;
   readonly display_name?: string | null;
   readonly rendered_verdict?: SummaryRenderedVerdict | null;
+  readonly source_visibility?: "active" | "archived" | "hidden_from_sources" | null;
   readonly status?: string | null;
   readonly total_records?: number | null;
 }
@@ -162,10 +163,29 @@ function freshnessNoteFromVerdict(verdict: SummaryRenderedVerdict): string | nul
   return null;
 }
 
+/**
+ * `"archived"` is the current spelling; `"hidden_from_sources"` is the retired
+ * one, still accepted so a report run against an older reference classifies
+ * those rows as archived instead of rendering them as live sources.
+ */
+function isArchivedSource(summary: ConnectorSummaryLike): boolean {
+  return summary.source_visibility === "archived" || summary.source_visibility === "hidden_from_sources";
+}
+
 function deriveStatus(summary: ConnectorSummaryLike): SourceStatusFlag {
   // Lifecycle outranks the verdict, exactly as `deriveRenderedSourceStatus`
   // ranks it: a revoked or paused connection is not collecting, so a stale
   // verdict tone must never be shown as its health.
+  //
+  // Archived is ranked FIRST, ahead of even `revoked`, matching the console.
+  // An archived row is usually `paused` carrying a stored verdict from when it
+  // was live, so ranking `paused` first printed "⏸ Paused" — and, before the
+  // server-side fix, "Reconnect this account", a promise that leads nowhere
+  // because reconnecting mints a new connection and resumes nothing. The
+  // records are real; the collection is over.
+  if (isArchivedSource(summary)) {
+    return { dot: "⊘", kind: "archived", label: "Archived · not collecting" };
+  }
   if (summary.status === "revoked") {
     return { dot: "⊘", kind: "revoked", label: "Revoked" };
   }
