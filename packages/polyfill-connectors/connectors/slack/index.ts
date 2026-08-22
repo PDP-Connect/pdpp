@@ -3505,6 +3505,20 @@ if (isMainModule(import.meta.url)) {
           ]
         : null;
 
+      // Everything from here through mergeScopedMessageArchivePasses below
+      // reads only the already-downloaded local sqlite archive(s) and posts
+      // to this run's own ingest endpoint — no further slackdump subprocess,
+      // no further Slack API call, no provider rate limit. `maxRunWallClockMs`
+      // (run-executor.ts) is sized for the external walk that already
+      // finished above; this marker tells the scheduler watchdog to stop
+      // applying it for the remainder of the attempt, so a large local
+      // archive being read into the store is not truncated as if it were
+      // still rate-limited by Slack. See run_1787407222861: slackdump had
+      // archived 1,066,135 messages to disk and only this local read-and-emit
+      // pass was in flight when the external-walk ceiling killed the run.
+      progress("Slack: external archive walk complete; beginning local archive read", {
+        phase_boundary: "local_only_phase_started",
+      });
       let messageResult = await timedPhase(progress, "read-and-emit", () =>
         runRequestedStreams(deps, state, { workspace, token, cookie }, emit, {
           allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
