@@ -225,6 +225,21 @@ test("guard ALLOWS a provisioned test database with an EMPTY records table", {
   });
 });
 
+test("guard survives a suite that DROPs SCHEMA public (sentinel lives in its own schema)", {
+  skip: POSTGRES_SKIP,
+}, async () => {
+  assert.ok(POSTGRES_URL);
+  await withScratchDatabase(POSTGRES_URL, async (url) => {
+    await provisionTestDatabase(url);
+    // browser-surface-lease-store.test.ts legitimately does exactly this to
+    // exercise the empty-database bootstrap path. A sentinel stored in
+    // `public` would be destroyed here and every later initPostgresStorage in
+    // that file would be refused -- the guard would break honest tests.
+    await exec(url, "DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+    await assertTestDatabase(url);
+  });
+});
+
 test("provisionTestDatabase is idempotent", { skip: POSTGRES_SKIP }, async () => {
   assert.ok(POSTGRES_URL);
   await withScratchDatabase(POSTGRES_URL, async (url) => {
