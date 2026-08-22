@@ -153,7 +153,25 @@ const EXPORT_DIALOG_MESSAGE_SELECTOR =
 const EXPORT_NO_DATA_RE = /no transactions|nothing to export/iu;
 const USAA_ACCOUNT_DETAIL_ROUTE_RE = /^\/my\/(?:checking|savings|credit-card)(?:\/|$)/u;
 const USAA_INTERSTITIAL_ROUTE_RE =
-  /\/(?:my\/logon|access-management\/oauth2\/member\/authorize|security(?:\/|$)|challenge(?:\/|$))/iu;
+  /\/(?:my\/logon|access-management\/oauth2\/member\/authorize|security(?:\/|$)|challenge(?:\/|$)|my\/banking-offer(?:\/|$))/iu;
+/**
+ * Marketing interstitials USAA injects in FRONT of an account page. Distinct
+ * from the auth/challenge interstitials above: the session is perfectly alive,
+ * the member is simply being shown an offer (e.g. `/my/banking-offer/atm-deposit`,
+ * "Depositing cash just got more convenient!") before the page they asked for.
+ *
+ * Observed live on the owner's mailbox 2026-07-14: BOTH checking accounts
+ * landed here instead of `/my/checking`, so `findExportAffordance` found no
+ * Export button and the run reported `source_structure_changed` — "USAA changed
+ * their UI" — for two accounts that were fine. Credit-card accounts, which are
+ * not offered ATM deposits, exported normally. That is the whole of the
+ * long-standing USAA `transactions` 2-of-4 coverage gap.
+ *
+ * These pages carry the originally-requested URL in their own `goto` query
+ * param, which is the honest way back: it is USAA's own statement of where the
+ * member was headed, not a URL this connector guessed.
+ */
+const USAA_OFFER_INTERSTITIAL_ROUTE_RE = /^\/my\/banking-offer(?:\/|$)/iu;
 const USAA_ACCOUNT_DETAIL_MARKER_SELECTOR = ".ent-as-utility-bar, .as_credit__utility-bar";
 const USAA_TRANSACTION_MARKER_SELECTOR =
   'table[aria-label*="transaction" i], [data-testid*="transaction" i], [id*="transaction" i]';
@@ -1145,6 +1163,84 @@ function capturePageDiagnostics(page: Page): Promise<PageDiagnostics | null> {
     .catch((): PageDiagnostics | null => null);
 }
 
+/**
+ * If `finalUrl` is a USAA marketing interstitial, return the account URL to
+ * retry; otherwise `null` (we are already where we asked to be, or somewhere
+ * this function has no honest opinion about).
+ *
+ * Pure and exported so the escape decision is testable without Playwright.
+ *
+ * The retry target is the interstitial's own `goto` param when it names a USAA
+ * account-detail route, else the `accountUrl` originally requested. Both are
+ * URLs the caller already had or USAA itself supplied; a `goto` pointing
+ * off-host or at some other section is refused rather than followed, so a
+ * redirect chain can never steer the connector somewhere it did not intend to
+ * go. Returns `null` when the escape target matches the URL we just loaded, so
+ * a self-referential offer page cannot produce an infinite retry.
+ */
+export function resolveUsaaOfferInterstitialEscape(finalUrl: string, accountUrl: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(finalUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.hostname !== "www.usaa.com" || !USAA_OFFER_INTERSTITIAL_ROUTE_RE.test(parsed.pathname)) {
+    return null;
+  }
+  let target = accountUrl;
+  const goto = parsed.searchParams.get("goto");
+  if (goto) {
+    try {
+      const gotoUrl = new URL(goto, "https://www.usaa.com");
+      if (gotoUrl.hostname === "www.usaa.com" && USAA_ACCOUNT_DETAIL_ROUTE_RE.test(gotoUrl.pathname)) {
+        target = gotoUrl.toString();
+      }
+    } catch {
+      // Unparseable `goto` — fall back to the requested account URL.
+    }
+  }
+  return target === finalUrl ? null : target;
+}
+
+/**
+ * Ensure the just-loaded page is the account page we asked for, navigating
+ * through a USAA marketing offer if one was served in front of it.
+ *
+ * Returns `false` when this candidate URL should be abandoned (the escape
+ * navigation itself failed); `true` when the caller should look for the export
+ * affordance on the current page.
+ *
+ * Throws {@link SessionDeadRedirectError} if the session died — before OR
+ * after the escape hop, since an offer page can itself redirect to logon.
+ *
+ * Exactly one escape hop is attempted. If the offer re-serves itself, the
+ * caller's ordinary no-affordance path reports it rather than looping.
+ */
+async function settleOnAccountPage(page: Page, accountUrl: string, settleDelayMs: number): Promise<boolean> {
+  const assertSessionAlive = async (): Promise<void> => {
+    if (LOGON_REDIRECT_RE.test(page.url())) {
+      throw new SessionDeadRedirectError(await captureNoExportAffordanceObservation(page));
+    }
+  };
+  await assertSessionAlive();
+  const escapeUrl = resolveUsaaOfferInterstitialEscape(page.url(), accountUrl);
+  if (!escapeUrl) {
+    return true;
+  }
+  try {
+    await page.goto(escapeUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: ACCOUNT_NAV_TIMEOUT_MS,
+    });
+  } catch {
+    return false;
+  }
+  await politeDelay(settleDelayMs);
+  await assertSessionAlive();
+  return true;
+}
+
 async function locateExportPage(
   page: Page,
   accountUrl: string,
@@ -1167,9 +1263,8 @@ async function locateExportPage(
       continue;
     }
     await politeDelay(settleDelayMs);
-    const finalUrl = page.url();
-    if (LOGON_REDIRECT_RE.test(finalUrl)) {
-      throw new SessionDeadRedirectError(await captureNoExportAffordanceObservation(page));
+    if (!(await settleOnAccountPage(page, url, settleDelayMs))) {
+      continue;
     }
     const btn = await findExportAffordance(page);
     if (btn) {
