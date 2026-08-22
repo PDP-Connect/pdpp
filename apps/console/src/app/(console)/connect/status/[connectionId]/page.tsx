@@ -237,9 +237,24 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
 
 // Browser/SSO connections (ChatGPT and every other browser-bound connector)
 // have no stored credential at all — copy here must never say "credential" or
-// imply a secret was expected. Progress (an active/last run) is real evidence
-// even before any material is captured; see `deriveSetupState`'s
-// browser_session handling in the RI runtime projection.
+// imply a secret was expected.
+//
+// It must also never claim the login SUCCEEDED. `deriveSetupState` reaches
+// `first_sync_running`/`first_sync_pending` for a browser session from
+// `hasRunEvidence` alone — the mere existence of an active or last run row
+// (`static-secret-setup-status.ts` `hasDraftSetupProgress`). For a
+// browser_session connection the run IS the login attempt: it starts so the
+// owner can sign in inside the streamed browser. So a run row proves a sign-in
+// was ATTEMPTED, never that it completed — and `defaultSetupMaterial` pins
+// `present: false` for this kind precisely because no material was captured.
+//
+// Saying "Login is complete" here told the owner a session was live while the
+// stream was still sitting on Reddit's sign-in form. Unlike the static-secret
+// and manual-upload branches — whose "credential is captured" / "file is
+// captured" claims ARE backed by `setup_material.present === true` — this
+// branch has no proof to cite, so it describes only what is observed: a sync
+// is running. Owner-reported 2026-08-19; see
+// design-notes/browser-stream-status-honesty-2026-08-22.md.
 function describeBrowserSessionState(status: ConnectionSetupStatus): StatusDescription {
   const terminalDisposition = describeTerminalSetupDisposition(status);
   if (terminalDisposition) {
@@ -250,13 +265,15 @@ function describeBrowserSessionState(status: ConnectionSetupStatus): StatusDescr
       return describeActiveConnectionState(status);
     case "first_sync_running":
       return {
-        detail: "Login is complete and the first sync is running. It will continue automatically.",
+        detail:
+          "A first sync is running. If the browser is still showing a sign-in page, finish signing in there — this page can't confirm the login by itself.",
         headline: "First sync running",
         tone: "pending",
       };
     case "first_sync_pending":
       return {
-        detail: "Login is complete and the first sync is queued. It will start automatically.",
+        detail:
+          "A first sync is queued and will start automatically. If the browser is still showing a sign-in page, finish signing in there — this page can't confirm the login by itself.",
         headline: "First sync starting",
         tone: "pending",
       };
