@@ -56,6 +56,17 @@ export function expiredEnrollmentShellIds(shells: readonly EnrollmentShellLike[]
   return shells.filter((shell) => enrollmentShellExpired(shell, nowMs)).map((shell) => shell.connectorInstanceId);
 }
 
+// Stamped into the revoked shell's `source_binding_json.revocation_reason` by
+// the sweep below. This is the ONLY reason a `browser_enrollment_shell` row
+// is ever revoked by this module — an owner-abandon revocation goes through
+// the separate `/abandon-enrollment` route, which stamps `owner_abandoned`
+// instead (see `mountRefBrowserEnrollmentShell` in
+// `routes/ref-browser-enrollment-shell.ts`). Recording the true cause at the
+// moment of revocation means `deriveSourceVisibility`/`archiveRenderedVerdict`
+// (`ref-control.ts`) never have to GUESS why a setup shell died from
+// `revoked_at` timing alone.
+export const TTL_EXPIRED_REVOCATION_REASON = "ttl_expired";
+
 export interface ShellRetirementStore {
   // List all unresolved browser-enrollment shell instances (any connector) for
   // the given owner, or all owners if ownerSubjectId is null. Implementations
@@ -64,7 +75,12 @@ export interface ShellRetirementStore {
   listDraftBrowserEnrollmentShells: (ownerSubjectId: string | null) => Promise<EnrollmentShellLike[]>;
   updateStatus: (
     connectorInstanceId: string,
-    args: { status: string; updatedAt: string; revokedAt?: string | null }
+    args: {
+      status: string;
+      updatedAt: string;
+      revokedAt?: string | null;
+      sourceBindingPatch?: Record<string, unknown> | null;
+    }
   ) => Promise<unknown>;
 }
 
@@ -78,7 +94,12 @@ export async function retireExpiredBrowserEnrollmentShells(
   const ids = expiredEnrollmentShellIds(shells, now);
   for (const id of ids) {
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-    await store.updateStatus(id, { revokedAt: now, status: "revoked", updatedAt: now });
+    await store.updateStatus(id, {
+      revokedAt: now,
+      sourceBindingPatch: { revocation_reason: TTL_EXPIRED_REVOCATION_REASON },
+      status: "revoked",
+      updatedAt: now,
+    });
   }
   return ids;
 }
