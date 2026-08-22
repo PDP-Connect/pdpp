@@ -218,7 +218,7 @@ const ASSISTED_REFRESH: ConnectionRefreshEvidence = {
 
 const TONE_RANK: Record<VerdictTone, number> = { amber: 2, green: 0, grey: 1, red: 3 };
 const TONE_TO_LABEL: Record<VerdictTone, string> = {
-  amber: "Degraded",
+  amber: "Missing data",
   green: "Healthy",
   grey: "Not measured",
   red: "Can't collect",
@@ -247,8 +247,8 @@ const DISPOSITION_TONE: Record<ForwardDisposition, VerdictTone> = {
 // reason the tone reached amber-or-worse is a not-actually-broken shape
 // (idle-with-prior-success or passive cooling-off state, stale freshness,
 // owner_refresh_due disposition); any coverage/attention/outbox axis, a
-// broken state, or a broken disposition keeps "Degraded". An active run then
-// further softens a "Needs refresh" (never a "Degraded") verdict to "Syncing"
+// broken state, or a broken disposition keeps "Missing data". An active run then
+// further softens a "Needs refresh" (never a "Missing data") verdict to "Syncing"
 // (active-run visibility fix) — active work dominates a routine nudge, never
 // a genuine defect.
 function expectedAmberLabel(
@@ -263,7 +263,7 @@ function expectedAmberLabel(
   const hasDegradingAxis = toneInputs.some(
     (input) => ["coverage", "attention", "outbox"].includes(input.axis) && TONE_RANK[input.tone] >= TONE_RANK.amber
   );
-  const label = stateIsBroken || dispositionIsBroken || hasDegradingAxis ? "Degraded" : "Needs refresh";
+  const label = stateIsBroken || dispositionIsBroken || hasDegradingAxis ? "Missing data" : "Needs refresh";
   return label === "Needs refresh" && snap.badges.syncing ? "Syncing" : label;
 }
 
@@ -303,7 +303,7 @@ function assertAllInvariants(verdict: RenderedVerdict, snap: ConnectionHealthSna
   );
   // (6) label follows tone plus active-work evidence. Grey is only "Checking"
   // when current activity evidence proves the system is actively checking.
-  // Amber splits into "Needs refresh" (not-actually-broken) vs "Degraded"
+  // Amber splits into "Needs refresh" (not-actually-broken) vs "Missing data"
   // (real trouble) — see expectedAmberLabel.
   const expectedLabel =
     verdict.pill.tone === "grey" && snap.badges.syncing
@@ -473,7 +473,7 @@ test("tone: an active run does not mask genuine open owner attention — attenti
     exactSyncAttention()
   );
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "attention");
   assert.equal(v.required_actions[0]?.kind, "add_info");
   assert.equal(v.forward_statement, "Complete the requested action and collection resumes.");
@@ -607,14 +607,14 @@ test("tone: degraded evidence wins over active local-device outbox label", () =>
   });
   const v = synthesizeRenderedVerdict(snap, [stream({ coverage: "retryable_gap", gap_retryable: true })], null, true);
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
 });
 
 test("tone: worst axis (degrading coverage) wins over a healthy state", () => {
   const snap = snapshot({ axes: { coverage: "retryable_gap" }, state: "healthy" });
   const v = synthesizeRenderedVerdict(snap, [stream({ coverage: "retryable_gap", gap_retryable: true })], null, true);
   assert.equal(v.pill.tone, "amber"); // not the state-implied green
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
 });
 
 test("coverage: optional stale stream annotates but does not downgrade the pill", () => {
@@ -1152,7 +1152,7 @@ test("channel: degraded resumable stale coverage is advisory Retry now, not calm
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(action.kind, "retry_gap");
@@ -1183,7 +1183,7 @@ test("channel: failed deferred history is retryable, not a passive collecting wa
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(v.progress.headline, "Holding 136,907 records; retry to continue.");
@@ -1208,7 +1208,7 @@ test("channel: idle assisted retryable gap offers retry instead of passive colle
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(action.kind, "retry_gap");
@@ -1242,7 +1242,7 @@ test("channel: explicit manual-default background-safe schedule stays scheduled 
   assert.ok(action, "primary required action exists");
   assert.equal(v.progress.mode, "scheduled");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "calm");
   assert.equal(v.forward_statement, "The next run is expected to fill the remaining data.");
   assert.equal(action.kind, "wait");
@@ -1280,7 +1280,7 @@ test("channel: background-unsafe active schedule stays manual and still offers R
   assert.ok(action, "primary required action exists");
   assert.equal(v.progress.mode, "manual");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(action.kind, "retry_gap");
@@ -1317,7 +1317,7 @@ test("channel: paused active schedule stays manual and still offers Retry now", 
   assert.ok(action, "primary required action exists");
   assert.equal(v.progress.mode, "manual");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(action.kind, "retry_gap");
@@ -1351,7 +1351,7 @@ test("channel: source-pressure deferred recovery is a self-handled wait, not an 
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "calm");
   assert.equal(v.forward_statement, "The next run is expected to fill the remaining data.");
   assert.equal(action.kind, "wait");
@@ -1864,7 +1864,7 @@ test("golden: Acme Slack-shaped paused schedule + stale freshness + cancelled la
   // aged past the staleness window, and the last run was cancelled rather than
   // succeeded (no fresh CollectionSucceeded evidence). This must not render green,
   // and — since nothing about the connector itself is broken — it must not
-  // overstate the situation as "Degraded" either.
+  // overstate the situation as "Missing data" either.
   const snap = snapshot({
     axes: { coverage: "complete", freshness: "stale" },
     forward_disposition: "owner_refresh_due",
@@ -1875,7 +1875,7 @@ test("golden: Acme Slack-shaped paused schedule + stale freshness + cancelled la
   assert.equal(v.pill.tone, "amber");
   assert.equal(v.pill.label, "Needs refresh");
   assert.notEqual(v.pill.label, "Healthy");
-  assert.notEqual(v.pill.label, "Degraded");
+  assert.notEqual(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
 });
 
@@ -1897,7 +1897,7 @@ test("golden: Chase-shaped resumable retryable gap stays Degraded, not Needs ref
     true
   );
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
 });
 
@@ -1916,7 +1916,7 @@ test("golden: USAA-shaped awaiting_owner attention-open gap stays Degraded, not 
     MANUAL_REFRESH,
     true
   );
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.notEqual(v.pill.label, "Needs refresh");
 });
 
@@ -1950,7 +1950,7 @@ test("degraded state (real degrading condition) with only stale freshness, no co
   });
   const v = synthesizeRenderedVerdict(snap, [stream()], MANUAL_REFRESH, true);
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
 });
 
 test("idle never-run (no prior success, no stale evidence) stays neutral, not amber", () => {
@@ -1995,7 +1995,7 @@ test("golden: Chase — degraded/advisory with a retryable transactions gap", ()
     { mode: "manual", retained_records: 1200 }
   );
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.ok(v.annotations.some((a) => a.kind === "freshness" && a.text === "Transactions stuck since Apr 22."));
   const retry = v.required_actions.find((a) => a.kind === "retry_gap");
@@ -2033,7 +2033,7 @@ test("golden: Amazon order_items stream name does not trip calm/advisory count i
     { mode: "manual", retained_records: 6525 }
   );
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.trace.channel_cause, "owner_optional_or_status:retry_gap");
   assert.ok(v.annotations.some((a) => a.kind === "freshness" && a.text === "Order items stuck since Jun 30."));
@@ -2122,7 +2122,7 @@ test("golden: succeeded terminal coverage reads as degraded coverage review, not
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(action?.kind, "code_fix");
   assert.equal(action?.audience, "maintainer");

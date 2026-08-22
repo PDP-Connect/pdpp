@@ -533,8 +533,10 @@ function formatCollectedThisRun(row: SyncRow): string | null {
 }
 
 /**
- * The coverage condition is shown only when it adds information: "complete" is
- * the expected baseline and "unknown" is noise, so both are suppressed.
+ * The coverage condition is shown only when it adds information: `complete` is
+ * the expected baseline and `unknown` (rendered "not measured") is noise, so
+ * both are suppressed. The comparison is against the raw AXIS KEY, not the
+ * owner-facing label, so renaming the label leaves this correct.
  * Otherwise this renders the SAME owner-facing wording as the source detail
  * page and connection diagnostics (`formatCoverageAxis`'s humanized `value`,
  * e.g. "won't backfill" / "retryable gap") — never the raw internal axis key

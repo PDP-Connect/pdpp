@@ -745,12 +745,12 @@ test(
     assert.equal(partialMessages.forward_disposition, "resumable");
     assert.equal(summary.connection_health.axes.coverage, "partial");
     assert.equal(summary.connection_health.state, "degraded");
-    assert.equal(summary.rendered_verdict.pill.label, "Degraded");
+    assert.equal(summary.rendered_verdict.pill.label, "Missing data");
 
     const detail = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
     assert.ok(detail, "the partial-coverage connection resolves a source-detail summary");
     assert.equal(detail.connection_health.axes.coverage, "partial");
-    assert.equal(detail.rendered_verdict.pill.label, "Degraded");
+    assert.equal(detail.rendered_verdict.pill.label, "Missing data");
   })
 );
 
@@ -2334,5 +2334,220 @@ test(
     } finally {
       Date.prototype.toISOString = originalToISOString;
     }
+  })
+);
+
+// ─── B8: a device source names its device AND its connector ──────────────────
+//
+// A local-device connection's stored `display_name` is whatever the owner typed
+// into the enrollment form's free-text field, passed through verbatim as
+// `--device-label`. Nothing ever composed the connector name into it, so naming
+// depended entirely on what the client happened to send:
+//
+//     peregrine Codex   | codex    <- owner typed the connector name by hand
+//     peregrine         | signal   <- owner forgot; the row said nothing about
+//                                     WHAT it collects (owner: "it should have
+//                                     been called 'signal' then")
+//
+// The projection now derives the owner-facing name so it is systematic rather
+// than client-dependent. Derived at render time, never stored: the owner's typed
+// label is their data, and this fixes existing rows with no migration.
+
+test(
+  "B8: a device source with no connector name in its label gets the connector appended",
+  withTmpDb(async () => {
+    seedConnector();
+    // The Signal-shaped case: the owner typed only a hostname.
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "peregrine",
+      sourceBinding: { device: "peregrine", kind: "local_device" },
+      sourceBindingKey: "peregrine",
+      sourceKind: "local_device",
+    });
+    const rows = (await listConnectorSummaries()).filter((row) => row.connector_id === CONNECTOR_ID);
+    const row = rows.find((r) => r.connector_instance_id === WORK_INSTANCE_ID);
+    assert.ok(row);
+    assert.equal(
+      row.display_name,
+      "peregrine Connection First Records",
+      "a device row must identify both its device and its connector"
+    );
+    // The connector-type name stays a separate field — this composes for
+    // display, it does not collapse the two identities.
+    assert.equal(row.connector_display_name, "Connection First Records");
+  })
+);
+
+test(
+  "B8: a device label that already names the connector is not duplicated",
+  withTmpDb(async () => {
+    seedConnector();
+    // The "peregrine Codex" case: the owner already typed the connector name.
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "peregrine Connection First Records",
+      sourceBinding: { device: "peregrine", kind: "local_device" },
+      sourceBindingKey: "peregrine",
+      sourceKind: "local_device",
+    });
+    const rows = (await listConnectorSummaries()).filter((row) => row.connector_id === CONNECTOR_ID);
+    const row = rows.find((r) => r.connector_instance_id === WORK_INSTANCE_ID);
+    assert.ok(row);
+    assert.equal(row.display_name, "peregrine Connection First Records");
+  })
+);
+
+test(
+  "B8: containment is punctuation- and case-insensitive, so near-miss labels do not duplicate",
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "peregrine connection-first-records",
+      sourceBinding: { device: "peregrine", kind: "local_device" },
+      sourceBindingKey: "peregrine",
+      sourceKind: "local_device",
+    });
+    const rows = (await listConnectorSummaries()).filter((row) => row.connector_id === CONNECTOR_ID);
+    const row = rows.find((r) => r.connector_instance_id === WORK_INSTANCE_ID);
+    assert.ok(row);
+    assert.equal(row.display_name, "peregrine connection-first-records");
+  })
+);
+
+test(
+  "B8: a non-device (API/OAuth) connection keeps the owner's label untouched",
+  withTmpDb(async () => {
+    seedConnector();
+    // The negative control that keeps this change narrow. An API connection is
+    // already unambiguous; appending the connector name would restate the
+    // owner's own naming for no benefit.
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "Work laptop",
+      sourceBinding: { kind: "manual" },
+      sourceBindingKey: "work",
+      sourceKind: "manual",
+    });
+    const rows = (await listConnectorSummaries()).filter((row) => row.connector_id === CONNECTOR_ID);
+    const row = rows.find((r) => r.connector_instance_id === WORK_INSTANCE_ID);
+    assert.ok(row);
+    assert.equal(row.display_name, "Work laptop");
+  })
+);
+
+test(
+  "B8: a device connection with no stored label falls back to the connector name alone",
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "",
+      sourceBinding: { device: "peregrine", kind: "local_device" },
+      sourceBindingKey: "peregrine",
+      sourceKind: "local_device",
+    });
+    const rows = (await listConnectorSummaries()).filter((row) => row.connector_id === CONNECTOR_ID);
+    const row = rows.find((r) => r.connector_instance_id === WORK_INSTANCE_ID);
+    assert.ok(row);
+    assert.equal(row.display_name, "Connection First Records", "never renders a bare or doubled connector name");
+  })
+);
+
+test(
+  "B8: an account connection is qualified by its declared, non-secret account identity",
+  withTmpDb(async () => {
+    seedConnector();
+    // The two-Amazon case: same connector, two accounts. The manifest-declared
+    // identity field (`identity: true` + `secret: false`) is the only account
+    // label safe to render, and `verified_identity` is where the static-secret
+    // pipeline durably records it.
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "",
+      sourceBinding: { kind: "static_secret", verified_identity: "gezalsatx@yahoo.com" },
+      sourceBindingKey: "identity_a",
+      sourceKind: "account",
+    });
+    await seedInstance({
+      connectorInstanceId: PERSONAL_INSTANCE_ID,
+      displayName: "",
+      sourceBinding: { kind: "static_secret", verified_identity: "tnunamak@gmail.com" },
+      sourceBindingKey: "identity_b",
+      sourceKind: "account",
+    });
+    const rows = (await listConnectorSummaries()).filter((row) => row.connector_id === CONNECTOR_ID);
+    const a = rows.find((r) => r.connector_instance_id === WORK_INSTANCE_ID);
+    const b = rows.find((r) => r.connector_instance_id === PERSONAL_INSTANCE_ID);
+    assert.ok(a);
+    assert.ok(b);
+    assert.equal(a.display_name, "Connection First Records - gezalsatx@yahoo.com");
+    assert.equal(b.display_name, "Connection First Records - tnunamak@gmail.com");
+    assert.notEqual(a.display_name, b.display_name, "two accounts of one connector must never render identically");
+  })
+);
+
+test(
+  "B8: an owner-renamed account connection keeps its name and still gains the account identity",
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "Shopping",
+      sourceBinding: { kind: "static_secret", verified_identity: "gezalsatx@yahoo.com" },
+      sourceBindingKey: "identity_a",
+      sourceKind: "account",
+    });
+    const rows = (await listConnectorSummaries()).filter((row) => row.connector_id === CONNECTOR_ID);
+    const row = rows.find((r) => r.connector_instance_id === WORK_INSTANCE_ID);
+    assert.ok(row);
+    assert.equal(row.display_name, "Shopping - gezalsatx@yahoo.com", "the owner's own name is preserved, not replaced");
+  })
+);
+
+test(
+  "B8: an account label that already contains the identity is not doubled",
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "Amazon gezalsatx@yahoo.com",
+      sourceBinding: { kind: "static_secret", verified_identity: "gezalsatx@yahoo.com" },
+      sourceBindingKey: "identity_a",
+      sourceKind: "account",
+    });
+    const rows = (await listConnectorSummaries()).filter((row) => row.connector_id === CONNECTOR_ID);
+    const row = rows.find((r) => r.connector_instance_id === WORK_INSTANCE_ID);
+    assert.ok(row);
+    assert.equal(row.display_name, "Amazon gezalsatx@yahoo.com");
+  })
+);
+
+test(
+  "B8: a connection with no declared identity is NOT given a fabricated one",
+  withTmpDb(async () => {
+    seedConnector();
+    // The honesty control. Most connectors (Amazon included, today) declare no
+    // identity field, and a connector that marks its username `secret: true`
+    // (H-E-B) must never have that value surface here. When the system holds no
+    // safe account label, the label stays plain rather than inventing identity
+    // the system does not have.
+    await seedInstance({
+      connectorInstanceId: WORK_INSTANCE_ID,
+      displayName: "",
+      sourceBinding: { kind: "static_secret", setup_fields: { username: "secret-user@example.com" } },
+      sourceBindingKey: "identity_a",
+      sourceKind: "account",
+    });
+    const rows = (await listConnectorSummaries()).filter((row) => row.connector_id === CONNECTOR_ID);
+    const row = rows.find((r) => r.connector_instance_id === WORK_INSTANCE_ID);
+    assert.ok(row);
+    assert.equal(row.display_name, "Connection First Records");
+    assert.doesNotMatch(
+      row.display_name,
+      /secret-user/,
+      "a field the manifest marked secret must never reach an owner-facing label"
+    );
   })
 );

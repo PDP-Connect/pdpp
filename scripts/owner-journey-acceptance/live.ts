@@ -562,7 +562,7 @@ function isMaterialSourceIssue(connector: Connector): boolean {
     pill.tone === "red" ||
     pill.label === "Can't collect" ||
     pill.tone === "amber" ||
-    pill.label === "Degraded" ||
+    pill.label === "Missing data" ||
     verdict.channel === "attention"
   );
 }

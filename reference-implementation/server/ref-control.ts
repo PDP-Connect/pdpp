@@ -171,6 +171,7 @@ import {
   listRetainedSizeStreams,
   listRetainedSizeStreamsByInstanceIds,
 } from "./retained-size-read-model.ts";
+import { staticSecretVerifiedIdentityFromBinding } from "./static-secret-identity.ts";
 import {
   parseCollectionRatePayload,
   readCollectionFactsFromTerminalData,
@@ -564,6 +565,13 @@ export interface PendingDetailGapSummary {
    */
   readonly attempt_count?: unknown;
   readonly connector_instance_id?: unknown;
+  /**
+   * Durable `connector_detail_gaps.detail_locator_json`, as parsed by
+   * `rowToGap`. Optional/`unknown` because not every gap projection populates
+   * it. Read by {@link isLocalCollectorRunnerGap} to tell a local-collector
+   * runner condition (`kind: "local_collector_gap"`) from a real stream gap.
+   */
+  readonly detail_locator?: unknown;
   readonly last_attempt_at?: unknown;
   /**
    * Durable `connector_detail_gaps.last_error_json`, as parsed by `rowToGap`.
@@ -3811,10 +3819,168 @@ export function projectCollectionReport(input: {
   });
 }
 
+/**
+ * Normalize a label for containment testing: lowercase, non-alphanumerics
+ * collapsed to single spaces. Mirrors the console's `normalizeLabelForContainment`
+ * so both sides agree on when a connector name is already present in a label.
+ */
+function normalizeLabelForContainment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Append `qualifier` to `label` unless the label already says it.
+ *
+ * Containment is normalized (case- and punctuation-insensitive) so a label the
+ * owner already qualified by hand is never doubled — "peregrine Codex" stays
+ * "peregrine Codex", not "peregrine Codex Codex".
+ */
+function qualifyLabel(label: string, qualifier: string, join: string): string {
+  const trimmedQualifier = qualifier.trim();
+  if (!trimmedQualifier) {
+    return label;
+  }
+  const normalizedQualifier = normalizeLabelForContainment(trimmedQualifier);
+  if (!normalizedQualifier || normalizeLabelForContainment(label).includes(normalizedQualifier)) {
+    return label;
+  }
+  return `${label}${join}${trimmedQualifier}`;
+}
+
+/**
+ * The owner-facing display name for one configured connection.
+ *
+ * B8 (owner ledger 2026-08-22). ONE RULE, stated once: **a source's label must
+ * identify WHICH source it is.** Two owner complaints are the same defect:
+ *
+ *   1. A local-device source's stored `display_name` is whatever the owner typed
+ *      into the enrollment form's free-text field, passed through verbatim as
+ *      `--device-label`. Nothing ever composed the connector name into it, so
+ *      the owner typed "peregrine Codex" by hand but only "peregrine" for
+ *      Signal — a bare hostname saying nothing about WHAT it collects.
+ *      (Owner: "it should have been called 'signal' then".)
+ *
+ *   2. Two Amazon connections both rendered as literally "Amazon", so the owner
+ *      could not tell which account survived a tombstoning.
+ *      (Owner: "I only see one Amazon source... I don't know which one remains,
+ *      and I don't know where the other one went.")
+ *
+ * Both are answered by the same composition, applied in identity order —
+ * the label carries the connector, then whatever distinguishes this connection
+ * from its siblings of the same connector:
+ *
+ *   - device-backed  →  "<device> <Connector>"        e.g. "peregrine Signal"
+ *   - account-backed →  "<Connector> - <account>"     e.g. "H-E-B - a@b.com"
+ *
+ * The account identifier is the manifest-declared, NON-SECRET identity field
+ * (`verified_identity` on `source_binding`, read via the provider-neutral
+ * `staticSecretVerifiedIdentityFromBinding`). The `identity: true` +
+ * `secret: false` pair is the manifest's own declaration that a field is a safe
+ * account label rather than a credential — so a connector that marks its
+ * username `secret: true` (H-E-B does) can never leak it through this path.
+ * Provider-neutral: no connector is named here.
+ *
+ * HONESTY / SCOPE: when a connection exposes no declared account identity this
+ * does NOT invent one, and it does NOT decorate the label with an opaque id by
+ * default. Most connectors (including Amazon) declare no identity field today,
+ * so the honest fix for two identically-named Amazon rows is upstream — the
+ * connector must declare an identity field, or the owner renames the
+ * connection. Inventing a distinguishing suffix here would manufacture the
+ * appearance of identity the system does not actually have. See the report for
+ * what this does and does not close.
+ *
+ * Derived at RENDER time, never stored, because:
+ *   1. The owner's typed label is their data. Rewriting
+ *      `connector_instances.display_name` would silently restate an
+ *      owner-authored name and make the owner's own rename
+ *      (`owner-connections.ts` `setDisplayName`) indistinguishable from a
+ *      machine edit.
+ *   2. It fixes EXISTING rows and future enrollments in one step — no
+ *      migration, nothing to reverse.
+ *   3. Every input is already on the projected row; no join, no extra read.
+ *
+ * PII: an account identifier in a display name is the existing shipped pattern
+ * (H-E-B). It stays confined to this owner-facing label — never logs, never
+ * diagnostics.
+ */
+function projectedConnectionDisplayName(input: {
+  readonly connectorDisplayName: string;
+  readonly sourceBinding: unknown;
+  readonly sourceKind: string | null | undefined;
+  readonly storedDisplayName: string | null | undefined;
+}): string {
+  const stored = typeof input.storedDisplayName === "string" ? input.storedDisplayName.trim() : "";
+  const connectorName = input.connectorDisplayName.trim();
+
+  // Device-backed: the stored label is a DEVICE name, so the connector is the
+  // qualifier that says what this source collects.
+  if (input.sourceKind === "local_device" || input.sourceKind === "browser_collector") {
+    return stored ? qualifyLabel(stored, connectorName, " ") : connectorName;
+  }
+
+  // Account-backed and everything else is connector-first: the base is the
+  // owner's label when they set one, qualified by the declared account identity
+  // when the manifest exposes a non-secret one.
+  const base = stored || connectorName;
+  const accountIdentity = staticSecretVerifiedIdentityFromBinding(input.sourceBinding);
+  return accountIdentity ? qualifyLabel(base, accountIdentity, " - ") : base;
+}
+
+/**
+ * Whether a pending detail gap is a **local-collector runner condition** rather
+ * than a real stream gap.
+ *
+ * B9 (owner ledger 2026-08-22): the detail-gap store is keyed by stream, but a
+ * local-collector gap is not stream-scoped — `connector_child_failure` means the
+ * collector's child process died, and `policy_budget` means it hit a scan
+ * budget. Neither has a stream. To fit the stream-shaped primary key,
+ * `parseGapBodyBase` (`routes/ref-device-exporters.ts`) mints a synthetic name
+ * like `local-collector/connector_child_failure` and stores it in the `stream`
+ * column. Unfiltered, that pseudo-stream flowed into the collection report's
+ * in-scope universe and the console rendered a PROCESS FAILURE as one of the
+ * owner's DATA STREAMS.
+ *
+ * The gap already carries the structured discriminator the route wrote next to
+ * the synthetic name: `detail_locator.kind === "local_collector_gap"`. We key on
+ * that (not on the stream-name prefix) because it is the authored field and is
+ * immune to separator drift between emitters.
+ *
+ * This ONLY removes the failure from the per-stream data list. The failure still
+ * reaches the owner through the channel that already carries it: the
+ * `local_collector_gaps` diagnostics block, which aggregates the pending count
+ * and the `reasons` array and renders with a warning tone
+ * (`routes/ref-device-exporters.ts` → `connection-diagnostics.tsx`).
+ */
+function isLocalCollectorRunnerGap(gap: PendingDetailGapSummary): boolean {
+  const locator = gap.detail_locator;
+  if (
+    locator &&
+    typeof locator === "object" &&
+    !Array.isArray(locator) &&
+    (locator as { kind?: unknown }).kind === "local_collector_gap"
+  ) {
+    return true;
+  }
+  // Fallback for rows written before the locator was populated, and as a guard
+  // against separator drift (`local-collector/` vs `local_collector/`).
+  const stream = typeof gap.stream === "string" ? gap.stream : "";
+  return stream.startsWith("local-collector/") || stream.startsWith("local_collector/");
+}
+
 function pendingDetailGapCountsByStream(gaps: readonly PendingDetailGapSummary[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const gap of gaps) {
     if (!gap || typeof gap !== "object" || Array.isArray(gap) || gap.status !== "pending") {
+      continue;
+    }
+    // B9: a collector-runner condition is not a data stream. Excluded here so it
+    // never enters the collection report's in-scope stream universe; it stays
+    // visible to the owner via the local_collector_gaps diagnostics block.
+    if (isLocalCollectorRunnerGap(gap)) {
       continue;
     }
     const stream = typeof gap.stream === "string" ? gap.stream : "";
@@ -6253,7 +6419,15 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     connector_display_name: connectorDisplayName,
     connector_id: connectorId,
     connector_instance_id: connectorInstanceId,
-    display_name: instance.displayName || connectorDisplayName,
+    // B8: a source's label must identify WHICH source it is — the device for a
+    // device-backed source, the account for an account-backed one. Derived,
+    // never stored.
+    display_name: projectedConnectionDisplayName({
+      connectorDisplayName,
+      sourceBinding: instance.sourceBinding,
+      sourceKind: instance.sourceKind,
+      storedDisplayName: instance.displayName,
+    }),
     freshness,
     last_run: authoritativeLastRun,
     last_successful_run: authoritativeLastSuccessfulRun,
@@ -7406,7 +7580,12 @@ async function projectConnectorIdentityInventoryPage(
         connector_display_name: connectorDisplayName,
         connector_id: instance.connectorId,
         connector_instance_id: instance.connectorInstanceId,
-        display_name: instance.displayName || connectorDisplayName,
+        display_name: projectedConnectionDisplayName({
+          connectorDisplayName,
+          sourceBinding: instance.sourceBinding,
+          sourceKind: instance.sourceKind,
+          storedDisplayName: instance.displayName,
+        }),
         membership_state: evidence ? "complete" : "pending",
         streams,
       },
@@ -7619,7 +7798,12 @@ async function projectConnectorRetainedCountSummaryPage(
         connector_display_name: connectorDisplayName,
         connector_id: instance.connectorId,
         connector_instance_id: instance.connectorInstanceId,
-        display_name: instance.displayName || connectorDisplayName,
+        display_name: projectedConnectionDisplayName({
+          connectorDisplayName,
+          sourceBinding: instance.sourceBinding,
+          sourceKind: instance.sourceKind,
+          storedDisplayName: instance.displayName,
+        }),
         revoked_at: instance.revokedAt ?? null,
         status: instance.status,
         total_records: totalRecords,

@@ -105,7 +105,7 @@ const COOLING_VERDICT = {
   channel: "advisory",
   detail: {},
   forward_statement: "The source is throttling this connection; it will retry automatically.",
-  pill: { label: "Degraded", tone: "amber" },
+  pill: { label: "Missing data", tone: "amber" },
   progress: {
     gaps_drained_last_run: null,
     headline: "Waiting for the next attempt.",

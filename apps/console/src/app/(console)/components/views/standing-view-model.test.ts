@@ -488,7 +488,7 @@ test("advisory owner actions surface non-urgent Amazon retry work without calm a
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Some order detail is still outstanding. Retry this source to collect the missing detail.",
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           {
             affects: ["orders"],
@@ -611,7 +611,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Run a refresh to bring this up to date.",
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           {
             affects: [],
@@ -633,7 +633,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Latest collection completed with known coverage gaps.",
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           {
             affects: [],
@@ -700,7 +700,7 @@ function deferredRecoveryVerdict(): RefConnectorSummary["rendered_verdict"] {
   return verdict({
     channel: "calm",
     forward_statement: "Catching up on the remaining data.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     required_actions: [
       {
         affects: [],
@@ -775,7 +775,7 @@ test("dashboard cross-surface: every source-work section count equals its render
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Run a refresh to bring this up to date.",
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           {
             affects: [],
@@ -938,7 +938,7 @@ test("reviewable degraded source appears once rather than as review plus source 
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Retry now to give the recoverable gap another run.",
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           {
             affects: [],
@@ -1016,7 +1016,7 @@ test("maintainer-only actions are not advisory owner actions", () => {
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "This source needs a connector code fix before it can make progress.",
-        pill: { label: "Degraded", tone: "amber" },
+        pill: { label: "Missing data", tone: "amber" },
         required_actions: [
           {
             affects: [],
