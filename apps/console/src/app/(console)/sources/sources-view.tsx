@@ -85,6 +85,7 @@ import { SOURCE_ACCESS_NOTE } from "./sources-copy.ts";
 import {
   buildDuplicateSourceReview,
   collapseDuplicateFallbackSources,
+  collapseSetupFailedSources,
   type DuplicateSourceGroup,
   type DuplicateSourceReview,
   reactivateRecordCopy,
@@ -128,28 +129,37 @@ export function SourcesView({
   revokeAction,
   runtimeAdvisory,
 }: SourcesViewProps) {
-  // Archived sources are partitioned out FIRST: they are neither active nor
-  // revoked, and must not reach the duplicate-collapse pass, whose ordinal
-  // relabelling ("account 2") implies a live sibling set they are not part of.
+  // Archived and setup-failed sources are partitioned out FIRST: neither is
+  // active nor an ordinary revoked row, and both must not reach the
+  // duplicate-collapse pass, whose ordinal relabelling ("account 2") implies
+  // a live sibling set they are not part of.
   const archivedInstances = instances.filter((i) => i.archived);
-  const liveInstances = instances.filter((i) => !i.archived);
+  const setupFailedInstances = instances.filter((i) => i.setupFailed);
+  const liveInstances = instances.filter((i) => !(i.archived || i.setupFailed));
   const activeInstances = liveInstances.filter((i) => !i.revoked);
   const revokedInstances = liveInstances.filter((i) => i.revoked);
   const duplicateReviews = buildDuplicateSourceReview(liveInstances);
   const { duplicateGroups, visibleActiveInstances } = collapseDuplicateFallbackSources(liveInstances);
+  const { setupFailedGroups } = collapseSetupFailedSources(setupFailedInstances);
 
-  // Default selection: first active source, then revoked, then archived — an
-  // archived row is only ever the default when the owner has nothing else,
-  // in which case showing it beats showing an empty pane.
+  // Default selection: first active source, then revoked, then archived, then
+  // setup-failed — a setup-failed row is only ever the default when the
+  // owner has nothing else, in which case showing it beats an empty pane.
   const defaultId =
-    (visibleActiveInstances[0] ?? duplicateGroups[0]?.items[0] ?? revokedInstances[0] ?? archivedInstances[0])?.id ??
-    null;
+    (
+      visibleActiveInstances[0] ??
+      duplicateGroups[0]?.items[0] ??
+      revokedInstances[0] ??
+      archivedInstances[0] ??
+      setupFailedGroups[0]?.representative
+    )?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(defaultId);
   const selected =
     instances.find((i) => i.id === selectedId) ??
     activeInstances[0] ??
     revokedInstances[0] ??
     archivedInstances[0] ??
+    setupFailedGroups[0]?.representative ??
     null;
 
   if (instances.length === 0) {
@@ -221,6 +231,30 @@ export function SourcesView({
                   key={instance.id}
                   onSelect={() => setSelectedId(instance.id)}
                   selected={selected?.id === instance.id}
+                />
+              ))}
+            </details>
+          ) : null}
+
+          {/* Setup-failed sources: repeated failed setup, zero records — the
+              owner's only evidence a connector was ever attempted. Coalesced to
+              one row per connector (attemptCount) rather than one row per
+              retried shell, and grouped separately so a collapsed group can
+              never be mistaken for a live or ever-successful source. */}
+          {setupFailedGroups.length > 0 ? (
+            <details className="rr-s-revoked-group" data-testid="sources-setup-failed-group">
+              <summary className="rr-s-revoked-group__summary">
+                Setup never completed ({setupFailedGroups.length})
+              </summary>
+              <p className="rr-s-archived-group__note">
+                These connections never finished setup. No records were collected — try again from Add a source.
+              </p>
+              {setupFailedGroups.map((group) => (
+                <InstanceListItem
+                  instance={group.representative}
+                  key={group.connectorId}
+                  onSelect={() => setSelectedId(group.representative.id)}
+                  selected={selected?.id === group.representative.id}
                 />
               ))}
             </details>
@@ -477,7 +511,13 @@ function InstancePassport({
         {instance.nextAction ? (
           <NextActionCta detailHref={instance.detailHref} formatted={instance.nextAction} />
         ) : null}
-        {instance.revoked ? (
+        {instance.setupFailed ? (
+          <p className="rr-s-revoked-note">
+            This connection attempt never finished setup. No records were collected — start a new attempt from Add a
+            source.
+          </p>
+        ) : null}
+        {instance.revoked && !instance.setupFailed ? (
           <p className="rr-s-revoked-note">
             Future collection is stopped. Already-collected records stay visible and searchable; revoke does not erase
             anything.
@@ -644,7 +684,11 @@ function PassportActions({
           </IcButton>
         ) : null}
 
-        {interactive && reactivateAction && instance.connectionId && instance.revoked ? (
+        {/* A setup-failed row has no credential, schedule, or prior collection
+            to reactivate — it is a spent enrollment shell, not a paused live
+            connection. Offering "Reactivate" here would be the same dishonest
+            promise archived sources already refuse to make. */}
+        {interactive && reactivateAction && instance.connectionId && instance.revoked && !instance.setupFailed ? (
           <IcButton
             data-testid="sources-reactivate-btn"
             onClick={() => setConfirmingReactivate((v) => !v)}

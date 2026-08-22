@@ -54,6 +54,7 @@ import { scheduleEnabled, scheduleIntervalSeconds } from "../lib/schedule-eviden
 import {
   isArchivedSource,
   isRevokedConnector,
+  isSetupFailedSource,
   isSetupInProgressConnector,
   projectSourceActionability,
   type SourceOwnerActionCue,
@@ -179,6 +180,15 @@ export interface SourceInstanceView {
    */
   primaryVerdictAction: SourcePrimaryVerdictAction | null;
   revoked: boolean;
+  /**
+   * A revoked retired-setup-shell row that never had a successful run —
+   * repeated failed setup, zero records. Derived from the server's
+   * `source_visibility: "setup_failed"`. Renders in the Sources list's own
+   * "Setup never completed" group and, like `archived`, must never read as
+   * healthy or current, and offers no action implying a connection exists to
+   * resume — the honest next step is a fresh attempt via Add Source.
+   */
+  setupFailed: boolean;
   /** Status flag (dot + Endorse) derived from rendered verdict, with legacy fallback. */
   status: SourceStatusFlag;
   /** Stream manifest rows for the passport table. */
@@ -207,6 +217,19 @@ export interface DuplicateSourceGroup {
   items: readonly SourceInstanceView[];
   kind: string;
   total: number;
+}
+
+/**
+ * One row per connector standing in for every `setupFailed` attempt against
+ * it. `representative` is the most recent attempt (rows arrive in
+ * `created_at ASC` order from the identity page, so the last item for a
+ * connector is the newest) — its status/label are what renders; the others
+ * exist only to be counted in `attemptCount`.
+ */
+export interface SetupFailedSourceGroup {
+  attemptCount: number;
+  connectorId: string;
+  representative: SourceInstanceView;
 }
 
 export interface SourcesRuntimeAdvisory {
@@ -513,6 +536,7 @@ export function toSourceInstanceView(
   const routeId = connectionId ?? connectorInstanceId ?? actionability.routeId;
   const revoked = isRevokedConnector(summary);
   const archived = isArchivedSource(summary);
+  const setupFailed = isSetupFailedSource(summary);
   // Modality is persisted server authority. A missing heartbeat must not
   // resurrect remote Sync controls for a local-device connection.
   const isLocalDevicePush = summary.source_kind === "local_device";
@@ -644,6 +668,7 @@ export function toSourceInstanceView(
     passportFields,
     primaryVerdictAction,
     revoked,
+    setupFailed,
     status,
     streams,
     totalRecords: summary.total_records,
@@ -721,6 +746,44 @@ export function collapseDuplicateFallbackSources(instances: readonly SourceInsta
     duplicateGroups: duplicateGroups.sort((a, b) => b.total - a.total || a.kind.localeCompare(b.kind)),
     visibleActiveInstances: activeInstances.filter((instance) => !groupedIds.has(instance.id)),
   };
+}
+
+/**
+ * Coalesces every `setupFailed` row into ONE row per connector. Unlike
+ * {@link collapseDuplicateFallbackSources} (which only groups active
+ * duplicates past a minimum count), this ALWAYS collapses — even a single
+ * failed attempt renders through this path, so a connector's setup-failure
+ * history reads as one row with an attempt count rather than depending on
+ * how many times the owner happened to retry. Coalescing UI rows only: the
+ * underlying `connector_instances` rows are untouched, and `attemptCount`
+ * is a display aggregate, not a merge.
+ */
+export function collapseSetupFailedSources(instances: readonly SourceInstanceView[]): {
+  setupFailedGroups: readonly SetupFailedSourceGroup[];
+} {
+  const byConnector = new Map<string, SourceInstanceView[]>();
+  for (const instance of instances) {
+    if (!instance.setupFailed) {
+      continue;
+    }
+    const bucket = byConnector.get(instance.connectorId);
+    if (bucket) {
+      bucket.push(instance);
+    } else {
+      byConnector.set(instance.connectorId, [instance]);
+    }
+  }
+
+  const setupFailedGroups: SetupFailedSourceGroup[] = [];
+  for (const [connectorId, items] of byConnector) {
+    const representative = items.at(-1);
+    if (!representative) {
+      continue;
+    }
+    setupFailedGroups.push({ attemptCount: items.length, connectorId, representative });
+  }
+
+  return { setupFailedGroups: setupFailedGroups.sort((a, b) => a.connectorId.localeCompare(b.connectorId)) };
 }
 
 /**
