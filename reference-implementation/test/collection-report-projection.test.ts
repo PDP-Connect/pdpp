@@ -1472,6 +1472,40 @@ test("carry-forward: an attempted-but-unresolved classifying fact cannot shadow 
   );
 });
 
+test("carry-forward: a classifying fact with a committed checkpoint but NO measured boundary cannot shadow a stored fact that measured one (B7)", () => {
+  // Production shape (owner ledger 2026-08-22, cin_d344ba53d6d95c7dd343393d):
+  // an OLDER run measured `contacts` (considered: 1, covered: 1, checkpoint:
+  // committed) via full_inventory. A LATER run re-attempted `contacts`,
+  // committed the same checkpoint, but emitted no DETAIL_COVERAGE at all —
+  // its fact carries checkpoint: committed with considered: null. The
+  // checkpoint-floor alone treats both facts as equally "durable", so the
+  // newer, weaker attempt won and shadowed the durable store's still-valid
+  // proof, rendering "coverage unknown" for a stream the account had already
+  // proven complete. The measured-boundary floor must independently protect
+  // the `considered` denominator the checkpoint floor cannot see.
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [fact({ checkpoint: "committed", collected: 0, considered: null, stream: "contacts" })],
+    },
+    collectionFactsAsOf: "2026-08-22T01:55:46.181Z",
+    freshness: "fresh",
+    latestStreamFacts: storedFacts(
+      [fact({ checkpoint: "committed", collected: 0, considered: 1, covered: 1, stream: "contacts" })],
+      { asOf: "2026-08-21T22:49:57.455Z", runId: "run_1787352596202" }
+    ),
+    manifestStreams: [
+      { coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window", name: "contacts", required: true },
+    ],
+    refresh: null,
+  });
+  const entry = entryFor(entries, "contacts");
+  assert.equal(entry.coverage_condition, "complete", "the durably-measured stored fact is kept, not shadowed");
+  assert.equal(entry.considered, 1);
+  assert.equal(entry.covered, 1);
+  assert.equal(entry.evidence_as_of, "2026-08-21T22:49:57.455Z", "proof age is the STORED fact's own timestamp");
+});
+
 test("carry-forward: manifest-deferred stream stays accepted policy regardless of carry evidence", () => {
   const entries = buildCollectionReport({
     attentionOpen: false,
