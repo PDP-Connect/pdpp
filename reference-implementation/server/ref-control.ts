@@ -135,12 +135,12 @@ import {
   isStreamFullyUnfillableAccounted,
   type TerminalGapProofRow,
 } from "./connector-gap-classification.ts";
-import { canonicalConnectorKey } from "./connector-key.ts";
 import {
   loadOwnerConnectorInstanceGroupsPostgres,
   loadOwnerConnectorInstanceGroupsSqlite,
   resolveCanonicalConnectorInstanceId,
 } from "./connector-instance-canonicalization.ts";
+import { canonicalConnectorKey } from "./connector-key.ts";
 import {
   type HeartbeatRow,
   projectConnectorOutboxAxisFromHeartbeats,
@@ -198,6 +198,7 @@ import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
   isOwnerVisibleConnectorInstance,
+  RETIRED_SETUP_SHELL_BINDING_KINDS,
 } from "./stores/connector-instance-store.ts";
 import {
   getDefaultDeviceExporterStore,
@@ -896,18 +897,42 @@ export interface ConnectorSummary {
   readonly source_kind: string;
   /**
    * Provider-neutral Sources-list visibility, derived from `source_binding`
-   * by `deriveSourceVisibility`. `"hidden_from_sources"` is reserved for a
-   * PURE recovered historical fragment: a `historical_archive` binding whose
+   * by `deriveSourceVisibility`. `"archived"` is reserved for a PURE
+   * recovered historical fragment: a `historical_archive` binding whose
    * `recovery_reason` is exactly `"connection_metadata_missing"` AND that
    * carries no UAT-transfer marker. Every other row — including a
    * `historical_archive` binding that DOES carry a UAT-transfer marker (a
    * manual/UAT-imported source, not a bare recovered fragment) and every
-   * active/promoted connection — is `"active"`. This never removes or
-   * mutates the stored connection; Explore and other record-read paths do
-   * not consult this field, so hidden fragments' records stay reachable
-   * there.
+   * active/promoted connection — is `"active"`.
+   *
+   * `"archived"` means PRESERVED BUT NOT COLLECTING: the records are real
+   * and readable, and no collection will ever resume for this row. It is
+   * NOT a hidden state. The Sources list renders these under their own
+   * "Archived" group (`sources-view-model.ts`), because a record that
+   * exists and is shown nowhere violates the standing principle that no
+   * data known to the system may be invisible in the UI.
+   *
+   * The distinction that must not be lost: an archived source is dead, so
+   * no surface may give it a live-looking verdict or an action that implies
+   * collection could resume (see `isArchivedSource` in
+   * `source-actionability.ts`). This never removes or mutates the stored
+   * connection.
+   *
+   * `"setup_failed"` is reserved for a revoked retired-setup-shell binding
+   * (`browser_enrollment_shell`/`static_secret_draft`/`manual_upload_draft`)
+   * that NEVER had a successful run. Such a row only reaches synthesis at all
+   * because `listSourcesVisibleIdentityPage`'s Sources-only escape (see
+   * `NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE`/`..._POSTGRES` in
+   * `connector-instance-store.ts`) already excludes every setup shell WITH a
+   * successful run — a successful run promotes the connection to its own
+   * `active` row, and that row, not the spent shell, is what should render.
+   * Every setup shell `deriveSourceVisibility` sees is therefore guaranteed
+   * never-succeeded; it does not re-check run history itself. Holds zero
+   * records by construction (no run ever emitted any) and must never render
+   * a "Reconnect" action — there is nothing to reconnect, only a fresh
+   * attempt to make (see `isSetupFailedSource` in `source-actionability.ts`).
    */
-  readonly source_visibility: "active" | "hidden_from_sources";
+  readonly source_visibility: "active" | "archived" | "setup_failed";
   /** Total server-owned work classification derived from `owner_state.resolver`. */
   readonly source_work: SourceWorkGroup;
   readonly status: string | null;
@@ -6266,7 +6291,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       ? evidence.total_records
       : null
     : liveRetainedRecordsOrNull(live);
-  const renderedVerdict = buildRenderedVerdictForSummary({
+  const builtRenderedVerdict = buildRenderedVerdictForSummary({
     attentionRecords: attention.records,
     collectionReport,
     connectionHealth,
@@ -6280,6 +6305,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     runtimeOk,
     schedule: localDeviceBacked ? null : schedule,
   });
+  const renderedVerdict = archiveRenderedVerdict(builtRenderedVerdict, deriveSourceVisibility(instance));
   // Owner review, 2026-07-09: reuse `coverageClassifyingRun` — the SAME
   // classifying run health/coverage already resolved to — so an
   // owner-cancelled `lastRun` is excluded exactly like the health/coverage
@@ -6538,21 +6564,94 @@ function hasUatTransferMarker(binding: Record<string, unknown>): boolean {
 }
 
 /**
- * Provider-neutral Sources-list visibility predicate. Hides ONLY a pure
- * recovered historical fragment: `source_binding.kind === "historical_archive"`
- * with `recovery_reason === "connection_metadata_missing"` and no UAT-transfer
+ * Provider-neutral Sources-list visibility predicate. Marks as `"archived"`
+ * ONLY a pure recovered historical fragment:
+ * `source_binding.kind === "historical_archive"` with
+ * `recovery_reason === "connection_metadata_missing"` and no UAT-transfer
  * marker. A `historical_archive` binding that DOES carry a UAT-transfer marker
  * (e.g. a UAT-imported Google Maps/WhatsApp source) is a manual/transferred
  * source, not a bare fragment, and stays `"active"` — as does every other
  * binding kind, including active promoted connections. Never inspects
  * `connector_id`/`source_kind` — no connector-specific branching.
+ *
+ * `"archived"` classifies; it does not hide. The Sources list renders these
+ * rows in a distinct, clearly-dead group rather than dropping them.
  */
-function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "hidden_from_sources" {
+/**
+ * Replace an archived source's verdict with an honest terminal one.
+ *
+ * An ARCHIVED source is terminal: records preserved, collection finished,
+ * nothing will resume. Its underlying instance is typically `paused`, so the
+ * BUILT verdict describes a live-but-stopped connection and carries
+ * "Reconnect this account and collection resumes" — a promise that leads
+ * nowhere, since reconnecting mints a NEW connection and resumes nothing here
+ * (the intent `dfbbb8843` established for these rows).
+ *
+ * Applied on the SERVER, not in the console, so every consumer of
+ * `rendered_verdict` gets the same answer. That placement is not a
+ * preference: a console-only fix left the `sources-report` CLI rendering
+ * "Paused · Reconnect this account" for the same row, which is how this gap
+ * was found. Any future reader inherits the honest verdict for free.
+ *
+ * `required_actions` is emptied rather than rewritten — there IS no action
+ * that resumes an archived source, and inventing one would be the same class
+ * of lie in a different sentence.
+ *
+ * A `"setup_failed"` source gets its own honest terminal verdict for the same
+ * reason, applied at the same server layer: its underlying instance is a
+ * revoked `browser_enrollment_shell`/etc., so the BUILT verdict describes a
+ * dead enrollment popup's health, not a source the owner ever had running.
+ * `required_actions` is emptied here too — the honest next step is a FRESH
+ * attempt (a new connection), not an action on THIS one, so the console
+ * synthesizes its own "Try again" CTA (`SETUP_FAILED_CTA_LABEL` in
+ * `source-actionability.ts`) that routes to Add Source, the same way it
+ * synthesizes `SETUP_IN_PROGRESS_CTA_LABEL` for a draft.
+ */
+export function archiveRenderedVerdict<T extends RenderedVerdict>(
+  verdict: T,
+  visibility: "active" | "archived" | "setup_failed"
+): T {
+  if (visibility === "archived") {
+    return {
+      ...verdict,
+      channel: "calm",
+      forward_statement: "This source is archived. Its records are kept and stay searchable.",
+      pill: { label: "Archived", tone: "grey" },
+      progress: { ...verdict.progress, headline: "Collection has finished for this source." },
+      required_actions: [],
+    };
+  }
+  if (visibility === "setup_failed") {
+    return {
+      ...verdict,
+      channel: "calm",
+      forward_statement: "Setup never finished for this source. No records were collected.",
+      pill: { label: "Setup never completed", tone: "grey" },
+      progress: { ...verdict.progress, headline: "This connection attempt did not finish." },
+      required_actions: [],
+    };
+  }
+  return verdict;
+}
+
+function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "archived" | "setup_failed" {
   const binding = instance.sourceBinding;
   if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
     return "active";
   }
   const record = binding as Record<string, unknown>;
+  // A revoked retired-setup-shell row reaches synthesis at all only via the
+  // Sources-only never-succeeded escape (`NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_*`
+  // in `connector-instance-store.ts`), which already excludes every such row
+  // WITH a successful run. Every row seen here is therefore guaranteed
+  // never-succeeded — no run-history re-check needed.
+  if (
+    instance.status === "revoked" &&
+    typeof record.kind === "string" &&
+    RETIRED_SETUP_SHELL_BINDING_KINDS.has(record.kind)
+  ) {
+    return "setup_failed";
+  }
   if (record.kind !== "historical_archive") {
     return "active";
   }
@@ -6562,7 +6661,7 @@ function deriveSourceVisibility(instance: ConnectorInstanceRow): "active" | "hid
   if (hasUatTransferMarker(record)) {
     return "active";
   }
-  return "hidden_from_sources";
+  return "archived";
 }
 
 function connectionIsBrowserSessionBound(instance: ConnectorInstanceRow): boolean {
