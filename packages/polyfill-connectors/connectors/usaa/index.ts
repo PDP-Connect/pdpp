@@ -238,6 +238,11 @@ export interface EmitDeps {
    * successfully-navigated-and-scraped card emits recovery for its supplied
    * gap id on whichever stream(s) had one — see `recoverServedCreditCardGaps`. */
   servedCreditCardGaps?: { billing: ReadonlyMap<string, string>; billingStats: ReadonlyMap<string, string> };
+  /** Pending USAA `statements` PDF gaps served by the runtime this run. A
+   * statement whose PDF is present again emits recovery for its supplied gap
+   * id; without this a downloaded statement leaves its gap pending forever
+   * (see `recoverServedStatementGaps`). */
+  servedStatementGaps?: ReadonlyMap<string, string>;
 }
 
 /** Aggregate shape from the PDF hydration pass. Exposed so the emit-
@@ -861,7 +866,53 @@ export async function emitStatementCoverage(
   for (const gap of result.gaps) {
     await deps.emit(gap);
   }
+  await recoverServedStatementGaps(deps, result.coverage.hydratedKeys);
   await emitDetailCoverage(deps, result.coverage);
+}
+
+/**
+ * Close the served `statements` gaps whose PDF is present again this run.
+ *
+ * A statement gap is opened whenever a run does not hold that statement's PDF,
+ * and it is genuinely retryable — the next run re-attempts every row. But
+ * nothing ever CLOSED one: a pending detail gap only leaves `pending` on an
+ * explicit `DETAIL_GAP_RECOVERED` (see `connector-detail-gap-store.ts`), and
+ * this connector emitted that message for `transactions` and the credit-card
+ * streams while `statements` was left out.
+ *
+ * The result on the owner's instance: 4 `statements` gaps sat `pending` from a
+ * 2026-08-04 run, three of them never re-attempted (`attempt_count = 0`), while
+ * every one of those four statements had in fact been downloaded — each has a
+ * durable `pdf_sha256` on its record, and the same stream reported
+ * `covered: 10 / considered: 10, checkpoint: committed`. The stream was fully
+ * collected and simultaneously showed a retryable gap, purely as stale
+ * bookkeeping.
+ *
+ * `hydratedKeys` is the honest input: it is exactly the set
+ * `computeStatementCoverage` proved artifact-present this run (`isHydrated` on
+ * the resolved body), the same predicate that put those keys in the coverage
+ * numerator. Only ids the runtime actually served as pending gaps are closed —
+ * the lookup enforces that, so a recovery can never close unrelated work.
+ */
+async function recoverServedStatementGaps(deps: EmitDeps, hydratedKeys: readonly (string | number)[]): Promise<void> {
+  const served = deps.servedStatementGaps;
+  if (!served || served.size === 0) {
+    return;
+  }
+  for (const key of hydratedKeys) {
+    const statementId = String(key);
+    const gapId = served.get(statementId);
+    if (!gapId) {
+      continue;
+    }
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gapId,
+      stream: "statements",
+      record_key: statementId,
+    });
+  }
 }
 
 /**
@@ -2207,6 +2258,16 @@ export function buildServedAccountTransactionGapLookup(
 }
 
 /**
+ * Keep only `statements` PDF gaps the runtime actually served this run. Locator
+ * shape is `buildStatementDetailGap`'s (`usaa.statement` / `statement_id`).
+ */
+export function buildServedStatementGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
+): Map<string, string> {
+  return buildServedGapLookup(detailGaps, "statements", "usaa.statement", "statement_id");
+}
+
+/**
  * Keep only USAA credit-card billing/stats gaps the runtime actually served
  * this run, one lookup per stream (a card's `credit_card_billing` gap and its
  * `credit_card_billing_stats` gap are independent DETAIL_GAP rows, served and
@@ -3474,6 +3535,7 @@ export async function collectUsaa(ctx: BrowserCollectContext): Promise<void> {
     emitRecord,
     servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
     servedCreditCardGaps: buildServedCreditCardGapLookups(ctx.detailGaps),
+    servedStatementGaps: buildServedStatementGapLookup(ctx.detailGaps),
   };
 
   // Run-scoped state shared across every stream below, constructed
