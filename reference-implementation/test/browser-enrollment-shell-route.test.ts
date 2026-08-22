@@ -387,6 +387,35 @@ test("abandon-enrollment: retires a draft shell (status → revoked)", async () 
   });
 });
 
+test("abandon-enrollment: stamps owner_abandoned as the revocation reason, distinct from the TTL sweep's ttl_expired", async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, "venmo");
+    const cookie = await ownerLogin(asUrl);
+    const createRes = await fetch(`${asUrl}/_ref/connectors/venmo/browser-enrollment-shell`, {
+      headers: { cookie },
+      method: "POST",
+    });
+    assert.equal(createRes.status, 201);
+    const { connection_id } = await jsonBody(createRes);
+    const abandonRes = await fetch(`${asUrl}/_ref/connections/${connection_id}/abandon-enrollment`, {
+      headers: { cookie },
+      method: "POST",
+    });
+    assert.equal(abandonRes.status, 200);
+
+    const row = getDb()
+      .prepare("SELECT source_binding_json FROM connector_instances WHERE connector_instance_id = ?")
+      .get(connection_id) as { source_binding_json: string } | undefined;
+    assert.ok(row, "the revoked shell row must still exist");
+    const binding = JSON.parse(row.source_binding_json) as Record<string, unknown>;
+    assert.equal(
+      binding.revocation_reason,
+      "owner_abandoned",
+      "an explicit owner dismissal must record its own true cause — never the TTL sweep's ttl_expired"
+    );
+  });
+});
+
 test("abandon-enrollment: idempotent when already revoked", async () => {
   await withServer(async ({ asUrl }) => {
     await registerConnector(asUrl, "usaa");
@@ -503,7 +532,12 @@ test("BROWSER_ENROLLMENT_SHELL_TTL_MS is 2 hours", () => {
 
 test("retireExpiredBrowserEnrollmentShells flips expired draft/active shell bindings to revoked", async () => {
   interface RecordedUpdate {
-    readonly args: { revokedAt?: string | null; status: string; updatedAt: string };
+    readonly args: {
+      revokedAt?: string | null;
+      status: string;
+      updatedAt: string;
+      sourceBindingPatch?: Record<string, unknown> | null;
+    };
     readonly connectorInstanceId: string;
   }
   const updates: RecordedUpdate[] = [];
@@ -545,10 +579,16 @@ test("retireExpiredBrowserEnrollmentShells flips expired draft/active shell bind
   );
 
   assert.deepEqual(retired, ["cin_expired_1", "cin_active"]);
+  // Quiet-expiry defect fix (owner ruling 2026-08-22): the sweep now stamps
+  // `sourceBindingPatch: { revocation_reason: "ttl_expired" }` on every row it
+  // retires, so `deriveSourceVisibility`/`archiveRenderedVerdict`
+  // (ref-control.ts) can render an honest "expired while waiting for you"
+  // verdict instead of a silent, unexplained revocation.
   assert.deepEqual(updates, [
     {
       args: {
         revokedAt: "2026-06-10T12:00:00.000Z",
+        sourceBindingPatch: { revocation_reason: "ttl_expired" },
         status: "revoked",
         updatedAt: "2026-06-10T12:00:00.000Z",
       },
@@ -557,6 +597,7 @@ test("retireExpiredBrowserEnrollmentShells flips expired draft/active shell bind
     {
       args: {
         revokedAt: "2026-06-10T12:00:00.000Z",
+        sourceBindingPatch: { revocation_reason: "ttl_expired" },
         status: "revoked",
         updatedAt: "2026-06-10T12:00:00.000Z",
       },

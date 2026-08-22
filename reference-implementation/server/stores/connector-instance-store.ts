@@ -1766,17 +1766,34 @@ export function createSqliteConnectorInstanceStore() {
         status,
         updatedAt,
         revokedAt = null,
+        sourceBindingPatch = null,
       }: {
         status: string;
         updatedAt: string;
         revokedAt?: string | null;
+        // Merged onto the row's existing `source_binding_json` in the SAME
+        // statement as the status write (`json_patch`), so a caller can
+        // record WHY a status changed (e.g. `{ revocation_reason:
+        // "ttl_expired" }`) at the moment of truth, never as a best-effort
+        // follow-up write. See `retireExpiredBrowserEnrollmentShells`.
+        sourceBindingPatch?: Record<string, unknown> | null;
       }
     ): ConnectorInstance | null {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
       writeTransaction(() => {
-        exec(referenceQueries.connectorInstancesUpdateStatus, [status, updatedAt, revokedAt, connectorInstanceId]);
+        if (sourceBindingPatch) {
+          exec(referenceQueries.connectorInstancesUpdateStatusWithBindingPatch, [
+            status,
+            updatedAt,
+            revokedAt,
+            stableJson(sourceBindingPatch),
+            connectorInstanceId,
+          ]);
+        } else {
+          exec(referenceQueries.connectorInstancesUpdateStatus, [status, updatedAt, revokedAt, connectorInstanceId]);
+        }
         exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
           `connector instance status changed to ${status}`,
           connectorInstanceId,
@@ -2573,10 +2590,16 @@ export function createPostgresConnectorInstanceStore() {
         status,
         updatedAt,
         revokedAt = null,
+        sourceBindingPatch = null,
       }: {
         status: string;
         updatedAt: string;
         revokedAt?: string | null;
+        // See the SQLite implementation's doc comment above for why this
+        // exists: merges onto `source_binding_json` in the same statement as
+        // the status write, so the caller can record WHY at the moment of
+        // truth.
+        sourceBindingPatch?: Record<string, unknown> | null;
       }
     ): Promise<ConnectorInstance | null> {
       if (!VALID_STATUSES.has(status)) {
@@ -2584,10 +2607,17 @@ export function createPostgresConnectorInstanceStore() {
       }
       await withPostgresTransaction(
         async (client: PostgresTransactionClient) => {
-          await client.query(
-            "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4",
-            [status, updatedAt, revokedAt, connectorInstanceId]
-          );
+          if (sourceBindingPatch) {
+            await client.query(
+              "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3, source_binding_json = COALESCE(source_binding_json, '{}'::jsonb) || $4::jsonb WHERE connector_instance_id = $5",
+              [status, updatedAt, revokedAt, stableJson(sourceBindingPatch), connectorInstanceId]
+            );
+          } else {
+            await client.query(
+              "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4",
+              [status, updatedAt, revokedAt, connectorInstanceId]
+            );
+          }
           await client.query(
             `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
             [`connector instance status changed to ${status}`, connectorInstanceId]
