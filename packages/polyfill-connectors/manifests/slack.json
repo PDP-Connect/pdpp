@@ -1537,5 +1537,49 @@
     "channel_history_out_of_member_scope": "Some public channels weren't collected because you're not a member of them. Set the Slack option MEMBER_ONLY to false to collect every channel your workspace lists, including ones you've left and ones that are archived",
     "optional_stream_failed": "We couldn't collect one part of your Slack data, so we skipped it",
     "source_partition_missing": "Some previously seen Slack channels are missing from this export, so message coverage is incomplete"
+  },
+  "options_schema": {
+    "type": "object",
+    "description": "Operator/owner tuning knobs for the Slack connector, resolved from the connector_instance_config_revisions spine (see reference-implementation/server/stores/connector-instance-config-store.ts). declared_option_kind here is the connector's CLAIM about whether a knob shapes collection scope or only transport -- it is advisory, not authoritative: the runtime's own platform-owned classification (server/connector-config-option-kind-registry.ts, enforced by connector-config-option-kind-honesty.test.ts) decides what actually gates self-activation, and a manifest claiming 'transport' for a key the platform classifies as 'collection_scope' is rejected at build time. A connector cannot widen its own eligibility by mislabeling a knob.",
+    "properties": {
+      "CHANNEL_ALLOWLIST": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Explicit list of channel IDs to include. Empty list means every accessible channel (subject to MEMBER_ONLY/CHANNEL_TYPES).",
+        "default": [],
+        "declared_option_kind": "collection_scope"
+      },
+      "CHANNEL_TYPES": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Channel types to export. Allowed values: public, private, im, mpim.",
+        "default": ["public", "private", "im", "mpim"],
+        "declared_option_kind": "collection_scope"
+      },
+      "MEMBER_ONLY": {
+        "type": "boolean",
+        "description": "When true, export only channels the authenticated user is a member of. When false, includes channels left and channels Slack has archived.",
+        "default": true,
+        "declared_option_kind": "collection_scope"
+      },
+      "LOOKBACK_DAYS": {
+        "type": "integer",
+        "description": "How many days of message history to fetch per channel on a full refresh.",
+        "default": 7,
+        "declared_option_kind": "collection_scope"
+      },
+      "SKIP_FILES": {
+        "type": "boolean",
+        "description": "When true, skip file attachment metadata (reduces export size; does not change which messages are collected).",
+        "default": true,
+        "declared_option_kind": "transport"
+      },
+      "RECLAIM_UPLOADS": {
+        "type": "boolean",
+        "description": "When true, attempt to reclaim previously-failed file uploads on retry (does not change which channels/messages are collected).",
+        "default": false,
+        "declared_option_kind": "transport"
+      }
+    }
   }
 }
