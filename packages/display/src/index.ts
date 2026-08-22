@@ -22,6 +22,20 @@ export type {
   TraceLabelInput,
 } from "./identity/summary-row-label.ts";
 export { grantRowLabel, runRowLabel, traceRowLabel } from "./identity/summary-row-label.ts";
+export type {
+  AttentionAxis,
+  AxisChip,
+  CoverageAxis,
+  EvidenceTone,
+  FreshnessAxis,
+  OutboxAxis,
+} from "./health/axis-vocabulary.ts";
+export {
+  formatAttentionAxis,
+  formatCoverageAxis,
+  formatFreshnessAxis,
+  formatOutboxAxis,
+} from "./health/axis-vocabulary.ts";
 export type { DeclaredFieldRoles, FieldRole } from "./record/declared-field-roles.ts";
 export {
   EMPTY_DECLARED_FIELD_ROLES,
