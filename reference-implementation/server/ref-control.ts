@@ -2420,6 +2420,31 @@ function isSchedulerSkippedRun(run: ConnectorRunSummary | null): boolean {
 }
 
 /**
+ * A run the SERVER's own restart ended, not the provider.
+ *
+ * `reconcileOrphanedRunsAtBoot` (`lib/controller-boot.ts`) terminalizes any
+ * run left non-terminal by a dead process as `status: "abandoned"` with
+ * `controller_terminated_before_run_finished`. Nothing observed that run
+ * fail: the process died holding it, so its outcome was never seen at all.
+ *
+ * Without this exclusion `mapRunStatus` folds `"abandoned"` into `"failed"`
+ * and the owner is told "The latest terminal collection run failed." about a
+ * deploy — the connector, the credential and the provider were all fine. In
+ * production that misreported 28 runs across 9 Slack, 4 Gmail and 3 YNAB
+ * walks in two days (`run_history`, 2026-08-21/22), which is exactly the
+ * "restart turns my data unhealthy" the owner reported.
+ *
+ * Treated like the owner-cancel case it most resembles: an abandoned run
+ * carries NO provider or coverage evidence, so health defers to the last run
+ * that actually observed something. This hides no real failure — a genuine
+ * connector failure terminalizes as `failed`/`cancelled` by the run's own
+ * process and is untouched here.
+ */
+function isControllerAbandonedRun(run: ConnectorRunSummary | null): boolean {
+  return run?.status === "abandoned";
+}
+
+/**
  * Compatibility fallback for callers that have not yet supplied the store's
  * newest-terminal run. An active `lastRun` is progress, not settled health;
  * before the explicit settled-run read existed, the only honest fallback was
@@ -2462,7 +2487,7 @@ function healthClassifyingRun(
   latestSettledRun: ConnectorRunSummary | null,
   lastSuccessfulRun: ConnectorRunSummary | null = null
 ): ConnectorRunSummary | null {
-  if (isOwnerCancelledRun(latestSettledRun)) {
+  if (isOwnerCancelledRun(latestSettledRun) || isControllerAbandonedRun(latestSettledRun)) {
     return lastSuccessfulRun;
   }
   return isSchedulerSkippedRun(latestSettledRun) ? null : latestSettledRun;
@@ -2528,7 +2553,11 @@ function coverageClassifyingRun(
     latestSettledRun !== null &&
     latestSettledRun !== lastSuccessfulRun &&
     !isActiveRunSummaryStatus(latestSettledRun.status) &&
-    !isOwnerCancelledRun(latestSettledRun);
+    !isOwnerCancelledRun(latestSettledRun) &&
+    // A restart-abandoned run is not an intervening piece of provider
+    // evidence either (see `isControllerAbandonedRun`) — it observed nothing,
+    // so it must not displace a real run's proven coverage.
+    !isControllerAbandonedRun(latestSettledRun);
   if (lastRun && isActiveRunSummaryStatus(lastRun.status) && !settledIsIntervening) {
     return lastSuccessfulRun ?? null;
   }

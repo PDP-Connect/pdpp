@@ -87,12 +87,58 @@ function normalizeSchedulerEpochMs(epochMs: number | undefined): number {
   return epochMs;
 }
 
+/**
+ * Terminal reasons that mean "the SERVER stopped this run", not "this run ran".
+ *
+ * Both are written by restart reconciliation, and they are NOT interchangeable
+ * in the database, which is why this keys on the terminal reason rather than
+ * the status: `controller_terminated_before_run_finished` is stored with
+ * `status = 'abandoned'`, while `controller_restarted` is stored with
+ * `status = 'failed'` (verified against production `run_history`: 28 rows and
+ * 17 rows respectively). A status-only test would silently miss the second.
+ */
+const CONTROLLER_RESTART_TERMINAL_REASONS: ReadonlySet<string> = new Set([
+  "controller_restarted",
+  "controller_terminated_before_run_finished",
+]);
+
+/**
+ * A run that a server restart ended, rather than one that actually ran.
+ *
+ * Such a run observed nothing: the process died holding it. It is not evidence
+ * that the connector was contacted, so it must not count as "we just ran" when
+ * the scheduler decides when to run next.
+ */
+function isControllerRestartRun(record: RunRecord): boolean {
+  const reason = record.terminalReason ?? record.failureReason ?? "";
+  return CONTROLLER_RESTART_TERMINAL_REASONS.has(reason);
+}
+
+/**
+ * Newest run timestamp in history — the fallback schedule anchor.
+ *
+ * Runs ended by a server restart are SKIPPED. Before this, the loop took the
+ * newest `completedAt` with no status or reason filter at all, so a restart
+ * reset the interval clock: a source killed 11 hours into a 12-hour cycle
+ * waited a fresh 12 hours, because the abandoned run's `completedAt` was the
+ * newest row. That compounded the restart damage — the deploy did not merely
+ * kill the in-flight run, it then delayed the recovery run by a full interval,
+ * which is why sources stayed stale long after a deploy.
+ *
+ * Genuine failures still anchor normally. Back-off depends on a real failure
+ * advancing this clock, and weakening that would turn a failing connector into
+ * a hot retry loop. This skips ONLY the restart-ended runs, which carry no
+ * observation to back off from.
+ */
 function newestHistoryEpochMs(history: readonly RunRecord[]): number {
   let newest = 0;
   // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
   for (let i = history.length - 1; i >= 0; i--) {
     const record = history[i];
     if (!record) {
+      continue;
+    }
+    if (isControllerRestartRun(record)) {
       continue;
     }
     const parsed = Date.parse(record.completedAt || record.startedAt || "");
