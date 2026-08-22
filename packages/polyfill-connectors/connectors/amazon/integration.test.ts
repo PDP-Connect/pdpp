@@ -569,6 +569,40 @@ test("scrapeListPage: a failed list navigation cannot reuse the prior page as a 
   assert.doesNotMatch(JSON.stringify(messages), /orders-list-minimal|B0/);
 });
 
+test("scrapeListPage: a card with no parseable order id is dropped AND reported, alongside a card that survives", async () => {
+  // The "prove the drop happens today, is invisible today" half of the pair.
+  // One card has a normal `.yohtmlc-order-id`; the other (modeling a
+  // never-shipped/cancelled order rendering under a variant Amazon uses for
+  // that order type) has none. Before this fix, the second card vanished
+  // from `orders` with zero SKIP_RESULT anywhere — see
+  // `countOrderCardsWithoutOrderId` in parsers.ts for the mechanism.
+  const html = readFileSync(
+    new URL("./__fixtures__/orders-list-one-card-missing-order-id.html", import.meta.url),
+    "utf8"
+  );
+  const messages: EmittedMessage[] = [];
+  const page = Object.assign({} as Page, {
+    content: (): Promise<string> => Promise.resolve(html),
+    goto: (): Promise<null> => Promise.resolve(null),
+    locator: (): { first: () => { waitFor: () => Promise<null> } } => ({
+      first: () => ({ waitFor: (): Promise<null> => Promise.resolve(null) }),
+    }),
+  });
+
+  const orders = await scrapeListPage(page, null, 2024, 0, (message) => {
+    messages.push(message);
+    return Promise.resolve();
+  });
+
+  assert.equal(orders.length, 1, "only the card with a parseable order id survives");
+  assert.equal(orders[0]?.orderId, "111-2222222-3333333");
+
+  const skip = messages.find((message) => message.type === "SKIP_RESULT");
+  assert.ok(skip, "the drop must be reported, not silent");
+  assert.equal(skip?.reason, "list_page_order_id_not_found");
+  assert.deepEqual(skip?.diagnostics, { dropped_card_count: 1 });
+});
+
 test("scrapeListPage: a page-2 renderer diagnostic failure aborts without STATE or coverage", async () => {
   const messages: EmittedMessage[] = [];
   const page = Object.assign({} as Page, {
