@@ -52,6 +52,7 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   buildIndexRows,
   buildPdfTemplateUnknownDiagnostics,
+  buildServedStatementGapLookup,
   classifyUsaaNoExportRoute,
   DEFERRED_STREAMS,
   driveExport,
@@ -59,10 +60,12 @@ import {
   emitAccountsStream,
   emitDeferredStreams,
   emitExportFailure,
+  emitStatementCoverage,
   emitStatementRecords,
   type HydrationSummary,
   hydrationSuccess,
   isNoDataExportMessage,
+  resolveUsaaOfferInterstitialEscape,
   runSingleLadderAttempt,
   shouldParseStatementTitle,
   USAA_RETRYABLE_PATTERN,
@@ -572,6 +575,328 @@ test("classifyUsaaNoExportRoute requires both a closed account route and structu
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/logon", true), "interstitial");
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/dashboard", true), "unknown");
   assert.equal(classifyUsaaNoExportRoute("https://private.example/my/checking", true), "unknown");
+});
+
+const STATEMENT_HYDRATED = {
+  document_url: "file:///home/user/.pdpp/usaa-statements/chk/2026-04-aaaaaaaa.pdf",
+  pdf_path: "/home/user/.pdpp/usaa-statements/chk/2026-04-aaaaaaaa.pdf",
+  pdf_sha256: "aa".repeat(32),
+};
+const STATEMENT_NOT_HYDRATED = { document_url: null, pdf_path: null, pdf_sha256: null };
+
+/** A served pending `statements` gap in the shape the runtime supplies. */
+function servedStatementGap(statementId: string, gapId: string) {
+  return {
+    gap_id: gapId,
+    record_key: statementId,
+    status: "pending",
+    stream: "statements",
+    detail_locator: { kind: "usaa.statement", statement_id: statementId },
+  };
+}
+
+/**
+ * A pending detail gap only leaves `pending` on an explicit
+ * `DETAIL_GAP_RECOVERED`. This connector emitted that for `transactions` and
+ * the credit-card streams but never for `statements`, so a statement PDF that
+ * failed once and downloaded fine afterwards kept its gap forever.
+ *
+ * Owner-visible symptom: 4 `statements` gaps pending from a 2026-08-04 run
+ * (three never even re-attempted, `attempt_count = 0`) while the same stream
+ * reported `covered: 10 / considered: 10, checkpoint: committed` — and all four
+ * of those statements had a durable `pdf_sha256` on their record. Fully
+ * collected and showing a retryable gap at the same time.
+ */
+test("emitStatementCoverage: recovers a served statement gap once the PDF is present again", async () => {
+  const { deps, messages } = makeHarness();
+  await emitStatementCoverage(
+    {
+      ...deps,
+      servedStatementGaps: new Map([["stmt-recovered", "gap-recovered"]]),
+    },
+    [{ id: "stmt-recovered", isCandidate: true, pointers: STATEMENT_HYDRATED }]
+  );
+
+  assert.deepEqual(
+    messages.filter((m) => m.type === "DETAIL_GAP_RECOVERED"),
+    [
+      {
+        type: "DETAIL_GAP_RECOVERED",
+        reference_only: true,
+        gap_id: "gap-recovered",
+        stream: "statements",
+        record_key: "stmt-recovered",
+      },
+    ],
+    "a statement whose PDF is present again must close its served gap, or the gap stays pending forever"
+  );
+});
+
+test("emitStatementCoverage: never closes a gap for a statement still missing its PDF", async () => {
+  const { deps, messages } = makeHarness();
+  await emitStatementCoverage(
+    {
+      ...deps,
+      // Both ids are served, but only one statement actually has its PDF.
+      servedStatementGaps: new Map([
+        ["stmt-have", "gap-have"],
+        ["stmt-missing", "gap-missing"],
+      ]),
+    },
+    [
+      { id: "stmt-have", isCandidate: true, pointers: STATEMENT_HYDRATED },
+      { id: "stmt-missing", isCandidate: true, pointers: STATEMENT_NOT_HYDRATED },
+    ]
+  );
+
+  assert.deepEqual(
+    messages.filter((m) => m.type === "DETAIL_GAP_RECOVERED").map((m) => m.gap_id),
+    ["gap-have"],
+    "recovery must follow the hydration proof, never merely the fact that a gap was served"
+  );
+  assert.ok(
+    messages.some((m) => m.type === "DETAIL_GAP" && m.record_key === "stmt-missing"),
+    "the still-missing statement must keep a pending gap"
+  );
+});
+
+test("emitStatementCoverage: only closes gaps the runtime actually served", async () => {
+  const { deps, messages } = makeHarness();
+  await emitStatementCoverage({ ...deps, servedStatementGaps: new Map() }, [
+    { id: "stmt-unserved", isCandidate: true, pointers: STATEMENT_HYDRATED },
+  ]);
+
+  assert.deepEqual(
+    messages.filter((m) => m.type === "DETAIL_GAP_RECOVERED"),
+    [],
+    "a gap id the runtime did not serve must never be synthesized — that could close unrelated work"
+  );
+});
+
+test("buildServedStatementGapLookup: accepts only well-formed pending usaa.statement gaps", () => {
+  const lookup = buildServedStatementGapLookup([
+    servedStatementGap("stmt-ok", "gap-ok"),
+    // Wrong stream, wrong locator kind, non-pending, and a locator/record_key
+    // disagreement must all be refused.
+    { ...servedStatementGap("stmt-other-stream", "gap-x"), stream: "transactions" },
+    { ...servedStatementGap("stmt-bad-kind", "gap-y"), detail_locator: { kind: "usaa.account", account_id: "a" } },
+    { ...servedStatementGap("stmt-recovered", "gap-z"), status: "recovered" },
+    { ...servedStatementGap("stmt-mismatch", "gap-w"), record_key: "different-id" },
+  ] as never);
+
+  assert.deepEqual(
+    [...lookup.entries()],
+    [["stmt-ok", "gap-ok"]],
+    "only a pending usaa.statement gap whose locator agrees with its record_key may be recoverable"
+  );
+});
+
+/**
+ * USAA serves a marketing offer in front of an account page. The session is
+ * alive; the member is simply being shown "Depositing cash just got more
+ * convenient!" before the page they asked for.
+ *
+ * Regression (owner-reported, USAA `transactions` stuck at 2 of 4 accounts):
+ * BOTH checking accounts landed on
+ * `/my/banking-offer/atm-deposit?...&accountType=checking&goto=...` instead of
+ * `/my/checking`, so no Export button was found and the run reported
+ * `source_structure_changed` — "USAA changed their UI" — for two accounts that
+ * were perfectly fine. Credit cards, which are not offered ATM deposits,
+ * exported normally. Captured live 2026-07-14 (page title "Find an ATM | USAA").
+ */
+test("resolveUsaaOfferInterstitialEscape: prefers the offer page's own goto target", () => {
+  assert.equal(
+    resolveUsaaOfferInterstitialEscape(
+      "https://www.usaa.com/my/banking-offer/atm-deposit?accountId=private&accountType=checking&goto=https://www.usaa.com/my/checking%3FaccountId%3Dprivate",
+      "https://www.usaa.com/my/checking?accountId=fallback"
+    ),
+    "https://www.usaa.com/my/checking?accountId=private",
+    "the offer page states where the member was headed; that is the honest way back"
+  );
+});
+
+test("resolveUsaaOfferInterstitialEscape: falls back to the requested account URL", () => {
+  // A `goto` that is off-host or points somewhere other than an account detail
+  // route is REFUSED, so a redirect chain cannot steer the connector.
+  for (const goto of [
+    "https://www.usaa.com/inet/ent_home/CpHome",
+    "https://evil.example/my/checking",
+    "%%not-a-url%%",
+  ]) {
+    assert.equal(
+      resolveUsaaOfferInterstitialEscape(
+        `https://www.usaa.com/my/banking-offer/atm-deposit?goto=${encodeURIComponent(goto)}`,
+        "https://www.usaa.com/my/checking?accountId=private"
+      ),
+      "https://www.usaa.com/my/checking?accountId=private",
+      `goto=${goto} must not be followed`
+    );
+  }
+});
+
+test("resolveUsaaOfferInterstitialEscape: only offer routes escape, and never into a loop", () => {
+  // Pages that are already the destination, or that this function has no
+  // honest opinion about, must NOT trigger a re-navigation.
+  for (const finalUrl of [
+    "https://www.usaa.com/my/checking?accountId=private",
+    "https://www.usaa.com/challenge/step",
+    "https://www.usaa.com/my/dashboard",
+    "https://evil.example/my/banking-offer/atm-deposit",
+    "not-a-url",
+  ]) {
+    assert.equal(
+      resolveUsaaOfferInterstitialEscape(finalUrl, "https://www.usaa.com/my/checking?accountId=private"),
+      null,
+      `${finalUrl} must not be treated as an escapable offer interstitial`
+    );
+  }
+  // A self-referential offer page cannot produce an infinite retry.
+  assert.equal(
+    resolveUsaaOfferInterstitialEscape(
+      "https://www.usaa.com/my/banking-offer/atm-deposit",
+      "https://www.usaa.com/my/banking-offer/atm-deposit"
+    ),
+    null,
+    "an escape target identical to the page just loaded must be refused"
+  );
+});
+
+/** A page that serves the ATM-deposit offer first and the real account page
+ *  (with a working Export button) only after the connector navigates through
+ *  it — exactly the live sequence. Records every `goto` so the test proves the
+ *  connector actually navigated rather than merely tolerating the offer. */
+function makeOfferInterstitialPage(visited: string[]): Page {
+  const offerUrl =
+    "https://www.usaa.com/my/banking-offer/atm-deposit?accountId=private&accountType=checking" +
+    "&goto=https%3A%2F%2Fwww.usaa.com%2Fmy%2Fchecking%3FaccountId%3Dprivate";
+  return Object.assign({} as Page, {
+    evaluate() {
+      return Promise.resolve({
+        account_detail_marker_count: 0,
+        navigation_marker_count: 0,
+        target_count: 0,
+        transaction_marker_count: 0,
+      });
+    },
+    goto(target: string) {
+      visited.push(target);
+      return Promise.resolve(null);
+    },
+    keyboard: {
+      press: () => Promise.resolve(),
+    },
+    locator(selector: string) {
+      // The Export button exists ONLY once we are off the offer page.
+      const onAccountPage = visited.length > 1;
+      if (selector === "button.ent-as-utility-bar__item.export" && onAccountPage) {
+        return {
+          click: () => Promise.resolve(),
+          count: () => Promise.resolve(1),
+          first() {
+            return this;
+          },
+        };
+      }
+      return {
+        count: () => Promise.resolve(0),
+        filter() {
+          return this;
+        },
+        first() {
+          return this;
+        },
+        innerHTML: () => Promise.reject(new Error("no dialog")),
+        waitFor: () => Promise.reject(new Error("timeout waiting for select")),
+      };
+    },
+    url() {
+      return visited.length > 1 ? "https://www.usaa.com/my/checking?accountId=private" : offerUrl;
+    },
+  });
+}
+
+test("driveExport navigates through the ATM-deposit offer instead of reporting a missing export affordance", async () => {
+  const visited: string[] = [];
+  const diagnostics: DiagnosticInfo[] = [];
+  await driveExport(makeOfferInterstitialPage(visited), "https://www.usaa.com/my/checking?accountId=private", {
+    onDiagnostics: (info) => diagnostics.push(info),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  });
+
+  assert.deepEqual(
+    visited,
+    ["https://www.usaa.com/my/checking?accountId=private", "https://www.usaa.com/my/checking?accountId=private"],
+    "the connector must re-navigate to the account page after landing on the offer"
+  );
+  // The point of the fix: this account is NOT reported as a structural change.
+  assert.equal(
+    diagnostics.find((info) => info.phase === "no_export_affordance"),
+    undefined,
+    "an offer interstitial must never be reported as a missing export affordance — that is the false " +
+      "`source_structure_changed` that held USAA transactions at 2 of 4 accounts"
+  );
+});
+
+/**
+ * The offer page can itself bounce to logon — the session may die DURING the
+ * escape hop, not only before it. That must surface as the existing
+ * session-dead outcome (which triggers re-auth and excludes the account from
+ * the coverage denominator), never as a missing export affordance, which would
+ * blame the source's UI for an expired session.
+ */
+test("driveExport reports a session death that happens during the offer escape, not a missing affordance", async () => {
+  const visited: string[] = [];
+  const diagnostics: DiagnosticInfo[] = [];
+  const offerUrl =
+    "https://www.usaa.com/my/banking-offer/atm-deposit?goto=https%3A%2F%2Fwww.usaa.com%2Fmy%2Fchecking%3FaccountId%3Dprivate";
+  const page = Object.assign({} as Page, {
+    evaluate: () =>
+      Promise.resolve({
+        account_detail_marker_count: 0,
+        navigation_marker_count: 0,
+        target_count: 0,
+        transaction_marker_count: 0,
+      }),
+    goto(target: string) {
+      visited.push(target);
+      return Promise.resolve(null);
+    },
+    keyboard: { press: () => Promise.resolve() },
+    locator: () => ({
+      count: () => Promise.resolve(0),
+      filter() {
+        return this;
+      },
+      first() {
+        return this;
+      },
+    }),
+    // First load lands on the offer; the escape hop lands on logon.
+    url: () => (visited.length > 1 ? "https://www.usaa.com/my/logon" : offerUrl),
+  });
+
+  const outcome = await driveExport(page, "https://www.usaa.com/my/checking?accountId=private", {
+    onDiagnostics: (info) => diagnostics.push(info),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  }).then(
+    () => "resolved",
+    (err: unknown) => (err instanceof Error ? err.message : String(err))
+  );
+
+  assert.equal(
+    outcome,
+    "session_dead_redirect_to_logon",
+    "a logon bounce during the escape hop must raise the session-dead signal"
+  );
+  assert.equal(
+    diagnostics.find((info) => info.phase === "no_export_affordance"),
+    undefined,
+    "an expired session must never be reported as USAA changing their export UI"
+  );
 });
 
 test("driveExport records account, challenge, and unrelated routes through the actual no-export path", async () => {

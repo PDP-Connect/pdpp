@@ -33,6 +33,16 @@
  *     recovery budget forever confirming the same impossibility. This tool
  *     has no way to check that per-row proof safely in bulk, so `too_large`
  *     is refused outright rather than requeued speculatively.
+ *
+ *     If you came here trying to requeue `too_large` rows: that refusal stands,
+ *     and this tool will never accept the reason. A `too_large` proof CAN be
+ *     false (a message-scoped size checked against a per-part cap condemns
+ *     collectible items), but establishing that requires comparing each row
+ *     against the item's OWN recorded size — per-row adjudication this bulk
+ *     path deliberately does not do. Use
+ *     `requeue-fabricated-too-large-detail-gaps.ts`, which requeues a row only
+ *     when its claim is positively contradicted and leaves genuinely-oversized,
+ *     uncorroborated, and unparseable rows terminal.
  *   - `auth_failure` — requires owner re-authentication, not a data retry.
  *   - `not_available_in_mode` / `out_of_scope` / `user_disabled` —
  *     informational, by-design terminal states, not failures to retry.
@@ -77,6 +87,9 @@ interface ParsedRequeueArgs {
   connectorId: string | null;
   connectorInstanceId: string | null;
   limit: number;
+  /** Value-taking flags given with no value (e.g. a trailing `--reason`). Collected
+   *  rather than defaulted, so the tool refuses instead of acting on a guess. */
+  missingValueFlags: string[];
   reason: string;
   streams: string[];
 }
@@ -117,18 +130,41 @@ function parseArgs(argv: string[]): ParsedRequeueArgs {
     connectorId: null,
     connectorInstanceId: null,
     limit: 100,
+    missingValueFlags: [],
     reason: DEFAULT_REQUEUE_REASON,
     streams: [],
   };
   const seenStreams = new Set<string>();
-  for (const arg of argv) {
-    if (!arg.startsWith("--")) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg?.startsWith("--")) {
       continue;
     }
     const eq = arg.indexOf("=");
-    const key = eq > 0 ? arg.slice(2, eq) : arg.slice(2);
-    const value = eq > 0 ? arg.slice(eq + 1) : true;
-    applyParsedFlag(out, seenStreams, key, value);
+    if (eq > 0) {
+      applyParsedFlag(out, seenStreams, arg.slice(2, eq), arg.slice(eq + 1));
+      continue;
+    }
+    const key = arg.slice(2);
+    // `--apply` is the only genuine boolean. Every other flag takes a value, so
+    // the space-separated form must consume the NEXT argv entry. It previously
+    // substituted `true` and dropped the value: `--reason too_large` parsed as
+    // `reason = "true"`, which the allowlist then rejected with a message naming
+    // 'true' rather than the reason the operator actually typed. Silently
+    // misreading its own arguments is unacceptable in a tool that writes to
+    // production, so an unvalued non-boolean flag is now an explicit error
+    // rather than a fabricated value.
+    if (key === "apply") {
+      applyParsedFlag(out, seenStreams, key, true);
+      continue;
+    }
+    const next = argv[index + 1];
+    if (next === undefined || next.startsWith("--")) {
+      out.missingValueFlags.push(key);
+      continue;
+    }
+    index += 1;
+    applyParsedFlag(out, seenStreams, key, next);
   }
   return out;
 }
@@ -144,6 +180,9 @@ function parseArgs(argv: string[]): ParsedRequeueArgs {
  * connection-free operator error message.
  */
 function validateArgs(args: ParsedRequeueArgs): string | null {
+  if (args.missingValueFlags.length) {
+    return `missing value for: ${args.missingValueFlags.map((flag) => `--${flag}`).join(", ")}`;
+  }
   if (!args.connectorId) {
     return "--connector-id is required";
   }
