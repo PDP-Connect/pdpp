@@ -164,6 +164,51 @@ requeue only on positive contradiction (`fabricated_proof`); keep terminal for
 contradiction is not proof of fabrication.
 
 Repair tool: `scripts/repair/requeue-fabricated-too-large-detail-gaps.ts`
-(gmail/attachments-locked, dry-run by default). **Not applied** — the owner
-approves data mutations. Dry-run: matched 32, would_requeue 32, proof_holds 0,
-no_corroborating_record 0.
+(gmail/attachments-locked, dry-run by default).
+
+**APPLIED 2026-08-22** to `cin_12407c1afb78d56848fe0b20`, with backup table
+`gmail_gaps_backup_20260822034236` (32 rows):
+
+| | before | after |
+|---|---|---|
+| `recovered / temporary_unavailable` | 10,236 | 10,240 |
+| `terminal / too_large` | **32** | **0** |
+| `terminal / quarantined` | 3 | 0 |
+| `pending / temporary_unavailable` | 0 | 31 |
+
+All 32 adjudicated `fabricated_proof` (0 `proof_holds`, 0
+`no_corroborating_record`). The 3 `quarantined` rows went through the existing
+allowlisted tool in the same pass. **Zero terminal gaps remain.**
+
+Recovery is confirmed real, not hollow: within a minute, 4 of the 32 had already
+moved to `recovered` with `hydration_status: hydrated` and content-addressed
+blobs (2,248 / 13,162 / 220,273 / 1,970,646 bytes) — every one far under the cap
+it had been condemned against. So the requeued gaps ARE picked up by the ordinary
+recovery path; this is not the D2 defect class inverted.
+
+Each requeued row carries an audit trail
+(`class: "too_large_proof_contradicted"`) recording the claimed size, the cap,
+and the item's real size, so the repair is legible in the row's own history.
+
+
+## Operational: a repair CLI that silently misread its own arguments
+
+Found while applying the D4 repair. `--reason too_large` (space-separated)
+parsed as `reason = "true"`: the parser read a value only from `--key=value` and
+substituted the boolean `true` otherwise. The operator saw
+
+    --reason='true' is not requeueable (allowed: quarantined, ...)
+
+naming a value they never typed. The refusal was correct — `too_large` IS
+refused by that tool by design — but the message pointed at the wrong thing, so
+the tool looked broken in a different way than it was, and the real routing
+(use the adjudicating tool) stayed hidden.
+
+Both repair CLIs now accept `--flag value` and `--flag=value`, and REFUSE a
+value-taking flag given no value rather than defaulting. Defaulting is what
+produced the defect; failing closed is the only safe reading of an ambiguous
+argument list for a tool that writes to production.
+
+> **Worth checking in other operator tooling:** the `--key=value`-only parser
+> with a `true` fallback is a common hand-rolled shape, and it fails silently
+> and specifically on the argument form most operators type first.
