@@ -545,7 +545,7 @@ async function emitRunAbandoned(
         dataJson,
       ]
     );
-    await projectAbandonedRunHistoryPostgres(client, orphan, occurredAt);
+    await projectAbandonedRunHistoryPostgres(client, orphan, occurredAt, dataJson);
     return true;
   } catch (err) {
     // Idempotency: a prior reconciler already abandoned this orphan.
@@ -605,7 +605,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
       orphan.run_id,
       dataJson
     );
-    projectAbandonedRunHistorySqlite(orphan, occurredAt);
+    projectAbandonedRunHistorySqlite(orphan, occurredAt, dataJson);
     return true;
   } catch (err) {
     // Idempotency on SQLite: better-sqlite3 throws SqliteError with
@@ -652,9 +652,23 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
 // finalizing a run some other path already terminalised. The
 // `connector_instance_id` fence is load-bearing for the same reason it is
 // on the generic writer: run_id alone is not unique across connections.
+//
+// `facts_json` carries the same epoch-transition provenance
+// (original_boot_epoch/reconciled_by_boot_epoch/etc.) already written to
+// the spine event's data_json, verbatim. Without it, "controller_terminated_
+// before_run_finished" is an unverifiable claim from run_history alone --
+// confirming a real restart happened requires correlating raw spine events
+// against container logs across a deploy (see the investigation this
+// closed: run_1787406305278, 2026-08-22, where a real deploy-triggered
+// container replacement left no trace in `docker inspect`'s RestartCount).
 // ─────────────────────────────────────────────────────────────────────────
 
-async function projectAbandonedRunHistoryPostgres(client: PgClient, orphan: OrphanRow, at: string): Promise<void> {
+async function projectAbandonedRunHistoryPostgres(
+  client: PgClient,
+  orphan: OrphanRow,
+  at: string,
+  factsJson: string
+): Promise<void> {
   if (!(orphan.run_id && orphan.connector_instance_id)) {
     // No connection identity on the started event means no row can be
     // matched without guessing. Leave it rather than fence on run_id alone.
@@ -664,11 +678,19 @@ async function projectAbandonedRunHistoryPostgres(client: PgClient, orphan: Orph
     `UPDATE run_history
      SET status = $1,
          completed_at = $2,
-         terminal_reason = $3
-     WHERE run_id = $4
-       AND connector_instance_id = $5
+         terminal_reason = $3,
+         facts_json = $4::jsonb
+     WHERE run_id = $5
+       AND connector_instance_id = $6
        AND status = 'running'`,
-    [ABANDONED_RUN_HISTORY_STATUS, at, terminalReasonFor(orphan), orphan.run_id, orphan.connector_instance_id]
+    [
+      ABANDONED_RUN_HISTORY_STATUS,
+      at,
+      terminalReasonFor(orphan),
+      factsJson,
+      orphan.run_id,
+      orphan.connector_instance_id,
+    ]
   );
 }
 
@@ -701,6 +723,11 @@ async function projectAbandonedRunHistoryPostgres(client: PgClient, orphan: Orph
 //
 // `records_emitted` is left untouched for the same reason as above:
 // records validly committed before the run died stay committed.
+//
+// `facts_json` adopts the terminal event's own `data_json` verbatim, same
+// as `status`/`terminal_reason`/`completed_at` — the projection should
+// carry whatever evidence the terminal event actually recorded, not a
+// reason string with no way to check it.
 // ─────────────────────────────────────────────────────────────────────────
 
 /** The spine's canonical terminal set, as SQL literals for the drift query. */
@@ -732,6 +759,7 @@ interface DriftedRunRow {
   connector_instance_id: string;
   event_status: string | null;
   event_type: string;
+  facts_json: string | null;
   occurred_at: string;
   reason: string | null;
   run_id: string;
@@ -762,7 +790,8 @@ function repairTerminalRunHistoryDriftSqlite(): number {
         t.event_type,
         t.status AS event_status,
         t.occurred_at,
-        json_extract(t.data_json, '$.reason') AS reason
+        json_extract(t.data_json, '$.reason') AS reason,
+        t.data_json AS facts_json
       FROM run_history h
       JOIN spine_events t
         ON t.run_id = h.run_id
@@ -784,7 +813,8 @@ function repairTerminalRunHistoryDriftSqlite(): number {
     `UPDATE run_history
      SET status = ?,
          completed_at = ?,
-         terminal_reason = ?
+         terminal_reason = ?,
+         facts_json = ?
      WHERE run_id = ?
        AND connector_instance_id = ?
        AND status = 'running'`
@@ -796,6 +826,7 @@ function repairTerminalRunHistoryDriftSqlite(): number {
       terminalStatusForEventType(row.event_type, row.event_status),
       row.occurred_at,
       row.reason,
+      row.facts_json,
       row.run_id,
       row.connector_instance_id
     );
@@ -818,7 +849,8 @@ async function repairTerminalRunHistoryDriftPostgres(client: PgClient): Promise<
                    ELSE 'failed'
                  END,
         completed_at = t.occurred_at,
-        terminal_reason = t.data_json->>'reason'
+        terminal_reason = t.data_json->>'reason',
+        facts_json = t.data_json
     FROM (
       SELECT DISTINCT ON (run_id) run_id, event_type, status, occurred_at, data_json
       FROM spine_events
@@ -834,7 +866,7 @@ async function repairTerminalRunHistoryDriftPostgres(client: PgClient): Promise<
   return rowCount ?? 0;
 }
 
-function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string): void {
+function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string, factsJson: string): void {
   if (!(orphan.run_id && orphan.connector_instance_id)) {
     return;
   }
@@ -851,10 +883,18 @@ function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string): void {
       `UPDATE run_history
        SET status = ?,
            completed_at = ?,
-           terminal_reason = ?
+           terminal_reason = ?,
+           facts_json = ?
        WHERE run_id = ?
          AND connector_instance_id = ?
          AND status = 'running'`
     )
-    .run(ABANDONED_RUN_HISTORY_STATUS, at, terminalReasonFor(orphan), orphan.run_id, orphan.connector_instance_id);
+    .run(
+      ABANDONED_RUN_HISTORY_STATUS,
+      at,
+      terminalReasonFor(orphan),
+      factsJson,
+      orphan.run_id,
+      orphan.connector_instance_id
+    );
 }
