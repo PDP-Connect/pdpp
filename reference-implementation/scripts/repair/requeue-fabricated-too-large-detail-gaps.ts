@@ -104,27 +104,52 @@ interface ParsedArgs {
   apply: boolean;
   connectorInstanceId: string | null;
   limit: number;
+  /** Value-taking flags given with no value; the tool refuses rather than guessing. */
+  missingValueFlags: string[];
+  /** A `--connector-id` naming something other than the supported connector. */
+  wrongConnectorId?: string;
 }
 
+/**
+ * Accepts both `--flag=value` and `--flag value`. `--apply` is the only genuine
+ * boolean; every other flag consumes the next argv entry, and a value-taking
+ * flag given without one is recorded in `missingValueFlags` so the tool refuses
+ * rather than acting on a substituted default.
+ */
 function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { apply: false, connectorInstanceId: null, limit: 100 };
-  for (const arg of argv) {
-    if (!arg.startsWith("--")) {
-      continue;
-    }
-    const eq = arg.indexOf("=");
-    const key = eq > 0 ? arg.slice(2, eq) : arg.slice(2);
-    const value = eq > 0 ? arg.slice(eq + 1) : "";
-    if (key === "apply") {
-      out.apply = true;
-    } else if (key === "connector-instance-id") {
+  const out: ParsedArgs = { apply: false, connectorInstanceId: null, limit: 100, missingValueFlags: [] };
+  const applyFlag = (key: string, value: string): void => {
+    if (key === "connector-instance-id") {
       out.connectorInstanceId = value;
-    } else if (key === "connector-id" && value && value !== SUPPORTED_CONNECTOR_ID) {
-      out.connectorInstanceId = null;
+    } else if (key === "connector-id" && value !== SUPPORTED_CONNECTOR_ID) {
+      out.wrongConnectorId = value;
     } else if (key === "limit") {
       const parsed = Number.parseInt(value, 10);
       out.limit = Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 500) : out.limit;
     }
+  };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg?.startsWith("--")) {
+      continue;
+    }
+    const eq = arg.indexOf("=");
+    if (eq > 0) {
+      applyFlag(arg.slice(2, eq), arg.slice(eq + 1));
+      continue;
+    }
+    const key = arg.slice(2);
+    if (key === "apply") {
+      out.apply = true;
+      continue;
+    }
+    const next = argv[index + 1];
+    if (next === undefined || next.startsWith("--")) {
+      out.missingValueFlags.push(key);
+      continue;
+    }
+    index += 1;
+    applyFlag(key, next);
   }
   return out;
 }
@@ -242,10 +267,21 @@ async function requeueRow(row: AdjudicatedRow, now: string): Promise<boolean> {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.connectorInstanceId) {
+  if (args.missingValueFlags.length) {
+    console.error(`missing value for: ${args.missingValueFlags.map((flag) => `--${flag}`).join(", ")}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (args.wrongConnectorId !== undefined) {
     console.error(
-      `--connector-instance-id is required (and --connector-id, if given, must be '${SUPPORTED_CONNECTOR_ID}')`
+      `--connector-id='${args.wrongConnectorId}' is not supported; this tool only adjudicates ` +
+        `'${SUPPORTED_CONNECTOR_ID}' / '${SUPPORTED_STREAM}', whose corroborating size shape it understands`
     );
+    process.exitCode = 2;
+    return;
+  }
+  if (!args.connectorInstanceId) {
+    console.error("--connector-instance-id is required");
     process.exitCode = 2;
     return;
   }
