@@ -21,6 +21,8 @@ import {
   uncommittedCompleteStreams,
 } from "../scripts/sources-report-model.ts";
 
+const PAUSED_WORD_RE = /paused/i;
+
 function summary(overrides: Partial<ConnectorSummaryLike>): ConnectorSummaryLike {
   return { connector_id: "example", display_name: "Example", status: "active", ...overrides };
 }
@@ -155,6 +157,67 @@ test("a revoked connection never shows a stale verdict tone as its health", () =
   assert.equal(row.status.dot, "⊘");
   assert.equal(row.status.kind, "revoked");
   assert.equal(row.status.label, "Revoked");
+});
+
+test("an archived source reads 'Archived', not the paused lifecycle it usually also carries", () => {
+  // The regression this pins: an archived row is USUALLY `paused` and still
+  // carries the stored verdict from when it was live. Ranking `paused` (or the
+  // verdict) first printed "⏸ Paused" — and, before the server-side fix,
+  // "Reconnect this account", a promise that leads nowhere because
+  // reconnecting mints a new connection and resumes nothing.
+  const row = projectSourceRow(
+    summary({
+      display_name: "Amazon (recovered fragment)",
+      rendered_verdict: {
+        pill: { label: "Paused", tone: "grey" },
+        required_actions: [{ cta: "Reconnect this account" }],
+      },
+      source_visibility: "archived",
+      status: "paused",
+    })
+  );
+
+  assert.equal(row.status.kind, "archived");
+  assert.equal(row.status.label, "Archived · not collecting");
+  assert.equal(row.status.dot, "⊘");
+  assert.doesNotMatch(row.status.label, PAUSED_WORD_RE, "an archived row must not read as merely paused");
+});
+
+test("archived outranks revoked and the verdict tone, matching the console's ranking", () => {
+  // Ordering proof: if the archived branch were moved below either check, one
+  // of these would fall through to "Revoked" or to the green verdict.
+  for (const status of ["revoked", "paused", "active"]) {
+    const row = projectSourceRow(
+      summary({
+        rendered_verdict: { pill: { label: "Healthy", tone: "green" } },
+        source_visibility: "archived",
+        status,
+      })
+    );
+    assert.equal(row.status.kind, "archived", `archived must outrank status="${status}"`);
+  }
+});
+
+test("the retired 'hidden_from_sources' spelling still classifies as archived", () => {
+  // An older reference server has not been renamed yet; failing toward the
+  // safe reading keeps those rows from rendering as live sources.
+  const row = projectSourceRow(
+    summary({
+      rendered_verdict: { pill: { label: "Healthy", tone: "green" } },
+      source_visibility: "hidden_from_sources",
+    })
+  );
+  assert.equal(row.status.kind, "archived");
+});
+
+test("an active source_visibility never triggers the archived branch", () => {
+  // Guards the inverse mutation: a predicate that returned true unconditionally
+  // would archive the whole fleet, and every other test here would still pass.
+  const row = projectSourceRow(
+    summary({ rendered_verdict: { pill: { label: "Healthy", tone: "green" } }, source_visibility: "active" })
+  );
+  assert.equal(row.status.kind, "healthy");
+  assert.equal(row.status.label, "Healthy");
 });
 
 test("a summary with no rendered_verdict reads honest 'Verdict unavailable', never a guess", () => {
