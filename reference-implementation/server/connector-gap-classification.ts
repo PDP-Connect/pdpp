@@ -301,25 +301,102 @@ const OBSERVED_EXCEEDS_LIMIT_MESSAGE_RE = /exceeds max size:\s*(\d+)\s*>\s*(\d+)
  * the numbers are the evidence; the tag is only a hint of where to look.
  */
 export function isProvenUnfillableGap(gap: TerminalGapProofRow | null | undefined): boolean {
+  const proof = readClaimedSizeProof(gap);
+  return proof !== null && proof.claimedBytes > proof.limitBytes;
+}
+
+/**
+ * The size a terminal gap CLAIMS was observed, and the cap it was measured
+ * against, when the row carries a parseable size-vs-cap message. `null` when
+ * the row records no such numbers — a bare `class: "too_large"` tag is a hint
+ * of where to look, never evidence.
+ */
+export function readClaimedSizeProof(
+  gap: TerminalGapProofRow | null | undefined
+): { claimedBytes: number; limitBytes: number } | null {
   if (!gap || typeof gap !== "object") {
-    return false;
+    return null;
   }
   const lastError = gap.last_error;
   if (!lastError || typeof lastError !== "object" || Array.isArray(lastError)) {
-    return false;
+    return null;
   }
   // biome-ignore lint/style/useDestructuring: Explicit property access documents the durable row shape being read.
   const message = (lastError as { message?: unknown }).message;
   if (typeof message !== "string") {
-    return false;
+    return null;
   }
   const match = OBSERVED_EXCEEDS_LIMIT_MESSAGE_RE.exec(message);
   if (!match) {
-    return false;
+    return null;
   }
-  const observed = Number(match[1]);
-  const limit = Number(match[2]);
-  return Number.isFinite(observed) && Number.isFinite(limit) && observed > limit;
+  const claimedBytes = Number(match[1]);
+  const limitBytes = Number(match[2]);
+  if (!(Number.isFinite(claimedBytes) && Number.isFinite(limitBytes))) {
+    return null;
+  }
+  return { claimedBytes, limitBytes };
+}
+
+/**
+ * Why a `too_large` terminal gap may or may not be requeued.
+ *
+ *   - `fabricated_proof` — the row's claimed size is CONTRADICTED by the
+ *     item's own recorded size, which is within the cap. The impossibility
+ *     proof is false, so the row is safe to requeue.
+ *   - `proof_holds` — the item's own recorded size is genuinely over the cap.
+ *     Retrying can never converge. STAYS terminal.
+ *   - `no_corroborating_record` — there is no recorded item size to compare
+ *     against. Absence of contradiction is NOT proof of fabrication, so the
+ *     row STAYS terminal and is reported separately.
+ *   - `not_a_size_proof` — the row records no parseable size-vs-cap numbers
+ *     at all, so this classifier has no opinion; it is not a `too_large`
+ *     impossibility claim this tool can adjudicate.
+ */
+export type TooLargeProofVerdict = "fabricated_proof" | "no_corroborating_record" | "not_a_size_proof" | "proof_holds";
+
+/**
+ * Adjudicate one `too_large` terminal gap against the item's OWN recorded size.
+ *
+ * This exists because `too_large` proofs turned out to be forgeable by an
+ * ordinary bug rather than by malice. Gmail's attachment hydrator briefly used
+ * imapflow's `meta.expectedSize`, which is populated from the FETCH
+ * `RFC822.SIZE` item — the size of the ENTIRE MESSAGE, identical for every part
+ * of a multipart message. Checking a message-scoped size against a per-part cap
+ * condemned every attachment of a message whenever their SUM crossed the cap.
+ * On the owner's mailbox that produced 32 terminal rows sharing just 7 distinct
+ * "observed" sizes, each ≈ the sum of that message's parts; the smallest item so
+ * condemned was 3,080 bytes against a 26,214,400-byte cap. The connector was
+ * fixed to use the per-part BODYSTRUCTURE size, but the rows it had already
+ * written stayed terminal, and `isProvenUnfillableGap` reads them as durable
+ * per-item impossibility proof — so the owner is told those emails are
+ * permanently unrecoverable when they are collectible.
+ *
+ * The invariant this preserves: a row is requeued ONLY when its proof is
+ * affirmatively contradicted by independent evidence. A row whose recorded size
+ * really does exceed the cap keeps its terminal status, exactly as
+ * `TERMINAL_REQUEUE_REASON_ALLOWLIST` intends — this does not weaken the
+ * refusal of genuine impossibility, it refuses to honor a proof that is false.
+ * Equally, a row with NO corroborating record is left terminal: "we cannot find
+ * evidence against it" is not "we have evidence for it", and requeuing on
+ * missing evidence would be the same fabrication in the opposite direction.
+ *
+ * `recordedSizeBytes` is the item's own durable size (for Gmail attachments,
+ * `records.record_json->>'size_bytes'`), or `null`/undefined when no such
+ * record exists.
+ */
+export function classifyTooLargeProof(
+  gap: TerminalGapProofRow | null | undefined,
+  recordedSizeBytes: number | null | undefined
+): TooLargeProofVerdict {
+  const proof = readClaimedSizeProof(gap);
+  if (!proof) {
+    return "not_a_size_proof";
+  }
+  if (typeof recordedSizeBytes !== "number" || !Number.isFinite(recordedSizeBytes)) {
+    return "no_corroborating_record";
+  }
+  return recordedSizeBytes > proof.limitBytes ? "proof_holds" : "fabricated_proof";
 }
 
 /**
