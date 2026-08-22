@@ -31,6 +31,7 @@ import {
   postgresQuery,
 } from "../server/postgres-storage.ts";
 import { getRecord as _getRecord, queryRecords as _queryRecords, ingestRecord } from "../server/records.ts";
+import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 
 type ManifestLike = Record<string, unknown>;
 interface ExpandedRelation {
@@ -82,7 +83,13 @@ function getRecord(
   ) as Promise<ResponseItem>;
 }
 
-const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+// Only the dedicated, loopback-only test listener and a runner-allocated
+// per-file database may enter this lane. Reading the raw env var here is what
+// let this file be pointed at PRODUCTION and write 42 stray rows into real
+// owner data; `dedicatedPostgresTestUrl` rejects anything that is not the
+// dedicated test URL shape, and `initPostgresStorage` separately refuses any
+// database that carries no test sentinel.
+const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
 if (POSTGRES_URL) {
   test("postgres expand hydration parity", async (t) => {
