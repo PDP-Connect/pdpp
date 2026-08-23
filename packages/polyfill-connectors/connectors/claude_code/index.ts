@@ -46,6 +46,7 @@ import {
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import {
   isLocalJsonlPhysicalCursorV1,
+  LocalJsonlMalformedLineError,
   type LocalJsonlScanResult,
   scanLocalJsonl,
 } from "../../src/local-jsonl-cursor.ts";
@@ -1217,15 +1218,39 @@ function cloneObservations(observation: JsonlObservations, forcedSessionId: stri
   return { ...observation, sessionId: forcedSessionId ?? observation.sessionId };
 }
 
-function parseJsonlLine(line: Buffer): JsonlObject | null {
+function parseJsonlLine(line: Buffer, committedOffsetBytes: number): JsonlObject | null {
   const text = line.toString("utf8");
   if (!text.trim()) {
     return null;
   }
   try {
     return JSON.parse(text) as JsonlObject;
-  } catch {
-    return null;
+  } catch (error) {
+    // A complete malformed line is a source gap. Throwing prevents the
+    // physical cursor from being returned past this line; the collect caller
+    // reports the unresolved stream gap instead of silently consuming it.
+    throw new LocalJsonlMalformedLineError(committedOffsetBytes, { cause: error });
+  }
+}
+
+async function reportMalformedJsonlGap(input: {
+  error: unknown;
+  reportStreamFailure:
+    | ((stream: string, message: string, options?: { retryable?: boolean }) => Promise<void>)
+    | undefined;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  if (!(input.error instanceof LocalJsonlMalformedLineError && input.reportStreamFailure)) {
+    return;
+  }
+  for (const stream of ["sessions", "messages", "attachments"] as const) {
+    if (input.requested.has(stream)) {
+      await input.reportStreamFailure(
+        stream,
+        "Claude Code contains a malformed complete JSONL line; the source cursor was not advanced past it",
+        { retryable: false }
+      );
+    }
   }
 }
 
@@ -1396,8 +1421,8 @@ async function scanSessionSource(input: {
   const result = await scanLocalJsonl({
     path: input.source.path,
     prior: input.cursor,
-    onLine: async (line) => {
-      const obj = parseJsonlLine(line);
+    onLine: async (line, committedOffsetBytes) => {
+      const obj = parseJsonlLine(line, committedOffsetBytes);
       if (!obj) {
         return;
       }
@@ -1449,8 +1474,8 @@ async function scanChildSource(input: {
   const result = await scanLocalJsonl({
     path: input.source.path,
     prior: input.cursor,
-    onLine: async (line) => {
-      const obj = parseJsonlLine(line);
+    onLine: async (line, committedOffsetBytes) => {
+      const obj = parseJsonlLine(line, committedOffsetBytes);
       if (!obj) {
         return;
       }
@@ -1842,7 +1867,7 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "claude_code",
     validateRecord,
-    async collect({ state, requested, emit, emitRecord }) {
+    async collect({ state, requested, emit, emitRecord, reportStreamFailure }) {
       const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
       const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
       // Build the source inventory and flush durable coverage diagnostics
@@ -2009,13 +2034,19 @@ if (isMainModule(import.meta.url)) {
           );
           const changedLegacySessionIds = new Set<string>();
           for (const source of sources) {
-            const scanned = await scanSessionSource({
-              cursor: rebuildAll ? undefined : priorSessionCursors[source.path],
-              projectDir: source.projectDir,
-              sessionAccumulators,
-              source,
-              telemetry,
-            });
+            let scanned: Awaited<ReturnType<typeof scanSessionSource>>;
+            try {
+              scanned = await scanSessionSource({
+                cursor: rebuildAll ? undefined : priorSessionCursors[source.path],
+                projectDir: source.projectDir,
+                sessionAccumulators,
+                source,
+                telemetry,
+              });
+            } catch (error) {
+              await reportMalformedJsonlGap({ error, reportStreamFailure, requested });
+              throw error;
+            }
             nextSessionCursors[source.path] = scanned.cursor;
             newSessionFileMtimes[source.path] = scanned.cursor.observed_mtime_ms;
             rebuildAll ||= scanned.rebuilt;
@@ -2118,14 +2149,20 @@ if (isMainModule(import.meta.url)) {
         if (requested.has("messages") || requested.has("attachments")) {
           for (const source of sources) {
             const candidateLegacyBaseline = messageUsesLegacyJsonlMtimes && messageLegacyJsonlMtimes.has(source.path);
-            let scanned = await scanChildSource({
-              cursor: priorChildCursors[source.path],
-              emitRecord: countingEmitRecord,
-              emitRecords: !candidateLegacyBaseline,
-              requested,
-              source,
-              telemetry,
-            });
+            let scanned: Awaited<ReturnType<typeof scanChildSource>>;
+            try {
+              scanned = await scanChildSource({
+                cursor: priorChildCursors[source.path],
+                emitRecord: countingEmitRecord,
+                emitRecords: !candidateLegacyBaseline,
+                requested,
+                source,
+                telemetry,
+              });
+            } catch (error) {
+              await reportMalformedJsonlGap({ error, reportStreamFailure, requested });
+              throw error;
+            }
             // The scan, not a pre-scan stat, decides whether the old mtime
             // actually describes the bytes that were cursorized. A change in
             // the small interval before the open snapshot is replayed from
@@ -2134,14 +2171,19 @@ if (isMainModule(import.meta.url)) {
               candidateLegacyBaseline &&
               !matchesLegacyJsonlMtime(messageLegacyJsonlMtimes, source.path, scanned.cursor.observed_mtime_ms)
             ) {
-              scanned = await scanChildSource({
-                cursor: undefined,
-                emitRecord: countingEmitRecord,
-                emitRecords: true,
-                requested,
-                source,
-                telemetry,
-              });
+              try {
+                scanned = await scanChildSource({
+                  cursor: undefined,
+                  emitRecord: countingEmitRecord,
+                  emitRecords: true,
+                  requested,
+                  source,
+                  telemetry,
+                });
+              } catch (error) {
+                await reportMalformedJsonlGap({ error, reportStreamFailure, requested });
+                throw error;
+              }
             }
             if (requested.has("messages")) {
               derivedCounts.messages.examined += scanned.messagesExamined;
