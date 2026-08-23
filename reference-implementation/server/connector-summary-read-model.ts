@@ -2086,6 +2086,41 @@ function rowIsFoldLogicVersionAhead(row: Row): boolean {
   return version !== null && version > STREAM_FACTS_FOLD_LOGIC_VERSION;
 }
 
+/**
+ * Whether a stored `stream_facts_event_seq` names a REAL position in the
+ * terminal-event log that a fold pass can resume from.
+ *
+ * `stream_facts_event_seq` is typed `number | null` but carries THREE states,
+ * not two:
+ *   - a real log position  -> resumable; this predicate is `true`
+ *   - `NULL`               -> never folded; no position
+ *   - a literal `0`        -> ALSO never folded; no position
+ *
+ * The literal zero is written by `stampZeroCheckpointForBootstrap` for a row
+ * with no terminal history yet, and by the fold's own write path for a row
+ * whose replay has not advanced. It is NOT "position zero" — event_seq is
+ * 1-based, so no attributable terminal event ever lives at 0.
+ *
+ * Naming this is not cosmetic; the rule has regressed in production. The first
+ * fix (`6cd8368ad`) guarded only NULL, so a literal-0 row still pulled the
+ * shared `sinceSeq` floor to the start of a 1,438,556-event log and every
+ * bounded 2s pass read zero qualifying events and wrote nothing. `7bba0be69`
+ * then had to re-fix the SAME idea in a second place, and `a4f0fdeb0` a third,
+ * one layer up. Each occurrence was a live stall, not a theoretical one.
+ *
+ * Every reader of the field now asks this ONE question by name instead of
+ * respelling `!== null && > 0` / `Number(x ?? 0) === 0` inline, so a future
+ * reader cannot accidentally guard only half the invariant.
+ *
+ * Accepts `unknown` because `Row` is `Record<string, unknown>`: the raw column
+ * may arrive as a number, or as a string when a driver returns bigint as text.
+ * `Number(...)` normalizes both; a non-numeric value yields `NaN`, and
+ * `NaN > 0` is `false` — the safe "no position" answer.
+ */
+function checkpointIsResumablePosition(checkpoint: unknown): boolean {
+  return checkpoint !== null && checkpoint !== undefined && Number(checkpoint) > 0;
+}
+
 /** A participant row's write-time CAS anchor, captured at seed time. */
 interface FoldCasBaseline {
   readonly eventSeq: number | null;
@@ -2224,13 +2259,14 @@ function seedFoldState(
     // it; it simply must not drag the shared read cursor backward. When EVERY
     // participant lacks a checkpoint the floor stays 0, so a fresh install
     // still reads from the beginning.
-    // Guard 0 as well as null. A row that has never had a terminal event
-    // folded into it stores a literal 0 checkpoint, not NULL, so guarding
-    // only null still let it pull the shared floor to the beginning of the
-    // log -- observed after the first fix shipped: the floor read 0 again
-    // with four participants, and the sweep resumed burning its budget from
-    // seq 0 against a 1.44M-event log.
-    if (checkpoint !== null && checkpoint > 0) {
+    // Guard 0 as well as null -- see `checkpointIsResumablePosition`, which
+    // is the single definition of that rule. A row that has never had a
+    // terminal event folded into it stores a literal 0 checkpoint, not NULL,
+    // so guarding only null still let it pull the shared floor to the
+    // beginning of the log -- observed after the first fix shipped: the floor
+    // read 0 again with four participants, and the sweep resumed burning its
+    // budget from seq 0 against a 1.44M-event log.
+    if (checkpoint !== null && checkpointIsResumablePosition(checkpoint)) {
       sinceSeq = Math.min(sinceSeq, checkpoint);
     }
   }
@@ -2401,7 +2437,7 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
   // round's own high-water and never re-freezes at zero, so this clause
   // cannot match that row again.
   if (
-    Number(checkpoint ?? 0) === 0 &&
+    !checkpointIsResumablePosition(checkpoint) &&
     row.terminal_facts_reason_code === "terminal_facts_historical" &&
     Number(row.dirty ?? 0) === 0
   ) {
