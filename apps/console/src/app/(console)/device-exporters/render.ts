@@ -40,16 +40,47 @@ export function formatRelativeTime(value: string | null | undefined, now = new D
   return `${days}d ${suffix}`;
 }
 
-export function summarizeIngestCounts(device: Pick<DeviceExporter, "source_instances">): {
-  accepted: number;
-  rejected: number;
-} {
-  return device.source_instances.reduce(
+/**
+ * A summed count that remembers whether it is complete.
+ *
+ * `accepted_record_count` and `rejected_record_count` are optional in the
+ * published contract (`DeviceSourceInstanceSchema` does not list them as
+ * required), so a source instance may carry no count at all. Coalescing an
+ * absent count to `0` and summing it produces a number that LOOKS measured but
+ * is not — and the device row derives its rejected TONE from that number, so a
+ * fabricated zero rendered as a neutral "no rejects" reassurance. `total` is
+ * therefore the sum of the counts that genuinely exist, and `complete` says
+ * whether any were missing, so callers can decline to state a total they
+ * cannot prove.
+ */
+export interface IngestCount {
+  complete: boolean;
+  total: number;
+}
+
+export interface IngestCounts {
+  accepted: IngestCount;
+  rejected: IngestCount;
+}
+
+/** Formats a count for display, refusing to print a total it cannot prove. */
+export function formatIngestCount(count: IngestCount): string {
+  return count.complete ? count.total.toLocaleString() : "unknown";
+}
+
+export function summarizeIngestCounts(device: Pick<DeviceExporter, "source_instances">): IngestCounts {
+  return device.source_instances.reduce<IngestCounts>(
     (counts, source) => ({
-      accepted: counts.accepted + (source.accepted_record_count ?? 0),
-      rejected: counts.rejected + (source.rejected_record_count ?? 0),
+      accepted: {
+        complete: counts.accepted.complete && typeof source.accepted_record_count === "number",
+        total: counts.accepted.total + (source.accepted_record_count ?? 0),
+      },
+      rejected: {
+        complete: counts.rejected.complete && typeof source.rejected_record_count === "number",
+        total: counts.rejected.total + (source.rejected_record_count ?? 0),
+      },
     }),
-    { accepted: 0, rejected: 0 }
+    { accepted: { complete: true, total: 0 }, rejected: { complete: true, total: 0 } }
   );
 }
 
