@@ -92,7 +92,6 @@ async function run(input: {
       type: "START",
     },
   });
-  assert.equal(result.code, 0, result.stderr);
   const states = Object.fromEntries(
     result.messages
       .filter((message): message is Extract<EmittedMessage, { type: "STATE" }> => message.type === "STATE")
@@ -101,7 +100,7 @@ async function run(input: {
   const records = result.messages.filter(
     (message): message is Extract<EmittedMessage, { type: "RECORD" }> => message.type === "RECORD"
   );
-  return { messages: result.messages, records, states };
+  return { code: result.code, messages: result.messages, records, states };
 }
 
 async function scanLines(path: string, prior?: Awaited<ReturnType<typeof scanLocalJsonl>>["cursor"]) {
@@ -205,7 +204,7 @@ test("M8: an unterminated line is not committed until its LF arrives", async () 
   assert.deepEqual((await scanLines(path, first.result.cursor)).lines, ['{"id":"partial"}']);
 });
 
-test("M9: malformed LF-terminated JSON is skipped while its physical boundary advances", async () => {
+test("M9: malformed LF-terminated JSON reports a gap and does not advance its physical boundary", async () => {
   const source = await makeSource();
   const first = await run(source);
   await writeFile(source.top, `${await readFile(source.top, "utf8")}not-json\n`);
@@ -213,14 +212,18 @@ test("M9: malformed LF-terminated JSON is skipped while its physical boundary ad
     ...source,
     state: { messages: first.states.messages, sessions: first.states.sessions },
   });
+  // A complete malformed line is not an in-flight tail: silently consuming it
+  // would lose the record forever. The connector must fail the run, disclose
+  // the unresolved streams, and write no cursor past that line.
+  assert.equal(malformed.code, 1);
   assert.equal(malformed.records.length, 0);
-  const child = malformed.states.messages as {
-    file_cursors: Record<string, { committed_offset_bytes: number }>;
-  };
   assert.equal(
-    child.file_cursors[source.top]?.committed_offset_bytes,
-    (await (await import("node:fs/promises")).stat(source.top)).size
+    malformed.messages.filter((message) => message.type === "SKIP_RESULT").length,
+    2,
+    "sessions and messages both disclose the malformed source gap"
   );
+  assert.equal(malformed.states.messages, undefined, "no messages cursor may commit past the malformed line");
+  assert.equal(malformed.states.sessions, undefined, "no sessions cursor may commit past the malformed line");
 });
 
 test("M10: a tail without sessionId inherits saved parser continuation", async () => {

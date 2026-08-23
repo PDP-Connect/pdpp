@@ -68,6 +68,7 @@ import {
 } from "../../src/collection-scope-enumeration.ts";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
+import { LocalJsonlMalformedLineError } from "../../src/local-jsonl-cursor.ts";
 import {
   buildCoverageDiagnosticsStateSnapshot,
   buildDerivedCoverageRecord,
@@ -271,6 +272,8 @@ export interface RolloutLineYield {
  * Byte offsets are tracked over the raw bytes (Buffer length), not decoded
  * characters, so a multi-byte UTF-8 sequence advances the offset by its true
  * byte length and the resume offset always lands on a real byte boundary.
+ * A malformed complete line throws instead of being consumed, so callers
+ * cannot checkpoint past an unresolved source gap.
  */
 export async function* iterJsonlLinesFromOffset(path: string, startOffset: number): AsyncGenerator<RolloutLineYield> {
   const stream = createReadStream(path, { start: startOffset });
@@ -290,8 +293,11 @@ export async function* iterJsonlLinesFromOffset(path: string, startOffset: numbe
         let parsed: RolloutObject | null = null;
         try {
           parsed = JSON.parse(line) as RolloutObject;
-        } catch {
-          parsed = null; // skip malformed, but still advance the offset
+        } catch (error) {
+          // A complete malformed line is a source gap. Throw before yielding
+          // the next record so parseRolloutFile cannot return a cursor beyond
+          // this line and the connector can disclose the unresolved stream.
+          throw new LocalJsonlMalformedLineError(committed, { cause: error });
         }
         if (parsed) {
           yield { obj: parsed, committedOffset: committed };
@@ -1419,7 +1425,10 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
           messagesExamined += counts.messages;
           functionCallsExamined += counts.functionCalls;
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof LocalJsonlMalformedLineError) {
+          await reportMalformedRolloutGap(args.requested);
+        }
         // Any error during parsing (without code or other) makes scan incomplete
         scanOutcome = "parse_error";
         break;
@@ -1444,6 +1453,23 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
     functionCallsExamined,
     scanOutcome,
   };
+}
+
+async function reportMalformedRolloutGap(requested: Map<string, StreamScope>): Promise<void> {
+  // The malformed line was complete, so it is a real unresolved source item
+  // rather than an in-flight tail. Do not checkpoint this file; disclose the
+  // gap on every requested rollout-derived stream.
+  for (const stream of ["messages", "function_calls"] as const) {
+    if (requested.has(stream)) {
+      emit({
+        type: "SKIP_RESULT",
+        stream,
+        reason: "malformed_jsonl_line",
+        message: "Codex contains a malformed complete JSONL line; the source cursor was not advanced past it",
+      });
+    }
+  }
+  await waitForEmitDrain();
 }
 
 // ─── Session emission ───────────────────────────────────────────────────
