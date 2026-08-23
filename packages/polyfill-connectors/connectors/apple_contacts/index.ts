@@ -177,11 +177,11 @@ function contactId(bookUrl: string, href: string): string {
   return `${addressBookId(bookUrl)}::${href}`;
 }
 
-/** vCard field id for CATEGORIES-derived group membership. Deterministic
- *  per (addressbook, group name) so re-emitting the same group is a no-op
- *  under the fingerprint cursor. */
-function groupId(bookUrl: string, groupName: string): string {
-  return `${addressBookId(bookUrl)}::group::${groupName}`;
+/** Stable id for group membership. Apple group vCards carry a provider UID;
+ *  CATEGORIES-derived groups have no independent provider identifier and keep
+ *  the name fallback rather than inventing a mutable hash. */
+function groupId(bookUrl: string, groupName: string, providerUid?: string): string {
+  return `${addressBookId(bookUrl)}::group::${providerUid ? `uid:${providerUid}` : groupName}`;
 }
 
 export function addressBookRecord(book: { url: string; displayName?: string }, supportsSync: boolean): RecordData {
@@ -232,9 +232,9 @@ export function contactTombstone(bookUrl: string, href: string): RecordData {
   return { id: contactId(bookUrl, href), deleted: true };
 }
 
-export function groupRecord(bookUrl: string, name: string, memberUids: string[]): RecordData {
+export function groupRecord(bookUrl: string, name: string, memberUids: string[], providerUid?: string): RecordData {
   return {
-    id: groupId(bookUrl, name),
+    id: groupId(bookUrl, name, providerUid),
     addressbook_url: bookUrl,
     name,
     member_uids: memberUids,
@@ -263,27 +263,29 @@ export function groupRecord(bookUrl: string, name: string, memberUids: string[])
 export function deriveGroups(bookUrl: string, cards: ReadonlyArray<{ card: ParsedVCard; uid: string }>): RecordData[] {
   const { contacts, groups } = partitionVCards(cards);
 
-  const membersByGroup = new Map<string, string[]>();
+  const membersByGroup = new Map<string, { memberUids: string[]; providerUid?: string }>();
   for (const { card, uid } of contacts) {
     for (const category of categoriesOf(card)) {
-      const members = membersByGroup.get(category) ?? [];
-      members.push(uid);
-      membersByGroup.set(category, members);
+      const group = membersByGroup.get(category) ?? { memberUids: [] };
+      group.memberUids.push(uid);
+      membersByGroup.set(category, group);
     }
   }
 
   // Apple group vCards are authoritative; they overwrite a CATEGORIES-derived
   // entry of the same name rather than merging into it, so a group's
   // membership is never half server-stated and half inferred.
-  for (const { card } of groups) {
+  for (const { card, uid } of groups) {
     const name = card.fn?.trim();
     if (!name) {
       continue;
     }
-    membersByGroup.set(name, groupMemberUids(card));
+    membersByGroup.set(name, { memberUids: groupMemberUids(card), providerUid: card.uid ?? uid });
   }
 
-  return [...membersByGroup.entries()].map(([name, members]) => groupRecord(bookUrl, name, members));
+  return [...membersByGroup.entries()].map(([name, group]) =>
+    groupRecord(bookUrl, name, group.memberUids, group.providerUid)
+  );
 }
 
 interface AddressBookCollectionCtx {
