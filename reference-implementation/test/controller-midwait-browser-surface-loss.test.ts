@@ -27,8 +27,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-// biome-ignore lint/correctness/noUnresolvedImports: Biome resolver lacks this runtime-supported dependency export shape.
-import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from "@opendatalabs/remote-surface/leases";
+import {
+  type BrowserSurfaceAllocator,
+  BrowserSurfaceLeaseManager,
+  DEFAULT_NEKO_PRIORITY_RANKS,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome resolver lacks this runtime-supported dependency export shape.
+} from "@opendatalabs/remote-surface/leases";
 import type {
   BrowserSurfaceReadinessProbe,
   BrowserSurfaceReadinessProbeCode,
@@ -144,7 +148,7 @@ function createSchedulerStore(): SchedulerStore {
   };
 }
 
-function createManagerWithReadySurface() {
+function createManagerWithReadySurface(surfaceMode: "static" | "dynamic" = "static") {
   let leaseSeq = 0;
   let tokenSeq = 0;
   return new BrowserSurfaceLeaseManager({
@@ -158,7 +162,7 @@ function createManagerWithReadySurface() {
       staticProfileKey: "managed-profile",
       staticStreamBaseUrl: "http://127.0.0.1:8080",
       surfaceCap: 1,
-      surfaceMode: "static",
+      surfaceMode,
     },
     initialSurfaces: [
       {
@@ -184,6 +188,28 @@ function createManagerWithReadySurface() {
     },
     now: () => new Date("2026-05-12T12:00:00.000Z"),
   });
+}
+
+function createTestAllocator(stopRequests: string[]): BrowserSurfaceAllocator {
+  return {
+    ensureSurface: async (request) => ({
+      backend: "neko",
+      cdp_url: "http://127.0.0.1:9222/replacement",
+      connector_id: request.connectorId,
+      created_at: "2026-05-12T12:00:00.000Z",
+      health: "ready",
+      last_used_at: "2026-05-12T12:00:00.000Z",
+      profile_key: request.profileKey,
+      stream_base_url: "http://127.0.0.1:8080/replacement",
+      surface_id: request.surfaceId,
+    }),
+    getSurfaceStatus: async () => null,
+    listSurfaces: async () => [],
+    stopSurface: ({ surfaceId }) => {
+      stopRequests.push(surfaceId);
+      return Promise.resolve(null);
+    },
+  };
 }
 
 interface RunEventRow {
@@ -300,10 +326,13 @@ test("surface dies during manual_action wait: run.browser_surface_lost emitted, 
   const connectorDone = new Promise<FixtureInteractionResponse | undefined>((res) => {
     resolveConnectorDone = res;
   });
+  const leaseManager = createManagerWithReadySurface("dynamic");
+  const stopRequests: string[] = [];
 
   const c2 = createController({
     admitRunConnection: fakeAdmitRunConnection(),
-    browserSurfaceLeaseManager: createManagerWithReadySurface(),
+    browserSurfaceAllocator: createTestAllocator(stopRequests),
+    browserSurfaceLeaseManager: leaseManager,
     browserSurfaceMidWaitPollIntervalMs: 5,
     browserSurfaceReadinessProbe: probe,
     connectorPathResolver: () => "/tmp/connector.js",
@@ -348,6 +377,13 @@ test("surface dies during manual_action wait: run.browser_surface_lost emitted, 
   assert.equal(interactionResponseStatus, "cancelled");
 
   await c2.drainActiveRuns(2000);
+
+  assert.equal(
+    leaseManager.getSurface("surface_static"),
+    undefined,
+    "a mid-wait CDP loss must invalidate the surface before cleanup releases its lease"
+  );
+  assert.deepEqual(stopRequests, ["surface_static"], "a dynamic surface loss must stop the dead allocator resource");
 
   // run.browser_surface_lost must be emitted.
   const events = listRunEvents("run_midwait_loss");
