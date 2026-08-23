@@ -159,7 +159,7 @@ test("pages through multiple connection pages before advancing the cursor", asyn
   assert.equal(records.filter((r) => r.stream === "people").length, 2);
 });
 
-test("a page cap with a continuation token fails before people STATE or coverage", async () => {
+test("a page cap with a continuation token discloses truncation instead of claiming coverage", async () => {
   const fakeClient = new FakePeopleClient({
     connectionPages: [
       { people: [makePerson({ resourceName: "people/c1" })], nextPageToken: "page2", nextSyncToken: null },
@@ -168,24 +168,38 @@ test("a page cap with a continuation token fails before people STATE or coverage
   });
   const { ctx, messages, records } = makeContext({ streams: [{ name: "people" }] });
 
-  await assert.rejects(
-    () =>
-      collectGoogleContacts(ctx, {
-        clientFactory: () => fakeClient,
-        env: ENV,
-        maxPages: 1,
-        ...FAKE_TOKEN,
-      }),
-    /google_contacts_pagination_cap/
-  );
+  // The ceiling is hit while the provider still advertises another page. The
+  // run keeps the prefix it enumerated but must disclose the shortfall rather
+  // than let a truncated walk read as a complete one.
+  await collectGoogleContacts(ctx, {
+    clientFactory: () => fakeClient,
+    env: ENV,
+    maxPages: 1,
+    ...FAKE_TOKEN,
+  });
+
   assert.equal(records.filter((r) => r.stream === "people").length, 1, "the enumerated prefix may be emitted");
-  assert.equal(
-    messages.some((message) => message.type === "STATE" && message.stream === "people"),
-    false
+  const skip = messages.find(
+    (message): message is Extract<typeof message, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "people"
   );
-  assert.equal(
-    messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "people"),
-    false
+  assert.ok(skip, "a truncated walk must disclose itself to the owner");
+  assert.equal(skip.reason, "older_pages_deferred_page_budget");
+  assert.match(skip.message, /1-page limit/, "the disclosed ceiling must be the one actually enforced");
+  // Coverage IS emitted on a truncated walk — suppressing it would leave the
+  // stream with no denominator at all. What must never happen is a COMPLETE
+  // claim: the unread page inflates `considered`, so the shortfall is visible.
+  const coverage = messages.find(
+    (message): message is Extract<typeof message, { type: "DETAIL_COVERAGE" }> =>
+      message.type === "DETAIL_COVERAGE" && message.stream === "people"
+  );
+  assert.ok(coverage, "a truncated walk still needs a denominator");
+  const { considered, covered } = coverage;
+  assert.equal(typeof considered, "number", "a coverage claim without a denominator is not a claim");
+  assert.equal(typeof covered, "number", "a coverage claim without a numerator is not a claim");
+  assert.ok(
+    (considered as number) > (covered as number),
+    `truncation must read as a shortfall, got ${String(covered)}/${String(considered)}`
   );
 });
 
