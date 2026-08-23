@@ -4041,18 +4041,23 @@ export function deriveOutboxAxisFromHeartbeat(
     return { axis: "unknown", cause: null, unreliable: false };
   }
   const heartbeatAgeMs = ageMs(evidence.lastHeartbeatAt, options.nowIso);
-  const pending = evidence.recordsPending ?? 0;
+  const pending = evidence.recordsPending;
   const heartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > options.staleHeartbeatThresholdMs;
 
   if (evidence.lastHeartbeatStatus === "blocked") {
     return classifyBlockedHeartbeat(evidence, { heartbeatStale, pending });
   }
 
-  if (pending > 0 && heartbeatStale) {
+  if (pending !== null && pending > 0 && heartbeatStale) {
     return { axis: "stalled", cause: "stale_pending", unreliable: false };
   }
   const retryingBacklogAgeMs = ageMs(evidence.oldestRetryingAt ?? null, options.nowIso);
-  if (pending > 0 && retryingBacklogAgeMs !== null && retryingBacklogAgeMs > OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS) {
+  if (
+    pending !== null &&
+    pending > 0 &&
+    retryingBacklogAgeMs !== null &&
+    retryingBacklogAgeMs > OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS
+  ) {
     return { axis: "stalled", cause: "transient_upload_failure", unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "starting" || evidence.lastHeartbeatStatus === "retrying") {
@@ -4061,7 +4066,7 @@ export function deriveOutboxAxisFromHeartbeat(
     }
     return { axis: "active", cause: null, unreliable: false };
   }
-  if (pending > 0) {
+  if (pending !== null && pending > 0) {
     return { axis: "active", cause: null, unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "healthy" || evidence.lastHeartbeatStatus === "stopped") {
@@ -4081,7 +4086,7 @@ export function deriveOutboxAxisFromHeartbeat(
  */
 function classifyBlockedHeartbeat(
   evidence: HeartbeatOutboxEvidence,
-  age: { heartbeatStale: boolean; pending: number }
+  age: { heartbeatStale: boolean; pending: number | null }
 ): { axis: OutboxAxis; cause: OutboxStalledCause | null; unreliable: boolean } {
   // A blocked heartbeat with dead letters is a backlog to retry+re-run; a
   // blocked heartbeat with none is a failed state read cleared by re-running.
@@ -4113,7 +4118,7 @@ function classifyBlockedHeartbeat(
  */
 function qualifiesForBoundedDebrisCarveOut(
   evidence: HeartbeatOutboxEvidence,
-  age: { heartbeatStale: boolean; pending: number }
+  age: { heartbeatStale: boolean; pending: number | null }
 ): boolean {
   return (
     typeof evidence.backlogOpenCount === "number" &&
