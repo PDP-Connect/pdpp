@@ -666,6 +666,109 @@ CREATE TABLE IF NOT EXISTS connector_instance_credentials (
 CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
   ON connector_instance_credentials(owner_subject_id, status);
 
+-- Durable, provenance-bearing connector configuration: an IMMUTABLE
+-- per-connection revision ledger, not a mutable current-value table.
+--
+-- Design history: an earlier draft of this table stored one mutable row
+-- per (connector_instance_id, key), overwritten in place on every write.
+-- An adversarial design review (CONFIG-REDTEAM-CODEX.md, 2026-08-22) showed
+-- that shape survives the exact incident it exists to fix: an agent holding
+-- the owner's bearer token can still write a well-typed, fully-attributed
+-- value, and a well-typed agent-authored write is not the same as an
+-- owner-chosen one. The review's required invariant: a run consumes
+-- collection-shaping configuration only from an immutable, owner-confirmed
+-- revision; a non-owner write can PROPOSE but never itself ACTIVATE a
+-- collection-scope change. Immutability plus a status column is what makes
+-- that gate expressible; a table that overwrites its own history cannot
+-- distinguish "proposed" from "silently superseded."
+--
+-- One row per (connector_instance_id, revision): revision is a
+-- monotonically increasing integer scoped to the connection (assigned by
+-- the store from the current max, matching the spine_events.event_seq
+-- pattern already used for the same reason -- caller input cannot forge
+-- ordering). A row, once written, is NEVER updated -- superseding a
+-- revision means writing a new row and moving connector_instance_config_current
+-- to point at it, never mutating this one. This is what lets exact
+-- historical values remain queryable ("what was active when run R ran")
+-- without a second history mechanism.
+--
+-- config_json holds the full config bundle for this revision (all
+-- collection_scope + transport keys together), not one row per key: CAS
+-- (optimistic concurrency) and atomic proof-declassification both operate
+-- per-connection-generation, not per-key, so a per-key row would let two
+-- concurrent writers each "win" on a different key of the same logical
+-- change -- exactly the merge hazard the review rejects (finding #7).
+--
+-- Every provenance column is NOT NULL; origin is a closed enum with no
+-- 'unknown' member. status starts 'proposed' for any non-owner origin and
+-- only an owner-confirmation write may move a revision (or its successor)
+-- to 'active'. See connector_instance_config_current below for "which
+-- revision is in force now" and server/stores/connector-instance-config-store.ts
+-- for the CAS and confirmation logic.
+CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
+  connector_instance_id TEXT NOT NULL,
+  revision               INTEGER NOT NULL,
+  config_json            TEXT NOT NULL,
+  -- Closed, platform-owned contract identifier + version for the shape of
+  -- config_json. A revision is only ever read by code that proves it
+  -- understands the exact contract version -- never coerced across a
+  -- version bump. See config_contract_version in the store module.
+  config_contract_id      TEXT NOT NULL,
+  config_contract_version INTEGER NOT NULL,
+  -- Whether this revision shapes what the connector collects or only how
+  -- it collects. A revision is homogeneous: mixing collection_scope and
+  -- transport keys in one config_json is allowed, but the revision as a
+  -- whole is classified by whether ANY key in it is collection_scope,
+  -- because that is what determines whether it may self-activate.
+  option_kind             TEXT NOT NULL CHECK (option_kind IN ('collection_scope', 'transport')),
+  origin                  TEXT NOT NULL CHECK (origin IN ('owner', 'agent', 'migration', 'default')),
+  is_explicit              INTEGER NOT NULL CHECK (is_explicit IN (0, 1)),
+  -- proposed:   written, but not yet the connection's active configuration
+  --             (mandatory starting state for a non-owner collection_scope
+  --             write -- see the store's activation rule).
+  -- active:     the revision a run resolves against right now.
+  -- superseded: was active; a later revision replaced it.
+  -- quarantined: server-detected integrity problem (e.g. an untrusted
+  --             direct DB write) -- never runnable, never silently
+  --             attributed to an author.
+  status                   TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+  -- The collection-boundary fingerprint this revision's collection_scope
+  -- keys resolve to, following the same declassification contract already
+  -- proven for START.scope (see local-collection-scope.ts). NULL for a
+  -- pure-transport revision, which cannot change the boundary.
+  collection_boundary_fingerprint TEXT,
+  source_of_change         TEXT NOT NULL,
+  set_by                   TEXT NOT NULL,
+  set_at                   TEXT NOT NULL,
+  confirmed_by             TEXT,
+  confirmed_at             TEXT,
+  PRIMARY KEY (connector_instance_id, revision),
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_connector_instance_config_revisions_instance
+  ON connector_instance_config_revisions(connector_instance_id, revision);
+
+-- "Which revision is active right now" for a connection -- the single
+-- server-authoritative pointer every run resolves against. Separated from
+-- the revision ledger itself (rather than an is_active bool on the ledger
+-- row) so advancing the pointer and appending a revision are two distinct
+-- statements inside the SAME transaction, which is what makes "atomically
+-- move the pointer AND declassify stale coverage proof" possible: both
+-- happen or neither does (review finding #10).
+CREATE TABLE IF NOT EXISTS connector_instance_config_current (
+  connector_instance_id TEXT PRIMARY KEY,
+  active_revision        INTEGER NOT NULL,
+  -- Storage epoch: bumped on backup restore / re-import so a device
+  -- holding a pre-restore revision number cannot silently win a
+  -- compare-and-swap against post-restore state (review finding #7's
+  -- restore case). A write's base_revision AND base_epoch must both match.
+  storage_epoch           INTEGER NOT NULL DEFAULT 1,
+  updated_at              TEXT NOT NULL,
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+  FOREIGN KEY(connector_instance_id, active_revision) REFERENCES connector_instance_config_revisions(connector_instance_id, revision)
+);
+
 CREATE TABLE IF NOT EXISTS acquisition_batches (
   batch_id              TEXT PRIMARY KEY,
   owner_subject_id      TEXT NOT NULL,

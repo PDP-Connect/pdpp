@@ -270,6 +270,15 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
   readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
   readonly connectorInstanceCredentialsUpsert: MutationQuery;
+  // Durable, provenance-bearing connector configuration: immutable
+  // per-connection revision ledger (see connector_instance_config_revisions
+  // in db.ts for the full rationale). The append+CAS+declassify write path
+  // is transactional and lives in connector-instance-config-store.ts as raw
+  // prepared statements, not as registry entries, matching the existing
+  // record-rejection-store.ts precedent for multi-statement writes.
+  readonly connectorInstanceConfigGetCurrentPointer: ReadOneQuery;
+  readonly connectorInstanceConfigGetRevision: ReadOneQuery;
+  readonly connectorInstanceConfigListRevisionsByInstance: ReadManyQuery;
   readonly connectorInstanceGroupsDeleteByFragment: MutationQuery;
   readonly connectorInstanceGroupsGetByFragment: ReadOneQuery;
   readonly connectorInstanceGroupsListByOwner: ReadManyQuery;
