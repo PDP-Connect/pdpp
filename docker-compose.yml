@@ -224,9 +224,9 @@ services:
       start_period: 30s
 
   # Postgres runtime storage. Brought up unconditionally so the reference
-  # service can depend on it. Enable Postgres as the runtime backend by
-  # setting PDPP_STORAGE_BACKEND=postgres and PDPP_DATABASE_URL in
-  # .env.docker; otherwise the reference falls back to the SQLite default.
+  # service can depend on it. The shipped .env.docker.example selects this
+  # backend and supplies its internal service URL; a custom env file must keep
+  # PDPP_STORAGE_BACKEND=postgres and PDPP_DATABASE_URL paired.
   # Used by env-gated conformance/runtime proofs such as
   # `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.ts`,
   # `reference-implementation/test/consent-device-auth-conformance-postgres.test.ts`,

@@ -20,8 +20,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { dirname } from "node:path";
 import { load as loadSqliteVec } from "sqlite-vec";
 import {
   makeConnectorInstanceId as canonicalConnectorInstanceId,
@@ -5844,6 +5845,9 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   // interference defect.
   detachDb();
   const busyTimeoutMs = resolveSqliteBusyTimeoutMs(opts.busyTimeoutMs);
+  if (path !== ":memory:") {
+    mkdirSync(dirname(path), { recursive: true });
+  }
   const raw = new Database(path, { timeout: busyTimeoutMs }) as unknown as SqliteDatabase;
   sqliteStoreCacheGeneration += 1;
   sqliteStoreCacheIdentity = `sqlite:${String(path)}:${sqliteStoreCacheGeneration}`;

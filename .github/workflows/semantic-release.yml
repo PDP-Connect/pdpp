@@ -571,3 +571,33 @@ jobs:
             echo "::error::release channel is not fully promoted; re-run the failed promote-release-images matrix legs" >&2
             exit 1
           fi
+
+  # Source builds cannot detect registry/package assembly defects. Run the
+  # documented public bootstrap only after the release channel is fully
+  # promoted, so this gate observes published state rather than racing the
+  # workflow that creates it.
+  published-bootstrap-smoke:
+    name: smoke the published bootstrap artifacts
+    needs: [release, verify-release-channel]
+    if: >-
+      always() &&
+      needs.release.outputs.published == 'true' &&
+      needs.verify-release-channel.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prove published local collector advertises from a clean Node container
+        run: bash scripts/published-local-collector-advertise-smoke.sh
+
+      - name: Prove published split images identify the same source revision
+        run: bash scripts/published-image-revision-smoke.sh
+
+      - name: Prove a pristine documented Compose environment boots published artifacts
+        run: bash scripts/published-compose-bootstrap-smoke.sh
