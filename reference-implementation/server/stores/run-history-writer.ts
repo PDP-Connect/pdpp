@@ -65,12 +65,14 @@ const RUN_TERMINAL_EVENT_TYPES = new Set([
   "run.abandoned",
 ]);
 const RUN_PROGRESS_EVENT_TYPE = "run.progress_reported";
+const RUN_BATCH_INGESTED_EVENT_TYPE = "run.batch_ingested";
 
 export function isRunHistoryRelevantEventType(eventType: string | null | undefined): boolean {
   return (
     eventType === RUN_STARTED_EVENT_TYPE ||
     RUN_TERMINAL_EVENT_TYPES.has(eventType ?? "") ||
-    eventType === RUN_PROGRESS_EVENT_TYPE
+    eventType === RUN_PROGRESS_EVENT_TYPE ||
+    eventType === RUN_BATCH_INGESTED_EVENT_TYPE
   );
 }
 
@@ -233,6 +235,12 @@ function collectionRateMergeJson(data: Record<string, unknown>): string | null {
   return JSON.stringify({ collection_rate: data.collection_rate });
 }
 
+function batchFactsMergeJson(data: Record<string, unknown>): string | null {
+  return typeof data.records_emitted === "number" && Number.isFinite(data.records_emitted)
+    ? JSON.stringify({ records_emitted: data.records_emitted })
+    : null;
+}
+
 type SqliteRunHistoryExecute = (
   query: Parameters<typeof exec>[0],
   params: Parameters<typeof exec>[1]
@@ -267,6 +275,19 @@ function writeSqliteRunHistoryWith(event: RunHistorySpineEvent, execute: SqliteR
     const mergeJson = collectionRateMergeJson(event.data);
     if (mergeJson !== null) {
       execute(referenceQueries.controllerMergeRunHistoryCollectionRate, [
+        mergeJson,
+        event.runId,
+        event.connectorInstanceId,
+      ]);
+    }
+    return;
+  }
+
+  if (event.eventType === RUN_BATCH_INGESTED_EVENT_TYPE) {
+    const mergeJson = batchFactsMergeJson(event.data);
+    if (mergeJson !== null) {
+      execute(referenceQueries.controllerMergeRunHistoryBatchFacts, [
+        mergeJson,
         mergeJson,
         event.runId,
         event.connectorInstanceId,
@@ -354,6 +375,22 @@ export async function writePostgresRunHistoryForSpineEvent(
            AND connector_instance_id = $3
            AND status = 'running'`,
         [JSON.stringify(event.data.collection_rate), event.runId, event.connectorInstanceId]
+      );
+    }
+    return;
+  }
+
+  if (event.eventType === RUN_BATCH_INGESTED_EVENT_TYPE) {
+    const recordsEmitted = event.data.records_emitted;
+    if (typeof recordsEmitted === "number" && Number.isFinite(recordsEmitted)) {
+      await client.query(
+        `UPDATE run_history
+         SET records_emitted = GREATEST(records_emitted, $1),
+             facts_json = COALESCE(facts_json, '{}'::jsonb) || jsonb_build_object('records_emitted', $1)
+         WHERE run_id = $2
+           AND connector_instance_id = $3
+           AND status = 'running'`,
+        [recordsEmitted, event.runId, event.connectorInstanceId]
       );
     }
     return;

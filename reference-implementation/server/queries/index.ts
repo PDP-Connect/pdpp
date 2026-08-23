@@ -319,6 +319,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly controllerListActiveRuns: SmallEnumerationQuery;
   readonly controllerListRunHistory: ReadManyQuery;
   readonly controllerListSchedulerLastRunTimes: SmallEnumerationQuery;
+  readonly controllerMergeRunHistoryBatchFacts: MutationQuery;
   readonly controllerListSchedules: SmallEnumerationQuery;
   readonly controllerMergeRunHistoryCollectionRate: MutationQuery;
   readonly controllerStartRunHistory: MutationQuery;
@@ -925,6 +926,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerListRunHistory",
     "controllerStartRunHistory",
     "controllerFinalizeRunHistory",
+    "controllerMergeRunHistoryBatchFacts",
     "controllerMergeRunHistoryCollectionRate",
     "controllerInsertFinalizedRunHistory",
     "controllerListSchedulerLastRunTimes",
