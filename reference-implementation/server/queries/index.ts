@@ -279,6 +279,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstanceConfigGetCurrentPointer: ReadOneQuery;
   readonly connectorInstanceConfigGetRevision: ReadOneQuery;
   readonly connectorInstanceConfigListRevisionsByInstance: ReadManyQuery;
+  readonly connectorInstanceGroupsCountByCanonical: ReadOneQuery;
   readonly connectorInstanceGroupsDeleteByFragment: MutationQuery;
   readonly connectorInstanceGroupsGetByFragment: ReadOneQuery;
   readonly connectorInstanceGroupsListByOwner: ReadManyQuery;

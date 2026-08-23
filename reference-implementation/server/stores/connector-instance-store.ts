@@ -347,10 +347,28 @@ LIMIT ?`;
 // exclusions, the revoked-draft rule, the cursor tuple, ordering, LIMIT). The
 // exclusion is applied BEFORE `LIMIT`, keeping `hasMore`/the next cursor
 // authoritative over exactly the rows this page renders.
+//
+// The exclusion is CONDITIONAL on the canonical row actually existing.
+// `connector_instance_groups` carries no foreign key to `connector_instances`
+// (see server/db.ts), and neither delete path removes or retargets inbound
+// group rows, so a canonical row can be deleted out from under its fragments
+// and leave the group rows dangling. Hiding a fragment because it "has a
+// canonical" is only honest when that canonical is actually there to render
+// in its place; if it is gone, hiding the fragment hides the fragment's
+// records from every summary surface at once — exactly the silent-data-loss
+// failure this project exists to prevent. So the fragment yields its Sources
+// row only to a canonical that EXISTS; otherwise it renders its own row
+// again, which is the same principle as the recovered-historical-fragment
+// carve-out above. This predicate never deletes or rewrites anything: it only
+// declines to hide a row whose stand-in is missing.
 const GROUPED_FRAGMENT_EXCLUSION_SQLITE = `
   AND NOT EXISTS (
     SELECT 1 FROM connector_instance_groups
     WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
+      AND EXISTS (
+        SELECT 1 FROM connector_instances AS canonical_instances
+        WHERE canonical_instances.connector_instance_id = connector_instance_groups.canonical_connector_instance_id
+      )
   )`;
 
 // A revoked retired-setup-shell row (`RETIRED_SETUP_SHELL_BINDING_KINDS`) is
@@ -527,7 +545,13 @@ function assertDeletableConnection(
     connectorInstanceId,
     ownerSubjectId,
     hasActiveRun,
-  }: { connectorInstanceId: string; ownerSubjectId: string; hasActiveRun: boolean }
+    inboundFragmentCount = 0,
+  }: {
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+    hasActiveRun: boolean;
+    inboundFragmentCount?: number;
+  }
 ): ConnectorInstance {
   if (!instance || instance.ownerSubjectId !== ownerSubjectId) {
     // Absent OR foreign — both surface as not-found so existence is not leaked
@@ -543,6 +567,25 @@ function assertDeletableConnection(
       "connection_run_active",
       `Connection '${connectorInstanceId}' has an active collection run; stop or await the run before deleting.`,
       { connectorInstanceId, ownerSubjectId }
+    );
+  }
+  if (inboundFragmentCount > 0) {
+    // This row is the canonical identity for grouped fragments, and
+    // `connector_instance_groups` has no foreign key to `connector_instances`
+    // (server/db.ts), so nothing at the storage layer would stop this delete
+    // from leaving those group rows pointing at an id that no longer exists.
+    // Every fragment would then be a row the Sources page hides in favour of
+    // a canonical that is not there to render — its records reachable from no
+    // summary surface. Refusing here is the guard that makes the grouping
+    // table's "deleting a row is the complete rollback" promise true: ungroup
+    // the fragments first (delete their `connector_instance_groups` rows,
+    // which restores them as independently-visible connections), then delete
+    // this row. Typed like the other delete refusals so the route maps it to
+    // 409 rather than a 500.
+    throw new ConnectorInstanceDeleteError(
+      "connection_is_grouping_canonical",
+      `Connection '${connectorInstanceId}' is the canonical identity for ${inboundFragmentCount} grouped fragment connection(s); deleting it would orphan their records on every summary surface. Ungroup those fragments first, then delete this connection.`,
+      { connectorInstanceId, inboundFragmentCount, ownerSubjectId }
     );
   }
   if (instance.sourceKind === "account" && instance.sourceBindingKey === DEFAULT_ACCOUNT_SOURCE_BINDING_KEY) {
@@ -1307,7 +1350,17 @@ export function createSqliteConnectorInstanceStore() {
       const instanceLookup = this.get(connectorInstanceId);
       const activeRuns = allowUnboundedReadAcknowledged<ActiveRunRow>(referenceQueries.controllerListActiveRuns);
       const hasActiveRun = activeRuns.some((run) => run.connector_instance_id === connectorInstanceId);
-      const instance = assertDeletableConnection(instanceLookup, { connectorInstanceId, hasActiveRun, ownerSubjectId });
+      const inboundFragmentCount = Number(
+        getOne<{ fragment_count: number }>(referenceQueries.connectorInstanceGroupsCountByCanonical, [
+          connectorInstanceId,
+        ])?.fragment_count ?? 0
+      );
+      const instance = assertDeletableConnection(instanceLookup, {
+        connectorInstanceId,
+        hasActiveRun,
+        inboundFragmentCount,
+        ownerSubjectId,
+      });
 
       const storageTarget = { connector_id: instance.connectorId, connector_instance_id: connectorInstanceId };
       const { streams } = await purge.enumerateStreams(storageTarget);
@@ -1973,6 +2026,10 @@ const GROUPED_FRAGMENT_EXCLUSION_POSTGRES = `
   AND NOT EXISTS (
     SELECT 1 FROM connector_instance_groups
     WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
+      AND EXISTS (
+        SELECT 1 FROM connector_instances AS canonical_instances
+        WHERE canonical_instances.connector_instance_id = connector_instance_groups.canonical_connector_instance_id
+      )
   )`;
 
 // Postgres mirror of `NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE` — same
@@ -2124,7 +2181,17 @@ export function createPostgresConnectorInstanceStore() {
         [connectorInstanceId]
       );
       const hasActiveRun = activeRuns.rows.length > 0;
-      const instance = assertDeletableConnection(instanceLookup, { connectorInstanceId, hasActiveRun, ownerSubjectId });
+      const inboundFragments = await postgresQuery<{ fragment_count: string }>(
+        "SELECT COUNT(*) AS fragment_count FROM connector_instance_groups WHERE canonical_connector_instance_id = $1",
+        [connectorInstanceId]
+      );
+      const inboundFragmentCount = Number(inboundFragments.rows[0]?.fragment_count ?? 0);
+      const instance = assertDeletableConnection(instanceLookup, {
+        connectorInstanceId,
+        hasActiveRun,
+        inboundFragmentCount,
+        ownerSubjectId,
+      });
 
       const storageTarget = { connector_id: instance.connectorId, connector_instance_id: connectorInstanceId };
       const { streams } = await purge.enumerateStreams(storageTarget);
