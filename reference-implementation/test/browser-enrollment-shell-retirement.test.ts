@@ -167,3 +167,102 @@ test("retireExpiredBrowserEnrollmentShells does not call updateStatus at all whe
   assert.deepEqual(retired, []);
   assert.equal(updateStatusCalls.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// In-flight-run guard (owner-wait defect, 2026-08-23).
+//
+// The TTL asks "has the owner abandoned this setup?". A run holding a durable
+// controller claim (`controller_active_runs`) is direct evidence he has not —
+// most acutely when the connector has asked him for a 2FA code and is waiting
+// on his answer. Retiring such a shell kills his attempt for a reason that has
+// nothing to do with the provider.
+//
+// The guard defers retirement for the life of a real run; it never cancels it.
+// Every terminal path (success, failure, owner cancel, assistance timeout,
+// boot reconciliation) deletes the claim, after which the shell retires on the
+// next sweep — so an abandoned shell still expires.
+// ---------------------------------------------------------------------------
+
+// A shell already past its TTL, i.e. the sweep would revoke it but for a claim.
+const expiredShell = () => shell("cin_venmo", { status: "active" });
+
+test("does NOT retire an expired shell while a run against it is in flight", () => {
+  assert.deepEqual(
+    expiredEnrollmentShellIds([expiredShell()], NOW, new Set(["cin_venmo"])),
+    [],
+    "a shell the owner is actively signing into must survive its TTL"
+  );
+});
+
+test("DOES retire an expired shell when no run is in flight (no regression)", () => {
+  assert.deepEqual(
+    expiredEnrollmentShellIds([expiredShell()], NOW, new Set()),
+    ["cin_venmo"],
+    "an abandoned shell must still expire — the TTL is not defeated"
+  );
+});
+
+test("the in-flight guard is scoped to the claiming shell, not the whole sweep", () => {
+  // An unrelated connection's run must not shelter a genuinely abandoned shell.
+  const shells = [expiredShell(), shell("cin_abandoned")];
+  assert.deepEqual(expiredEnrollmentShellIds(shells, NOW, new Set(["cin_venmo"])), ["cin_abandoned"]);
+});
+
+test("a shell whose owner-interaction wait has itself timed out expires normally", () => {
+  // The eventual bound: when the owner never answers, the runtime's assistance
+  // timeout terminates the run (`runtime/index.ts` -> run.assistance_timed_out)
+  // and `runSingleAttempt`'s `finally` deletes the claim. The next sweep sees
+  // an empty claim set and retires the shell. No shell is immortal.
+  const claimsAfterInteractionTimeout = new Set<string>();
+  assert.deepEqual(expiredEnrollmentShellIds([expiredShell()], NOW, claimsAfterInteractionTimeout), ["cin_venmo"]);
+});
+
+test("retireExpiredBrowserEnrollmentShells does not revoke a shell whose run is in flight", async () => {
+  const { store, updateStatusCalls } = fakeStore([expiredShell()]);
+  const retired = await retireExpiredBrowserEnrollmentShells(
+    { ...store, listRunInFlightInstanceIds: () => Promise.resolve(["cin_venmo"]) },
+    { now: NOW }
+  );
+
+  assert.deepEqual(retired, []);
+  assert.equal(updateStatusCalls.length, 0, "the sweep must not write to a shell backing a live run");
+});
+
+test("retireExpiredBrowserEnrollmentShells revokes once the in-flight claim is released", async () => {
+  const { store, updateStatusCalls } = fakeStore([expiredShell()]);
+  const retired = await retireExpiredBrowserEnrollmentShells(
+    { ...store, listRunInFlightInstanceIds: () => Promise.resolve([]) },
+    { now: NOW }
+  );
+
+  assert.deepEqual(retired, ["cin_venmo"]);
+  assert.equal(updateStatusCalls[0]?.args.status, "revoked");
+});
+
+test("retireExpiredBrowserEnrollmentShells reads claims AFTER shells, so a run starting mid-sweep is seen", async () => {
+  // Race safety: the claim read must observe any run admitted after the shell
+  // list was taken. Reading claims first would leave exactly the window this
+  // guard exists to close. This fake admits a run between the two reads.
+  const updateStatusCalls: Array<{ connectorInstanceId: string; args: Record<string, unknown> }> = [];
+  let runAdmitted = false;
+  const retired = await retireExpiredBrowserEnrollmentShells(
+    {
+      listDraftBrowserEnrollmentShells() {
+        // The owner starts his setup run immediately after the sweep lists shells.
+        runAdmitted = true;
+        return Promise.resolve([expiredShell()]);
+      },
+      listRunInFlightInstanceIds() {
+        return Promise.resolve(runAdmitted ? ["cin_venmo"] : []);
+      },
+      updateStatus(connectorInstanceId: string, args: Record<string, unknown>) {
+        updateStatusCalls.push({ args, connectorInstanceId });
+        return Promise.resolve(null);
+      },
+    },
+    { now: NOW }
+  );
+
+  assert.deepEqual(retired, [], "a run admitted after the shell read must still be observed by the claim read");
+  assert.equal(updateStatusCalls.length, 0);
+});
