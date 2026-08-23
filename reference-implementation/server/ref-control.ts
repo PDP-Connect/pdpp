@@ -6066,7 +6066,7 @@ interface ConnectorSummaryProjectionDeps {
    * row (the latter merged in at `run.progress_reported` write time by
    * `run-history-writer.ts`) — never a per-run spine read (G1).
    */
-  readonly latestRunFactsJsonByRunId: ReadonlyMap<string, Record<string, unknown> | null>;
+  readonly latestRunFactsJsonByRunIdentity: ReadonlyMap<string, Record<string, unknown> | null>;
   /**
    * Durable per-stream latest-attempt evidence per connection, read from the
    * connector-summary read model in ONE batched query for the whole list
@@ -7381,7 +7381,9 @@ async function projectConnectorSummaryForInstance(
   // for this connection.
   const collectionRate =
     !localDeviceBacked && lastRun?.run_id
-      ? readLatestCollectionRateForRun(deps.latestRunFactsJsonByRunId.get(lastRun.run_id) ?? null)
+      ? readLatestCollectionRateForRun(
+          deps.latestRunFactsJsonByRunIdentity.get(runFactsCacheKey(lastRun.run_id, connectorInstanceId)) ?? null
+        )
       : null;
   return synthesizeConnectorSummary({
     acquisitionCoverage,
@@ -7491,12 +7493,17 @@ function selectBatchedRunHistory(
 // Page-batch hit is the common case; the per-connection fallback (used
 // only when the caller did not pre-load a page batch — e.g. an unscoped
 // call) also records its own facts_json into the shared map so a later
-// `readLatestCollectionRateForRun` lookup for this run_id still avoids a
-// spine read.
+// `readLatestCollectionRateForRun` lookup for this run identity still avoids
+// a spine read. The identity is `(run_id, connector_instance_id)` because
+// run_id is not globally unique across connections.
+export function runFactsCacheKey(runId: string, connectorInstanceId: string): string {
+  return `${connectorInstanceId}\u0000${runId}`;
+}
+
 function resolveLatestRunSummaryForConnectionId({
   activeRunsByInstanceId,
   connectorInstanceId,
-  latestRunFactsJsonByRunId,
+  latestRunFactsJsonByRunIdentity,
   latestRunHistoryByInstanceId,
   latestSettledRunHistoryByInstanceId,
   latestSuccessfulRunHistoryByInstanceId,
@@ -7505,7 +7512,7 @@ function resolveLatestRunSummaryForConnectionId({
 }: {
   readonly activeRunsByInstanceId: ReadonlyMap<string, ActiveRunRecord>;
   readonly connectorInstanceId: string;
-  readonly latestRunFactsJsonByRunId: Map<string, Record<string, unknown> | null>;
+  readonly latestRunFactsJsonByRunIdentity: Map<string, Record<string, unknown> | null>;
   readonly latestRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
   /**
    * Batched newest-TERMINAL-row-per-connection map, keyed the same as
@@ -7538,7 +7545,10 @@ function resolveLatestRunSummaryForConnectionId({
     )
       .then((history) => {
         if (history?.runId) {
-          latestRunFactsJsonByRunId.set(history.runId, history.factsJson ?? null);
+          latestRunFactsJsonByRunIdentity.set(
+            runFactsCacheKey(history.runId, connectorInstanceId),
+            history.factsJson ?? null
+          );
         }
         return productRunHistoryToConnectorRunSummary(history ?? null, activeRun);
       })
@@ -7547,7 +7557,10 @@ function resolveLatestRunSummaryForConnectionId({
   return Promise.resolve(schedulerStore.getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId, status))
     .then((history) => {
       if (history?.runId) {
-        latestRunFactsJsonByRunId.set(history.runId, history.factsJson ?? null);
+        latestRunFactsJsonByRunIdentity.set(
+          runFactsCacheKey(history.runId, connectorInstanceId),
+          history.factsJson ?? null
+        );
       }
       return productRunHistoryToConnectorRunSummary(history ?? null, activeRun);
     })
@@ -7664,14 +7677,17 @@ async function loadConnectorSummaryProjectionDeps(
   // Populated from the SAME batched rows above (zero new reads); a
   // singular-fallback lookup (unscoped list census) adds its own entry as
   // it resolves, below.
-  const latestRunFactsJsonByRunId = new Map<string, Record<string, unknown> | null>();
+  const latestRunFactsJsonByRunIdentity = new Map<string, Record<string, unknown> | null>();
   for (const row of [
     ...(latestRunHistoryRows ?? []),
     ...(latestSuccessfulRunHistoryRows ?? []),
     ...(latestSettledRunHistoryRows ?? []),
   ]) {
-    if (row.runId) {
-      latestRunFactsJsonByRunId.set(row.runId, row.factsJson ?? null);
+    if (row.runId && row.connectorInstanceId) {
+      latestRunFactsJsonByRunIdentity.set(
+        runFactsCacheKey(row.runId, row.connectorInstanceId),
+        row.factsJson ?? null
+      );
     }
   }
   const evidenceReadFailed = summaryEvidenceRead.failed;
@@ -7726,7 +7742,7 @@ async function loadConnectorSummaryProjectionDeps(
       resolveLatestRunSummaryForConnectionId({
         activeRunsByInstanceId,
         connectorInstanceId,
-        latestRunFactsJsonByRunId,
+        latestRunFactsJsonByRunIdentity,
         latestRunHistoryByInstanceId,
         latestSettledRunHistoryByInstanceId,
         latestSuccessfulRunHistoryByInstanceId,
@@ -7734,7 +7750,7 @@ async function loadConnectorSummaryProjectionDeps(
         status,
       }),
     includeRunSummaries: options.includeRunSummaries ?? true,
-    latestRunFactsJsonByRunId,
+    latestRunFactsJsonByRunIdentity,
     latestStreamFactsByInstanceId,
     manifestDeclarationByConnectorId,
     manifestsByConnectorId,
