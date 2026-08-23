@@ -897,6 +897,7 @@ export interface RefVerdictPill {
     | "Healthy"
     | "Import complete"
     | "Missing data"
+    | "Missing optional data"
     | "Needs refresh"
     | "Not measured"
     | "Setup never completed"

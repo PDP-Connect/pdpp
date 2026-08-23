@@ -234,6 +234,19 @@ const BASE_STATE_TONE: Record<ConnectionHealthState, VerdictTone> = {
   needs_attention: "amber",
   unknown: "grey",
 };
+// Mirrors rendered-verdict.ts coverageTone.
+const COVERAGE_TONE: Record<StreamRollup["coverage"], VerdictTone> = {
+  complete: "green",
+  deferred: "green",
+  gaps: "amber",
+  inventory_only: "green",
+  partial: "amber",
+  retryable_gap: "amber",
+  terminal_gap: "red",
+  unavailable: "red",
+  unknown: "grey",
+  unsupported: "red",
+};
 const DISPOSITION_TONE: Record<ForwardDisposition, VerdictTone> = {
   awaiting_owner: "amber",
   checking: "grey",
@@ -244,19 +257,47 @@ const DISPOSITION_TONE: Record<ForwardDisposition, VerdictTone> = {
   unmeasured: "grey",
 };
 
-// Mirrors rendered-verdict.ts amberLabel: "Needs refresh" only when every
-// reason the tone reached amber-or-worse is a not-actually-broken shape
-// (idle-with-prior-success or passive cooling-off state, stale freshness,
-// owner_refresh_due disposition); any coverage/attention/outbox axis, a
-// broken state, or a broken disposition keeps "Missing data". An active run then
-// further softens a "Needs refresh" (never a "Missing data") verdict to "Syncing"
-// (active-run visibility fix) — active work dominates a routine nudge, never
-// a genuine defect.
+// Mirrors rendered-verdict.ts amberLabel, in the same order:
+//
+//   1. "Missing optional data" when the SOLE degradation is a permanently-lost
+//      non-required, collect-intent stream (owner decision 2026-08-23).
+//   2. "Needs refresh" when every reason the tone reached amber-or-worse is a
+//      not-actually-broken shape (idle-with-prior-success or passive
+//      cooling-off state, stale freshness, owner_refresh_due disposition).
+//   3. "Missing data" otherwise — any coverage/attention/outbox axis, a broken
+//      state, or a broken disposition.
+//
+// An active run then further softens a "Needs refresh" (never a "Missing
+// data"/"Missing optional data") verdict to "Syncing" (active-run visibility
+// fix) — active work dominates a routine nudge, never a genuine defect, and it
+// certainly cannot recover a terminal loss.
+//
+// `streams` are the synthesizer INPUT rollups (which carry `priority`), not the
+// rendered rows — priority is the whole discriminator and the rows do not
+// carry it.
 function expectedAmberLabel(
   snap: ConnectionHealthSnapshot,
   disposition: ForwardDisposition,
-  toneInputs: readonly { readonly axis: string; readonly tone: VerdictTone }[]
+  toneInputs: readonly { readonly axis: string; readonly tone: VerdictTone }[],
+  streams: readonly StreamRollup[] = []
 ): string {
+  const isOptionalTerminalLoss = (s: StreamRollup) =>
+    s.priority === "optional" && s.coverage === "terminal_gap" && s.unfillable_accounted !== true;
+  const requiredCoverageDegrading = streams.some(
+    (s) =>
+      s.priority === "required" &&
+      !(s.coverage === "terminal_gap" && s.unfillable_accounted === true) &&
+      TONE_RANK[COVERAGE_TONE[s.coverage]] >= TONE_RANK.amber
+  );
+  const nonCoverageDegrading = toneInputs.some(
+    (input) =>
+      input.axis !== "coverage" &&
+      ["coverage", "attention", "outbox"].includes(input.axis) &&
+      TONE_RANK[input.tone] >= TONE_RANK.amber
+  );
+  if (streams.some(isOptionalTerminalLoss) && !nonCoverageDegrading && !requiredCoverageDegrading) {
+    return "Missing optional data";
+  }
   const stateIsBroken =
     snap.state !== "idle" && snap.state !== "cooling_off" && TONE_RANK[BASE_STATE_TONE[snap.state]] >= TONE_RANK.amber;
   const dispositionIsBroken =
@@ -268,7 +309,12 @@ function expectedAmberLabel(
   return label === "Needs refresh" && snap.badges.syncing ? "Syncing" : label;
 }
 
-function assertAllInvariants(verdict: RenderedVerdict, snap: ConnectionHealthSnapshot, runtimeOk: boolean) {
+function assertAllInvariants(
+  verdict: RenderedVerdict,
+  snap: ConnectionHealthSnapshot,
+  runtimeOk: boolean,
+  streams: readonly StreamRollup[] = []
+) {
   // (1) freshness-mandatory-off-fresh
   if (snap.axes.freshness !== "fresh") {
     assert.ok(
@@ -314,7 +360,7 @@ function assertAllInvariants(verdict: RenderedVerdict, snap: ConnectionHealthSna
         ? "Syncing"
         : // biome-ignore lint/style/noNestedTernary: localized test assertion preserves its explicit contract.
           verdict.pill.tone === "amber"
-          ? expectedAmberLabel(snap, verdict.detail.forward_disposition, verdict.trace.tone_inputs)
+          ? expectedAmberLabel(snap, verdict.detail.forward_disposition, verdict.trace.tone_inputs, streams)
           : TONE_TO_LABEL[verdict.pill.tone];
   assert.equal(verdict.pill.label, expectedLabel, "inv6: label matches tone plus active-work evidence");
   // (7) no contradictory chip pair
@@ -685,7 +731,19 @@ test("coverage: optional stale stream annotates but does not downgrade the pill"
   assert.equal(v.pill.tone, "green", "optional partial must not amber the pill");
 });
 
-test("coverage: a terminal optional stream stays visible without downgrading required coverage", () => {
+// EXPECTATION CHANGED — owner decision, 2026-08-23.
+//
+// This asserted green/"Healthy" for a terminal OPTIONAL stream. That encoded
+// the old policy, where `required: false` alone kept a source green — which
+// overloaded the flag to mean both "not load-bearing" and "we accept its
+// absence". A collect-intent stream that is lost forever is a real loss to the
+// owner, so it now ambers. It does NOT go red: the source still delivers
+// everything load-bearing, which is why the tone is capped at amber and the
+// label is the narrower "Missing optional data" rather than "Missing data".
+//
+// The stream row assertions are unchanged and still matter: the point was
+// always that the stream stays VISIBLE, and it still does.
+test("coverage: a terminal optional stream ambers the pill while staying visible", () => {
   const snap = snapshot({ forward_disposition: "complete", state: "healthy" });
   const v = synthesizeRenderedVerdict(
     snap,
@@ -693,10 +751,25 @@ test("coverage: a terminal optional stream stays visible without downgrading req
     null,
     true
   );
-  assert.equal(v.pill.tone, "green");
-  assert.equal(v.pill.label, "Healthy");
+  assert.equal(v.pill.tone, "amber");
+  assert.equal(v.pill.label, "Missing optional data");
   assert.equal(v.streams[0]?.stream_id, "opt");
   assert.equal(v.streams[0]?.coverage, "terminal_gap");
+});
+
+// The accepted-absence counterpart, added alongside the changed expectation so
+// the two cannot silently re-collapse: the SAME terminal gap, differing only in
+// priority, must still read green.
+test("coverage: a terminal accepted_absence stream keeps the pill green", () => {
+  const snap = snapshot({ forward_disposition: "complete", state: "healthy" });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: "terminal_gap", priority: "accepted_absence", stream_id: "acc" })],
+    null,
+    true
+  );
+  assert.equal(v.pill.tone, "green");
+  assert.equal(v.pill.label, "Healthy");
 });
 
 // ─── 3.3 collected clamp ──────────────────────────────────────────────────────
@@ -1650,7 +1723,7 @@ test("composite: all eleven invariants hold across representative snapshots", ()
   ];
   for (const c of cases) {
     const v = synthesizeRenderedVerdict(c.snap, c.streams, c.refresh, c.ok);
-    assertAllInvariants(v, c.snap, c.ok);
+    assertAllInvariants(v, c.snap, c.ok, c.streams);
   }
 });
 
@@ -1697,18 +1770,14 @@ test("property: tone is worst-wins (never below base state) and (tone,channel) o
                 state,
               });
               const refresh = freshness === "stale" ? MANUAL_REFRESH : null;
-              const v = synthesizeRenderedVerdict(
-                snap,
-                [
-                  stream({
-                    attention_open: attention === "open",
-                    coverage,
-                    gap_retryable: coverage === "retryable_gap",
-                  }),
-                ],
-                refresh,
-                true
-              );
+              const streams = [
+                stream({
+                  attention_open: attention === "open",
+                  coverage,
+                  gap_retryable: coverage === "retryable_gap",
+                }),
+              ];
+              const v = synthesizeRenderedVerdict(snap, streams, refresh, true);
               // worst-wins: never below base state tone
               assert.ok(
                 TONE_RANK[v.pill.tone] >= TONE_RANK[BASE_STATE_TONE[state]],
@@ -1721,7 +1790,7 @@ test("property: tone is worst-wins (never below base state) and (tone,channel) o
                   ? "Checking"
                   : // biome-ignore lint/style/noNestedTernary: localized test assertion preserves its explicit contract.
                     v.pill.tone === "amber"
-                    ? expectedAmberLabel(snap, v.detail.forward_disposition, v.trace.tone_inputs)
+                    ? expectedAmberLabel(snap, v.detail.forward_disposition, v.trace.tone_inputs, streams)
                     : TONE_TO_LABEL[v.pill.tone];
               assert.equal(v.pill.label, expectedLabel);
               // active work never co-occurs with a conflicting refresh_now CTA.

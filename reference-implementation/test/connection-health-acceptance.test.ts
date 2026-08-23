@@ -1577,7 +1577,23 @@ function baselineHealthyRefineInputs(nowIso: string) {
   return { healthInput, initialConnectionHealth };
 }
 
-test("optional terminal report cannot preserve an optional terminal initial axis", () => {
+// EXPECTATIONS UNCHANGED, but the reason is now load-bearing — owner decision,
+// 2026-08-23. It would be easy to read this test as pinning the OLD policy ("an
+// optional terminal gap is harmless"). It does not, and it must keep passing.
+//
+// This asserts the CONNECTION-LEVEL coverage axis, which answers "is this
+// connection's REQUIRED coverage complete?" — and it is. The new policy does
+// not change that answer; it changes the SOURCE VERDICT, which is derived one
+// layer up by `synthesizeConnectorVerdict` from the per-stream collection
+// report. That layer now reads this same optional `terminal_gap` entry and
+// ambers the pill to "Missing optional data"
+// (see `test/optional-terminal-gap-amber.test.ts` and the cross-surface test).
+//
+// Keeping the connection axis `complete` here is deliberate: promoting it
+// instead would have made an optional loss indistinguishable from a required
+// one for every consumer of the axis, which is the collapse the policy is
+// removing — not repeating in the other direction.
+test("optional terminal report leaves the connection-level required-coverage axis complete", () => {
   const optionalStream = { name: "optional_stream", required: false };
   const run = succeededRun({
     known_gaps: [
