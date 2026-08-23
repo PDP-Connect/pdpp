@@ -42,6 +42,7 @@ import {
   boundStringList,
   buildCollectionFacts,
   buildKnownGap,
+  buildRecoveryGapClosureFacts,
   GAP_STRING_MAX,
   isValidRecoveryHintShape,
   normalizeGapScope,
@@ -3177,6 +3178,13 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       recoveryOnly: startRecoveryOnly,
       scopeByStream,
     } as unknown as Parameters<typeof buildCollectionFacts>[0]);
+    // Distinct from `collectionFacts`: a recovery-only run's durable
+    // detail-gap-closure count, never an inventory/list-pass claim. See
+    // `buildRecoveryGapClosureFacts`'s doc comment.
+    const recoveryGapClosureFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps,
+      recoveryOnly: startRecoveryOnly,
+    } as unknown as Parameters<typeof buildRecoveryGapClosureFacts>[0]);
     return {
       buffered_records_dropped: countBufferedRecords(),
       checkpoint_commit_status: checkpointCommitStatus(),
@@ -3189,6 +3197,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       state_streams_committed: stateStreamsCommitted,
       state_streams_staged: stateStreamsStaged,
       ...(collectionFacts ? { collection_facts: collectionFacts } : {}),
+      ...(recoveryGapClosureFacts ? { recovery_gap_closure_facts: recoveryGapClosureFacts } : {}),
       // Final adaptive rate controller state: the last `collection_rate` progress
       // payload emitted this run. Persisted on the terminal event so the reference
       // can surface it as `connection_health.collection_rate` after the run ends,
