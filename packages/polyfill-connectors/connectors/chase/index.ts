@@ -957,15 +957,13 @@ async function navigateToStatementsPage(page: Page): Promise<void> {
  * Enumerate the statement rows currently visible on the Statements page.
  * Each row maps to one monthly statement PDF. Returns an array of rows in
  * DOM order (newest first, per Chase's default ordering). DOM parsing now
- * runs in Node via linkedom (see parsers.ts#parseStatementsListDom).
+ * runs in Node via linkedom (see parsers.ts#parseStatementsListDom). A page
+ * content or parser failure is propagated to `runStatements`, which emits
+ * `statements_scrape_failed`; it must never be represented as an empty list.
  */
 async function enumerateStatementRows(page: Page): Promise<StatementRow[]> {
-  try {
-    const html = await page.content();
-    return parseStatementsListDom(html);
-  } catch {
-    return [];
-  }
+  const html = await page.content();
+  return parseStatementsListDom(html);
 }
 
 /**
@@ -1733,12 +1731,12 @@ export type StatementDetailOutcome =
 
 /**
  * Emit the per-run `statements` DETAIL_COVERAGE. `outcomes` is built from
- * every row `runStatements` enumerated this run; the caller wraps
- * navigation + enumeration in a try/catch that emits a `statements_scrape_
- * failed` SKIP_RESULT and returns BEFORE reaching this function on an
- * enumeration failure, so `outcomes.length === 0` here always means
- * "enumeration completed and found zero statement rows," never "enumeration
- * never happened." Always emits when statements are in scope — including
+ * every row `runStatements` enumerated this run. `enumerateStatementRows`
+ * propagates page-content and parser failures, so `runStatements` emits its
+ * `statements_scrape_failed` SKIP_RESULT and returns BEFORE reaching this
+ * function on an enumeration failure. Therefore `outcomes.length === 0`
+ * here means "enumeration completed and found zero statement rows," never
+ * "enumeration failed." Always emits when statements are in scope — including
  * the zero-outcome steady-state case (considered: 0, covered: 0, empty key
  * sets) — so a run that legitimately enumerated its denominator to zero
  * stays measured instead of silently unreported.
@@ -2587,7 +2585,7 @@ async function processStatementRow(
   }
 }
 
-async function runStatements(
+export async function runStatements(
   deps: EmitDeps,
   page: Page,
   filteredAccounts: readonly ChaseAccount[],
