@@ -1159,6 +1159,10 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "heb",
     validateRecord,
+    // See the chase declaration: without this the runtime resolves `{}`, never
+    // raises the `credentials` INTERACTION, and H-E-B's hand-off blames the
+    // page for what is really an absent stored credential.
+    auth: { kind: "env", required: ["HEB_USERNAME", "HEB_PASSWORD"] },
     // H-E-B is fronted by Incapsula, which fingerprints headless Chromium.
     // Persistent profile keeps cookies + TLS fingerprint warm across runs.
     browser: { profileName: "heb" },
@@ -1170,8 +1174,22 @@ if (isMainModule(import.meta.url)) {
       }
       return true;
     },
-    async ensureSession({ page, sendInteraction, capture, checkpoint, onCredentialSubmit }): Promise<void> {
-      const ok = await ensureHebSession({ capture, checkpoint, onCredentialSubmit, page, sendInteraction });
+    async ensureSession({
+      page,
+      sendInteraction,
+      capture,
+      checkpoint,
+      credentials,
+      onCredentialSubmit,
+    }): Promise<void> {
+      const ok = await ensureHebSession({
+        capture,
+        checkpoint,
+        credentials,
+        onCredentialSubmit,
+        page,
+        sendInteraction,
+      });
       if (!ok) {
         throw new Error("heb_session_required");
       }

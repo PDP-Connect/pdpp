@@ -23,6 +23,17 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
+import { type LoginCredentialFields, resolveLoginCredentials } from "./login-credentials.ts";
+
+/**
+ * Where Amazon's sign-in pair lives in the runtime-resolved `credentials`
+ * object. Must match the manifest's `credential_capture` env mapping (see
+ * `src/generated/static-secret-registry.generated.ts`).
+ */
+export const AMAZON_LOGIN_FIELDS: LoginCredentialFields = {
+  password: ["AMAZON_PASSWORD"],
+  username: ["AMAZON_USERNAME"],
+};
 
 const SIGNIN_CHALLENGE_URL = /\/ap\/(signin|challenge|mfa)/;
 const ORDER_URL = /\/your-orders|\/order-history/;
@@ -45,6 +56,12 @@ interface EnsureAmazonSessionArgs {
    */
   checkpoint?: SessionCheckpointFn;
   context: BrowserContext;
+  /**
+   * This connection's resolved sign-in pair, threaded from the runtime (see
+   * `login-credentials.ts`). Optional so a direct, non-runtime caller can omit
+   * it; an absent pair reports itself as absent rather than blaming the page.
+   */
+  credentials?: Readonly<Record<string, string | undefined>> | undefined;
   // Test hook for synthetic pages that intentionally never render a field.
   fieldTimeoutMs?: number | undefined;
   onCredentialSubmit?: () => void;
@@ -140,14 +157,21 @@ async function requestManualLoginForChallenge({
 
 async function requestManualLoginWithoutCredentials({
   capture,
+  credentialReason,
   page,
   sendInteraction,
-}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction">): Promise<boolean> {
+}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  readonly credentialReason: string;
+}): Promise<boolean> {
   return await waitForManualLogin({
     ...(capture ? { capture } : {}),
     handoffReason: "login",
+    // Leads with the CREDENTIAL. The previous copy called the sign-in details
+    // "optional" and named no field, so an owner could not tell that a stored
+    // credential was expected and absent.
     message:
-      "No optional Amazon sign-in details were provided. Sign in to Amazon in the secure browser and complete any CAPTCHA, OTP, passkey, or other human verification there, then respond success.",
+      `${credentialReason} ` +
+      "Alternatively, sign in to Amazon in the secure browser and complete any CAPTCHA, OTP, passkey, or other human verification there, then respond success.",
     page,
     sendInteraction,
   });
@@ -180,16 +204,26 @@ async function waitForManualLogin({
 async function ensureManualSessionWithoutCredentials({
   capture,
   checkpoint,
+  credentialReason,
   page,
   sendInteraction,
 }: {
   capture?: CaptureSession | null;
   checkpoint: SessionCheckpointFn;
+  /** Owner-facing reason naming the absent credential fields. */
+  readonly credentialReason: string;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }): Promise<boolean> {
   await checkpoint("amazon-signin-manual-required");
-  if (await requestManualLoginWithoutCredentials({ ...(capture ? { capture } : {}), page, sendInteraction })) {
+  if (
+    await requestManualLoginWithoutCredentials({
+      ...(capture ? { capture } : {}),
+      credentialReason,
+      page,
+      sendInteraction,
+    })
+  ) {
     return true;
   }
   throw new Error("amazon_login_manual_incomplete");
@@ -243,6 +277,7 @@ export async function ensureAmazonSession({
   capture,
   checkpoint = noopCheckpoint,
   context: _context,
+  credentials,
   fieldTimeoutMs,
   onCredentialSubmit,
   page,
@@ -256,16 +291,22 @@ export async function ensureAmazonSession({
     return true;
   }
 
-  const email = process.env.AMAZON_USERNAME;
-  const password = process.env.AMAZON_PASSWORD;
-  if (!(email && password)) {
+  // Connection-scoped, never ambient: `credentials` belongs to the ONE
+  // connection this run is for. See `login-credentials.ts` for why reading
+  // process.env here is banned (scripts/check-no-direct-credential-env.ts).
+  const resolved = resolveLoginCredentials(credentials, AMAZON_LOGIN_FIELDS, "amazon");
+  if (resolved.kind === "absent") {
     return await ensureManualSessionWithoutCredentials({
       ...(capture ? { capture } : {}),
       checkpoint,
+      // Names the CREDENTIAL, not the page: the old copy said sign-in details
+      // were "optional" and never named the fields the owner had to supply.
+      credentialReason: resolved.reason,
       page,
       sendInteraction,
     });
   }
+  const { password, username: email } = resolved;
 
   // Drive login. Navigate to the signin page explicitly; a prior page may
   // have redirected from /your-orders and not shown the email field yet.

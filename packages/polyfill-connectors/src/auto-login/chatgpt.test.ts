@@ -33,23 +33,6 @@ function extractAuthProbeDiagnostic(message: string): Record<string, unknown> {
   return JSON.parse(message.slice(prefix.length)) as Record<string, unknown>;
 }
 
-function withEnvUnset(keys: readonly string[], run: () => Promise<void>): Promise<void> {
-  const prior = new Map<string, string | undefined>();
-  for (const key of keys) {
-    prior.set(key, process.env[key]);
-    delete process.env[key];
-  }
-  return run().finally(() => {
-    for (const [key, value] of prior) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  });
-}
-
 function withEnvValues(values: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
   const prior = new Map<string, string | undefined>();
   for (const [key, value] of Object.entries(values)) {
@@ -119,11 +102,6 @@ test("chatGptPushApprovalAssistance emits nonblocking external approval shape", 
 });
 
 test("ChatGPT push approval checkpoints while polling so the session watchdog sees progress", async () => {
-  const originalUsername = process.env.CHATGPT_USERNAME;
-  const originalPassword = process.env.CHATGPT_PASSWORD;
-  process.env.CHATGPT_USERNAME = "owner@example.test";
-  process.env.CHATGPT_PASSWORD = "correct horse battery staple";
-
   let sessionProbeCount = 0;
   let passwordSubmitted = false;
   const checkpoints: string[] = [];
@@ -182,109 +160,98 @@ test("ChatGPT push approval checkpoints while polling so the session watchdog se
     waitForTimeout: async () => undefined,
   };
 
-  try {
-    const ok = await ensureChatGptSession({
-      assist: (req) => {
-        assistanceMessages.push(req.message);
-        return Promise.resolve("assist_1");
-      },
-      checkpoint: (label) => {
-        checkpoints.push(label);
-        return Promise.resolve();
-      },
-      completeAssistance: () => Promise.resolve(),
-      context: {} as never,
-      page: page as never,
-      progress: () => Promise.resolve(),
-      sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
-    });
+  const ok = await ensureChatGptSession({
+    assist: (req) => {
+      assistanceMessages.push(req.message);
+      return Promise.resolve("assist_1");
+    },
+    checkpoint: (label) => {
+      checkpoints.push(label);
+      return Promise.resolve();
+    },
+    completeAssistance: () => Promise.resolve(),
+    context: {} as never,
+    credentials: { CHATGPT_PASSWORD: "correct horse battery staple", CHATGPT_USERNAME: "owner@example.test" },
+    page: page as never,
+    progress: () => Promise.resolve(),
+    sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+  });
 
-    assert.equal(ok, true);
-    assert.deepEqual(assistanceMessages, [CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE]);
-    assert.ok(
-      checkpoints.includes("chatgpt-push-approval-requested"),
-      "push approval should checkpoint immediately after assistance is emitted"
-    );
-    assert.ok(
-      checkpoints.includes("chatgpt-push-approval-waiting-12"),
-      "long app-approval polling should checkpoint before the 120s watchdog deadline"
-    );
-  } finally {
-    if (originalUsername === undefined) {
-      delete process.env.CHATGPT_USERNAME;
-    } else {
-      process.env.CHATGPT_USERNAME = originalUsername;
-    }
-    if (originalPassword === undefined) {
-      delete process.env.CHATGPT_PASSWORD;
-    } else {
-      process.env.CHATGPT_PASSWORD = originalPassword;
-    }
-  }
+  assert.equal(ok, true);
+  assert.deepEqual(assistanceMessages, [CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE]);
+  assert.ok(
+    checkpoints.includes("chatgpt-push-approval-requested"),
+    "push approval should checkpoint immediately after assistance is emitted"
+  );
+  assert.ok(
+    checkpoints.includes("chatgpt-push-approval-waiting-12"),
+    "long app-approval polling should checkpoint before the 120s watchdog deadline"
+  );
 });
 
 test("ChatGPT initial auth probe emits bounded diagnostic before credential login", async () => {
-  await withEnvUnset(["CHATGPT_USERNAME", "CHATGPT_PASSWORD"], async () => {
-    const progressMessages: string[] = [];
-    const privateRoute = "https://chatgpt.com/c/private-conversation-id";
-    let currentUrl = privateRoute;
-    const page = {
-      evaluate: (fn: (...args: never[]) => unknown) => {
-        const source = String(fn);
-        if (source.includes("/api/auth/session")) {
-          return Promise.resolve(null);
-        }
-        if (source.includes("querySelectorAll")) {
-          return Promise.resolve({
-            dom_logged_in: true,
-            has_login_or_signup: false,
-            has_sidebar: true,
-            has_user_menu: false,
-          });
-        }
-        return Promise.resolve(false);
-      },
-      goto: (url: string) => {
-        currentUrl = url;
+  // No `credentials` passed: `allowInteractiveAuthRepair: false` rejects
+  // before credential resolution is ever reached, so a stored credential
+  // (present or absent) cannot affect this test.
+  const progressMessages: string[] = [];
+  const privateRoute = "https://chatgpt.com/c/private-conversation-id";
+  let currentUrl = privateRoute;
+  const page = {
+    evaluate: (fn: (...args: never[]) => unknown) => {
+      const source = String(fn);
+      if (source.includes("/api/auth/session")) {
         return Promise.resolve(null);
+      }
+      if (source.includes("querySelectorAll")) {
+        return Promise.resolve({
+          dom_logged_in: true,
+          has_login_or_signup: false,
+          has_sidebar: true,
+          has_user_menu: false,
+        });
+      }
+      return Promise.resolve(false);
+    },
+    goto: (url: string) => {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    url: () => currentUrl,
+    waitForTimeout: async () => undefined,
+  };
+
+  await assert.rejects(
+    ensureChatGptSession({
+      allowInteractiveAuthRepair: false,
+      context: {} as never,
+      page: page as never,
+      progress: (message) => {
+        progressMessages.push(message);
+        return Promise.resolve();
       },
-      url: () => currentUrl,
-      waitForTimeout: async () => undefined,
-    };
+      sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+    }),
+    /chatgpt_session_required/u
+  );
 
-    await assert.rejects(
-      ensureChatGptSession({
-        allowInteractiveAuthRepair: false,
-        context: {} as never,
-        page: page as never,
-        progress: (message) => {
-          progressMessages.push(message);
-          return Promise.resolve();
-        },
-        sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
-      }),
-      /chatgpt_session_required/u
-    );
-
-    assert.equal(progressMessages.length, 2);
-    assert.doesNotMatch(progressMessages[0] ?? "", /private-conversation-id/u);
-    const diagnostic = extractAuthProbeDiagnostic(progressMessages[0] ?? "");
-    // The mocked session probe always resolves null, so the retry (see
-    // checkSessionWithRetry) exhausts every attempt before the initial probe
-    // honestly reports "still not active after retrying" — proving a `false`
-    // decision here survived retry rather than being a single unretried blip.
-    assert.deepEqual(diagnostic, {
-      object: "chatgpt_auth_probe",
-      stage: "initial",
-      api_session_user: false,
-      api_session_user_attempts: 4,
-      dom_logged_in: true,
-      has_login_or_signup: false,
-      has_sidebar: true,
-      has_user_menu: false,
-      route_class: "home",
-      decision: "credential_login_required",
-    });
+  assert.equal(progressMessages.length, 2);
+  assert.doesNotMatch(progressMessages[0] ?? "", /private-conversation-id/u);
+  const diagnostic = extractAuthProbeDiagnostic(progressMessages[0] ?? "");
+  // The mocked session probe always resolves null, so the retry (see
+  // checkSessionWithRetry) exhausts every attempt before the initial probe
+  // honestly reports "still not active after retrying" — proving a `false`
+  // decision here survived retry rather than being a single unretried blip.
+  assert.deepEqual(diagnostic, {
+    object: "chatgpt_auth_probe",
+    stage: "initial",
+    api_session_user: false,
+    api_session_user_attempts: 4,
+    dom_logged_in: true,
+    has_login_or_signup: false,
+    has_sidebar: true,
+    has_user_menu: false,
+    route_class: "home",
+    decision: "credential_login_required",
   });
 });
 
@@ -422,10 +389,11 @@ test("ChatGPT auth repair policy only allows owner-started manual runs by defaul
 });
 
 test("ChatGPT scheduled auth repair fails before credential login or owner prompts", async () => {
+  // No `credentials` passed either: this path rejects on the trigger-kind
+  // check before credential resolution is ever reached, so a stored
+  // credential (present or absent) cannot affect the outcome.
   await withEnvValues(
     {
-      CHATGPT_PASSWORD: "correct horse battery staple",
-      CHATGPT_USERNAME: "owner@example.test",
       PDPP_RUN_AUTOMATION_MODE: "unattended",
       PDPP_RUN_TRIGGER_KIND: "scheduled",
     },
@@ -491,10 +459,11 @@ test("ChatGPT scheduled auth repair fails before credential login or owner promp
 });
 
 test("ChatGPT manual auth repair can use the secure browser without storing a password", async () => {
+  // No `credentials` passed to either `ensureChatGptSession` call below — that
+  // is how this test now expresses "no stored password", rather than unsetting
+  // process.env.
   await withEnvValues(
     {
-      CHATGPT_PASSWORD: undefined,
-      CHATGPT_USERNAME: undefined,
       PDPP_RUN_AUTOMATION_MODE: "assisted",
       PDPP_RUN_TRIGGER_KIND: "manual",
     },
@@ -549,8 +518,14 @@ test("ChatGPT manual auth repair can use the secure browser without storing a pa
       });
 
       assert.equal(ok, true);
+      // The assistance copy now LEADS with the credential naming — no
+      // `credentials` was passed, so the owner must be told plainly that no
+      // stored username/password reached this run, before the (still-valid)
+      // fallback offer to sign in in the secure browser instead.
       assert.deepEqual(assistanceMessages, [
-        "ChatGPT could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.",
+        "no stored credential for this chatgpt connection (missing: CHATGPT_USERNAME, CHATGPT_PASSWORD). " +
+          "Automated sign-in was not attempted. Save this connection's credentials to enable it. " +
+          "ChatGPT could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.",
       ]);
 
       const inactivePage = {
@@ -588,10 +563,10 @@ test("ChatGPT manual auth repair can use the secure browser without storing a pa
 });
 
 test("ChatGPT fallback keeps owner copy concise while preserving diagnostic evidence separately", async () => {
+  // The stored credential is passed via `credentials` on the call below, not
+  // process.env.
   await withEnvValues(
     {
-      CHATGPT_PASSWORD: "stored password",
-      CHATGPT_USERNAME: "owner@example.test",
       PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS: "1",
       PDPP_RUN_AUTOMATION_MODE: "assisted",
       PDPP_RUN_TRIGGER_KIND: "manual",
@@ -654,6 +629,7 @@ test("ChatGPT fallback keeps owner copy concise while preserving diagnostic evid
             return Promise.resolve();
           },
           context: {} as never,
+          credentials: { CHATGPT_PASSWORD: "stored password", CHATGPT_USERNAME: "owner@example.test" },
           page: page as never,
           progress: () => Promise.resolve(),
           sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
@@ -672,10 +648,10 @@ test("ChatGPT fallback keeps owner copy concise while preserving diagnostic evid
 });
 
 test("ChatGPT rejected stored password fails before push approval or browser assistance", async () => {
+  // The stored (stale) credential is passed via `credentials` on the call
+  // below, not process.env.
   await withEnvValues(
     {
-      CHATGPT_PASSWORD: "stale password",
-      CHATGPT_USERNAME: "owner@example.test",
       PDPP_RUN_AUTOMATION_MODE: "assisted",
       PDPP_RUN_TRIGGER_KIND: "manual",
     },
@@ -755,6 +731,7 @@ test("ChatGPT rejected stored password fails before push approval or browser ass
             throw new Error("rejected stored password must not request owner assistance");
           },
           context: {} as never,
+          credentials: { CHATGPT_PASSWORD: "stale password", CHATGPT_USERNAME: "owner@example.test" },
           onCredentialSubmit: () => {
             markerCount += 1;
             assert.equal(passwordSubmitted, true, "marker must fire only after the password submit click");

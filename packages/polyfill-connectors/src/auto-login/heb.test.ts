@@ -829,26 +829,32 @@ function makePage(initial: FakePageInit = {}): Page {
   return page as Page;
 }
 
+/**
+ * H-E-B's sign-in pair as the runtime hands it to `ensureHebSession`.
+ *
+ * Formerly this suite set `process.env.HEB_USERNAME` / `_PASSWORD` around each
+ * test. `ensureHebSession` now takes the connection's credentials as an
+ * argument (see `login-credentials.ts`), so the fixture is a plain object and
+ * the tests no longer mutate global state to steer a login.
+ */
+const HEB_TEST_CREDENTIALS = Object.freeze({
+  HEB_PASSWORD: "synthetic-password",
+  HEB_USERNAME: "owner@example.com",
+});
+
+/**
+ * Runs `run` with `HEB_LOGIN_SHOULD_SUCCEED=1` — the stub-page behavior flag
+ * that decides whether the fake page's submit handler resolves to a live
+ * session (see `triggerSubmit` above). This is NOT a credential: the sign-in
+ * pair itself is passed directly to `ensureHebSession` via
+ * `HEB_TEST_CREDENTIALS`, never through `process.env`.
+ */
 async function withHebCredentials(run: () => Promise<void>): Promise<void> {
-  const priorUsername = process.env.HEB_USERNAME;
-  const priorPassword = process.env.HEB_PASSWORD;
   const priorLoginShouldSucceed = process.env.HEB_LOGIN_SHOULD_SUCCEED;
-  process.env.HEB_USERNAME = "owner@example.com";
-  process.env.HEB_PASSWORD = "synthetic-password";
   process.env.HEB_LOGIN_SHOULD_SUCCEED = "1";
   try {
     await run();
   } finally {
-    if (priorUsername === undefined) {
-      delete process.env.HEB_USERNAME;
-    } else {
-      process.env.HEB_USERNAME = priorUsername;
-    }
-    if (priorPassword === undefined) {
-      delete process.env.HEB_PASSWORD;
-    } else {
-      process.env.HEB_PASSWORD = priorPassword;
-    }
     if (priorLoginShouldSucceed === undefined) {
       delete process.env.HEB_LOGIN_SHOULD_SUCCEED;
     } else {
@@ -881,6 +887,7 @@ test("ensureHebSession declines the post-submit passkey-enrollment upsell and co
     const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
 
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -944,6 +951,7 @@ test("ensureHebSession fails honestly when the passkey decline control is unusab
 
     await assert.rejects(
       ensureHebSession({
+        credentials: HEB_TEST_CREDENTIALS,
         page,
         postSubmitWaitClock: makePostSubmitWaitClock(page),
         sendInteraction: harness.sendInteraction,
@@ -981,6 +989,7 @@ test("ensureHebSession fails honestly when the passkey decline click does not ta
 
     await assert.rejects(
       ensureHebSession({
+        credentials: HEB_TEST_CREDENTIALS,
         page,
         postSubmitWaitClock: makePostSubmitWaitClock(page),
         sendInteraction: harness.sendInteraction,
@@ -1020,6 +1029,7 @@ test("a genuine verification-code surface on the accounts.heb.com interaction ho
     const harness = makeInteractionHarness();
 
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -1062,6 +1072,7 @@ test("the login-method chooser never prompts for an OTP — a radio label offeri
     const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
 
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -1105,6 +1116,7 @@ test("the chooser's own copy cannot fabricate an OTP prompt on the post-submit w
     const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
 
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -1144,6 +1156,7 @@ test("prose mentioning a one-time code with no code input never prompts — text
 
     await assert.rejects(
       ensureHebSession({
+        credentials: HEB_TEST_CREDENTIALS,
         page,
         postSubmitWaitClock: makePostSubmitWaitClock(page),
         sendInteraction: harness.sendInteraction,
@@ -1190,6 +1203,7 @@ test("a code input that disappears between classification and the prompt fails h
     await assert.rejects(
       ensureHebSession({
         checkpoint,
+        credentials: HEB_TEST_CREDENTIALS,
         page,
         postSubmitWaitClock: makePostSubmitWaitClock(page),
         sendInteraction: harness.sendInteraction,
@@ -1299,6 +1313,7 @@ test("ensureHebSession fills the verified login form, submits, and waits for the
     const page = makePage({ html: SIGNIN_HTML, live: false, url: SIGNIN_URL, view: "login" });
     const harness = makeInteractionHarness();
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -1318,6 +1333,7 @@ test("ensureHebSession fires onCredentialSubmit exactly once, and only when the 
     const harness = makeInteractionHarness();
     let markerCount = 0;
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       onCredentialSubmit: () => {
         markerCount += 1;
         assert.equal(state.submitClicks, 1, "the marker must fire after the submit click, never before it");
@@ -1381,6 +1397,7 @@ test("ensureHebSession fills the live optional-passkey form instead of handing o
     const page = makePage({ html: OPTIONAL_LOGIN_HTML, live: false, url: SIGNIN_URL, view: "login" });
     const harness = makeInteractionHarness();
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -1418,6 +1435,7 @@ test("ensureHebSession waits through an unknown intermediate page before succeed
     });
     const harness = makeInteractionHarness();
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -1456,6 +1474,7 @@ test("ensureHebSession routes a post-submit verification-code challenge through 
     });
     const harness = makeInteractionHarness();
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -1558,6 +1577,7 @@ test("ensureHebSession rejects cancelled or invalid otp responses on the post-su
       const harness = makeInteractionHarness({ responseForRequest });
       await assert.rejects(
         ensureHebSession({
+          credentials: HEB_TEST_CREDENTIALS,
           page,
           postSubmitWaitClock: makePostSubmitWaitClock(page),
           sendInteraction: harness.sendInteraction,
@@ -1674,6 +1694,7 @@ test("ensureHebSession does not treat orders URL login/loading/challenge bodies 
       const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
       await assert.rejects(
         ensureHebSession({
+          credentials: HEB_TEST_CREDENTIALS,
           page,
           postSubmitWaitClock: makePostSubmitWaitClock(page),
           sendInteraction: harness.sendInteraction,
@@ -1726,6 +1747,7 @@ test("ensureHebSession hands off when multiple visible login roots are present",
     const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
     await assert.rejects(
       ensureHebSession({
+        credentials: HEB_TEST_CREDENTIALS,
         page,
         postSubmitWaitClock: makePostSubmitWaitClock(page),
         sendInteraction: harness.sendInteraction,
@@ -1755,6 +1777,7 @@ test("ensureHebSession ignores hidden and disabled distractors inside the chosen
     });
     const harness = makeInteractionHarness();
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -1791,6 +1814,7 @@ test("ensureHebSession waits through an unknown intermediate page before handing
     });
     const harness = makeInteractionHarness();
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,
@@ -1812,6 +1836,7 @@ test("ensureHebSession falls back to manual action when the auto-login submit do
     const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
     await assert.rejects(
       ensureHebSession({
+        credentials: HEB_TEST_CREDENTIALS,
         page,
         postSubmitWaitClock: makePostSubmitWaitClock(page),
         sendInteraction: harness.sendInteraction,
@@ -1842,6 +1867,7 @@ test("ensureHebSession times out on a stable unknown post-submit page", async ()
     const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
     await assert.rejects(
       ensureHebSession({
+        credentials: HEB_TEST_CREDENTIALS,
         page,
         postSubmitWaitClock: makePostSubmitWaitClock(page),
         sendInteraction: harness.sendInteraction,
@@ -1875,6 +1901,7 @@ test("ensureHebSession recognizes authenticated evidence that appears after the 
     const harness = makeInteractionHarness();
 
     const ok = await ensureHebSession({
+      credentials: HEB_TEST_CREDENTIALS,
       page,
       postSubmitWaitClock: makePostSubmitWaitClock(page),
       sendInteraction: harness.sendInteraction,

@@ -27,7 +27,8 @@
  * when affordances drift, so the next repair starts from captured evidence
  * rather than silently failing with zero records.
  *
- * Auth: CHASE_USERNAME + CHASE_PASSWORD in env. 2FA via INTERACTION kind=otp.
+ * Auth: CHASE_USERNAME + CHASE_PASSWORD, declared in this connector's `auth`
+ * block and resolved per-connection by the runtime. 2FA via INTERACTION kind=otp.
  * CHASE_2FA_METHOD=text|voice|email (default text).
  */
 
@@ -1808,12 +1809,7 @@ export function buildServedStatementGapLookup(
       continue;
     }
     const statementId = locator.statement_id;
-    if (
-      typeof statementId !== "string" ||
-      statementId.length === 0 ||
-      typeof gap.gap_id !== "string" ||
-      !gap.gap_id
-    ) {
+    if (typeof statementId !== "string" || statementId.length === 0 || typeof gap.gap_id !== "string" || !gap.gap_id) {
       continue;
     }
     // First served gap per statement wins; the runtime serves at most one
@@ -1836,10 +1832,7 @@ export function buildServedStatementGapLookup(
  * run is left on the `DETAIL_GAP` re-emit path and is never recovered here —
  * lose-no-data preserved.
  */
-export async function recoverServedStatementGaps(
-  deps: EmitDeps,
-  hydratedKeys: readonly string[]
-): Promise<void> {
+export async function recoverServedStatementGaps(deps: EmitDeps, hydratedKeys: readonly string[]): Promise<void> {
   const served = deps.servedStatementGaps;
   if (!served || served.size === 0) {
     return;
@@ -2687,6 +2680,11 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "chase",
     validateRecord,
+    // Declaring the pair is what makes an absent credential SAY so: the
+    // runtime resolves these fields for THIS connection and raises a
+    // `credentials` INTERACTION naming the missing one. Without the block it
+    // resolved `{}` and the run fell through to a page-blaming hand-off.
+    auth: { kind: "env", required: ["CHASE_USERNAME", "CHASE_PASSWORD"] },
     // Chase fingerprints the shared daemon profile and bounces it to
     // /#/logon/logon/error regardless of cookie state. See
     // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
