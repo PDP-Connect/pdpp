@@ -1097,7 +1097,13 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         commands: [localCollectorRecoverPreviewCommand(), localCollectorRecoverApplyCommand()],
         kind: "local_collector_recovery",
         label: "Recover local collector uploads",
-        summary: "The local collector has saved records on its host that did not upload to this server.",
+        // Says PERMANENT, not merely stalled. `dead_letter_backlog` means the
+        // outbox exhausted its retries: these records will NOT drain on their
+        // own, unlike `transient_upload_failure`. The prior wording read as a
+        // temporary condition, so an owner could reasonably wait for a recovery
+        // that was never coming.
+        summary:
+          "The local collector has records on its host that failed to upload and will not retry on their own. Recovering them is a manual step.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
       };
     case "transient_upload_failure":
