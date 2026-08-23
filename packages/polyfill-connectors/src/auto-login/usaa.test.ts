@@ -623,6 +623,7 @@ test("ensureUsaaSession follows exactly one visible semantic login action, then 
       markSucceeded: (): void => {
         /* no-op */
       },
+      hasRegisteredSecrets: (): boolean => false,
       registerSecrets: (): void => undefined,
       recordRecord: (): void => {
         /* no-op */
@@ -801,6 +802,7 @@ test("ensureUsaaSession captures DOM/screenshot evidence on the password-field s
       markSucceeded: (): void => {
         /* no-op */
       },
+      hasRegisteredSecrets: (): boolean => false,
       registerSecrets: (): void => undefined,
       recordRecord: (): void => {
         /* no-op */

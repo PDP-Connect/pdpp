@@ -2212,6 +2212,32 @@ export function isContextDisconnected(context: Pick<BrowserContext, "browser">):
  * run. To keep the on-disk footprint bounded, written trace chunks are deleted
  * after a clean run (markSucceeded() called before stop()) and retained on
  * failure for post-mortem debugging.
+ *
+ * CREDENTIAL SAFETY — why a trace is DISCARDED once secrets are registered.
+ *
+ * A real owner password was recovered from 8 of 14 trace zips in one Venmo
+ * run. The bytes sat in the `trace.trace` entry, and because a trace is a ZIP,
+ * a plain `grep` over the file found nothing — the leak was invisible to the
+ * obvious check.
+ *
+ * The value does NOT arrive via DOM snapshots. Playwright's action recorder
+ * writes each call's PARAMETERS, so `page.fill(selector, password)` is logged
+ * as `{"method":"fill","params":{"value":"<password>"}}` plus an echoing
+ * `{"type":"log","message":"fill(\"<password>\")"}`. Measured against
+ * Playwright 1.62.1: with `snapshots:false, screenshots:false, sources:false`
+ * the password still appeared 4 times in `trace.trace`.
+ *
+ * That rules out the two tempting fixes:
+ *   - Tracing options cannot help. `screenshots`/`snapshots`/`sources` are the
+ *     only knobs `tracing.start()` has, and none governs action parameters.
+ *   - Rewriting the zip afterwards would still write the credential to disk
+ *     first, and chunks land at EVERY checkpoint, so the plaintext would sit
+ *     in the capture directory for the whole run before any cleanup ran.
+ *
+ * So a run that touched a credential does not get to keep a trace. Traces are
+ * still recorded (an in-flight trace is what makes chunking possible) and are
+ * still fully retained for runs that never register a secret — which is every
+ * API-only connector and every browser run that reuses a stored session.
  */
 export function makeTracer(context: BrowserContext, name: string, capture: CaptureSession | null): Tracer {
   const enabled = process.env.PDPP_TRACE === "1" || capture !== null;
@@ -2297,6 +2323,51 @@ export function makeTracer(context: BrowserContext, name: string, capture: Captu
     writtenTraceFiles.length = 0;
   };
 
+  /**
+   * True when this run has handled a credential, which makes every trace
+   * artifact it produced unsafe to keep. Asked at stop() time rather than
+   * cached, because credentials resolve after the tracer is constructed.
+   */
+  const credentialsInPlay = (): boolean => capture?.hasRegisteredSecrets?.() === true;
+
+  /**
+   * Delete every trace this run wrote and record why, so the absence of a
+   * trace is self-explaining to whoever goes looking for one.
+   */
+  const discardTracesForCredentialSafety = (): void => {
+    const count = writtenTraceFiles.length;
+    deleteWrittenTraces();
+    try {
+      rmSync(tracePath, { force: true });
+    } catch {
+      // Best-effort: the single-trace path may never have written this file.
+    }
+    process.stderr.write(
+      `[trace] run handled credentials; ${count} trace chunk(s) discarded — Playwright records fill() values into trace.trace and no tracing option suppresses them\n`
+    );
+    if (!traceBaseDir) {
+      return;
+    }
+    try {
+      writeFileSync(
+        join(traceBaseDir, `${traceName}.suppressed.json`),
+        JSON.stringify(
+          {
+            captured_at: new Date().toISOString(),
+            discarded_chunks: count,
+            reason: "credentials_registered",
+            detail:
+              "Playwright's action recorder writes fill() parameters into the trace.trace entry, so a trace taken after a credential is typed contains it verbatim. No tracing option removes it, so the trace is not persisted.",
+          },
+          null,
+          2
+        )
+      );
+    } catch {
+      // Diagnostics must never affect the connector outcome.
+    }
+  };
+
   return {
     async start(): Promise<void> {
       if (!enabled) {
@@ -2358,6 +2429,12 @@ export function makeTracer(context: BrowserContext, name: string, capture: Captu
 
   function finalizeDisconnected(): void {
     writeTraceDiagnostic("stop-disconnected", new Error("browser disconnected before trace stop"));
+    // Checked before the traceBaseDir guard: a disconnect must not become a
+    // path that leaves credential-bearing chunks behind.
+    if (credentialsInPlay()) {
+      discardTracesForCredentialSafety();
+      return;
+    }
     if (!traceBaseDir) {
       return;
     }
@@ -2374,6 +2451,10 @@ export function makeTracer(context: BrowserContext, name: string, capture: Captu
   async function stopChunkedTrace(): Promise<void> {
     await stopChunk("final");
     await context.tracing.stop();
+    if (credentialsInPlay()) {
+      discardTracesForCredentialSafety();
+      return;
+    }
     if (succeeded) {
       deleteWrittenTraces();
       process.stderr.write(`[trace] run succeeded; trace chunks deleted from ${traceBaseDir}\n`);
@@ -2384,6 +2465,12 @@ export function makeTracer(context: BrowserContext, name: string, capture: Captu
 
   async function stopSingleTrace(): Promise<void> {
     await context.tracing.stop({ path: tracePath });
+    // Also covers PDPP_TRACE=1 with no capture session, where the trace lands
+    // in /tmp. A credential is no safer there than under fixtures/.
+    if (credentialsInPlay()) {
+      discardTracesForCredentialSafety();
+      return;
+    }
     if (!succeeded) {
       process.stderr.write(`[trace] run failed; trace retained at ${tracePath}\n`);
       return;

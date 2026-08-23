@@ -1033,6 +1033,7 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
       keepOnSuccess: true,
       markSucceeded: (): void => undefined,
       recordRecord: (): void => undefined,
+      hasRegisteredSecrets: (): boolean => false,
       registerSecrets: (): void => undefined,
       runId: "test-dialog-not-open",
     } satisfies CaptureSession,

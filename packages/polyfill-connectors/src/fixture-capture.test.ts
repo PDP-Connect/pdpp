@@ -42,9 +42,12 @@ test("captureDom writes html, aria, page metadata, and screenshot in raw local c
   assert.ok(capture);
 
   try {
-    const page: Pick<Page, "ariaSnapshot" | "content" | "screenshot" | "title" | "url"> = {
+    const page: Pick<Page, "ariaSnapshot" | "content" | "locator" | "screenshot" | "title" | "url"> = {
       ariaSnapshot: () => Promise.resolve('- document:\n  - button "Submit" [ref=e1]'),
       content: () => Promise.resolve("<html><title>Fixture</title><body>ok</body></html>"),
+      // Screenshots are only written when the page can build a credential
+      // mask, so a page double must supply `locator` to get one.
+      locator: ((selector: string) => ({ selector })) as unknown as Page["locator"],
       screenshot: () => Promise.resolve(Buffer.from("png")),
       title: () => Promise.resolve("Fixture"),
       url: () => "https://example.test/current",
