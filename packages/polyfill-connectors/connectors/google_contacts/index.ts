@@ -163,9 +163,10 @@ async function syncPeoplePages(args: {
   readonly client: PeopleClientLike;
   readonly ctx: CollectContext;
   readonly cursor: FingerprintCursor;
+  readonly maxPages: number;
   readonly syncToken: string | undefined;
 }): Promise<SyncPeopleResult> {
-  const { client, ctx, cursor, syncToken } = args;
+  const { client, ctx, cursor, maxPages, syncToken } = args;
   let pageToken: string | undefined;
   let nextSyncToken: string | null = null;
   let pages = 0;
@@ -198,7 +199,10 @@ async function syncPeoplePages(args: {
     }
     pageToken = page.value.nextPageToken ?? undefined;
     nextSyncToken = page.value.nextSyncToken ?? nextSyncToken;
-  } while (pageToken && pages < MAX_PAGES);
+  } while (pageToken && pages < maxPages);
+  if (pageToken) {
+    throw new Error(`google_contacts_pagination_cap: more than ${String(maxPages)} pages remain`);
+  }
   return { fullResync: !syncToken, nextSyncToken, considered, covered };
 }
 
@@ -206,10 +210,11 @@ async function syncPeopleWithFallback(args: {
   readonly client: PeopleClientLike;
   readonly ctx: CollectContext;
   readonly cursor: FingerprintCursor;
+  readonly maxPages: number;
   readonly priorState: PeopleState | undefined;
   readonly now: () => number;
 }): Promise<SyncPeopleResult> {
-  const { client, ctx, cursor, priorState, now } = args;
+  const { client, ctx, cursor, maxPages, priorState, now } = args;
   const tokenIsStale = syncTokenIsStale(priorState, now);
   const syncToken = tokenIsStale ? undefined : priorState?.sync_token;
   if (tokenIsStale) {
@@ -218,7 +223,7 @@ async function syncPeopleWithFallback(args: {
     });
   }
   try {
-    return await syncPeoplePages({ client, ctx, cursor, syncToken });
+    return await syncPeoplePages({ client, ctx, cursor, maxPages, syncToken });
   } catch (error) {
     if (!isSyncTokenExpired(error)) {
       throw error;
@@ -226,7 +231,7 @@ async function syncPeopleWithFallback(args: {
     await ctx.progress("Google Contacts syncToken rejected by the API (410) — falling back to full resync", {
       stream: "people",
     });
-    return await syncPeoplePages({ client, ctx, cursor, syncToken: undefined });
+    return await syncPeoplePages({ client, ctx, cursor, maxPages, syncToken: undefined });
   }
 }
 
@@ -234,6 +239,8 @@ interface ContactsCollectOptions {
   readonly clientFactory?: (accessToken: string) => PeopleClientLike;
   readonly env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   readonly getAccessToken?: () => Promise<GoogleAccessToken>;
+  /** Lowered only by deterministic tests; production uses the audited cap. */
+  readonly maxPages?: number;
   readonly now?: () => number;
 }
 
@@ -263,6 +270,7 @@ export async function collectGoogleContacts(ctx: CollectContext, options: Contac
 
   const { accessToken } = await getAccessToken();
   const client = options.clientFactory ? options.clientFactory(accessToken) : new GooglePeopleClient({ accessToken });
+  const maxPages = options.maxPages ?? MAX_PAGES;
   const state = (ctx.state as GoogleContactsState) ?? {};
 
   if (wantsGroups) {
@@ -286,7 +294,14 @@ export async function collectGoogleContacts(ctx: CollectContext, options: Contac
   }
 
   const peopleCursor = openFingerprintCursor(state.people, { excludeFromFingerprint: [...PERSON_FINGERPRINT_EXCLUDE] });
-  const result = await syncPeopleWithFallback({ client, ctx, cursor: peopleCursor, priorState: state.people, now });
+  const result = await syncPeopleWithFallback({
+    client,
+    ctx,
+    cursor: peopleCursor,
+    maxPages,
+    priorState: state.people,
+    now,
+  });
   // A syncToken response is a PARTIAL delta; only a full resync (no
   // syncToken, or the fallback path) may prune stale fingerprints — matching
   // the Calendar connector's identical rule.

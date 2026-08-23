@@ -159,6 +159,36 @@ test("pages through multiple connection pages before advancing the cursor", asyn
   assert.equal(records.filter((r) => r.stream === "people").length, 2);
 });
 
+test("a page cap with a continuation token fails before people STATE or coverage", async () => {
+  const fakeClient = new FakePeopleClient({
+    connectionPages: [
+      { people: [makePerson({ resourceName: "people/c1" })], nextPageToken: "page2", nextSyncToken: null },
+      { people: [makePerson({ resourceName: "people/c2" })], nextPageToken: null, nextSyncToken: "sync-final" },
+    ],
+  });
+  const { ctx, messages, records } = makeContext({ streams: [{ name: "people" }] });
+
+  await assert.rejects(
+    () =>
+      collectGoogleContacts(ctx, {
+        clientFactory: () => fakeClient,
+        env: ENV,
+        maxPages: 1,
+        ...FAKE_TOKEN,
+      }),
+    /google_contacts_pagination_cap/
+  );
+  assert.equal(records.filter((r) => r.stream === "people").length, 1, "the enumerated prefix may be emitted");
+  assert.equal(
+    messages.some((message) => message.type === "STATE" && message.stream === "people"),
+    false
+  );
+  assert.equal(
+    messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "people"),
+    false
+  );
+});
+
 test("carries forward the prior syncToken cursor on an incremental run", async () => {
   const fakeClient = new FakePeopleClient({
     connectionPages: [
