@@ -676,10 +676,12 @@ CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
 -- the owner's bearer token can still write a well-typed, fully-attributed
 -- value, and a well-typed agent-authored write is not the same as an
 -- owner-chosen one. The review's required invariant: a run consumes
--- collection-shaping configuration only from an immutable, owner-confirmed
--- revision; a non-owner write can PROPOSE but never itself ACTIVATE a
--- collection-scope change. Immutability plus a status column is what makes
--- that gate expressible; a table that overwrites its own history cannot
+-- collection-shaping configuration only from an immutable revision confirmed
+-- by the connection's authenticated owner subject.
+-- revision. Provenance origin is not authorization: every collection-scope
+-- change starts proposed, regardless of whether its author says "owner".
+-- Immutability plus a status column is what makes that gate expressible; a
+-- table that overwrites its own history cannot
 -- distinguish "proposed" from "silently superseded."
 --
 -- One row per (connector_instance_id, revision): revision is a
@@ -700,9 +702,10 @@ CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
 -- change -- exactly the merge hazard the review rejects (finding #7).
 --
 -- Every provenance column is NOT NULL; origin is a closed enum with no
--- 'unknown' member. status starts 'proposed' for any non-owner origin and
--- only an owner-confirmation write may move a revision (or its successor)
--- to 'active'. See connector_instance_config_current below for "which
+-- 'unknown' member. Platform-derived collection_scope rows always start
+-- proposed; only a confirmation bound to the connection's authenticated
+-- owner subject may move one to active. See
+-- connector_instance_config_current below for "which
 -- revision is in force now" and server/stores/connector-instance-config-store.ts
 -- for the CAS and confirmation logic.
 CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
@@ -716,16 +719,17 @@ CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
   config_contract_id      TEXT NOT NULL,
   config_contract_version INTEGER NOT NULL,
   -- Whether this revision shapes what the connector collects or only how
-  -- it collects. A revision is homogeneous: mixing collection_scope and
-  -- transport keys in one config_json is allowed, but the revision as a
+  -- it collects. A revision has one platform-derived classification: mixing
+  -- collection_scope and transport keys in one config_json is allowed, but
+  -- the revision as a
   -- whole is classified by whether ANY key in it is collection_scope,
   -- because that is what determines whether it may self-activate.
   option_kind             TEXT NOT NULL CHECK (option_kind IN ('collection_scope', 'transport')),
   origin                  TEXT NOT NULL CHECK (origin IN ('owner', 'agent', 'migration', 'default')),
   is_explicit              INTEGER NOT NULL CHECK (is_explicit IN (0, 1)),
   -- proposed:   written, but not yet the connection's active configuration
-  --             (mandatory starting state for a non-owner collection_scope
-  --             write -- see the store's activation rule).
+  --             (mandatory starting state for every collection_scope write
+  --             -- see the store's platform-derived activation rule).
   -- active:     the revision a run resolves against right now.
   -- superseded: was active; a later revision replaced it.
   -- quarantined: server-detected integrity problem (e.g. an untrusted
@@ -756,6 +760,11 @@ CREATE INDEX IF NOT EXISTS idx_connector_instance_config_revisions_instance
 -- statements inside the SAME transaction, which is what makes "atomically
 -- move the pointer AND declassify stale coverage proof" possible: both
 -- happen or neither does (review finding #10).
+-- The schema deliberately does not add a cross-table CHECK or trigger that
+-- requires this pointer's row to be active: that is not portable across the
+-- existing SQLite/Postgres schemas without a trigger/migration protocol. The
+-- store instead fails closed at read time when a legacy or corrupt pointer
+-- addresses a non-active revision.
 CREATE TABLE IF NOT EXISTS connector_instance_config_current (
   connector_instance_id TEXT PRIMARY KEY,
   active_revision        INTEGER NOT NULL,

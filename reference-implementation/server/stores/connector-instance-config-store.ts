@@ -17,10 +17,10 @@
  * collection-shaping value, and "well-typed and attributed to an agent" is
  * not the same as "the owner chose this." The review's required
  * invariant, adopted here: a run consumes collection-shaping configuration
- * only from an immutable, owner-confirmed revision. A non-owner write
- * (agent, script, migration) may PROPOSE a collection_scope revision but
- * can never itself ACTIVATE one -- only an explicit owner-confirmation
- * call moves a proposed collection_scope revision to `active`.
+ * only from an immutable, authenticated-owner-subject-confirmed revision.
+ * Every collection_scope write, regardless of its provenance origin, starts
+ * proposed; only authenticated owner-subject confirmation moves it to
+ * `active`.
  * Pure-transport revisions (proven not to change what is collected) may
  * self-activate, because there is nothing for the owner to confirm.
  *
@@ -38,13 +38,14 @@
  */
 
 import { getMany, getOne, referenceQueries, writeTransaction } from "../../lib/db.ts";
+import { resolveEnforcedOptionKind } from "../../../packages/polyfill-connectors/src/connector-config-option-kind-registry.ts";
 import { getDb } from "../db.ts";
 import { postgresQuery } from "../postgres-storage.ts";
 
 /** A config revision shapes what a connector collects, or only how it collects. */
 export type ConfigOptionKind = "collection_scope" | "transport";
 
-/** Closed by design -- no 'unknown' member. A caller that cannot honestly assert one of these has no way to call `propose()`. */
+/** Closed provenance vocabulary. Origin describes attribution, never authorization. */
 export type ConfigOrigin = "agent" | "default" | "migration" | "owner";
 
 export type ConfigRevisionStatus = "active" | "proposed" | "quarantined" | "superseded";
@@ -55,7 +56,6 @@ export const CONNECTOR_CONFIG_CONTRACT_VERSION = 1;
 
 export interface ConfigProvenance {
   readonly isExplicit: boolean;
-  readonly optionKind: ConfigOptionKind;
   readonly origin: ConfigOrigin;
   readonly setAt: string;
   /** Actor id: "owner", an agent/session identifier, or a migration script name. Never "unknown", "system", or empty. */
@@ -102,15 +102,11 @@ export class ConfigStaleWriteError extends Error {
 }
 
 const VALID_ORIGINS: ReadonlySet<string> = new Set(["owner", "agent", "migration", "default"]);
-const VALID_OPTION_KINDS: ReadonlySet<string> = new Set(["collection_scope", "transport"]);
 const MAX_REVISIONS_PER_INSTANCE = 500;
 
 function assertProvenanceOrThrow(provenance: ConfigProvenance): void {
   if (!VALID_ORIGINS.has(provenance.origin)) {
     throw new Error(`connector_instance_config: invalid origin "${provenance.origin}"`);
-  }
-  if (!VALID_OPTION_KINDS.has(provenance.optionKind)) {
-    throw new Error(`connector_instance_config: invalid option_kind "${provenance.optionKind}"`);
   }
   if (provenance.setBy.trim().length === 0) {
     throw new Error("connector_instance_config: setBy must not be empty");
@@ -124,27 +120,24 @@ function assertProvenanceOrThrow(provenance: ConfigProvenance): void {
 }
 
 /**
- * A revision may self-activate (no owner confirmation required) only when
- * it cannot change what is collected: proven `transport`, or the
- * manifest-materialized `default` applied at connection creation (nothing
- * was chosen; there is nothing to confirm). Every other collection_scope
- * write -- agent, script/migration, or even an owner write made through a
- * path that does not carry confirmation -- lands `proposed` and stays
- * inert until a separate confirmation call. This is the review's
- * acceptance attack #1 made structural: an agent's 239-ID write can never
- * itself become the connection's active configuration.
+ * Classification is platform-owned and is derived from the whole config
+ * bundle. Any collection-shaping key makes the whole revision
+ * `collection_scope`; empty and unknown bundles fail closed to that same
+ * class. Only proven transport revisions self-activate. Provenance records
+ * who supplied a value, not whether that actor is authorized to activate it.
  */
-function initialStatusFor(provenance: ConfigProvenance): ConfigRevisionStatus {
-  if (provenance.optionKind === "transport") {
-    return "active";
+function deriveOptionKind(connectorId: string, config: Record<string, unknown>): ConfigOptionKind {
+  const keys = Object.keys(config);
+  if (keys.length === 0) {
+    return "collection_scope";
   }
-  if (provenance.origin === "default" && !provenance.isExplicit) {
-    return "active";
-  }
-  if (provenance.origin === "owner") {
-    return "active";
-  }
-  return "proposed";
+  return keys.some((key) => resolveEnforcedOptionKind(connectorId, key) === "collection_scope")
+    ? "collection_scope"
+    : "transport";
+}
+
+function initialStatusFor(optionKind: ConfigOptionKind): ConfigRevisionStatus {
+  return optionKind === "transport" ? "active" : "proposed";
 }
 
 interface RevisionRow {
@@ -170,6 +163,11 @@ interface PointerRow {
   connector_instance_id: string;
   storage_epoch: number;
   updated_at: string;
+}
+
+interface ConnectorInstanceAuthorityRow {
+  connector_id: string;
+  owner_subject_id: string;
 }
 
 function mapRevisionRow(row: RevisionRow): ConfigRevision {
@@ -211,14 +209,15 @@ export interface ProposeArgs {
 }
 
 export interface ConfirmArgs {
+  /** Established by the caller's authentication boundary; this store verifies it owns the connection. */
+  readonly authenticatedOwnerSubjectId: string;
   readonly confirmedAt: string;
-  readonly confirmedBy: string;
   readonly connectorInstanceId: string;
   readonly revision: number;
 }
 
 export interface ConnectorInstanceConfigStore {
-  /** Move a `proposed` revision to `active`, superseding the previous active revision. Only meaningful for a non-self-activating (collection_scope, non-owner) revision. */
+  /** Move a `proposed` revision to `active` after the authenticated owner subject matches the connection owner. */
   confirm: (args: ConfirmArgs) => Promise<ConfigRevision>;
   getActiveRevision: (connectorInstanceId: string) => Promise<ConfigRevision | null>;
   getCurrentPointer: (connectorInstanceId: string) => Promise<CurrentPointer | null>;
@@ -226,9 +225,8 @@ export interface ConnectorInstanceConfigStore {
   /**
    * Append a new immutable revision. Rejects with {@link ConfigStaleWriteError}
    * if `baseRevision`/`baseEpoch` do not match the connection's current
-   * pointer -- optimistic concurrency, never a merge. A `transport` or
-   * inherited-`default` revision activates immediately in the same
-   * transaction that appends it; any other `collection_scope` write lands
+   * pointer -- optimistic concurrency, never a merge. Platform-classified
+   * `transport` self-activates; every `collection_scope` revision lands
    * `proposed` and requires a separate {@link confirm} call before any run
    * resolves against it.
    */
@@ -247,12 +245,42 @@ function readPointerSqlite(connectorInstanceId: string): CurrentPointer | null {
   return row ? mapPointerRow(row) : null;
 }
 
+function requireConnectorInstanceAuthoritySqlite(
+  db: ReturnType<typeof getDb>,
+  connectorInstanceId: string
+): ConnectorInstanceAuthorityRow {
+  const row = db
+    .prepare("SELECT connector_id, owner_subject_id FROM connector_instances WHERE connector_instance_id = ?")
+    .get(connectorInstanceId) as ConnectorInstanceAuthorityRow | undefined;
+  if (!row) {
+    throw new Error(`connector_instance_config: no connector instance ${connectorInstanceId}`);
+  }
+  return row;
+}
+
+function assertAuthenticatedOwnerSubject(authenticatedOwnerSubjectId: unknown): asserts authenticatedOwnerSubjectId is string {
+  if (typeof authenticatedOwnerSubjectId !== "string" || authenticatedOwnerSubjectId.trim().length === 0) {
+    throw new Error("connector_instance_config: authenticated owner subject must not be empty");
+  }
+}
+
+function assertOwnerSubjectMatches(
+  connectorInstanceId: string,
+  authenticatedOwnerSubjectId: string,
+  ownerSubjectId: string
+): void {
+  if (authenticatedOwnerSubjectId !== ownerSubjectId) {
+    throw new Error(`connector_instance_config: authenticated owner subject does not own ${connectorInstanceId}`);
+  }
+}
+
 export function createSqliteConnectorInstanceConfigStore(): ConnectorInstanceConfigStore {
   return {
     async propose({ connectorInstanceId, config, provenance, baseRevision, baseEpoch, boundaryFingerprint }) {
       assertProvenanceOrThrow(provenance);
       return writeTransaction(() => {
         const db = getDb();
+        const authority = requireConnectorInstanceAuthoritySqlite(db, connectorInstanceId);
         const existingPointer = readPointerSqlite(connectorInstanceId);
         const currentRevision = existingPointer?.activeRevision ?? 0;
         const currentEpoch = existingPointer?.storageEpoch ?? 1;
@@ -261,7 +289,8 @@ export function createSqliteConnectorInstanceConfigStore(): ConnectorInstanceCon
         }
 
         const revision = nextRevisionSqlite(db, connectorInstanceId);
-        const status = initialStatusFor(provenance);
+        const optionKind = deriveOptionKind(authority.connector_id, config);
+        const status = initialStatusFor(optionKind);
         db.prepare(
           `INSERT INTO connector_instance_config_revisions(
              connector_instance_id, revision, config_json, config_contract_id, config_contract_version,
@@ -274,7 +303,7 @@ export function createSqliteConnectorInstanceConfigStore(): ConnectorInstanceCon
           JSON.stringify(config),
           CONNECTOR_CONFIG_CONTRACT_ID,
           CONNECTOR_CONFIG_CONTRACT_VERSION,
-          provenance.optionKind,
+          optionKind,
           provenance.origin,
           provenance.isExplicit ? 1 : 0,
           status,
@@ -310,12 +339,14 @@ export function createSqliteConnectorInstanceConfigStore(): ConnectorInstanceCon
       });
     },
 
-    async confirm({ connectorInstanceId, revision, confirmedBy, confirmedAt }) {
-      if (confirmedBy.trim().length === 0) {
-        throw new Error("connector_instance_config: confirmedBy must not be empty");
-      }
+    async confirm({ connectorInstanceId, revision, authenticatedOwnerSubjectId, confirmedAt }) {
+      assertAuthenticatedOwnerSubject(authenticatedOwnerSubjectId);
       return writeTransaction(() => {
         const db = getDb();
+        const authority = requireConnectorInstanceAuthoritySqlite(db, connectorInstanceId);
+        // The HTTP/owner-agent boundary authenticates this subject. The store
+        // only verifies that authenticated identity owns this exact connection.
+        assertOwnerSubjectMatches(connectorInstanceId, authenticatedOwnerSubjectId, authority.owner_subject_id);
         const target = getOne<RevisionRow>(referenceQueries.connectorInstanceConfigGetRevision, [
           connectorInstanceId,
           revision,
@@ -331,7 +362,7 @@ export function createSqliteConnectorInstanceConfigStore(): ConnectorInstanceCon
         const pointer = readPointerSqlite(connectorInstanceId);
         db.prepare(
           "UPDATE connector_instance_config_revisions SET status = 'active', confirmed_by = ?, confirmed_at = ? WHERE connector_instance_id = ? AND revision = ?"
-        ).run(confirmedBy, confirmedAt, connectorInstanceId, revision);
+        ).run(authenticatedOwnerSubjectId, confirmedAt, connectorInstanceId, revision);
         if (pointer) {
           db.prepare(
             "UPDATE connector_instance_config_revisions SET status = 'superseded' WHERE connector_instance_id = ? AND revision = ?"
@@ -369,7 +400,7 @@ export function createSqliteConnectorInstanceConfigStore(): ConnectorInstanceCon
         connectorInstanceId,
         pointer.activeRevision,
       ]);
-      return row ? mapRevisionRow(row) : null;
+      return row?.status === "active" ? mapRevisionRow(row) : null;
     },
 
     async listRevisions(connectorInstanceId) {
@@ -404,10 +435,25 @@ async function readRevisionPostgres(connectorInstanceId: string, revision: numbe
   return result.rows[0];
 }
 
+async function requireConnectorInstanceAuthorityPostgres(
+  connectorInstanceId: string
+): Promise<ConnectorInstanceAuthorityRow> {
+  const result = await postgresQuery<ConnectorInstanceAuthorityRow>(
+    "SELECT connector_id, owner_subject_id FROM connector_instances WHERE connector_instance_id = $1",
+    [connectorInstanceId]
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new Error(`connector_instance_config: no connector instance ${connectorInstanceId}`);
+  }
+  return row;
+}
+
 export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceConfigStore {
   return {
     async propose({ connectorInstanceId, config, provenance, baseRevision, baseEpoch, boundaryFingerprint }) {
       assertProvenanceOrThrow(provenance);
+      const authority = await requireConnectorInstanceAuthorityPostgres(connectorInstanceId);
       // Postgres path: no ambient cross-statement transaction helper is
       // wired here (unlike SQLite's writeTransaction), so concurrency
       // safety comes from the CAS check re-verified by the conditional
@@ -426,7 +472,8 @@ export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceC
         [connectorInstanceId]
       );
       const revision = Number(nextRevisionResult.rows[0]?.next ?? 1);
-      const status = initialStatusFor(provenance);
+      const optionKind = deriveOptionKind(authority.connector_id, config);
+      const status = initialStatusFor(optionKind);
 
       await postgresQuery(
         `INSERT INTO connector_instance_config_revisions(
@@ -440,7 +487,7 @@ export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceC
           JSON.stringify(config),
           CONNECTOR_CONFIG_CONTRACT_ID,
           CONNECTOR_CONFIG_CONTRACT_VERSION,
-          provenance.optionKind,
+          optionKind,
           provenance.origin,
           provenance.isExplicit,
           status,
@@ -476,10 +523,12 @@ export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceC
       return mapRevisionRow(written);
     },
 
-    async confirm({ connectorInstanceId, revision, confirmedBy, confirmedAt }) {
-      if (confirmedBy.trim().length === 0) {
-        throw new Error("connector_instance_config: confirmedBy must not be empty");
-      }
+    async confirm({ connectorInstanceId, revision, authenticatedOwnerSubjectId, confirmedAt }) {
+      assertAuthenticatedOwnerSubject(authenticatedOwnerSubjectId);
+      const authority = await requireConnectorInstanceAuthorityPostgres(connectorInstanceId);
+      // The caller/auth boundary establishes authentication; this store binds
+      // that authenticated subject to the persisted connection owner.
+      assertOwnerSubjectMatches(connectorInstanceId, authenticatedOwnerSubjectId, authority.owner_subject_id);
       const target = await readRevisionPostgres(connectorInstanceId, revision);
       if (!target) {
         throw new Error(`connector_instance_config: no revision ${revision} for ${connectorInstanceId}`);
@@ -493,7 +542,7 @@ export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceC
       await postgresQuery(
         `UPDATE connector_instance_config_revisions SET status = 'active', confirmed_by = $1, confirmed_at = $2
          WHERE connector_instance_id = $3 AND revision = $4`,
-        [confirmedBy, confirmedAt, connectorInstanceId, revision]
+        [authenticatedOwnerSubjectId, confirmedAt, connectorInstanceId, revision]
       );
       if (pointer) {
         await postgresQuery(
@@ -527,7 +576,7 @@ export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceC
         return null;
       }
       const row = await readRevisionPostgres(connectorInstanceId, pointer.activeRevision);
-      return row ? mapRevisionRow(row) : null;
+      return row?.status === "active" ? mapRevisionRow(row) : null;
     },
 
     async listRevisions(connectorInstanceId) {

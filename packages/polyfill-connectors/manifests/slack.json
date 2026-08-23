@@ -1540,7 +1540,7 @@
   },
   "options_schema": {
     "type": "object",
-    "description": "Operator/owner tuning knobs for the Slack connector, resolved from the connector_instance_config_revisions spine (see reference-implementation/server/stores/connector-instance-config-store.ts). declared_option_kind here is the connector's CLAIM about whether a knob shapes collection scope or only transport -- it is advisory, not authoritative: the runtime's own platform-owned classification (server/connector-config-option-kind-registry.ts, enforced by connector-config-option-kind-honesty.test.ts) decides what actually gates self-activation, and a manifest claiming 'transport' for a key the platform classifies as 'collection_scope' is rejected at build time. A connector cannot widen its own eligibility by mislabeling a knob.",
+    "description": "Operator/owner tuning knobs for the Slack connector, resolved from the connector_instance_config_revisions spine (see reference-implementation/server/stores/connector-instance-config-store.ts). declared_option_kind here is the connector's CLAIM about whether a knob shapes collection scope or only transport -- it is advisory, not authoritative: the platform-owned classification in packages/polyfill-connectors/src/connector-config-option-kind-registry.ts decides what actually gates self-activation, and connector-config-option-kind-honesty.test.ts rejects a manifest that claims 'transport' for a key the platform classifies as 'collection_scope'. A connector cannot widen its own eligibility by mislabeling a knob.",
     "properties": {
       "CHANNEL_ALLOWLIST": {
         "type": "array",
