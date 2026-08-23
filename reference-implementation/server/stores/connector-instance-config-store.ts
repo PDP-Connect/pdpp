@@ -31,10 +31,11 @@
  * never last-write-wins.
  *
  * Every provenance column is NOT NULL; origin is a closed enum with no
- * 'unknown' member -- see assertProvenanceOrThrow. Activating a revision
- * and declassifying stale coverage proof happen in the SAME SQLite
- * transaction as the pointer move, so a run can never observe a new
- * config with old proof or vice versa.
+ * 'unknown' member -- see assertProvenanceOrThrow. Activation and the current
+ * pointer move happen in the same SQLite transaction. This store does not
+ * touch coverage-proof tables; any proof declassification is a separate
+ * operation, so callers must not infer atomic config/coverage invalidation
+ * from this transaction.
  */
 
 import { getMany, getOne, referenceQueries, writeTransaction } from "../../lib/db.ts";
