@@ -14,7 +14,8 @@
 //   Functions: boundString, boundStringList, boundGapString,
 //              boundConnectorErrorMessage, boundConsideredCount,
 //              normalizeRecoveryHint, isValidRecoveryHintShape,
-//              normalizeGapScope, buildCollectionFacts, buildKnownGap
+//              normalizeGapScope, buildCollectionFacts,
+//              buildRecoveryGapClosureFacts, buildKnownGap
 //   Constants: VIOLATION_LIST_MAX, GAP_STRING_MAX, RECOVERY_ACTIONS,
 //              BROWSER_SURFACE_KINDS (exported read-only for the manifest
 //              parity test only — see test/connector-gap-bounding-browser-
@@ -731,6 +732,73 @@ export function buildCollectionFacts({
     };
   });
 
+  return {
+    reference_only: true,
+    schema_version: 1,
+    streams,
+  };
+}
+
+// ── RECOVERY GAP-CLOSURE FACTS ─────────────────────────────────────────────────
+
+interface BuildRecoveryGapClosureFactsInput {
+  durableDetailGaps: Array<KnownGap & { gap_id?: string }>;
+  recoveryOnly?: boolean;
+}
+
+/**
+ * Build a run-terminal fact block reporting, per stream, how many of a
+ * recovery-only run's durably-recorded gap recoveries (`DETAIL_GAP_RECOVERED`
+ * -> `detailGapStore.settleLeasedGapRecovered`/`markGapStatus("recovered")`)
+ * this run settled. Distinct from `buildCollectionFacts`'s `collection_facts`
+ * block by design: `buildCollectionFacts` returns `null` unconditionally for
+ * a recovery-only run because NO signal a recovery-only run produces proves a
+ * genuine forward/list-pass inventory measurement occurred — that includes
+ * this run's own DETAIL_COVERAGE `considered`/`covered` counts, which are
+ * connector-self-declared and were explicitly rejected as inventory proof
+ * (see `buildCollectionFacts`'s `recoveryOnly` doc comment).
+ *
+ * This block makes a narrower, different claim: not "the stream's inventory
+ * is N/M", but "N previously-open detail gaps for this stream are now
+ * durably closed". The count comes from `durableDetailGaps` entries this run
+ * itself transitioned to `status: "recovered"` — a real store-backed state
+ * transition the runtime performed, not a connector-declared number. It says
+ * nothing about the stream's total inventory (`considered`) and is never
+ * treated as list-pass proof; the read-model fold (`connector-summary-read-
+ * model.ts`) only ever uses it to narrow an EXISTING durably-proven fact's
+ * gap count, never to originate a fresh `considered`/`checkpoint` for a
+ * stream this run did not otherwise measure.
+ *
+ * Duplicate entries for the same gap_id are deduplicated before counting:
+ * only the stable gap_id identity matters. Malformed entries (no stream, no
+ * gap_id, status != "recovered") are silently excluded from the proof.
+ *
+ * @returns the block, or null when there is nothing to report (not a
+ *   recovery-only run, or the run recovered no durable gaps).
+ */
+export function buildRecoveryGapClosureFacts({
+  durableDetailGaps,
+  recoveryOnly = false,
+}: BuildRecoveryGapClosureFactsInput): { reference_only: true; schema_version: number; streams: object[] } | null {
+  if (!recoveryOnly) {
+    return null;
+  }
+  const recoveredCountByStream = new Map<string, number>();
+  const seenGapIds = new Set<string>();
+  for (const gap of durableDetailGaps) {
+    if (gap.status !== "recovered" || !gap.stream || !gap.gap_id || seenGapIds.has(gap.gap_id)) {
+      continue;
+    }
+    seenGapIds.add(gap.gap_id);
+    recoveredCountByStream.set(gap.stream, (recoveredCountByStream.get(gap.stream) || 0) + 1);
+  }
+  if (!recoveredCountByStream.size) {
+    return null;
+  }
+  const streams = [...recoveredCountByStream.entries()].map(([stream, recoveredCount]) => ({
+    recovered_count: recoveredCount,
+    stream,
+  }));
   return {
     reference_only: true,
     schema_version: 1,

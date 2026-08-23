@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-
+import { buildRecoveryGapClosureFacts } from "../runtime/connector-gap-bounding.ts";
 import {
   foldConnectorSummaryStreamFacts,
   getConnectorSummaryEvidence,
@@ -92,6 +92,7 @@ interface SeedTerminalEventOptions {
   connectorInstanceId?: string | null;
   eventType?: string;
   occurredAt: string;
+  recoveryGapClosure?: { recovered_count: number; stream: string }[];
   recoveryOnly?: boolean;
   runId: string;
   streams?: TerminalEventStreamFact[];
@@ -102,12 +103,16 @@ interface SeedTerminalEventOptions {
  * collection_facts block at all — the shape a real recovery-only run's
  * terminal event actually has (buildCollectionFacts returns null
  * unconditionally for a recovery-only run; see connector-gap-bounding.ts).
+ * `recoveryGapClosure`, when given, seeds the DISTINCT
+ * `recovery_gap_closure_facts` block a recovery-only run's terminal event
+ * carries instead (see buildRecoveryGapClosureFacts).
  */
 function seedTerminalEvent({
   runId,
   occurredAt,
   connectorInstanceId = null,
   streams,
+  recoveryGapClosure,
   eventType = "run.completed",
   recoveryOnly = false,
 }: SeedTerminalEventOptions) {
@@ -116,6 +121,11 @@ function seedTerminalEvent({
     ...(connectorInstanceId ? { connection_id: connectorInstanceId, connector_instance_id: connectorInstanceId } : {}),
     ...(recoveryOnly ? { recovery_only: true } : {}),
     ...(streams === undefined ? {} : { collection_facts: { reference_only: true, schema_version: 1, streams } }),
+    ...(recoveryGapClosure === undefined
+      ? {}
+      : {
+          recovery_gap_closure_facts: { reference_only: true, schema_version: 1, streams: recoveryGapClosure },
+        }),
   };
   getDb()
     .prepare(
@@ -1496,5 +1506,128 @@ test("existing-row self-heal: a row already folded under v5 with its proof ERASE
     assert.equal(healed.fact.considered, 1, "the measured denominator is recovered from retained event history");
     assert.equal(healed.fact.covered, 1, "the measured numerator is recovered too");
     assert.equal(healed.run_id, "run_1787343668906", "provenance points back at the run that actually measured");
+  });
+});
+
+test("recovery run closing 2 of 2 gaps moves owner-visible coverage 3/5 -> 5/5", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovery_2_of_2", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_2_of_2",
+      occurredAt: "2026-08-22T00:00:00.000Z",
+      runId: "run_prior_3_of_5",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 5, covered: 3, stream: "transactions" }],
+    });
+    const recoveryFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps: [
+        { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" },
+        { gap_id: "gap-2", kind: "detail_gap", status: "recovered", stream: "transactions" },
+      ],
+      recoveryOnly: true,
+    });
+    assert.ok(recoveryFacts);
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_2_of_2",
+      occurredAt: "2026-08-23T00:00:00.000Z",
+      recoveryGapClosure: recoveryFacts.streams as { recovered_count: number; stream: string }[],
+      recoveryOnly: true,
+      runId: "run_recovery_2_of_2",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const fact = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovery_2_of_2")), "transactions");
+    assert.equal(fact.fact.covered, 5);
+    assert.equal(fact.fact.considered, 5);
+    assert.equal(fact.run_id, "run_recovery_2_of_2");
+  });
+});
+
+test("recovery run closing NOTHING does not advance coverage", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovery_nothing", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_nothing",
+      occurredAt: "2026-08-22T00:00:00.000Z",
+      runId: "run_prior_3_of_5",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 5, covered: 3, stream: "transactions" }],
+    });
+    const recoveryFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps: [{ gap_id: "gap-pending", kind: "detail_gap", status: "pending", stream: "transactions" }],
+      recoveryOnly: true,
+    });
+    assert.equal(recoveryFacts, null);
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_nothing",
+      occurredAt: "2026-08-23T00:00:00.000Z",
+      recoveryOnly: true,
+      runId: "run_recovery_nothing",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const fact = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovery_nothing")), "transactions");
+    assert.equal(fact.fact.covered, 3);
+    assert.equal(fact.fact.considered, 5);
+    assert.equal(fact.run_id, "run_prior_3_of_5");
+  });
+});
+
+test("partial recovery advances coverage by exactly the number of gaps closed", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovery_partial", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_partial",
+      occurredAt: "2026-08-22T00:00:00.000Z",
+      runId: "run_prior_3_of_5",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 5, covered: 3, stream: "transactions" }],
+    });
+    const recoveryFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps: [{ gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" }],
+      recoveryOnly: true,
+    });
+    assert.ok(recoveryFacts);
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_partial",
+      occurredAt: "2026-08-23T00:00:00.000Z",
+      recoveryGapClosure: recoveryFacts.streams as { recovered_count: number; stream: string }[],
+      recoveryOnly: true,
+      runId: "run_recovery_partial",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const fact = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovery_partial")), "transactions");
+    assert.equal(fact.fact.covered, 4);
+    assert.equal(fact.fact.considered, 5);
+  });
+});
+
+test("same gap counted twice does not double-advance coverage", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovery_dedupe", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_dedupe",
+      occurredAt: "2026-08-22T00:00:00.000Z",
+      runId: "run_prior_3_of_5",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 5, covered: 3, stream: "transactions" }],
+    });
+    const recoveryFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps: [
+        { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" },
+        { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" },
+      ],
+      recoveryOnly: true,
+    });
+    assert.ok(recoveryFacts);
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_dedupe",
+      occurredAt: "2026-08-23T00:00:00.000Z",
+      recoveryGapClosure: recoveryFacts.streams as { recovered_count: number; stream: string }[],
+      recoveryOnly: true,
+      runId: "run_recovery_dedupe",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const fact = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovery_dedupe")), "transactions");
+    assert.equal(fact.fact.covered, 4);
+    assert.equal(fact.fact.considered, 5);
   });
 });
