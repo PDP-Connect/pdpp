@@ -1213,6 +1213,84 @@ test("fold: an ALREADY-STRANDED checkpoint-0 historical row (production shape) r
 });
 
 // ---------------------------------------------------------------------------
+// The shared read-cursor floor: a checkpoint-less participant must not rewind
+// the whole pass to the start of the log.
+//
+// `sinceSeq` is the MINIMUM checkpoint across participants, so ONE participant
+// holding "no position" drags every other participant's read back to the
+// beginning. Both spellings of "no position" have to be guarded: NULL, and a
+// literal 0 (what `stampZeroCheckpointForBootstrap` writes for a row with no
+// terminal history yet -- event_seq is 1-based, so 0 is never a real position).
+//
+// This regressed in production TWICE. 6cd8368ad guarded only NULL; 7bba0be69
+// then observed the floor sitting back at 0 live, with the sweep replaying a
+// 1.44M-event log inside a 2s budget, reading zero qualifying events and
+// writing nothing. `checkpointIsResumablePosition` is now the single named
+// definition of that rule, and this test pins the OBSERVABLE it protects
+// (`minimumCheckpointBefore`) rather than the predicate's spelling -- nothing
+// else in the suite asserts the floor directly.
+test("fold: a checkpoint-0 participant does not drag the shared read floor back to the start of the log", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_advanced", "gmail");
+    seedInstance("cin_no_position", "imessage");
+    await rebuildConnectorSummaryEvidence();
+
+    // Give the advanced row a real, far-along position in the log.
+    for (let i = 0; i < 12; i += 1) {
+      seedTerminalEvent({
+        connectorInstanceId: "cin_advanced",
+        occurredAt: `2026-06-18T09:${String(i).padStart(2, "0")}:00.000Z`,
+        runId: `run_advanced_${i}`,
+        streams: [{ checkpoint: "committed", collected: i, stream: "messages" }],
+      });
+    }
+    await foldConnectorSummaryStreamFacts(["cin_advanced"]);
+    const advanced = getDb()
+      .prepare("SELECT stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?")
+      .get<{ stream_facts_event_seq: number | null }>("cin_advanced");
+    const advancedCheckpoint = advanced?.stream_facts_event_seq ?? 0;
+    assert.ok(advancedCheckpoint > 0, "premise: the advanced row holds a real, non-zero position");
+
+    // The other row has ANY attributable terminal history (so it is a genuine
+    // participant, not a zero-history fixture artifact) but is parked at
+    // checkpoint 0 -- the bootstrap-stamped "no position" shape.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_no_position",
+      occurredAt: "2026-06-18T10:00:00.000Z",
+      runId: "run_no_position",
+      streams: [{ checkpoint: "committed", collected: 1, stream: "messages" }],
+    });
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET stream_facts_event_seq = 0,
+                stream_latest_facts_json = NULL,
+                dirty = 1
+          WHERE connector_instance_id = ?`
+      )
+      .run("cin_no_position");
+
+    // A new event for the advanced row so it genuinely lags and rejoins the
+    // same pass -- the floor is only observable when BOTH rows participate.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_advanced",
+      occurredAt: "2026-06-18T11:00:00.000Z",
+      runId: "run_advanced_new",
+      streams: [{ checkpoint: "committed", collected: 99, stream: "messages" }],
+    });
+
+    const pass = await foldConnectorSummaryStreamFacts(["cin_advanced", "cin_no_position"]);
+    assert.equal(pass.participants, 2, "premise: both rows participate in the same pass");
+    assert.equal(
+      pass.minimumCheckpointBefore,
+      advancedCheckpoint,
+      "the shared floor is the advanced row's real position -- a checkpoint-0 participant holds no position and must not set it"
+    );
+    assert.notEqual(pass.minimumCheckpointBefore, 0, "the floor must never rewind to the start of the log");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Measured-boundary guard (apple_contacts cin_d344ba53d6d95c7dd343393d,
 // run_1787343668906 proved `contacts covered 1 / considered 1`; the next
 // incremental run erased it).
