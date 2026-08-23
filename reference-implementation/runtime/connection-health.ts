@@ -4065,6 +4065,9 @@ export function deriveOutboxAxisFromHeartbeat(
     return { axis: "active", cause: null, unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "healthy" || evidence.lastHeartbeatStatus === "stopped") {
+    if (evidence.recordsPending === null) {
+      return { axis: "unknown", cause: null, unreliable: false };
+    }
     return { axis: "idle", cause: null, unreliable: false };
   }
   return { axis: "unknown", cause: null, unreliable: false };
