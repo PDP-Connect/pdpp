@@ -161,7 +161,7 @@ test("orders: NO prune — an order in a year not scraped this run keeps its fin
   await emitOrderAndItems(run1.deps, makeListOrder({ orderId: "ORDER-2026" }), makeDetail(), "2026-01-05");
 
   // Run 2: the 2025 year froze, so only the 2026 order is re-scraped. The
-  // cursor is NEVER pruned (no pruneStale call), so ORDER-2025's fingerprint
+  // cursor is NEVER pruned (no dropUnseenIds call), so ORDER-2025's fingerprint
   // must survive even though it was not observed this run.
   const cursor2 = openFingerprintCursor(
     { fingerprints: cursor1.toState() },

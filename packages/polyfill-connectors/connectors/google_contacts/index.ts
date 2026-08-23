@@ -285,7 +285,7 @@ export async function collectGoogleContacts(ctx: CollectContext, options: Contac
         await ctx.emitRecord("contact_groups", record);
       }
     }
-    groupsCursor.pruneStale();
+    groupsCursor.dropUnseenIds();
     await ctx.emit({ type: "STATE", stream: "contact_groups", cursor: { fingerprints: groupsCursor.toState() } });
   }
 
@@ -306,7 +306,7 @@ export async function collectGoogleContacts(ctx: CollectContext, options: Contac
   // syncToken, or the fallback path) may prune stale fingerprints — matching
   // the Calendar connector's identical rule.
   if (result.fullResync) {
-    peopleCursor.pruneStale();
+    peopleCursor.dropUnseenIds();
   }
   const nextPeopleState: PeopleState = {
     ...(result.nextSyncToken ? { sync_token: result.nextSyncToken, synced_at: new Date(now()).toISOString() } : {}),

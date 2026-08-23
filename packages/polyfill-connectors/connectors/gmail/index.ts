@@ -1352,7 +1352,7 @@ async function emitLabelsStream(
   }
   // Drop fingerprints for mailboxes that disappeared so a future
   // re-creation re-emits. `labels` is always a full scan.
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   const labelsCursor: Record<string, unknown> = { fetched_at: nowIso() };
   if (cursor.size() > 0) {
     labelsCursor.fingerprints = cursor.toState();

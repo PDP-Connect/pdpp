@@ -108,7 +108,7 @@
  * from the prior run's cursor. A re-fetched message whose fingerprint is
  * unchanged is NOT re-emitted as a RECORD this run — this is what stops
  * every run from duplicating the same bounded per-chat window into
- * downstream storage. The cursor is carry-forward only (no `pruneStale`):
+ * downstream storage. The cursor is carry-forward only (no `dropUnseenIds`):
  * gmcli gives no deletion signal for messages that scroll out of the
  * `--limit` window or a conversation gmcli stops returning, so an id once
  * seen stays remembered rather than being dropped and re-emitted as "new"

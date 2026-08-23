@@ -515,7 +515,7 @@ test("ynabCollect: a run on an established (many-runs-old) connection still prov
 // call is a full walk, an id genuinely missing this run MUST be dropped from
 // `newState.accounts[budgetId].fingerprints`, or a future re-creation of the
 // same id would silently no-op against the stale fingerprint instead of
-// re-emitting. `collectAccounts` calls `entityCursor.pruneStale()` right
+// re-emitting. `collectAccounts` calls `entityCursor.dropUnseenIds()` right
 // before serializing `fingerprints` into STATE — this test proves that call
 // is load-bearing by asserting the deleted account's fingerprint is actually
 // gone from the second run's committed cursor, not just that the record
@@ -559,7 +559,7 @@ test("ynabCollect: an account present in run 1 and absent from run 2's full list
   );
   assert.ok(
     !(ACCOUNT_2 in secondFingerprints),
-    "ACCOUNT_2 was absent from run 2's full list — pruneStale must remove its fingerprint from committed STATE, or a future re-creation of ACCOUNT_2 would silently no-op against the stale entry"
+    "ACCOUNT_2 was absent from run 2's full list — dropUnseenIds must remove its fingerprint from committed STATE, or a future re-creation of ACCOUNT_2 would silently no-op against the stale entry"
   );
 
   const secondCov = coverageFor(second.messages, "accounts");

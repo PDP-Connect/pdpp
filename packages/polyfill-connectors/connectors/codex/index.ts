@@ -1915,7 +1915,7 @@ async function emitGatedInventoryStream(input: {
       await waitForEmitDrain();
     }
   }
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   const inventoryCursor: Record<string, unknown> = { fetched_at: input.nowIso() };
   if (cursor.size() > 0) {
     inventoryCursor.fingerprints = cursor.toState();

@@ -87,7 +87,7 @@ test("credit_card_billing: a no-op refresh (only fetched_at differs) is suppress
 
   const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
   assert.equal(wouldEmit(cursor1, a, billing, RUN1_AT), true, "first observation emits");
-  cursor1.pruneStale();
+  cursor1.dropUnseenIds();
   const state1 = { credit_card_billing: { fetched_at: RUN1_AT, fingerprints: cursor1.toState() } };
 
   // Second run: identical billing, only fetched_at differs.
@@ -109,7 +109,7 @@ test("credit_card_billing: a balance / rewards / cycle-status move does NOT re-e
     const a = makeCardAccount();
     const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
     wouldEmit(cursor1, a, makeBilling(), RUN1_AT);
-    cursor1.pruneStale();
+    cursor1.dropUnseenIds();
     const state1 = { credit_card_billing: { fingerprints: cursor1.toState() } };
 
     const cursor2 = openFingerprintCursor(state1.credit_card_billing, {
@@ -133,7 +133,7 @@ test("credit_card_billing: a credit-limit / APR / nickname move each re-emit the
     const a = makeCardAccount();
     const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
     wouldEmit(cursor1, a, makeBilling(), RUN1_AT);
-    cursor1.pruneStale();
+    cursor1.dropUnseenIds();
     const state1 = { credit_card_billing: { fingerprints: cursor1.toState() } };
 
     const cursor2 = openFingerprintCursor(state1.credit_card_billing, {
@@ -152,7 +152,7 @@ test("credit_card_billing: STATE round-trips a fingerprints map keyed by card id
   const a = makeCardAccount({ account_id_raw: "CC-0001" });
   const cursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
   wouldEmit(cursor, a, makeBilling(), RUN1_AT);
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   const state = { credit_card_billing: { fetched_at: RUN1_AT, fingerprints: cursor.toState() } };
   const fps = readPriorCreditCardBillingFingerprints(state);
   assert.equal(fps.size, 1, "one fingerprint persisted");

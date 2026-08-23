@@ -1437,7 +1437,7 @@ export async function emitAccountsStream(
   );
   // Accounts enumeration is a full dashboard scan: prune fingerprints for
   // accounts no longer present so a re-added account re-emits.
-  fingerprintCursor.pruneStale();
+  fingerprintCursor.dropUnseenIds();
   const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
   if (fingerprintCursor.size() > 0) {
     cursor.fingerprints = fingerprintCursor.toState();
@@ -1589,7 +1589,7 @@ export async function emitTransactionsForAccount(
     // field move is a fingerprint boundary and still emits.
     //
     // NOTE: transactions is a PARTIAL scan (per-account incremental
-    // windows), so this cursor is never `pruneStale()`d — pruning ids the
+    // windows), so this cursor is never `dropUnseenIds()`d — pruning ids the
     // run did not look at would drop their fingerprints and re-churn them
     // on the next overlapping window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
@@ -1643,7 +1643,7 @@ export async function emitCurrentActivityForAccount(
     // `fetched_at` is suppressed.
     //
     // NOTE: current_activity is a PARTIAL scan (only the dashboard's
-    // recent rows), so this cursor is never `pruneStale()`d — pruning ids
+    // recent rows), so this cursor is never `dropUnseenIds()`d — pruning ids
     // the overview stopped showing would drop their fingerprints and
     // re-churn a row that scrolls back into the recent window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
@@ -2643,8 +2643,8 @@ export async function runStatements(
     // (and the carried hydration pointers, in lockstep) for statements no
     // longer listed so a re-appearance re-emits and a delisted statement
     // stops being carried forever.
-    fingerprintCursor?.pruneStale();
-    hydrationCursor?.pruneStale();
+    fingerprintCursor?.dropUnseenIds();
+    hydrationCursor?.dropUnseenIds();
     const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
     if (fingerprintCursor && fingerprintCursor.size() > 0) {
       cursor.fingerprints = fingerprintCursor.toState();

@@ -67,7 +67,7 @@ export interface CarryForwardCursor<T> {
    *  pruning ids it never looked at. If `note` was called zero times this
    *  run, every prior id is dropped — the correct outcome for a requested
    *  full-scan stream that returned zero records. */
-  pruneStale: () => void;
+  dropUnseenIds: () => void;
   /** Number of ids in the next map. */
   size: () => number;
   /** Serializable next-run map for STATE. */
@@ -95,7 +95,7 @@ export function openCarryForwardCursor<T>(prior: ReadonlyMap<string, T>): CarryF
       next.set(id, value);
       seen.add(id);
     },
-    pruneStale(): void {
+    dropUnseenIds(): void {
       for (const id of next.keys()) {
         if (!seen.has(id)) {
           next.delete(id);
@@ -150,7 +150,7 @@ export interface FingerprintCursor {
    *  times this run, every prior id is dropped — that is the correct
    *  outcome for a requested full-scan stream that returned zero
    *  records. */
-  pruneStale: () => void;
+  dropUnseenIds: () => void;
   /** Returns `true` iff the record's fingerprint differs from the prior
    *  cursor value for this id (or no prior exists). Always records the
    *  computed fingerprint into the next map and the id into the seen
@@ -230,8 +230,8 @@ export function openFingerprintCursor(priorState: unknown, options: FingerprintC
     priorFingerprint(id: string): string | undefined {
       return cursor.prior(id);
     },
-    pruneStale(): void {
-      cursor.pruneStale();
+    dropUnseenIds(): void {
+      cursor.dropUnseenIds();
     },
     toState(): Record<string, string> {
       return cursor.toState();

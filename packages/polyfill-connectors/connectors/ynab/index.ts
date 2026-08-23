@@ -997,7 +997,7 @@ async function collectAccounts(ctx: BudgetCtx): Promise<AccountsBudgetFact> {
   });
 
   if (wantsEntity) {
-    entityCursor.pruneStale();
+    entityCursor.dropUnseenIds();
     const accounts =
       (newState.accounts as
         | Record<string, { server_knowledge: number; fingerprints?: Record<string, string> }>
@@ -1289,7 +1289,7 @@ async function collectPayeeLocations(ctx: BudgetCtx): Promise<PayeeLocationsBudg
   // id absent this run was deleted at the source. Prune so a future
   // re-creation triggers a fresh emit instead of silently no-opping
   // against a stale fingerprint.
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   const payeeLocsState =
     (newState.payee_locations as Record<string, { fingerprints?: Record<string, string> }> | undefined) ?? {};
   payeeLocsState[budgetId] = { fingerprints: cursor.toState() };
@@ -1858,7 +1858,7 @@ export async function emitBudgetsStream(deps: BudgetsStreamDeps): Promise<void> 
   // cursor but absent this run was deleted at the source. Prune so a future
   // re-creation triggers a fresh emit instead of silently no-opping against a
   // stale fingerprint.
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   const budgetsCursor = {
     fetched_at: nowIso(),
     fingerprints: cursor.toState(),

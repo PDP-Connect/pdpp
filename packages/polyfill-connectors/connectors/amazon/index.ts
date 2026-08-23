@@ -1076,7 +1076,7 @@ export async function emitOrderAndItems(
     // does not churn on a no-op re-scrape and is left ungated.
     //
     // NOTE: orders is a PARTIAL scan (year-freezing skips historical years),
-    // so this cursor is never `pruneStale()`d — pruning ids in years the run
+    // so this cursor is never `dropUnseenIds()`d — pruning ids in years the run
     // did not scrape would drop their fingerprints and re-churn them when the
     // year is next (re)visited.
     const orderRecord = buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt);

@@ -676,7 +676,7 @@ export async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise
     }
     // Full-scan source: prune ids the server no longer returns so a real
     // deletion tombstones instead of silently no-opping forever.
-    entityCursor.pruneStale();
+    entityCursor.dropUnseenIds();
     await progress("Synced address book via bounded full snapshot", {
       stream: "contacts",
       count: contactCount,
@@ -943,7 +943,7 @@ if (isMainModule(import.meta.url)) {
       }
 
       if (requested.has("address_books")) {
-        bookCursor.pruneStale();
+        bookCursor.dropUnseenIds();
         newState.address_books = { fingerprints: bookCursor.toState(), fetched_at: nowIso() };
         await emit({ type: "STATE", stream: "address_books", cursor: newState.address_books });
         await emitDetailCoverage(

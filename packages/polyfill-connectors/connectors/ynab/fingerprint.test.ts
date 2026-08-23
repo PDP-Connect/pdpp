@@ -73,7 +73,7 @@ function runPass(
       emitted.push(record);
     }
   }
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   const priorPayeeLocs = priorState.payee_locations;
   const carry: Record<string, { fingerprints?: Record<string, string> }> =
     priorPayeeLocs && typeof priorPayeeLocs === "object" && !Array.isArray(priorPayeeLocs)
@@ -268,7 +268,7 @@ function runBudgetPass(priorState: Record<string, unknown>, budgets: readonly Bu
       emitted.push(record);
     }
   }
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   return {
     emitted,
     state: { ...priorState, budgets: { fetched_at: "2026-01-01T00:00:00.000Z", fingerprints: cursor.toState() } },

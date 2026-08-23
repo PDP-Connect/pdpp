@@ -388,7 +388,7 @@ test("external archive replacement: a different (e.g. re-paired) archive's messa
   );
   assert.deepEqual(sortedIds(emitted), ["replaced_msg_1", "replaced_msg_2"]);
 
-  // The cursor is carry-forward only (no pruneStale — see index.ts's STATE
+  // The cursor is carry-forward only (no dropUnseenIds — see index.ts's STATE
   // doc comment: gmcli gives no deletion signal), so the old chat_alice/
   // msg_1 fingerprint is neither required nor asserted gone here; the point
   // under test is that the replacement's own messages are not silently

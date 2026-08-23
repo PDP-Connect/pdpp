@@ -2197,7 +2197,7 @@ export async function emitMessagesPass(
  * archive-rebuild churn produces a fresh RECORD per (record, run) pair
  * even when source state hasn't moved. One cursor per fingerprinted
  * stream; cursors for streams not requested this run carry forward
- * untouched (their `pruneStale` is never called).
+ * untouched (their `dropUnseenIds` is never called).
  */
 export interface StreamDeps {
   db: DatabaseSync;
@@ -3095,7 +3095,7 @@ export function pruneRequestedFingerprintCursors(
 ): void {
   for (const stream of FINGERPRINTED_STREAMS) {
     if (requested.has(stream) && !failedStreams.has(stream)) {
-      fingerprintCursors.get(stream)?.pruneStale();
+      fingerprintCursors.get(stream)?.dropUnseenIds();
     }
   }
 }
