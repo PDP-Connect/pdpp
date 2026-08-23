@@ -102,7 +102,11 @@ test("apple_contacts integration: discovers, syncs via sync-collection, and emit
 });
 
 test("apple_contacts integration: a genuinely empty address book completes with proven-empty contacts coverage", async () => {
-  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  const server = await startFakeCardDavServer({
+    username: USERNAME,
+    password: PASSWORD,
+    enforceRfc6578IncrementalSemantics: true,
+  });
   try {
     // No contacts registered on the fake server at all — the address book
     // exists and enumerates cleanly, it is just genuinely empty.
@@ -143,6 +147,30 @@ test("apple_contacts integration: a genuinely empty address book completes with 
     assert.equal(groupsCoverage.covered, 0);
     const groupsState = result.messages.find((m) => m.type === "STATE" && m.stream === "contact_groups");
     assert.ok(groupsState, "a successful empty group enumeration must stage its stream checkpoint");
+
+    const contactsState = result.messages.findLast(
+      (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "contacts"
+    );
+    assert.ok(contactsState);
+    const [bookState] = Object.values(
+      contactsState.cursor as Record<string, { initial_sync_completed?: boolean; sync_token?: string }>
+    );
+    assert.equal(bookState?.initial_sync_completed, true, "the empty inventory still establishes a boundary");
+    assert.ok(bookState?.sync_token);
+
+    // A true zero must not make every later ordinary sync walk the whole
+    // collection. The marker makes this run resume the quiet token instead.
+    const quiet = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage({ contacts: contactsState.cursor }),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+    assert.equal(
+      quiet.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts"),
+      undefined,
+      "the initialized empty book must use its quiet token instead of full-rescanning"
+    );
 
     const addressBooksCoverage = result.messages.find(
       (m) => m.type === "DETAIL_COVERAGE" && m.stream === "address_books"
@@ -310,6 +338,85 @@ test("apple_contacts integration: an unchanged incremental sync re-enumerates th
       contactsCoverage,
       undefined,
       "an unchanged incremental sync must not claim a proven contacts boundary"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("apple_contacts integration: recovers a legacy sync token without an initialization boundary", async () => {
+  const server = await startFakeCardDavServer({
+    username: USERNAME,
+    password: PASSWORD,
+    enforceRfc6578IncrementalSemantics: true,
+    syncCollectionOmitsAddressData: true,
+  });
+  try {
+    server.contacts.set("alice", {
+      uid: "alice",
+      href: "/addressbooks/owner/card/alice.vcf",
+      vcard: buildVCard({ uid: "alice", fn: "Alice Example" }),
+    });
+    server.contacts.set("bob", {
+      uid: "bob",
+      href: "/addressbooks/owner/card/bob.vcf",
+      vcard: buildVCard({ uid: "bob", fn: "Bob Example" }),
+    });
+    server.contacts.set("carol", {
+      uid: "carol",
+      href: "/addressbooks/owner/card/carol.vcf",
+      vcard: buildVCard({ uid: "carol", fn: "Carol Example" }),
+    });
+
+    // This is the deployed legacy shape: a book-level token was persisted,
+    // but no full-inventory boundary or contact fingerprints were recorded.
+    // RFC 6578 returns an empty change feed for this quiet token even though
+    // the address book is populated.
+    const legacyState = {
+      contacts: {
+        [`${server.origin}/addressbooks/owner/card`]: {
+          fingerprints: {},
+          sync_token: "legacy-token",
+        },
+      },
+    };
+    const recovered = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(legacyState),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    assert.equal(recordsOf(recovered.messages, "contacts").length, 3);
+    const recoveredCoverage = recovered.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(recoveredCoverage && recoveredCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(recoveredCoverage.considered, 3);
+    assert.equal(recoveredCoverage.covered, 3);
+
+    const recoveredState = recovered.messages.findLast(
+      (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "contacts"
+    );
+    assert.ok(recoveredState);
+    const [recoveredBookState] = Object.values(
+      recoveredState.cursor as Record<string, { initial_sync_completed?: boolean; sync_token?: string }>
+    );
+    assert.equal(recoveredBookState?.initial_sync_completed, true);
+    assert.ok(recoveredBookState?.sync_token);
+
+    // The recovery boundary is sticky. A genuinely empty account takes the
+    // same first path, then this ordinary follow-up must resume its token
+    // rather than full-rescanning forever.
+    const quiet = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage({ contacts: recoveredState.cursor }),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+    assert.equal(recordsOf(quiet.messages, "contacts").length, 0);
+    assert.equal(
+      quiet.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts"),
+      undefined,
+      "the initialized follow-up must use its token's quiet change feed, not re-establish a full boundary"
     );
   } finally {
     await server.close();
