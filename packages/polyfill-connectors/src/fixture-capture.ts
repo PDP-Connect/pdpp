@@ -64,7 +64,7 @@ import { fileURLToPath } from "node:url";
 
 import type { Page } from "playwright";
 
-import { redactAriaSnapshot, redactDomHtml } from "./capture-redaction.ts";
+import { redactAriaSnapshot, redactDomHtml, redactKnownSecrets } from "./capture-redaction.ts";
 import type { RecordData } from "./connector-runtime.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -179,6 +179,17 @@ export interface CaptureSession {
    * Safe to call multiple times; the second call is a no-op.
    */
   finalize: () => void;
+  /**
+   * True once any credential value has been registered for this run.
+   *
+   * This is the trace-suppression gate. Playwright records `fill()` action
+   * PARAMETERS into `trace.trace`, so a trace taken after a credential is
+   * typed contains that credential verbatim and no tracing option removes it.
+   * `makeTracer` reads this to decide whether a trace may be persisted.
+   * Deliberately a method, not a snapshot boolean: the tracer asks at stop()
+   * time, long after credentials resolve.
+   */
+  hasRegisteredSecrets: () => boolean;
   /** True when this session retains raw fixtures on success. */
   readonly keepOnSuccess: boolean;
   /**
@@ -193,6 +204,10 @@ export interface CaptureSession {
    * wherever they appear, including fields no rule would recognize as secret.
    * Call as soon as credentials resolve and before any page interaction.
    * Values shorter than the matching floor are ignored — see capture-redaction.
+   *
+   * Registering ANY value also disarms trace persistence for the run, even a
+   * value below the matching floor: the floor governs text substitution, not
+   * whether the run handles credentials at all.
    */
   registerSecrets: (values: Iterable<string>) => void;
   readonly runId: string;
@@ -278,20 +293,30 @@ async function captureDomHtml(
   }
 }
 
-async function capturePageMetadata(page: Page, baseDir: string, label: string, safe: string): Promise<void> {
+async function capturePageMetadata(
+  page: Page,
+  baseDir: string,
+  label: string,
+  safe: string,
+  secrets: readonly string[]
+): Promise<void> {
   try {
     const title = await page.title().catch(() => "");
     writeFileSync(
       join(baseDir, "pages", `${safe}.json`),
-      JSON.stringify(
-        {
-          captured_at: new Date().toISOString(),
-          label,
-          title,
-          url: page.url(),
-        },
-        null,
-        2
+      // A credential can reach a URL (a token in a query string) or a title.
+      redactKnownSecrets(
+        JSON.stringify(
+          {
+            captured_at: new Date().toISOString(),
+            label,
+            title,
+            url: page.url(),
+          },
+          null,
+          2
+        ),
+        secrets
       )
     );
   } catch (err) {
@@ -323,9 +348,49 @@ async function captureAriaSnapshot(
   }
 }
 
+/**
+ * Write a viewport screenshot, masking any field that could render a
+ * credential as readable pixels.
+ *
+ * A screenshot is the one capture kind no text rule can clean: the bytes are
+ * an image, so `grep` sees nothing and the redaction helpers have no purchase.
+ * `type="password"` renders as dots and is safe on its own, but a
+ * one-time-code input is conventionally `type="text"` and renders the digits
+ * PLAINLY. Two live paths do exactly that — venmo `venmo-otp-after-submit`
+ * and reddit `reddit-otp-after-submit` both screenshot immediately after
+ * filling an OTP field, and their submit clicks are best-effort, so a failed
+ * click leaves the code on screen.
+ *
+ * Playwright's `mask` option paints an opaque box over each matched element
+ * before the pixels are read, so the credential is never encoded into the PNG
+ * at all — as opposed to being written and then cleaned. The surrounding page
+ * still renders, which is what makes the screenshot worth keeping.
+ */
+const SCREENSHOT_MASK_SELECTOR = [
+  "input[type=password]",
+  "input[autocomplete=one-time-code]",
+  "input[autocomplete=current-password]",
+  "input[autocomplete=new-password]",
+  'input[name="otp"]',
+  'input[name="code"]',
+  'input[name="smsCode"]',
+  'input[name="verification_code"]',
+  'input[inputmode="numeric"]',
+  "input[type=tel]",
+].join(", ");
+
 async function captureScreenshot(page: Page, baseDir: string, label: string, safe: string): Promise<void> {
   try {
-    const screenshot = await page.screenshot({ fullPage: false, type: "png" });
+    // `mask` needs a real Locator. Build it defensively so a page-like object
+    // without `locator` (test doubles, reduced surfaces) degrades to no
+    // screenshot rather than an unmasked one — never write pixels we cannot
+    // prove are masked.
+    const mask = typeof page.locator === "function" ? [page.locator(SCREENSHOT_MASK_SELECTOR)] : null;
+    if (!mask) {
+      process.stderr.write(`[capture] screenshot skipped for ${label}: page cannot build a credential mask\n`);
+      return;
+    }
+    const screenshot = await page.screenshot({ fullPage: false, mask, type: "png" });
     writeFileSync(join(baseDir, "screenshots", `${safe}.png`), screenshot);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -377,21 +442,28 @@ async function writeLocatorProbeReport(
   baseDir: string,
   label: string,
   safe: string,
-  results: readonly LocatorProbeResult[]
+  results: readonly LocatorProbeResult[],
+  secrets: readonly string[]
 ): Promise<void> {
   try {
     writeFileSync(
       join(baseDir, "locators", `${safe}.json`),
-      JSON.stringify(
-        {
-          captured_at: new Date().toISOString(),
-          label,
-          probes: results,
-          title: await page.title().catch((): string => ""),
-          url: page.url(),
-        },
-        null,
-        2
+      // Each probe's ariaSnapshot is already redacted by runLocatorProbe; this
+      // second pass covers the report's own url/title fields and any probe
+      // selector or error message that quoted a credential back.
+      redactKnownSecrets(
+        JSON.stringify(
+          {
+            captured_at: new Date().toISOString(),
+            label,
+            probes: results,
+            title: await page.title().catch((): string => ""),
+            url: page.url(),
+          },
+          null,
+          2
+        ),
+        secrets
       )
     );
   } catch (err) {
@@ -430,6 +502,10 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
 
   let httpSeq = 0;
   const secrets = new Set<string>();
+  // Tracked separately from `secrets.size` so that a credential too short to
+  // be matched verbatim still suppresses traces. "Did this run handle a
+  // credential?" and "can we substring-match it?" are different questions.
+  let sawAnySecret = false;
   let traceCheckpointHook: ((label: string) => Promise<void>) | null = null;
   let succeeded = false;
   let finalized = false;
@@ -445,8 +521,12 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
       for (const value of values) {
         if (typeof value === "string" && value.length > 0) {
           secrets.add(value);
+          sawAnySecret = true;
         }
       }
+    },
+    hasRegisteredSecrets(): boolean {
+      return sawAnySecret;
     },
     markSucceeded(): void {
       succeeded = true;
@@ -470,7 +550,11 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
     recordRecord(msg): void {
       try {
         const file = join(baseDir, "records", `${safeLabel(msg.stream)}.jsonl`);
-        appendFileSync(file, `${JSON.stringify(msg.data)}\n`);
+        // Identity-based redaction only. records/ holds connector-emitted
+        // payloads with no form structure, so there is no field slot to reason
+        // about — but a credential echoed back by an API (a session token in a
+        // profile response) is still a credential landing on disk.
+        appendFileSync(file, `${redactKnownSecrets(JSON.stringify(msg.data), [...secrets])}\n`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[capture] record write failed: ${message}\n`);
@@ -480,7 +564,7 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
       const safe = safeLabel(label);
       const knownSecrets = [...secrets];
       await captureDomHtml(page, baseDir, label, safe, knownSecrets);
-      await capturePageMetadata(page, baseDir, label, safe);
+      await capturePageMetadata(page, baseDir, label, safe, knownSecrets);
       await captureAriaSnapshot(page, baseDir, label, safe, knownSecrets);
       await captureScreenshot(page, baseDir, label, safe);
       if (traceCheckpointHook) {
@@ -494,7 +578,7 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
       const safe = safeLabel(label);
       const knownSecrets = [...secrets];
       const results = await Promise.all(probes.map((probe) => runLocatorProbe(page, probe, knownSecrets)));
-      await writeLocatorProbeReport(page, baseDir, label, safe, results);
+      await writeLocatorProbeReport(page, baseDir, label, safe, results, knownSecrets);
     },
     captureHttp(label, body, meta = {}): void {
       try {
@@ -502,7 +586,11 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
         const idx = String(httpSeq).padStart(4, "0");
         const file = join(baseDir, "http", `${idx}-${safeLabel(label)}.json`);
         const payload = { label, meta, body };
-        writeFileSync(file, JSON.stringify(payload, null, 2));
+        // meta carries request URLs, which is where a credential in a query
+        // string would appear; body carries whatever the endpoint returned.
+        // Both are free-form, so identity matching is the only rule that
+        // applies — see capture-redaction for why shape matching cannot work.
+        writeFileSync(file, redactKnownSecrets(JSON.stringify(payload, null, 2), [...secrets]));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[capture] http write failed for ${label}: ${message}\n`);

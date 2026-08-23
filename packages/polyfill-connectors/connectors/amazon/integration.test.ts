@@ -1632,6 +1632,7 @@ test("processListOrder: first failed detail captures one failed-detail checkpoin
       keepOnSuccess: true,
       markSucceeded: (): void => undefined,
       recordRecord: (): void => undefined,
+      hasRegisteredSecrets: (): boolean => false,
       registerSecrets: (): void => undefined,
       runId: "test-run",
     },
