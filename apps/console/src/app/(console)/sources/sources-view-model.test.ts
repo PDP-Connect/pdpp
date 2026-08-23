@@ -906,6 +906,47 @@ test("an archived source never renders a healthy status, even with a green store
 
   assert.equal(views[0]?.status.kind, "archived", "a green verdict must not survive archival");
   assert.notEqual(views[0]?.status.tone, "success", "an archived source must never render a success tone");
+
+  // The list row renders `fusedStatus.line` and `fusedStatus.tone` (see
+  // `sources-view.tsx`); `status` reaches only the decorative dot. Asserting
+  // `status` alone is what let a green "Healthy" fused line ship under a test
+  // named "never renders a healthy status" — the name promised the RENDERED
+  // status, the assertions covered a projection the owner barely sees. Both
+  // projections are now pinned, so they cannot silently disagree again.
+  assert.equal(views[0]?.fusedStatus.kind, "archived", "the fused line the owner reads must agree with the dot");
+  assert.notEqual(views[0]?.fusedStatus.tone, "success", "the fused line must never render a success tone");
+  assert.match(
+    views[0]?.fusedStatus.line ?? "",
+    /^Archived · not collecting/,
+    "the fused line must lead with the archived state, not a stale green verdict label"
+  );
+  assert.doesNotMatch(views[0]?.fusedStatus.line ?? "", /Healthy/, "the stale green label must not survive archival");
+});
+
+test("an archived source with a stale in-flight run keeps the archived line, not a recovered verdict label", () => {
+  // The tie-break case. `archived` and `blocked` are BOTH severity 0 in
+  // `SEVERITY_BY_KIND`, and `stateSlot` prefers the recovered verdict on a
+  // tie (`<=`), so handing a `verdictFallback` to an archived row would let a
+  // stale red verdict displace "Archived · not collecting". It would also
+  // append "Syncing now" to a source that will never collect again.
+  const views = toSourcesView([
+    summary({
+      connection_id: "cin_archived_running",
+      connector_id: "chase",
+      display_name: "Chase",
+      last_run: lastRun("running"),
+      rendered_verdict: renderedVerdict({ pill: { label: "Can't collect", tone: "red" } }),
+      source_visibility: "archived",
+    }),
+  ]);
+
+  assert.equal(views[0]?.fusedStatus.kind, "archived", "archival outranks any recovered verdict");
+  assert.match(views[0]?.fusedStatus.line ?? "", /^Archived · not collecting/);
+  assert.doesNotMatch(
+    views[0]?.fusedStatus.line ?? "",
+    /Syncing now/,
+    "an archived source is not syncing, whatever a stale run flag says"
+  );
 });
 
 test("an archived source offers no Reconnect action — the prompt that leads nowhere", () => {
@@ -1018,6 +1059,16 @@ test("a setup-failed source never renders a healthy status, even with a green st
 
   assert.equal(views[0]?.status.kind, "setup_failed", "a green verdict must not survive setup-failure classification");
   assert.notEqual(views[0]?.status.tone, "success", "a setup-failed source must never render a success tone");
+
+  // Same gap as the archived case above: the row renders the FUSED line, so
+  // pinning `status` alone left the surface the owner reads unguarded.
+  assert.equal(views[0]?.fusedStatus.kind, "setup_failed", "the fused line the owner reads must agree with the dot");
+  assert.notEqual(views[0]?.fusedStatus.tone, "success", "the fused line must never render a success tone");
+  assert.match(
+    views[0]?.fusedStatus.line ?? "",
+    /^Setup never completed/,
+    "the fused line must lead with the terminal setup state, not a stale green verdict label"
+  );
 });
 
 test("a setup-failed source offers no action — no Reconnect, no Try-again CTA on the row, no list cue", () => {
