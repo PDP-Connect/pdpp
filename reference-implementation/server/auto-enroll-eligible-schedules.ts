@@ -4,9 +4,10 @@
 /**
  * Reference-server boot pass that enrolls a default enabled schedule for
  * every first-party connector that DERIVES an automatic refresh mode from
- * its declared capability facts, is publicly listed as `supported`, AND
- * whose declared `capabilities.auth.required` env names are populated in
- * `process.env`.
+ * its declared capability facts, AND whose declared
+ * `capabilities.auth.required` env names are populated in `process.env`.
+ * A connector that declares no auth requirement is already satisfied; the
+ * boot pass has no credential gate to wait for in that case.
  *
  * The mode is derived, never read from the hand-written `recommended_mode`
  * string — see `runtime/refresh-mode-derivation.ts` for the rule and why
@@ -78,13 +79,6 @@ export interface AutoEnrollSummary {
   scanned: number;
   skipped_env: number;
   skipped_existing: number;
-  /**
-   * Policy-eligible connectors this pass has no env requirement to gate on,
-   * so it cannot enroll them. Counted apart from `skipped_policy` because
-   * nothing is wrong with these connectors — conflating the two made a
-   * routine no-op boot read as a fleet-wide policy rejection.
-   */
-  skipped_no_auth_requirement: number;
   skipped_policy: number;
 }
 
@@ -96,7 +90,6 @@ const EMPTY_SUMMARY = (): AutoEnrollSummary => ({
   scanned: 0,
   skipped_env: 0,
   skipped_existing: 0,
-  skipped_no_auth_requirement: 0,
   skipped_policy: 0,
 });
 
@@ -153,19 +146,6 @@ function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {
   };
 }
 
-interface ListingFacts {
-  readonly tier: string | null;
-}
-
-function getListingFacts(caps: ManifestCapabilities): ListingFacts {
-  const listing = caps.public_listing;
-  if (!listing || typeof listing !== "object" || Array.isArray(listing)) {
-    return { tier: null };
-  }
-  const l = listing as Record<string, unknown>;
-  return { tier: typeof l.tier === "string" ? l.tier : null };
-}
-
 function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | null {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const auth = caps.auth;
@@ -178,7 +158,7 @@ function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | 
   }
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const required = a.required;
-  if (!Array.isArray(required) || required.length === 0) {
+  if (!Array.isArray(required)) {
     return null;
   }
   return required;
@@ -324,10 +304,6 @@ function checkPolicyEligibility(caps: ManifestCapabilities): PolicyEligibility {
       reason: `derived_mode=${derivedMode} (interaction_posture=${policy.interactionPosture ?? "<missing>"}, background_safe=${String(policy.backgroundSafe)})`,
     };
   }
-  const listing = getListingFacts(caps);
-  if (listing.tier !== "supported") {
-    return { eligible: false, reason: `public_listing.tier=${listing.tier ?? "<missing>"}` };
-  }
   return { eligible: true };
 }
 
@@ -345,14 +321,13 @@ interface EligibleManifest {
 }
 
 /**
- * Why a manifest was not eligible, so the summary can say which. These are
- * genuinely different operator situations and previously both landed in
- * `skipped_policy`, which made a routine no-op boot read like 25 policy
- * rejections.
+ * Why a manifest was not eligible, so the summary can say which. Policy
+ * failures remain distinct from the separate env/store credential gate.
  */
-type ManifestIneligibility =
-  | { readonly kind: "no_auth_requirement" }
-  | { readonly kind: "policy"; readonly reason: string };
+interface ManifestIneligibility {
+  readonly kind: "policy";
+  readonly reason: string;
+}
 
 type ManifestClassification = EligibleManifest | ManifestIneligibility;
 
@@ -369,14 +344,18 @@ function classifyManifestEligibility(manifest: unknown): ManifestClassification 
   if (!policy.eligible) {
     return { kind: "policy", reason: policy.reason ?? "ineligible" };
   }
+  // An absent auth capability means this connector has no credential to
+  // gate on. Non-env auth remains ineligible here: this boot pass can prove
+  // only env-backed requirements (or their encrypted store equivalent).
+  if (caps.auth === undefined) {
+    return {
+      intervalSeconds: resolveIntervalSeconds(caps),
+      requirements: [],
+    };
+  }
   const requirements = extractEnvRequirement(caps);
   if (!requirements) {
-    // Eligibility includes "manifest declares its env requirements".
-    // An automatic, listed connector without auth.required cannot be
-    // auto-enrolled by this pass because we have nothing to gate on. This
-    // is NOT a policy rejection — the connector is perfectly eligible in
-    // policy terms — so it is counted and logged separately.
-    return { kind: "no_auth_requirement" };
+    return { kind: "policy", reason: "manifest declares an unsupported auth requirement" };
   }
   return {
     intervalSeconds: resolveIntervalSeconds(caps),
@@ -424,12 +403,6 @@ async function decideScheduleAttachmentForConnector(args: {
 }): Promise<AutoEnrollSummaryCounter> {
   const classification = classifyManifestEligibility(args.manifest);
   if (!isEligibleManifest(classification)) {
-    if (classification.kind === "no_auth_requirement") {
-      args.log(
-        `[auto-enroll] ${args.connectorId} is policy-eligible but declares no capabilities.auth.required; nothing to gate on`
-      );
-      return "skipped_no_auth_requirement";
-    }
     args.log(`[auto-enroll] ${args.connectorId} not eligible: ${classification.reason}`);
     return "skipped_policy";
   }
