@@ -28,6 +28,7 @@
  *      shape as reddit/amazon's OTP handoff.
  */
 
+import type { ProgressExtra } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Locator, Page } from "playwright";
 import { DEADLINE_TIMEOUT, manualBrowserLogin, withDeadline } from "../browser-handoff.ts";
@@ -478,8 +479,16 @@ interface EnsureVenmoSessionArgs {
    * `probeVenmoAccount`'s `evaluateTimeoutMs` already provides.
    */
   passwordScreenTimeoutMs?: number;
+  /**
+   * Emits a `run.progress_reported` spine event. Optional so tests that don't
+   * care about the timeline can omit it; production always supplies it (see
+   * `connectors/venmo/index.ts`'s `ensureSession`).
+   */
+  progress?: (message: string, extra?: ProgressExtra) => Promise<void>;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
+
+const noopProgress = (): Promise<void> => Promise.resolve();
 
 export interface VenmoAccountProbeResult {
   live: boolean;
@@ -997,10 +1006,11 @@ async function loginWithSavedCredentials({
   onCredentialSubmit,
   page,
   passwordScreenTimeoutMs,
+  progress = noopProgress,
   sendInteraction,
   username,
   password,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "passwordScreenTimeoutMs" | "sendInteraction"> & {
+}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "passwordScreenTimeoutMs" | "progress" | "sendInteraction"> & {
   checkpoint: SessionCheckpointFn;
   onCredentialSubmit?: () => void;
   password: string;
@@ -1051,6 +1061,12 @@ async function loginWithSavedCredentials({
     throw new Error("venmo_login_submit_missing");
   }
   onCredentialSubmit?.();
+  // Durable, non-secret marker: no credential value, just the fact and phase.
+  // Before this, the run spine had no way to distinguish "the saved password
+  // was submitted and Venmo rejected it" from "the flow never got this far" —
+  // `onCredentialSubmit` only flips an in-process retry-classification flag
+  // (session-establish.ts) and was never itself observable in spine_events.
+  await progress("venmo_credential_submit: saved password submitted to sign-in form, awaiting result");
   await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch((): null => null);
   await captureLoginState(capture, page, "venmo-login-after-submit");
   await checkpoint("venmo-2fa-decision");
@@ -1086,6 +1102,7 @@ export async function ensureVenmoSession({
   onCredentialSubmit,
   page,
   passwordScreenTimeoutMs,
+  progress,
   sendInteraction,
 }: EnsureVenmoSessionArgs): Promise<VenmoAccountProbeResult> {
   await checkpoint("venmo-auth-probe");
@@ -1112,6 +1129,7 @@ export async function ensureVenmoSession({
     ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
     page,
     ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),
+    ...(progress ? { progress } : {}),
     sendInteraction,
     username,
     password,
