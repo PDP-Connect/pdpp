@@ -1956,6 +1956,16 @@ test("outbox axis: trusted healthy heartbeat with zero pending is idle", () => {
   assert.deepEqual(r, { axis: "idle", cause: null, unreliable: false });
 });
 
+test("outbox axis: fresh healthy or stopped heartbeat without pending evidence is unknown", () => {
+  for (const lastHeartbeatStatus of ["healthy", "stopped"] as const) {
+    const r = deriveOutboxAxisFromHeartbeat(
+      heartbeat({ lastHeartbeatStatus, recordsPending: null }),
+      { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+    );
+    assert.deepEqual(r, { axis: "unknown", cause: null, unreliable: false });
+  }
+});
+
 test("outbox axis: trusted healthy heartbeat with pending work is active", () => {
   const r = deriveOutboxAxisFromHeartbeat(heartbeat({ recordsPending: 5 }), {
     nowIso: NOW,
