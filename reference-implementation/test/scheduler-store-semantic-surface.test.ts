@@ -492,6 +492,32 @@ test("listSchedules entries each surface enabled as a boolean", async () => {
   });
 });
 
+test("SchedulerStore rejects an empty run id instead of persisting an empty run_history key", async () => {
+  await withFreshStore(async (store) => {
+    assert.throws(
+      () =>
+        store.appendRunHistory({
+          attempt: 1,
+          checkpointSummary: null,
+          completedAt: "2026-04-29T04:00:01.000Z",
+          connectorId: SEMANTIC_CONNECTOR,
+          connectorInstanceId: "cin_empty_run_id",
+          knownGaps: [],
+          recordsEmitted: 0,
+          runId: "",
+          source: { id: SEMANTIC_CONNECTOR, kind: "connector" },
+          startedAt: "2026-04-29T04:00:00.000Z",
+          status: "failed",
+        }),
+      /runId must be non-empty/
+    );
+    assert.equal(
+      (getDb().prepare("SELECT COUNT(*) AS n FROM run_history WHERE run_id = ''").get() as { n: number }).n,
+      0
+    );
+  });
+});
+
 test("page-scoped scheduler batches preserve exact instance history and schedule ordering", async () => {
   await withFreshStore(async (store) => {
     const batches = schedulerBatches(store);
