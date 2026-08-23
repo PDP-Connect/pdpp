@@ -1331,6 +1331,13 @@ async function runInBrowser(args: {
       capture: baseCtx.capture,
       name,
       page,
+      // Checkpoints already name every sign-in phase, but they only ever wrote
+      // to `capture` — which is opt-in and was OFF in production, so a failed
+      // browser sign-in left ONE progress event for the whole run and the
+      // timeline could not say which phase it died in. Threading `progress`
+      // here puts the phase names on the durable timeline regardless of
+      // whether capture is enabled.
+      progress,
     });
     await watchdog.run(() =>
       establishSession(
@@ -1999,6 +2006,9 @@ export function makeSessionEstablishWatchdog(args: {
   pollIntervalMs?: number;
   /** Hook fired exactly once when the watchdog trips, before the run rejects. */
   onTrip?: (info: { lastLabel: string | null; sinceMs: number }) => void;
+  /** Optional durable progress channel so each checkpoint phase reaches the
+   *  timeline, not just the opt-in capture directory. */
+  progress?: (message: string) => Promise<void> | void;
 }): SessionEstablishWatchdog {
   const now = args.now ?? Date.now;
   const deadlineMs = args.deadlineMs ?? resolveSessionEstablishWatchdogMs();
@@ -2021,6 +2031,13 @@ export function makeSessionEstablishWatchdog(args: {
 
   const checkpoint: SessionCheckpointFn = async (label) => {
     markProgress(label);
+    // Durable phase trace. Best-effort and never fails the run, matching the
+    // capture call below.
+    try {
+      await args.progress?.(`session-establish phase: ${label}`);
+    } catch {
+      // A progress emit must never fail session establishment.
+    }
     // Best-effort durable diagnostic so a hang no longer leaves only the
     // initial blank-page artifact. captureBrowserPage already guards a closed
     // page; the bounded-title fix keeps the underlying metadata read from
