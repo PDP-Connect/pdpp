@@ -37,6 +37,7 @@ import {
   type RunExecutorRuntimeState,
 } from "../runtime/scheduler/run-executor.ts";
 import type { ConnectorSchedule } from "../runtime/scheduler-domain-types.ts";
+import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
@@ -242,6 +243,21 @@ rl.on("line", async (line) => {
   return connectorPath;
 }
 
+interface SpineEventRow {
+  connector_instance_id: string | null;
+  data_json: string;
+  event_type: string;
+  run_id: string | null;
+}
+
+function spineEventsForRun(runId: string, eventType: string): SpineEventRow[] {
+  return getDb()
+    .prepare(
+      "SELECT connector_instance_id, data_json, event_type, run_id FROM spine_events WHERE run_id = ? AND event_type = ?"
+    )
+    .all(runId, eventType) as SpineEventRow[];
+}
+
 function freshRuntime(): RunExecutorRuntimeState {
   return {
     announcedBackoffClass: new Map<string, string>(),
@@ -434,6 +450,54 @@ test(
     );
     assert.equal(record.terminalReason, null);
     assert.equal(record.recordsEmitted, 5);
+
+    // The watchdog suppressing maxRunWallClockMs is a decision that must
+    // leave a durable trace — without it, an operator watching a run exceed
+    // its ceiling cannot tell "legitimately in a local-only phase" from "the
+    // watchdog failed to fire" without reading source.
+    const { runId } = record;
+    assert.ok(runId, "expected the record to carry a run_id to look up its spine events");
+    const events = spineEventsForRun(runId as string, "run.local_only_phase_started");
+    assert.equal(
+      events.length,
+      1,
+      `expected exactly one run.local_only_phase_started spine event for ${runId}, got ${events.length}`
+    );
+    const [event] = events;
+    assert.ok(event, "expected the queried spine event row to be present");
+    const data = JSON.parse(event.data_json) as {
+      disarmed_timer_ms?: number;
+      elapsed_ms?: number;
+      phase_boundary?: string;
+    };
+    assert.equal(event.connector_instance_id, CONNECTOR_INSTANCE_ID);
+    assert.equal(data.phase_boundary, "local_only_phase_started");
+    assert.equal(data.disarmed_timer_ms, 150, "must name the maxRunWallClockMs value the timer was disarmed from");
+    assert.ok(
+      typeof data.elapsed_ms === "number" && data.elapsed_ms >= 0,
+      `expected a non-negative elapsed_ms at latch, got ${String(data.elapsed_ms)}`
+    );
+  })
+);
+
+test(
+  "a run with no phase-boundary declaration never emits a local_only_phase_started spine event (control for the durable-trace test above)",
+  withServerAndTmpDir(async ({ ownerToken, rsUrl, tmpDir }) => {
+    const runtime = freshRuntime();
+    const launchRun = makeHarness(runtime, rsUrl, 150);
+
+    const record = await launchRun(schedule(writeConnector(tmpDir, 5, true), ownerToken), false, SCHEDULED_POLICY);
+
+    assert.equal(record.status, "failed");
+    assert.equal(record.terminalReason, "run_timed_out");
+    const { runId } = record;
+    assert.ok(runId, "expected the record to carry a run_id to look up its spine events");
+    const events = spineEventsForRun(runId as string, "run.local_only_phase_started");
+    assert.equal(
+      events.length,
+      0,
+      "a run that never declares a local-only phase must not emit a local_only_phase_started event"
+    );
   })
 );
 
