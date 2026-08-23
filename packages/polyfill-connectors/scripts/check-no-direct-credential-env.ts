@@ -19,7 +19,8 @@
  *   - a connector that reads `process.env` has no reason to declare an `auth`
  *     block, and four did not (`heb`, `chase`, `amazon`, `chatgpt`), so the
  *     runtime resolved `{}` and never raised the `credentials` INTERACTION
- *     that would have told the owner a credential was expected;
+ *     that would have told the owner a credential was expected. All four now
+ *     declare one, and their sign-in sites read the resolved `credentials`;
  *   - an absent value falls through to a generic "hand the page to the owner"
  *     branch whose message blames the PAGE, not the credential.
  *
@@ -59,19 +60,18 @@ const CREDENTIAL_ENV_PATTERN = /process\.env\.([A-Z][A-Z0-9_]*_(?:USERNAME|PASSW
  * Files that still read credentials from `process.env`, pending migration to
  * `resolveLoginCredentials`. THIS LIST MAY ONLY SHRINK.
  *
- * Each entry is a path relative to the package root. `heb.ts` is listed
- * because a concurrent change owns that file; the rest are queued behind it so
- * this gate could land without a mass rewrite that would collide with in-flight
- * work.
+ * Each entry is a path relative to the package root. The `heb`/`chase`/
+ * `amazon`/`chatgpt` entries have been migrated and removed. What remains is
+ * `github` (a token/device flow with no manifest-declared sign-in pair) plus
+ * `reddit` and `jellyfin`, whose STORED credentials predate their current
+ * manifest shape — see LEGACY_CREDENTIAL_KIND_MIGRATIONS in
+ * ../static-secret-injection.ts. Those need a credential-kind migration, not
+ * just a call-site swap.
  */
 const MIGRATION_ALLOWLIST: ReadonlySet<string> = new Set([
-  "connectors/amazon/index.ts",
   "connectors/jellyfin/index.ts",
   "connectors/reddit/index.ts",
-  "src/auto-login/amazon.ts",
-  "src/auto-login/chatgpt.ts",
   "src/auto-login/github.ts",
-  "src/auto-login/heb.ts",
   "src/auto-login/reddit.ts",
 ]);
 

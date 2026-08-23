@@ -79,16 +79,30 @@ function makeChallengePage(sessionActive: () => boolean): Page {
   return fake as Page;
 }
 
-async function withChatGptCredentials(run: () => Promise<void>): Promise<void> {
+/**
+ * ChatGPT's sign-in pair as the runtime hands it to `ensureChatGptSession`.
+ *
+ * Formerly this suite set `process.env.CHATGPT_USERNAME` / `_PASSWORD` around
+ * each test. `ensureChatGptSession` now takes the connection's credentials as
+ * an argument (see `login-credentials.ts`), so the fixture is a plain object
+ * passed straight into the call.
+ */
+const CHATGPT_TEST_CREDENTIALS = Object.freeze({
+  CHATGPT_PASSWORD: "test-password",
+  CHATGPT_USERNAME: "test-user@example.com",
+});
+
+/**
+ * Runs `run` with the streaming env cleared, so the manual-action handoff
+ * fails closed (no CDP/network) and the test exercises only the login
+ * control flow.
+ */
+async function withClearedStreamingEnv(run: () => Promise<void>): Promise<void> {
   const prior = new Map<string, string | undefined>();
-  for (const key of [...STREAMING_ENV_KEYS, "CHATGPT_USERNAME", "CHATGPT_PASSWORD"]) {
-    prior.set(key, process.env[key]);
-  }
   for (const key of STREAMING_ENV_KEYS) {
+    prior.set(key, process.env[key]);
     delete process.env[key];
   }
-  process.env.CHATGPT_USERNAME = "test-user@example.com";
-  process.env.CHATGPT_PASSWORD = "test-password";
   try {
     await run();
   } finally {
@@ -114,7 +128,7 @@ function manualActionResponder(requests: InteractionRequest[]) {
 }
 
 test("ensureChatGptSession continues when the operator completes login during the unexpected-UI fallback", async () => {
-  await withChatGptCredentials(async () => {
+  await withClearedStreamingEnv(async () => {
     const requests: InteractionRequest[] = [];
     // Session is inactive until the operator completes the manual step, then
     // active — modelling a Cloudflare challenge solved in the stream.
@@ -132,6 +146,7 @@ test("ensureChatGptSession continues when the operator completes login during th
 
     const result = await ensureChatGptSession({
       context: makeContext(),
+      credentials: CHATGPT_TEST_CREDENTIALS,
       page: makeChallengePage(() => completedManualStep),
       sendInteraction: responder,
     });
@@ -147,12 +162,13 @@ test("ensureChatGptSession continues when the operator completes login during th
 });
 
 test("ensureChatGptSession fails only when login still has not happened after the manual step", async () => {
-  await withChatGptCredentials(async () => {
+  await withClearedStreamingEnv(async () => {
     const requests: InteractionRequest[] = [];
 
     await assert.rejects(
       ensureChatGptSession({
         context: makeContext(),
+        credentials: CHATGPT_TEST_CREDENTIALS,
         // Session never becomes active — operator dismissed without logging in.
         page: makeChallengePage(() => false),
         sendInteraction: manualActionResponder(requests),

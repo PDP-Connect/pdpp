@@ -27,6 +27,7 @@ import { isIncapsulaBlocked, looksLoggedOut } from "../../connectors/heb/parsers
 import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
+import { type LoginCredentialFields, resolveLoginCredentials } from "./login-credentials.ts";
 
 const ORDERS_URL = "https://www.heb.com/my-account/your-orders";
 const SESSION_PROBE_WAIT_MS = 2000;
@@ -122,9 +123,25 @@ export type HebAuthSurface =
   | "incapsula"
   | "unknown";
 
+/**
+ * Where H-E-B's sign-in pair lives in the runtime-resolved `credentials`
+ * object. Must match the manifest's `credential_capture` env mapping (see
+ * `src/generated/static-secret-registry.generated.ts`).
+ */
+const HEB_LOGIN_FIELDS: LoginCredentialFields = {
+  password: ["HEB_PASSWORD"],
+  username: ["HEB_USERNAME"],
+};
+
 interface EnsureHebSessionArgs {
   capture?: CaptureSession | null;
   checkpoint?: SessionCheckpointFn;
+  /**
+   * This connection's resolved sign-in pair, threaded from the runtime (see
+   * `login-credentials.ts`). Optional so a direct, non-runtime caller can omit
+   * it; an absent pair reports itself as absent rather than blaming the page.
+   */
+  credentials?: Readonly<Record<string, string | undefined>> | undefined;
   onCredentialSubmit?: () => void;
   page: Page;
   postSubmitWaitClock?: PostSubmitWaitClock;
@@ -707,11 +724,19 @@ async function waitForPostSubmitAuthSurface(
 async function handOffToOwner({
   capture,
   checkpoint,
+  credentialReason,
   page,
   sendInteraction,
   surface,
 }: Pick<EnsureHebSessionArgs, "capture" | "page" | "sendInteraction"> & {
   readonly checkpoint?: SessionCheckpointFn | undefined;
+  /**
+   * Set when this connection had no stored sign-in pair. It leads the message
+   * because it is the ACTUAL cause: whatever H-E-B rendered, the run never had
+   * a credential to submit, and the surface copy alone would misattribute that
+   * to the page.
+   */
+  readonly credentialReason?: string | undefined;
   readonly surface: Exclude<HebAuthSurface, "live">;
 }): Promise<boolean> {
   let message: string;
@@ -724,6 +749,9 @@ async function handOffToOwner({
     message = unknownSurfaceMessage(observed);
   } else {
     message = manualLoginMessage(surface);
+  }
+  if (credentialReason) {
+    message = `${credentialReason} ${message}`;
   }
   await manualAction(
     {
@@ -1028,6 +1056,7 @@ async function declinePasskeyEnrollmentThenSettle({
 export async function ensureHebSession({
   capture,
   checkpoint,
+  credentials,
   onCredentialSubmit,
   page,
   postSubmitWaitClock,
@@ -1039,12 +1068,15 @@ export async function ensureHebSession({
     return true;
   }
 
-  const username = process.env.HEB_USERNAME;
-  const password = process.env.HEB_PASSWORD;
+  // Connection-scoped, never ambient: `credentials` belongs to the ONE
+  // connection this run is for. See `login-credentials.ts` for why reading
+  // process.env here is banned (scripts/check-no-direct-credential-env.ts).
+  const resolved = resolveLoginCredentials(credentials, HEB_LOGIN_FIELDS, "heb");
   const loginFormRoot = await resolveUniqueLoginFormRoot(page);
   const surface = loginFormRoot ? "login_form" : await inspectAuthSurface(page);
 
-  if (username && password && loginFormRoot) {
+  if (resolved.kind === "resolved" && loginFormRoot) {
+    const { password, username } = resolved;
     const submitted = await handleVerifiedLoginFormSubmission({
       capture,
       checkpoint,
@@ -1090,6 +1122,11 @@ export async function ensureHebSession({
   const recovered = await handOffToOwner({
     ...(capture ? { capture } : {}),
     checkpoint,
+    // Names the CREDENTIAL, not the page. An owner reading this must be able to
+    // tell "no credential was stored for this connection" apart from "H-E-B's
+    // sign-in form failed to render" — the two need different remedies, and
+    // before this the surface copy claimed the latter for both.
+    ...(resolved.kind === "absent" ? { credentialReason: resolved.reason } : {}),
     page,
     sendInteraction,
     surface: repairSurface,

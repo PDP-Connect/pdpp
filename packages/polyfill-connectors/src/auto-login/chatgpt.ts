@@ -8,7 +8,9 @@
  * sign in via Google SSO (couldn't be fully automated without Google creds)
  * or email+password.
  *
- * Env: CHATGPT_USERNAME / CHATGPT_PASSWORD. ChatGPT has Cloudflare protection
+ * Credential fields: CHATGPT_USERNAME / CHATGPT_PASSWORD, resolved for THIS
+ * connection from the runtime-supplied `credentials` (never read from
+ * process.env — see `login-credentials.ts`). ChatGPT has Cloudflare protection
  * and may demand 2FA (app approval or code entry).
  *
  * If auto-login needs owner help (Cloudflare challenge, unexpected UI, slow
@@ -27,6 +29,17 @@ import type {
 } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
 import { detectCloudflareChallenge } from "../platform-probes.ts";
+import { type LoginCredentialFields, resolveLoginCredentials } from "./login-credentials.ts";
+
+/**
+ * Where ChatGPT's sign-in pair lives in the runtime-resolved `credentials`
+ * object. Must match the manifest's `credential_capture` env mapping (see
+ * `src/generated/static-secret-registry.generated.ts`).
+ */
+const CHATGPT_LOGIN_FIELDS: LoginCredentialFields = {
+  password: ["CHATGPT_PASSWORD"],
+  username: ["CHATGPT_USERNAME"],
+};
 
 interface EnsureChatGptSessionArgs {
   allowInteractiveAuthRepair?: boolean;
@@ -47,6 +60,12 @@ interface EnsureChatGptSessionArgs {
     extra?: { message?: string }
   ) => Promise<void>;
   context: BrowserContext;
+  /**
+   * This connection's resolved sign-in pair, threaded from the runtime (see
+   * `login-credentials.ts`). Optional so a direct, non-runtime caller can omit
+   * it; an absent pair reports itself as absent rather than blaming the page.
+   */
+  credentials?: Readonly<Record<string, string | undefined>> | undefined;
   onCredentialSubmit?: () => void;
   page: Page;
   progress?: (message: string, extra?: { stream?: string }) => Promise<void>;
@@ -1035,19 +1054,24 @@ async function repairWithManualBrowserLogin({
   capture,
   checkpoint,
   completeAssistance,
+  credentialReason,
   page,
   progress,
   sendInteraction,
 }: Pick<
   EnsureChatGptSessionArgs,
   "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
->): Promise<boolean> {
+> & {
+  /** Set when this connection had no stored sign-in pair; leads the copy. */
+  readonly credentialReason?: string | undefined;
+}): Promise<boolean> {
   await openChatGptLogin(page);
   return await handleBrowserLoginAssistance({
     ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),
     ...checkpointOption(checkpoint),
     ...(completeAssistance ? { completeAssistance } : {}),
+    ...(credentialReason ? { message: `${credentialReason} ${CHATGPT_BROWSER_LOGIN_ASSISTANCE_MESSAGE}` } : {}),
     page,
     ...(progress ? { progress } : {}),
     reason: "login",
@@ -1121,6 +1145,7 @@ export async function ensureChatGptSession({
   checkpoint,
   completeAssistance,
   context: _context,
+  credentials,
   onCredentialSubmit,
   page,
   progress,
@@ -1136,10 +1161,12 @@ export async function ensureChatGptSession({
     throw new Error(CHATGPT_SESSION_REQUIRED_NON_INTERACTIVE_MESSAGE);
   }
 
-  const email = process.env.CHATGPT_USERNAME;
-  const password = process.env.CHATGPT_PASSWORD;
+  // Connection-scoped, never ambient: `credentials` belongs to the ONE
+  // connection this run is for. See `login-credentials.ts` for why reading
+  // process.env here is banned (scripts/check-no-direct-credential-env.ts).
+  const resolved = resolveLoginCredentials(credentials, CHATGPT_LOGIN_FIELDS, "chatgpt");
   const hooks = sessionAssistanceHooks({ assist, capture, checkpoint, completeAssistance, progress });
-  if (!(email && password)) {
+  if (resolved.kind === "absent") {
     // No reusable session AND no stored credential. Reaching this point means the
     // connection is browser-session-bound (a static-secret-BOUND connection with
     // no usable credential fails closed in `resolveStaticSecretRunEnv` before the
@@ -1148,9 +1175,13 @@ export async function ensureChatGptSession({
     // the interactive browser login IS the correct owner-mediated repair here.
     // (Binding-first repair selection is owned by the connection-health
     // projection + console routing; see route-credentialless-repair-to-capture.)
+    // The reason still LEADS the copy even on the SSO path: an owner who did
+    // intend to store a credential must be able to see that none reached this
+    // run, rather than reading it as a routine browser-session repair.
     if (
       await repairWithManualBrowserLogin({
         ...hooks,
+        credentialReason: resolved.reason,
         page,
         sendInteraction,
       })
@@ -1160,6 +1191,7 @@ export async function ensureChatGptSession({
     throw new Error("chatgpt_login_post_submit_failed");
   }
 
+  const { password, username: email } = resolved;
   return await driveStoredCredentialAuthRepair({
     ...hooks,
     email,

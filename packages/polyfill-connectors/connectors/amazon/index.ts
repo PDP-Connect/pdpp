@@ -23,7 +23,8 @@
 import { isMainModule } from "@pdpp/connector-protocol";
 import pRetry, { AbortError } from "p-retry";
 import type { BrowserContext, Page } from "playwright";
-import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
+import { AMAZON_LOGIN_FIELDS, ensureAmazonSession } from "../../src/auto-login/amazon.ts";
+import { resolveLoginCredentials } from "../../src/auto-login/login-credentials.ts";
 import {
   type BrowserCollectContext,
   type DetailGapMessage,
@@ -688,6 +689,7 @@ function readRecoverableAmazonOrderDetailGap(
  *  the USAA connector's `EmitDeps.reauthenticate` seam. */
 export type AmazonReauthFn = (input: {
   context: BrowserContext;
+  credentials?: Readonly<Record<string, string | undefined>> | undefined;
   page: Page;
   sendInteraction: BrowserCollectContext["sendInteraction"];
 }) => Promise<boolean>;
@@ -695,8 +697,8 @@ export type AmazonReauthFn = (input: {
 /**
  * Attempt exactly one mid-run session repair via `ensureAmazonSession` (or
  * `reauthenticate`, if injected), then retry the exact same order-detail
- * fetch once. Gated to the credentialed (`AMAZON_USERNAME`/
- * `AMAZON_PASSWORD`) automated login path only — `ensureAmazonSession`
+ * fetch once. Gated to the credentialed (this connection's resolved
+ * `AMAZON_USERNAME`/`AMAZON_PASSWORD` pair) automated login path only — `ensureAmazonSession`
  * probes first and no-ops when the session is still live, but its
  * NO-credentials fallback opens an interactive owner hand-off that can
  * block up to 30 minutes and consume an OTP interaction slot; that path
@@ -711,18 +713,23 @@ async function attemptAutomatedSessionRepair(
   sendInteraction: BrowserCollectContext["sendInteraction"],
   flags: RunFlags,
   orderId: string,
-  reauthenticate: AmazonReauthFn = ensureAmazonSession
+  reauthenticate: AmazonReauthFn = ensureAmazonSession,
+  credentials?: Readonly<Record<string, string | undefined>>
 ): Promise<DetailFetchResult | null> {
   if (flags.repairAttempted) {
     return null;
   }
   flags.repairAttempted = true;
-  const email = process.env.AMAZON_USERNAME;
-  const password = process.env.AMAZON_PASSWORD;
-  if (!(email && password)) {
+  // Connection-scoped, never ambient. This is a GATE, not a login site: it only
+  // decides whether the credentialed repair path is eligible, so an absent pair
+  // stays silent here and falls through to `session_repair_required` — the
+  // owner-facing naming belongs to `ensureAmazonSession` at run start, which
+  // must not be triggered speculatively mid-run (it can block 30 minutes).
+  const resolved = resolveLoginCredentials(credentials, AMAZON_LOGIN_FIELDS, "amazon");
+  if (resolved.kind === "absent") {
     return null;
   }
-  const recovered = await reauthenticate({ context, page, sendInteraction }).catch((): boolean => false);
+  const recovered = await reauthenticate({ context, credentials, page, sendInteraction }).catch((): boolean => false);
   if (!recovered) {
     return null;
   }
@@ -735,7 +742,8 @@ async function resolveOrderDetail(
   sendInteraction: BrowserCollectContext["sendInteraction"] | undefined,
   flags: RunFlags,
   orderId: string,
-  reauthenticate?: AmazonReauthFn
+  reauthenticate?: AmazonReauthFn,
+  credentials?: Readonly<Record<string, string | undefined>>
 ): Promise<DetailFetchResult> {
   if (flags.sessionRepairRequired) {
     // The session died earlier this run and the one-shot automated repair
@@ -774,7 +782,8 @@ async function resolveOrderDetail(
     sendInteraction,
     flags,
     orderId,
-    reauthenticate ?? ensureAmazonSession
+    reauthenticate ?? ensureAmazonSession,
+    credentials
   );
   return repaired ?? result;
 }
@@ -820,6 +829,9 @@ export interface AmazonDetailRecoveryDeps {
    *  attempt. Optional so legacy callers/tests that don't exercise the
    *  repair path can omit it — see `EmitDeps.context`. */
   context?: BrowserContext | undefined;
+  /** This connection's resolved sign-in pair, threaded to the mid-run repair
+   *  gate. Optional for the same reason as `context`. */
+  credentials?: Readonly<Record<string, string | undefined>> | undefined;
   detailGaps: readonly BrowserCollectContext["detailGaps"][number][];
   emit: EmitFn;
   emitRecord: EmitRecordFn;
@@ -853,7 +865,8 @@ async function recoverPendingOrderItemDetailGapPage(
       deps.sendInteraction,
       flags,
       locator.orderId,
-      deps.reauthenticate
+      deps.reauthenticate,
+      deps.credentials
     );
     if (result.status === "hydrated") {
       for (const item of result.detail.items) {
@@ -985,6 +998,9 @@ export interface EmitDeps {
    *  terminal `session_repair_required` behavior, unchanged from before
    *  this fix. */
   context?: BrowserContext | undefined;
+  /** This connection's resolved sign-in pair, threaded to the mid-run repair
+   *  gate. Optional for the same reason as `context`. */
+  credentials?: Readonly<Record<string, string | undefined>> | undefined;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
@@ -1417,7 +1433,8 @@ async function resolveDetailForListOrder(
     deps.sendInteraction,
     flags,
     listOrder.orderId,
-    deps.reauthenticate
+    deps.reauthenticate,
+    deps.credentials
   );
   if (result.status === "hydrated") {
     resolution.detail = result.detail;
@@ -1738,14 +1755,28 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "amazon",
     validateRecord,
+    // See the chase declaration: without this the runtime resolves `{}`, never
+    // raises the `credentials` INTERACTION, and Amazon's hand-off says "no
+    // optional sign-in details were provided" without naming the fields the
+    // owner must supply.
+    auth: { kind: "env", required: ["AMAZON_USERNAME", "AMAZON_PASSWORD"] },
     // Persistent profile keeps cookies and session state across runs; browser
     // mode is selected by the deployment, not by this connector.
     browser: { profileName: "amazon" },
-    async ensureSession({ capture, checkpoint, context, onCredentialSubmit, page, sendInteraction }): Promise<void> {
+    async ensureSession({
+      capture,
+      checkpoint,
+      context,
+      credentials,
+      onCredentialSubmit,
+      page,
+      sendInteraction,
+    }): Promise<void> {
       await ensureAmazonSession({
         ...(capture ? { capture } : {}),
         checkpoint,
         context,
+        credentials,
         onCredentialSubmit,
         page,
         sendInteraction,
@@ -1757,7 +1788,19 @@ if (isMainModule(import.meta.url)) {
       }
     },
     async collect(ctx: BrowserCollectContext): Promise<void> {
-      const { scope, state, emitRecord, emit, progress, capture, emittedAt, page, context, sendInteraction } = ctx;
+      const {
+        scope,
+        state,
+        emitRecord,
+        emit,
+        progress,
+        capture,
+        emittedAt,
+        page,
+        context,
+        credentials,
+        sendInteraction,
+      } = ctx;
       const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
       const wantsItems = requested.has("order_items");
       const wantsOrders = requested.has("orders");
@@ -1780,6 +1823,7 @@ if (isMainModule(import.meta.url)) {
         {
           capture,
           context,
+          credentials,
           detailGaps: ctx.detailGaps,
           emit,
           emitRecord,
@@ -1850,6 +1894,7 @@ if (isMainModule(import.meta.url)) {
       const deps: EmitDeps = {
         capture,
         context,
+        credentials,
         emit,
         emitRecord,
         emittedAt,

@@ -4585,6 +4585,11 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "chatgpt",
     validateRecord,
+    // See the chase declaration: without this the runtime resolves `{}`, never
+    // raises the `credentials` INTERACTION, and the no-credential branch opens
+    // an interactive browser login without ever saying a credential was
+    // expected.
+    auth: { kind: "env", required: ["CHATGPT_USERNAME", "CHATGPT_PASSWORD"] },
     normalizeTerminalError: normalizeChatGptTerminalError,
     // Page-preservation flags come from the shared browser-surface policy so the
     // page-level (child) and process-level (reference lease caller) retention
@@ -4596,6 +4601,7 @@ if (isMainModule(import.meta.url)) {
       checkpoint,
       completeAssistance,
       context,
+      credentials,
       onCredentialSubmit,
       page,
       progress,
@@ -4607,6 +4613,7 @@ if (isMainModule(import.meta.url)) {
         checkpoint,
         completeAssistance,
         context,
+        credentials,
         onCredentialSubmit,
         page,
         progress,
