@@ -159,6 +159,7 @@ test("buildProgressEvidence maps every field through and defaults observed_at to
       retainedRecords: 5,
     }),
     {
+      coverage_proven_at: null,
       gaps_drained_last_run: 2,
       last_refreshed_at: "2026-01-01T00:00:00.000Z",
       mode: "scheduled",

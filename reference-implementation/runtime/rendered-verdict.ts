@@ -393,6 +393,22 @@ export interface StreamRollup {
  * `mode`. All fields are nullable; the synthesizer never fabricates a number.
  */
 export interface ProgressEvidence {
+  /**
+   * When this connection's required-stream coverage was last PROVEN — the
+   * oldest `evidence_as_of` across required streams already proven complete
+   * (`oldestRequiredCompleteEvidenceAsOf`, `server/ref-control.ts`). A
+   * DIFFERENT anchor from {@link last_refreshed_at}: that one is
+   * connection-record recency (the last successful run / device heartbeat),
+   * this one is the age of the coverage proof itself. A run can succeed and
+   * refresh records without re-proving every required stream, so the two
+   * legitimately diverge — and when they do, the owner-facing freshness
+   * sentence must age against THIS one, not the flattering one.
+   *
+   * Optional and nullable: absent/`null`/unparseable means no proof stands
+   * behind a claim about coverage age, and the sentence falls back to the
+   * record-recency wording rather than inventing a date.
+   */
+  readonly coverage_proven_at?: string | null;
   readonly gaps_drained_last_run?: number | null;
   readonly last_refreshed_at?: string | null;
   readonly mode: ProgressMode;
@@ -1734,13 +1750,45 @@ function freshRecencyText(tone: VerdictTone, progress: ProgressEvidence | null):
   if (unhealthy && age) {
     return `Last successful refresh ${age}.`;
   }
+  // Record recency says "today"/"yesterday", but the COVERAGE PROOF is a
+  // separate anchor and can be materially older. Say so before claiming
+  // freshness on the strength of the record anchor alone.
+  const proofAge = staleCoverageProofAge(progress);
   if (age === "today") {
-    return "Fresh today.";
+    return proofAge ? `Fresh today. Coverage last proven ${proofAge}.` : "Fresh today.";
   }
   if (age === "yesterday") {
-    return "Fresh yesterday.";
+    return proofAge ? `Fresh yesterday. Coverage last proven ${proofAge}.` : "Fresh yesterday.";
   }
   return null;
+}
+
+/**
+ * The coverage proof's age, but ONLY when it is old enough that a reasonable
+ * owner would want to know — otherwise `null` so a healthy row stays clean.
+ *
+ * Threshold: the proof is reported once it is neither today nor yesterday,
+ * reusing {@link relativeDayAge}'s existing recency boundary rather than
+ * introducing a new constant. That boundary is already this module's shipped
+ * definition of "recent enough to state without a date" (it is exactly why
+ * `Fresh today.` / `Fresh yesterday.` carry no date while anything older
+ * renders `N days ago`). Applying the SAME rule to the proof anchor keeps one
+ * notion of recency in the renderer.
+ *
+ * Fails closed: an absent, null, malformed, or future-stamped proof yields
+ * `null`, never a fabricated or negative age — `relativeDayAge` already
+ * rejects unparseable input and any `from > observed`.
+ */
+function staleCoverageProofAge(progress: ProgressEvidence | null): string | null {
+  const provenAt = progress?.coverage_proven_at ?? null;
+  if (!provenAt) {
+    return null;
+  }
+  const proofAge = relativeDayAge(provenAt, progress?.observed_at ?? null);
+  if (proofAge === null || proofAge === "today" || proofAge === "yesterday") {
+    return null;
+  }
+  return proofAge;
 }
 
 function relativeDayAge(fromIso: string | null, observedIso: string | null): string | null {

@@ -241,9 +241,16 @@ export function buildProgressEvidence(input: {
   readonly recordsCommittedLastRun: number | null;
   readonly gapsDrainedLastRun: number | null;
   readonly lastRefreshedAt: string | null;
+  /**
+   * Oldest proof time across required streams already proven complete, or
+   * `null` when no such proof exists. Optional so every existing caller keeps
+   * its current behavior (absent reads as "no proof to age").
+   */
+  readonly coverageProvenAt?: string | null;
   readonly observedAt?: string | null;
 }): ProgressEvidence {
   return {
+    coverage_proven_at: input.coverageProvenAt ?? null,
     gaps_drained_last_run: input.gapsDrainedLastRun,
     last_refreshed_at: input.lastRefreshedAt,
     mode: input.mode,
