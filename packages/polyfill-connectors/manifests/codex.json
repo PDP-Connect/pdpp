@@ -894,6 +894,7 @@
     }
   ],
   "reason_display_messages": {
+    "malformed_jsonl_line": "Part of this session's log file couldn't be read, so those entries were skipped. Nothing was lost on your machine — the original file is unchanged",
     "shape_check_failed": "The data didn't look like we expected"
   }
 }
