@@ -782,8 +782,16 @@ export async function collect({ state, requested, emit, emitRecord, progress }: 
   const cursor = openFingerprintCursor(state.messages);
 
   await progress(`Google Messages phase=emit pass=emit messages=${String(parsed.length)}`);
+  // Tallied per message rather than read off `parsed.length`. The runtime
+  // drops a record that fails its shape check, so a message the validator
+  // rejects was weighed but never accounted for — counting it would let a
+  // schema drift that discards every message still report full coverage.
+  let covered = 0;
   for (const message of parsed) {
     const record = { ...message };
+    if (validateRecord("messages", record).ok) {
+      covered += 1;
+    }
     if (cursor.shouldEmit(record)) {
       await emitRecord("messages", record);
     }
@@ -809,12 +817,14 @@ export async function collect({ state, requested, emit, emitRecord, progress }: 
   // never proved its own coverage, leaving it permanently unmeasured
   // even on a fully successful run. gmcli's per-conversation query
   // already gives an exact enumerated count (`parsed.length`) every
-  // run — every fetched message is unconditionally considered above, so
-  // considered === covered even though the fingerprint gate may not
-  // re-emit an unchanged one as a fresh RECORD. A truncated run's
-  // SKIP_RESULT (emitted above) already outranks this in the coverage
-  // precedence order, so this always-emit is safe even when the fetch
-  // was bounded.
+  // run, so that is the honest `considered`. `covered` is the separate
+  // per-message tally above: a fetched-but-unchanged message still counts
+  // (its prior emission already durably queued it), but one the shape
+  // check rejects does not, because the runtime drops it. Counting both
+  // from `parsed.length` made a shortfall unreportable by construction.
+  // A truncated run's SKIP_RESULT (emitted above) already outranks this in
+  // the coverage precedence order, so this always-emit is safe even when
+  // the fetch was bounded.
   await emitDetailCoverage(
     { emit },
     {
@@ -823,7 +833,7 @@ export async function collect({ state, requested, emit, emitRecord, progress }: 
       requiredKeys: [],
       hydratedKeys: [],
       considered: parsed.length,
-      covered: parsed.length,
+      covered,
     }
   );
 }

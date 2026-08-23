@@ -147,6 +147,14 @@ interface PeopleClientLike {
 }
 
 interface SyncPeopleResult {
+  /** People this run actually enumerated from the API, counted at the page
+   *  loop — the only site that sees the source boundary. */
+  readonly considered: number;
+  /** The subset of `considered` this run accounted for: emitted, or
+   *  deliberately suppressed as unchanged. A person whose record the shape
+   *  check would reject is NOT counted, so a schema drift that silently
+   *  drops contacts reads as a shortfall instead of a full green run. */
+  readonly covered: number;
   readonly fullResync: boolean;
   readonly nextSyncToken: string | null;
 }
@@ -161,6 +169,8 @@ async function syncPeoplePages(args: {
   let pageToken: string | undefined;
   let nextSyncToken: string | null = null;
   let pages = 0;
+  let considered = 0;
+  let covered = 0;
   do {
     const page = await httpGovernor.request(
       () => client.listConnectionsPage({ ...(syncToken ? { syncToken } : {}), ...(pageToken ? { pageToken } : {}) }),
@@ -173,6 +183,15 @@ async function syncPeoplePages(args: {
     });
     for (const person of page.value.people) {
       const record = personRecord(person);
+      considered += 1;
+      // The runtime drops a record that fails its shape check (it emits a
+      // SKIP_RESULT instead of a RECORD), so asking the same validator here
+      // is what separates "accounted for" from "weighed and dropped".
+      // Without this the two counts could never diverge and the stream would
+      // report 100% coverage even while every contact was being rejected.
+      if (validateRecord("people", record).ok) {
+        covered += 1;
+      }
       if (cursor.shouldEmit(record)) {
         await ctx.emitRecord("people", record);
       }
@@ -180,7 +199,7 @@ async function syncPeoplePages(args: {
     pageToken = page.value.nextPageToken ?? undefined;
     nextSyncToken = page.value.nextSyncToken ?? nextSyncToken;
   } while (pageToken && pages < MAX_PAGES);
-  return { fullResync: !syncToken, nextSyncToken };
+  return { fullResync: !syncToken, nextSyncToken, considered, covered };
 }
 
 async function syncPeopleWithFallback(args: {
@@ -280,13 +299,19 @@ export async function collectGoogleContacts(ctx: CollectContext, options: Contac
   };
   await ctx.emit({ type: "STATE", stream: "people", cursor: nextPeopleState });
 
+  // Counted at the page loop, not from the cursor. `peopleCursor.size()` is
+  // the carry-forward map — it is seeded from prior state, so on a syncToken
+  // delta run it includes every contact this run never even looked at, and
+  // using it for both counts made coverage report 100% by construction.
+  // `covered` omits any person the shape check would reject, so a drop shows
+  // up as a shortfall rather than a silent green.
   await emitDetailCoverage(ctx, {
     stream: "people",
     stateStream: "people",
     requiredKeys: [],
     hydratedKeys: [],
-    considered: peopleCursor.size(),
-    covered: peopleCursor.size(),
+    considered: result.considered,
+    covered: result.covered,
   });
 }
 
