@@ -197,7 +197,12 @@ rl.on("line", (line) => {
  * provider-rate-limited phase — `sleepMs` is deliberately set well past
  * `maxRunWallClockMs` in the test that uses this.
  */
-function writeConnectorWithPhaseBoundary(tmpDir: string, recordCount: number, sleepMs: number): string {
+function writeConnectorWithPhaseBoundary(
+  tmpDir: string,
+  recordCount: number,
+  sleepMs: number,
+  hangAfterBoundary = false
+): string {
   const connectorPath = join(tmpDir, "connector.mjs");
   const records = Array.from({ length: recordCount }, (_, i) => ({
     data: { id: `i${i}` },
@@ -220,6 +225,12 @@ rl.on("line", async (line) => {
   }
   process.stdout.write(JSON.stringify({ cursor: { last: records.length ? records[records.length - 1].key : null }, stream: "items", type: "STATE" }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "PROGRESS", message: "entering local-only phase", phase_boundary: "local_only_phase_started" }) + "\\n");
+  if (${hangAfterBoundary ? "true" : "false"}) {
+    // Deliberately make no further progress. The local-only secondary ceiling
+    // must end this attempt; the pre-fix watchdog disarmed itself forever.
+    setInterval(() => {}, 1000);
+    return;
+  }
   await new Promise((resolve) => setTimeout(resolve, ${sleepMs}));
   process.stdout.write(JSON.stringify({ records_emitted: records.length, status: "succeeded", type: "DONE" }) + "\\n");
   rl.close();
@@ -438,6 +449,23 @@ test(
     // intact and it is specifically the phase_boundary signal, not merely
     // "the connector kept emitting PROGRESS", that disarms it.
     const record = await launchRun(schedule(writeConnector(tmpDir, 5, true), ownerToken), false, SCHEDULED_POLICY);
+
+    assert.equal(record.status, "failed");
+    assert.equal(record.terminalReason, "run_timed_out");
+  })
+);
+
+test(
+  "a connector that hangs after the local-only phase boundary is still killed by the secondary ceiling",
+  withServerAndTmpDir(async ({ ownerToken, rsUrl, tmpDir }) => {
+    const runtime = freshRuntime();
+    const launchRun = makeHarness(runtime, rsUrl, 150);
+
+    const record = await launchRun(
+      schedule(writeConnectorWithPhaseBoundary(tmpDir, 1, 2_000, true), ownerToken),
+      false,
+      SCHEDULED_POLICY
+    );
 
     assert.equal(record.status, "failed");
     assert.equal(record.terminalReason, "run_timed_out");
