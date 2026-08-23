@@ -209,10 +209,18 @@ async function searchAll(
       total_seen: results.length,
       cursor_present: Boolean(json.has_more && json.next_cursor),
     });
-    if (!(json.has_more && json.next_cursor)) {
+    if (json.has_more !== true) {
       break;
     }
-    cursor = json.next_cursor;
+    // `has_more` is the provider's claim that another page exists. A missing
+    // cursor contradicts that claim, so stopping here would silently hide the
+    // unfetched tail and let runStream advance its edit-time watermark past
+    // data this run never enumerated.
+    const nextCursor = json.next_cursor;
+    if (typeof nextCursor !== "string" || nextCursor.trim().length === 0) {
+      throw new Error("notion_pagination_contradiction");
+    }
+    cursor = nextCursor;
     pageIndex += 1;
     await politeDelay(POLITE_DELAY_MS);
   }
