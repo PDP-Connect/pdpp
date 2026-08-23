@@ -5489,7 +5489,17 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * Defaults to `new Date().toISOString()`; tests pass a fixed value.
    */
   readonly nowIso?: string;
-  readonly outbox?: { axis: OutboxAxis; cause?: OutboxStalledCause | null };
+  /**
+   * `counts` is the local-device outbox breakdown rolled up from trusted
+   * heartbeat rows. Purely additive annotation carried to the rendered
+   * remediation so a dead-letter backlog can be SIZED for the owner; no
+   * classification step reads it.
+   */
+  readonly outbox?: {
+    axis: OutboxAxis;
+    cause?: OutboxStalledCause | null;
+    counts?: OutboxDiagnosticCounts | null;
+  };
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   /**
    * `true` when the durable detail-gap evidence could not be read. Threaded
@@ -6445,7 +6455,12 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     localDeviceBacked,
     manifestStreams: manifest.streams ?? [],
     nowIso,
-    outbox: { axis: outbox.axis, cause: outbox.cause },
+    // `counts` is the same trusted-row rollup `localDeviceProgress` already
+    // carries. Passing it lets the rendered dead-letter remediation SIZE the
+    // backlog instead of describing it as an unbounded "records"; it feeds no
+    // classification step. Scheduler-managed connections have no local-device
+    // progress, so they pass `null` and keep the uncounted wording.
+    outbox: { axis: outbox.axis, cause: outbox.cause, counts: localDeviceProgress?.outbox_counts ?? null },
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     pendingDetailGapsRecovered: detailGaps.recovered,

@@ -68,6 +68,7 @@ function snapshot(): ConnectionHealthSnapshot {
     ephemeral_browser_runtime: null,
     forward_disposition: "awaiting_owner",
     last_success_at: null,
+    local_device_outbox_counts: null,
     next_action: null,
     next_attempt_at: "2026-06-15T12:00:00.000Z",
     reason_code: "credential_rejected",
