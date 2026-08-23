@@ -357,7 +357,12 @@ interface AttemptWatchdog {
    * `phase_boundary` marker (see connector-protocol-phase-boundary.d.ts) when
    * present — used to detect the local-only-phase transition below.
    */
-  markProgress: (extra?: { phase_boundary?: string }) => void;
+  /** Returns true on the ONE call that latches local-only suppression, so the
+   *  caller can emit a durable trace. A disarmed safety timer must not be an
+   *  invisible decision: before this, `phase_boundary` appeared in ZERO spine
+   *  events across every run, so an operator seeing a run exceed its ceiling
+   *  could not tell "legitimately local-only" from "the watchdog failed". */
+  markProgress: (extra?: { phase_boundary?: string }) => boolean;
   readonly signal: AbortSignal;
   timedOut: () => boolean;
 }
@@ -422,9 +427,11 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
           clearTimeout(timer);
           timer = null;
         }
-        return;
+        // TRUE only on the latching call — the caller emits the durable trace.
+        return true;
       }
       arm();
+      return false;
     },
     signal: cancellation.signal,
     timedOut() {
@@ -957,8 +964,18 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       ...call,
       cancelSignal: watchdog.signal,
       onProgress: (msg) => {
-        watchdog.markProgress(extractPhaseBoundary(msg));
+        const suppressedWallClock = watchdog.markProgress(extractPhaseBoundary(msg));
         originalOnProgress(msg);
+        if (suppressedWallClock) {
+          // The run just disarmed its own wall-clock watchdog. Record it through
+          // the SAME progress channel the timeline already persists, so the
+          // decision leaves a trace instead of being reconstructable only by
+          // reading source inside a container.
+          originalOnProgress({
+            message: `runtime.wall_clock_watchdog_suppressed {"reason":"local_only_phase_started","disarmed_budget_ms":${String(maxRunWallClockMs)}}`,
+            stream: null,
+          } as Parameters<typeof originalOnProgress>[0]);
+        }
       },
       onStarted: registerAttemptCancellation(
         call.onStarted,
