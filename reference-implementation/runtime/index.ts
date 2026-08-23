@@ -977,14 +977,24 @@ function runtimeAuthoredFailureMessage(
   return !hasStructuredFailureDetail && err.message ? boundedRuntimeFailureMessage(err.message) : null;
 }
 
-function buildStderrTailDiagnostic(tail: StderrTail | null | undefined): Record<string, unknown> | null {
+/**
+ * `knownSecrets` is REQUIRED, not optional, so the compiler forces any future
+ * call site to decide what this run's credentials are rather than silently
+ * inheriting shape-only redaction. The one existing caller has them in scope
+ * two lines away; a caller that genuinely holds none passes an empty array and
+ * says so at the call site.
+ */
+function buildStderrTailDiagnostic(
+  tail: StderrTail | null | undefined,
+  knownSecrets: readonly string[]
+): Record<string, unknown> | null {
   if (!tail || typeof tail !== "object") {
     return null;
   }
   if (!tail.text || tail.bytes_captured === 0) {
     return null;
   }
-  const { text: redactedText, redacted } = redactStderrTail(tail.text);
+  const { text: redactedText, redacted } = redactStderrTail(tail.text, { knownSecrets });
   return {
     bytes_captured: tail.bytes_captured,
     bytes_observed: tail.bytes_observed,
@@ -5671,10 +5681,32 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         // before it reaches progress OR the retained diagnostic — progress is
         // not a lower-trust sink than the retained evidence, so it gets the
         // same treatment.
+        //
+        // These are the credential values this run resolved and injected into
+        // the connector child's environment, passed so redaction can match them
+        // by IDENTITY. A connector that prints a password into an unlabelled
+        // stderr line ("Login failed for <password>") matches no shape rule and
+        // otherwise reaches a durable spine event verbatim — proven against the
+        // deployed head, with a real owner credential. See stderr-redact.ts.
+        //
+        // The set is every live secret THIS run handed the child, not just the
+        // connection's own credential: `ownerToken` and the streaming
+        // registration token are bearer credentials in the same environment, so
+        // a child that echoes one into stderr leaks it the same way. Scoping to
+        // what was actually injected keeps this a fact about the run rather than
+        // a guess about the connector.
+        const runKnownSecrets = [
+          ...Object.values(staticSecretLaunchEnv),
+          ownerToken,
+          streamingRegistrationToken,
+        ].filter((value): value is string => typeof value === "string" && value.length > 0);
         if (stderrTailRaw.text) {
-          onProgress({ text: redactStderrTail(stderrTailRaw.text).text, type: "stderr" });
+          onProgress({
+            text: redactStderrTail(stderrTailRaw.text, { knownSecrets: runKnownSecrets }).text,
+            type: "stderr",
+          });
         }
-        const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw);
+        const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw, runKnownSecrets);
 
         try {
           await waitForQueueDrain();
