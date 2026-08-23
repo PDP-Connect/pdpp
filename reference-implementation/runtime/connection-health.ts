@@ -883,6 +883,18 @@ export interface ConnectionHealthSnapshot {
    */
   readonly forward_disposition: ForwardDisposition;
   readonly last_success_at: string | null;
+  /**
+   * Additive, nullable local-device outbox count breakdown carried through
+   * from {@link ConnectionOutboxEvidence.counts}. Pure annotation: no
+   * classification step reads it, so it cannot move the headline `state`, any
+   * axis, any condition, the `forward_disposition`, or `next_action`. It lets
+   * the rendered verdict size a dead-letter backlog the system already
+   * counted instead of describing it as an unbounded "records". Carries only
+   * non-negative integer counts and optional ISO-8601 timestamps; never a
+   * stream body, payload, source name, or token. `null` when no trusted
+   * device rows stand behind a count.
+   */
+  readonly local_device_outbox_counts: OutboxDiagnosticCounts | null;
   /** Non-secret CTA. `null` when the connection does not need attention. */
   readonly next_action: NextAction | null;
   readonly next_attempt_at: string | null;
@@ -1063,6 +1075,21 @@ export interface ConnectionOutboxEvidence {
    * generic copy.
    */
   readonly cause?: OutboxStalledCause | null;
+  /**
+   * The already-rolled-up local-device outbox breakdown
+   * (`rollupOutboxDiagnosticCounts` over the trusted heartbeat rows). Purely
+   * additive annotation: NO classification step reads it, so it cannot move an
+   * axis, a condition, the headline state, or the cause. It exists so the
+   * owner-facing remediation summary can BOUND a dead-letter backlog the
+   * system already counted — "1 of 10,001" and "8,432 of 10,001" demand
+   * completely different reactions, and telling the owner only "records"
+   * leaves a known magnitude invisible.
+   *
+   * Absent/`null` when no trusted device rows stand behind a count. The
+   * renderer must fall back to uncounted wording rather than fabricate a
+   * zero; see `deadLetterMagnitude` in `rendered-verdict.ts`.
+   */
+  readonly counts?: OutboxDiagnosticCounts | null;
 }
 
 /**
@@ -1376,6 +1403,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const ephemeralBrowserRuntime = input.ephemeralBrowserRuntime;
   const remoteSurface = projectRemoteSurfaceDetail(input.remoteSurface ?? null);
+  const localDeviceOutboxCounts = input.outbox?.counts ?? null;
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
   const nextAttemptAt = conditionExpired(input.backoff?.nextRunAt ?? null, input.observedAt ?? null)
     ? null
@@ -1402,6 +1430,10 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       dominantConditionId,
       ephemeralBrowserRuntime,
       forwardDisposition,
+      // Attached at the single funnel every classification step returns
+      // through, so the annotation rides along without any step being able to
+      // classify on it.
+      localDeviceOutboxCounts,
       supportingConditionIds: pickSupportingConditionIds(conditions, dominantConditionId),
     });
   };
@@ -3789,6 +3821,7 @@ interface SnapshotArgs {
   readonly ephemeralBrowserRuntime?: EphemeralBrowserRuntimeProjection | null | undefined;
   readonly forwardDisposition: ForwardDisposition;
   readonly lastSuccessAt: string | null;
+  readonly localDeviceOutboxCounts?: OutboxDiagnosticCounts | null;
   readonly nextAction?: NextAction | null;
   readonly nextAttemptAt: string | null;
   readonly reasonCode: string | null;
@@ -3809,6 +3842,7 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     ephemeral_browser_runtime: runtimeAnnotationForSnapshot(args.ephemeralBrowserRuntime),
     forward_disposition: args.forwardDisposition,
     last_success_at: args.lastSuccessAt,
+    local_device_outbox_counts: args.localDeviceOutboxCounts ?? null,
     next_action: args.nextAction ?? null,
     next_attempt_at: args.nextAttemptAt,
     reason_code: args.reasonCode,

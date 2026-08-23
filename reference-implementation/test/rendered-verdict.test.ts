@@ -144,6 +144,7 @@ interface SnapshotOverrides {
   readonly dominant_condition_id?: string | null;
   readonly forward_disposition?: ForwardDisposition;
   readonly last_success_at?: string | null;
+  readonly local_device_outbox_counts?: ConnectionHealthSnapshot["local_device_outbox_counts"];
   readonly next_attempt_at?: string | null;
   readonly reason_code?: string | null;
   readonly state?: ConnectionHealthState;
@@ -170,6 +171,7 @@ function snapshot(overrides: SnapshotOverrides = {}): ConnectionHealthSnapshot {
     ephemeral_browser_runtime: null,
     forward_disposition: overrides.forward_disposition ?? "complete",
     last_success_at: overrides.last_success_at ?? null,
+    local_device_outbox_counts: overrides.local_device_outbox_counts ?? null,
     next_action: null,
     next_attempt_at: overrides.next_attempt_at ?? null,
     reason_code: overrides.reason_code ?? null,
@@ -1089,6 +1091,103 @@ test("channel: dead-letter stalled outbox includes recover preview before apply"
       "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply",
     ]
   );
+});
+
+// ─── Dead-letter magnitude (P1: no count the system knows may stay invisible) ──
+//
+// The owner cannot size a loss they cannot see. "1 of 10,001" and "8,432 of
+// 10,001" demand completely different reactions, and the system already holds
+// the numbers on the source-instance outbox diagnostics. These four cases pin
+// the whole contract: the count renders, the singular case reads correctly, an
+// absent count falls back to the exact prior sentence rather than fabricating a
+// zero, and the recovery CTA survives every one of those paths.
+
+/** Dead-letter stalled snapshot with optional outbox counts attached. */
+function deadLetterSnapshot(counts: ConnectionHealthSnapshot["local_device_outbox_counts"]): ConnectionHealthSnapshot {
+  return snapshot({
+    axes: { coverage: "complete", freshness: "fresh", outbox: "stalled" },
+    conditions: [
+      localExporterStalledCondition(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG),
+      backlogStalledCondition(CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG),
+    ],
+    forward_disposition: "complete",
+    local_device_outbox_counts: counts,
+    reason_code: "local_exporter_dead_letter_backlog",
+    state: "degraded",
+  });
+}
+
+function deadLetterVerdict(counts: ConnectionHealthSnapshot["local_device_outbox_counts"]) {
+  return synthesizeRenderedVerdict(deadLetterSnapshot(counts), [stream({ coverage: "complete" })], null, true);
+}
+
+test("dead-letter summary bounds the magnitude with thousands separators", () => {
+  // Real production state for one source: total 10001, dead_letter 1.
+  const v = deadLetterVerdict({ dead_letter: 1, succeeded: 10_000, total: 10_001 });
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.ok(action, "primary required action exists");
+  assert.equal(
+    action.remediation?.summary,
+    "1 of 10,001 records on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step."
+  );
+  // The permanence wording is the load-bearing half; the count only sizes it.
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(action.remediation?.summary ?? "", /will not retry on their own/);
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(action.remediation?.summary ?? "", /Recovering them is a manual step\./);
+  assert.equal(action.cta, "Recover local collector uploads");
+});
+
+test("dead-letter summary pluralizes a multi-record backlog", () => {
+  const v = deadLetterVerdict({ dead_letter: 8432, succeeded: 1569, total: 10_001 });
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.equal(
+    action?.remediation?.summary,
+    "8,432 of 10,001 records on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step."
+  );
+  assert.equal(action?.cta, "Recover local collector uploads");
+});
+
+test("dead-letter summary reads 'record' in the singular when the total is one", () => {
+  const v = deadLetterVerdict({ dead_letter: 1, succeeded: 0, total: 1 });
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  // "1 of 1 records" is exactly the sloppiness the owner notices.
+  assert.equal(
+    action?.remediation?.summary,
+    "1 of 1 record on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step."
+  );
+  assert.equal(action?.cta, "Recover local collector uploads");
+});
+
+test("dead-letter summary falls back to the uncounted sentence when counts are unavailable", () => {
+  // Fail-closed: a fabricated zero is as bad as a fabricated green. With no
+  // counts, no partial counts, and no zeroed counts may the sentence invent a
+  // magnitude — it must read exactly as it did before counts were plumbed.
+  const uncounted =
+    "The local collector has records on its host that failed to upload and will not retry on their own. Recovering them is a manual step.";
+  for (const counts of [
+    null,
+    {},
+    { total: 10_001 },
+    { dead_letter: 1 },
+    { dead_letter: 0, total: 10_001 },
+    { dead_letter: 1, total: 0 },
+  ] as const) {
+    const v = deadLetterVerdict(counts);
+    // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+    const action = v.required_actions[0];
+    assert.equal(
+      action?.remediation?.summary,
+      uncounted,
+      `counts ${JSON.stringify(counts)} must not fabricate a magnitude`
+    );
+    // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+    assert.doesNotMatch(action?.remediation?.summary ?? "", /undefined|null|NaN|\b0 of\b/);
+    assert.equal(action?.cta, "Recover local collector uploads", "the recovery CTA survives a missing count");
+  }
 });
 
 test("channel: structured attention carries the exact sync target from its own run id", () => {

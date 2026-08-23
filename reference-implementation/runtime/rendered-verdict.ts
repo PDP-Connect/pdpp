@@ -1143,6 +1143,58 @@ function localCollectorDoctorCommand(): ActionRemediationCommand {
   };
 }
 
+/**
+ * The uncounted dead-letter sentence. Says PERMANENT, not merely stalled:
+ * these records will NOT drain on their own. This is the fail-closed fallback
+ * whenever the magnitude is genuinely unavailable — a fabricated zero is as
+ * bad as a fabricated green, so an absent count costs the owner the number,
+ * never the warning.
+ */
+const DEAD_LETTER_SUMMARY_UNCOUNTED =
+  "The local collector has records on its host that failed to upload and will not retry on their own. Recovering them is a manual step.";
+
+/**
+ * Bound the dead-letter backlog the system already counted. Returns `null`
+ * — meaning "render the uncounted sentence" — unless BOTH a positive
+ * dead-letter count and a positive total are present as real integers.
+ *
+ * Every rejected shape matters: a missing count, a zeroed count, a partial
+ * pair, or a non-integer would each otherwise render a magnitude the evidence
+ * does not support ("0 of 0", "undefined of 10,001"). The owner reads a number
+ * as a measurement, so we only print one we actually measured.
+ */
+function deadLetterMagnitude(counts: ConnectionHealthSnapshot["local_device_outbox_counts"]): string | null {
+  if (!counts) {
+    return null;
+  }
+  const { dead_letter: deadLetter, total } = counts;
+  if (!(Number.isInteger(deadLetter) && Number.isInteger(total))) {
+    return null;
+  }
+  if (!(typeof deadLetter === "number" && typeof total === "number" && deadLetter > 0 && total > 0)) {
+    return null;
+  }
+  // Plural agrees with the TOTAL, the noun it actually modifies: "1 of 1
+  // record", "1 of 10,001 records". "1 of 1 records" is exactly the
+  // sloppiness the owner notices.
+  const noun = total === 1 ? "record" : "records";
+  return `${deadLetter.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} ${noun}`;
+}
+
+/**
+ * Owner-facing dead-letter summary. Names the state AND bounds the magnitude
+ * when the count is known, because "1 of 10,001" and "8,432 of 10,001" demand
+ * completely different reactions and the system holds the answer either way.
+ * The permanence wording is identical on both paths — only the magnitude is
+ * conditional.
+ */
+function deadLetterSummary(snapshot: ConnectionHealthSnapshot): string {
+  const magnitude = deadLetterMagnitude(snapshot.local_device_outbox_counts);
+  return magnitude === null
+    ? DEAD_LETTER_SUMMARY_UNCOUNTED
+    : `${magnitude} on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step.`;
+}
+
 function stalledOutboxCause(snapshot: ConnectionHealthSnapshot): ActionRemediationCause {
   const reasons = new Set(
     snapshot.conditions
@@ -1211,9 +1263,10 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         // outbox exhausted its retries: these records will NOT drain on their
         // own, unlike `transient_upload_failure`. The prior wording read as a
         // temporary condition, so an owner could reasonably wait for a recovery
-        // that was never coming.
-        summary:
-          "The local collector has records on its host that failed to upload and will not retry on their own. Recovering them is a manual step.",
+        // that was never coming. `deadLetterSummary` additionally bounds the
+        // magnitude when the count is known, and falls back to exactly this
+        // permanence wording when it is not.
+        summary: deadLetterSummary(snapshot),
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
       };
     case "transient_upload_failure":
