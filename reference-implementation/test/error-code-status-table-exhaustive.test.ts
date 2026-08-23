@@ -40,6 +40,7 @@ const EXPECTED_CODE_TO_STATUS = {
   authentication_error: 401,
   blob_not_found: 404,
   browser_enrollment_shell_required: 400,
+  connection_is_grouping_canonical: 409,
   connection_not_found: 404,
   connection_run_active: 409,
   connection_tombstoned: 409,
