@@ -74,6 +74,16 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Gap evidence records source coverage state.",
   },
+  connector_instance_config_current: {
+    classification: "backup_required",
+    reason:
+      "Names the revision a connection actually collects under. Losing the pointer silently reverts every connection to unconfigured while the revisions survive — configuration present but inert, with nothing saying so.",
+  },
+  connector_instance_config_revisions: {
+    classification: "backup_required",
+    reason:
+      "Owner consent decisions and the scopes they authorize. A collection_scope revision is the owner's answer to what may be collected; it cannot be rebuilt from any other table.",
+  },
   connector_instance_credentials: {
     classification: "backup_required",
     reason: "Stored connector credentials require the credential encryption key to decrypt after restore.",

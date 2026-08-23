@@ -4191,6 +4191,21 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         manifestStateStreamByStream,
         manifestDetailParentStreamsByStream
       );
+      // Flush records before a coverage claim becomes durable.
+      //
+      // Records are buffered and flushed at BATCH_SIZE or at DONE, but a
+      // coverage claim carries an explicit `covered` count the read model
+      // trusts verbatim: `evaluateStreamCoherence` compares `covered` against
+      // `considered` and never consults `collected`, so a claim of 5-of-5 is
+      // "proven" even when zero records reached the database. Without this
+      // flush, a connector that emits DETAIL_COVERAGE and then dies with an
+      // unflushed batch reports a stream fully covered whose records were
+      // lost — the terminal fact block is still written on the failure path.
+      //
+      // Same ordering rule the state and gap-recovery handlers already apply
+      // (`handleStateMessage`, `handleDetailGapRecovered`): the durable claim
+      // must never precede the records it claims.
+      await flushAll();
       // Proven by the validator: state_stream/stream are non-empty
       // in-scope names and the key arrays are string/number arrays.
       const coverageStateStream = msg.state_stream as string;
