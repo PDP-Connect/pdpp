@@ -165,15 +165,16 @@ async function syncPeoplePages(args: {
   readonly client: PeopleClientLike;
   readonly ctx: CollectContext;
   readonly cursor: FingerprintCursor;
+  readonly maxPages: number;
   readonly syncToken: string | undefined;
 }): Promise<SyncPeopleResult> {
-  const { client, ctx, cursor, syncToken } = args;
+  const { client, ctx, cursor, maxPages, syncToken } = args;
   let pageToken: string | undefined;
   let nextSyncToken: string | null = null;
   let considered = 0;
   let covered = 0;
   const walk = await walkPagesWithCeiling({
-    maxPages: MAX_PAGES,
+    maxPages,
     fetchPage: async (pageNumber) => {
       const page = await httpGovernor.request(
         () => client.listConnectionsPage({ ...(syncToken ? { syncToken } : {}), ...(pageToken ? { pageToken } : {}) }),
@@ -216,10 +217,11 @@ async function syncPeopleWithFallback(args: {
   readonly client: PeopleClientLike;
   readonly ctx: CollectContext;
   readonly cursor: FingerprintCursor;
+  readonly maxPages: number;
   readonly priorState: PeopleState | undefined;
   readonly now: () => number;
 }): Promise<SyncPeopleResult> {
-  const { client, ctx, cursor, priorState, now } = args;
+  const { client, ctx, cursor, maxPages, priorState, now } = args;
   const tokenIsStale = syncTokenIsStale(priorState, now);
   const syncToken = tokenIsStale ? undefined : priorState?.sync_token;
   if (tokenIsStale) {
@@ -228,7 +230,7 @@ async function syncPeopleWithFallback(args: {
     });
   }
   try {
-    return await syncPeoplePages({ client, ctx, cursor, syncToken });
+    return await syncPeoplePages({ client, ctx, cursor, maxPages, syncToken });
   } catch (error) {
     if (!isSyncTokenExpired(error)) {
       throw error;
@@ -236,7 +238,7 @@ async function syncPeopleWithFallback(args: {
     await ctx.progress("Google Contacts syncToken rejected by the API (410) — falling back to full resync", {
       stream: "people",
     });
-    return await syncPeoplePages({ client, ctx, cursor, syncToken: undefined });
+    return await syncPeoplePages({ client, ctx, cursor, maxPages, syncToken: undefined });
   }
 }
 
@@ -244,11 +246,15 @@ interface ContactsCollectOptions {
   readonly clientFactory?: (accessToken: string) => PeopleClientLike;
   readonly env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   readonly getAccessToken?: () => Promise<GoogleAccessToken>;
+  /** Test seam: lowers the page ceiling so truncation is reachable without
+   *  standing up {@link MAX_PAGES} pages of fixtures. */
+  readonly maxPages?: number;
   readonly now?: () => number;
 }
 
 export async function collectGoogleContacts(ctx: CollectContext, options: ContactsCollectOptions = {}): Promise<void> {
   const env = options.env ?? process.env;
+  const maxPages = options.maxPages ?? MAX_PAGES;
   const now = options.now ?? Date.now;
   const getAccessToken =
     options.getAccessToken ??
@@ -296,7 +302,14 @@ export async function collectGoogleContacts(ctx: CollectContext, options: Contac
   }
 
   const peopleCursor = openFingerprintCursor(state.people, { excludeFromFingerprint: [...PERSON_FINGERPRINT_EXCLUDE] });
-  const result = await syncPeopleWithFallback({ client, ctx, cursor: peopleCursor, priorState: state.people, now });
+  const result = await syncPeopleWithFallback({
+    client,
+    ctx,
+    cursor: peopleCursor,
+    maxPages,
+    priorState: state.people,
+    now,
+  });
   // A syncToken response is a PARTIAL delta; only a full resync (no
   // syncToken, or the fallback path) may prune stale fingerprints — matching
   // the Calendar connector's identical rule.
@@ -308,8 +321,11 @@ export async function collectGoogleContacts(ctx: CollectContext, options: Contac
       type: "SKIP_RESULT",
       stream: "people",
       reason: "older_pages_deferred_page_budget",
-      message: `Google Contacts stopped at the ${MAX_PAGES}-page limit with more people listed`,
-      diagnostics: { page_limit: MAX_PAGES, unread_pages: 1 },
+      // The ceiling reported here is the one actually enforced, not the module
+      // default — otherwise a lowered cap would disclose a limit the walk
+      // never applied.
+      message: `Google Contacts stopped at the ${String(maxPages)}-page limit with more people listed`,
+      diagnostics: { page_limit: maxPages, unread_pages: 1 },
     });
   }
   const nextPeopleState: PeopleState = {

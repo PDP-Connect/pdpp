@@ -164,7 +164,7 @@ test("pages through multiple event pages before advancing the cursor", async () 
   assert.equal(records.filter((r) => r.stream === "events").length, 2);
 });
 
-test("a page cap with a continuation token fails before events STATE or coverage", async () => {
+test("a page cap with a continuation token discloses truncation instead of claiming coverage", async () => {
   const fakeClient = new FakeCalendarClient({
     calendars: [{ id: "primary", summary: "Work", primary: true, accessRole: "owner", timeZone: null }],
     eventPages: [
@@ -174,24 +174,39 @@ test("a page cap with a continuation token fails before events STATE or coverage
   });
   const { ctx, messages, records } = makeContext();
 
-  await assert.rejects(
-    () =>
-      collectGoogleCalendar(ctx, {
-        clientFactory: () => fakeClient,
-        env: ENV,
-        maxPagesPerCalendar: 1,
-        ...FAKE_TOKEN,
-      }),
-    /google_calendar_pagination_cap/
-  );
+  // The ceiling is hit while the provider still advertises another page. The
+  // run does not fail — it keeps the prefix it enumerated — but it must say so
+  // rather than let a truncated walk read as a complete one.
+  await collectGoogleCalendar(ctx, {
+    clientFactory: () => fakeClient,
+    env: ENV,
+    maxPagesPerCalendar: 1,
+    ...FAKE_TOKEN,
+  });
+
   assert.equal(records.filter((r) => r.stream === "events").length, 1, "the enumerated prefix may be emitted");
-  assert.equal(
-    messages.some((message) => message.type === "STATE" && message.stream === "events"),
-    false
+  const skip = messages.find(
+    (message): message is Extract<typeof message, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "events"
   );
-  assert.equal(
-    messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "events"),
-    false
+  assert.ok(skip, "a truncated walk must disclose itself to the owner");
+  assert.equal(skip.reason, "older_pages_deferred_page_budget");
+  assert.match(skip.message, /1-page limit/, "the disclosed ceiling must be the one actually enforced");
+  // Coverage IS emitted on a truncated walk — suppressing it would leave the
+  // stream with no denominator at all. What must never happen is a COMPLETE
+  // claim: a truncated calendar is withheld from the covered set, so the
+  // shortfall is visible.
+  const coverage = messages.find(
+    (message): message is Extract<typeof message, { type: "DETAIL_COVERAGE" }> =>
+      message.type === "DETAIL_COVERAGE" && message.stream === "events"
+  );
+  assert.ok(coverage, "a truncated walk still needs a denominator");
+  const { considered, covered } = coverage;
+  assert.equal(typeof considered, "number", "a coverage claim without a denominator is not a claim");
+  assert.equal(typeof covered, "number", "a coverage claim without a numerator is not a claim");
+  assert.ok(
+    (considered as number) > (covered as number),
+    `truncation must read as a shortfall, got ${String(covered)}/${String(considered)}`
   );
 });
 
