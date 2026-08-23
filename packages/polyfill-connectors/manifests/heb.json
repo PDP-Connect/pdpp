@@ -326,6 +326,7 @@
     "item_count_short": "Some orders hold fewer items than H-E-B says they contain",
     "list_page_navigation_failed": "We couldn't load a page of your H-E-B order history and didn't want to assume that meant the end",
     "list_page_shape_check_failed": "The page didn't look like we expected",
+    "older_pages_deferred_page_budget": "We stopped after reading the most recent pages of your order history, so older orders haven't been collected yet. Nothing was lost — the next run picks up where this one stopped",
     "pagination_exhausted": "We reached the end of the available pages",
     "pagination_metadata_absent": "H-E-B didn't tell us how many pages of orders there are, so we stopped to avoid missing any",
     "pagination_metadata_contradictory": "H-E-B gave us conflicting page-count information, so we stopped to avoid missing any orders",
