@@ -268,7 +268,24 @@ test("fresh manual success stays green across health, rendered, owner, and fleet
   assert.deepEqual(fleet.dimensions.attention.needs_owner, []);
 });
 
-test("optional terminal stream stays visible as an advisory across health, fleet, pill, and stream surfaces", () => {
+// EXPECTATION CHANGED — owner decision, 2026-08-23.
+//
+// This test previously asserted the pill read "Healthy"/green with an optional
+// terminal stream present. That encoded the old policy, in which `required:
+// false` alone was enough to keep a source green. The owner rejected it: a
+// stream the connector INTENDS to collect (`coverage_policy: collect`, or no
+// policy) that is now lost forever is a real loss, and a source sitting on one
+// must not claim to be Healthy. Only an EXPLICIT accepted-absence policy earns
+// green — see the `accepted_absence` sibling test below.
+//
+// What did NOT change, and is asserted here to keep the boundary honest:
+// the CONNECTION-level coverage axis is still `complete` and the snapshot state
+// is still `healthy`, because the connection's REQUIRED coverage genuinely is
+// complete. The optional loss is carried by the verdict's per-stream rollup,
+// not by promoting the connection axis. And `needs_owner` stays empty: the
+// owner is informed, never interrupted, because there is no owner action that
+// would bring a permanently-lost stream back.
+test("optional terminal stream downgrades the pill to Missing optional data without demanding owner action", () => {
   const projected = project(
     input({ coverage: { axis: "complete" }, refresh: MANUAL_REFRESH, schedule: null }),
     [stream({ coverage: "terminal_gap", priority: "optional", stream_id: "optional_stream" })],
@@ -278,15 +295,45 @@ test("optional terminal stream stays visible as an advisory across health, fleet
 
   assert.equal(projected.snapshot.state, "healthy");
   assert.equal(projected.snapshot.axes.coverage, "complete");
-  assert.equal(projected.verdict.pill.label, "Healthy");
-  assert.equal(projected.verdict.pill.tone, "green");
+  assert.equal(projected.verdict.pill.label, "Missing optional data");
+  assert.equal(projected.verdict.pill.tone, "amber");
   assert.equal(
     projected.verdict.streams.some((row) => row.stream_id === "optional_stream"),
     true
   );
-  assert.equal(projected.ownerState.resolver, "healthy");
+  assert.equal(projected.ownerState.resolver, "system_degraded");
 
   const fleet = fleetFor("optional-stream", projected);
+  assert.equal(fleet.state, "unhealthy");
+  assert.deepEqual(
+    fleet.dimensions.system.degraded_or_broken.map((entry) => entry.connection_id),
+    ["optional-stream"],
+    "the source is visibly degraded to a maintainer"
+  );
+  assert.deepEqual(
+    fleet.dimensions.attention.needs_owner,
+    [],
+    "but the owner is never asked to fix a stream that cannot be recovered"
+  );
+});
+
+// The other half of the owner's decision: an EXPLICIT accepted-absence policy
+// still earns green under exactly the same terminal gap. This is the test that
+// proves the three-way distinction survived — `optional` and `accepted_absence`
+// were collapsed before, and are not collapsed now.
+test("accepted_absence terminal stream still reads Healthy across every surface", () => {
+  const projected = project(
+    input({ coverage: { axis: "complete" }, refresh: MANUAL_REFRESH, schedule: null }),
+    [stream({ coverage: "terminal_gap", priority: "accepted_absence", stream_id: "accepted_stream" })],
+    MANUAL_REFRESH,
+    null
+  );
+
+  assert.equal(projected.verdict.pill.label, "Healthy");
+  assert.equal(projected.verdict.pill.tone, "green");
+  assert.equal(projected.ownerState.resolver, "healthy");
+
+  const fleet = fleetFor("accepted-stream", projected);
   assert.equal(fleet.state, "healthy");
   assert.deepEqual(fleet.dimensions.system.degraded_or_broken, []);
   assert.deepEqual(fleet.dimensions.attention.needs_owner, []);

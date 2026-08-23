@@ -309,6 +309,7 @@ const KNOWN_VERDICT_LABELS = new Set([
   "Healthy",
   "Import complete",
   "Missing data",
+  "Missing optional data",
   "Needs refresh",
   "Not measured",
   "Syncing",
