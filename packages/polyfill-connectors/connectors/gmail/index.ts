@@ -295,11 +295,33 @@ export type EmitRecordFn = (
 
 export type ProgressEmitter = (msg: ProgressMessage) => Promise<void>;
 
-/** Bodies resolved for one message. All fields may be null if the fetch
- *  failed, the message has no matching parts, or scope didn't ask. */
+/**
+ * Bodies resolved for one message.
+ *
+ * `fetchFailed` is the load-bearing field. All three body fields are null in
+ * TWO very different situations, and before this discriminator existed the
+ * caller could not tell them apart:
+ *
+ *   1. The message genuinely has no body part in scope (or scope did not ask).
+ *      Nothing was lost; `body_source: "empty"` is the honest record.
+ *   2. The IMAP body fetch THREW. The body exists on the server, we just did
+ *      not get it. Emitting `body_source: "empty"` here is a lie, and because
+ *      the walk advances the UID cursor past the message either way, the real
+ *      body lands behind the cursor and is never refetched.
+ *
+ * `fetchFailed: true` marks case 2 so `processMessage` can emit a durable,
+ * retryable DETAIL_GAP for that message. `failureClass` carries the bounded,
+ * non-secret reason (never raw error text — see `bodyFetchFailureClass`) so a
+ * gap that keeps failing records WHY instead of accruing attempts against a
+ * permanently-null `last_error_json`.
+ */
 export interface FetchedBodies {
   bodyHtmlFull: string | null;
   bodyTextFull: string | null;
+  /** Bounded failure category; present only when `fetchFailed` is true. */
+  failureClass?: string;
+  /** True only when the body fetch threw — NOT when the message is simply empty. */
+  fetchFailed?: boolean;
   snippet: string | null;
 }
 
@@ -307,7 +329,7 @@ export interface FetchedBodies {
  * Injected body fetcher. Production wires this to an IMAP round-trip;
  * tests wire it to a pure function that returns canned bodies (or a
  * rejected promise to simulate fetch failure — the helper turns that
- * into all-nulls internally).
+ * into all-nulls plus `fetchFailed: true` internally).
  */
 export type FetchBodiesFn = (
   msg: FetchMessageObject,
@@ -666,6 +688,51 @@ export function buildAttachmentDetailGap(attachment: AttachmentRecord, failureCl
   });
 }
 
+/**
+ * Build the recoverable DETAIL_GAP for one message whose body fetch THREW.
+ *
+ * Why this exists: `message_bodies` has a `body_source: "empty"` enum value,
+ * and before this gap a failed fetch and a genuinely bodyless message produced
+ * the identical record. The messages walk then advanced the UID cursor to live
+ * `uidnext` either way, so the real body sat behind the cursor and was never
+ * refetched — while the stream read complete to the owner. A schema-valid
+ * record is not the same as an honest one.
+ *
+ * `record_key` is the X-GM-MSGID, the `message_bodies` primary key, so a later
+ * run can refetch exactly this body. The locator carries the IMAP `uid` too,
+ * but only as a hint: a UID is meaningful only inside one UIDVALIDITY epoch,
+ * whereas X-GM-MSGID is stable across epochs. The message id is therefore the
+ * authoritative half, and the UID merely saves a lookup when the epoch has not
+ * rolled — which is why the gap stays valid even if it does.
+ *
+ * `reason` is `temporary_unavailable` (retryable): a thrown BODY[...] fetch
+ * mixes transient network/IMAP faults with no exhaustion signal, exactly like
+ * the attachments gap above, so retrying next run is the honest default.
+ *
+ * Bounded and reference-only: only opaque identifiers plus the connector-chosen
+ * failure class cross. No body bytes, subject, sender, filename, raw error
+ * text, tokens, or URLs.
+ */
+export function buildMessageBodyDetailGap(params: {
+  failureClass?: string | undefined;
+  gmMsgid: string;
+  uid: number | undefined;
+}): DetailGapMessage {
+  const { gmMsgid, uid, failureClass } = params;
+  return buildDetailGap({
+    stream: "message_bodies",
+    parentStream: "messages",
+    recordKey: gmMsgid,
+    reason: "temporary_unavailable",
+    locator: {
+      kind: "gmail.message_body_detail",
+      message_id: gmMsgid,
+      ...(typeof uid === "number" ? { uid } : {}),
+    },
+    ...(failureClass ? { error: { class: failureClass } } : {}),
+  });
+}
+
 function normalizeAttachmentRecoveryKey(recordKey: string | number | null | undefined): string | null {
   // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
   if (recordKey == null) {
@@ -815,6 +882,76 @@ function perMessageInternalDateToIso(date: Date | string | undefined, nowIsoFn: 
 }
 
 /**
+ * Emit the `message_bodies` record for one message, and — when the body was NOT
+ * actually captured — the durable gap that keeps it refetchable.
+ *
+ * Two distinct ways the body is not captured, both of which previously left an
+ * advancing UID cursor and no trace at all:
+ *
+ *   - the fetch THREW (`bodies.fetchFailed`). The record emitted just above
+ *     says `body_source: "empty"`, which is byte-identical to the record for a
+ *     message that genuinely has no body. Schema-valid, and a lie.
+ *   - `emitRecord` returned false — the record was schema-rejected (a
+ *     SKIP_RESULT went out instead) or carried no key, so nothing landed.
+ *
+ * Either way the body stays retryable behind a pending DETAIL_GAP. A genuinely
+ * empty body that emits cleanly gets NO gap: an empty message is not broken,
+ * and marking every one of them would drown the real losses.
+ *
+ * Honoring `emitRecord === false` is possible here only because Gmail owns its
+ * `makeEmitRecord`, which returns `Promise<boolean>`. The shared runtime's
+ * `emitRecord` is `Promise<void>` and gives a caller nothing to branch on.
+ */
+async function emitMessageBody(
+  deps: Pick<PerMessageDeps, "emitProtocol" | "emitRecord" | "uploadBodyBlob">,
+  params: {
+    bodies: FetchedBodies;
+    gmMsgid: string;
+    receivedAt: string;
+    selection: ReturnType<typeof selectBodyParts>;
+    uid: number | undefined;
+  }
+): Promise<void> {
+  const { bodies, gmMsgid, receivedAt, selection, uid } = params;
+  const { bodyHtmlFull, bodyTextFull, fetchFailed, failureClass } = bodies;
+  const bodyBlobCandidates = canonicalBodyBlobCandidates({ bodyHtmlFull, bodyTextFull });
+  if (bodyBlobCandidates.length > 0 && !deps.uploadBodyBlob) {
+    throw new Error("canonical Gmail body requires blob upload");
+  }
+  for (const candidate of bodyBlobCandidates) {
+    await deps.uploadBodyBlob?.({
+      content: [candidate.content],
+      connectorId: process.env.PDPP_CONNECTOR_ID || DEFAULT_GMAIL_CONNECTOR_ID,
+      jsonPath: candidate.jsonPath,
+      mimeType: candidate.mimeType,
+      recordKey: gmMsgid,
+      stream: "message_bodies",
+    });
+  }
+  const bodyEmitted = await deps.emitRecord(
+    "message_bodies",
+    buildMessageBodyRecord({
+      bodyHtmlFull,
+      bodyTextFull,
+      gmMsgid,
+      htmlCharset: selection.htmlCharset,
+      receivedAt,
+      textCharset: selection.plainCharset,
+    })
+  );
+  if (!(fetchFailed || bodyEmitted === false)) {
+    return;
+  }
+  await deps.emitProtocol(
+    buildMessageBodyDetailGap({
+      gmMsgid,
+      uid,
+      failureClass: fetchFailed ? failureClass : "message_bodies_record_rejected",
+    })
+  );
+}
+
+/**
  * Emit the per-stream records for one Gmail message.
  *
  * Invariants (tested in integration.test.ts):
@@ -826,8 +963,11 @@ function perMessageInternalDateToIso(date: Date | string | undefined, nowIsoFn: 
  *      that references them.
  *   4. wantBodies / wantMessages / requested.has("attachments") each
  *      gate their own stream; disabling one doesn't suppress siblings.
- *   5. Body-fetch failure (returned all-nulls) still emits the messages
- *      record with a null snippet — never silently drops the envelope.
+ *   5. Body-fetch failure still emits the messages record with a null
+ *      snippet — never silently drops the envelope — but ALSO emits a
+ *      durable retryable DETAIL_GAP on `message_bodies`, so the body stays
+ *      refetchable after the UID cursor advances past it. A genuinely
+ *      bodyless message emits `body_source: "empty"` with no gap.
  *
  * Returns true if the message produced any emits (or would have, modulo
  * scope). Returns false when skipped by an early filter so the caller
@@ -855,7 +995,7 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
   const attachments = decodeBodystructureForAttachments(msg.bodyStructure, gmMsgid, receivedAt);
 
   const selection = selectBodyParts(msg.bodyStructure, deps.wantBodies);
-  const { bodyHtmlFull, bodyTextFull, snippet } = await deps.fetchBodies(
+  const { bodyHtmlFull, bodyTextFull, snippet, fetchFailed, failureClass } = await deps.fetchBodies(
     msg,
     selection,
     deps.wantBodies,
@@ -863,31 +1003,19 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
   );
 
   if (deps.wantBodies) {
-    const bodyBlobCandidates = canonicalBodyBlobCandidates({ bodyHtmlFull, bodyTextFull });
-    if (bodyBlobCandidates.length > 0 && !deps.uploadBodyBlob) {
-      throw new Error("canonical Gmail body requires blob upload");
-    }
-    for (const candidate of bodyBlobCandidates) {
-      await deps.uploadBodyBlob?.({
-        content: [candidate.content],
-        connectorId: process.env.PDPP_CONNECTOR_ID || DEFAULT_GMAIL_CONNECTOR_ID,
-        jsonPath: candidate.jsonPath,
-        mimeType: candidate.mimeType,
-        recordKey: gmMsgid,
-        stream: "message_bodies",
-      });
-    }
-    await deps.emitRecord(
-      "message_bodies",
-      buildMessageBodyRecord({
+    await emitMessageBody(deps, {
+      bodies: {
         bodyHtmlFull,
         bodyTextFull,
-        gmMsgid,
-        htmlCharset: selection.htmlCharset,
-        receivedAt,
-        textCharset: selection.plainCharset,
-      })
-    );
+        snippet,
+        ...(fetchFailed ? { fetchFailed } : {}),
+        ...(failureClass ? { failureClass } : {}),
+      },
+      gmMsgid,
+      receivedAt,
+      selection,
+      uid: typeof msg.uid === "number" ? msg.uid : undefined,
+    });
   }
 
   if (deps.wantMessages) {
@@ -1607,9 +1735,27 @@ function decodeFetchedBodies(
 }
 
 /**
+ * Bounded, non-secret failure category for a thrown body fetch.
+ *
+ * Only this connector-chosen category ever reaches the emitted DETAIL_GAP's
+ * `error.class`. Raw error text never crosses that boundary: an IMAP error
+ * message can embed the failing command, which for a BODY[...] fetch quotes
+ * the mailbox and part path. The split mirrors `isImapTransientError`, which
+ * the run-level retry classifier already trusts.
+ */
+export function bodyFetchFailureClass(err: unknown): string {
+  return isImapTransientError(err) ? "imap_body_fetch_transient" : "imap_body_fetch_failed";
+}
+
+/**
  * Fetch (and decode) the parts we need for one message in a single IMAP
- * round-trip. Best-effort: body fetch failures return all-nulls so the
- * caller can still emit the envelope record.
+ * round-trip.
+ *
+ * Still best-effort in the sense that a body failure never blocks the envelope
+ * emit — but it no longer renders as an empty message. A thrown fetch resolves
+ * to all-nulls PLUS `fetchFailed: true`, which is what lets `processMessage`
+ * mark the body retryable instead of writing a schema-valid lie
+ * (`body_source: "empty"`) that the advancing UID cursor then makes permanent.
  */
 async function fetchBodies(
   client: Pick<ImapFlow, "fetchOne">,
@@ -1631,9 +1777,11 @@ async function fetchBodies(
     const plainBuf = selection.plainPart && bodyResp ? (bodyResp.bodyParts?.get(selection.plainPart) ?? null) : null;
     const htmlBuf = selection.htmlPart && bodyResp ? (bodyResp.bodyParts?.get(selection.htmlPart) ?? null) : null;
     return decodeFetchedBodies(plainBuf, htmlBuf, selection, wantBodies, wantMessages);
-  } catch {
-    // Best-effort: body fetch failures shouldn't block message emit.
-    return empty;
+  } catch (err) {
+    // The envelope still emits — but the caller MUST be able to tell this
+    // apart from a genuinely bodyless message, or the body is lost behind the
+    // cursor forever.
+    return { ...empty, fetchFailed: true, failureClass: bodyFetchFailureClass(err) };
   }
 }
 
