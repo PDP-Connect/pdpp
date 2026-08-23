@@ -222,6 +222,7 @@ test("zero-account collection captures the interstitial checkpoint before emitti
     keepOnSuccess: true,
     markSucceeded: (): void => undefined,
     recordRecord: (): void => undefined,
+    registerSecrets: (): void => undefined,
     runId: "test-income-capture",
   };
 

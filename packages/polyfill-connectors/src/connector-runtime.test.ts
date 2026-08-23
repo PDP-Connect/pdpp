@@ -727,6 +727,7 @@ function makeFakeCapture(): {
     markSucceeded: () => {
       /* no-op */
     },
+    registerSecrets: () => undefined,
     recordRecord: () => {
       /* no-op */
     },

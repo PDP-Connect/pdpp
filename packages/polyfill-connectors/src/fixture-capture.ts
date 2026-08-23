@@ -41,8 +41,14 @@
  *   traces/*.zip               Playwright traces when a browser connector runs
  *   http/<nnnn>-<label>.json   HTTP response bodies for API connectors
  *
- * The "raw" side is gitignored. A companion scrubber (bin/scrub-fixtures.mjs)
+ * The "raw" side is gitignored. A companion scrubber (bin/scrub-fixtures.ts)
  * consumes a run's raw/ and writes sanitized files to scrubbed/ for commit.
+ *
+ * That scrubber is NOT the credential defense. raw/ persists on the volume and
+ * is exactly what a diagnostic agent is pointed at, so a later sanitizing pass
+ * cannot un-write a secret that already landed. DOM and ARIA captures are
+ * therefore redacted at WRITE TIME by `src/capture-redaction.ts`; see that
+ * module for the rules and for what they deliberately do not cover.
  *
  * runId is an ISO-timestamp folder so repeated runs accumulate rather than
  * overwriting — useful when diffing runs or when the first run fails partway.
@@ -58,6 +64,7 @@ import { fileURLToPath } from "node:url";
 
 import type { Page } from "playwright";
 
+import { redactAriaSnapshot, redactDomHtml } from "./capture-redaction.ts";
 import type { RecordData } from "./connector-runtime.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -181,6 +188,13 @@ export interface CaptureSession {
    */
   markSucceeded: () => void;
   recordRecord: (msg: { stream: string; data: RecordData }) => void;
+  /**
+   * Register credential values the run holds so capture can redact them
+   * wherever they appear, including fields no rule would recognize as secret.
+   * Call as soon as credentials resolve and before any page interaction.
+   * Values shorter than the matching floor are ignored — see capture-redaction.
+   */
+  registerSecrets: (values: Iterable<string>) => void;
   readonly runId: string;
   setTraceCheckpointHook?: (hook: ((label: string) => Promise<void>) | null) => void;
 }
@@ -248,9 +262,15 @@ function probeForReport(probe: LocatorProbe): LocatorProbeResult["probe"] {
   return rest;
 }
 
-async function captureDomHtml(page: Page, baseDir: string, label: string, safe: string): Promise<void> {
+async function captureDomHtml(
+  page: Page,
+  baseDir: string,
+  label: string,
+  safe: string,
+  secrets: readonly string[]
+): Promise<void> {
   try {
-    const html = await page.content();
+    const html = redactDomHtml(await page.content(), secrets);
     writeFileSync(join(baseDir, "dom", `${safe}.html`), html);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -280,13 +300,22 @@ async function capturePageMetadata(page: Page, baseDir: string, label: string, s
   }
 }
 
-async function captureAriaSnapshot(page: Page, baseDir: string, label: string, safe: string): Promise<void> {
+async function captureAriaSnapshot(
+  page: Page,
+  baseDir: string,
+  label: string,
+  safe: string,
+  secrets: readonly string[]
+): Promise<void> {
   try {
-    const ariaSnapshot = await page.ariaSnapshot({
-      depth: Number(process.env.PDPP_CAPTURE_ARIA_DEPTH ?? 8),
-      mode: "ai",
-      timeout: ARIA_SNAPSHOT_TIMEOUT_MS,
-    });
+    const ariaSnapshot = redactAriaSnapshot(
+      await page.ariaSnapshot({
+        depth: Number(process.env.PDPP_CAPTURE_ARIA_DEPTH ?? 8),
+        mode: "ai",
+        timeout: ARIA_SNAPSHOT_TIMEOUT_MS,
+      }),
+      secrets
+    );
     writeFileSync(join(baseDir, "aria", `${safe}.aria.yml`), ariaSnapshot);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -304,7 +333,11 @@ async function captureScreenshot(page: Page, baseDir: string, label: string, saf
   }
 }
 
-async function runLocatorProbe(page: LocatorProbePage, probe: LocatorProbe): Promise<LocatorProbeResult> {
+async function runLocatorProbe(
+  page: LocatorProbePage,
+  probe: LocatorProbe,
+  secrets: readonly string[]
+): Promise<LocatorProbeResult> {
   const result: LocatorProbeResult = {
     id: probe.id,
     kind: probe.kind,
@@ -328,7 +361,9 @@ async function runLocatorProbe(page: LocatorProbePage, probe: LocatorProbe): Pro
         })
         .catch((): undefined => undefined);
       if (ariaSnapshot !== undefined) {
-        result.ariaSnapshot = ariaSnapshot;
+        // Same leak channel as the page-level snapshot: a probe aimed at a
+        // password field serializes that field's value.
+        result.ariaSnapshot = redactAriaSnapshot(ariaSnapshot, secrets);
       }
     }
   } catch (err) {
@@ -394,6 +429,7 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
   }
 
   let httpSeq = 0;
+  const secrets = new Set<string>();
   let traceCheckpointHook: ((label: string) => Promise<void>) | null = null;
   let succeeded = false;
   let finalized = false;
@@ -404,6 +440,13 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
     keepOnSuccess,
     setTraceCheckpointHook(hook): void {
       traceCheckpointHook = hook;
+    },
+    registerSecrets(values): void {
+      for (const value of values) {
+        if (typeof value === "string" && value.length > 0) {
+          secrets.add(value);
+        }
+      }
     },
     markSucceeded(): void {
       succeeded = true;
@@ -435,9 +478,10 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
     },
     async captureDom(page, label): Promise<void> {
       const safe = safeLabel(label);
-      await captureDomHtml(page, baseDir, label, safe);
+      const knownSecrets = [...secrets];
+      await captureDomHtml(page, baseDir, label, safe, knownSecrets);
       await capturePageMetadata(page, baseDir, label, safe);
-      await captureAriaSnapshot(page, baseDir, label, safe);
+      await captureAriaSnapshot(page, baseDir, label, safe, knownSecrets);
       await captureScreenshot(page, baseDir, label, safe);
       if (traceCheckpointHook) {
         await traceCheckpointHook(label).catch((err: unknown): undefined => {
@@ -448,7 +492,8 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
     },
     async captureLocatorProbe(page, label, probes): Promise<void> {
       const safe = safeLabel(label);
-      const results = await Promise.all(probes.map((probe) => runLocatorProbe(page, probe)));
+      const knownSecrets = [...secrets];
+      const results = await Promise.all(probes.map((probe) => runLocatorProbe(page, probe, knownSecrets)));
       await writeLocatorProbeReport(page, baseDir, label, safe, results);
     },
     captureHttp(label, body, meta = {}): void {
