@@ -75,6 +75,7 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { walkPagesWithCeiling } from "../../src/page-ceiling.ts";
 import { API_BASE, profileRecord, transactionRecord, userRecord } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type {
@@ -261,41 +262,37 @@ export async function fetchAllFriends(
 ): Promise<{ friends: VenmoUser[]; truncated: boolean }> {
   const all: VenmoUser[] = [];
   let offset = 0;
-  let page = 0;
-  let truncated = false;
-  while (true) {
-    if (page >= MAX_FRIENDS_PAGES) {
-      // EXIT B — the deliberate page ceiling. A full or short non-empty page
-      // can still have a continuation, so only an empty page is completion.
-      truncated = true;
-      break;
-    }
-    await progress("Fetching Venmo friends page", { stream: "friends", phase: "fetch", offset_ordinal: page });
-    const { status, body } = await fetchPath(`/users/${ownerId}/friends`, {
-      limit: String(FRIENDS_PAGE_SIZE),
-      offset: String(offset),
-    });
-    assertVenmoOk(status, body, "/users/{id}/friends");
-    const parsed = JSON.parse(body) as VenmoFriendsResponse;
-    const batch = parsed.data ?? [];
-    page += 1;
-    all.push(...batch);
-    await progress("Fetched Venmo friends page", {
-      stream: "friends",
-      phase: "page",
-      item_count: batch.length,
-      total_seen: all.length,
-    });
-    // EXIT A — an empty page proves the offset walk is exhausted. A short
-    // non-empty page is not terminal: Venmo can return fewer than `limit`
-    // rows while more rows remain.
-    if (batch.length === 0) {
-      break;
-    }
-    offset += batch.length;
-    await delay(PAGE_DELAY_MS);
-  }
-  return { friends: all, truncated };
+  const walk = await walkPagesWithCeiling({
+    maxPages: MAX_FRIENDS_PAGES,
+    fetchPage: async (pageNumber) => {
+      const pageIndex = pageNumber - 1;
+      await progress("Fetching Venmo friends page", { stream: "friends", phase: "fetch", offset_ordinal: pageIndex });
+      const { status, body } = await fetchPath(`/users/${ownerId}/friends`, {
+        limit: String(FRIENDS_PAGE_SIZE),
+        offset: String(offset),
+      });
+      assertVenmoOk(status, body, "/users/{id}/friends");
+      const parsed = JSON.parse(body) as VenmoFriendsResponse;
+      const batch = parsed.data ?? [];
+      all.push(...batch);
+      await progress("Fetched Venmo friends page", {
+        stream: "friends",
+        phase: "page",
+        item_count: batch.length,
+        total_seen: all.length,
+      });
+      // EXIT A — an empty page proves the offset walk is exhausted. A short
+      // non-empty page is not terminal: Venmo can return fewer than `limit`
+      // rows while more rows remain.
+      if (batch.length === 0) {
+        return false;
+      }
+      offset += batch.length;
+      await delay(PAGE_DELAY_MS);
+      return true;
+    },
+  });
+  return { friends: all, truncated: walk.truncated };
 }
 
 export async function fetchTransactionsPage(
@@ -352,54 +349,55 @@ export async function collectTransactions(
   let totalModeled = 0;
   let latestSeenAt: string | null = null;
 
-  let page = 0;
-  let truncated = false;
-  while (true) {
-    if (page >= MAX_TRANSACTION_PAGES) {
-      // EXIT B — the deliberate page ceiling. `beforeId` remains set after
-      // the last full page, so the source has not been exhausted.
-      truncated = true;
-      break;
-    }
-    await progress("Fetching Venmo transactions page", {
-      stream: "transactions",
-      phase: "fetch",
-      offset_ordinal: page,
-      cursor_present: Boolean(beforeId),
-      total_seen: totalSeen,
-    });
-    const stories = await fetchTransactionsPage(fetchPath, ownerId, beforeId);
-    page += 1;
-    if (stories.length === 0) {
-      // EXIT A — an empty page is the provider's terminal boundary.
-      break;
-    }
+  const walk = await walkPagesWithCeiling({
+    maxPages: MAX_TRANSACTION_PAGES,
+    fetchPage: async (pageNumber) => {
+      const pageIndex = pageNumber - 1;
+      await progress("Fetching Venmo transactions page", {
+        stream: "transactions",
+        phase: "fetch",
+        offset_ordinal: pageIndex,
+        cursor_present: Boolean(beforeId),
+        total_seen: totalSeen,
+      });
+      const stories = await fetchTransactionsPage(fetchPath, ownerId, beforeId);
+      if (stories.length === 0) {
+        // EXIT A — an empty page is the provider's terminal boundary.
+        return false;
+      }
 
-    const { latestSeenAt: pageLatest, modeled } = await emitTransactionsPage(emitRecord, stories, ownerId);
-    if (pageLatest && (!latestSeenAt || pageLatest > latestSeenAt)) {
-      latestSeenAt = pageLatest;
-    }
-    totalSeen += stories.length;
-    totalModeled += modeled;
-    await progress("Fetched Venmo transactions page", {
-      stream: "transactions",
-      phase: "page",
-      item_count: modeled,
-      total_seen: totalSeen,
-      cursor_present: stories.length === TRANSACTIONS_PAGE_SIZE,
-    });
+      const { latestSeenAt: pageLatest, modeled } = await emitTransactionsPage(emitRecord, stories, ownerId);
+      if (pageLatest && (!latestSeenAt || pageLatest > latestSeenAt)) {
+        latestSeenAt = pageLatest;
+      }
+      totalSeen += stories.length;
+      totalModeled += modeled;
+      await progress("Fetched Venmo transactions page", {
+        stream: "transactions",
+        phase: "page",
+        item_count: modeled,
+        total_seen: totalSeen,
+        cursor_present: stories.length === TRANSACTIONS_PAGE_SIZE,
+      });
 
-    const lastStory = stories.at(-1);
-    // A short non-empty page is not terminal. Continue whenever Venmo gives us
-    // a cursor; a page without a usable id is the other honest terminal exit.
-    if (!lastStory?.id) {
-      break;
-    }
-    beforeId = lastStory.id;
-    await delay(PAGE_DELAY_MS);
-  }
+      const lastStory = stories.at(-1);
+      // A short non-empty page is not terminal. Continue whenever Venmo gives us
+      // a cursor; a page without a usable id is the other honest terminal exit.
+      if (!lastStory?.id) {
+        return false;
+      }
+      beforeId = lastStory.id;
+      await delay(PAGE_DELAY_MS);
+      return true;
+    },
+  });
 
-  return { considered: totalSeen + (truncated ? 1 : 0), covered: totalModeled, latestSeenAt, truncated };
+  return {
+    considered: totalSeen + (walk.truncated ? 1 : 0),
+    covered: totalModeled,
+    latestSeenAt,
+    truncated: walk.truncated,
+  };
 }
 
 async function collectProfile(

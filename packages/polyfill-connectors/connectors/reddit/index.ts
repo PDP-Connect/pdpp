@@ -72,6 +72,7 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
+import { walkPagesWithCeiling } from "../../src/page-ceiling.ts";
 import { createRepairBudget } from "../../src/repair-budget.ts";
 import {
   appendNewChildren,
@@ -333,65 +334,61 @@ export async function paginate(
   let after: string | null = null;
   const streamExtra = streamName ? { stream: streamName } : {};
 
-  let truncated = false;
-  let guard = 0;
-  while (true) {
-    if (guard >= MAX_PAGES) {
-      // EXIT B — the deliberate page ceiling. `after` is still non-null here,
-      // so this is a fetched prefix, not an exhausted listing.
-      truncated = true;
-      break;
-    }
-    await progress?.("Fetching Reddit listing page", {
-      ...streamExtra,
-      phase: "fetch",
-      page_index: guard,
-      total_seen: all.length,
-      cursor_present: Boolean(after),
-    });
-    const path = pagePath(endpoint, after);
-    const { status, json } = await fetchListingPage(fetchPath, path, onAuthFailed, repairBudget);
-    if (status === 429) {
-      await progress?.("Reddit listing page rate limited", {
+  const walk = await walkPagesWithCeiling({
+    maxPages: MAX_PAGES,
+    fetchPage: async (pageNumber) => {
+      const pageIndex = pageNumber - 1;
+      await progress?.("Fetching Reddit listing page", {
         ...streamExtra,
-        phase: "rate_limit",
-        page_index: guard,
+        phase: "fetch",
+        page_index: pageIndex,
         total_seen: all.length,
         cursor_present: Boolean(after),
-        rate_limit_pressure: 1,
       });
-    }
-    assertListingEnvelope(status, json, endpoint);
+      const path = pagePath(endpoint, after);
+      const { status, json } = await fetchListingPage(fetchPath, path, onAuthFailed, repairBudget);
+      if (status === 429) {
+        await progress?.("Reddit listing page rate limited", {
+          ...streamExtra,
+          phase: "rate_limit",
+          page_index: pageIndex,
+          total_seen: all.length,
+          cursor_present: Boolean(after),
+          rate_limit_pressure: 1,
+        });
+      }
+      assertListingEnvelope(status, json, endpoint);
 
-    capture?.captureHttp(`page-${String(guard).padStart(3, "0")}-${endpoint.replaceAll("/", "_")}`, json, {
-      status,
-      path,
-      endpoint,
-    });
+      capture?.captureHttp(`page-${String(pageIndex).padStart(3, "0")}-${endpoint.replaceAll("/", "_")}`, json, {
+        status,
+        path,
+        endpoint,
+      });
 
-    const { children } = json.data;
-    guard += 1;
-    await progress?.("Fetched Reddit listing page", {
-      ...streamExtra,
-      phase: "page",
-      page_index: guard,
-      item_count: children.length,
-      total_seen: all.length + children.length,
-      cursor_present: Boolean(nextAfter(json)),
-    });
-    if (children.length === 0) {
-      break;
-    }
-    if (appendNewChildren(children, sinceEpochUtc, all, order)) {
-      break;
-    }
+      const { children } = json.data;
+      await progress?.("Fetched Reddit listing page", {
+        ...streamExtra,
+        phase: "page",
+        page_index: pageNumber,
+        item_count: children.length,
+        total_seen: all.length + children.length,
+        cursor_present: Boolean(nextAfter(json)),
+      });
+      if (children.length === 0) {
+        return false;
+      }
+      if (appendNewChildren(children, sinceEpochUtc, all, order)) {
+        return false;
+      }
 
-    after = nextAfter(json);
-    if (!after) {
-      break;
-    }
-    await delay(PAGE_DELAY_MS);
-  }
+      after = nextAfter(json);
+      if (!after) {
+        return false;
+      }
+      await delay(PAGE_DELAY_MS);
+      return true;
+    },
+  });
 
   // `action`-ordered streams walk the whole listing every run, so the same
   // item recurs across runs and (rarely) within one walk when Reddit shifts
@@ -403,7 +400,7 @@ export async function paginate(
     // EXIT A — all normal breaks above mean the listing ended, crossed the
     // created-order boundary, or supplied no continuation cursor.
     children: order === "action" ? dedupeByFullname(all) : all,
-    truncated,
+    truncated: walk.truncated,
   };
 }
 
