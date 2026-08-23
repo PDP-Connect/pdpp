@@ -689,18 +689,20 @@ CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
 -- monotonically increasing integer scoped to the connection (assigned by
 -- the store from the current max, matching the spine_events.event_seq
 -- pattern already used for the same reason -- caller input cannot forge
--- ordering). A row, once written, is NEVER updated -- superseding a
--- revision means writing a new row and moving connector_instance_config_current
--- to point at it, never mutating this one. This is what lets exact
+-- ordering). The revision payload and provenance fields are immutable once
+-- written. Lifecycle metadata (status, confirmed_by, and confirmed_at)
+-- may be updated when a revision is activated or superseded; the active
+-- pointer moves to the resulting revision. This is what lets exact
 -- historical values remain queryable ("what was active when run R ran")
 -- without a second history mechanism.
 --
 -- config_json holds the full config bundle for this revision (all
 -- collection_scope + transport keys together), not one row per key: CAS
--- (optimistic concurrency) and atomic proof-declassification both operate
--- per-connection-generation, not per-key, so a per-key row would let two
--- concurrent writers each "win" on a different key of the same logical
--- change -- exactly the merge hazard the review rejects (finding #7).
+-- (optimistic concurrency) operates per connection generation, not per key,
+-- so a per-key row would let two concurrent writers each "win" on a
+-- different key of the same logical change -- exactly the merge hazard the
+-- review rejects (finding #7). Coverage-proof invalidation is a separate
+-- concern and is not performed by this table's activation writes.
 --
 -- Every provenance column is NOT NULL; origin is a closed enum with no
 -- 'unknown' member. Platform-derived collection_scope rows always start
