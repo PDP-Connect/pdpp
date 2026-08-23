@@ -1022,6 +1022,10 @@ export function runConnector(config: RunConnectorConfig): void {
       sendInteraction,
       connectorName: name,
     });
+    // Registered before any page interaction so a capture taken mid-login can
+    // redact these values wherever they surface — including a field no
+    // field-name rule would recognize as secret.
+    capture?.registerSecrets(Object.values(credentials));
 
     const emitRecord = makeEmitRecord({
       requested,
