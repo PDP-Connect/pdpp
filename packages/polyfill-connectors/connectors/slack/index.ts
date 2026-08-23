@@ -140,6 +140,17 @@ export function formatSlackdumpMissingError(bin: string): string {
   ].join(" ");
 }
 
+/**
+ * Slack's archive normalizer marks a deletion-shaped message with the exact
+ * boolean `is_tombstone` field. Do not infer deletion from omission, text,
+ * timestamps, or any other subtype: a false positive would delete the
+ * owner's retained message. The stream guard also prevents this message
+ * marker from affecting derived Slack streams.
+ */
+export function isSlackMessageTombstone(stream: string, data: RecordData): boolean {
+  return stream === "messages" && data.is_tombstone === true;
+}
+
 // safeAll: typed SQL wrapper. Rows returned as unknown[] → caller casts.
 function safeAll<T>(db: DatabaseSync, sql: string): T[] | null {
   try {
@@ -3386,6 +3397,7 @@ if (isMainModule(import.meta.url)) {
     retryablePattern: SLACK_RETRYABLE_FAILURE_RE,
     timeRangeField: "sent_at",
     validateRecord,
+    isTombstone: isSlackMessageTombstone,
     auth: {
       kind: "env",
       required: ["SLACK_WORKSPACE", "SLACK_TOKEN", "SLACK_COOKIE"],
