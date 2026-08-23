@@ -47,6 +47,7 @@ function snap(
     ephemeral_browser_runtime: null,
     forward_disposition: "complete",
     last_success_at: null,
+    local_device_outbox_counts: null,
     next_action: null,
     next_attempt_at: null,
     reason_code: null,
