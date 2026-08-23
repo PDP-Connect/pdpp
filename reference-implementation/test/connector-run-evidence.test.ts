@@ -15,11 +15,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { emitSpineEvent } from "../lib/spine.ts";
 import {
   getConnectorRunEvidenceConnectorId,
+  getLatestConnectorRunSummary,
   getManifestRefreshPolicy,
   getMaximumStalenessSeconds,
 } from "../server/connector-run-evidence.ts";
+import { closeDb, initDb } from "../server/db.ts";
+
+const getLatestConnectorRunSummaryForTest = getLatestConnectorRunSummary as unknown as (
+  connectorId: string,
+  status: string,
+  connectorInstanceId: string
+) => Promise<{ last_at: unknown; status: unknown } | null>;
+
+async function withSpine(fn: () => Promise<void>): Promise<void> {
+  initDb();
+  try {
+    await fn();
+  } finally {
+    closeDb();
+  }
+}
 
 test("getConnectorRunEvidenceConnectorId returns the id only from a storage binding", () => {
   assert.equal(getConnectorRunEvidenceConnectorId({ connector_id: "gmail" }), "gmail");
@@ -49,4 +67,34 @@ test("getMaximumStalenessSeconds accepts a positive finite number only", () => {
   // Non-object / array / null policy -> null.
   assert.equal(getMaximumStalenessSeconds([]), null);
   assert.equal(getMaximumStalenessSeconds(null), null);
+});
+
+test("getLatestConnectorRunSummary scopes success evidence to the connector instance", async () => {
+  await withSpine(async () => {
+    await emitSpineEvent({
+      data: { connector_instance_id: "cin_amazon_a" },
+      event_type: "run.completed",
+      object_id: "run_amazon_a",
+      object_type: "run",
+      occurred_at: "2026-08-01T00:00:00.000Z",
+      run_id: "run_amazon_a",
+      source_id: "amazon",
+      source_kind: "connector",
+      status: "succeeded",
+    });
+    await emitSpineEvent({
+      data: { connector_instance_id: "cin_amazon_b" },
+      event_type: "run.completed",
+      object_id: "run_amazon_b",
+      object_type: "run",
+      occurred_at: "2026-08-02T00:00:00.000Z",
+      run_id: "run_amazon_b",
+      source_id: "amazon",
+      source_kind: "connector",
+      status: "succeeded",
+    });
+
+    const summary = await getLatestConnectorRunSummaryForTest("amazon", "succeeded", "cin_amazon_a");
+    assert.equal(summary?.last_at, "2026-08-01T00:00:00.000Z");
+  });
 });
