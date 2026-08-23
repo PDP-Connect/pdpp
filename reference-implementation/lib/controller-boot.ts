@@ -679,7 +679,7 @@ async function projectAbandonedRunHistoryPostgres(
      SET status = $1,
          completed_at = $2,
          terminal_reason = $3,
-         facts_json = $4::jsonb
+         facts_json = COALESCE(facts_json, '{}'::jsonb) || $4::jsonb
      WHERE run_id = $5
        AND connector_instance_id = $6
        AND status = 'running'`,
@@ -884,7 +884,17 @@ function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string, factsJs
        SET status = ?,
            completed_at = ?,
            terminal_reason = ?,
-           facts_json = ?
+           facts_json = json_set(
+             COALESCE(facts_json, '{}'),
+             '$.caused_by_event_id', json_extract(json(?), '$.caused_by_event_id'),
+             '$.original_boot_epoch', json_extract(json(?), '$.original_boot_epoch'),
+             '$.original_controller_id', json_extract(json(?), '$.original_controller_id'),
+             '$.reason', json_extract(json(?), '$.reason'),
+             '$.reconciled_by_boot_epoch', json_extract(json(?), '$.reconciled_by_boot_epoch'),
+             '$.reconciled_by_controller_id', json_extract(json(?), '$.reconciled_by_controller_id'),
+             '$.reconciled_by_seq', json_extract(json(?), '$.reconciled_by_seq'),
+             '$.source', json_extract(json(?), '$.source')
+           )
        WHERE run_id = ?
          AND connector_instance_id = ?
          AND status = 'running'`
@@ -893,6 +903,13 @@ function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string, factsJs
       ABANDONED_RUN_HISTORY_STATUS,
       at,
       terminalReasonFor(orphan),
+      factsJson,
+      factsJson,
+      factsJson,
+      factsJson,
+      factsJson,
+      factsJson,
+      factsJson,
       factsJson,
       orphan.run_id,
       orphan.connector_instance_id

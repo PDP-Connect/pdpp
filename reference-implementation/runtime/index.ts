@@ -3664,6 +3664,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         records_accepted: result.records_accepted,
         records_attempted: result.records_attempted,
         records_flushed: result.records_accepted,
+        records_emitted: totalEmitted,
         records_permanently_rejected: result.records_rejected,
         records_rejected: result.records_rejected,
         source: runSource,

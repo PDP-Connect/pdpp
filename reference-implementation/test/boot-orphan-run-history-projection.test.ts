@@ -19,7 +19,7 @@ import test from "node:test";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome resolver lacks this runtime-supported dependency export shape.
 import Database from "better-sqlite3";
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../lib/controller-boot.ts";
-import { clearCurrentBootEpoch } from "../lib/spine.ts";
+import { clearCurrentBootEpoch, emitSpineEvent } from "../lib/spine.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
@@ -179,6 +179,58 @@ test("boot reconciliation retains records already committed by the orphaned run"
     // terminalising the run must not revise its yield down to the
     // reconciler's own zero.
     assert.equal(row.records_emitted, 42, "records already committed by the run must survive reconciliation");
+  } finally {
+    closeDb();
+    clearCurrentBootEpoch();
+  }
+});
+
+test("boot reconciliation retains durable batches recorded before a SIGKILL", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    const runId = "run_orphan_durable_batch_1";
+    seedRunningRun(dbPath, { event_id: "evt_orphan_batch_1", run_id: runId });
+
+    // This is the production ordering: the resource server has durably
+    // accepted a batch and the runtime has recorded its cumulative emitted
+    // count, but SIGKILL arrives before the connector can emit a terminal
+    // event. The boot reconciler is the next writer to touch the run.
+    await emitSpineEvent({
+      actor_id: CONNECTOR_ID,
+      actor_type: "runtime",
+      data: {
+        batch_size: 3,
+        connector_instance_id: INSTANCE_ID,
+        records_accepted: 3,
+        records_emitted: 3,
+        records_flushed: 3,
+        source: { id: CONNECTOR_ID, kind: "connector" },
+        total_records_flushed: 3,
+      },
+      event_type: "run.batch_ingested",
+      object_id: runId,
+      object_type: "run",
+      run_id: runId,
+      status: "succeeded",
+      stream_id: "items",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-epoch-orphan-batch-1",
+      controllerId: "host-test",
+    });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    const row = readRunHistory(dbPath, runId);
+    assert.ok(row, "seeded run_history row should still exist");
+    assert.equal(row.status, "abandoned");
+    assert.equal(
+      row.records_emitted,
+      3,
+      "a durable batch written before SIGKILL must not be replaced by the schema default"
+    );
+    assert.equal(JSON.parse(row.facts_json ?? "{}").records_emitted, 3);
   } finally {
     closeDb();
     clearCurrentBootEpoch();
