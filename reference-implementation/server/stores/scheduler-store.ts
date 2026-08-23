@@ -476,6 +476,14 @@ function requireRunHistoryConnectorInstanceId(record: SchedulerRunHistoryRecord)
   return record.connectorInstanceId;
 }
 
+function rejectEmptyRunHistoryRunId(record: SchedulerRunHistoryRecord): void {
+  if (typeof record.runId === "string" && record.runId.trim().length === 0) {
+    throw new Error(
+      "SchedulerStore.appendRunHistory: runId must be non-empty when provided; do not persist an empty run_id."
+    );
+  }
+}
+
 function sourceWebhookReceiptMatches(receipt: SourceWebhookRunReceipt, input: SourceWebhookRunAdmissionInput): boolean {
   const { active_run: activeRun, source_event: sourceEvent } = input;
   return (
@@ -576,6 +584,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
   return {
     appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
+      rejectEmptyRunHistoryRunId(record);
       exec(referenceQueries.controllerInsertRunHistory, [
         connectorInstanceId,
         record.connectorId,
@@ -1001,6 +1010,7 @@ export function createPostgresSchedulerStore(): SchedulerStore {
   return {
     async appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
+      rejectEmptyRunHistoryRunId(record);
       await postgresQuery(
         `INSERT INTO run_history(
            connector_instance_id,
