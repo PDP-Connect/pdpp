@@ -30,6 +30,7 @@ import {
   decodeConnectorSummaryPageCursor,
   encodeConnectorSummaryPageCursor,
 } from "../operations/ref-connectors-list/pagination.ts";
+import { type AcknowledgedLossRecord, readAcknowledgedLoss } from "../runtime/acknowledged-loss.ts";
 import { type AttentionRecord, isHealthRelevant, type OwnerAction } from "../runtime/attention.ts";
 import {
   type ConnectorSummaryCacheDecision as ConnectorSummariesCacheDecisionForRuntime,
@@ -6196,6 +6197,14 @@ async function loadRetainedSizeProjectionSnapshot(): Promise<RetainedSizeProject
 }
 
 function buildRenderedVerdictForSummary(input: {
+  /**
+   * The connection's durable owner-stamped acknowledgement that some data is
+   * permanently gone for an external reason, read verbatim off the instance's
+   * `source_binding` by {@link readAcknowledgedLoss}. `null` when the writer
+   * never stamped one — this projection NEVER infers an acknowledgement from a
+   * connector id, an error string, or a run outcome.
+   */
+  readonly acknowledgedLoss: AcknowledgedLossRecord | null;
   readonly collectionReport: readonly CollectionReportEntry[];
   readonly attentionRecords: readonly AttentionRecord[];
   readonly connectionHealth: ConnectionHealthSnapshot;
@@ -6262,6 +6271,7 @@ function buildRenderedVerdictForSummary(input: {
     mode: scheduleModeFrom(scheduleApiShape(input.schedule)),
   };
   return synthesizeConnectorVerdict({
+    acknowledgedLoss: input.acknowledgedLoss,
     attention: structuredAttention,
     manifestStreams: input.manifestStreams,
     progress: progressEvidence,
@@ -6558,6 +6568,10 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       : null
     : liveRetainedRecordsOrNull(live);
   const builtRenderedVerdict = buildRenderedVerdictForSummary({
+    // Read exactly as the writer stamped it (owner ruling 2026-08-22, the same
+    // discipline as `deriveSetupFailedReason` below): if no record exists this
+    // is `null` and the verdict is byte-identical to its prior output.
+    acknowledgedLoss: readAcknowledgedLoss(instance.sourceBinding),
     attentionRecords: attention.records,
     collectionReport,
     connectionHealth,

@@ -21,6 +21,7 @@
  * when one exists; this module never fabricates a liveness heuristic.
  */
 
+import type { AcknowledgedLossRecord } from "./acknowledged-loss.ts";
 import {
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
@@ -266,6 +267,12 @@ export function buildProgressEvidence(input: {
  * liveness signal is threaded once one exists.
  */
 export function synthesizeConnectorVerdict(input: {
+  /**
+   * A durable, owner-stamped acknowledgement that some of this connection's
+   * data is permanently gone for an external reason. Passed straight through;
+   * this module never derives one. Omitted/`null` preserves prior behavior.
+   */
+  readonly acknowledgedLoss?: AcknowledgedLossRecord | null;
   readonly attention?: ConnectionAttentionEvidence | null;
   readonly snapshot: ConnectionHealthSnapshot;
   readonly report: readonly CollectionReportEntryLike[];
@@ -284,6 +291,7 @@ export function synthesizeConnectorVerdict(input: {
     input.runtimeOk ?? true,
     input.progress,
     input.scheduleEvidence ?? null,
-    input.attention ?? null
+    input.attention ?? null,
+    input.acknowledgedLoss ?? null
   );
 }
