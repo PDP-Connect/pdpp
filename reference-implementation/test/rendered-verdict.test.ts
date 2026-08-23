@@ -1460,7 +1460,9 @@ test("channel: a retryable gap whose only contributing stream is retry_by_runtim
       }),
     ],
     ASSISTED_REFRESH,
-    true
+    true,
+    null,
+    { hasPriorSuccess: true, mode: "scheduled-active" }
   );
   assert.ok(
     !v.required_actions.some((a) => a.kind === "retry_gap"),
@@ -1469,6 +1471,31 @@ test("channel: a retryable gap whose only contributing stream is retry_by_runtim
   // The gap itself must still render — never fabricated-complete.
   assert.equal(v.pill.tone, "amber");
   assert.equal(v.pill.label, "Missing data");
+});
+
+test("channel: retry_by_runtime without an active schedule still offers Retry now", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "unknown" },
+      forward_disposition: "resumable",
+      state: "idle",
+    }),
+    [
+      stream({
+        coverage: "retryable_gap",
+        gap_retryable: true,
+        recovery_action: "retry_by_runtime",
+        stream_id: "messages",
+      }),
+    ],
+    ASSISTED_REFRESH,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.ok(action, "missing schedule evidence must keep an owner action visible");
+  assert.equal(action.kind, "retry_gap");
+  assert.equal(action.audience, "owner");
+  assert.equal(action.cta, "Retry now");
 });
 
 test("channel: MUTATION-SAFETY a genuinely owner-actionable retryable gap still offers Retry now", () => {
