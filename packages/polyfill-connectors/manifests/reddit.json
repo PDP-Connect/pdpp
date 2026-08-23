@@ -568,5 +568,8 @@
       "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "older_pages_deferred_page_budget": "We stopped after reading a set number of pages of this Reddit listing, so older posts haven't been collected yet. Nothing was lost \u2014 the next run picks up where this one stopped"
+  }
 }

@@ -269,6 +269,12 @@ function assertListingEnvelope(
  */
 export type RedditListingFetch = (path: string) => Promise<RedditFetchResult>;
 
+export interface RedditPaginationResult {
+  children: RedditChild[];
+  /** True only when MAX_PAGES stopped a walk that still had an `after` cursor. */
+  truncated: boolean;
+}
+
 /**
  * Re-run the connector's existing session-establishment flow
  * (`ensureRedditSession`) and report whether the session is live afterward.
@@ -322,12 +328,20 @@ export async function paginate(
   onAuthFailed?: RedditReauthFn,
   repairBudget: ReturnType<typeof createRepairBudget> = createRepairBudget(),
   order: RedditListingOrder = "created"
-): Promise<RedditChild[]> {
+): Promise<RedditPaginationResult> {
   const all: RedditChild[] = [];
   let after: string | null = null;
   const streamExtra = streamName ? { stream: streamName } : {};
 
-  for (let guard = 0; guard < MAX_PAGES; guard += 1) {
+  let truncated = false;
+  let guard = 0;
+  while (true) {
+    if (guard >= MAX_PAGES) {
+      // EXIT B — the deliberate page ceiling. `after` is still non-null here,
+      // so this is a fetched prefix, not an exhausted listing.
+      truncated = true;
+      break;
+    }
     await progress?.("Fetching Reddit listing page", {
       ...streamExtra,
       phase: "fetch",
@@ -356,6 +370,7 @@ export async function paginate(
     });
 
     const { children } = json.data;
+    guard += 1;
     await progress?.("Fetched Reddit listing page", {
       ...streamExtra,
       phase: "page",
@@ -384,7 +399,12 @@ export async function paginate(
   // `considered`/`covered`, so coverage reflects distinct items rather than
   // repeat sightings. `created`-ordered streams stop at the cursor and are
   // already distinct, so this is a no-op for them.
-  return order === "action" ? dedupeByFullname(all) : all;
+  return {
+    // EXIT A — all normal breaks above mean the listing ended, crossed the
+    // created-order boundary, or supplied no continuation cursor.
+    children: order === "action" ? dedupeByFullname(all) : all,
+    truncated,
+  };
 }
 
 // ─── Stream runner ──────────────────────────────────────────────────────
@@ -434,7 +454,7 @@ export async function collectStream(args: CollectStreamArgs): Promise<CollectStr
   await progress(stream.progressMessage, { stream: stream.name });
 
   const sinceEpoch = sinceFromState(state, stream.name);
-  const items = await paginate(
+  const { children: items, truncated } = await paginate(
     fetchPath,
     stream.endpoint,
     sinceEpoch,
@@ -469,13 +489,32 @@ export async function collectStream(args: CollectStreamArgs): Promise<CollectStr
     cursor_present: latestEpoch > 0,
   });
 
+  if (truncated) {
+    // Reddit does not expose a total page count. One synthetic considered unit
+    // is the honest lower bound for the unread tail: the next page exists, but
+    // this run deliberately did not fetch it. The deferred suffix keeps the
+    // stream out of `complete` without inventing an item count.
+    await emit({
+      type: "SKIP_RESULT",
+      stream: stream.name,
+      reason: "older_pages_deferred_page_budget",
+      message: `Reddit ${stream.name} stopped at the ${MAX_PAGES}-page limit with more pages still listed`,
+      diagnostics: { page_limit: MAX_PAGES, total_seen: items.length, unread_pages: 1 },
+    });
+  }
+
   await emit({
     type: "STATE",
     stream: stream.name,
-    cursor: { last_created_utc: latestEpoch },
+    // A created-order watermark comes from the newest page. Advancing it after
+    // a capped walk would make the next run stop before the unread tail. The
+    // action-ordered streams do not use this watermark for their stop rule,
+    // but holding it there keeps the checkpoint contract uniform across all
+    // six Reddit streams.
+    cursor: { last_created_utc: truncated ? (sinceEpoch ?? 0) : latestEpoch },
   });
 
-  return { considered: items.length, covered };
+  return { considered: items.length + (truncated ? 1 : 0), covered };
 }
 
 /** Build the list of streams this connector can populate, bound to a

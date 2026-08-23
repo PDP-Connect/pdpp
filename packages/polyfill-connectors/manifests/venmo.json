@@ -345,5 +345,9 @@
       "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "friends_deferred_page_budget": "We stopped after reading a set number of pages of your Venmo friends, so some friends haven't been collected yet. Nothing was lost \u2014 the next run picks up where this one stopped",
+    "transactions_deferred_page_budget": "We stopped after reading a set number of pages of your Venmo transactions, so older transactions haven't been collected yet. Nothing was lost \u2014 the next run picks up where this one stopped"
+  }
 }
