@@ -8368,6 +8368,24 @@ export async function startServer(opts: ServerOpts = {}) {
     const autoEnrollOptOut = process.env.PDPP_SKIP_AUTO_SCHEDULE_ENROLLMENT === "1";
     const autoEnrollEnabled =
       opts.autoEnrollEligibleSchedules === undefined ? !autoEnrollOptOut : !!opts.autoEnrollEligibleSchedules;
+    const recordAutoEnrollDecision = async (connectorId: string, reason: string | null): Promise<void> => {
+      const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+      const instanceStore = createRequestConnectorInstanceStore();
+      const instances = (await instanceStore.listByOwnerIncludingDrafts(ownerAuthSubjectId)).filter(
+        (instance) => (canonicalConnectorKey(instance.connectorId) ?? instance.connectorId) === canonicalId
+      );
+      for (const instance of instances) {
+        // The reason is merged atomically with the existing source binding,
+        // following the same write-time evidence pattern as revocation_reason.
+        // It is deliberately non-secret and connector-neutral.
+        await Promise.resolve(instanceStore.updateStatus(instance.connectorInstanceId, {
+          revokedAt: instance.revokedAt ?? null,
+          sourceBindingPatch: { auto_enroll_skip_reason: reason },
+          status: instance.status,
+          updatedAt: new Date().toISOString(),
+        }));
+      }
+    };
     const enrollmentSummary = await autoEnrollEligibleSchedules({
       controller,
       enabled: autoEnrollEnabled,
@@ -8401,6 +8419,7 @@ export async function startServer(opts: ServerOpts = {}) {
         return manifests.map(({ connectorId, manifest }) => ({ connector_id: connectorId, manifest }));
       },
       log: (msg) => logger.info(msg),
+      recordSkipReason: recordAutoEnrollDecision,
     });
     if (enrollmentSummary.scanned > 0) {
       logger.info(enrollmentSummary, "auto-enroll eligible schedules summary");

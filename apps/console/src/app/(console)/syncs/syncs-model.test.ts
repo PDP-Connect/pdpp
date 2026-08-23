@@ -704,6 +704,20 @@ test("describeCadence humanizes the schedule interval", () => {
   assert.equal(describeCadence(null), "on demand");
 });
 
+test("syncs carries a durable auto-enrollment skip reason for an unscheduled source", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        auto_enroll_skip_reason: "public_listing.tier=preview",
+        streams: ["alpha"],
+      }),
+    ],
+    runs: [],
+  });
+
+  assert.equal(model.groups[0]?.scheduleReason, "public_listing.tier=preview");
+});
+
 test("describeDelta reads records, no change, and failure honestly", () => {
   assert.equal(describeDelta({ eventCount: 38, failed: false }), "+38 records");
   assert.equal(describeDelta({ eventCount: 1, failed: false }), "+1 record");
