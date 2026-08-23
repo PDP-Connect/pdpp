@@ -193,9 +193,18 @@ function makeStub({ stderrText, exitCode = 1 }: { stderrText: string; exitCode?:
 async function runStub({
   stderrText,
   exitCode = 1,
+  staticSecretEnv = null,
 }: {
   stderrText: string;
   exitCode?: number;
+  /**
+   * The connection-scoped credential fragment the controller/scheduler would
+   * resolve for a real run. Threaded here so the identity-redaction test below
+   * exercises the REAL wiring — runConnector reading its own resolved
+   * credentials — rather than calling `redactStderrTail` with a hand-built
+   * registry, which would prove nothing about whether the runtime passes them.
+   */
+  staticSecretEnv?: Record<string, string> | null;
 }): Promise<StubRunResult> {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-failure-diagnostics-"));
   const stubPath = join(tmpDir, "stub.js");
@@ -236,6 +245,7 @@ async function runStub({
     // fails closed; this stub never emits records anyway.
     rsUrl: "http://127.0.0.1:1",
     state: null,
+    ...(staticSecretEnv ? { staticSecretEnv } : {}),
   };
   try {
     outcome = await runConnector(runOptions);
@@ -328,4 +338,77 @@ test("runConnector: secret-shaped stderr is redacted before persistence", async 
   // Surrounding context is still intact so the owner can see what
   // happened, just not the credential value.
   assert.ok(diag.text.includes("upstream returned 401"));
+});
+
+// ─── 4. Identity redaction through the REAL runConnector path ────────────────
+//
+// These spawn an actual connector child with an actual resolved credential
+// fragment and assert on what runConnector persists. That is the point: a test
+// that called `redactStderrTail` directly with a hand-built registry would pass
+// even if the runtime never passed its credentials in — which is exactly the
+// deployed defect. Proven against the deployed head (14d371ee4) with a REAL
+// owner password: an unlabelled credential in a stderr line reached
+// `run.failed.data.connector_diagnostics.stderr_tail` verbatim.
+//
+// The value below is a synthetic placeholder chosen for its SHAPE — 8
+// characters, mixed case, alphanumeric — which is what makes it invisible to
+// every shape rule. No real credential appears in this file.
+const PLACEHOLDER_CONNECTION_PASSWORD = "Zq7tRm2k";
+
+test("runConnector: an UNLABELLED resolved credential is redacted from the persisted diagnostic", async () => {
+  const stderrText = `Login failed for ${PLACEHOLDER_CONNECTION_PASSWORD}\nretrying in 5s\n`;
+
+  const surfaced = await runStub({
+    exitCode: 1,
+    staticSecretEnv: { TEST_STUB_PASSWORD: PLACEHOLDER_CONNECTION_PASSWORD },
+    stderrText,
+  });
+  assert.equal(surfaced.status, "failed");
+
+  const diag = surfaced.connector_diagnostics?.stderr_tail;
+  assert.ok(diag, "expected stderr_tail");
+  assert.ok(
+    !diag.text.includes(PLACEHOLDER_CONNECTION_PASSWORD),
+    `the run's own resolved credential leaked into the durable diagnostic: ${diag.text}`
+  );
+  assert.equal(diag.redacted, true);
+  // Diagnostic value is preserved: the line still says a credential appeared,
+  // and the surrounding context survives. That distinction is what made the
+  // real Venmo failure readable.
+  assert.ok(diag.text.includes("Login failed for [REDACTED]"), `expected a marker in place, got: ${diag.text}`);
+  assert.ok(diag.text.includes("retrying in 5s"));
+});
+
+test("runConnector: an unlabelled NON-credential of the same shape survives", async () => {
+  // Over-redaction guard on the real path. The stub's resolved credential is a
+  // different value, so this lookalike must reach the diagnostic verbatim —
+  // otherwise identity redaction has been implemented as a shape rule.
+  const lookalike = "Xk4pQw9z";
+  const stderrText = `Login failed for ${lookalike}\n`;
+
+  const surfaced = await runStub({
+    exitCode: 1,
+    staticSecretEnv: { TEST_STUB_PASSWORD: PLACEHOLDER_CONNECTION_PASSWORD },
+    stderrText,
+  });
+
+  const diag = surfaced.connector_diagnostics?.stderr_tail;
+  assert.ok(diag, "expected stderr_tail");
+  assert.ok(diag.text.includes(lookalike), `an unregistered lookalike was over-redacted: ${diag.text}`);
+  assert.equal(diag.redacted, false);
+});
+
+test("runConnector: the run's owner token is redacted from the persisted diagnostic", async () => {
+  // `ownerToken` is a live bearer credential this run hands the child in the
+  // same environment as the connection secret, so a child that echoes it leaks
+  // it the same way. `runStub` passes "test-owner-token" as the owner token.
+  const stderrText = "auth header was test-owner-token and upstream rejected it\n";
+
+  const surfaced = await runStub({ exitCode: 1, stderrText });
+
+  const diag = surfaced.connector_diagnostics?.stderr_tail;
+  assert.ok(diag, "expected stderr_tail");
+  assert.ok(!diag.text.includes("test-owner-token"), `owner token leaked into the diagnostic: ${diag.text}`);
+  assert.ok(diag.text.includes("[REDACTED]"));
+  assert.ok(diag.text.includes("upstream rejected it"), "surrounding context survives");
 });
