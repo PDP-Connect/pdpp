@@ -70,6 +70,9 @@ async function makeAttachmentSource(): Promise<{
 
 async function run(input: {
   claudeHome: string;
+  /** Set when the run is expected to fail, e.g. a malformed complete JSONL
+   * line. Every other caller keeps the default success assertion. */
+  expectFailure?: boolean;
   projects: string;
   state?: Record<string, unknown>;
   streams?: string[];
@@ -92,6 +95,11 @@ async function run(input: {
       type: "START",
     },
   });
+  if (input.expectFailure) {
+    assert.equal(result.code, 1, result.stderr);
+  } else {
+    assert.equal(result.code, 0, result.stderr);
+  }
   const states = Object.fromEntries(
     result.messages
       .filter((message): message is Extract<EmittedMessage, { type: "STATE" }> => message.type === "STATE")
@@ -210,6 +218,7 @@ test("M9: malformed LF-terminated JSON reports a gap and does not advance its ph
   await writeFile(source.top, `${await readFile(source.top, "utf8")}not-json\n`);
   const malformed = await run({
     ...source,
+    expectFailure: true,
     state: { messages: first.states.messages, sessions: first.states.sessions },
   });
   // A complete malformed line is not an in-flight tail: silently consuming it
@@ -638,9 +647,31 @@ test("source mutations, partial tails, and malformed terminated lines retain phy
     },
   });
   assert.equal(partial.records.length, 0, "M8: unterminated JSONL does not emit");
+
+  // M9: once the pending tail is terminated, a malformed complete line follows
+  // it. The malformed line is NOT an in-flight tail, so consuming it would lose
+  // that record forever. The run must fail and commit no cursor, which also
+  // withholds the now-complete line that precedes it -- a failed run proves
+  // nothing rather than proving a subset.
+  const beforeMalformed = await readFile(source.top, "utf8");
+  await writeFile(source.top, `${beforeMalformed}","isSidechain":false}\nnot-json\n`);
+  const malformedTail = await run({
+    ...source,
+    expectFailure: true,
+    state: {
+      messages: partial.states.messages,
+      sessions: partial.states.sessions,
+    },
+  });
+  assert.equal(malformedTail.code, 1, "M9: a malformed complete line fails the run");
+  assert.equal(malformedTail.records.length, 0, "M9: a failed run emits no records");
+  assert.equal(malformedTail.states.messages, undefined, "M9: no messages cursor may commit past the malformed line");
+
+  // M8/M9 recovery: with the malformed line repaired at the source, the
+  // previously-completed tail and the following line both emit exactly once.
   await writeFile(
     source.top,
-    `${await readFile(source.top, "utf8")}","isSidechain":false}\nnot-json\n${transcriptLine("top-3", "2026-07-21T00:03:00Z")}\n`
+    `${beforeMalformed}","isSidechain":false}\n${transcriptLine("top-3", "2026-07-21T00:03:00Z")}\n`
   );
   const completed = await run({
     ...source,
@@ -652,7 +683,7 @@ test("source mutations, partial tails, and malformed terminated lines retain phy
   assert.deepEqual(
     completed.records.filter((record) => record.stream === "messages").map((record) => record.data.id),
     [IDS.partial, IDS["top-3"]],
-    "M8/M9: completed and post-malformed lines advance once"
+    "M8/M9: once the source is repaired, completed and following lines advance once"
   );
 
   await truncate(source.subagent, 0);
