@@ -358,6 +358,16 @@ export interface StreamRollup {
   readonly gap_retryable: boolean;
   /** Manifest stream priority. `required` streams weight the worst-wins rollup. */
   readonly priority: "accepted_absence" | "optional" | "required";
+  /**
+   * Recovery action the runtime attached to this stream's outstanding gap, when
+   * known. `"retry_by_runtime"` means an ordinary future run already retries
+   * this stream without owner involvement — the owner-facing retry CTA must
+   * not claim credit for work the runtime does on its own. `null`/absent means
+   * unknown (no skip fact, or a value the runtime hasn't declared): callers
+   * must treat unknown the same as owner-actionable, never the same as
+   * `retry_by_runtime`.
+   */
+  readonly recovery_action?: string | null;
   readonly stream_id: string;
   /**
    * Whether this stream's ENTIRE terminal shortfall carries durable per-item
@@ -942,11 +952,31 @@ function shouldOfferRefreshNowAction(
   );
 }
 
+/**
+ * Whether the streams behind this gap are ALL declared `retry_by_runtime` —
+ * an ordinary future run already retries every one of them without owner
+ * involvement, so an owner-facing "Retry now" would offer an action that adds
+ * nothing. Fails open (`false`, i.e. keep offering the CTA) whenever a
+ * contributing stream is missing from `streams`, or any contributing stream's
+ * `recovery_action` is absent/unknown/anything other than `retry_by_runtime`
+ * — a genuinely owner-actionable gap, or one this rollup can't yet speak to,
+ * must never lose its action.
+ */
+function allContributingStreamsRetryByRuntime(streams: readonly StreamRollup[], streamIds: readonly string[]): boolean {
+  if (streamIds.length === 0) {
+    return false;
+  }
+  const streamById = new Map(streams.map((s) => [s.stream_id, s]));
+  return streamIds.every((id) => streamById.get(id)?.recovery_action === "retry_by_runtime");
+}
+
 function shouldOfferRetryGapAction(
   snapshot: ConnectionHealthSnapshot,
   refresh: ConnectionRefreshEvidence | null,
   scheduleEvidence: ScheduleEvidence | null,
-  progress: ProgressEvidence | null
+  progress: ProgressEvidence | null,
+  streams: readonly StreamRollup[],
+  retryGapStreamIds: readonly string[]
 ): boolean {
   if (isManualRefreshOnly(refresh) && !hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence)) {
     return true;
@@ -964,7 +994,7 @@ function shouldOfferRetryGapAction(
     return false;
   }
   if (snapshot.axes.coverage === "retryable_gap") {
-    return true;
+    return !allContributingStreamsRetryByRuntime(streams, retryGapStreamIds);
   }
   return snapshot.state === "degraded";
 }
@@ -1295,12 +1325,13 @@ function buildRequiredActions(
   // Degraded or manual-refresh retryable gaps: the system can recover on a
   // future run, but the owner can explicitly ask for another attempt. Surface
   // that non-urgent accelerant instead of hiding degraded gaps as a calm wait.
+  const retryGapAffects = resumableStreamIds(streams);
   if (
     disposition === "resumable" &&
     actions.length === 0 &&
-    shouldOfferRetryGapAction(snapshot, refresh, scheduleEvidence, progress)
+    shouldOfferRetryGapAction(snapshot, refresh, scheduleEvidence, progress, streams, retryGapAffects)
   ) {
-    const affects = resumableStreamIds(streams);
+    const affects = retryGapAffects;
     actions.push({
       affects,
       audience: "owner",

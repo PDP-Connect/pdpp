@@ -56,6 +56,16 @@ export interface CollectionReportEntryLike {
    */
   readonly coverage_unfillable_accounted?: boolean;
   readonly pending_detail_gaps: number;
+  /**
+   * The `SKIP_RESULT` fact for this stream, or `null`/absent. Only
+   * `recovery_action` is read here (e.g. `retry_by_runtime` means an ordinary
+   * future run already retries this without owner involvement) — structurally
+   * typed so this module stays free of the server's `RuntimeCollectionFactSkip`
+   * import while still accepting a real `CollectionReportEntry`. Absent or an
+   * unrecognized value reads as unknown, never as `retry_by_runtime`, so the
+   * gate this feeds fails open toward offering the owner action.
+   */
+  readonly skipped?: { readonly recovery_action?: string | null } | null;
   readonly stream: string;
 }
 
@@ -167,6 +177,7 @@ export function buildStreamRollups(
       coverage: entry.coverage_condition,
       gap_retryable: retryable,
       priority: effectivePriority,
+      recovery_action: entry.skipped?.recovery_action ?? null,
       stream_id: entry.stream,
       // Carried, never re-derived: the entry already holds the one owner's
       // verdict, so the verdict's disposition reads the same fact the
