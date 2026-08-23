@@ -23,6 +23,7 @@ import { EnrollmentForm } from "./enrollment-form.tsx";
 import { ReenrollButton } from "./reenroll-button.tsx";
 import {
   classifyHeartbeatFreshness,
+  formatIngestCount,
   formatLastError,
   formatRelativeTime,
   sourceLabel,
@@ -197,8 +198,27 @@ function DeviceRow({ device, referenceBaseUrl }: { device: DeviceExporter; refer
             ) : null}
           </div>
           <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2">
-            <MetaPill label="accepted" tone="success" value={counts.accepted} />
-            <MetaPill label="rejected" tone={counts.rejected > 0 ? "danger" : "neutral"} value={counts.rejected} />
+            {/* An incomplete sum renders "unknown" in a neutral tone rather
+                than a number. The rejected tone in particular must follow the
+                PROVEN count: a device whose counts were omitted has not been
+                shown to have zero rejects, and a neutral pill reading "0" said
+                exactly that. `success` on accepted is likewise withheld —
+                there is nothing to celebrate about a total we cannot read. */}
+            <MetaPill
+              label="accepted"
+              tone={counts.accepted.complete ? "success" : "neutral"}
+              value={formatIngestCount(counts.accepted)}
+            />
+            <MetaPill
+              label="rejected"
+              tone={counts.rejected.complete && counts.rejected.total > 0 ? "danger" : "neutral"}
+              value={formatIngestCount(counts.rejected)}
+            />
+            {counts.accepted.complete && counts.rejected.complete ? null : (
+              <span className="pdpp-caption self-center text-muted-foreground">
+                some source instances reported no counts
+              </span>
+            )}
             <MetaPill label="sources" value={device.source_instances.length} />
             <MetaPill
               label="last error"
@@ -290,11 +310,25 @@ function SourceInstanceCard({ source }: { source: DeviceSourceInstance }) {
         <span className="pdpp-caption text-muted-foreground">ingest {formatRelativeTime(source.last_ingest_at)}</span>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
-        <MetaPill label="accepted" tone="success" value={source.accepted_record_count ?? 0} />
+        {/* Matches `sources/[connector]/connection-diagnostics.tsx`, which
+            already renders an omitted count as "unknown" rather than 0. Both
+            fields are optional in the published contract, so `?? 0` here was
+            presenting an absent count as a measured one. */}
+        <MetaPill
+          label="accepted"
+          tone={typeof source.accepted_record_count === "number" ? "success" : "neutral"}
+          value={
+            typeof source.accepted_record_count === "number" ? source.accepted_record_count.toLocaleString() : "unknown"
+          }
+        />
         <MetaPill
           label="rejected"
-          tone={(source.rejected_record_count ?? 0) > 0 ? "danger" : "neutral"}
-          value={source.rejected_record_count ?? 0}
+          tone={
+            typeof source.rejected_record_count === "number" && source.rejected_record_count > 0 ? "danger" : "neutral"
+          }
+          value={
+            typeof source.rejected_record_count === "number" ? source.rejected_record_count.toLocaleString() : "unknown"
+          }
         />
         <MetaPill label="last error" tone={lastError === "none" ? "neutral" : "danger"} value={lastError} />
         <MetaPill label="outbox" tone={outbox.tone} value={outbox.label.replace("Outbox · ", "")} />
