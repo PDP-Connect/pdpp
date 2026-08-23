@@ -470,19 +470,31 @@ const WITHHOLD_SYNC_TOKEN = undefined;
  * claim can be emitted for a book that already has a token. The stored token is
  * left untouched on disk: the run rewrites it from its own sync-collection
  * response, and a failed run persists nothing, so an incremental resume stays
- * available either way. `undefined` collectionMode means `"incremental"`, per
- * that same contract.
+ * available either way.
+ *
+ * Deployed legacy cursors predate the per-book initialization marker. They can
+ * carry a token but no evidence that this connector ever enumerated the whole
+ * book. That token is only a change-feed checkpoint: using it against a quiet
+ * RFC 6578 server returns no members forever. Withhold it once to establish
+ * the missing boundary, then persist the marker below. `undefined`
+ * collectionMode means `"incremental"`, per that same contract.
  */
 async function resolveResumableSyncToken(
   collectionMode: "full_refresh" | "incremental" | undefined,
   storedSyncToken: string | undefined,
+  initialSyncCompleted: boolean,
   progress: AddressBookCollectionCtx["progress"]
 ): Promise<string | undefined> {
-  if (collectionMode !== "full_refresh") {
+  if (collectionMode !== "full_refresh" && initialSyncCompleted) {
     return storedSyncToken;
   }
   if (storedSyncToken) {
-    await progress("Full refresh requested: re-enumerating this address book", { stream: "contacts" });
+    await progress(
+      collectionMode === "full_refresh"
+        ? "Full refresh requested: re-enumerating this address book"
+        : "Initializing legacy address book: re-enumerating contacts",
+      { stream: "contacts" }
+    );
   }
   // Withhold the stored token so `resolveSyncResult` takes its initial-sync
   // path and re-establishes the enumeration boundary. The token stays on disk.
@@ -496,7 +508,7 @@ async function resolveResumableSyncToken(
  * from collect() to keep the top-level function's branching bounded — this
  * is the whole per-book unit of work in one place.
  */
-async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
+export async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   contactsBoundaryEstablished: boolean;
   contactsConsidered: number;
   contactsCovered: number;
@@ -522,12 +534,20 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   } = ctx;
   const bookKey = addressBookId(book.url);
   const priorSync = (
-    state.contacts as Record<string, { sync_token?: string; fingerprints?: Record<string, string> }>
+    state.contacts as Record<
+      string,
+      { initial_sync_completed?: boolean; sync_token?: string; fingerprints?: Record<string, string> }
+    >
   )?.[bookKey];
 
   // See `resolveResumableSyncToken`: a full_refresh run withholds the stored
   // token so this book re-establishes its enumeration boundary.
-  const priorSyncToken = await resolveResumableSyncToken(collectionMode, priorSync?.sync_token, progress);
+  const priorSyncToken = await resolveResumableSyncToken(
+    collectionMode,
+    priorSync?.sync_token,
+    priorSync?.initial_sync_completed === true,
+    progress
+  );
 
   await progress("Probing sync capability", { stream: "contacts" });
   const syncResult = await resolveSyncResult({
@@ -704,9 +724,13 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   });
 
   const contactsState =
-    (newState.contacts as Record<string, { sync_token?: string; fingerprints?: Record<string, string> }>) ?? {};
+    (newState.contacts as Record<
+      string,
+      { initial_sync_completed?: boolean; sync_token?: string; fingerprints?: Record<string, string> }
+    >) ?? {};
   contactsState[bookKey] = {
     fingerprints: entityCursor.toState(),
+    initial_sync_completed: priorSync?.initial_sync_completed === true || contactsBoundaryEstablished,
     ...(supportsSync && resolvedSyncResult.syncToken ? { sync_token: resolvedSyncResult.syncToken } : {}),
   };
   newState.contacts = contactsState;
