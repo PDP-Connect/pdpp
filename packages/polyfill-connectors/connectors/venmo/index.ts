@@ -87,8 +87,8 @@ import type {
 
 const FRIENDS_PAGE_SIZE = 200;
 const TRANSACTIONS_PAGE_SIZE = 50;
-const MAX_FRIENDS_PAGES = 200;
-const MAX_TRANSACTION_PAGES = 400;
+export const MAX_FRIENDS_PAGES = 200;
+export const MAX_TRANSACTION_PAGES = 400;
 
 /**
  * `venmo_transport_error` (collect()'s page-fetch, see `makePageFetch` below)
@@ -258,10 +258,18 @@ export async function fetchAllFriends(
   ownerId: string,
   progress: VenmoProgress,
   delay: (ms: number) => Promise<void> = politeDelay
-): Promise<VenmoUser[]> {
+): Promise<{ friends: VenmoUser[]; truncated: boolean }> {
   const all: VenmoUser[] = [];
   let offset = 0;
-  for (let page = 0; page < MAX_FRIENDS_PAGES; page += 1) {
+  let page = 0;
+  let truncated = false;
+  while (true) {
+    if (page >= MAX_FRIENDS_PAGES) {
+      // EXIT B — the deliberate page ceiling. A full or short non-empty page
+      // can still have a continuation, so only an empty page is completion.
+      truncated = true;
+      break;
+    }
     await progress("Fetching Venmo friends page", { stream: "friends", phase: "fetch", offset_ordinal: page });
     const { status, body } = await fetchPath(`/users/${ownerId}/friends`, {
       limit: String(FRIENDS_PAGE_SIZE),
@@ -270,6 +278,7 @@ export async function fetchAllFriends(
     assertVenmoOk(status, body, "/users/{id}/friends");
     const parsed = JSON.parse(body) as VenmoFriendsResponse;
     const batch = parsed.data ?? [];
+    page += 1;
     all.push(...batch);
     await progress("Fetched Venmo friends page", {
       stream: "friends",
@@ -277,13 +286,16 @@ export async function fetchAllFriends(
       item_count: batch.length,
       total_seen: all.length,
     });
-    if (batch.length < FRIENDS_PAGE_SIZE) {
+    // EXIT A — an empty page proves the offset walk is exhausted. A short
+    // non-empty page is not terminal: Venmo can return fewer than `limit`
+    // rows while more rows remain.
+    if (batch.length === 0) {
       break;
     }
     offset += batch.length;
     await delay(PAGE_DELAY_MS);
   }
-  return all;
+  return { friends: all, truncated };
 }
 
 export async function fetchTransactionsPage(
@@ -326,7 +338,7 @@ export async function collectTransactions(
   fetchPath: VenmoPageFetch,
   ownerId: string,
   delay: (ms: number) => Promise<void> = politeDelay
-): Promise<{ considered: number; covered: number; latestSeenAt: string | null }> {
+): Promise<{ considered: number; covered: number; latestSeenAt: string | null; truncated: boolean }> {
   const { emitRecord } = ctx;
   const progress = ctx.progress as VenmoProgress;
   // `before_id` pages backward (toward older history) with no documented
@@ -340,7 +352,15 @@ export async function collectTransactions(
   let totalModeled = 0;
   let latestSeenAt: string | null = null;
 
-  for (let page = 0; page < MAX_TRANSACTION_PAGES; page += 1) {
+  let page = 0;
+  let truncated = false;
+  while (true) {
+    if (page >= MAX_TRANSACTION_PAGES) {
+      // EXIT B — the deliberate page ceiling. `beforeId` remains set after
+      // the last full page, so the source has not been exhausted.
+      truncated = true;
+      break;
+    }
     await progress("Fetching Venmo transactions page", {
       stream: "transactions",
       phase: "fetch",
@@ -349,7 +369,9 @@ export async function collectTransactions(
       total_seen: totalSeen,
     });
     const stories = await fetchTransactionsPage(fetchPath, ownerId, beforeId);
+    page += 1;
     if (stories.length === 0) {
+      // EXIT A — an empty page is the provider's terminal boundary.
       break;
     }
 
@@ -368,14 +390,16 @@ export async function collectTransactions(
     });
 
     const lastStory = stories.at(-1);
-    if (!lastStory?.id || stories.length < TRANSACTIONS_PAGE_SIZE) {
+    // A short non-empty page is not terminal. Continue whenever Venmo gives us
+    // a cursor; a page without a usable id is the other honest terminal exit.
+    if (!lastStory?.id) {
       break;
     }
     beforeId = lastStory.id;
     await delay(PAGE_DELAY_MS);
   }
 
-  return { considered: totalSeen, covered: totalModeled, latestSeenAt };
+  return { considered: totalSeen + (truncated ? 1 : 0), covered: totalModeled, latestSeenAt, truncated };
 }
 
 async function collectProfile(
@@ -414,10 +438,11 @@ async function collectFriends(
   ctx: BrowserCollectContext,
   fetchPath: VenmoPageFetch,
   ownerId: string,
-  progress: VenmoProgress
+  progress: VenmoProgress,
+  delay: (ms: number) => Promise<void>
 ): Promise<void> {
   const { emit, emitRecord } = ctx;
-  const friends = await fetchAllFriends(fetchPath, ownerId, progress);
+  const { friends, truncated } = await fetchAllFriends(fetchPath, ownerId, progress, delay);
   const cursor = openFingerprintCursor(ctx.state.friends, { excludeFromFingerprint: [] });
   let covered = 0;
   for (const friend of friends) {
@@ -427,15 +452,35 @@ async function collectFriends(
     }
     covered += 1;
   }
-  cursor.pruneStale();
-  await emit({ type: "STATE", stream: "friends", cursor: { fingerprints: cursor.toState() } });
+  if (!truncated) {
+    cursor.pruneStale();
+  }
+  const priorCursor = ctx.state.friends;
+  const priorFingerprints =
+    priorCursor && typeof priorCursor === "object" && !Array.isArray(priorCursor)
+      ? (priorCursor as { fingerprints?: unknown }).fingerprints
+      : undefined;
+  const fingerprints =
+    truncated && priorFingerprints && typeof priorFingerprints === "object" && !Array.isArray(priorFingerprints)
+      ? (priorFingerprints as Record<string, string>)
+      : cursor.toState();
+  if (truncated) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "friends",
+      reason: "friends_deferred_page_budget",
+      message: `Venmo friends stopped at the ${MAX_FRIENDS_PAGES}-page limit with more rows still listed`,
+      diagnostics: { page_limit: MAX_FRIENDS_PAGES, total_seen: friends.length, unread_pages: 1 },
+    });
+  }
+  await emit({ type: "STATE", stream: "friends", cursor: { fingerprints } });
   await emit(
     buildDetailCoverageMessage({
       stream: "friends",
       stateStream: "friends",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: friends.length,
+      considered: friends.length + (truncated ? 1 : 0),
       covered,
     })
   );
@@ -446,7 +491,8 @@ export async function collectAllStreams(
   ctx: BrowserCollectContext,
   fetchPath: VenmoPageFetch,
   ownerId: string,
-  account: VenmoUser | null
+  account: VenmoUser | null,
+  delay: (ms: number) => Promise<void> = politeDelay
 ): Promise<void> {
   const { emit, requested } = ctx;
   const progress = ctx.progress as VenmoProgress;
@@ -456,15 +502,33 @@ export async function collectAllStreams(
   }
 
   if (requested.has("friends")) {
-    await collectFriends(ctx, fetchPath, ownerId, progress);
+    await collectFriends(ctx, fetchPath, ownerId, progress, delay);
   }
 
   if (requested.has("transactions")) {
-    const { considered, covered, latestSeenAt } = await collectTransactions(ctx, fetchPath, ownerId);
+    const { considered, covered, latestSeenAt, truncated } = await collectTransactions(ctx, fetchPath, ownerId, delay);
+    const priorCursor = ctx.state.transactions;
+    const priorLatestSeenAt =
+      priorCursor && typeof priorCursor === "object" && !Array.isArray(priorCursor)
+        ? (priorCursor as { last_seen_date_created?: unknown }).last_seen_date_created
+        : undefined;
+    if (truncated) {
+      await emit({
+        type: "SKIP_RESULT",
+        stream: "transactions",
+        reason: "transactions_deferred_page_budget",
+        message: `Venmo transactions stopped at the ${MAX_TRANSACTION_PAGES}-page limit with more rows still listed`,
+        diagnostics: { page_limit: MAX_TRANSACTION_PAGES, total_seen: considered - 1, unread_pages: 1 },
+      });
+    }
+    let nextLatestSeenAt = latestSeenAt;
+    if (truncated) {
+      nextLatestSeenAt = typeof priorLatestSeenAt === "string" || priorLatestSeenAt === null ? priorLatestSeenAt : null;
+    }
     await emit({
       type: "STATE",
       stream: "transactions",
-      cursor: { last_seen_date_created: latestSeenAt },
+      cursor: { last_seen_date_created: nextLatestSeenAt },
     });
     await emit(
       buildDetailCoverageMessage({

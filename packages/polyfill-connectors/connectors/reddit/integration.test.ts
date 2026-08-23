@@ -399,7 +399,8 @@ test("paginate: follows 'after' through multiple pages until exhausted", async (
   });
 
   const out = await paginate(fetch, `${USER_PATH}/comments.json`, null, null, NO_DELAY);
-  assert.equal(out.length, 3);
+  assert.equal(out.children.length, 3);
+  assert.equal(out.truncated, false);
   assert.equal(calls.length, 2);
   assert.ok(calls[0]?.includes("limit=100"));
   assert.ok(calls[1]?.includes("after=t1_b"), "page 2 must carry the 'after' cursor");
@@ -417,7 +418,8 @@ for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
 
     const out = await paginate(fetch, stream.endpoint, null, null, NO_DELAY);
 
-    assert.equal(out.length, 2, `${stream.name}: both pages contribute children`);
+    assert.equal(out.children.length, 2, `${stream.name}: both pages contribute children`);
+    assert.equal(out.truncated, false);
     assert.deepEqual(calls, [`${stream.endpoint}?limit=100`, `${stream.endpoint}?limit=100&after=${after}`]);
   });
 }
@@ -464,7 +466,8 @@ test("paginate: empty listing children → returns empty, no further fetches", a
     [`${USER_PATH}/hidden.json`]: [okResult(listing([], null))],
   });
   const out = await paginate(fetch, `${USER_PATH}/hidden.json`, null, null, NO_DELAY);
-  assert.equal(out.length, 0);
+  assert.equal(out.children.length, 0);
+  assert.equal(out.truncated, false);
   assert.equal(calls.length, 1);
 });
 
@@ -523,7 +526,7 @@ test("paginate: page 1 succeeds, page 2 401s, repair succeeds, retry of the SAME
   assert.equal(calls.length, 3, "page 1, failed page 2, retried page 2 — no extra calls");
   assert.deepEqual(calls[1], calls[2], "the retry after repair must hit the EXACT SAME path as the failed request");
   assert.deepEqual(
-    out.map((c) => c.data.name),
+    out.children.map((c) => c.data.name),
     ["t3_a", "t3_b"],
     "both pre- and post-repair pages contribute records"
   );
@@ -1283,6 +1286,89 @@ test("collectStream: nonzero results return correct considered and covered count
 
   assert.equal(result.considered, 3);
   assert.equal(result.covered, 3);
+});
+
+test("collectAllStreams: a Reddit listing beyond MAX_PAGES is partial and does not advance its watermark", async () => {
+  let pagesFetched = 0;
+  const fetch: RedditListingFetch = () => {
+    pagesFetched += 1;
+    return Promise.resolve(
+      okResult(listing([makePost(`t3_cap${pagesFetched}`, 100_000 - pagesFetched)], `after-${pagesFetched}`))
+    );
+  };
+  const { children: items, truncated } = await paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY);
+
+  assert.equal(items.length, 100);
+  assert.equal(truncated, true, "the partial result must carry an explicit truncation marker");
+  assert.equal(pagesFetched, 100, "the safety ceiling still bounds the walk");
+});
+
+test("collectStream: a capped Reddit walk holds its watermark instead of skipping the unread tail", async () => {
+  // The ceiling is hit while `after` is still set, so pages 101+ (the OLDEST
+  // items, in a reverse-chronological listing) were never fetched. Advancing
+  // last_created_utc to the newest page would move the next run's resume
+  // boundary PAST that unread tail — permanent, silent loss.
+  const PRIOR_WATERMARK = 500;
+  const harness = makeRecordingEmit(validateRecord);
+  const fetch: RedditListingFetch = (() => {
+    let pagesFetched = 0;
+    return () => {
+      pagesFetched += 1;
+      // created_utc descends but stays above PRIOR_WATERMARK, so the walk is
+      // stopped by the page ceiling rather than by the created-order boundary.
+      return Promise.resolve(
+        okResult(listing([makePost(`t3_cap${pagesFetched}`, 100_000 - pagesFetched)], `after-${pagesFetched}`))
+      );
+    };
+  })();
+
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: { submitted: { last_created_utc: PRIOR_WATERMARK } },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+  });
+
+  const state = harness.protocolMessages.find((m) => m.type === "STATE" && m.stream === "submitted");
+  assert.ok(state && state.type === "STATE");
+  assert.deepEqual(
+    state.cursor,
+    { last_created_utc: PRIOR_WATERMARK },
+    "a truncated walk must hold the prior watermark, never advance past unfetched pages"
+  );
+
+  assert.ok(
+    result.considered > result.covered,
+    "the unread tail must produce a boundary_shortfall, not a complete stream"
+  );
+  assert.ok(
+    harness.protocolMessages.some((m) => m.type === "SKIP_RESULT" && m.stream === "submitted"),
+    "a capped walk must announce the deferred pages"
+  );
+});
+
+test("collectAllStreams: a Reddit listing that ends before MAX_PAGES remains complete", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [okResult(listing([makePost("t3_complete", 100)], null))],
+  });
+  await collectAllStreams(createMockBrowserContext(fetch, harness, ["submitted"]));
+
+  const coverage = harness.protocolMessages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "submitted");
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE");
+  assert.equal(coverage.considered, 1);
+  assert.equal(coverage.covered, 1, "an honest terminal page must remain complete");
+  assert.equal(
+    harness.protocolMessages.some((m) => m.type === "SKIP_RESULT"),
+    false
+  );
 });
 
 test("collectStream: schema-invalid item not counted in covered, still emitted for runtime SKIP_RESULT", async () => {
