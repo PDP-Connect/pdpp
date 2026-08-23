@@ -710,7 +710,8 @@ CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
 -- owner subject may move one to active. See
 -- connector_instance_config_current below for "which
 -- revision is in force now" and server/stores/connector-instance-config-store.ts
--- for the CAS and confirmation logic.
+-- for the CAS and confirmation logic. Coverage-proof invalidation is outside
+-- this schema transaction.
 CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
   connector_instance_id TEXT NOT NULL,
   revision               INTEGER NOT NULL,
@@ -759,10 +760,9 @@ CREATE INDEX IF NOT EXISTS idx_connector_instance_config_revisions_instance
 -- "Which revision is active right now" for a connection -- the single
 -- server-authoritative pointer every run resolves against. Separated from
 -- the revision ledger itself (rather than an is_active bool on the ledger
--- row) so advancing the pointer and appending a revision are two distinct
--- statements inside the SAME transaction, which is what makes "atomically
--- move the pointer AND declassify stale coverage proof" possible: both
--- happen or neither does (review finding #10).
+-- row) so appending or activating a revision and moving the pointer can be
+-- coordinated in one transaction. Coverage-proof invalidation is outside
+-- this schema transaction and must not be inferred from the pointer update.
 -- The schema deliberately does not add a cross-table CHECK or trigger that
 -- requires this pointer's row to be active: that is not portable across the
 -- existing SQLite/Postgres schemas without a trigger/migration protocol. The
