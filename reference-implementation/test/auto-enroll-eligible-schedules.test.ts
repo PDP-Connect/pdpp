@@ -2,22 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Auto-enrollment for proven, env-wired connectors.
+ * Auto-enrollment for policy-eligible automatic connectors.
  *
  * Covers the boot-time helper that closes the "registered, listed,
  * proven, env-wired, silently unscheduled" gap for connectors like
  * Notion, Oura, and Strava. The contract under test:
  *
  *   - Eligible-with-env: a manifest that DERIVES automatic (see
- *     runtime/refresh-mode-derivation.ts), is listed as supported, and
- *     declares `capabilities.auth.required` whose env names are all
- *     populated on `process.env` gets a new enabled schedule row at the
+ *     runtime/refresh-mode-derivation.ts) and declares
+ *     `capabilities.auth.required` whose env names are all populated on
+ *     `process.env` gets a new enabled schedule row at the
  *     manifest-recommended interval.
+ *   - Eligible-without-auth: a policy-eligible manifest with no auth
+ *     requirement is already satisfied and gets a schedule.
  *   - Eligible-without-env: the same manifest with one env name unset
  *     produces no row.
  *   - Ineligible policy: a connector whose declared interaction posture
- *     needs a per-run owner gesture, or an explicit `paused`, or an
- *     unproven tier, produces no row even when env is set.
+ *     needs a per-run owner gesture or an explicit `paused` produces no row
+ *     even when env is set. Public listing tier does not gate the owner's
+ *     configured connector.
  *   - Derived, not declared: a hand-written `recommended_mode` cannot
  *     override the facts the connector declares, in either direction.
  *   - Idempotency: a second pass over the same controller is a no-op;
@@ -412,7 +415,7 @@ test("assisted_after_owner_auth=true does not by itself block enrollment", async
   assert.equal(summary.skipped_policy, 0);
 });
 
-test('public_listing.tier != "supported" is never auto-enrolled', async () => {
+test("a preview-tier connector with a configured connection is auto-enrolled", async () => {
   const controller = createFakeController();
   const m = manifest();
   m.capabilities.public_listing.tier = "preview";
@@ -421,11 +424,12 @@ test('public_listing.tier != "supported" is never auto-enrolled', async () => {
     env: { WIDGET_TOKEN: "set" },
     listConnectors: singleManifestList(m),
   });
-  assert.equal(summary.skipped_policy, 1);
-  assert.equal(summary.enrolled, 0);
+  assert.equal(summary.skipped_policy, 0);
+  assert.equal(summary.enrolled, 1);
+  assert.ok(controller.schedules.has(m.connector_id));
 });
 
-test("a Development connector is never auto-enrolled", async () => {
+test("a development-tier automatic connector is auto-enrolled", async () => {
   const controller = createFakeController();
   const m = manifest();
   m.capabilities.public_listing.tier = "development";
@@ -434,11 +438,11 @@ test("a Development connector is never auto-enrolled", async () => {
     env: { WIDGET_TOKEN: "set" },
     listConnectors: singleManifestList(m),
   });
-  assert.equal(summary.skipped_policy, 1);
-  assert.equal(summary.enrolled, 0);
+  assert.equal(summary.skipped_policy, 0);
+  assert.equal(summary.enrolled, 1);
 });
 
-test("manifest without capabilities.auth.required cannot be auto-enrolled", async () => {
+test("a policy-eligible connector with no auth requirement is auto-enrolled", async () => {
   const controller = createFakeController();
   const m = manifest();
   const { auth: _auth, ...capabilities } = m.capabilities;
@@ -447,14 +451,37 @@ test("manifest without capabilities.auth.required cannot be auto-enrolled", asyn
     env: { WIDGET_TOKEN: "set" },
     listConnectors: singleManifestList({ ...m, capabilities }),
   });
-  // Counted apart from skipped_policy: nothing is wrong with this
-  // connector's policy — the pass simply has no env requirement to gate on.
-  // Conflating the two is what made a no-op boot log read as 25 policy
-  // rejections. The connector remains visible in the catalog and the doctor
-  // still reports it as NOSCHED.
-  assert.equal(summary.skipped_no_auth_requirement, 1);
   assert.equal(summary.skipped_policy, 0);
-  assert.equal(summary.enrolled, 0);
+  assert.equal(summary.enrolled, 1);
+  assert.ok(controller.schedules.has(m.connector_id));
+});
+
+test("all six derived-manual connectors remain skipped", async () => {
+  const manualConnectors = [
+    ["chase", "otp_likely"],
+    ["google_maps", "manual_action_likely"],
+    ["google_maps_data_portability", "manual_action_likely"],
+    ["usaa", "otp_likely"],
+    ["venmo", "otp_likely"],
+    ["whatsapp", "manual_action_likely"],
+  ] as const;
+
+  await Promise.all(
+    manualConnectors.map(async ([connectorId, interactionPosture]) => {
+      const controller = createFakeController();
+      const m = manifest({ connector_id: connectorId });
+      m.capabilities.refresh_policy.interaction_posture = interactionPosture;
+      m.capabilities.refresh_policy.background_safe = false;
+      const summary = await autoEnrollEligibleSchedules({
+        controller,
+        env: { WIDGET_TOKEN: "set" },
+        listConnectors: singleManifestList(m),
+      });
+      assert.equal(summary.skipped_policy, 1, `${connectorId} remains policy-skipped`);
+      assert.equal(summary.enrolled, 0, `${connectorId} must not be auto-enrolled`);
+      assert.equal(controller.schedules.size, 0, `${connectorId} has no schedule row`);
+    })
+  );
 });
 
 test("existing schedule row is never overwritten (idempotent re-run)", async () => {
