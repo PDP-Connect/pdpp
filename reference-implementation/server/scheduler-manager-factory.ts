@@ -137,7 +137,8 @@ interface SchedulerManagerOptions {
   readonly createConnectorInstanceStore: () => ConnectorInstanceStore;
   readonly getLatestConnectorRunSummary: (
     connectorId: string,
-    status: string
+    status: string,
+    connectorInstanceId?: string | null
   ) => Promise<{ last_at?: string | null } | null>;
   readonly getManifestRefreshPolicy: (
     manifest: SchedulerManifest
@@ -573,9 +574,9 @@ export function createReferenceSchedulerManager({
       // the back-off gate clear a stale failure streak when a genuine success
       // has occurred since, so automation resumes. Returns null on no success or
       // probe error (never fabricates a success that would suppress back-off).
-      getLastSuccessfulRunAt: async (connectorId) => {
+      getLastSuccessfulRunAt: async (connectorId, connectorInstanceId) => {
         try {
-          const summary = await getLatestConnectorRunSummary(connectorId, "succeeded");
+          const summary = await getLatestConnectorRunSummary(connectorId, "succeeded", connectorInstanceId);
           const at = summary?.last_at ? Date.parse(summary.last_at) : Number.NaN;
           return Number.isFinite(at) ? at : null;
         } catch (err) {

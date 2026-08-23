@@ -190,6 +190,7 @@ export interface SpineEventFilters {
 
 export interface SpineCorrelationFilters {
   readonly clientId?: string | null;
+  readonly connectorInstanceId?: string | null;
   readonly cursor?: string | null;
   readonly grantId?: string | null;
   readonly limit?: number | string | null;
@@ -1349,6 +1350,9 @@ function applyFilters(summary: SpineSummary, filters: SpineCorrelationFilters): 
   if (filters.clientId && summary.client_id !== filters.clientId) {
     return false;
   }
+  if (filters.connectorInstanceId && summary.connector_instance_id !== filters.connectorInstanceId) {
+    return false;
+  }
   if (filters.sourceKind && summary.source_kind !== filters.sourceKind) {
     return false;
   }
@@ -1559,6 +1563,10 @@ function buildCorrelationAggregateSql(
   if (filters.clientId) {
     whereParts.push("client_id = ?");
     whereBinds.push(filters.clientId);
+  }
+  if (filters.connectorInstanceId) {
+    whereParts.push("connector_instance_id = ?");
+    whereBinds.push(filters.connectorInstanceId);
   }
   if (filters.sourceKind) {
     whereParts.push("source_kind = ?");
