@@ -1190,6 +1190,10 @@ runConnector({
       return;
     }
 
+    // The discovery walk is the chat coverage boundary. Every export file is
+    // considered even when parsing later rejects it; only successfully parsed
+    // exports are covered.
+    const consideredExports = files.length;
     let importedExports = 0;
     let totalAttachments = 0;
     let totalAttachmentsCovered = 0;
@@ -1267,8 +1271,9 @@ runConnector({
     // counts the files that yielded a chat, measured at the discovery walk
     // above rather than from the emit count, so a steady-state run whose chats
     // were all fingerprint-suppressed still reads covered. Files rejected by
-    // `parseExportFile` emit their own SKIP_RESULT and stay out of both counts,
-    // so a rejected export correctly reads partial.
+    // `parseExportFile` emit their own SKIP_RESULT: they remain in the
+    // enumeration denominator but stay out of `covered`, so a rejected export
+    // correctly reads partial.
     if (requested.has("chats")) {
       await emit(
         buildDetailCoverageMessage({
@@ -1276,7 +1281,7 @@ runConnector({
           stateStream: "chats",
           requiredKeys: [],
           hydratedKeys: [],
-          considered: importedExports,
+          considered: consideredExports,
           covered: importedExports,
         })
       );
