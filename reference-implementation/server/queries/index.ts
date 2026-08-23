@@ -264,12 +264,6 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly clientEventSubscriptionsUpdateQueueAttempt: MutationQuery;
   readonly clientEventSubscriptionsUpdateSecret: MutationQuery;
   readonly clientEventSubscriptionsUpdateStatus: MutationQuery;
-  // Per-connection encrypted static-secret credential store (peer of the
-  // connector-instance row). Sealed secrets only; never projected to reads.
-  readonly connectorInstanceCredentialsDeleteByInstance: MutationQuery;
-  readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
-  readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
-  readonly connectorInstanceCredentialsUpsert: MutationQuery;
   // Durable, provenance-bearing connector configuration: immutable
   // per-connection revision ledger (see connector_instance_config_revisions
   // in db.ts for the full rationale). The append+CAS+declassify write path
@@ -280,6 +274,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstanceConfigGetRevision: ReadOneQuery;
   readonly connectorInstanceConfigListRevisionsByInstance: ReadManyQuery;
   readonly connectorInstanceGroupsCountByCanonical: ReadOneQuery;
+  // Per-connection encrypted static-secret credential store (peer of the
+  // connector-instance row). Sealed secrets only; never projected to reads.
+  readonly connectorInstanceCredentialsDeleteByInstance: MutationQuery;
+  readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
+  readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
+  readonly connectorInstanceCredentialsUpsert: MutationQuery;
   readonly connectorInstanceGroupsDeleteByFragment: MutationQuery;
   readonly connectorInstanceGroupsGetByFragment: ReadOneQuery;
   readonly connectorInstanceGroupsListByOwner: ReadManyQuery;
@@ -302,6 +302,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstancesPromoteSetupBinding: MutationQuery;
   readonly connectorInstancesSetRecordIdentityGeneration: MutationQuery;
   readonly connectorInstancesUpdateDisplayName: MutationQuery;
+  readonly connectorInstancesUpdateSourceBindingPatch: MutationQuery;
   readonly connectorInstancesUpdateStaticSecretBinding: MutationQuery;
   readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly connectorInstancesUpdateStatusWithBindingPatch: MutationQuery;

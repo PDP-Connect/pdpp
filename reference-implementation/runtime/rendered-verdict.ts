@@ -34,6 +34,12 @@
  */
 
 import {
+  type AcknowledgedLossRecord,
+  acknowledgedLossProgressHeadline,
+  acknowledgedLossStatement,
+  acknowledgedLossTone,
+} from "./acknowledged-loss.ts";
+import {
   CONNECTION_CONDITION_REASONS,
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
@@ -454,6 +460,47 @@ export interface ScheduleEvidence {
 // ─── Tone (worst-wins) ──────────────────────────────────────────────────────
 
 const TONE_RANK: Record<VerdictTone, number> = { amber: 2, green: 0, grey: 1, red: 3 };
+
+/**
+ * Actions whose entire promise is "do this and the missing data arrives". Under
+ * an owner-acknowledged permanent loss that promise is false, so these are
+ * withdrawn rather than left as an action item the owner can never clear.
+ *
+ * `code_fix` is included: for a provider-side purge or a provider API that
+ * contradicts itself, there is no connector change that recovers the data, and
+ * claiming otherwise blames our code for the provider's act. `reauth` and
+ * `add_info` are deliberately NOT included — a broken credential is a real,
+ * separately-fixable defect that an acknowledged loss must not paper over.
+ */
+const RECOVERY_PROMISING_ACTION_KINDS: ReadonlySet<RequiredActionKind> = new Set<RequiredActionKind>([
+  "backfill",
+  "code_fix",
+  "refresh_now",
+  "retry_gap",
+]);
+
+/**
+ * The tone axes an acknowledged loss is allowed to speak for. An
+ * acknowledgement explains why DATA is missing; it says nothing about whether
+ * the credential works or the outbox is draining.
+ *
+ * `state` is deliberately EXCLUDED. The headline state is the worst-wins rollup
+ * of everything, so a red `state` can be driven by a blocked credential that
+ * the acknowledgement does not excuse — and honesty invariant 5
+ * (`toneBelowBaseStateViolation`) independently forbids a tone below the base
+ * state tone. Softening on `state` would trip that invariant, which is exactly
+ * the check catching the mistake.
+ */
+const ACKNOWLEDGED_LOSS_TONE_AXES: ReadonlySet<string> = new Set(["coverage", "disposition"]);
+
+/**
+ * True when every axis voting `red` is one an acknowledged loss can explain.
+ * If any other axis is red, the connection has a second, unacknowledged problem
+ * and must keep its red tone.
+ */
+function redIsOnlyFromCoverage(toneInputs: readonly { readonly axis: string; readonly tone: VerdictTone }[]): boolean {
+  return toneInputs.every((input) => input.tone !== "red" || ACKNOWLEDGED_LOSS_TONE_AXES.has(input.axis));
+}
 
 const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
   amber: "Missing data",
@@ -2869,7 +2916,14 @@ export function synthesizeRenderedVerdict(
   runtime_ok: boolean,
   progress: ProgressEvidence | null = null,
   scheduleEvidence: ScheduleEvidence | null = null,
-  attention: ConnectionAttentionEvidence | null = null
+  attention: ConnectionAttentionEvidence | null = null,
+  /**
+   * A durable, owner-stamped acknowledgement that some data is permanently
+   * gone for an external reason. Read verbatim, never inferred: `null` (the
+   * default) preserves byte-identical prior behavior for every caller and
+   * every connection that has no stamped record.
+   */
+  acknowledgedLoss: AcknowledgedLossRecord | null = null
 ): RenderedVerdict {
   // ── tone: worst-wins over base(state) + every axis ──
   const disposition = connectionDisposition(snapshot, streams, refresh, scheduleEvidence);
@@ -2883,11 +2937,45 @@ export function synthesizeRenderedVerdict(
     { axis: "attention", tone: attentionTone(snapshot) },
     { axis: "outbox", tone: outboxTone(snapshot) },
   ];
-  const tone = toneInputs.reduce<VerdictTone>((acc, input) => worse(acc, input.tone), "green");
+  // An acknowledged permanent loss softens a red COVERAGE verdict to amber, the
+  // same way `softensTerminalCoverageToDegraded` already softens a terminal gap
+  // under a succeeded run. The reasoning is identical: red means "unexamined
+  // breakage demanding escalation", and an owner-acknowledged external cause is
+  // examined and settled. It stays amber — never green — because the data is
+  // genuinely missing.
+  //
+  // The softening applies ONLY when coverage/disposition is what made it red. A
+  // red arriving from any other axis (a rejected credential, a stalled outbox)
+  // is a separate, still-fixable defect that an acknowledgement must not mask,
+  // so it survives unchanged.
+  const synthesizedTone = toneInputs.reduce<VerdictTone>((acc, input) => worse(acc, input.tone), "green");
+  // Softening can never sink below the base state tone (honesty invariant 5,
+  // `toneBelowBaseStateViolation`): a `blocked`/`broken` headline state outranks
+  // any acknowledgement, so `worse()` re-floors the result.
+  const tone =
+    acknowledgedLoss && synthesizedTone === "red" && redIsOnlyFromCoverage(toneInputs)
+      ? worse(acknowledgedLossTone(), baseStateTone(snapshot.state, snapshot.last_success_at))
+      : synthesizedTone;
   const pill: VerdictPill = { label: labelForPill(tone, snapshot, disposition, toneInputs, streams), tone };
 
   // ── required actions (terminality derived from the sole oracle) ──
-  const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress, scheduleEvidence, attention);
+  const synthesizedActions = buildRequiredActions(
+    snapshot,
+    streams,
+    refresh,
+    disposition,
+    progress,
+    scheduleEvidence,
+    attention
+  );
+  // The owner has already accepted this cause and no run can undo it, so every
+  // action whose whole promise is "do this and the data comes back" is
+  // withdrawn. Actions that remain meaningful — reconnecting a broken
+  // credential, for instance — are untouched: an acknowledged purge does not
+  // excuse a separate, still-fixable defect.
+  const actions = acknowledgedLoss
+    ? synthesizedActions.filter((action) => !RECOVERY_PROMISING_ACTION_KINDS.has(action.kind))
+    : synthesizedActions;
 
   // ── channel: computed AFTER tone in the same pass; runtime fault caps at calm ──
   let channel = computeChannel(actions);
@@ -2898,9 +2986,21 @@ export function synthesizeRenderedVerdict(
 
   // ── annotations, statement, streams, progress ──
   const annotations = buildAnnotations(snapshot, channel, tone, refresh, scheduleEvidence, progress, actions);
-  const forwardStatement = buildForwardStatement(disposition, actions, snapshot, streams);
+  // The stamped record is the most specific true thing known about this
+  // connection's missing data, so it OUTRANKS every derived sentence. This is
+  // the whole point of stamping it: the writer stated the truth, so the
+  // renderer does not fall back to a generic guess.
+  const forwardStatement = acknowledgedLoss
+    ? acknowledgedLossStatement(acknowledgedLoss)
+    : buildForwardStatement(disposition, actions, snapshot, streams);
   const streamRows = buildStreamRows(streams, snapshot, refresh, scheduleEvidence, actions);
-  const renderedProgress = buildProgress(progress, disposition, actions, snapshot.badges.syncing);
+  const synthesizedProgress = buildProgress(progress, disposition, actions, snapshot.badges.syncing);
+  const renderedProgress = acknowledgedLoss
+    ? {
+        ...synthesizedProgress,
+        headline: acknowledgedLossProgressHeadline(acknowledgedLoss, synthesizedProgress.retained_records),
+      }
+    : synthesizedProgress;
 
   // ── inspection layer: suppressed signals routed to detail, never deleted ──
   const suppressed = buildSuppressed(snapshot, channel, runtime_ok);
