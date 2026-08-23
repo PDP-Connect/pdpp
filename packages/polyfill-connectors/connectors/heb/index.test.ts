@@ -31,6 +31,7 @@ import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  buildOrdersStateCursor,
   classifyEmptyListPage,
   classifyHebDetailFailure,
   type EmitDeps,
@@ -39,6 +40,7 @@ import {
   fetchOrderDetail,
   HEB_HYDRATION_WAIT_MAX_MS,
   HEB_HYDRATION_WAIT_MIN_MS,
+  MAX_LIST_PAGES as HEB_MAX_LIST_PAGES,
   HEB_REPAIR_RETRY_DELAY_MAX_MS,
   HEB_REPAIR_RETRY_DELAY_MIN_MS,
   hebAllowsInteractiveAuthRepair,
@@ -1104,7 +1106,7 @@ test("runForwardScan: a genuine single-page result (maxPage: 1, affirmatively as
     }
   ) as Page;
 
-  const newestOrderDate = await runForwardScan(page, deps, makeRunFlags(), null);
+  const { newestOrderDate } = await runForwardScan(page, deps, makeRunFlags(), null);
 
   assert.equal(gotoCount, 1, "a genuine single-page result must never request page 2");
   assert.equal(newestOrderDate, "2026-07-13", "page 1's order must still be processed normally");
@@ -1234,7 +1236,7 @@ test("runForwardScan: H-E-B's real 'No past orders' page completes the scan inst
   const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
   const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
 
-  const newest = await runForwardScan(page, deps, makeRunFlags(), null);
+  const { newestOrderDate: newest } = await runForwardScan(page, deps, makeRunFlags(), null);
 
   assert.equal(newest, null, "an empty history yields no newest order date");
   // The scan must reach a clean terminal, not throw. Before the fix this call
@@ -1663,4 +1665,142 @@ test("recordDetailOutcome: hydrated/gap each land in the right accumulator set",
   assert.deepEqual(coverage.required, ["ord-h", "ord-g"]);
   assert.deepEqual(coverage.hydrated, ["ord-h"]);
   assert.deepEqual(coverage.gap, ["ord-g"]);
+});
+
+// ─── Page-ceiling honesty (MAX_LIST_PAGES) ────────────────────────────────
+//
+// `runForwardScan` has two distinct exits: an honest completion
+// (`pageNum > maxPage` — the walk reached the end H-E-B itself advertised)
+// and a blast-radius ceiling (`pageNum <= MAX_LIST_PAGES` going false). The
+// ceiling is a legitimate bound, but a run that stops there has NOT seen the
+// whole list, and H-E-B's own pagination nav says so. These tests pin that
+// the two exits are distinguishable in the owner-facing coverage evidence:
+// a truncated walk must never report `covered >= considered`, because
+// `covered < considered` is what `evaluateStreamCoherence` turns into
+// `boundary_shortfall` -> `partial` instead of `complete`.
+
+/** Build a list-page stub advertising `maxPage` total pages, each holding one
+ *  order, with dates descending so no boundary stop fires. */
+function makeCeilingPage(advertisedMaxPage: number): { page: Page; pagesFetched: () => number[] } {
+  const nav = `<nav aria-label="Pagination"><a href="?page=1">1</a><a href="?page=${advertisedMaxPage}">${advertisedMaxPage}</a></nav>`;
+  const fetched: number[] = [];
+  let currentPage = 1;
+  const htmlFor = (pageNum: number): string => {
+    // Descending dates: page 1 newest. Day-of-month stays in range for any
+    // page count used here (<= 60 pages -> 2026-06-XX .. 2026-07-XX).
+    const day = 60 - pageNum;
+    const month = day > 30 ? 7 : 6;
+    const dayOfMonth = day > 30 ? day - 30 : day;
+    const id = `HEB${String(2_000_000_000 + pageNum)}`;
+    return `<html><body><main>
+      <a href="/my-account/order-history/${id}">${month === 7 ? "July" : "June"} ${dayOfMonth}, 2026 $10.00, 1 items</a>
+      ${nav}
+    </main></body></html>`;
+  };
+  const page = new Proxy(
+    {},
+    {
+      get(_target, prop): unknown {
+        if (prop === "goto") {
+          return (url: string): Promise<null> => {
+            const m = /page=(\d+)/.exec(url);
+            currentPage = m?.[1] ? Number(m[1]) : 1;
+            fetched.push(currentPage);
+            return Promise.resolve(null);
+          };
+        }
+        if (prop === "waitForSelector") {
+          return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "content") {
+          return (): Promise<string> => Promise.resolve(htmlFor(currentPage));
+        }
+        if (prop === "url") {
+          return (): string => `https://www.heb.com/my-account/your-orders?page=${currentPage}`;
+        }
+        throw new Error(`unexpected page.${String(prop)} in ceiling test stub`);
+      },
+    }
+  ) as Page;
+  return { page, pagesFetched: (): number[] => fetched };
+}
+
+test("runForwardScan: hitting MAX_LIST_PAGES does not report the orders stream complete", async () => {
+  // H-E-B advertises 60 pages; the connector's blast-radius ceiling is 50.
+  // The walk stops 10 pages short of what the provider itself says exists.
+  const ordersCoverage = newOrdersCoverage();
+  const { deps } = makeRecordingDeps({ ordersCoverage, wantsItems: false });
+  const { page, pagesFetched } = makeCeilingPage(60);
+
+  await runForwardScan(page, deps, makeRunFlags(), null);
+
+  assert.equal(pagesFetched().length, HEB_MAX_LIST_PAGES, "the ceiling bounds the walk at MAX_LIST_PAGES pages");
+
+  // The honesty contract: `covered` must fall short of `considered` so the
+  // reference implementation derives `partial`, not `complete`.
+  assert.ok(
+    ordersCoverage.covered.length < ordersCoverage.considered.length,
+    "a truncated walk must report covered < considered so coverage reads partial, not complete; " +
+      `got considered=${ordersCoverage.considered.length} covered=${ordersCoverage.covered.length}`
+  );
+});
+
+test("runForwardScan: an honest completion (maxPage under the ceiling) still reports the orders stream complete", async () => {
+  // The guard against over-correcting: a walk that genuinely reached the end
+  // H-E-B advertised must still read complete (covered >= considered).
+  const ordersCoverage = newOrdersCoverage();
+  const { deps } = makeRecordingDeps({ ordersCoverage, wantsItems: false });
+  const { page, pagesFetched } = makeCeilingPage(3);
+
+  await runForwardScan(page, deps, makeRunFlags(), null);
+
+  assert.equal(pagesFetched().length, 3, "an honest walk fetches exactly the advertised page count");
+  assert.ok(
+    ordersCoverage.covered.length >= ordersCoverage.considered.length && ordersCoverage.considered.length === 3,
+    "an honest completion must still read complete; " +
+      `got considered=${ordersCoverage.considered.length} covered=${ordersCoverage.covered.length}`
+  );
+});
+
+test("runForwardScan: the ceiling exit reports truncated, the honest exit does not", async () => {
+  const overCeiling = makeCeilingPage(60);
+  const truncatedScan = await runForwardScan(
+    overCeiling.page,
+    makeRecordingDeps({ wantsItems: false }).deps,
+    makeRunFlags(),
+    null
+  );
+  assert.equal(truncatedScan.truncated, true, "stopping at the page ceiling must report truncated");
+
+  const underCeiling = makeCeilingPage(3);
+  const honestScan = await runForwardScan(
+    underCeiling.page,
+    makeRecordingDeps({ wantsItems: false }).deps,
+    makeRunFlags(),
+    null
+  );
+  assert.equal(honestScan.truncated, false, "reaching the advertised maxPage must NOT report truncated");
+});
+
+test("buildOrdersStateCursor: a truncated scan must not advance the orders checkpoint past unread pages", () => {
+  // The permanent-loss case. H-E-B's list is reverse-chronological, so
+  // `newestOrderDate` is page 1's date. Committing it after a walk that never
+  // read pages 51..60 would claim coverage back to that date; the next run's
+  // `resumeBoundary` would then stop the walk long before reaching the
+  // untraversed tail, making those orders unreachable by ANY future run.
+  const priorState = { checkpoint: "2026-01-01" };
+
+  const truncated = buildOrdersStateCursor("2026-07-14", priorState, undefined, true);
+  assert.equal(
+    truncated.checkpoint,
+    "2026-01-01",
+    "a truncated scan holds the prior checkpoint so the unread tail stays reachable next run"
+  );
+
+  const honest = buildOrdersStateCursor("2026-07-14", priorState, undefined, false);
+  assert.equal(
+    honest.checkpoint,
+    "2026-07-14",
+    "an honest completion still advances the checkpoint — truncation handling must not freeze normal progress"
+  );
 });

@@ -1533,6 +1533,9 @@ export async function processListOrder(
 
 interface YearRunResult {
   orderCount: number;
+  /** True when the year's walk stopped at `PAGE_LIMIT` with orders still
+   *  arriving, rather than because the year ran out of pages. */
+  truncated: boolean;
   unparseableDateCount: number;
 }
 
@@ -1540,19 +1543,39 @@ interface YearCompletionArgs {
   newYearsState: YearsCursor;
   prior: YearState | undefined;
   progress: BrowserCollectContext["progress"];
+  /** A year cut short by the page ceiling must never be recorded as complete. */
+  truncated: boolean;
   unparseableDateCount: number;
   year: number;
   yearOrderCount: number;
 }
 
-async function applyYearCompletionState({
+export async function applyYearCompletionState({
   newYearsState,
   prior,
   progress,
+  truncated,
   unparseableDateCount,
   year,
   yearOrderCount,
 }: YearCompletionArgs): Promise<void> {
+  // A year whose walk hit PAGE_LIMIT is a PREFIX of that year, not the year.
+  // Recording it would be the permanent-loss case this connector's freeze
+  // policy makes irreversible: `order_count` would hold the capped prefix
+  // count, and because a truncated year reproduces the SAME capped count on
+  // every run, `stableCount` goes true on the very next run and freezes a past
+  // year for good — and `collect()` skips frozen years outright
+  // (`if (prior?.frozen) continue`), so the untraversed tail becomes
+  // unreachable by ANY future run. Leaving the prior state untouched keeps the
+  // year eligible for a later, fuller scan.
+  if (truncated) {
+    await progress(
+      `Not advancing Amazon year ${year} cursor because its scan stopped at the ${PAGE_LIMIT}-page limit ` +
+        `with more orders still listed (${yearOrderCount} seen so far)`,
+      { stream: "orders" }
+    );
+    return;
+  }
   // Year completion state with freeze-once-stable policy. If required
   // list rows were dropped, do not advance `last_scraped`: the next run
   // must be allowed to retry the year after a parser fix instead of
@@ -1647,10 +1670,23 @@ async function runYear(
   let pageCount = 0;
   let yearOrderCount = 0;
   let unparseableDateCount = 0;
-  while (pageCount < PAGE_LIMIT) {
+  // Which of the loop's two exits fired. A year can end because Amazon ran
+  // out of orders to list (honest completion: `orders.length === 0`) or
+  // because the run hit its `PAGE_LIMIT` blast-radius bound with orders still
+  // coming. Those make opposite claims about completeness, and nothing
+  // downstream could tell them apart before this flag existed.
+  let truncated = false;
+  while (true) {
+    if (pageCount >= PAGE_LIMIT) {
+      // EXIT B — page ceiling. The bound is legitimate; recording the prefix
+      // as a finished year is not.
+      truncated = true;
+      break;
+    }
     await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
     const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit, priorOrdersEvidence);
     if (orders.length === 0) {
+      // EXIT A — honest completion: the year is exhausted.
       await deps.progress(`Amazon year ${year}: no more orders after ${yearOrderCount} seen`, { stream: "orders" });
       break;
     }
@@ -1687,7 +1723,22 @@ async function runYear(
       diagnostics: { dropped: unparseableDateCount, total_seen: yearOrderCount, year },
     });
   }
-  return { orderCount: yearOrderCount, unparseableDateCount };
+  // A truncated year is reported to the owner as a deferred remainder, never
+  // left to read as a finished year. `..._deferred` is load-bearing: the
+  // reference implementation classifies a skip by its reason string, and only
+  // a deferred-matching reason maps to the `deferred` axis instead of
+  // `terminal_gap` — the remaining orders are postponed by a page budget, not
+  // permanently unreachable.
+  if (truncated) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "older_pages_deferred_page_budget",
+      message: `Amazon year ${year}: stopped at the ${PAGE_LIMIT}-page limit with more orders still listed`,
+      diagnostics: { page_limit: PAGE_LIMIT, total_seen: yearOrderCount, year },
+    });
+  }
+  return { orderCount: yearOrderCount, truncated, unparseableDateCount };
 }
 
 // ─── Incremental year planning ───────────────────────────────────────────
@@ -1935,18 +1986,17 @@ if (isMainModule(import.meta.url)) {
         // before. It is what makes a later "no orders in <year>" page a
         // contradiction to escalate rather than a result to trust. Read here,
         // next to the year cursor it derives from, and passed down explicitly.
-        const { orderCount: yearOrderCount, unparseableDateCount } = await runYear(
-          page,
-          deps,
-          flags,
-          year,
-          priorOrdersEvidenceForYear(yearsState, year)
-        );
+        const {
+          orderCount: yearOrderCount,
+          truncated,
+          unparseableDateCount,
+        } = await runYear(page, deps, flags, year, priorOrdersEvidenceForYear(yearsState, year));
 
         await applyYearCompletionState({
           newYearsState,
           prior,
           progress,
+          truncated,
           unparseableDateCount,
           year,
           yearOrderCount,

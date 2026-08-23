@@ -39,6 +39,7 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   AMAZON_NO_ORDERS_TEXT_PATTERN,
   type AmazonRecoveryClass,
+  applyYearCompletionState,
   buildOrderDetailGap,
   classifyAmazonDetailFailure,
   classifyDetailOutcome,
@@ -2433,4 +2434,68 @@ test("emitOrderAndItems: items out of scope suppress the reconciliation entirely
     0,
     "a stream nobody asked for cannot report a gap against records it never tried to emit"
   );
+});
+
+// ─── Page-ceiling honesty (PAGE_LIMIT) ────────────────────────────────────
+//
+// `runYear` has two exits: the year genuinely ran out of orders
+// (`orders.length === 0`) and the `PAGE_LIMIT` blast-radius ceiling. Only the
+// first one means "this year is complete". Conflating them is uniquely
+// dangerous on Amazon because year state feeds a freeze-once-stable policy:
+// a capped prefix reproduces the SAME order_count every run, so `stableCount`
+// goes true on the next run and a past year is frozen — and `collect()` skips
+// frozen years entirely, making the untraversed tail unreachable forever.
+
+test("applyYearCompletionState: a page-ceiling-truncated year is never recorded, so it can never freeze", async () => {
+  const newYearsState: Record<string, unknown> = {};
+  const progressCalls: string[] = [];
+  const progress = ((message: string): Promise<void> => {
+    progressCalls.push(message);
+    return Promise.resolve();
+  }) as unknown as BrowserCollectContext["progress"];
+
+  // The second run of a truncated year: prior state holds the SAME capped
+  // count this run produced. That equality is exactly what `stableCount`
+  // tests, so an unguarded implementation freezes the year here.
+  await applyYearCompletionState({
+    newYearsState,
+    prior: { frozen: false, last_scraped: "2026-01-01T00:00:00.000Z", order_count: 500 },
+    progress,
+    truncated: true,
+    unparseableDateCount: 0,
+    year: 2024,
+    yearOrderCount: 500,
+  });
+
+  assert.deepEqual(
+    newYearsState,
+    {},
+    "a truncated year must not be written to year state at all — writing it is what lets the " +
+      "freeze-once-stable policy mark a partially-scanned past year complete forever"
+  );
+  assert.ok(
+    progressCalls.some((m) => m.includes("page limit") || m.includes("-page limit")),
+    `the owner must be told the year stopped at its page limit; got ${JSON.stringify(progressCalls)}`
+  );
+});
+
+test("applyYearCompletionState: an honest (untruncated) stable past year still freezes", async () => {
+  // The guard against over-correcting: freeze-once-stable is a real
+  // optimization and must survive for years that genuinely completed.
+  const newYearsState: Record<string, unknown> = {};
+  const progress = ((): Promise<void> => Promise.resolve()) as unknown as BrowserCollectContext["progress"];
+
+  await applyYearCompletionState({
+    newYearsState,
+    prior: { frozen: false, last_scraped: "2026-01-01T00:00:00.000Z", order_count: 312 },
+    progress,
+    truncated: false,
+    unparseableDateCount: 0,
+    year: 2024,
+    yearOrderCount: 312,
+  });
+
+  const recorded = newYearsState["2024"] as { frozen: boolean; order_count: number } | undefined;
+  assert.equal(recorded?.order_count, 312, "an honest year is still recorded");
+  assert.equal(recorded?.frozen, true, "an honest, stable, past year still freezes — the optimization is preserved");
 });

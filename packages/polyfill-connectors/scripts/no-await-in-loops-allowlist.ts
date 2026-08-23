@@ -979,14 +979,14 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/heb/index.ts",
-    line: 933,
+    line: 965,
     column: 22,
     category: "ordered_browser_interaction",
     note: "loadListPage(): sequential Playwright action against the shared page/context",
   },
   {
     path: "connectors/heb/index.ts",
-    line: 959,
+    line: 992,
     column: 7,
     category: "ordered_browser_interaction",
     note: "processListOrder(): sequential Playwright action against the shared page/context",

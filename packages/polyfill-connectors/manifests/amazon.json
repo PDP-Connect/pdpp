@@ -304,6 +304,7 @@
     "list_page_navigation_failed": "We couldn't load an orders page, so we stopped before advancing",
     "list_page_shape_check_failed": "The page didn't look like we expected",
     "no_orders_text": "This account shows no orders to import",
+    "older_pages_deferred_page_budget": "We stopped after reading a set number of pages for one year, so some older orders from that year haven't been collected yet. Nothing was lost — that year stays open so a later run can finish it",
     "pagination_exhausted": "We reached the end of the available pages",
     "renderer_diagnostics_failed": "We couldn't inspect an empty orders page, so we stopped before advancing",
     "selector_drift": "The page layout changed and we couldn't find what we needed",

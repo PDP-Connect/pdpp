@@ -61,7 +61,7 @@ export const HEB_HYDRATION_WAIT_MIN_MS = 1500;
 export const HEB_HYDRATION_WAIT_MAX_MS = 2500;
 // 400-500ms between order-history list pages.
 const LIST_PAGE_POLITE_DELAY_MS = 450;
-const MAX_LIST_PAGES = 50;
+export const MAX_LIST_PAGES = 50;
 // Bounded per-run detail budget (design doc "Collector plan" §3): blast-radius
 // stop, not an attempt at exhaustive backfill in one run.
 const MAX_DETAIL_ATTEMPTS_PER_RUN = 100;
@@ -909,11 +909,25 @@ export async function processListOrder(
 }
 
 /**
+ * The outcome of one forward scan. `truncated` distinguishes the loop's two
+ * exits: `false` means the walk ended because it reached the end of the list
+ * (terminal page, resume boundary, or the source's advertised `maxPage`);
+ * `true` means it stopped at the `MAX_LIST_PAGES` blast-radius ceiling with
+ * more pages still available. Callers MUST NOT advance the `orders` checkpoint
+ * on a truncated scan — see `buildOrdersStateCursor`.
+ */
+export interface ForwardScanResult {
+  newestOrderDate: string | null;
+  truncated: boolean;
+}
+
+/**
  * Walk the order-history list pages newest-first, processing every order and
  * tracking the newest order_date seen. Stops on a legitimate terminal page,
- * once a full page is entirely older than the resume boundary, or once the
- * source's own pagination max is exhausted. Returns the newest order_date
- * observed this run (or null if none).
+ * once a full page is entirely older than the resume boundary, once the
+ * source's own pagination max is exhausted, or at the `MAX_LIST_PAGES`
+ * ceiling. The returned `truncated` flag says which of those it was, so a
+ * bounded prefix is never mistaken for a finished walk.
  */
 export async function runForwardScan(
   page: Page,
@@ -921,7 +935,7 @@ export async function runForwardScan(
   flags: RunFlags,
   boundary: string | null,
   priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
-): Promise<string | null> {
+): Promise<ForwardScanResult> {
   let newestOrderDate: string | null = null;
   let pageNum = 1;
   // Run-scoped dedup: parseOrdersListDom already dedupes within one page, but
@@ -929,7 +943,25 @@ export async function runForwardScan(
   // first order on page N+1) would otherwise be processed twice — double
   // list/item records and two DETAIL_GAPs for one logical order (S5).
   const seenOrderIds = new Set<string>();
-  while (pageNum <= MAX_LIST_PAGES) {
+  // The pagination max H-E-B advertised on the last list page actually read.
+  // Retained past the loop so the ceiling exit can measure how much of the
+  // source's own advertised list this run never traversed.
+  let advertisedMaxPage: number | null = null;
+  // Which of the loop's two exits fired. `runForwardScan` can stop because it
+  // reached the end of the list (honest completion: `pageNum > maxPage`, a
+  // terminal page, or a full page past the resume boundary) or because it hit
+  // the blast-radius ceiling. Those are NOT the same claim, and until this
+  // flag existed nothing downstream could tell them apart — a 50-page prefix
+  // of a 60-page list reported exactly the coverage of a finished walk.
+  let hitPageCeiling = false;
+  while (true) {
+    if (pageNum > MAX_LIST_PAGES) {
+      // EXIT B — blast-radius ceiling. The bound itself is legitimate (see
+      // MAX_LIST_PAGES); what would be a lie is reporting the prefix as a
+      // complete walk. Record it and let the caller account for the tail.
+      hitPageCeiling = true;
+      break;
+    }
     const listPage = await loadListPage(page, pageNum, deps.emit, priorOrdersEvidence, deps.waitForHydration);
     if (listPage === "terminal") {
       break;
@@ -939,6 +971,7 @@ export async function runForwardScan(
     // shared page to any order-detail URL (fix for the item-enriched scan
     // silently truncating after page 1: detail HTML has no pagination nav).
     const { maxPage, orders } = listPage;
+    advertisedMaxPage = maxPage;
 
     await deps.progress(`H-E-B list page ${pageNum}: found ${orders.length} orders`, { stream: "orders" });
 
@@ -968,11 +1001,79 @@ export async function runForwardScan(
 
     pageNum += 1;
     if (pageNum > maxPage) {
+      // EXIT A — honest completion. The walk reached the end of the list as
+      // H-E-B's own pagination nav advertised it; there is no untraversed
+      // tail, so coverage may legitimately read complete.
       break;
     }
     await politeDelay(LIST_PAGE_POLITE_DELAY_MS);
   }
-  return newestOrderDate;
+
+  if (hitPageCeiling) {
+    await reportListPageCeiling(deps, advertisedMaxPage);
+  }
+
+  return { newestOrderDate, truncated: hitPageCeiling };
+}
+
+/**
+ * Account for a walk that stopped at the blast-radius ceiling instead of the
+ * end of the list.
+ *
+ * H-E-B advertises the real total page count in its own pagination nav, so a
+ * truncated run KNOWS how much it did not read. That untraversed tail is added
+ * to the `orders` coverage denominator (`considered`) and deliberately NOT to
+ * the numerator (`covered`): `covered < considered` is what
+ * `evaluateStreamCoherence` reads as `boundary_shortfall`, which the reference
+ * implementation renders as `partial` rather than `complete`. This is the
+ * whole point — the ceiling stays as a bound, but it stops masquerading as a
+ * finished walk.
+ *
+ * The tail is counted in PAGES, not orders: the connector never read those
+ * pages, so it cannot know the order count on them, and inventing one would be
+ * the same class of lie in the opposite direction. One page = one unit of
+ * unread work is an honest, deliberately coarse lower bound on what is missing.
+ *
+ * When the nav did not resolve a max page, a single synthetic unit still marks
+ * the stream short — "I stopped early and cannot say how much is left" must
+ * not read as complete either.
+ */
+async function reportListPageCeiling(deps: EmitDeps, advertisedMaxPage: number | null): Promise<void> {
+  const unreadPages =
+    advertisedMaxPage !== null && advertisedMaxPage > MAX_LIST_PAGES ? advertisedMaxPage - MAX_LIST_PAGES : 1;
+
+  if (deps.ordersCoverage) {
+    for (let i = 0; i < unreadPages; i += 1) {
+      // Considered-but-not-covered: enumerated as owed by the source's own
+      // pagination, never fetched by this run.
+      deps.ordersCoverage.considered.push(`unread_list_page_${MAX_LIST_PAGES + i + 1}`);
+    }
+  }
+
+  await deps.progress(
+    `H-E-B order-history scan stopped at its ${MAX_LIST_PAGES}-page limit with more pages available; ` +
+      "this run covered only the most recent orders",
+    { stream: "orders" }
+  );
+
+  // `..._deferred` is load-bearing, not decorative: the reference
+  // implementation classifies a skip by reason (see
+  // `mapSkipCoverageCondition`), and only a `deferred`-matching reason maps to
+  // the `deferred` axis. A reason matching none of its patterns would fall
+  // through to `terminal_gap` — "this data is permanently unreachable" — which
+  // would be a different lie: the untraversed tail is still fetchable, it was
+  // postponed by a budget, not lost.
+  await deps.emit({
+    type: "SKIP_RESULT",
+    stream: "orders",
+    reason: "older_pages_deferred_page_budget",
+    message: "Stopped after the most recent orders; older orders were not read in this run",
+    diagnostics: {
+      max_list_pages: MAX_LIST_PAGES,
+      ...(advertisedMaxPage === null ? {} : { advertised_max_page: advertisedMaxPage }),
+      unread_pages: unreadPages,
+    },
+  });
 }
 
 interface LoadedListPage {
@@ -1051,13 +1152,26 @@ async function loadListPage(
 
 /** Build the next `orders` STATE cursor from this run's newest order_date
  *  (falling back to the prior checkpoint when no order was seen) and the
- *  fingerprint cursor, if any. */
-function buildOrdersStateCursor(
+ *  fingerprint cursor, if any.
+ *
+ *  `truncated` is the page-ceiling exit. It must hold the checkpoint back,
+ *  and this is the permanent-loss guard, not a nicety. The list is
+ *  reverse-chronological, so `newestOrderDate` comes from page 1 — the very
+ *  first page read. Committing it after a truncated walk would claim
+ *  "everything at or before this date is covered" while pages 51..N were never
+ *  read at all. The next run derives `resumeBoundary` from that checkpoint and
+ *  `shouldStopPaginating` halts as soon as one full page falls older than it,
+ *  so the untraversed tail would never be revisited by any future run: the
+ *  data becomes unreachable forever, silently. Keeping the PRIOR checkpoint
+ *  makes the next run re-walk from where coverage was genuinely proven.
+ */
+export function buildOrdersStateCursor(
   newestOrderDate: string | null,
   ordersState: OrdersStateShape,
-  ordersFingerprintCursor: FingerprintCursor | undefined
+  ordersFingerprintCursor: FingerprintCursor | undefined,
+  truncated = false
 ): OrdersStateShape {
-  const nextCheckpoint = newestOrderDate ?? ordersState.checkpoint;
+  const nextCheckpoint = truncated ? ordersState.checkpoint : (newestOrderDate ?? ordersState.checkpoint);
   const cursor: OrdersStateShape = nextCheckpoint === undefined ? {} : { checkpoint: nextCheckpoint };
   if (ordersFingerprintCursor && ordersFingerprintCursor.size() > 0) {
     cursor.fingerprints = ordersFingerprintCursor.toState();
@@ -1101,7 +1215,7 @@ export async function emitOrdersCoverage(deps: EmitDeps, coverage: OrdersCoverag
 
 // ─── Checkpoint / incremental planning ─────────────────────────────────────
 
-interface OrdersStateShape {
+export interface OrdersStateShape {
   checkpoint?: string;
   fingerprints?: Record<string, string>;
 }
@@ -1270,10 +1384,12 @@ if (isMainModule(import.meta.url)) {
 
       await progress("H-E-B session verified; scanning order history");
 
-      const newestOrderDate = await runForwardScan(page, deps, flags, boundary, priorOrdersEvidence);
+      const { newestOrderDate, truncated } = await runForwardScan(page, deps, flags, boundary, priorOrdersEvidence);
 
       if (wantsOrders) {
-        const cursor = buildOrdersStateCursor(newestOrderDate, ordersState, ordersFingerprintCursor);
+        // A truncated scan holds the checkpoint at its prior value: advancing
+        // it would strand every order on the pages this run never read.
+        const cursor = buildOrdersStateCursor(newestOrderDate, ordersState, ordersFingerprintCursor, truncated);
         await emit({ type: "STATE", stream: "orders", cursor });
       }
 
