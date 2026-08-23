@@ -993,7 +993,7 @@ test("channel: dead-letter stalled outbox includes recover preview before apply"
   assert.equal(v.channel, "attention");
   assert.equal(
     v.forward_statement,
-    "The local collector has saved records on its host that did not upload to this server."
+    "The local collector has records on its host that failed to upload and will not retry on their own. Recovering them is a manual step."
   );
   assert.equal(action.cta, "Recover local collector uploads");
   assert.equal(action.remediation?.cause, "dead_letter_backlog");
