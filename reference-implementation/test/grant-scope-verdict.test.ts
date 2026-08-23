@@ -133,6 +133,97 @@ test("grant-scope: no inspection-layer figure leaks through the grant-scoped pro
   assert.ok(!serialized.includes("collection_rate"), "no rate snapshot in grant-scoped output");
 });
 
+/**
+ * A stalled outbox whose retries are exhausted (`dead_letter_backlog`), carrying a
+ * REAL `local_device_outbox_counts` rollup. The fixture above pins `null`, so the
+ * counted dead-letter sentence was never exercised against the grant-scoped
+ * projection until this one existed.
+ */
+function deadLetterSnapshot(): ConnectionHealthSnapshot {
+  return {
+    ...snapshot(),
+    axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "stalled", remote_surface: "none" },
+    conditions: [
+      {
+        current: true,
+        expires_at: null,
+        id: "BacklogClear:outbox_dead_letter_backlog",
+        message: "dead letter backlog",
+        observed_at: null,
+        origin: "local_device",
+        reason: "outbox_dead_letter_backlog",
+        reason_code: null,
+        remediation: null,
+        sensitivity: "owner",
+        severity: "warning",
+        status: "false",
+        type: "BacklogClear",
+      },
+    ],
+    detail_gap_backlog: null,
+    dominant_condition_id: "BacklogClear:outbox_dead_letter_backlog",
+    forward_disposition: "awaiting_owner",
+    local_device_outbox_counts: { dead_letter: 1, pending: 0, succeeded: 10_000, total: 10_001 },
+    reason_code: null,
+  };
+}
+
+function deadLetterStream(): StreamRollup {
+  return { ...stream(), attention_open: false, coverage: "complete", gap_retryable: false };
+}
+
+// The dead-letter magnitude ("1 of 10,001 records …") DOES reach a grant-scoped
+// client, and that is the intended behavior — pinned here so the choice is
+// deliberate rather than incidental.
+//
+// The count is not inspection-layer material like the `2532` backlog scale above.
+// It rides in `remediation.summary` on an `audience: "owner"` action, and it also
+// becomes `forward_statement` (`buildForwardStatement` returns the summary verbatim
+// for a `local_collector_recovery` remediation). Both are attention-layer narrative
+// that states the collection OUTCOME, which the maintainer-action test below already
+// establishes is supposed to cross the boundary.
+//
+// Withholding it would be the actual hazard: this repo never lets a surface imply
+// data is complete when it is not, and a grant-scoped consumer reading a source with
+// permanently-unuploaded records needs to know its read is short. Volume is already
+// public anyway — `progress.retained_records` carries the owner's retained record
+// total through this same projection untouched.
+test("grant-scope: the dead-letter magnitude reaches grant scope (incompleteness is not withheld)", () => {
+  const owner = synthesizeRenderedVerdict(
+    deadLetterSnapshot(),
+    [deadLetterStream()],
+    { backgroundSafe: false, interactionPosture: "otp_likely", recommendedMode: "manual" },
+    true
+  );
+
+  // Precondition: the owner verdict really does render the COUNTED sentence.
+  const deadLetter = owner.required_actions.find((a) => a.remediation?.cause === "dead_letter_backlog");
+  assert.ok(deadLetter, "precondition: the owner verdict carries the dead-letter remediation");
+  assert.equal(deadLetter.audience, "owner", "the dead-letter action is owner-audience, so it survives scoping");
+  assert.equal(
+    deadLetter.remediation?.summary,
+    "1 of 10,001 records on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step."
+  );
+
+  const scoped = toGrantScopedVerdict(owner);
+  const serialized = JSON.stringify(scoped);
+
+  assert.ok(serialized.includes("1 of 10,001 records"), "the magnitude reaches grant scope through the remediation");
+  assert.equal(
+    scoped.forward_statement,
+    "1 of 10,001 records on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step.",
+    "and through forward_statement, which mirrors the remediation summary"
+  );
+  // The permanence warning is the load-bearing half: a consumer must never be told
+  // only that a count exists, without being told the records will not drain.
+  assert.ok(serialized.includes("will not retry on their own"), "the permanence warning crosses the boundary too");
+
+  // Still no inspection-layer material: the counts field itself is snapshot INPUT,
+  // never a projected key on any wire surface.
+  assert.ok(!serialized.includes("local_device_outbox_counts"), "the raw counts field is not a grant-scoped key");
+  assert.ok(!serialized.includes('dead_letter":'), "no raw counts object reaches grant scope");
+});
+
 test("grant-scope: public attention-layer fields survive the projection", () => {
   const v = synthesizeRenderedVerdict(
     snapshot(),
