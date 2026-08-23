@@ -92,6 +92,13 @@ export type VerdictLabel =
   | "Healthy"
   | "Import complete"
   | "Missing data"
+  // Owner decision 2026-08-23: a NON-REQUIRED stream the connector intended to
+  // collect (`coverage_policy: collect`, or no policy) has been lost for good.
+  // The source still works and still delivers everything load-bearing, so
+  // "Missing data" would overstate it and "Healthy" would hide a real loss.
+  // Named in the same plain-English register as "Missing data" — it says what
+  // the owner lost and that it was not the essential part.
+  | "Missing optional data"
   | "Needs refresh"
   | "Not measured"
   // Terminal and honest, like "Archived": this source never connected, so
@@ -449,18 +456,68 @@ const DEGRADING_AXES = new Set(["coverage", "attention", "outbox"]);
 const NON_DEGRADING_AMBER_STATES = new Set(["idle", "cooling_off"]);
 
 /**
- * Decide the amber label. "Needs refresh" only when EVERY reason the tone
- * reached amber-or-worse is one of the not-actually-broken shapes: `state:
- * idle` (with a prior success), `state: cooling_off`, `freshness: stale`, or `disposition:
- * owner_refresh_due`. Any other axis reaching amber-or-worse — or `state`
- * being outside those non-degrading states, or `disposition` being anything
- * other than `owner_refresh_due` — means real trouble, so it stays "Missing data".
+ * Whether an optional terminal loss is the ONLY thing that made this verdict
+ * degrade — i.e. the connection is otherwise working. Every non-coverage
+ * degrading signal (state, attention, outbox) must be clean, and the coverage
+ * axis's amber must be attributable solely to optional terminal streams: no
+ * required stream may be contributing an amber-or-worse coverage tone of its
+ * own. If anything else is also wrong, the honest label is the broader
+ * "Missing data" — the narrower claim would under-report real trouble.
+ */
+function optionalLossIsSoleDegradation(
+  streams: readonly StreamRollup[],
+  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+): boolean {
+  const anyOptionalTerminalLoss = streams.some((stream) => isOptionalTerminalLoss(stream));
+  if (!anyOptionalTerminalLoss) {
+    return false;
+  }
+  // Any degrading axis OTHER than coverage means something else is also wrong.
+  // `coverage` is excluded because it is the axis the optional loss ITSELF
+  // drives amber — including it here would make this check always false.
+  const nonCoverageDegrading = toneInputs.some(
+    (input) => DEGRADING_AXES.has(input.axis) && input.axis !== "coverage" && TONE_RANK[input.tone] >= TONE_RANK.amber
+  );
+  if (nonCoverageDegrading) {
+    return false;
+  }
+  // A required stream carrying its own amber-or-worse coverage is real trouble
+  // regardless of what the optional streams are doing.
+  const requiredCoverageDegrading = streams.some(
+    (stream) =>
+      stream.priority === "required" &&
+      !streamCoverageIsFullyAccounted(stream) &&
+      TONE_RANK[coverageTone(stream.coverage)] >= TONE_RANK.amber
+  );
+  return !requiredCoverageDegrading;
+}
+
+/**
+ * Decide the amber label. Three outcomes, in order of specificity:
+ *
+ *   - "Missing optional data" when the sole degradation is a lost collect-intent
+ *     non-required stream (owner decision 2026-08-23).
+ *   - "Needs refresh" when EVERY reason the tone reached amber-or-worse is one
+ *     of the not-actually-broken shapes: `state: idle` (with a prior success),
+ *     `state: cooling_off`, `freshness: stale`, or `disposition:
+ *     owner_refresh_due`.
+ *   - "Missing data" otherwise — any other axis reaching amber-or-worse, `state`
+ *     outside those non-degrading states, or `disposition` being anything other
+ *     than `owner_refresh_due` means real trouble.
+ *
+ * The optional-loss check runs FIRST because that state would otherwise be
+ * indistinguishable from a required coverage gap: both surface as an amber
+ * `coverage` axis, and only the stream rollups know which kind it is.
  */
 function amberLabel(
   snapshot: ConnectionHealthSnapshot,
   disposition: ForwardDisposition,
-  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+  toneInputs: readonly { axis: string; tone: VerdictTone }[],
+  streams: readonly StreamRollup[]
 ): VerdictLabel {
+  if (optionalLossIsSoleDegradation(streams, toneInputs)) {
+    return "Missing optional data";
+  }
   const stateIsBroken =
     !NON_DEGRADING_AMBER_STATES.has(snapshot.state) &&
     TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
@@ -476,7 +533,8 @@ function labelForPill(
   tone: VerdictTone,
   snapshot: ConnectionHealthSnapshot,
   disposition: ForwardDisposition,
-  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+  toneInputs: readonly { axis: string; tone: VerdictTone }[],
+  streams: readonly StreamRollup[] = []
 ): VerdictLabel {
   if (tone === "grey" && snapshot.badges.syncing) {
     return "Checking";
@@ -492,7 +550,7 @@ function labelForPill(
     return "Import complete";
   }
   if (tone === "amber") {
-    const label = amberLabel(snapshot, disposition, toneInputs);
+    const label = amberLabel(snapshot, disposition, toneInputs, streams);
     // An active run dominates a routine "needs refresh" nudge (Wave 10a
     // active-run visibility): when every reason the tone reached amber is a
     // not-actually-broken shape (idle-with-prior-success, stale, or
@@ -694,11 +752,46 @@ function streamCoverageIsFullyAccounted(stream: StreamRollup): boolean {
 }
 
 /**
- * The worst per-stream coverage tone, weighted by manifest priority: an
- * `accepted_absence`/`optional` stream that is merely stale or partial annotates but
- * does NOT downgrade the pill below the required-stream tone (mitigates "worst-wins
- * over-ambers on a trivial optional stream", design Risks). A required stream always
- * contributes its full tone; optional stream coverage remains an advisory fact.
+ * Whether an `optional` stream's shortfall is TERMINAL — permanently lost, with
+ * no proof that losing it was acceptable.
+ *
+ * This is the discriminator the owner's 2026-08-23 policy turns on. Only
+ * `terminal_gap` qualifies: a `retryable_gap`/`partial`/`gaps` axis is filled by
+ * the next ordinary run, so downgrading the source for it would manufacture
+ * exactly the alert fatigue the priority weighting exists to prevent. A
+ * shortfall that is fully unfillable-accounted also does NOT qualify — durable
+ * per-item proof of impossibility is the same claim an accepted-absence policy
+ * makes, just proven rather than declared, and it already tones green for
+ * required streams.
+ *
+ * `unsupported`/`unavailable` are deliberately excluded here: those axes are
+ * themselves accepted-absence vocabulary, and a stream carrying them is
+ * classified `accepted_absence` upstream by `streamPriority`.
+ */
+function isOptionalTerminalLoss(stream: StreamRollup): boolean {
+  return (
+    stream.priority === "optional" && stream.coverage === "terminal_gap" && !streamCoverageIsFullyAccounted(stream)
+  );
+}
+
+/**
+ * The worst per-stream coverage tone, weighted by manifest priority. THREE
+ * cases, deliberately not two:
+ *
+ *   - `required`         : contributes its full tone (red terminal stays red).
+ *   - `optional`         : a TERMINAL loss contributes amber and no worse; any
+ *                          non-terminal shortfall annotates only.
+ *   - `accepted_absence` : never contributes; annotates only.
+ *
+ * The `optional` case is the owner's 2026-08-23 decision. Previously `optional`
+ * and `accepted_absence` were collapsed by a single `priority === "required"`
+ * test, which overloaded `required: false` to mean both "not load-bearing" and
+ * "we accept its absence". Those are different claims: a stream the connector
+ * INTENDS to collect (`coverage_policy: collect`, or no policy) and has now
+ * lost forever is a real loss to the owner, and a source sitting on one must
+ * not read "Healthy" (iMessage participants/attachments on older macOS is the
+ * live shape). It ambers rather than reds because it is still, genuinely, not
+ * required — the source keeps working, it just cannot deliver everything.
  *
  * A `terminal_gap` whose ENTIRE shortfall is proven permanently uncollectable
  * tones GREEN, for the same reason it no longer derives a `terminal` disposition
@@ -717,8 +810,14 @@ function worstStreamCoverageTone(streams: readonly StreamRollup[]): VerdictTone 
     const tone = streamCoverageIsFullyAccounted(stream) ? "green" : coverageTone(stream.coverage);
     if (stream.priority === "required") {
       worstTone = worse(worstTone, tone);
+      continue;
     }
-    // optional/accepted-absence non-red coverage annotates only; does not downgrade.
+    if (isOptionalTerminalLoss(stream)) {
+      // Capped at amber: a lost optional stream is a real loss, but it is not
+      // the "this source cannot collect" claim a required loss makes.
+      worstTone = worse(worstTone, "amber");
+    }
+    // accepted-absence, and any non-terminal optional coverage, annotate only.
   }
   return worstTone;
 }
@@ -742,12 +841,23 @@ function connectionDisposition(
     // disposition (already derived through the oracle by the projection).
     return snapshot.forward_disposition;
   }
-  // Worst-wins over per-stream dispositions, each derived through the oracle —
-  // weighted by manifest priority exactly as the coverage rollup is. A required
-  // stream always contributes its disposition; an optional / accepted-absence
-  // stream contributes only when its disposition is `terminal` (a lost stream is
-  // lost regardless of priority). This keeps disposition and coverage consistent so
-  // a trivially-stale optional stream does not amber the whole connection.
+  // Worst-wins over per-stream dispositions, each derived through the oracle.
+  // ONLY `required` streams contribute, and that is deliberate even under the
+  // 2026-08-23 optional-loss policy.
+  //
+  // The connection-level `forward_disposition` is a single claim about what
+  // happens NEXT for the whole connection, and it is read by surfaces well
+  // beyond the pill (owner state, fleet rollups, required actions, the
+  // "resume" statement invariants). Letting a lost OPTIONAL stream promote it
+  // to `terminal` would assert the whole connection is finished — which is
+  // false, since the source keeps collecting everything load-bearing. The
+  // optional loss is carried by the COVERAGE tone instead, capped at amber
+  // (`worstStreamCoverageTone`), which is precisely the "annotate, do not
+  // dominate" split the priority weighting exists to express.
+  //
+  // So the three-way distinction lives in the coverage rollup; disposition
+  // stays required-only. `optional` and `accepted_absence` are still NOT
+  // equivalent — they differ in tone, label, and stream rows.
   let worstRank = TONE_RANK[dispositionTone(snapshot.forward_disposition)];
   let worst: ForwardDisposition = snapshot.forward_disposition;
   for (const stream of streams) {
@@ -2068,10 +2178,14 @@ function toneBelowBaseStateViolation(verdict: RenderedVerdict, snapshot: Connect
   return null;
 }
 
-function toneLabelViolation(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string | null {
+function toneLabelViolation(
+  verdict: RenderedVerdict,
+  snapshot: ConnectionHealthSnapshot,
+  streams: readonly StreamRollup[]
+): string | null {
   if (
     verdict.pill.label !==
-    labelForPill(verdict.pill.tone, snapshot, verdict.detail.forward_disposition, verdict.trace.tone_inputs)
+    labelForPill(verdict.pill.tone, snapshot, verdict.detail.forward_disposition, verdict.trace.tone_inputs, streams)
   ) {
     return "pill.label does not match tone plus active-work evidence (inv 6)";
   }
@@ -2086,7 +2200,11 @@ function terminalStreamResumeStatementViolation(row: VerdictStreamRow): string |
 }
 
 /** Honesty invariants 1–7 over the whole verdict. */
-function honestyViolations(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string[] {
+function honestyViolations(
+  verdict: RenderedVerdict,
+  snapshot: ConnectionHealthSnapshot,
+  streams: readonly StreamRollup[]
+): string[] {
   const dispositionTerminal = verdict.detail.forward_disposition === "terminal";
   return [
     missingFreshnessAnnotationViolation(verdict, snapshot),
@@ -2095,7 +2213,7 @@ function honestyViolations(verdict: RenderedVerdict, snapshot: ConnectionHealthS
     terminalProgressHeadlineResumeViolation(verdict),
     ...verdict.required_actions.map((action) => connectionActionTerminalViolation(action, dispositionTerminal)),
     toneBelowBaseStateViolation(verdict, snapshot),
-    toneLabelViolation(verdict, snapshot),
+    toneLabelViolation(verdict, snapshot, streams),
     ...verdict.streams.map(terminalStreamResumeStatementViolation),
   ].filter(isViolation);
 }
@@ -2155,8 +2273,13 @@ function silenceViolations(verdict: RenderedVerdict, runtimeOk: boolean): string
  * The eleven invariants (honesty 1–7, silence S1–S4) enforced on the WHOLE verdict —
  * one gate, not N scattered formatter checks.
  */
-function assertInvariants(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot, runtimeOk: boolean): string[] {
-  return [...honestyViolations(verdict, snapshot), ...silenceViolations(verdict, runtimeOk)];
+function assertInvariants(
+  verdict: RenderedVerdict,
+  snapshot: ConnectionHealthSnapshot,
+  runtimeOk: boolean,
+  streams: readonly StreamRollup[]
+): string[] {
+  return [...honestyViolations(verdict, snapshot, streams), ...silenceViolations(verdict, runtimeOk)];
 }
 
 /** A minimal, honest grey verdict used as the prod fallback on an invariant failure. */
@@ -2219,7 +2342,7 @@ export function synthesizeRenderedVerdict(
     { axis: "outbox", tone: outboxTone(snapshot) },
   ];
   const tone = toneInputs.reduce<VerdictTone>((acc, input) => worse(acc, input.tone), "green");
-  const pill: VerdictPill = { label: labelForPill(tone, snapshot, disposition, toneInputs), tone };
+  const pill: VerdictPill = { label: labelForPill(tone, snapshot, disposition, toneInputs, streams), tone };
 
   // ── required actions (terminality derived from the sole oracle) ──
   const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress, scheduleEvidence, attention);
@@ -2267,7 +2390,7 @@ export function synthesizeRenderedVerdict(
     trace,
   };
 
-  const violations = assertInvariants(verdict, snapshot, runtime_ok);
+  const violations = assertInvariants(verdict, snapshot, runtime_ok, streams);
   if (violations.length > 0) {
     if (shouldThrowOnViolation()) {
       throw new VerdictInvariantError(violations.join("; "));

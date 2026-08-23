@@ -32,6 +32,9 @@ const REQUIRED_PILL_LABELS = [
   "Healthy",
   "Import complete",
   "Missing data",
+  // Owner decision 2026-08-23: emitted when a non-required, collect-intent
+  // stream is permanently lost (`amberLabel`, runtime/rendered-verdict.ts).
+  "Missing optional data",
   "Needs refresh",
   "Not measured",
   "Setup never completed",
