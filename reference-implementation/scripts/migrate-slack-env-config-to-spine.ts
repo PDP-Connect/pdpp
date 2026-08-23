@@ -142,7 +142,7 @@ async function run(): Promise<void> {
   console.log(`Channel count: ${args.channelAllowlist.length}`);
   console.log(`Origin: agent (the ORIGINAL choice was agent-authored, per the 2026-08-22 incident)`);
   console.log(`This migration's own actor (set_by via origin=migration): ${args.actor}`);
-  console.log("Initial status: proposed (collection_scope + non-owner origin never self-activates)");
+  console.log("Initial status: proposed (collection_scope never self-activates, regardless of provenance origin)");
   console.log(`Source of change: ${args.sourceOfChange}`);
 
   if (!args.apply) {
@@ -222,7 +222,7 @@ async function run(): Promise<void> {
     );
     console.log(`\nWrote revision ${insertResult.rows[0]?.revision} with status '${insertResult.rows[0]?.status}'.`);
     console.log(
-      "This revision is a PROPOSAL. It will not affect any run until an owner explicitly confirms it via " +
+      "This revision is a PROPOSAL. It will not affect any run until the authenticated connection owner confirms it via " +
         "the config store's confirm() path (or the owner sets a different value, superseding it)."
     );
   } finally {
