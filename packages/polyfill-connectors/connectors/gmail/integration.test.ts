@@ -22,8 +22,10 @@
  * on the emit path prove the invariants downstream consumers observe:
  *   - stream-scope filters (wantMessages / wantBodies / attachments)
  *     suppress only their own stream and don't break siblings,
- *   - body-fetch failure still emits the envelope record (with null
- *     snippet, body_source="empty"), never silently drops the message,
+ *   - body-fetch failure still emits the envelope record (never silently
+ *     drops the message) AND leaves a retryable DETAIL_GAP so the body is
+ *     refetchable, while a genuinely empty body stays body_source="empty"
+ *     with no gap,
  *   - emit order within a message is body → envelope → attachments,
  *   - missing X-GM-MSGID is skipped silently without emitting anything,
  *   - per-message errors inside emitMessagesPass don't halt the loop.
@@ -42,7 +44,7 @@ import type {
   MessageEnvelopeObject,
   MessageStructureObject,
 } from "imapflow";
-import type { DetailGapStartEntry } from "../../src/connector-runtime.ts";
+import type { DetailGapMessage, DetailGapStartEntry, EmittedMessage } from "../../src/connector-runtime.ts";
 import { buildFullScanCoverageMessage } from "../../src/connector-runtime.ts";
 import { ReferenceBlobUploadFailure, runtimeBlobUploadAvailable } from "../../src/reference-blob-uploader.ts";
 import { type EmittedRecord, makeRecordingEmit, type RecordedEvent } from "../../src/test-harness.ts";
@@ -4056,10 +4058,73 @@ test("processMessage: fetchBodies that resolves all-nulls still emits messages w
   assert.equal(msgRecord.data.snippet, null, "snippet falls back to null, not undefined");
 });
 
-test("processMessage: body-fetch failure + wantBodies=true emits message_bodies with body_source='empty'", async () => {
+/**
+ * Narrow the recorded protocol stream to the single `message_bodies` DETAIL_GAP,
+ * or null. `protocolMessages` is the whole `EmittedMessage` union, so the tests
+ * below cannot read gap-only fields off it without this.
+ */
+function findMessageBodyGap(protocolMessages: readonly EmittedMessage[]): DetailGapMessage | null {
+  const gaps = protocolMessages.filter(
+    (m): m is DetailGapMessage => m.type === "DETAIL_GAP" && m.stream === "message_bodies"
+  );
+  return gaps[0] ?? null;
+}
+
+// This test previously pinned the LOSSY outcome as correct: a body fetch that
+// THREW emitted `body_source: "empty"` and nothing else, which is byte-identical
+// to the record for a message that genuinely has no body. Because the messages
+// walk advances the UID cursor to live `uidnext` either way, the real body ended
+// up behind the cursor and was NEVER refetched — while the stream read complete
+// to the owner. Owner decision (2026-08-23): keep emitting the envelope, but mark
+// the failed body as a retryable DETAIL_GAP so it stays refetchable and the
+// stream does not read complete. The cursor may still advance, because the gap is
+// durable and a later run refetches exactly that body.
+test("processMessage: body-fetch FAILURE emits message_bodies plus a retryable DETAIL_GAP", async () => {
+  const failedFetcher: FetchBodiesFn = (): Promise<FetchedBodies> =>
+    Promise.resolve({
+      bodyHtmlFull: null,
+      bodyTextFull: null,
+      snippet: null,
+      fetchFailed: true,
+      failureClass: "imap_body_fetch_transient",
+    });
+  const { deps, emitted, protocolMessages } = makeHarness({
+    fetchBodies: failedFetcher,
+    requested: makeRequested(["messages", "message_bodies"]),
+    wantBodies: true,
+    wantMessages: true,
+  });
+  await processMessage(deps, makeMsg());
+
+  // The envelope guarantee is unchanged: we still emit the record rather than
+  // dropping the message.
+  const bodyRecord = emitted.find((r) => r.stream === "message_bodies");
+  assert.ok(bodyRecord);
+  assert.equal(bodyRecord.data.body_text, null);
+  assert.equal(bodyRecord.data.body_html, null);
+
+  // What is new, and what makes the loss recoverable: a durable pending gap
+  // keyed by the message id, so a later run knows exactly which body to refetch.
+  const gap = findMessageBodyGap(protocolMessages);
+  assert.ok(gap, "a failed body fetch must leave a retryable gap, not a silent 'empty' record");
+  assert.equal(gap.record_key, String(makeMsg().emailId), "gap must carry the message id so the body can be refetched");
+  assert.equal(gap.status, "pending");
+  assert.equal(gap.retryable, true);
+  assert.equal(gap.reference_only, true);
+  assert.equal(gap.parent_stream, "messages");
+  const locator = gap.detail_locator as Record<string, unknown>;
+  assert.equal(locator.kind, "gmail.message_body_detail");
+  assert.equal(locator.message_id, String(makeMsg().emailId));
+  assert.equal(gap.last_error?.class, "imap_body_fetch_transient", "gap records WHY, not just that it failed");
+});
+
+// The case that must NOT regress: a message that genuinely has no body in scope
+// is not broken, and must not be made to look broken. It keeps `body_source:
+// "empty"` and emits NO gap.
+test("processMessage: genuinely empty body emits body_source='empty' and NO gap", async () => {
   const nullFetcher: FetchBodiesFn = (): Promise<FetchedBodies> =>
     Promise.resolve({ bodyHtmlFull: null, bodyTextFull: null, snippet: null });
-  const { deps, emitted } = makeHarness({
+  const { deps, emitted, protocolMessages } = makeHarness({
     fetchBodies: nullFetcher,
     requested: makeRequested(["messages", "message_bodies"]),
     wantBodies: true,
@@ -4068,9 +4133,31 @@ test("processMessage: body-fetch failure + wantBodies=true emits message_bodies 
   await processMessage(deps, makeMsg());
   const bodyRecord = emitted.find((r) => r.stream === "message_bodies");
   assert.ok(bodyRecord);
-  assert.equal(bodyRecord.data.body_source, "empty", "body_source marks the fallback");
+  assert.equal(bodyRecord.data.body_source, "empty", "body_source marks a genuinely empty body");
   assert.equal(bodyRecord.data.body_text, null);
   assert.equal(bodyRecord.data.body_html, null);
+  assert.equal(
+    findMessageBodyGap(protocolMessages),
+    null,
+    "an empty message is not a gap — do not make every empty message look broken"
+  );
+});
+
+// A schema-REJECTED body record is the sibling loss: `emitRecord` returns false,
+// a SKIP_RESULT goes out, nothing lands, and the cursor advances anyway. Gmail's
+// own makeEmitRecord returns Promise<boolean>, so processMessage can honor it.
+test("processMessage: schema-rejected message_bodies record leaves a retryable DETAIL_GAP", async () => {
+  const { deps, protocolMessages } = makeHarness({
+    requested: makeRequested(["messages", "message_bodies"]),
+    wantBodies: true,
+    wantMessages: true,
+  });
+  const rejectingEmitRecord: typeof deps.emitRecord = (stream, _data) => Promise.resolve(stream !== "message_bodies");
+  await processMessage({ ...deps, emitRecord: rejectingEmitRecord }, makeMsg());
+  const gap = findMessageBodyGap(protocolMessages);
+  assert.ok(gap, "a rejected body record must not be counted covered and checkpointed away");
+  assert.equal(gap.record_key, String(makeMsg().emailId));
+  assert.equal(gap.last_error?.class, "message_bodies_record_rejected");
 });
 
 // ─── Invariant: timestamp propagation (internalDate → received_at) ───────
