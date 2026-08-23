@@ -35,6 +35,7 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { walkPagesWithCeiling } from "../../src/page-ceiling.ts";
 import { type OrderItemTally, summarizeItemCounts } from "./item-count-anchor.ts";
 import {
   buildOrderItemRecord,
@@ -936,7 +937,6 @@ export async function runForwardScan(
   priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
 ): Promise<ForwardScanResult> {
   let newestOrderDate: string | null = null;
-  let pageNum = 1;
   // Run-scoped dedup: parseOrdersListDom already dedupes within one page, but
   // a pagination-boundary repeat (the last order on page N reappearing as the
   // first order on page N+1) would otherwise be processed twice — double
@@ -952,67 +952,67 @@ export async function runForwardScan(
   // the blast-radius ceiling. Those are NOT the same claim, and until this
   // flag existed nothing downstream could tell them apart — a 50-page prefix
   // of a 60-page list reported exactly the coverage of a finished walk.
-  let hitPageCeiling = false;
-  while (true) {
-    if (pageNum > MAX_LIST_PAGES) {
-      // EXIT B — blast-radius ceiling. The bound itself is legitimate (see
-      // MAX_LIST_PAGES); what would be a lie is reporting the prefix as a
-      // complete walk. Record it and let the caller account for the tail.
-      hitPageCeiling = true;
-      break;
-    }
-    const listPage = await loadListPage(page, pageNum, deps.emit, priorOrdersEvidence, deps.waitForHydration);
-    if (listPage === "terminal") {
-      break;
-    }
-    // Pagination max is captured from THIS page's own HTML inside
-    // loadListPage(), before the per-order loop below can navigate the
-    // shared page to any order-detail URL (fix for the item-enriched scan
-    // silently truncating after page 1: detail HTML has no pagination nav).
-    const { maxPage, orders } = listPage;
-    advertisedMaxPage = maxPage;
-
-    await deps.progress(`H-E-B list page ${pageNum}: found ${orders.length} orders`, { stream: "orders" });
-
-    const pageOrderDates: (string | null)[] = [];
-    for (const listOrder of orders) {
-      const orderDate = parseOrderDate(listOrder.orderDateRaw);
-      // The boundary/pagination-stop decision considers every order date on
-      // the page, repeats included — only the actual processing (which emits
-      // records/gaps) is deduped below.
-      pageOrderDates.push(orderDate);
-      if (orderDate && (!newestOrderDate || orderDate > newestOrderDate)) {
-        newestOrderDate = orderDate;
+  const walk = await walkPagesWithCeiling({
+    maxPages: MAX_LIST_PAGES,
+    fetchPage: async (pageNum) => {
+      const listPage = await loadListPage(page, pageNum, deps.emit, priorOrdersEvidence, deps.waitForHydration);
+      if (listPage === "terminal") {
+        return false;
       }
-      if (seenOrderIds.has(listOrder.orderId)) {
-        continue;
+      // Pagination max is captured from THIS page's own HTML inside
+      // loadListPage(), before the per-order loop below can navigate the
+      // shared page to any order-detail URL (fix for the item-enriched scan
+      // silently truncating after page 1: detail HTML has no pagination nav).
+      const { maxPage, orders } = listPage;
+      advertisedMaxPage = maxPage;
+
+      await deps.progress(`H-E-B list page ${pageNum}: found ${orders.length} orders`, { stream: "orders" });
+
+      const pageOrderDates: (string | null)[] = [];
+      for (const listOrder of orders) {
+        const orderDate = parseOrderDate(listOrder.orderDateRaw);
+        // The boundary/pagination-stop decision considers every order date on
+        // the page, repeats included — only the actual processing (which emits
+        // records/gaps) is deduped below.
+        pageOrderDates.push(orderDate);
+        if (orderDate && (!newestOrderDate || orderDate > newestOrderDate)) {
+          newestOrderDate = orderDate;
+        }
+        if (seenOrderIds.has(listOrder.orderId)) {
+          continue;
+        }
+        seenOrderIds.add(listOrder.orderId);
+        await processListOrder(page, deps, flags, listOrder);
       }
-      seenOrderIds.add(listOrder.orderId);
-      await processListOrder(page, deps, flags, listOrder);
-    }
 
-    if (shouldStopPaginating(pageOrderDates, boundary)) {
-      await deps.progress(`H-E-B list page ${pageNum}: full page older than checkpoint boundary; stopping`, {
-        stream: "orders",
-      });
-      break;
-    }
+      if (shouldStopPaginating(pageOrderDates, boundary)) {
+        await deps.progress(`H-E-B list page ${pageNum}: full page older than checkpoint boundary; stopping`, {
+          stream: "orders",
+        });
+        return false;
+      }
 
-    pageNum += 1;
-    if (pageNum > maxPage) {
-      // EXIT A — honest completion. The walk reached the end of the list as
-      // H-E-B's own pagination nav advertised it; there is no untraversed
-      // tail, so coverage may legitimately read complete.
-      break;
-    }
-    await politeDelay(LIST_PAGE_POLITE_DELAY_MS);
-  }
+      if (pageNum >= maxPage) {
+        // EXIT A — honest completion. The walk reached the end of the list as
+        // H-E-B's own pagination nav advertised it; there is no untraversed
+        // tail, so coverage may legitimately read complete.
+        return false;
+      }
+      if (pageNum >= MAX_LIST_PAGES) {
+        // The shared walker marks this as truncated because the provider still
+        // advertises another page after the permitted prefix.
+        return true;
+      }
+      await politeDelay(LIST_PAGE_POLITE_DELAY_MS);
+      return true;
+    },
+  });
 
-  if (hitPageCeiling) {
+  if (walk.truncated) {
     await reportListPageCeiling(deps, advertisedMaxPage);
   }
 
-  return { newestOrderDate, truncated: hitPageCeiling };
+  return { newestOrderDate, truncated: walk.truncated };
 }
 
 /**

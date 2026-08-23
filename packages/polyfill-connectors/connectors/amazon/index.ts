@@ -34,6 +34,7 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor, recordFingerprint } from "../../src/fingerprint-cursor.ts";
+import { walkPagesWithCeiling } from "../../src/page-ceiling.ts";
 import {
   buildOrderItemRecord,
   buildOrderRecord,
@@ -1666,49 +1667,46 @@ async function runYear(
   year: number,
   priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
 ): Promise<YearRunResult> {
-  let startIndex = 0;
-  let pageCount = 0;
   let yearOrderCount = 0;
   let unparseableDateCount = 0;
-  // Which of the loop's two exits fired. A year can end because Amazon ran
-  // out of orders to list (honest completion: `orders.length === 0`) or
-  // because the run hit its `PAGE_LIMIT` blast-radius bound with orders still
-  // coming. Those make opposite claims about completeness, and nothing
-  // downstream could tell them apart before this flag existed.
-  let truncated = false;
-  while (true) {
-    if (pageCount >= PAGE_LIMIT) {
-      // EXIT B — page ceiling. The bound is legitimate; recording the prefix
-      // as a finished year is not.
-      truncated = true;
-      break;
-    }
-    await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
-    const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit, priorOrdersEvidence);
-    if (orders.length === 0) {
-      // EXIT A — honest completion: the year is exhausted.
-      await deps.progress(`Amazon year ${year}: no more orders after ${yearOrderCount} seen`, { stream: "orders" });
-      break;
-    }
-    yearOrderCount += orders.length;
-    await deps.progress(`Amazon year ${year}: page ${pageCount + 1} found ${orders.length} orders`, {
-      stream: "orders",
-    });
-    for (const [index, o] of orders.entries()) {
-      await deps.progress(
-        `Amazon year ${year}: processing order ${index + 1}/${orders.length} on page ${pageCount + 1}`,
-        { stream: "orders" }
+  let pageCount = 0;
+  const walk = await walkPagesWithCeiling({
+    maxPages: PAGE_LIMIT,
+    fetchPage: async () => {
+      await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
+      const orders = await scrapeListPage(
+        page,
+        deps.capture,
+        year,
+        pageCount * START_INDEX_STEP,
+        deps.emit,
+        priorOrdersEvidence
       );
-      const processed = await processListOrder(page, deps, flags, o);
-      if (!processed) {
-        // biome-ignore lint/style/noIncrementDecrement: integration.test.ts asserts this literal `unparseableDateCount++` source text (source-regex oracle); switching to += would fail that pre-existing test for a purely cosmetic change.
-        unparseableDateCount++;
+      if (orders.length === 0) {
+        // EXIT A — honest completion: the year is exhausted.
+        await deps.progress(`Amazon year ${year}: no more orders after ${yearOrderCount} seen`, { stream: "orders" });
+        return false;
       }
-    }
-    pageCount += 1;
-    startIndex += START_INDEX_STEP;
-    await politeDelay(POLITE_DELAY_MS);
-  }
+      yearOrderCount += orders.length;
+      await deps.progress(`Amazon year ${year}: page ${pageCount + 1} found ${orders.length} orders`, {
+        stream: "orders",
+      });
+      for (const [index, o] of orders.entries()) {
+        await deps.progress(
+          `Amazon year ${year}: processing order ${index + 1}/${orders.length} on page ${pageCount + 1}`,
+          { stream: "orders" }
+        );
+        const processed = await processListOrder(page, deps, flags, o);
+        if (!processed) {
+          // biome-ignore lint/style/noIncrementDecrement: integration.test.ts asserts this literal `unparseableDateCount++` source text (source-regex oracle); switching to += would fail that pre-existing test for a purely cosmetic change.
+          unparseableDateCount++;
+        }
+      }
+      pageCount += 1;
+      await politeDelay(POLITE_DELAY_MS);
+      return true;
+    },
+  });
   // Bounded per-year coverage evidence: a year that silently drops order rows
   // with an unparseable order date must not look complete. One count-only
   // SKIP_RESULT per year (no raw order ids) instead of a per-item flood.
@@ -1729,7 +1727,7 @@ async function runYear(
   // a deferred-matching reason maps to the `deferred` axis instead of
   // `terminal_gap` — the remaining orders are postponed by a page budget, not
   // permanently unreachable.
-  if (truncated) {
+  if (walk.truncated) {
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "orders",
@@ -1738,7 +1736,7 @@ async function runYear(
       diagnostics: { page_limit: PAGE_LIMIT, total_seen: yearOrderCount, year },
     });
   }
-  return { orderCount: yearOrderCount, truncated, unparseableDateCount };
+  return { orderCount: yearOrderCount, truncated: walk.truncated, unparseableDateCount };
 }
 
 // ─── Incremental year planning ───────────────────────────────────────────

@@ -45,6 +45,7 @@ import {
   refreshGoogleAccessToken,
   resolveGoogleOAuthCredentials,
 } from "../../src/google-oauth.ts";
+import { walkPagesWithCeiling } from "../../src/page-ceiling.ts";
 import { google_contactsPacingProfile } from "../../src/provider-profile.ts";
 import type { ConnectionsPage, ContactGroup, Person } from "./api.ts";
 import { GooglePeopleClient, PeopleSyncTokenExpiredError } from "./api.ts";
@@ -157,64 +158,68 @@ interface SyncPeopleResult {
   readonly covered: number;
   readonly fullResync: boolean;
   readonly nextSyncToken: string | null;
+  readonly truncated: boolean;
 }
 
 async function syncPeoplePages(args: {
   readonly client: PeopleClientLike;
   readonly ctx: CollectContext;
   readonly cursor: FingerprintCursor;
-  readonly maxPages: number;
   readonly syncToken: string | undefined;
 }): Promise<SyncPeopleResult> {
-  const { client, ctx, cursor, maxPages, syncToken } = args;
+  const { client, ctx, cursor, syncToken } = args;
   let pageToken: string | undefined;
   let nextSyncToken: string | null = null;
-  let pages = 0;
   let considered = 0;
   let covered = 0;
-  do {
-    const page = await httpGovernor.request(
-      () => client.listConnectionsPage({ ...(syncToken ? { syncToken } : {}), ...(pageToken ? { pageToken } : {}) }),
-      (value) => ({ status: 200, value })
-    );
-    pages += 1;
-    await ctx.progress(`Fetched Google Contacts connections page ${String(pages)}`, {
-      stream: "people",
-      count: page.value.people.length,
-    });
-    for (const person of page.value.people) {
-      const record = personRecord(person);
-      considered += 1;
-      // The runtime drops a record that fails its shape check (it emits a
-      // SKIP_RESULT instead of a RECORD), so asking the same validator here
-      // is what separates "accounted for" from "weighed and dropped".
-      // Without this the two counts could never diverge and the stream would
-      // report 100% coverage even while every contact was being rejected.
-      if (validateRecord("people", record).ok) {
-        covered += 1;
+  const walk = await walkPagesWithCeiling({
+    maxPages: MAX_PAGES,
+    fetchPage: async (pageNumber) => {
+      const page = await httpGovernor.request(
+        () => client.listConnectionsPage({ ...(syncToken ? { syncToken } : {}), ...(pageToken ? { pageToken } : {}) }),
+        (value) => ({ status: 200, value })
+      );
+      await ctx.progress(`Fetched Google Contacts connections page ${String(pageNumber)}`, {
+        stream: "people",
+        count: page.value.people.length,
+      });
+      for (const person of page.value.people) {
+        const record = personRecord(person);
+        considered += 1;
+        // The runtime drops a record that fails its shape check (it emits a
+        // SKIP_RESULT instead of a RECORD), so asking the same validator here
+        // is what separates "accounted for" from "weighed and dropped".
+        // Without this the two counts could never diverge and the stream would
+        // report 100% coverage even while every contact was being rejected.
+        if (validateRecord("people", record).ok) {
+          covered += 1;
+        }
+        if (cursor.shouldEmit(record)) {
+          await ctx.emitRecord("people", record);
+        }
       }
-      if (cursor.shouldEmit(record)) {
-        await ctx.emitRecord("people", record);
-      }
-    }
-    pageToken = page.value.nextPageToken ?? undefined;
-    nextSyncToken = page.value.nextSyncToken ?? nextSyncToken;
-  } while (pageToken && pages < maxPages);
-  if (pageToken) {
-    throw new Error(`google_contacts_pagination_cap: more than ${String(maxPages)} pages remain`);
-  }
-  return { fullResync: !syncToken, nextSyncToken, considered, covered };
+      pageToken = page.value.nextPageToken ?? undefined;
+      nextSyncToken = page.value.nextSyncToken ?? nextSyncToken;
+      return Boolean(pageToken);
+    },
+  });
+  return {
+    fullResync: !(syncToken || walk.truncated),
+    nextSyncToken: walk.truncated ? (syncToken ?? null) : nextSyncToken,
+    considered: considered + (walk.truncated ? 1 : 0),
+    covered,
+    truncated: walk.truncated,
+  };
 }
 
 async function syncPeopleWithFallback(args: {
   readonly client: PeopleClientLike;
   readonly ctx: CollectContext;
   readonly cursor: FingerprintCursor;
-  readonly maxPages: number;
   readonly priorState: PeopleState | undefined;
   readonly now: () => number;
 }): Promise<SyncPeopleResult> {
-  const { client, ctx, cursor, maxPages, priorState, now } = args;
+  const { client, ctx, cursor, priorState, now } = args;
   const tokenIsStale = syncTokenIsStale(priorState, now);
   const syncToken = tokenIsStale ? undefined : priorState?.sync_token;
   if (tokenIsStale) {
@@ -223,7 +228,7 @@ async function syncPeopleWithFallback(args: {
     });
   }
   try {
-    return await syncPeoplePages({ client, ctx, cursor, maxPages, syncToken });
+    return await syncPeoplePages({ client, ctx, cursor, syncToken });
   } catch (error) {
     if (!isSyncTokenExpired(error)) {
       throw error;
@@ -231,7 +236,7 @@ async function syncPeopleWithFallback(args: {
     await ctx.progress("Google Contacts syncToken rejected by the API (410) — falling back to full resync", {
       stream: "people",
     });
-    return await syncPeoplePages({ client, ctx, cursor, maxPages, syncToken: undefined });
+    return await syncPeoplePages({ client, ctx, cursor, syncToken: undefined });
   }
 }
 
@@ -239,8 +244,6 @@ interface ContactsCollectOptions {
   readonly clientFactory?: (accessToken: string) => PeopleClientLike;
   readonly env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   readonly getAccessToken?: () => Promise<GoogleAccessToken>;
-  /** Lowered only by deterministic tests; production uses the audited cap. */
-  readonly maxPages?: number;
   readonly now?: () => number;
 }
 
@@ -270,7 +273,6 @@ export async function collectGoogleContacts(ctx: CollectContext, options: Contac
 
   const { accessToken } = await getAccessToken();
   const client = options.clientFactory ? options.clientFactory(accessToken) : new GooglePeopleClient({ accessToken });
-  const maxPages = options.maxPages ?? MAX_PAGES;
   const state = (ctx.state as GoogleContactsState) ?? {};
 
   if (wantsGroups) {
@@ -294,19 +296,21 @@ export async function collectGoogleContacts(ctx: CollectContext, options: Contac
   }
 
   const peopleCursor = openFingerprintCursor(state.people, { excludeFromFingerprint: [...PERSON_FINGERPRINT_EXCLUDE] });
-  const result = await syncPeopleWithFallback({
-    client,
-    ctx,
-    cursor: peopleCursor,
-    maxPages,
-    priorState: state.people,
-    now,
-  });
+  const result = await syncPeopleWithFallback({ client, ctx, cursor: peopleCursor, priorState: state.people, now });
   // A syncToken response is a PARTIAL delta; only a full resync (no
   // syncToken, or the fallback path) may prune stale fingerprints — matching
   // the Calendar connector's identical rule.
   if (result.fullResync) {
     peopleCursor.dropUnseenIds();
+  }
+  if (result.truncated) {
+    await ctx.emit({
+      type: "SKIP_RESULT",
+      stream: "people",
+      reason: "older_pages_deferred_page_budget",
+      message: `Google Contacts stopped at the ${MAX_PAGES}-page limit with more people listed`,
+      diagnostics: { page_limit: MAX_PAGES, unread_pages: 1 },
+    });
   }
   const nextPeopleState: PeopleState = {
     ...(result.nextSyncToken ? { sync_token: result.nextSyncToken, synced_at: new Date(now()).toISOString() } : {}),
