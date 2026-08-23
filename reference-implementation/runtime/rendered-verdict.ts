@@ -1120,7 +1120,10 @@ function shouldOfferRetryGapAction(
     return false;
   }
   if (snapshot.axes.coverage === "retryable_gap") {
-    return !allContributingStreamsRetryByRuntime(streams, retryGapStreamIds);
+    return !(
+      hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence) &&
+      allContributingStreamsRetryByRuntime(streams, retryGapStreamIds)
+    );
   }
   return snapshot.state === "degraded";
 }
