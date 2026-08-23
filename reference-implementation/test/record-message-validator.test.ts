@@ -11,6 +11,7 @@ function record(overrides: Partial<RecordMessageLike> = {}): RecordMessageLike {
 
 test("assertValidRecordEnvelope accepts a well-formed upsert and a well-formed delete", () => {
   assert.doesNotThrow(() => assertValidRecordEnvelope(record()));
+  assert.doesNotThrow(() => assertValidRecordEnvelope(record({ op: "upsert" })));
   assert.doesNotThrow(() => assertValidRecordEnvelope({ emitted_at: "2026-04-18T00:00:00Z", key: "m1", op: "delete" }));
 });
 
@@ -31,6 +32,8 @@ const INVALID_CASES: [string, RecordMessageLike, RegExp][] = [
   ["invalid op", record({ op: "replace" }), /invalid op/],
   ["missing emitted_at", record({ emitted_at: undefined }), /invalid emitted_at/],
   ["empty string emitted_at", record({ emitted_at: "" }), /invalid emitted_at/],
+  ["numeric emitted_at", record({ emitted_at: "0" }), /invalid emitted_at/],
+  ["invalid date emitted_at", record({ emitted_at: "not-a-date" }), /invalid emitted_at/],
 ];
 
 for (const [name, msg, messageRe] of INVALID_CASES) {
