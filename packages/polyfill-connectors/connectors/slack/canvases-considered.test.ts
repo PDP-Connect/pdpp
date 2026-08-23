@@ -72,6 +72,7 @@ function makeDeps(db: DatabaseSync, harness: RecordingEmit): StreamDeps {
     emit: harness.emit,
     emitRecord: harness.emitRecord,
     emittedAt: "2026-06-05T12:00:00.000Z",
+    failedStreams: new Set(),
     fingerprintCursors: new Map(),
     progress: () => Promise.resolve(),
     requested,

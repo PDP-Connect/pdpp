@@ -99,6 +99,7 @@ function makeDeps(
     emit: harness.emit,
     emitRecord: harness.emitRecord,
     emittedAt: "2026-06-05T12:00:00.000Z",
+    failedStreams: new Set(),
     fingerprintCursors: cursors,
     progress: () => Promise.resolve(),
     requested: new Map<string, StreamScope>(requestedStreams.map((n) => [n, { name: n }])),

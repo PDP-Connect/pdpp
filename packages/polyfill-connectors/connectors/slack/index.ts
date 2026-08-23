@@ -141,11 +141,11 @@ export function formatSlackdumpMissingError(bin: string): string {
 }
 
 // safeAll: typed SQL wrapper. Rows returned as unknown[] → caller casts.
-function safeAll<T>(db: DatabaseSync, sql: string): T[] {
+function safeAll<T>(db: DatabaseSync, sql: string): T[] | null {
   try {
     return db.prepare(sql).all() as T[];
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -192,7 +192,11 @@ function currentArchiveChannelIds(db: DatabaseSync): string[] {
     FROM CHANNEL
     WHERE ID IS NOT NULL AND ID != ''
   `
-  ).map((r) => r.id);
+  );
+  if (channels === null) {
+    return [];
+  }
+  const channelIds = channels.map((r) => r.id);
   const messageChannels = safeAll<{ id: string }>(
     db,
     `
@@ -200,8 +204,11 @@ function currentArchiveChannelIds(db: DatabaseSync): string[] {
     FROM MESSAGE
     WHERE CHANNEL_ID IS NOT NULL AND CHANNEL_ID != ''
   `
-  ).map((r) => r.id);
-  return [...new Set([...channels, ...messageChannels])].sort();
+  );
+  if (messageChannels === null) {
+    return [];
+  }
+  return [...new Set([...channelIds, ...messageChannels.map((r) => r.id)])].sort();
 }
 
 function missingPreviouslyObservedChannelIds(
@@ -241,6 +248,9 @@ function archiveFinalizedChannelIds(db: DatabaseSync): Set<string> {
     WHERE TYPE_ID = 0 AND FINAL = 1 AND CHANNEL_ID IS NOT NULL AND CHANNEL_ID != ''
   `
   );
+  if (rows === null) {
+    return new Set();
+  }
   return new Set(rows.map((r) => r.id));
 }
 
@@ -265,6 +275,9 @@ function archiveInventoryChannelIds(db: DatabaseSync): Set<string> {
     WHERE ID IS NOT NULL AND ID != ''
   `
   );
+  if (rows === null) {
+    return new Set();
+  }
   return new Set(rows.map((r) => r.id));
 }
 
@@ -380,6 +393,9 @@ function archiveChannelReachability(db: DatabaseSync): Map<string, ChannelReacha
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
   );
+  if (rows === null) {
+    return new Map();
+  }
   const out = new Map<string, ChannelReachability>();
   for (const r of rows) {
     const d = parseBlob(r.data);
@@ -1734,6 +1750,9 @@ function untouchedChannelIds(db: DatabaseSync): Set<string> {
       )
   `
   );
+  if (rows === null) {
+    return new Set();
+  }
   return new Set(rows.map((r) => r.id));
 }
 
@@ -1793,6 +1812,9 @@ function archiveEnumerationIncomplete(db: DatabaseSync): boolean {
     WHERE MODE = 'archive'
   `
   );
+  if (rows === null) {
+    return false;
+  }
   const finished = rows[0]?.finished;
   if (finished === undefined || finished === null) {
     return false;
@@ -2184,6 +2206,9 @@ export interface StreamDeps {
    */
   emitRecord: EmitRecordFn;
   emittedAt: string;
+  /** Streams whose source enumeration failed; failed streams must not prove
+   * coverage, prune fingerprints, or checkpoint STATE in this run. */
+  failedStreams: Set<string>;
   fingerprintCursors: Map<string, FingerprintCursor>;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
@@ -2237,6 +2262,29 @@ async function declareListConsidered(
       hydratedKeys: [],
       considered,
       ...(typeof covered === "number" && Number.isInteger(covered) && covered >= 0 ? { covered } : {}),
+    })
+  );
+}
+
+function markEnumerationFailed(deps: StreamDeps, stream: string): void {
+  deps.failedStreams.add(stream);
+}
+
+async function emitEnumerationFailureGap(
+  deps: StreamDeps,
+  emit: CollectContext["emit"],
+  stream: string
+): Promise<void> {
+  if (!deps.failedStreams.has(stream)) {
+    return;
+  }
+  await emit(
+    buildDetailGap({
+      stream,
+      recordKey: "enumeration",
+      reason: "temporary_unavailable",
+      locator: { kind: "slack.sqlite_enumeration", stream },
+      error: { class: "sqlite_enumeration_failed" },
     })
   );
 }
@@ -2399,6 +2447,10 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
     deps.db,
     "SELECT ID, TEAM, TEAM_ID, USERNAME, USER_ID, URL, ENTERPRISE_ID, DATA FROM WORKSPACE"
   );
+  if (rows === null) {
+    markEnumerationFailed(deps, "workspace");
+    return;
+  }
   const { considered, covered } = await runFingerprintedFullSync(deps, "workspace", rows, (r) =>
     buildWorkspaceRecord(r, deps.emittedAt)
   );
@@ -2482,6 +2534,10 @@ async function runChannelMembershipsStream(deps: StreamDeps): Promise<void> {
     SELECT DISTINCT CHANNEL_ID, USER_ID FROM CHANNEL_USER
   `
   );
+  if (rows === null) {
+    markEnumerationFailed(deps, "channel_memberships");
+    return;
+  }
   const { considered, covered } = await runFingerprintedFullSync(deps, "channel_memberships", rows, (r) =>
     buildChannelMembershipRecord(r, deps.emittedAt)
   );
@@ -2498,6 +2554,10 @@ export async function runUsersStream(deps: StreamDeps): Promise<void> {
       ON m.ID = u.ID AND m.mx = u.CHUNK_ID
   `
   );
+  if (rows === null) {
+    markEnumerationFailed(deps, "users");
+    return;
+  }
   const { considered, covered } = await runFingerprintedFullSync(deps, "users", rows, buildUserRecord);
   await declareListConsidered(deps, "users", considered, covered);
 }
@@ -2801,6 +2861,10 @@ export async function runFilesStream(deps: StreamDeps): Promise<void> {
     WHERE f.MODE != 'quip'
   `
   );
+  if (rows === null) {
+    markEnumerationFailed(deps, "files");
+    return;
+  }
   const { considered, covered } = await runFingerprintedFullSync(deps, "files", rows, buildFileRecord);
   await declareListConsidered(deps, "files", considered, covered);
 }
@@ -2828,6 +2892,10 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
     WHERE f.MODE = 'quip'
   `
   );
+  if (canvasRows === null) {
+    markEnumerationFailed(deps, "canvases");
+    return;
+  }
   const chanRows = safeAll<ChannelRow>(
     deps.db,
     `
@@ -2837,6 +2905,10 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
   );
+  if (chanRows === null) {
+    markEnumerationFailed(deps, "canvases");
+    return;
+  }
   const channelCanvasIndex = buildChannelCanvasIndex(chanRows);
   for (const r of canvasRows) {
     await deps.emitRecord("canvases", buildCanvasRecord(r, channelCanvasIndex));
@@ -2899,6 +2971,9 @@ function currentDmMpimChannelIds(db: DatabaseSync): string[] {
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
   );
+  if (rows === null) {
+    return [];
+  }
   const ids: string[] = [];
   for (const r of rows) {
     const d = parseBlob(r.data);
@@ -2925,12 +3000,13 @@ export async function runDmReadStatesStream(deps: StreamDeps, token: string, coo
   await deps.emit(buildFullScanCoverageMessage("dm_read_states", states.length));
 }
 
-interface StateEmitDeps {
+export interface StateEmitDeps {
   archivePath: string;
   baseArchiveResumedAt: Record<string, string>;
   channelLastTs: Record<string, string>;
   committedMaxTs: string | null;
   emit: CollectContext["emit"];
+  failedStreams: ReadonlySet<string>;
   fingerprintCursors: Map<string, FingerprintCursor>;
   observedChannelIds: readonly string[];
   requested: CollectContext["requested"];
@@ -2955,20 +3031,22 @@ interface StateEmitDeps {
  *   low cardinality, we full-sync each run; the cursor is just a freshness
  *   marker for visibility.
  */
-function emitStateCheckpoints(deps: StateEmitDeps): void {
-  deps.emit({
-    type: "STATE",
-    stream: "messages",
-    cursor: {
-      last_ts: deps.committedMaxTs,
-      channel_last_ts: deps.channelLastTs,
-      observed_channel_ids: [...deps.observedChannelIds].sort(),
-      archive_dir: deps.archivePath,
-      base_archive_resumed_at: deps.baseArchiveResumedAt,
-      scoped_archive_resumed_at: deps.scopedArchiveResumedAt,
-      fetched_at: nowIso(),
-    },
-  });
+export function emitStateCheckpoints(deps: StateEmitDeps): void {
+  if (!deps.failedStreams.has("messages")) {
+    deps.emit({
+      type: "STATE",
+      stream: "messages",
+      cursor: {
+        last_ts: deps.committedMaxTs,
+        channel_last_ts: deps.channelLastTs,
+        observed_channel_ids: [...deps.observedChannelIds].sort(),
+        archive_dir: deps.archivePath,
+        base_archive_resumed_at: deps.baseArchiveResumedAt,
+        scoped_archive_resumed_at: deps.scopedArchiveResumedAt,
+        fetched_at: nowIso(),
+      },
+    });
+  }
   for (const stream of [
     "channels",
     "channel_stats",
@@ -2982,7 +3060,7 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
     "reminders",
     "dm_read_states",
   ]) {
-    if (deps.requested.has(stream)) {
+    if (deps.requested.has(stream) && !deps.failedStreams.has(stream)) {
       const cursor: Record<string, unknown> = { synced_at: nowIso() };
       const fingerprintCursor = deps.fingerprintCursors.get(stream);
       if (fingerprintCursor && fingerprintCursor.size() > 0) {
@@ -2993,6 +3071,20 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
         stream,
         cursor,
       });
+    }
+  }
+}
+
+/** Prune only fingerprints from streams that completed their full source
+ * enumeration. A failed read leaves the prior map intact for the retry. */
+export function pruneRequestedFingerprintCursors(
+  requested: CollectContext["requested"],
+  failedStreams: ReadonlySet<string>,
+  fingerprintCursors: Map<string, FingerprintCursor>
+): void {
+  for (const stream of FINGERPRINTED_STREAMS) {
+    if (requested.has(stream) && !failedStreams.has(stream)) {
+      fingerprintCursors.get(stream)?.pruneStale();
     }
   }
 }
@@ -3166,6 +3258,7 @@ export async function runRequestedStreams(
   if (deps.requested.has("workspace")) {
     deps.progress("Slack: emitting workspace record", { stream: "workspace" });
     await runWorkspaceStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "workspace");
   }
   if (deps.requested.has("channels") || deps.requested.has("channel_stats")) {
     deps.progress("Slack: emitting channels", { stream: "channels" });
@@ -3174,10 +3267,12 @@ export async function runRequestedStreams(
   if (deps.requested.has("channel_memberships")) {
     deps.progress("Slack: emitting channel memberships", { stream: "channel_memberships" });
     await runChannelMembershipsStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "channel_memberships");
   }
   if (deps.requested.has("users")) {
     deps.progress("Slack: emitting users", { stream: "users" });
     await runUsersStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "users");
   }
   // Messages, reactions, message_attachments share one pass for efficiency.
   let result: MessagesPassResult = {
@@ -3209,10 +3304,12 @@ export async function runRequestedStreams(
   if (deps.requested.has("files")) {
     deps.progress("Slack: emitting files", { stream: "files" });
     await runFilesStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "files");
   }
   if (deps.requested.has("canvases")) {
     deps.progress("Slack: emitting canvases", { stream: "canvases" });
     await runCanvasesStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "canvases");
   }
   if (deps.requested.has("stars")) {
     deps.progress("Slack: emitting stars", { stream: "stars" });
@@ -3440,6 +3537,7 @@ if (isMainModule(import.meta.url)) {
               })
             : ctx.emitRecord(stream, data),
         emittedAt: ctx.emittedAt,
+        failedStreams: new Set(),
         fingerprintCursors,
         progress,
         requested,
@@ -3544,11 +3642,7 @@ if (isMainModule(import.meta.url)) {
       // since the prior run on streams we actually requested. Streams the
       // caller did not exercise keep their full carry-forward — an
       // unrequested stream's cursor must not be silently wiped.
-      for (const stream of FINGERPRINTED_STREAMS) {
-        if (requested.has(stream)) {
-          fingerprintCursors.get(stream)?.pruneStale();
-        }
-      }
+      pruneRequestedFingerprintCursors(requested, deps.failedStreams, fingerprintCursors);
 
       const priorMaxTs = messagesState?.last_ts || null;
       const committedMaxTs = selectCommittedMaxTs(priorMaxTs, messageResult.maxMessageTs);
@@ -3566,6 +3660,7 @@ if (isMainModule(import.meta.url)) {
         channelLastTs: committedChannelLastTs,
         committedMaxTs,
         emit,
+        failedStreams: deps.failedStreams,
         fingerprintCursors,
         observedChannelIds,
         requested,
