@@ -240,6 +240,7 @@ test("buildProgressEvidence: passes every field through and defaults observed_at
     retainedRecords: 100,
   });
   assert.deepEqual(ev, {
+    coverage_proven_at: null,
     gaps_drained_last_run: 2,
     last_refreshed_at: "2026-06-29T12:00:00.000Z",
     mode: "scheduled",

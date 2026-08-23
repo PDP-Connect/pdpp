@@ -172,7 +172,6 @@ import {
   listRetainedSizeStreams,
   listRetainedSizeStreamsByInstanceIds,
 } from "./retained-size-read-model.ts";
-import { staticSecretVerifiedIdentityFromBinding } from "./static-secret-identity.ts";
 import {
   parseCollectionRatePayload,
   readCollectionFactsFromTerminalData,
@@ -184,6 +183,7 @@ import {
   readNumber,
   succeededRunSupersedesSchedulerBackoff,
 } from "./scheduler-backoff-read.ts";
+import { staticSecretVerifiedIdentityFromBinding } from "./static-secret-identity.ts";
 import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
@@ -6212,6 +6212,16 @@ function buildRenderedVerdictForSummary(input: {
     schedule,
   });
   const progressEvidence = buildProgressEvidence({
+    // The COVERAGE anchor, alongside the record anchor below. `freshness`
+    // reaching this function is deliberately NOT proof-capped (see the note at
+    // the `refineConnectionHealthWithCollectionReport` call site: only the
+    // health projection ages against the proof anchor), so `lastRefreshedAt`
+    // alone can read "today" while required-stream coverage was last proven
+    // days ago. Passing the same anchor the Healthy gate uses lets the
+    // owner-facing sentence age against the proof instead of the flattering
+    // run time. `null` when nothing is proven complete — the renderer then
+    // says nothing about proof age rather than inventing one.
+    coverageProvenAt: oldestRequiredCompleteEvidenceAsOf(input.collectionReport),
     // `detailGaps.recovered` is a connector-wide all-time count-by-status, not a
     // per-run delta. Keep the exact count in owner-only detail; do not relabel it
     // as "last run" progress.
