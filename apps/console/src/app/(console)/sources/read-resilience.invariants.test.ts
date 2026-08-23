@@ -23,15 +23,14 @@
  * `router.refresh()` superseding an in-flight one, or the tab
  * backgrounding/throttling the connection) — NOT a failed data read. The
  * upstream `/_ref/connectors` call already returned 200. So this boundary
- * treats every activation as recoverable-by-construction: it never renders
- * error-shaped copy, retries unbounded on a capped backoff, and — while
- * retrying — is visually identical to the ordinary `loading.tsx` skeleton,
- * with at most a quiet "Updated Xs/Xm ago" caption once a last-known
- * timestamp exists.
+ * treats untyped activations as recoverable-by-construction. Typed,
+ * deterministic 4xx responses are handled by their server page before Next
+ * redacts the server's reason, and the shared classifier defensively stops a
+ * retry loop if one reaches the client boundary.
  *
- * These invariants pin the STRONGER property (no error copy ever reaches the
- * owner, no terminal manual-retry dead end) rather than merely deleting the
- * old, weaker pin:
+ * These invariants pin the transient-path property (no fabricated failure
+ * diagnosis and no terminal manual-retry dead end) while the deterministic
+ * rejection path remains explicit and actionable:
  *
  *   1. The boundary source contains NONE of the retired failure-ish copy
  *      ("error", "interruption", "retrying", "couldn't", "failed", "wrong")
@@ -39,8 +38,8 @@
  *   2. The boundary renders the SAME `ListLoadingSkeleton` component
  *      `loading.tsx` uses, not a bespoke banner/card — so the transient state
  *      is indistinguishable from an ordinary page load.
- *   3. The boundary retries on every mount (no `autoRetried`/"give up" flag)
- *      with a capped, growing backoff, and never renders a manual "Retry"
+ *   3. Untyped errors retry on every mount (no `autoRetried`/"give up" flag)
+ *      with a capped, growing backoff, and never render a manual "Retry"
  *      button or link as a terminal state.
  *   4. The boundary reads the CLIENT-cached last-known marker (it must not
  *      import a server-only module) and, when present, renders only a quiet,
@@ -95,6 +94,7 @@ const SERVER_ONLY_IMPORT_RE = /^import[\s\S]*?from\s+["'][^"']*(owner-token|serv
 const CALLS_RESET_RE = /reset\(\)/;
 const UNBOUNDED_RETRY_SCHEDULES_NEXT_RE = /setTimeout\([\s\S]*reset\(\)/;
 const BACKOFF_CAP_RE = /RETRY_MAX_DELAY_MS/;
+const RETRY_CLASSIFIER_RE = /shouldRetrySourcesReadError/;
 const POLLER_STAMPS_FRESH_RE = /markRecordsReadFresh/;
 const GUARDED_REFRESH_RE = /try\s*\{[\s\S]*router\.refresh\(\)[\s\S]*\}\s*catch/;
 const MARKER_GUARDS_WINDOW_RE = /typeof window/;
@@ -140,8 +140,9 @@ test("the boundary surfaces only a quiet relative-time caption from a client-cac
   assert.doesNotMatch(src, SERVER_ONLY_IMPORT_RE);
 });
 
-test("the boundary retries unbounded on a capped backoff, with no manual-retry terminal state", async () => {
+test("the boundary retries untyped RSC races unbounded on a capped backoff, with no manual-retry terminal state", async () => {
   const src = await readFile(ERROR_FILE, "utf8");
+  assert.match(src, RETRY_CLASSIFIER_RE);
   assert.match(src, CALLS_RESET_RE);
   // Every mount schedules the next retry — no gate that stops after N tries.
   assert.match(src, UNBOUNDED_RETRY_SCHEDULES_NEXT_RE);

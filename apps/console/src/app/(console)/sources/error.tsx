@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 import { readLastRecordsReadAt } from "./last-known-read.ts";
+import { shouldRetrySourcesReadError } from "./read-error-classification.ts";
 
 /**
  * Sources-segment error boundary (App Router convention) — SLVP bar: Stripe,
@@ -25,8 +26,10 @@ import { readLastRecordsReadAt } from "./last-known-read.ts";
  * not a backend outage, so there is no "fix the read" available here — the
  * fetch already succeeded by the time this fires.
  *
- * Given that, this boundary NEVER renders owner-facing failure copy, at any
- * stage. It:
+ * Given that, this boundary retries untyped errors as transient RSC races. A
+ * typed deterministic 4xx is the exception: it must not loop. Server pages
+ * should render those errors before Next redacts their reason; the client
+ * branch below remains a defensive fallback for client-originated errors. It:
  *   - retries immediately and then on a capped exponential backoff,
  *     UNBOUNDED — there is no terminal "give up and show a Retry button"
  *     state, because a manual-retry dead end is itself the thing the owner
@@ -93,6 +96,7 @@ function formatUpdatedAgo(at: number | null, nowMs: number): string | null {
 export default function SourcesError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   const [lastKnownAt, setLastKnownAt] = useState<number | null>(null);
   const [updatedAgoLabel, setUpdatedAgoLabel] = useState<string | null>(null);
+  const shouldRetry = shouldRetrySourcesReadError(error);
 
   useEffect(() => {
     // Logged for operator diagnostics only — never surfaced to the owner.
@@ -101,6 +105,9 @@ export default function SourcesError({ error, reset }: { error: Error & { digest
   }, [error]);
 
   useEffect(() => {
+    if (!shouldRetry) {
+      return;
+    }
     // Unbounded, capped backoff: every mount (i.e. every failed attempt)
     // schedules the next retry at a delay that grows with the module-scoped
     // `consecutiveAttempts` counter. There is deliberately no ceiling on the
@@ -112,7 +119,7 @@ export default function SourcesError({ error, reset }: { error: Error & { digest
       reset();
     }, delay);
     return () => clearTimeout(id);
-  }, [reset]);
+  }, [reset, shouldRetry]);
 
   useEffect(() => {
     // Recompute the relative-time caption independently of the retry timer so
@@ -125,6 +132,17 @@ export default function SourcesError({ error, reset }: { error: Error & { digest
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [lastKnownAt]);
+
+  if (!shouldRetry) {
+    return (
+      <div className="rr-s-toast" data-tone="error" role="alert">
+        <p>
+          The reference server rejected this request. If the console and reference server image revisions do not match,
+          redeploy both from the same revision. Then reload this page.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div data-testid="sources-read-recovering">

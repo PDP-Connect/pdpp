@@ -311,9 +311,9 @@ Follow these steps in order. Each is a gate for the next.
    cp data/pdpp.sqlite data/pdpp.sqlite.bak
    ```
 
-3. **Start Postgres container.** Use the reference docker-compose with the Postgres profile:
+3. **Start Postgres container.** The root Compose stack starts this service without a profile:
    ```shell
-   docker compose --profile postgres --env-file .env.docker up -d postgres
+   docker compose --env-file .env.docker up -d postgres
    ```
    Wait for readiness:
    ```shell

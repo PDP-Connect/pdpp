@@ -42,6 +42,7 @@ on:
       - "scripts/core-headed-patchright-runtime-oracle.test.ts"
       - "scripts/core-headed-patchright-runtime-oracle.ts"
       - "scripts/docker-smoke.sh"
+      - "scripts/published-*-smoke.sh"
   pull_request:
     # See the push trigger above: reference-implementation/** is excluded on
     # purpose so ref-impl-only changes don't rebuild the Docker image matrix.
@@ -63,6 +64,7 @@ on:
       - "scripts/core-headed-patchright-runtime-oracle.test.ts"
       - "scripts/core-headed-patchright-runtime-oracle.ts"
       - "scripts/docker-smoke.sh"
+      - "scripts/published-*-smoke.sh"
   workflow_dispatch:
     inputs:
       image:

@@ -3,6 +3,7 @@
 
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { existingSourcesByConnectorCatalog } from "../../components/existing-sources-by-connector.ts";
 import { ServerUnreachable } from "../../components/server-unreachable.tsx";
@@ -10,12 +11,27 @@ import { type ExistingSourceSetupLink, SourceSetupCatalog } from "../../componen
 import { buildOwnerConnectorCatalog, type ConnectorCatalogEntry } from "../../lib/connection-catalog.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { listConnectorManifests, listOwnerConnectorTemplates } from "../../lib/rs-client.ts";
+import { isDeterministicSourcesReadError } from "../read-error-classification.ts";
 
 export const dynamic = "force-dynamic";
 
 interface PageParams {
   demo?: string;
   source_q?: string;
+}
+
+function AddSourceHeader() {
+  return (
+    <PageHeader
+      breadcrumbs={[
+        { href: dashboardRoutes.section.overview, label: "Overview" },
+        { href: dashboardRoutes.section.records, label: "Sources" },
+        { label: "Add source" },
+      ]}
+      description="Add sources that populate this PDPP instance. App and local-client access is configured separately under Connect apps."
+      title="Add source"
+    />
+  );
 }
 
 export default async function AddSourcePage({ searchParams }: { searchParams: Promise<PageParams> }) {
@@ -45,6 +61,28 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
           </RecordroomShellWithPalette>
         );
       }
+      // Both the authorization-server and resource-server clients throw
+      // status-bearing errors, but they intentionally use different classes.
+      // Classify their shared HTTP contract here so a known 4xx is rendered
+      // before Next can redact the server-side message and erase `status`.
+      if (isDeterministicSourcesReadError(err)) {
+        return (
+          <RecordroomShellWithPalette>
+            <AddSourceHeader />
+            <div className="rr-s-toast" data-tone="error" role="alert" style={{ marginTop: 12 }}>
+              <p>The reference server rejected the source catalog request: {err.message}</p>
+              <p>
+                If the console and reference server image revisions do not match, redeploy both from the same revision.
+                Then reload this page. Review{" "}
+                <Link className="underline underline-offset-2 hover:text-foreground" href="/deployment">
+                  Deployment readiness
+                </Link>{" "}
+                and the service logs if the revisions already match.
+              </p>
+            </div>
+          </RecordroomShellWithPalette>
+        );
+      }
       throw err;
     }
   }
@@ -52,15 +90,7 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
   const sourceQuery = typeof params.source_q === "string" ? params.source_q.trim() : "";
   return (
     <RecordroomShellWithPalette>
-      <PageHeader
-        breadcrumbs={[
-          { href: dashboardRoutes.section.overview, label: "Overview" },
-          { href: dashboardRoutes.section.records, label: "Sources" },
-          { label: "Add source" },
-        ]}
-        description="Add sources that populate this PDPP instance. App and local-client access is configured separately under Connect apps."
-        title="Add source"
-      />
+      <AddSourceHeader />
       <SourceSetupCatalog
         action={dashboardRoutes.section.addSource}
         catalog={catalog}
