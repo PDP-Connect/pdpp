@@ -1779,6 +1779,38 @@ export function createSqliteConnectorInstanceStore() {
       });
       return this.get(connectorInstanceId);
     },
+    /**
+     * Stamp a durable fact onto a connection's `source_binding` WITHOUT
+     * changing its status.
+     *
+     * Sibling of `updateStatus`'s `sourceBindingPatch`, for the case that
+     * write cannot serve: an owner acknowledgement that some data is
+     * permanently gone upstream does NOT revoke or pause the connection. The
+     * source keeps the records it holds and keeps collecting whatever is still
+     * reachable; only the explanation is new.
+     *
+     * The patch is MERGED (`json_patch`), never assigned, so stamping one key
+     * cannot clobber a sibling (`revocation_reason`, binding identity fields).
+     * Marks summary evidence dirty in the same transaction so the next
+     * projection re-reads the row — the same coupling `updateStatus` uses.
+     */
+    updateSourceBindingPatch(
+      connectorInstanceId: string,
+      { sourceBindingPatch, updatedAt }: { sourceBindingPatch: Record<string, unknown>; updatedAt: string }
+    ): ConnectorInstance | null {
+      writeTransaction(() => {
+        exec(referenceQueries.connectorInstancesUpdateSourceBindingPatch, [
+          updatedAt,
+          stableJson(sourceBindingPatch),
+          connectorInstanceId,
+        ]);
+        exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+          "connector instance source binding patched",
+          connectorInstanceId,
+        ]);
+      });
+      return this.get(connectorInstanceId);
+    },
 
     // Re-key one owner-session static-secret instance after a synchronous
     // provider probe proves its account identity. The connector instance id
@@ -2615,6 +2647,26 @@ export function createPostgresConnectorInstanceStore() {
           await client.query(
             `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
             ["connector instance display_name changed", connectorInstanceId]
+          );
+        },
+        { lockConnectorInstanceId: connectorInstanceId }
+      );
+      return await this.get(connectorInstanceId);
+    },
+    /** Postgres mirror of the SQLite `updateSourceBindingPatch`; see its doc comment. */
+    async updateSourceBindingPatch(
+      connectorInstanceId: string,
+      { sourceBindingPatch, updatedAt }: { sourceBindingPatch: Record<string, unknown>; updatedAt: string }
+    ): Promise<ConnectorInstance | null> {
+      await withPostgresTransaction(
+        async (client: PostgresTransactionClient) => {
+          await client.query(
+            "UPDATE connector_instances SET updated_at = $1, source_binding_json = COALESCE(source_binding_json, '{}'::jsonb) || $2::jsonb WHERE connector_instance_id = $3",
+            [updatedAt, stableJson(sourceBindingPatch), connectorInstanceId]
+          );
+          await client.query(
+            `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+            ["connector instance source binding patched", connectorInstanceId]
           );
         },
         { lockConnectorInstanceId: connectorInstanceId }
