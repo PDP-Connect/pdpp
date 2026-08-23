@@ -2230,6 +2230,17 @@ export function retireExpiredBrowserEnrollmentShellsForMaintenance(
       async listDraftBrowserEnrollmentShells(ownerSubjectId) {
         return [...(await store.listDraftBrowserEnrollmentShells(ownerSubjectId))];
       },
+      // The durable controller run claims (`controller_active_runs`, one row
+      // per in-flight run, inserted before the run starts and deleted in
+      // `runSingleAttempt`'s `finally`). A shell holding a claim is spared,
+      // so our own housekeeping cannot revoke the owner's setup while he is
+      // mid-sign-in typing a 2FA code.
+      async listRunInFlightInstanceIds() {
+        const activeRuns = await getDefaultSchedulerStore().listActiveRuns();
+        return activeRuns
+          .map((run: ActiveRunRecord) => run.connector_instance_id ?? run.connector_id)
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+      },
       async updateStatus(connectorInstanceId, args) {
         return await store.updateStatus(connectorInstanceId, args);
       },
