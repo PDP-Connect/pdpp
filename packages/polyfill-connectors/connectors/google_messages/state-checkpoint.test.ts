@@ -424,3 +424,33 @@ test("STATE is emitted after every messages RECORD this run, never before", asyn
     );
   }
 });
+
+// ─── Coverage accounting: a dropped message must read as a shortfall ──────
+
+test("a message the shape check rejects is considered but NOT covered", async () => {
+  // `considered`/`covered` were both `parsed.length`, so the stream reported
+  // 100% coverage by construction — it could never report a shortfall no
+  // matter what happened. gmcli's own parser accepts any string `body`, but
+  // the runtime's shape check rejects a NUL byte (`pdppSafeText`), so this
+  // message is weighed and then dropped rather than stored. It must count in
+  // `considered` and NOT in `covered`, otherwise a schema drift that discards
+  // real messages still shows the source green.
+  const chats = [CHAT_ALICE];
+  const messages = [
+    msg({ message_id: "msg_ok", timestamp_ms: 1_754_071_452_000 }),
+    msg({ message_id: "msg_bad", timestamp_ms: 1_754_071_453_000, body: `bad${String.fromCharCode(0)}body` }),
+  ];
+
+  const run = await runGoogleMessagesCustom(chats, messages, {});
+
+  const dropped = skips(run.messages).find((s) => s.reason === "shape_check_failed");
+  assert.ok(dropped, "the poisoned message must be dropped by the runtime's shape check, not stored");
+
+  const coverage = run.messages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      m.type === "DETAIL_COVERAGE" && m.stream === "messages"
+  );
+  assert.ok(coverage, "messages must emit DETAIL_COVERAGE");
+  assert.equal(coverage?.considered, 2, "both fetched messages were weighed");
+  assert.equal(coverage?.covered, 1, "the dropped message must NOT count as covered — this is the shortfall");
+});
