@@ -7,7 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { exec } from "../lib/db.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
+import { referenceQueries } from "../server/queries/index.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import {
   deleteConnectionRecordRowsSqlite as deleteConnectionRecordRowsSqliteUntyped,
@@ -2267,5 +2269,89 @@ test("Postgres updateStatus merges sourceBindingPatch into source_binding_json v
     await postgresQuery("DELETE FROM connector_instances WHERE owner_subject_id = $1", [ownerSubjectId]);
     await postgresQuery("DELETE FROM connectors WHERE connector_id = 'venmo'");
     await closePostgresStorage();
+  }
+});
+
+test("SQLite deleteConnection REFUSES to delete a connection that grouped fragments still name as their canonical identity", async () => {
+  initDb();
+  try {
+    const store = createSqliteConnectorInstanceStore();
+    await seedSqliteConnector("amazon");
+
+    // The live Amazon incident in miniature: fragments are grouped onto a
+    // canonical, then the canonical itself is deleted. `connector_instance_groups`
+    // has no FK to `connector_instances`, so nothing at the storage layer stopped
+    // that delete — it left 12 group rows pointing at an id that no longer
+    // existed, and every fragment's records fell off every summary surface.
+    await seedDeletableInstance(store, {
+      connectorId: "amazon",
+      connectorInstanceId: "cin_canonical_target",
+      sourceBindingKey: "canonical",
+    });
+    await seedDeletableInstance(store, {
+      connectorId: "amazon",
+      connectorInstanceId: "cin_fragment_a",
+      sourceBindingKey: "fragment_a",
+    });
+    await seedDeletableInstance(store, {
+      connectorId: "amazon",
+      connectorInstanceId: "cin_fragment_b",
+      sourceBindingKey: "fragment_b",
+    });
+    for (const fragmentId of ["cin_fragment_a", "cin_fragment_b"]) {
+      exec(referenceQueries.connectorInstanceGroupsUpsert, [
+        fragmentId,
+        "cin_canonical_target",
+        "owner_1",
+        "proven_subset",
+        "{}",
+        "test-actor",
+        NOW,
+      ]);
+    }
+
+    let canonicalPurge = 0;
+    await assert.rejects(
+      () =>
+        store.deleteConnection("cin_canonical_target", {
+          now: LATER,
+          ownerSubjectId: "owner_1",
+          purge: stubPurge({
+            onDeleteRows: () => {
+              canonicalPurge += 1;
+            },
+          }),
+        }),
+      (err) =>
+        err instanceof ConnectorInstanceDeleteError &&
+        err.code === "connection_is_grouping_canonical" &&
+        (err as unknown as { inboundFragmentCount: number }).inboundFragmentCount === 2
+    );
+    assert.equal(canonicalPurge, 0, "a refused canonical delete never reaches purge — nothing is erased");
+    assert.ok(store.get("cin_canonical_target"), "the canonical row survives the refusal");
+
+    // Ungrouping the fragments is the documented rollback, and it makes the
+    // delete legal again: the guard keys strictly on live inbound group rows,
+    // never on the id having once been a canonical.
+    for (const fragmentId of ["cin_fragment_a", "cin_fragment_b"]) {
+      exec(referenceQueries.connectorInstanceGroupsDeleteByFragment, [fragmentId]);
+    }
+    await store.deleteConnection("cin_canonical_target", {
+      now: LATER,
+      ownerSubjectId: "owner_1",
+      purge: stubPurge(),
+    });
+    assert.equal(store.get("cin_canonical_target"), null, "after ungrouping, the canonical deletes normally");
+
+    // A fragment itself stays deletable while grouped — the guard is about
+    // inbound canonical references only, not about being grouped.
+    await store.deleteConnection("cin_fragment_a", {
+      now: LATER,
+      ownerSubjectId: "owner_1",
+      purge: stubPurge(),
+    });
+    assert.equal(store.get("cin_fragment_a"), null, "an ungrouped-and-deleted fragment is unaffected by the guard");
+  } finally {
+    closeDb();
   }
 });

@@ -282,6 +282,91 @@ test("listSourcesVisibleIdentityPage excludes a grouped fragment (account-unific
   }
 });
 
+test("listSourcesVisibleIdentityPage RETURNS a grouped fragment whose canonical row no longer exists — a fragment yields its row only to a canonical that is actually there to render", () => {
+  initDb();
+  try {
+    seedSqliteConnector("amazon");
+    const store = createSqliteConnectorInstanceStore();
+
+    // Reproduces the live Amazon incident: 12 grouped fragments whose
+    // canonical (`cin_a8ec003e6d441205d646f178`) was deleted 15 hours after
+    // the grouping was written, leaving every group row dangling. Because
+    // `connector_instance_groups` has no FK to `connector_instances`, the
+    // group rows survived the canonical's delete, and the Sources exclusion
+    // went on hiding each fragment in favour of a row that no longer exists.
+    // The fragments keep their records, so the net effect was records held by
+    // the system and rendered on no summary surface at all.
+    store.upsert({
+      connectorId: "amazon",
+      connectorInstanceId: "cin_amazon_orphaned_fragment",
+      createdAt: NOW,
+      displayName: "Amazon",
+      ownerSubjectId: "owner_orphan",
+      sourceBindingKey: "amazon_orphaned_fragment",
+      sourceKind: "account",
+      status: "paused",
+      updatedAt: NOW,
+    });
+    // The canonical is deliberately NEVER inserted — this is the dangling
+    // pointer, not a row we then delete.
+    groupFragment("cin_amazon_orphaned_fragment", "cin_amazon_missing_canonical", "owner_orphan");
+
+    const page = store.listSourcesVisibleIdentityPage("owner_orphan", { limit: 100 });
+    assert.deepEqual(
+      page.rows.map((row) => row.connectorInstanceId),
+      ["cin_amazon_orphaned_fragment"],
+      "a fragment whose canonical is absent must render its own Sources row again — hiding it would make its records reachable from no summary surface"
+    );
+  } finally {
+    closeDb();
+  }
+});
+
+test("listSourcesVisibleIdentityPage still excludes a grouped fragment whose canonical EXISTS — the orphan carve-out must not disable normal account unification", () => {
+  initDb();
+  try {
+    seedSqliteConnector("amazon");
+    const store = createSqliteConnectorInstanceStore();
+
+    // Control for the test above: identical shape, except the canonical row
+    // is present. The fragment must stay hidden, proving the new predicate
+    // keys strictly on canonical EXISTENCE and does not simply stop
+    // excluding fragments.
+    store.upsert({
+      connectorId: "amazon",
+      connectorInstanceId: "cin_amazon_present_canonical",
+      createdAt: NOW,
+      displayName: "Amazon",
+      ownerSubjectId: "owner_present",
+      sourceBindingKey: "default",
+      sourceKind: "account",
+      status: "paused",
+      updatedAt: NOW,
+    });
+    store.upsert({
+      connectorId: "amazon",
+      connectorInstanceId: "cin_amazon_hidden_fragment",
+      createdAt: NOW,
+      displayName: "Amazon",
+      ownerSubjectId: "owner_present",
+      sourceBindingKey: "amazon_hidden_fragment",
+      sourceKind: "account",
+      status: "paused",
+      updatedAt: NOW,
+    });
+    groupFragment("cin_amazon_hidden_fragment", "cin_amazon_present_canonical", "owner_present");
+
+    const page = store.listSourcesVisibleIdentityPage("owner_present", { limit: 100 });
+    assert.deepEqual(
+      page.rows.map((row) => row.connectorInstanceId),
+      ["cin_amazon_present_canonical"],
+      "with the canonical present, the fragment stays hidden exactly as before"
+    );
+  } finally {
+    closeDb();
+  }
+});
+
 test("listSourcesVisibleIdentityPage returns a revoked browser-enrollment shell that never had a successful run — repeated failed setup is the owner's only record of the attempt", () => {
   initDb();
   try {
