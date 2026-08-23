@@ -29,7 +29,14 @@ export interface EnrollmentShellLike {
 // active shells carrying a real `browser_enrollment_shell` binding with a
 // parseable declared TTL are eligible; anything else (wrong status, wrong
 // binding kind, missing/malformed TTL) is conservatively not-yet-expired.
-function enrollmentShellExpired(shell: EnrollmentShellLike, nowMs: number): boolean {
+//
+// `runInFlight` is the fifth guard and the only one that is not a property of
+// the shell row itself: a shell the owner is actively signing into must not be
+// revoked out from under him mid-attempt. See `expiredEnrollmentShellIds`.
+function enrollmentShellExpired(shell: EnrollmentShellLike, nowMs: number, runInFlight: boolean): boolean {
+  if (runInFlight) {
+    return false;
+  }
   if (shell.status !== "draft" && shell.status !== "active") {
     return false;
   }
@@ -51,9 +58,37 @@ function enrollmentShellExpired(shell: EnrollmentShellLike, nowMs: number): bool
 // malformed `enrollment_expires_at` is treated conservatively as not-yet-
 // expired (the data-ops retirement contract applies only to shells with a
 // declared TTL).
-export function expiredEnrollmentShellIds(shells: readonly EnrollmentShellLike[], now: string): readonly string[] {
+//
+// `runInFlightInstanceIds` holds the connectorInstanceIds that currently own a
+// durable controller run claim (`controller_active_runs`, one row per in-flight
+// run). A shell in that set is NEVER retired, however far past its TTL it is.
+//
+// WHY: the shell TTL answers "has the owner abandoned this setup?", and an
+// in-flight run is direct evidence that he has not. A browser enrollment can
+// legitimately outlive the 2-hour TTL — the connector reaches a 2FA or
+// device-approval step, asks the owner for a code, and waits (up to 1800s per
+// manual handoff, `packages/polyfill-connectors/src/session-establish.ts`).
+// Without this guard the maintenance sweep revokes the shell while the owner is
+// mid-sign-in, and his attempt dies for a reason that has nothing to do with
+// the provider — the same self-inflicted shape `ref-control.ts` already names
+// `controller_terminated_while_awaiting_owner_interaction`.
+//
+// This does NOT make shells immortal, because the claim itself is bounded. Every
+// run that ends — success, failure, owner cancel, assistance timeout
+// (`run.assistance_timed_out`), or boot reconciliation of an orphan
+// (`releaseAbandonedControllerRunClaims`) — deletes the active-run row. Once the
+// owner's interaction wait times out, the claim drops and the very next sweep
+// retires the shell normally. The guard defers retirement for the life of a real
+// run; it never cancels it.
+export function expiredEnrollmentShellIds(
+  shells: readonly EnrollmentShellLike[],
+  now: string,
+  runInFlightInstanceIds: ReadonlySet<string> = new Set()
+): readonly string[] {
   const nowMs = new Date(now).getTime();
-  return shells.filter((shell) => enrollmentShellExpired(shell, nowMs)).map((shell) => shell.connectorInstanceId);
+  return shells
+    .filter((shell) => enrollmentShellExpired(shell, nowMs, runInFlightInstanceIds.has(shell.connectorInstanceId)))
+    .map((shell) => shell.connectorInstanceId);
 }
 
 // Stamped into the revoked shell's `source_binding_json.revocation_reason` by
@@ -73,6 +108,11 @@ export interface ShellRetirementStore {
   // may scope this to `source_binding_json->>'kind' =
   // 'browser_enrollment_shell'` for efficiency.
   listDraftBrowserEnrollmentShells: (ownerSubjectId: string | null) => Promise<EnrollmentShellLike[]>;
+  // The connectorInstanceIds that currently hold a durable controller run
+  // claim. Optional so existing callers/fakes keep compiling; when absent the
+  // sweep treats no run as in flight (its historical behavior). Real callers
+  // supply it — see `retireExpiredBrowserEnrollmentShellsForMaintenance`.
+  listRunInFlightInstanceIds?: () => Promise<readonly string[]>;
   updateStatus: (
     connectorInstanceId: string,
     args: {
@@ -91,7 +131,13 @@ export async function retireExpiredBrowserEnrollmentShells(
   { now, ownerSubjectId = null }: { now: string; ownerSubjectId?: string | null }
 ): Promise<readonly string[]> {
   const shells = await store.listDraftBrowserEnrollmentShells(ownerSubjectId);
-  const ids = expiredEnrollmentShellIds(shells, now);
+  // Read the in-flight claims AFTER the shell list, never before. A run that
+  // starts between the two reads is then necessarily visible here, so the
+  // shell it claims is spared. The opposite order would leave exactly the
+  // window this fix exists to close: claims read first, run starts, shell read
+  // second, shell revoked under a live run. See `expiredEnrollmentShellIds`.
+  const runInFlightInstanceIds = new Set(await store.listRunInFlightInstanceIds?.());
+  const ids = expiredEnrollmentShellIds(shells, now, runInFlightInstanceIds);
   for (const id of ids) {
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     await store.updateStatus(id, {
