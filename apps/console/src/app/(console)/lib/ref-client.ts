@@ -678,6 +678,8 @@ export interface RefConnectorSummary {
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   revoked_at?: string | null;
   schedule: RefSchedule | null;
+  /** Reason recorded by boot auto-enrollment when this source has no schedule. */
+  auto_enroll_skip_reason?: string | null;
   source_binding_kind?: string | null;
   /**
    * The connection's source kind and non-secret source-binding kind. Owner

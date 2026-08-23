@@ -617,11 +617,22 @@ function SyncGroupLastRun({
  * (every stream shares the same schedule), so it renders once here instead of
  * repeating on every stream row below.
  */
-function SyncGroupSchedule({ cadence, next, nextAt }: { cadence: string; next: string; nextAt: string | null }) {
+function SyncGroupSchedule({
+  cadence,
+  next,
+  nextAt,
+  scheduleReason,
+}: {
+  cadence: string;
+  next: string;
+  nextAt: string | null;
+  scheduleReason: string | null;
+}) {
   return (
     <div className="rr-sync-group__schedule">
       <span className="rr-sync-group__cadence">{cadence}</span>
       <span className="rr-sync-group__next">next {nextAt ? <IcTimestamp mode="relative" value={nextAt} /> : next}</span>
+      {scheduleReason ? <span className="rr-sync-group__next">not scheduled: {scheduleReason}</span> : null}
     </div>
   );
 }
@@ -651,7 +662,12 @@ function SyncGroupBlock({ group }: { group: SyncGroup }) {
           lastRunAt={group.lastRunAt}
           rhythm={group.lastRunRhythm}
         />
-        <SyncGroupSchedule cadence={group.cadence} next={group.next} nextAt={group.nextAt} />
+        <SyncGroupSchedule
+          cadence={group.cadence}
+          next={group.next}
+          nextAt={group.nextAt}
+          scheduleReason={group.scheduleReason}
+        />
         {activeRunHref ? (
           <Link className="rr-link rr-sync-group__active" href={activeRunHref} prefetch={false}>
             Active sync →
