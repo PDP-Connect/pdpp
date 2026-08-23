@@ -34,6 +34,10 @@ import {
   toSourcesView,
 } from "./sources-view-model.ts";
 
+const ARCHIVED_LINE_RE = /^Archived · not collecting/;
+const SETUP_NEVER_COMPLETED_LINE_RE = /^Setup never completed/;
+const HEALTHY_RE = /Healthy/;
+const SYNCING_NOW_RE = /Syncing now/;
 const EXPLORE_HREF_RE = /^\/explore\?connection=conn_1&stream=/;
 const MESSAGES_STREAM_HREF_RE = /stream=messages/;
 const CHURN_SIGNAL_RE = /ynab \/ budgets retains 273\.75 versions/;
@@ -917,10 +921,10 @@ test("an archived source never renders a healthy status, even with a green store
   assert.notEqual(views[0]?.fusedStatus.tone, "success", "the fused line must never render a success tone");
   assert.match(
     views[0]?.fusedStatus.line ?? "",
-    /^Archived · not collecting/,
+    ARCHIVED_LINE_RE,
     "the fused line must lead with the archived state, not a stale green verdict label"
   );
-  assert.doesNotMatch(views[0]?.fusedStatus.line ?? "", /Healthy/, "the stale green label must not survive archival");
+  assert.doesNotMatch(views[0]?.fusedStatus.line ?? "", HEALTHY_RE, "the stale green label must not survive archival");
 });
 
 test("an archived source with a stale in-flight run keeps the archived line, not a recovered verdict label", () => {
@@ -941,10 +945,10 @@ test("an archived source with a stale in-flight run keeps the archived line, not
   ]);
 
   assert.equal(views[0]?.fusedStatus.kind, "archived", "archival outranks any recovered verdict");
-  assert.match(views[0]?.fusedStatus.line ?? "", /^Archived · not collecting/);
+  assert.match(views[0]?.fusedStatus.line ?? "", ARCHIVED_LINE_RE);
   assert.doesNotMatch(
     views[0]?.fusedStatus.line ?? "",
-    /Syncing now/,
+    SYNCING_NOW_RE,
     "an archived source is not syncing, whatever a stale run flag says"
   );
 });
@@ -1066,7 +1070,7 @@ test("a setup-failed source never renders a healthy status, even with a green st
   assert.notEqual(views[0]?.fusedStatus.tone, "success", "the fused line must never render a success tone");
   assert.match(
     views[0]?.fusedStatus.line ?? "",
-    /^Setup never completed/,
+    SETUP_NEVER_COMPLETED_LINE_RE,
     "the fused line must lead with the terminal setup state, not a stale green verdict label"
   );
 });
