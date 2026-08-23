@@ -164,6 +164,37 @@ test("pages through multiple event pages before advancing the cursor", async () 
   assert.equal(records.filter((r) => r.stream === "events").length, 2);
 });
 
+test("a page cap with a continuation token fails before events STATE or coverage", async () => {
+  const fakeClient = new FakeCalendarClient({
+    calendars: [{ id: "primary", summary: "Work", primary: true, accessRole: "owner", timeZone: null }],
+    eventPages: [
+      { events: [makeEvent({ id: "evt1" })], nextPageToken: "page2", nextSyncToken: null },
+      { events: [makeEvent({ id: "evt2" })], nextPageToken: null, nextSyncToken: "sync-final" },
+    ],
+  });
+  const { ctx, messages, records } = makeContext();
+
+  await assert.rejects(
+    () =>
+      collectGoogleCalendar(ctx, {
+        clientFactory: () => fakeClient,
+        env: ENV,
+        maxPagesPerCalendar: 1,
+        ...FAKE_TOKEN,
+      }),
+    /google_calendar_pagination_cap/
+  );
+  assert.equal(records.filter((r) => r.stream === "events").length, 1, "the enumerated prefix may be emitted");
+  assert.equal(
+    messages.some((message) => message.type === "STATE" && message.stream === "events"),
+    false
+  );
+  assert.equal(
+    messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "events"),
+    false
+  );
+});
+
 test("carries forward the prior syncToken cursor on an incremental run", async () => {
   const fakeClient = new FakeCalendarClient({
     calendars: [{ id: "primary", summary: "Work", primary: true, accessRole: "owner", timeZone: null }],

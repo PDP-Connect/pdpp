@@ -158,9 +158,10 @@ async function pageThroughEvents(args: {
   readonly client: CalendarClientLike;
   readonly ctx: CollectContext;
   readonly cursor: FingerprintCursor;
+  readonly maxPages: number;
   readonly syncToken: string | undefined;
 }): Promise<string | null> {
-  const { calendarId, client, ctx, cursor, syncToken } = args;
+  const { calendarId, client, ctx, cursor, maxPages, syncToken } = args;
   let pageToken: string | undefined;
   let nextSyncToken: string | null = null;
   let pages = 0;
@@ -186,7 +187,10 @@ async function pageThroughEvents(args: {
     }
     pageToken = page.value.nextPageToken ?? undefined;
     nextSyncToken = page.value.nextSyncToken ?? nextSyncToken;
-  } while (pageToken && pages < MAX_PAGES_PER_CALENDAR);
+  } while (pageToken && pages < maxPages);
+  if (pageToken) {
+    throw new Error(`google_calendar_pagination_cap: more than ${String(maxPages)} pages remain`);
+  }
   return nextSyncToken;
 }
 
@@ -195,11 +199,19 @@ async function syncCalendarEvents(args: {
   readonly client: CalendarClientLike;
   readonly ctx: CollectContext;
   readonly cursor: FingerprintCursor;
+  readonly maxPages: number;
   readonly priorSyncToken: string | undefined;
 }): Promise<EventsSyncResult> {
-  const { calendarId, client, ctx, cursor, priorSyncToken } = args;
+  const { calendarId, client, ctx, cursor, maxPages, priorSyncToken } = args;
   try {
-    const nextSyncToken = await pageThroughEvents({ calendarId, client, ctx, cursor, syncToken: priorSyncToken });
+    const nextSyncToken = await pageThroughEvents({
+      calendarId,
+      client,
+      ctx,
+      cursor,
+      maxPages,
+      syncToken: priorSyncToken,
+    });
     return { fullResync: false, nextSyncToken };
   } catch (error) {
     if (!isSyncTokenExpired(error)) {
@@ -210,7 +222,7 @@ async function syncCalendarEvents(args: {
     // discarded cursor as a fresh full scan, so pruneStale() below (in the
     // caller) is safe — a partial-scan cursor must not prune; a full resync
     // may.
-    const nextSyncToken = await pageThroughEvents({ calendarId, client, ctx, cursor, syncToken: undefined });
+    const nextSyncToken = await pageThroughEvents({ calendarId, client, ctx, cursor, maxPages, syncToken: undefined });
     return { fullResync: true, nextSyncToken };
   }
 }
@@ -229,6 +241,8 @@ interface CalendarCollectOptions {
   readonly clientFactory?: (accessToken: string) => CalendarClientLike;
   readonly env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   readonly getAccessToken?: () => Promise<GoogleAccessToken>;
+  /** Lowered only by deterministic tests; production uses the audited cap. */
+  readonly maxPagesPerCalendar?: number;
 }
 
 export async function collectGoogleCalendar(ctx: CollectContext, options: CalendarCollectOptions = {}): Promise<void> {
@@ -256,6 +270,7 @@ export async function collectGoogleCalendar(ctx: CollectContext, options: Calend
 
   const { accessToken } = await getAccessToken();
   const client = options.clientFactory ? options.clientFactory(accessToken) : new GoogleCalendarClient({ accessToken });
+  const maxPages = options.maxPagesPerCalendar ?? MAX_PAGES_PER_CALENDAR;
 
   const state = (ctx.state as GoogleCalendarState) ?? {};
   const calendars = await httpGovernor.request(
@@ -298,6 +313,7 @@ export async function collectGoogleCalendar(ctx: CollectContext, options: Calend
       client,
       ctx,
       cursor: eventsCursor,
+      maxPages,
       priorSyncToken: priorCalendarState?.sync_token,
     });
     // A syncToken response is a PARTIAL delta (only changed/deleted events
