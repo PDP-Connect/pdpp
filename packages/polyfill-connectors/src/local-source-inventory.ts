@@ -720,7 +720,7 @@ export const INVENTORY_FINGERPRINT_EXCLUDE_KEYS = ["mtime_epoch", "size_bytes"] 
  *  STATE cursor. Excludes the incidental `mtime_epoch`/`size_bytes` file-stat
  *  fields so an unchanged store does not re-version on every run. Inventory
  *  enumeration is a full scan of the known stores under the source home, so
- *  callers SHOULD `pruneStale()` before serializing STATE: a store that
+ *  callers SHOULD `dropUnseenIds()` before serializing STATE: a store that
  *  disappears must drop out of the cursor so its re-appearance re-emits. */
 export function openInventoryFingerprintCursor(priorState: unknown): FingerprintCursor {
   return openFingerprintCursor(priorState, {

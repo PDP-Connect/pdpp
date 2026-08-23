@@ -149,7 +149,7 @@ test("transactions: NO prune — a transaction omitted from a narrower window ke
   emitThrough(cursor1, csvTxns(RUN1_AT, SAMPLE));
 
   // Run 2: a NARROWER incremental window returns only the second row. The
-  // first row must NOT be pruned (no pruneStale call on this stream).
+  // first row must NOT be pruned (no dropUnseenIds call on this stream).
   const state2 = { transactions: { fingerprints: cursor1.toState() } };
   const cursor2 = openTxnCursor(state2);
   const run2 = emitThrough(cursor2, csvTxns(RUN2_AT, [SAMPLE[1] as [string, string, string]]));

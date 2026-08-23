@@ -81,7 +81,7 @@ test("source-field change: exactly the changed record re-emits", () => {
 
 // ─── Scenario 4: prior id absent → pruned ───────────────────────────────
 
-test("pruneStale: id present in prior but absent from this run is dropped", () => {
+test("dropUnseenIds: id present in prior but absent from this run is dropped", () => {
   const first = openFingerprintCursor(undefined);
   first.shouldEmit({ id: "U1", name: "alice" });
   first.shouldEmit({ id: "U2", name: "bob" });
@@ -94,32 +94,32 @@ test("pruneStale: id present in prior but absent from this run is dropped", () =
   assert.equal(second.toState().U2, first.toState().U2, "carry-forward keeps bob until prune");
   assert.equal(second.size(), 2);
 
-  second.pruneStale();
+  second.dropUnseenIds();
   const out = second.toState();
   assert.equal(out.U1 !== undefined, true, "seen id retained");
   assert.equal(out.U2, undefined, "absent id pruned");
   assert.equal(second.size(), 1);
 });
 
-test("pruneStale: empty seen-set on a full-scan stream drops every prior id", () => {
+test("dropUnseenIds: empty seen-set on a full-scan stream drops every prior id", () => {
   const first = openFingerprintCursor(undefined);
   first.shouldEmit({ id: "U1", name: "alice" });
 
   const second = openFingerprintCursor({ fingerprints: first.toState() });
   // Run did nothing — source returned zero rows. On a requested full-scan
   // stream, this is correct: everything should be pruned.
-  second.pruneStale();
+  second.dropUnseenIds();
   assert.equal(second.size(), 0);
 });
 
-test("pruneStale: seen-but-unchanged ids survive", () => {
+test("dropUnseenIds: seen-but-unchanged ids survive", () => {
   const first = openFingerprintCursor(undefined);
   first.shouldEmit({ id: "U1", name: "alice" });
   const firstFp = first.toState().U1;
 
   const second = openFingerprintCursor({ fingerprints: first.toState() });
   assert.equal(second.shouldEmit({ id: "U1", name: "alice" }), false, "no change → no emit");
-  second.pruneStale();
+  second.dropUnseenIds();
   assert.equal(second.toState().U1, firstFp, "fingerprint carried through prune");
 });
 
@@ -170,7 +170,7 @@ test("anonymous records (no id) pass through and never touch cursor state", () =
   assert.equal(cursor.shouldEmit({ id: "", filename: "z" }), true);
   assert.equal(cursor.size(), 1, "anonymous records left the map alone");
 
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   assert.equal(cursor.size(), 1, "alice retained after prune despite anonymous emits");
 });
 
@@ -230,7 +230,7 @@ test("openCarryForwardCursor: prior() reports the prior value; note() does not c
   assert.equal(cursor.prior("missing"), undefined);
 });
 
-test("openCarryForwardCursor: pruneStale drops un-noted ids, keeps noted ones", () => {
+test("openCarryForwardCursor: dropUnseenIds drops un-noted ids, keeps noted ones", () => {
   const prior = new Map<string, Fp>([
     ["a", { updated_at: 1, count: 5 }],
     ["b", { updated_at: 1, count: 6 }],
@@ -239,7 +239,7 @@ test("openCarryForwardCursor: pruneStale drops un-noted ids, keeps noted ones", 
   cursor.note("a", { updated_at: 1, count: 5 });
   // Pre-prune both carried; post-prune only the noted id survives.
   assert.equal(cursor.size(), 2);
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   assert.deepEqual(cursor.toState(), { a: { updated_at: 1, count: 5 } });
 });
 

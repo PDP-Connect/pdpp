@@ -1094,7 +1094,7 @@ async function emitParsedExport(
 function pruneRequestedCursors(requested: RequestedStreams, cursors: WhatsAppCursors): void {
   for (const [stream, cursor] of Object.entries(cursors)) {
     if (requested.has(stream)) {
-      cursor.pruneStale();
+      cursor.dropUnseenIds();
     }
   }
 }

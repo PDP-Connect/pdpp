@@ -70,7 +70,7 @@ function makeHarness(
 function pruneRequested(harness: SlackTestHarness): void {
   for (const stream of FINGERPRINTED_STREAMS) {
     if (harness.deps.requested.has(stream)) {
-      harness.cursors.get(stream)?.pruneStale();
+      harness.cursors.get(stream)?.dropUnseenIds();
     }
   }
 }

@@ -207,14 +207,14 @@ test("skipped record carries its fingerprint forward into the next STATE", () =>
 test("a store that disappears is pruned and re-emits on re-appearance", () => {
   const run1 = openInventoryFingerprintCursor(undefined);
   run1.shouldEmit(inventoryRecord());
-  run1.pruneStale();
+  run1.dropUnseenIds();
   const state1 = { fingerprints: run1.toState() };
   assert.ok("backups:abc123" in state1.fingerprints, "present store stays in cursor");
 
   // Run 2: the backups store is gone this run (not observed). Full-scan prune
   // drops it from the cursor.
   const run2 = openInventoryFingerprintCursor(state1);
-  run2.pruneStale();
+  run2.dropUnseenIds();
   const state2 = { fingerprints: run2.toState() };
   assert.equal(Object.keys(state2.fingerprints).length, 0, "absent store is pruned");
 

@@ -142,7 +142,7 @@ test("credit_card_billing_stats: a balance / rewards / status change does NOT re
     const a = makeCardAccount();
     const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
     assert.equal(entityWouldEmit(cursor1, a, makeBilling(), RUN1_AT), true, "first observation emits the entity");
-    cursor1.pruneStale();
+    cursor1.dropUnseenIds();
     const state1 = { credit_card_billing: { fingerprints: cursor1.toState() } };
 
     const cursor2 = openFingerprintCursor(state1.credit_card_billing, {
@@ -167,7 +167,7 @@ test("credit_card_billing_stats: a credit-limit / APR / nickname change DOES re-
     const a = makeCardAccount();
     const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
     entityWouldEmit(cursor1, a, makeBilling(), RUN1_AT);
-    cursor1.pruneStale();
+    cursor1.dropUnseenIds();
     const state1 = { credit_card_billing: { fingerprints: cursor1.toState() } };
 
     const cursor2 = openFingerprintCursor(state1.credit_card_billing, {

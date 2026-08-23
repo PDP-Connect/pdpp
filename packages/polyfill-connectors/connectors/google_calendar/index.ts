@@ -219,7 +219,7 @@ async function syncCalendarEvents(args: {
     }
     // Expired-token full-resync: discard the syncToken and prior
     // fingerprints, re-list from scratch. This connector treats the
-    // discarded cursor as a fresh full scan, so pruneStale() below (in the
+    // discarded cursor as a fresh full scan, so dropUnseenIds() below (in the
     // caller) is safe — a partial-scan cursor must not prune; a full resync
     // may.
     const nextSyncToken = await pageThroughEvents({ calendarId, client, ctx, cursor, maxPages, syncToken: undefined });
@@ -286,7 +286,7 @@ export async function collectGoogleCalendar(ctx: CollectContext, options: Calend
         await ctx.emitRecord("calendars", record);
       }
     }
-    calendarsCursor.pruneStale();
+    calendarsCursor.dropUnseenIds();
     await ctx.emit({
       type: "STATE",
       stream: "calendars",
@@ -320,7 +320,7 @@ export async function collectGoogleCalendar(ctx: CollectContext, options: Calend
     // surface), so pruning is only valid on the full-resync path — the same
     // rule Gmail/YNAB apply to their own delta vs. full-scan cursors.
     if (result.fullResync) {
-      eventsCursor.pruneStale();
+      eventsCursor.dropUnseenIds();
     }
     nextEventsState[entry.id] = {
       ...(result.nextSyncToken ? { sync_token: result.nextSyncToken } : {}),

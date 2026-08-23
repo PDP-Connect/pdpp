@@ -275,8 +275,8 @@ function flushState(
   fingerprint: ReturnType<typeof openFingerprintCursor>,
   hydration: StatementHydrationCursor
 ): Promise<void> {
-  fingerprint.pruneStale();
-  hydration.pruneStale();
+  fingerprint.dropUnseenIds();
+  hydration.dropUnseenIds();
   const cursor: Record<string, unknown> = { fetched_at: emittedAt };
   if (fingerprint.size() > 0) {
     cursor.fingerprints = fingerprint.toState();

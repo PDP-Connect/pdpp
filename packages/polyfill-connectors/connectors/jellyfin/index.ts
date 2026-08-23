@@ -775,7 +775,7 @@ async function collectLibraries(
     }
   }
 
-  libraryCursor.pruneStale();
+  libraryCursor.dropUnseenIds();
   if (!state.libraries || typeof state.libraries !== "object") {
     state.libraries = {};
   }

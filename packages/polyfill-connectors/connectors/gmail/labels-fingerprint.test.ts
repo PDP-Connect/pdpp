@@ -56,7 +56,7 @@ function runLabelsPass(
       emitted.push(String(body.name));
     }
   }
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   const nextCursor: Record<string, unknown> = { fetched_at: "2026-06-01T00:00:00.000Z" };
   if (cursor.size() > 0) {
     nextCursor.fingerprints = cursor.toState();

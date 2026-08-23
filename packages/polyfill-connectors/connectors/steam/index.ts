@@ -525,7 +525,7 @@ async function collectOwnedGames(
     gamesCursor,
     deps.emitRecord
   );
-  gamesCursor.pruneStale();
+  gamesCursor.dropUnseenIds();
   newState.owned_games = { fetched_at: nowIso(), fingerprints: gamesCursor.toState() };
   await deps.emit({ type: "STATE", stream: "owned_games", cursor: newState.owned_games });
 
@@ -584,7 +584,7 @@ async function collectRecentlyPlayed(
     recentCursor,
     deps.emitRecord
   );
-  recentCursor.pruneStale();
+  recentCursor.dropUnseenIds();
   newState.recently_played_games = { fetched_at: nowIso(), fingerprints: recentCursor.toState() };
   await deps.emit({ type: "STATE", stream: "recently_played_games", cursor: newState.recently_played_games });
 
@@ -643,7 +643,7 @@ async function collectFriends(
     friendsCursor,
     deps.emitRecord
   );
-  friendsCursor.pruneStale();
+  friendsCursor.dropUnseenIds();
   newState.friends = { fetched_at: nowIso(), fingerprints: friendsCursor.toState() };
   await deps.emit({ type: "STATE", stream: "friends", cursor: newState.friends });
 

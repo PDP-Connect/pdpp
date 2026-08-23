@@ -419,7 +419,7 @@ export async function emitAccountsStream(
   });
   // Accounts enumeration is a full dashboard scan: prune fingerprints for
   // accounts no longer present so a re-added account re-emits.
-  fingerprintCursor.pruneStale();
+  fingerprintCursor.dropUnseenIds();
   const cursor: Record<string, unknown> = { fetched_at: nowIso() };
   if (fingerprintCursor.size() > 0) {
     cursor.fingerprints = fingerprintCursor.toState();
@@ -806,8 +806,8 @@ export async function emitStatementRecords(
   // (and the carried hydration pointers, in lockstep) for statements no
   // longer listed so a re-appearance re-emits and a delisted statement
   // stops being carried forever.
-  fingerprintCursor?.pruneStale();
-  hydrationCursor?.pruneStale();
+  fingerprintCursor?.dropUnseenIds();
+  hydrationCursor?.dropUnseenIds();
   // Honest per-run detail coverage for the statement-PDF detail pass. Emitted
   // only when the run saw at least one statement-document row (a real
   // denominator). Each gap candidate (a statement whose PDF is not present this
@@ -2122,7 +2122,7 @@ export async function emitCsvTransactions(
     //
     // NOTE: transactions is a PARTIAL scan (per-account overlapping
     // windows + statement-PDF subsets), so this cursor is never
-    // `pruneStale()`d — pruning ids the run did not look at would drop
+    // `dropUnseenIds()`d — pruning ids the run did not look at would drop
     // their fingerprints and re-churn them on the next overlapping window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(t)) {
       await deps.emitRecord("transactions", t);
@@ -2996,7 +2996,7 @@ export async function runInboxStream(
     }
     // The inbox listing is a full scan of the inbox page: prune fingerprints
     // for messages no longer listed so a re-appearance re-emits.
-    fingerprintCursor.pruneStale();
+    fingerprintCursor.dropUnseenIds();
     const cursor: Record<string, unknown> = { fetched_at: nowIso() };
     if (fingerprintCursor.size() > 0) {
       cursor.fingerprints = fingerprintCursor.toState();
@@ -3390,7 +3390,7 @@ export async function runCreditCardBillingStream(
     }
     // Credit-card billing is a full scan of the credit-card accounts: prune
     // fingerprints for cards no longer present so a re-added card re-emits.
-    fingerprintCursor.pruneStale();
+    fingerprintCursor.dropUnseenIds();
     const cursor: Record<string, unknown> = { fetched_at: nowIso() };
     if (fingerprintCursor.size() > 0) {
       cursor.fingerprints = fingerprintCursor.toState();

@@ -419,7 +419,7 @@ async function collectProfile(
       await emitRecord("profile", record);
     }
     covered = 1;
-    cursor.pruneStale();
+    cursor.dropUnseenIds();
     await emit({ type: "STATE", stream: "profile", cursor: { fingerprints: cursor.toState() } });
   }
   await emit(
@@ -453,7 +453,7 @@ async function collectFriends(
     covered += 1;
   }
   if (!truncated) {
-    cursor.pruneStale();
+    cursor.dropUnseenIds();
   }
   const priorCursor = ctx.state.friends;
   const priorFingerprints =

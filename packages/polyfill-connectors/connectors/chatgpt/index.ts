@@ -2617,7 +2617,7 @@ export async function runSharedConversationsStream(
   if (!sawError) {
     // Only prune after a clean full pass — an aborted/errored scan never saw
     // every id and must not drop carry-forward entries it failed to observe.
-    fingerprintCursor.pruneStale();
+    fingerprintCursor.dropUnseenIds();
     deps.emit({
       type: "STATE",
       stream: "shared_conversations",
