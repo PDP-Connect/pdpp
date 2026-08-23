@@ -156,6 +156,7 @@ interface SpineEventPageOptions {
 
 interface SpineCorrelationFilters {
   readonly clientId?: string | null;
+  readonly connectorInstanceId?: string | null;
   readonly cursor?: string | null;
   readonly grantId?: string | null;
   readonly limit?: number | string | null;
@@ -978,6 +979,7 @@ function hasOnlyFirstPageRecentFilters(filters: SpineCorrelationFilters): boolea
     filters.until ||
     filters.status ||
     filters.clientId ||
+    filters.connectorInstanceId ||
     filters.sourceKind ||
     filters.sourceId ||
     filters.grantId ||
@@ -1353,6 +1355,10 @@ function buildCorrelationAggregateQuery(
   if (filters.clientId) {
     params.push(filters.clientId);
     whereParts.push(`client_id = $${params.length}`);
+  }
+  if (filters.connectorInstanceId) {
+    params.push(filters.connectorInstanceId);
+    whereParts.push(`connector_instance_id = $${params.length}`);
   }
   if (filters.sourceKind) {
     params.push(String(filters.sourceKind));

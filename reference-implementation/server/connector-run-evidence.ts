@@ -23,14 +23,19 @@ export function getConnectorRunEvidenceConnectorId(storageBinding: unknown): str
 
 export async function getLatestConnectorRunSummary(
   connectorId: string | null | undefined,
-  status: string | null = null
+  status: string | null = null,
+  connectorInstanceId: string | null | undefined = null
 ): Promise<{ last_at: unknown; status: unknown } | null> {
   if (!connectorId) {
     return null;
   }
-  const filters = status
-    ? { limit: 1, sourceId: connectorId, sourceKind: "connector", status }
-    : { limit: 1, sourceId: connectorId, sourceKind: "connector" };
+  const filters = {
+    limit: 1,
+    sourceId: connectorId,
+    sourceKind: "connector",
+    ...(status ? { status } : {}),
+    ...(connectorInstanceId ? { connectorInstanceId } : {}),
+  };
   const { summaries } = await listSpineCorrelations("run", filters);
   const summary = summaries[0] || null;
   if (!summary) {
