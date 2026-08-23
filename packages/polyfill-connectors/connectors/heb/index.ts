@@ -329,13 +329,12 @@ export const HEB_EMPTY_AFTER_PRIOR_ORDERS_MESSAGE =
  * design.md Decision 3 / Stop Condition #3: `pageNum > 1` alone is no longer
  * terminal proof. Normal completion is proven by successfully parsing every
  * list page from page 1 through the source-advertised `maxPage`
- * (`resolveMaxPage`) — the caller (`loadListPage`) only reaches this
- * zero-order classification for a page numbered <= maxPage in the first
- * place (a page beyond maxPage is never requested), so ANY zero-order page
- * that reaches here is, by construction, at-or-before maxPage and therefore
- * an error, never a possible terminal signal. A resolved maxPage with a
- * value strictly less than the page actually being loaded (a source-side
- * inconsistency) is also treated as non-terminal via `maxPageResolution`.
+ * (`resolveMaxPage`). Source-reported empty state is positive terminal
+ * evidence. Otherwise, an empty page is terminal only after the resolved
+ * pagination boundary; an empty page at or before that boundary is an error.
+ * A resolved maxPage with a value strictly less than the page actually being
+ * loaded is therefore treated as a terminal pagination boundary, while an
+ * absent or contradictory resolution remains non-terminal.
  */
 export function classifyEmptyListPage(
   diag: ListPageDiagnostics,
