@@ -355,6 +355,36 @@ test("resolveAllOpen drains every tracked row", async () => {
   assert.equal(writer._trackedForTests().open.size, 0);
 });
 
+test("resolveAllOpen retains rows when a transient transition failure leaves them durable-open", async () => {
+  const store = createFakeStore({ failOnTransition: true });
+  const writer = createAttentionWriter({ connectorId: "codex", runId: "run_transition_retry", store });
+  await writer.recordAssistanceRequest({
+    assistance_request_id: "asst_retry",
+    kind: "approve_in_app",
+    owner_action: "act_elsewhere",
+    progress_posture: "blocked",
+    response_contract: "none",
+  });
+
+  assert.deepEqual(await writer.resolveAllOpen("cancelled"), []);
+  assert.equal(writer._trackedForTests().open.size, 1);
+});
+
+test("resolveByRequestId retains tracking when a transient transition failure leaves the row durable-open", async () => {
+  const store = createFakeStore({ failOnTransition: true });
+  const writer = createAttentionWriter({ connectorId: "codex", runId: "run_request_retry", store });
+  await writer.recordAssistanceRequest({
+    assistance_request_id: "asst_request_retry",
+    kind: "approve_in_app",
+    owner_action: "act_elsewhere",
+    progress_posture: "blocked",
+    response_contract: "none",
+  });
+
+  assert.equal(await writer.resolveByRequestId("asst_request_retry", "resolved"), false);
+  assert.equal(writer._trackedForTests().open.size, 1);
+});
+
 test("multiple open ASSISTANCE prompts sharing a dedupe key resolve independently", async () => {
   const store = createFakeStore();
   const writer = createAttentionWriter({ connectorId: "chatgpt", runId: "run_shared", store });
