@@ -33,9 +33,9 @@ const FIVE_DAYS_AGO_PATTERN = /5 days ago/;
 const NAMES_COVERAGE_PATTERN = /cover(age|ed)/i;
 
 const SCHEDULED_REFRESH: ConnectionRefreshEvidence = {
-  background_safe: true,
-  interaction_posture: "background",
-  recommended_mode: "scheduled",
+  backgroundSafe: true,
+  interactionPosture: "none",
+  recommendedMode: "automatic",
 };
 
 /** A green, fresh, fully-covered connection — the shape that renders "Fresh today.". */
