@@ -741,6 +741,14 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
     paused,
     primaryAction,
     primaryVerdictAction,
+    // Every lifecycle fact `renderedStatus` gets, the fused line gets too.
+    // Omitting `archived`/`setupFailed` here (and passing them below) let the
+    // two projections disagree: the lifecycle override in
+    // `deriveRenderedSourceStatus` ranks archived FIRST, but it cannot fire on
+    // arguments it was never given, so an archived source with a green stored
+    // verdict fused to a green "Healthy" line. The list row renders THIS line
+    // (`sources-view.tsx`); `renderedStatus` reaches only the decorative dot,
+    // so the fabricated-green tone was the one the owner actually read.
     fusedStatus: fuseSourceStatus(
       deriveRenderedSourceStatus(
         connector.rendered_verdict,
@@ -748,7 +756,9 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
         pending,
         terminalSetupDisposition,
         running,
-        paused
+        paused,
+        archived,
+        setupFailed
       ),
       {
         hasEverSucceeded: connector.last_successful_run !== null,
@@ -756,14 +766,20 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
         // Hand back the verdict the `running` collapse discards, so a source
         // that is syncing AND failing still says it is failing.
         //
-        // Only for the `running` collapse. `revoked`/`paused`/`pending` are
-        // LIFECYCLE facts that outrank any verdict — a revoked source is
-        // revoked no matter how its last verdict read — and
+        // Only for the `running` collapse. `archived`/`setupFailed`/`revoked`/
+        // `paused`/`pending` are LIFECYCLE facts that outrank any verdict — a
+        // revoked source is revoked no matter how its last verdict read — and
         // `deriveRenderedSourceStatus` already ranks them ahead of `running`
         // for exactly that reason. Passing the verdict for those states would
-        // let a stale "Blocked" overwrite "Revoked".
+        // let a stale "Blocked" overwrite "Revoked". `archived`/`setupFailed`
+        // matter most here: they sit at severity 0 in `SEVERITY_BY_KIND`
+        // alongside `blocked`, and `stateSlot` prefers the fallback on a TIE,
+        // so a stale red verdict would displace the terminal lifecycle label
+        // even though the lifecycle override had correctly produced it.
         verdictFallback:
-          running && !revoked && !paused && !pending ? deriveSourceVerdictStatus(connector.rendered_verdict) : null,
+          running && !archived && !setupFailed && !revoked && !paused && !pending
+            ? deriveSourceVerdictStatus(connector.rendered_verdict)
+            : null,
       }
     ),
     renderedStatus: deriveRenderedSourceStatus(
