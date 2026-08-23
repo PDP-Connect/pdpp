@@ -240,7 +240,17 @@ test(
     process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS = "40";
     try {
       const attemptedAtLeastOnce = new Set<string>();
-      const maxRounds = rest.length + 2;
+      // The property under test is that the rotation cursor ADVANCES past the
+      // poisoned candidate, so every sibling is eventually reached — not that
+      // it is reached in a specific number of rounds. `rest.length + 2` bounded
+      // it at exactly the ideal round count plus one, which made a correctness
+      // property fail intermittently on scheduler timing alone: under full-suite
+      // load a round can land mid-repair and the run reaches the ceiling having
+      // cleared 6 of 7. (Observed as a red baseline that passed 3/3 in
+      // isolation.) The generous ceiling still falsifies the wedge it guards —
+      // a re-selecting cursor clears ZERO siblings no matter how long it runs —
+      // while no longer failing for a reason the test does not control.
+      const maxRounds = rest.length * 3 + 5;
       let roundsTaken = 0;
       for (let round = 0; round < maxRounds; round += 1) {
         // biome-ignore lint/performance/noAwaitInLoops: Each round must observe the prior round's durable rotation cursor.
