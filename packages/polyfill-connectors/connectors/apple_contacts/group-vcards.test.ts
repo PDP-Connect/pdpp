@@ -24,6 +24,7 @@ import {
   isGroupVCard,
   partitionVCards,
 } from "./group-vcards.ts";
+import { deriveGroups } from "./index.ts";
 import { parseVCards } from "./vcard.ts";
 
 /** Apple's real group-vCard wire shape, as iCloud serves it. */
@@ -116,6 +117,14 @@ test("groupMemberUids de-duplicates while preserving order", () => {
     "END:VCARD",
   ].join("\r\n");
   assert.deepEqual(groupMemberUids(card(dupes)), ["B", "A"]);
+});
+
+test("deriveGroups keys an Apple group vCard by its stable provider UID", () => {
+  const groups = deriveGroups("https://contacts.example/addressbook/", [
+    { card: card(APPLE_GROUP_VCARD), uid: "11111111-2222-3333-4444-555555555555" },
+  ]);
+  assert.equal(groups[0]?.id, "https://contacts.example/addressbook::group::uid:11111111-2222-3333-4444-555555555555");
+  assert.equal(groups[0]?.name, "Family");
 });
 
 // ─── partitionVCards: the phantom-contact fix ────────────────────────────
