@@ -1551,6 +1551,160 @@ test("stored evidence: a stored state_stream child inherits from its own run's s
   assert.equal(child.checkpoint, "committed");
 });
 
+// ─── state_stream coverage-condition inheritance (owner ledger 2026-08-22) ───
+//
+// A projected child stream (manifest `state_stream: <parent>`, e.g. Slack's
+// `message_attachments`/`reactions` off `messages`) is FORBIDDEN by the
+// runtime's own manifest-honesty validator from emitting its own
+// DETAIL_COVERAGE — its `considered` denominator is always blank by design.
+// Before this fix, that blank denominator read as the per-stream `unknown`
+// coverage_condition, and because the child is `required` by manifest default,
+// `rollupCollectionReportCoverageOverride` treated the whole connection as
+// unmeasured — voiding a source where every OTHER stream (messages, channels,
+// files, ...) was fully proven. The fix inherits the child's condition from its
+// parent's OWN entry, but only when that parent is genuinely proven.
+const SLACK_SHAPED_MANIFEST: ManifestStreamFixture[] = [
+  { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window", name: "messages" },
+  {
+    coverage_strategy: "checkpoint_window",
+    freshness_strategy: "scheduled_window",
+    name: "message_attachments",
+    state_stream: "messages",
+  },
+];
+
+test("state_stream inheritance: a projected child with a PROVEN parent inherits complete and no longer voids the source", () => {
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [
+        fact({ checkpoint: "committed", collected: 1_055_994, considered: 1_055_994, stream: "messages" }),
+        // The child emits NO DETAIL_COVERAGE at all — considered/covered stay
+        // null, exactly as `validateDetailCoverageAgainstManifest` requires.
+        fact({
+          checkpoint: "not_staged",
+          collected: 0,
+          considered: null,
+          covered: null,
+          stream: "message_attachments",
+        }),
+      ],
+    },
+    freshness: "fresh",
+    manifestStreams: SLACK_SHAPED_MANIFEST,
+    refresh: null,
+  });
+  const parent = entryFor(entries, "messages");
+  const child = entryFor(entries, "message_attachments");
+  assert.equal(parent.coverage_condition, "complete");
+  assert.equal(child.required, true, "no required:false in the manifest -> defaults to required");
+  assert.equal(
+    child.coverage_condition,
+    "complete",
+    "the child inherits its PROVEN parent's verdict instead of reading its own blank denominator as unknown"
+  );
+  assert.equal(
+    rollupCollectionReportCoverageOverride("complete", entries),
+    null,
+    "mutation proof (a): a projected child with a proven parent no longer voids the source"
+  );
+});
+
+test("state_stream inheritance: a projected child with an UNPROVEN parent stays unknown and still voids the source (fail closed)", () => {
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [
+        // Parent itself has no proof this run (no considered denominator).
+        fact({ checkpoint: "not_staged", collected: 0, considered: null, stream: "messages" }),
+        fact({
+          checkpoint: "not_staged",
+          collected: 0,
+          considered: null,
+          covered: null,
+          stream: "message_attachments",
+        }),
+      ],
+    },
+    freshness: "fresh",
+    manifestStreams: SLACK_SHAPED_MANIFEST,
+    refresh: null,
+  });
+  const parent = entryFor(entries, "messages");
+  const child = entryFor(entries, "message_attachments");
+  assert.equal(parent.coverage_condition, "unknown", "the parent itself carries no proof");
+  assert.equal(
+    child.coverage_condition,
+    "unknown",
+    "mutation proof (b) — the safety property: an unproven parent must NEVER be inherited; the child stays unknown"
+  );
+  assert.equal(
+    rollupCollectionReportCoverageOverride("complete", entries),
+    "unknown",
+    "an unproven required child still voids the connection axis exactly as before the fix"
+  );
+});
+
+test("state_stream inheritance: a genuinely unmeasured NON-projected stream still gates the verdict", () => {
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [
+        fact({ checkpoint: "committed", collected: 1_055_994, considered: 1_055_994, stream: "messages" }),
+        // `channels` is an ordinary sibling stream with NO state_stream
+        // declaration — it never emitted its own coverage this run either,
+        // but it has no parent to inherit from and must stay unknown.
+        fact({ checkpoint: "not_staged", collected: 0, considered: null, stream: "channels" }),
+      ],
+    },
+    freshness: "fresh",
+    manifestStreams: [
+      ...SLACK_SHAPED_MANIFEST,
+      { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window", name: "channels" },
+    ],
+    refresh: null,
+  });
+  const channels = entryFor(entries, "channels");
+  assert.equal(channels.required, true);
+  assert.equal(
+    channels.coverage_condition,
+    "unknown",
+    "mutation proof (c): a genuinely unmeasured stream with no declared state_stream parent is never inherited into anything"
+  );
+  assert.equal(
+    rollupCollectionReportCoverageOverride("complete", entries),
+    "unknown",
+    "the genuinely-unmeasured non-projected stream still gates the verdict"
+  );
+});
+
+test("state_stream inheritance: a child's own real skip/gap is never masked by an inherited parent verdict", () => {
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [
+        fact({ checkpoint: "committed", collected: 1_055_994, considered: 1_055_994, stream: "messages" }),
+        fact({
+          checkpoint: "not_staged",
+          collected: 0,
+          considered: null,
+          skipped: { reason: "connector_panicked" },
+          stream: "message_attachments",
+        }),
+      ],
+    },
+    freshness: "fresh",
+    manifestStreams: SLACK_SHAPED_MANIFEST,
+    refresh: null,
+  });
+  const child = entryFor(entries, "message_attachments");
+  assert.equal(
+    child.coverage_condition,
+    "terminal_gap",
+    "a real per-stream skip is its own honest verdict — never overwritten by a proven parent"
+  );
+});
+
 test("carry-forward: a carried fact zeroes its stale run-local pending_detail_gaps; only the durable store count is authoritative", () => {
   // The older block's fact reports pending_detail_gaps: 3 — a stale run-local
   // number from that old run. The durable gap store (pendingDetailGaps input)

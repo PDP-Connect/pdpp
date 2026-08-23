@@ -3529,20 +3529,97 @@ export function buildCollectionReport(input: {
     input.evidenceCollectionScope ?? input.collectionFacts?.collection_scope,
     input.declaredCollectionScope
   );
-  return [...inScope]
-    .map((stream) =>
-      buildCollectionReportEntry({
-        stream,
-        ...entryIndexes,
-        attentionOpen: input.attentionOpen,
-        evidenceScopeIsStale,
-        freshness: input.freshness,
-        localCoverage: input.localCoverage ?? null,
-        refresh: input.refresh,
-        schedule: input.schedule ?? null,
-      })
-    )
-    .sort((a, b) => a.stream.localeCompare(b.stream));
+  const entries = [...inScope].map((stream) =>
+    buildCollectionReportEntry({
+      stream,
+      ...entryIndexes,
+      attentionOpen: input.attentionOpen,
+      evidenceScopeIsStale,
+      freshness: input.freshness,
+      localCoverage: input.localCoverage ?? null,
+      refresh: input.refresh,
+      schedule: input.schedule ?? null,
+    })
+  );
+  return inheritStateStreamCoverageCondition(entries, entryIndexes.manifestByStream, {
+    attentionOpen: input.attentionOpen,
+    freshness: input.freshness,
+    refresh: input.refresh,
+    schedule: input.schedule ?? null,
+  }).sort((a, b) => a.stream.localeCompare(b.stream));
+}
+
+/**
+ * A projected child stream (manifest `state_stream: <parent>`) is FORBIDDEN
+ * from emitting its own DETAIL_COVERAGE (`validateDetailCoverageAgainstManifest`
+ * fails the run if it does) — its own `considered` is always blank, so
+ * `deriveStreamCoverageCondition` always reads it as the honest `unknown`. That
+ * per-stream `unknown` is correct evidence, but `rollupCollectionReportCoverageOverride`
+ * treats a REQUIRED stream at `unknown` as blocking, which would void an
+ * otherwise fully-proven source on a stream that was never supposed to carry
+ * its own proof (Slack's `message_attachments`/`reactions`, e.g. B-166).
+ *
+ * This inherits the child's coverage condition from its declared parent
+ * stream's entry, ONLY when:
+ *
+ *   1. the child's own condition is `unknown` (never overrides a real
+ *      per-stream verdict — a genuinely-observed skip/gap/partial on the
+ *      child itself is never masked by the parent);
+ *   2. the manifest declares `state_stream` for the child (never invented —
+ *      an ordinary sibling stream with no declared parent stays `unknown`);
+ *   3. the parent's OWN entry (read from the SAME already-built report, never
+ *      re-derived) is genuinely proven complete (`coverage_condition ===
+ *      "complete"`, which `deriveGapFreeStreamCoverageCondition` only reaches
+ *      via `evaluateStreamCoherence`'s `proven` verdict — never a bare
+ *      committed checkpoint). An unproven parent (partial, unknown, any gap
+ *      axis) leaves the child `unknown` — fail closed, exactly as an
+ *      undeclared stream would.
+ *
+ * `forward_disposition` is re-derived from the inherited condition so it never
+ * disagrees with the entry it sits on (mirrors `buildCollectionReportEntry`).
+ * One pass, no transitive walk: manifest validation already forbids a
+ * `state_stream` chain (`state_stream` may only name a stream that itself does
+ * not declare `state_stream` back), so a child's parent is never itself a
+ * child awaiting inheritance.
+ */
+function inheritStateStreamCoverageCondition(
+  entries: readonly CollectionReportEntry[],
+  manifestByStream: ReadonlyMap<string, ManifestStream>,
+  dispositionInput: {
+    readonly attentionOpen: boolean;
+    readonly freshness: FreshnessAxis;
+    readonly refresh: ConnectionRefreshEvidence | null;
+    readonly schedule?: { readonly enabled: boolean } | null;
+  }
+): CollectionReportEntry[] {
+  const entryByStream = new Map(entries.map((entry) => [entry.stream, entry] as const));
+  return entries.map((entry) => {
+    if (entry.coverage_condition !== "unknown") {
+      return entry;
+    }
+    const parentStream = localCoverageParentStream(manifestByStream.get(entry.stream));
+    if (!parentStream) {
+      return entry;
+    }
+    const parentEntry = entryByStream.get(parentStream);
+    if (!parentEntry || parentEntry.coverage_condition !== "complete") {
+      return entry;
+    }
+    const coverageCondition = parentEntry.coverage_condition;
+    return {
+      ...entry,
+      coverage_condition: coverageCondition,
+      forward_disposition: deriveForwardDisposition({
+        attentionOpen: dispositionInput.attentionOpen,
+        coverage: coverageCondition,
+        freshness: dispositionInput.freshness,
+        gapRetryable: false,
+        refresh: dispositionInput.refresh,
+        schedule: dispositionInput.schedule ?? null,
+        unfillableAccounted: false,
+      }),
+    };
+  });
 }
 
 interface IndexedCollectionReportInputs {
