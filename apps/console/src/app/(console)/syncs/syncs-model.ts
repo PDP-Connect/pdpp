@@ -88,8 +88,10 @@ export interface SyncGroup {
    * connection-level schedule fact — it was previously copied identically onto
    * every stream row (all streams in a connection share one schedule), which
    * read as repeated noise. Shown once in the group header instead.
-   */
+  */
   cadence: string;
+  /** Durable reason this source was not auto-enrolled, when present. */
+  scheduleReason: string | null;
   /** Durable connection identity (`connection_id`). */
   connectionId: string;
   /** Connector key, for the browse link. */
@@ -903,6 +905,7 @@ function projectSyncProjection(input: {
       name: connector.display_name,
       next,
       nextAt,
+      scheduleReason: connector.auto_enroll_skip_reason ?? null,
       streams: rows,
       totalStreamCount: rows.length,
     },

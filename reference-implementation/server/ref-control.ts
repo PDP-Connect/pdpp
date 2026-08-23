@@ -887,6 +887,8 @@ export interface ConnectorSummary {
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   readonly revoked_at: string | null;
   readonly schedule: unknown;
+  /** Reason recorded by the boot auto-enrollment pass when no schedule exists. */
+  readonly auto_enroll_skip_reason?: string | null;
   readonly source_binding_kind: string | null;
   /**
    * The connection's source kind and non-secret source-binding kind. Owner
@@ -6754,6 +6756,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       : { as_of: null, reason_code: "summary_evidence_unavailable", state: "unobserved" },
     revoked_at: instance.revokedAt ?? null,
     schedule: localDeviceBacked ? null : schedule,
+    auto_enroll_skip_reason: recordedAutoEnrollSkipReason(instance),
     source_binding_kind: connectionBindingKind(instance),
     source_kind: instance.sourceKind,
     source_visibility: sourceVisibility,
@@ -6811,6 +6814,15 @@ function connectionBindingKind(instance: ConnectorInstanceRow): string | null {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const kind = (binding as { readonly kind?: unknown }).kind;
   return typeof kind === "string" ? kind : null;
+}
+
+function recordedAutoEnrollSkipReason(instance: ConnectorInstanceRow): string | null {
+  const binding = instance.sourceBinding;
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    return null;
+  }
+  const reason = (binding as Record<string, unknown>).auto_enroll_skip_reason;
+  return typeof reason === "string" && reason.trim().length > 0 ? reason : null;
 }
 
 // A `historical_archive` binding recovered purely from record evidence (no

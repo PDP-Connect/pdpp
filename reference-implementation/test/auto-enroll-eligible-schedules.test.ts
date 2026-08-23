@@ -446,10 +446,14 @@ test("a policy-eligible connector with no auth requirement is auto-enrolled", as
   const controller = createFakeController();
   const m = manifest();
   const { auth: _auth, ...capabilities } = m.capabilities;
+  const decisions: Array<{ connectorId: string; reason: string | null }> = [];
   const summary = await autoEnrollEligibleSchedules({
     controller,
     env: { WIDGET_TOKEN: "set" },
     listConnectors: singleManifestList({ ...m, capabilities }),
+    recordSkipReason: async (connectorId, reason) => {
+      decisions.push({ connectorId, reason });
+    },
   });
   assert.equal(summary.skipped_policy, 0);
   assert.equal(summary.enrolled, 1);

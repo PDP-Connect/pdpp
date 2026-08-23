@@ -70,6 +70,8 @@ export interface AutoEnrollOptions {
    */
   hasStoredCredential?: (connectorId: string) => Promise<boolean>;
   listConnectors: AutoEnrollListConnectors;
+  /** Record the decision on the owner-visible connector instance binding. */
+  recordSkipReason?: (connectorId: string, reason: string | null) => Promise<void>;
   log?: (line: string) => void;
 }
 
@@ -400,10 +402,22 @@ async function decideScheduleAttachmentForConnector(args: {
   hasStoredCredential: ((connectorId: string) => Promise<boolean>) | undefined;
   log: (line: string) => void;
   manifest: unknown;
+  recordSkipReason?: (connectorId: string, reason: string | null) => Promise<void>;
 }): Promise<AutoEnrollSummaryCounter> {
+  const recordReason = async (reason: string | null): Promise<void> => {
+    if (!args.recordSkipReason) {
+      return;
+    }
+    try {
+      await args.recordSkipReason(args.connectorId, reason);
+    } catch (err) {
+      args.log(`[auto-enroll] could not persist decision for ${args.connectorId}: ${errorMessage(err)}`);
+    }
+  };
   const classification = classifyManifestEligibility(args.manifest);
   if (!isEligibleManifest(classification)) {
     args.log(`[auto-enroll] ${args.connectorId} not eligible: ${classification.reason}`);
+    await recordReason(classification.reason);
     return "skipped_policy";
   }
   const manifestEligibility = classification;
@@ -415,14 +429,25 @@ async function decideScheduleAttachmentForConnector(args: {
     requirements: manifestEligibility.requirements,
   });
   if (authGateFailure) {
+    await recordReason(
+      authGateFailure === "skipped_env"
+        ? "capabilities.auth.required not satisfied"
+        : "stored credential availability could not be verified"
+    );
     return authGateFailure;
   }
-  return attachScheduleForEligibleConnector({
+  const result = await attachScheduleForEligibleConnector({
     connectorId: args.connectorId,
     controller: args.controller,
     intervalSeconds: manifestEligibility.intervalSeconds,
     log: args.log,
   });
+  if (result === "enrolled" || result === "skipped_existing") {
+    await recordReason(null);
+  } else {
+    await recordReason("schedule enrollment failed");
+  }
+  return result;
 }
 
 /**
@@ -438,6 +463,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
     controller,
     hasStoredCredential,
     listConnectors,
+    recordSkipReason,
     log = () => {
       /* default no-op logger */
     },
@@ -467,6 +493,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
       hasStoredCredential,
       log,
       manifest: row.manifest,
+      ...(recordSkipReason ? { recordSkipReason } : {}),
     });
     summary[counter] += 1;
   }

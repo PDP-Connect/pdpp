@@ -167,6 +167,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     {
       activeRunId: null,
       cadence: "daily",
+      scheduleReason: null,
       connectionId: "cin_nh_e3391c",
       connectorId: "northstar_hr",
       health: "ok",
@@ -196,6 +197,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     {
       activeRunId: null,
       cadence: "daily",
+      scheduleReason: null,
       connectionId: "cin_cg_91a0fe",
       connectorId: "chatgpt",
       health: "failing",
@@ -219,6 +221,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     {
       activeRunId: null,
       cadence: "daily",
+      scheduleReason: null,
       connectionId: "cin_fm_206b11",
       connectorId: "first_meridian",
       health: "failing",
@@ -246,6 +249,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     {
       activeRunId: null,
       cadence: "every 15 min",
+      scheduleReason: null,
       connectionId: "cin_gm_410c2b",
       connectorId: "gmail",
       health: "ok",
