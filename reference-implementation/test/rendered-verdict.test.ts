@@ -188,6 +188,7 @@ function stream(overrides: Partial<StreamRollup> = {}): StreamRollup {
     coverage: overrides.coverage ?? "complete",
     gap_retryable: overrides.gap_retryable ?? false,
     priority: overrides.priority ?? "required",
+    ...(overrides.recovery_action === undefined ? {} : { recovery_action: overrides.recovery_action }),
     stream_id: overrides.stream_id ?? "s1",
     unfillable_accounted: overrides.unfillable_accounted ?? false,
   };
@@ -1269,6 +1270,76 @@ test("channel: idle assisted retryable gap offers retry instead of passive colle
   assert.equal(action.cta, "Retry now");
   assert.deepEqual(action.affects, ["messages"]);
   assert.ok(!v.required_actions.some((a) => a.kind === "wait" && a.cta === "Collecting — no action needed"));
+});
+
+test("channel: a retryable gap whose only contributing stream is retry_by_runtime does not offer Retry now", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "unknown" },
+      forward_disposition: "resumable",
+      state: "idle",
+    }),
+    [
+      stream({
+        coverage: "retryable_gap",
+        gap_retryable: true,
+        recovery_action: "retry_by_runtime",
+        stream_id: "group_messages",
+      }),
+    ],
+    ASSISTED_REFRESH,
+    true
+  );
+  assert.ok(
+    !v.required_actions.some((a) => a.kind === "retry_gap"),
+    "no retry_gap action when every contributing stream is retry_by_runtime"
+  );
+  // The gap itself must still render — never fabricated-complete.
+  assert.equal(v.pill.tone, "amber");
+  assert.equal(v.pill.label, "Missing data");
+});
+
+test("channel: MUTATION-SAFETY a genuinely owner-actionable retryable gap still offers Retry now", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "unknown" },
+      forward_disposition: "resumable",
+      state: "idle",
+    }),
+    [
+      stream({
+        coverage: "retryable_gap",
+        gap_retryable: true,
+        recovery_action: "owner_reauth_required",
+        stream_id: "transactions",
+      }),
+    ],
+    ASSISTED_REFRESH,
+    true
+  );
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.ok(action, "primary required action exists");
+  assert.equal(action.kind, "retry_gap");
+  assert.equal(action.cta, "Retry now");
+});
+
+test("channel: an unknown/absent recovery_action fails open and still offers Retry now", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "unknown" },
+      forward_disposition: "resumable",
+      state: "idle",
+    }),
+    [stream({ coverage: "retryable_gap", gap_retryable: true, stream_id: "messages" })],
+    ASSISTED_REFRESH,
+    true
+  );
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.ok(action, "primary required action exists — absent recovery_action must never suppress the CTA");
+  assert.equal(action.kind, "retry_gap");
+  assert.equal(action.cta, "Retry now");
 });
 
 test("channel: explicit manual-default background-safe schedule stays scheduled and does not offer Retry now", () => {
