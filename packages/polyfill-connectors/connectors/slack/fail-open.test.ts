@@ -175,7 +175,10 @@ test("healthy SQLite enumerations still declare complete coverage for all five s
     try {
       const { deps, messages } = await runStream(stream, db);
       assert.equal(deps.failedStreams.size, 0, `${stream} healthy run must not be marked failed`);
-      const coverage = messages.find((message) => message.type === "DETAIL_COVERAGE" && message.stream === stream);
+      const coverage = messages.find(
+        (message): message is Extract<typeof message, { type: "DETAIL_COVERAGE" }> =>
+          message.type === "DETAIL_COVERAGE" && message.stream === stream
+      );
       assert.equal(coverage?.considered, 1, `${stream} healthy run must enumerate one item`);
       assert.equal(coverage?.covered, 1, `${stream} healthy run must cover the enumerated item`);
     } finally {

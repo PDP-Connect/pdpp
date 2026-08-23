@@ -47,13 +47,13 @@ import {
 import { listPageOrderShape, validateRecord } from "./schemas.ts";
 import type { ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
 
-interface YearState {
+export interface YearState {
   frozen: boolean;
   last_scraped: string;
   order_count: number;
 }
 
-interface YearsCursor {
+export interface YearsCursor {
   [year: string]: YearState | undefined;
 }
 

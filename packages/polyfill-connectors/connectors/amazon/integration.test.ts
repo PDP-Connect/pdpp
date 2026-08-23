@@ -65,6 +65,7 @@ import {
   redactAmazonListPageDiagnostics,
   scrapeListPage,
   shouldEmitTrailingOrdersState,
+  type YearsCursor,
 } from "./index.ts";
 import { buildOrderRecord, parseOrderDate } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
@@ -2447,7 +2448,7 @@ test("emitOrderAndItems: items out of scope suppress the reconciliation entirely
 // frozen years entirely, making the untraversed tail unreachable forever.
 
 test("applyYearCompletionState: a page-ceiling-truncated year is never recorded, so it can never freeze", async () => {
-  const newYearsState: Record<string, unknown> = {};
+  const newYearsState: YearsCursor = {};
   const progressCalls: string[] = [];
   const progress = ((message: string): Promise<void> => {
     progressCalls.push(message);
@@ -2482,7 +2483,7 @@ test("applyYearCompletionState: a page-ceiling-truncated year is never recorded,
 test("applyYearCompletionState: an honest (untruncated) stable past year still freezes", async () => {
   // The guard against over-correcting: freeze-once-stable is a real
   // optimization and must survive for years that genuinely completed.
-  const newYearsState: Record<string, unknown> = {};
+  const newYearsState: YearsCursor = {};
   const progress = ((): Promise<void> => Promise.resolve()) as unknown as BrowserCollectContext["progress"];
 
   await applyYearCompletionState({
