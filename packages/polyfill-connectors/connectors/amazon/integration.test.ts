@@ -2502,3 +2502,111 @@ test("applyYearCompletionState: an honest (untruncated) stable past year still f
   assert.equal(recorded?.order_count, 312, "an honest year is still recorded");
   assert.equal(recorded?.frozen, true, "an honest, stable, past year still freezes — the optimization is preserved");
 });
+
+// ─── Current-year forward walk (multi-page) ───────────────────────────────
+//
+// A 2026-08-23 report claimed a live run against a year holding many more
+// orders than were stored recorded collection_facts of
+// covered:2/considered:2 and committed the checkpoint anyway, contradicting a
+// captured page (`orders-list-current-year-ten-orders.html`, structurally
+// modeled on a real 2026 capture whose PII has been replaced) that the
+// connector's own `parseOrdersListDom` parses into 10 valid orders.
+//
+// This drives `scrapeListPage` the same way `runYear`'s forward loop does:
+// page 1 (startIndex=0) returns the ten orders, page 2 (startIndex=10) is the
+// natural end of pagination (no more cards). If the walk logic itself were
+// the defect, this test would see fewer than 10 orders from page 1, or would
+// need something other than genuine pagination exhaustion to stop. It does
+// not: `scrapeListPage` and the loop shape in `runYear` both faithfully
+// surface every order the page contains.
+
+const AMAZON_CURRENT_YEAR_TEN_ORDERS_FIXTURE = new URL(
+  "./__fixtures__/orders-list-current-year-ten-orders.html",
+  import.meta.url
+);
+
+function makeListPageStub(html: string): Page {
+  return Object.assign({} as Page, {
+    content: (): Promise<string> => Promise.resolve(html),
+    goto: (): Promise<null> => Promise.resolve(null),
+    locator: (): { first: () => { waitFor: () => Promise<null> } } => ({
+      first: () => ({ waitFor: (): Promise<null> => Promise.resolve(null) }),
+    }),
+  });
+}
+
+test("scrapeListPage: a current-year page with ten orders yields all ten, not a truncated subset", async () => {
+  const html = readFileSync(AMAZON_CURRENT_YEAR_TEN_ORDERS_FIXTURE, "utf8");
+  const messages: EmittedMessage[] = [];
+  const orders = await scrapeListPage(makeListPageStub(html), null, 2026, 0, (message) => {
+    messages.push(message);
+    return Promise.resolve();
+  });
+
+  assert.equal(orders.length, 10, "every order card on the page must be walked, not just the first two");
+  assert.deepEqual(
+    orders.map((o) => o.orderId),
+    [
+      "111-0000001-0000001",
+      "111-0000002-0000002",
+      "111-0000003-0000003",
+      "111-0000004-0000004",
+      "111-0000005-0000005",
+      "111-0000006-0000006",
+      "111-0000007-0000007",
+      "111-0000008-0000008",
+      "111-0000009-0000009",
+      "111-0000010-0000010",
+    ]
+  );
+  assert.equal(
+    messages.some((message) => message.type === "SKIP_RESULT"),
+    false,
+    "a fully-parseable page must not report any diagnostic loss"
+  );
+});
+
+test("scrapeListPage: the forward walk's natural stopping page (no more cards) is ordinary pagination exhaustion, not a truncation", async () => {
+  // Models what `runYear` calls next after the ten-order page above: the
+  // SAME year at startIndex=10, where Amazon's own list genuinely has no
+  // more orders. `startIndex > 0` must fall through to the silent
+  // `pagination_exhausted` terminal classification — never the
+  // `amazon_empty_history_after_prior_orders` guard, which is scoped to
+  // `startIndex === 0` only (a later page coming back empty is ordinary
+  // exhaustion of a year that plainly did yield orders this run, not a claim
+  // that the year is empty). This pins that boundary so a future change to
+  // this walk cannot reopen the hole 6f9143f58 closed.
+  const emptyHtml = '<html><body><div id="ordersContainer"></div></body></html>';
+  const messages: EmittedMessage[] = [];
+  const page = Object.assign({} as Page, {
+    content: (): Promise<string> => Promise.resolve(emptyHtml),
+    evaluate: (): Promise<ListPageDiagnostics> =>
+      Promise.resolve(
+        makeEmptyPageDiagnostics({
+          order_cards: 0,
+          any_card: 0,
+          any_order_header: 0,
+          no_orders_text: "false",
+        })
+      ),
+    goto: (): Promise<null> => Promise.resolve(null),
+    locator: (): { first: () => { waitFor: () => Promise<null> } } => ({
+      first: () => ({ waitFor: (): Promise<null> => Promise.resolve(null) }),
+    }),
+  });
+
+  const orders = await scrapeListPage(
+    page,
+    null,
+    2026,
+    10,
+    (message) => {
+      messages.push(message);
+      return Promise.resolve();
+    },
+    { hasPriorOrders: true }
+  );
+
+  assert.deepEqual(orders, [], "pagination exhaustion yields no orders");
+  assert.deepEqual(messages, [], "ordinary pagination exhaustion is a silent, expected terminal state");
+});
