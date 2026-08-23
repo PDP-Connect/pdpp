@@ -23,7 +23,7 @@
  * guard → preRunGate → launchRun), pre-run gate, or dispatch governor.
  */
 
-import { createTraceContext, type SpineTraceContext } from "../../lib/spine.ts";
+import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../../lib/spine.ts";
 import type { SchedulerRunHistoryRecord } from "../../server/stores/scheduler-store.ts";
 import type { ConnectorEnvironmentBinding } from "../connector-child-environment.ts";
 import { runConnector } from "../index.ts";
@@ -355,13 +355,15 @@ interface AttemptWatchdog {
   /**
    * Called on every PROGRESS message. `extra` carries the connector's
    * `phase_boundary` marker (see connector-protocol-phase-boundary.d.ts) when
-   * present — used to detect the local-only-phase transition below.
+   * present — used to detect the local-only-phase transition below. Returns
+   * `true` exactly once, on the call that latches the local-only phase, so
+   * the caller can emit a durable record of the suppression on that single
+   * edge rather than on every subsequent PROGRESS message. A disarmed safety
+   * timer must not be an invisible decision: before this, `phase_boundary`
+   * appeared in ZERO spine events across every run, so an operator seeing a
+   * run exceed its ceiling could not tell "legitimately local-only" from
+   * "the watchdog failed".
    */
-  /** Returns true on the ONE call that latches local-only suppression, so the
-   *  caller can emit a durable trace. A disarmed safety timer must not be an
-   *  invisible decision: before this, `phase_boundary` appeared in ZERO spine
-   *  events across every run, so an operator seeing a run exceed its ceiling
-   *  could not tell "legitimately local-only" from "the watchdog failed". */
   markProgress: (extra?: { phase_boundary?: string }) => boolean;
   readonly signal: AbortSignal;
   timedOut: () => boolean;
@@ -951,6 +953,47 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     };
   }
 
+  // Durable record that a suppressed safety timer happened: nothing else
+  // persists this decision (see run-executor.ts's `localOnlyPhase` comment),
+  // so an operator watching a run exceed `maxRunWallClockMs` has no way to
+  // tell "legitimately in a local-only phase" from "the watchdog failed to
+  // fire" without reading source. Fire-and-forget with log-and-continue on
+  // failure, matching `reserveActiveRunRow`/`activeRunStore.deleteActiveRun`
+  // — a lost spine write must not fail or delay the run itself.
+  function emitLocalOnlyPhaseLatchedEvent(
+    connectorId: string,
+    connectorInstanceId: string,
+    runId: string,
+    traceContext: SpineTraceContext,
+    startedAt: string
+  ): void {
+    emitSpineEvent({
+      actor_id: connectorId,
+      actor_type: "runtime",
+      data: {
+        connector_instance_id: connectorInstanceId,
+        disarmed_timer_ms: maxRunWallClockMs,
+        elapsed_ms: Date.now() - Date.parse(startedAt),
+        phase_boundary: "local_only_phase_started",
+      },
+      event_type: "run.local_only_phase_started",
+      object_id: runId,
+      object_type: "run",
+      run_id: runId,
+      scenario_id: traceContext.scenario_id,
+      source_id: connectorId,
+      source_kind: "connector",
+      trace_id: traceContext.trace_id,
+    }).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] failed to emit local_only_phase_started spine event for ${connectorId}: ${message}`);
+      createRunLogger(baseLogger, { connectorId, connectorInstanceId, runId }).error(
+        `failed to emit local_only_phase_started spine event: ${message}`,
+        { phase: "local_only_phase_started" }
+      );
+    });
+  }
+
   // The durable active-run lease + wall-clock watchdog for one attempt. Wraps the
   // caller's RunConnectorCall so `onStarted` persists an active-run row and
   // `onProgress` feeds the watchdog; `clear()` (run in runSingleAttempt's finally)
@@ -988,6 +1031,9 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       cancelSignal: watchdog.signal,
       onProgress: (msg) => {
         const suppressedWallClock = watchdog.markProgress(extractPhaseBoundary(msg));
+        if (suppressedWallClock) {
+          emitLocalOnlyPhaseLatchedEvent(connectorId, connectorInstanceId, runId, traceContext, startedAt);
+        }
         originalOnProgress(msg);
         if (suppressedWallClock) {
           // The run just disarmed its own wall-clock watchdog. Record it through
