@@ -99,6 +99,13 @@ export type VerdictLabel =
   // Named in the same plain-English register as "Missing data" — it says what
   // the owner lost and that it was not the essential part.
   | "Missing optional data"
+  // A local-collector dead-letter backlog that is a strict MINORITY of the
+  // records that host handled. The source is demonstrably still collecting —
+  // the majority uploaded — so "Can't collect" is a false red. The loss is
+  // still permanent and still needs a manual recovery, so it is never green.
+  // The exact proportion always rides along in the action summary ("1 of
+  // 10,001"); this label only sets the tone the owner reads first.
+  | "Some records stuck"
   | "Needs refresh"
   | "Not measured"
   // Terminal and honest, like "Archived": this source never connected, so
@@ -509,8 +516,73 @@ function optionalLossIsSoleDegradation(
 }
 
 /**
- * Decide the amber label. Three outcomes, in order of specificity:
+ * Whether a minority dead-letter backlog is the ONLY thing that made this
+ * verdict degrade. "Some records stuck" is a narrow claim — it says the source
+ * works and a subset of records did not upload — so it may only be made when
+ * nothing else is also wrong. Any other degrading axis (coverage, attention)
+ * or a broken headline state means the honest label is the broader "Missing
+ * data"; the narrower one would under-report real trouble.
  *
+ * `outbox` is excluded from the other-axis scan for the same reason `coverage`
+ * is excluded in `optionalLossIsSoleDegradation`: it is the axis this very
+ * condition drives amber, so including it would make the check always false.
+ *
+ * `state` gets the same treatment, and it is load-bearing rather than
+ * cosmetic. A dead-letter stall DERIVES `state: "degraded"` on its own
+ * (`classifyDegradedEvidence` → `hasIndependentDegradingEvidence`,
+ * `connection-health.ts`: the stall's `LocalExporterAvailable` /
+ * `BacklogClear` conditions are themselves the degrading evidence). Treating
+ * that derived state as independent trouble would double-count ONE signal and
+ * make this branch unreachable for the exact production shape it exists to
+ * fix. So the state is accepted when its degrading conditions are only ever
+ * the stall's own; any OTHER false condition still means real, separate
+ * trouble and forfeits the narrow label.
+ */
+function minorityDeadLetterIsSoleDegradation(
+  snapshot: ConnectionHealthSnapshot,
+  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+): boolean {
+  if (!isMinorityDeadLetterStall(snapshot)) {
+    return false;
+  }
+  const nonOutboxDegrading = toneInputs.some(
+    (input) => DEGRADING_AXES.has(input.axis) && input.axis !== "outbox" && TONE_RANK[input.tone] >= TONE_RANK.amber
+  );
+  if (nonOutboxDegrading) {
+    return false;
+  }
+  if (
+    NON_DEGRADING_AMBER_STATES.has(snapshot.state) ||
+    TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] < TONE_RANK.amber
+  ) {
+    return true;
+  }
+  // `degraded` is the one amber state a dead-letter stall derives by itself.
+  // Accept it only when the stall's own conditions are the ONLY false ones.
+  return snapshot.state === "degraded" && !hasNonOutboxFalseCondition(snapshot);
+}
+
+/**
+ * Whether any CURRENT failing condition comes from somewhere other than the
+ * local-device outbox stall. These are the conditions that would have made the
+ * connection degraded regardless of the backlog, so their presence means the
+ * narrow "Some records stuck" claim is not the whole story.
+ */
+function hasNonOutboxFalseCondition(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.current &&
+      condition.status === "false" &&
+      condition.type !== "LocalExporterAvailable" &&
+      condition.type !== "BacklogClear"
+  );
+}
+
+/**
+ * Decide the amber label. Four outcomes, in order of specificity:
+ *
+ *   - "Some records stuck" when the sole degradation is a minority dead-letter
+ *     backlog on the local collector's host.
  *   - "Missing optional data" when the sole degradation is a lost collect-intent
  *     non-required stream (owner decision 2026-08-23).
  *   - "Needs refresh" when EVERY reason the tone reached amber-or-worse is one
@@ -531,6 +603,9 @@ function amberLabel(
   toneInputs: readonly { axis: string; tone: VerdictTone }[],
   streams: readonly StreamRollup[]
 ): VerdictLabel {
+  if (minorityDeadLetterIsSoleDegradation(snapshot, toneInputs)) {
+    return "Some records stuck";
+  }
   if (optionalLossIsSoleDegradation(streams, toneInputs)) {
     return "Missing optional data";
   }
@@ -738,6 +813,13 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
       return "green";
     case "stalled":
       if (hasTransientUploadFailure(snapshot)) {
+        return "amber";
+      }
+      // A dead-letter backlog that is a strict minority of what the host
+      // handled ambers rather than reds: the source demonstrably collected
+      // the rest. The loss stays fully visible — same owner action, same
+      // "N of M" summary, never green. See `deadLetterIsMinorityOfCorpus`.
+      if (isMinorityDeadLetterStall(snapshot)) {
         return "amber";
       }
       return "red";
@@ -1045,6 +1127,89 @@ function hasTransientUploadFailure(snapshot: ConnectionHealthSnapshot): boolean 
   );
 }
 
+function hasDeadLetterBacklog(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.current &&
+      (condition.reason === CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG ||
+        condition.reason === CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG)
+  );
+}
+
+/**
+ * Whether a dead-letter backlog is a strict MINORITY of the records the
+ * collector host handled — the discriminator between "this source is broken"
+ * and "this source works and dropped some records on the floor".
+ *
+ * This is NOT a tolerance threshold, and deliberately so. There is no
+ * percentage below which a loss is ignored: the count and the denominator are
+ * rendered verbatim in the action summary on EVERY path
+ * (`deadLetterSummary`), the owner action is emitted on every path, and the
+ * verdict never reaches green while a dead letter exists. What the proportion
+ * changes is SEVERITY ONLY — red ("Can't collect", a claim about capability)
+ * versus amber ("Some records stuck", a claim about a subset). Hiding the loss
+ * at any magnitude would be the false-green the owner fears most; calling a
+ * 2.5M-record source that just uploaded 10,000 of 10,001 records "Can't
+ * collect" is the false-red he actually hit.
+ *
+ * `dead_letter * 2 < total` is integer-exact — no float rounding, no
+ * configurable knob to drift. Majority loss (>= half) keeps its red, because
+ * at that point "Can't collect" is a fair description of the host. A total
+ * loss (dead_letter === total) is the extreme of that same case and stays red.
+ *
+ * An ABSENT or non-integer count does not soften anything: unknown magnitude
+ * classifies conservatively as red, exactly as it did before this carve-out
+ * existed. A count the system did not measure may never buy a gentler label —
+ * the same fail-closed rule `deadLetterMagnitude` already applies to the
+ * sentence.
+ */
+function deadLetterIsMinorityOfCorpus(snapshot: ConnectionHealthSnapshot): boolean {
+  const counts = snapshot.local_device_outbox_counts;
+  if (!counts) {
+    return false;
+  }
+  const { dead_letter: deadLetter, total } = counts;
+  if (!(Number.isInteger(deadLetter) && Number.isInteger(total))) {
+    return false;
+  }
+  if (!(typeof deadLetter === "number" && typeof total === "number" && deadLetter > 0 && total > 0)) {
+    return false;
+  }
+  return deadLetter * 2 < total;
+}
+
+/**
+ * Whether the outbox's stall is a minority dead-letter backlog AND nothing
+ * else about the outbox is also wrong. A stall carrying any OTHER cause
+ * (state-read failure, stale pending, stale heartbeat) describes a collector
+ * that cannot run, which the proportion of one backlog says nothing about —
+ * so it keeps its red.
+ */
+function isMinorityDeadLetterStall(snapshot: ConnectionHealthSnapshot): boolean {
+  return (
+    snapshot.axes.outbox === "stalled" &&
+    hasDeadLetterBacklog(snapshot) &&
+    !hasOtherStalledOutboxCause(snapshot) &&
+    deadLetterIsMinorityOfCorpus(snapshot)
+  );
+}
+
+/** Stalled-outbox reasons that describe a collector that cannot run at all. */
+const NON_DEAD_LETTER_STALL_REASONS: ReadonlySet<string> = new Set([
+  CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED,
+  CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED,
+  CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALE_PENDING,
+  CONNECTION_CONDITION_REASONS.OUTBOX_STALE_PENDING,
+  CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALE_HEARTBEAT,
+  CONNECTION_CONDITION_REASONS.OUTBOX_STALE_HEARTBEAT,
+]);
+
+function hasOtherStalledOutboxCause(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) => condition.current && NON_DEAD_LETTER_STALL_REASONS.has(condition.reason)
+  );
+}
+
 function hasEffectiveActiveScheduleEvidence(
   refresh: ConnectionRefreshEvidence | null,
   scheduleEvidence: ScheduleEvidence | null
@@ -1277,7 +1442,16 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         cause,
         commands: [localCollectorRecoverPreviewCommand(), localCollectorRecoverApplyCommand()],
         kind: "local_collector_recovery",
-        label: "Recover local collector uploads",
+        // Owner-facing, so it must mean something to a non-engineer. "Recover
+        // local collector uploads" failed twice over: "local collector" is
+        // jargon for the program on the owner's own machine, and "recover
+        // uploads" names an internal operation rather than what happened.
+        // This label says the three things the owner needs before clicking:
+        // records are STUCK (not lost, not uploaded), they are on a MACHINE
+        // he owns, and only he can move them. The permanence lives in the
+        // summary sentence, which says the records will not retry on their
+        // own — the label must not contradict it by implying a retry.
+        label: "Upload records stuck on your computer",
         // Says PERMANENT, not merely stalled. `dead_letter_backlog` means the
         // outbox exhausted its retries: these records will NOT drain on their
         // own, unlike `transient_upload_failure`. The prior wording read as a
