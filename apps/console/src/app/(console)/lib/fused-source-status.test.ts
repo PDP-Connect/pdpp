@@ -146,3 +146,64 @@ test("freshness punctuation is normalized so the separator reads cleanly", () =>
   assert.equal(fused.freshness, "Last refreshed 3 days ago");
   assert.doesNotMatch(fused.line, PERIOD_BEFORE_SEPARATOR);
 });
+
+/** How many times `needle` appears in `haystack`. */
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+test("a state label that already carries its freshness note renders it exactly once", () => {
+  // Owner-reported 2026-08-23 against live production data: the /sources row for
+  // "peregrine Claude Code" read
+  //   Can't collect · Freshness has not been measured yet. · Freshness has not been measured yet
+  // — the same sentence twice, differing only by the trailing period that
+  // `freshnessSlot` strips.
+  //
+  // The flag here is shaped EXACTLY as `deriveRenderedSourceStatus` builds it:
+  // it pre-concatenates the freshness note into `label` for its single-slot
+  // consumers. Every other test in this file passes a bare label, which is
+  // precisely why the double-render survived. See
+  // `sources-view-model.test.ts` ("carries freshness annotations from rendered
+  // verdict") for the derivation's own pin on that concatenated contract.
+  const note = "Freshness has not been measured yet.";
+  const fused = fuseSourceStatus(
+    flag({
+      freshnessNote: note,
+      kind: "blocked",
+      label: `Can't collect · ${note}`,
+      tone: "destructive",
+    }),
+    { hasEverSucceeded: true, syncing: false }
+  );
+
+  assert.equal(
+    occurrences(fused.line, "Freshness has not been measured yet"),
+    1,
+    `the freshness sentence must appear exactly once, got: ${fused.line}`
+  );
+  assert.equal(fused.line, "Can't collect · Freshness has not been measured yet");
+  assert.equal(fused.state, "Can't collect", "the state slot is the bare pill label");
+  assert.equal(fused.freshness, "Freshness has not been measured yet");
+});
+
+test("the freshness note is stripped from the state slot even while syncing", () => {
+  // The syncing clause must not push the duplicate off the end of the line and
+  // hide the regression: assert the COUNT with all three slots populated.
+  const note = "Last refreshed 3 days ago.";
+  const fused = fuseSourceStatus(
+    flag({ freshnessNote: note, kind: "degraded", label: `Needs attention · ${note}`, tone: "warning" }),
+    { syncing: true }
+  );
+
+  assert.equal(occurrences(fused.line, "Last refreshed 3 days ago"), 1, `got: ${fused.line}`);
+  assert.equal(fused.line, "Needs attention · Last refreshed 3 days ago · Syncing now");
+});
+
+test("a state label is left alone when it merely ends in words like its note", () => {
+  // Only an exact trailing `" · <note>"` is a pre-concatenation. A label that
+  // coincidentally overlaps must not be truncated.
+  const fused = fuseSourceStatus(flag({ freshnessNote: "Last refreshed 3 days ago.", label: "Working" }), {});
+
+  assert.equal(fused.state, "Working");
+  assert.equal(fused.line, "Working · Last refreshed 3 days ago");
+});
