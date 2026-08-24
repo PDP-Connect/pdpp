@@ -45,6 +45,15 @@ const EXPECTED_CODE_TO_STATUS = {
   connection_run_active: 409,
   connection_tombstoned: 409,
   connector_instance_busy: 503,
+  // The three config-revision codes. `stale_write` is a propose() whose
+  // baseRevision/baseEpoch missed the current pointer, and `not_proposed` is a
+  // confirm() against a revision that is not awaiting confirmation -- both are
+  // well-formed requests the world moved underneath, so they join the other
+  // 409s (approval_conflict, static_secret_identity_conflict) rather than
+  // becoming 400s. `revision_not_found` is a plain missing resource.
+  connector_instance_config_not_proposed: 409,
+  connector_instance_config_revision_not_found: 404,
+  connector_instance_config_stale_write: 409,
   connector_instance_connector_mismatch: 400,
   connector_instance_inactive: 400,
   connector_instance_not_active: 409,
