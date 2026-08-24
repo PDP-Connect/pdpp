@@ -114,6 +114,52 @@ for (const spec of SPECS) {
     writeFileSync(outPath, out);
     generated += 1;
 }
+// Programme documents are single-sourced the same way, from a DIFFERENT root
+// header shape. GOVERNANCE.md is not a spec: it carries a bolded `**Status:**`
+// block with Circulated / Formal review / Programme live lines rather than the
+// uniform `Status:`/`Date:` pair extractBody asserts on, and it is not under
+// CSL-1.0 or amended through the Community Specification process. Running it
+// through the spec path would throw on line 3; giving it its own path keeps the
+// spec header contract strict rather than loosening it to accommodate a file
+// that was never meant to satisfy it.
+//
+// The body is taken whole below the `# Title` line — the root document's own
+// status block IS content here (it states the review window and the lock), so
+// unlike the specs nothing is stripped but the heading the frontmatter replaces.
+const PROGRAMME_DOCS = [{ header: "governance", root: "GOVERNANCE", slug: "governance" }];
+function extractProgrammeBody(rootText, docName) {
+    const lines = rootText.split("\n");
+    if (!lines[0]?.startsWith("# ")) {
+        throw new Error(`sync-spec-docs: ${docName}.md: expected a '# Title' heading on line 1, got: ${JSON.stringify(lines[0])}`);
+    }
+    const body = lines.slice(1);
+    while (body.length && body[0].trim() === "") {
+        body.shift();
+    }
+    return body.join("\n");
+}
+for (const doc of PROGRAMME_DOCS) {
+    const rootPath = path.join(repoRoot, `${doc.root}.md`);
+    const headerPath = path.join(headerDir, `${doc.header}.header.md`);
+    if (!existsSync(rootPath)) {
+        throw new Error(`sync-spec-docs: missing root programme doc ${rootPath}`);
+    }
+    if (!existsSync(headerPath)) {
+        throw new Error(`sync-spec-docs: missing header sidecar ${headerPath}`);
+    }
+    const header = readFileSync(headerPath, "utf8").replace(/\s*$/, "");
+    const body = extractProgrammeBody(readFileSync(rootPath, "utf8"), doc.root);
+    // .mdx, NOT .md. In a .md file CommonMark treats `<Callout ...>` as a raw
+    // HTML block that runs to the first blank line, so the tag AND the lines
+    // before that blank are dropped outright — the wrapper never reaches the
+    // renderer and its opening content disappears. (This is why the spec pages'
+    // own `<Callout>` status banners render as bare paragraphs with their
+    // `Status:` line missing; those are generated as .md.) Emitting .mdx parses
+    // the JSX properly, so the callout renders as the real component. Safe here
+    // because the governance body contains no `<` or `{` for MDX to trip on.
+    writeFileSync(path.join(contentDir, `${doc.slug}.mdx`), `${header}\n\n${body.replace(/\s*$/, "")}\n`);
+    generated += 1;
+}
 // The spec's own front matter — version, status, date, editors — is emitted as
 // a module here rather than read when a page renders.
 //

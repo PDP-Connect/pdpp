@@ -13,10 +13,19 @@ import { SpecRailProvider } from "./rail-context.tsx";
 // The specification shell uses fumadocs' own slots to replace the sidebar
 // contents and remove its duplicate search trigger. Fumadocs still owns the
 // sidebar behavior, mobile drawer, active state, and document tree.
-export function SpecificationShell({ children }: { children: ReactNode }) {
+// `specFrontMatter` defaults to the specification's own block. Pass null on a
+// surface that is not the specification (see the governance route) so the rail
+// keeps the document list without claiming the spec's version and status.
+export function SpecificationShell({
+  children,
+  specFrontMatter = getSpecFrontMatter(),
+}: {
+  children: ReactNode;
+  specFrontMatter?: ReturnType<typeof getSpecFrontMatter> | null;
+}) {
   return (
     <PdppConceptShell className="pdpp-docs-shell" data-pdpp-doc-theme="true">
-      <SpecRailProvider frontMatter={getSpecFrontMatter()}>
+      <SpecRailProvider frontMatter={specFrontMatter}>
         {/* Same page measure as PdppConceptPage / masthead / footer — no
             full-bleed exception, so the rail's links open on the same x as
             the wordmark here as on every other page. */}

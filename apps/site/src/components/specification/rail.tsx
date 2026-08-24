@@ -52,13 +52,20 @@ function RailItem({ item }: { item: PageTree.Item }) {
   );
 }
 
-// The rail carries exactly one label ("Specification"). The tree it renders now
-// holds only the specification set (see getSpecNavTree), so any other separator
-// would be an empty divider — rendered as a bare rule rather than a title, which
-// keeps a stray tree entry from ever reading as a rival section heading.
+// The rail carries exactly two labels: "Specification" and "Programme". The
+// tree it renders holds the specification set and the programme documents (see
+// getSpecNavTree); any OTHER separator is still an empty divider — rendered as
+// a bare rule rather than a title, which keeps a stray tree entry from ever
+// reading as a rival section heading.
+//
+// "Programme" is a heading rather than a seventh row under "Specification"
+// because the two groups change by different routes: the specifications under
+// the Community Specification process, governance by a vote of Partners.
+const RAIL_SECTION_LABELS = new Set(["Specification", "Programme"]);
+
 function RailSeparator({ item }: { item: PageTree.Separator }) {
   const label = typeof item.name === "string" ? item.name : "";
-  if (label === "Specification") {
+  if (RAIL_SECTION_LABELS.has(label)) {
     return <PdppRailSectionLabel>{label}</PdppRailSectionLabel>;
   }
   return <hr className="pdpp-rail__rule" />;
@@ -66,6 +73,9 @@ function RailSeparator({ item }: { item: PageTree.Separator }) {
 
 function RailBanner() {
   const { frontMatter } = useSpecRailData();
+  if (!frontMatter) {
+    return null;
+  }
   return (
     <PdppRailFrontMatter
       date={frontMatter.date}

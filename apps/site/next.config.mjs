@@ -106,6 +106,16 @@ const nextConfig = {
         permanent: true,
         source: "/specification/spec-core",
       },
+      // Governance is authored inside the fumadocs collection (for the TOC,
+      // Copy Markdown and search indexing a spec page gets) but is a programme
+      // document, not a specification, so it is served at /governance. fumadocs
+      // still routes the page under /specification; that URL redirects to the
+      // canonical one rather than serving the same document at two addresses.
+      {
+        destination: "/governance",
+        permanent: true,
+        source: "/specification/governance",
+      },
       {
         destination: "/specification/spec-collection-profile",
         permanent: true,
