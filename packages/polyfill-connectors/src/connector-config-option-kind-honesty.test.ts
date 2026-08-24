@@ -75,6 +75,43 @@ test("no manifest's declared_option_kind disagrees with the platform-owned regis
   );
 });
 
+/**
+ * The disagreement check above compares only where BOTH sides know a key, so a
+ * lookup that returns null slips past it silently. That is exactly what
+ * happened: manifests carry the hyphenated `connector_key` (`claude-code`)
+ * while the registry is keyed on the directory form (`claude_code`), so every
+ * lookup missed and all five options fell through to the `collection_scope`
+ * default. Safe, but the registry's decisions were dead letters and the
+ * honesty test had nothing to compare -- a guard blind to its own blind spot.
+ *
+ * This pins the missing invariant: if a manifest bothered to declare a kind,
+ * the platform must actually HAVE an opinion to check it against.
+ */
+test("every manifest-declared option_kind resolves to a real platform registry entry", () => {
+  const unmatched: string[] = [];
+  for (const name of listManifestNames()) {
+    const manifest = readManifest(name);
+    const connectorKey = manifest.connector_key ?? name;
+    const properties = manifest.options_schema?.properties;
+    if (!properties) {
+      continue;
+    }
+    for (const [optionKey, prop] of Object.entries(properties)) {
+      if (!prop.declared_option_kind) {
+        continue;
+      }
+      if (platformOptionKind(connectorKey, optionKey) === null) {
+        unmatched.push(`${name} (connector_key "${connectorKey}").options_schema.${optionKey}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    unmatched,
+    [],
+    `a declared option_kind the registry cannot resolve is unenforceable and silently unverified: ${unmatched.join("; ")}`
+  );
+});
+
 test(
   "sanity: the disagreement check actually fires when a manifest mislabels a known collection_scope key as transport",
   () => {
