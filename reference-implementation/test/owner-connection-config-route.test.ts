@@ -21,6 +21,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { ResolvedConnectorOptionsSchema } from "../../packages/polyfill-connectors/src/connector-options-schema.ts";
+import { ConnectorOptionsSchemaError } from "../../packages/polyfill-connectors/src/connector-options-schema.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { mountOwnerConnectionConfig } from "../server/routes/owner-connection-config.ts";
 import { codeToStatus } from "../server/routes/ref-error-status.ts";
@@ -96,16 +98,27 @@ interface Harness {
   store: ReturnType<typeof createSqliteConnectorInstanceConfigStore>;
 }
 
+interface MountOptions {
+  /** The connector key `resolveOwnerConnectorNamespace` reports for this connection. */
+  readonly connectorKey?: string;
+  /** Overrides the schema resolver seam; omit to drive the REAL manifest-backed one. */
+  readonly connectorOptionsSchema?: (connectorKey: string) => ResolvedConnectorOptionsSchema | null;
+}
+
 /**
  * Mount the real routes with a ctx whose auth boundary is explicit: the
  * authenticated subject is whatever `getOwnerTokenSubjectId` returns from
  * `req.tokenInfo`, exactly as `server/index.ts` wires it.
  */
-function mountHarness(authenticatedSubject = OWNER_SUBJECT_ID): Harness {
+function mountHarness(authenticatedSubject = OWNER_SUBJECT_ID, mountOptions: MountOptions = {}): Harness {
   const app = new FakeApp();
   const errors: { code: string; message: string; status: number }[] = [];
   const store = createSqliteConnectorInstanceConfigStore();
+  const connectorKey = mountOptions.connectorKey ?? "slack";
   mountOwnerConnectionConfig(app as never, {
+    // Omitted unless a test overrides it, so the default path exercises the
+    // REAL manifest-backed resolver rather than a mock's idea of it.
+    ...(mountOptions.connectorOptionsSchema ? { connectorOptionsSchema: mountOptions.connectorOptionsSchema } : {}),
     getOwnerTokenSubjectId: (req) =>
       (req as { tokenInfo?: { subject_id?: string } }).tokenInfo?.subject_id ?? authenticatedSubject,
     handleError: (_res, err) => {
@@ -118,7 +131,10 @@ function mountHarness(authenticatedSubject = OWNER_SUBJECT_ID): Harness {
     requireOwner: "requireOwner",
     requireToken: "requireToken",
     resolveOwnerConnectorNamespace: (_req, _connectorId, options) =>
-      Promise.resolve({ connectorId: "slack", connectorInstanceId: options?.connectorInstanceId ?? CONNECTION_ID }),
+      Promise.resolve({
+        connectorId: connectorKey,
+        connectorInstanceId: options?.connectorInstanceId ?? CONNECTION_ID,
+      }),
     store,
   });
   return { app, errors, store };
@@ -510,6 +526,231 @@ test(
     assert.equal(afterBody.base_revision, 1);
     assert.deepEqual(asRecord(afterBody.active_revision).config, { SKIP_FILES: true });
     assert.deepEqual(harness.errors, []);
+  })
+);
+
+// ─── Options schema on the config read ──────────────────────────────────────
+//
+// The console renders its config form from this response. The properties under
+// test are that the form can be built without inventing anything, and that a
+// connector which has never described its options is reported as exactly that
+// rather than as a connector with no options.
+
+test(
+  "GET config carries the REAL manifest-declared options schema for a connector that has one",
+  withDb(async () => {
+    seedConnectorInstance(CONNECTION_ID);
+    // No resolver override: this drives the real slack.json manifest through
+    // the real resolver, so the assertion covers the actual wiring.
+    const harness = mountHarness();
+
+    const res = await call(harness, GET_ACTIVE_ROUTE, {
+      params: { connectionId: CONNECTION_ID },
+      tokenInfo: { pdpp_token_kind: "owner", subject_id: OWNER_SUBJECT_ID },
+    });
+
+    assert.deepEqual(harness.errors, []);
+    const body = asRecord(res.body);
+    assert.equal(body.options_schema_status, "declared");
+    assert.equal(body.connector_key, "slack");
+
+    const schema = asRecord(body.options_schema);
+    assert.equal(schema.object, "connector_config_options_schema");
+    assert.equal(schema.connector_key, "slack");
+
+    const options = schema.options as Record<string, unknown>[];
+    assert.ok(options.length > 0, "slack declares options; an empty form would be a rendering lie");
+
+    // Every option carries what a form needs to render a control.
+    const byKey = new Map(options.map((option) => [option.option_key as string, option]));
+    const allowlist = byKey.get("CHANNEL_ALLOWLIST");
+    assert.ok(allowlist, "CHANNEL_ALLOWLIST is declared in slack.json");
+    assert.equal(allowlist.type, "string_array");
+    assert.deepEqual(allowlist.default, []);
+    assert.equal(typeof allowlist.description, "string");
+  })
+);
+
+test(
+  "GET config reports not_declared -- NOT an empty schema -- for a connector that has never described its options",
+  withDb(async () => {
+    seedConnectorInstance(CONNECTION_ID);
+    // 42 of the 45 shipped manifests are in this state.
+    const harness = mountHarness(OWNER_SUBJECT_ID, {
+      connectorKey: "amazon",
+      connectorOptionsSchema: () => null,
+    });
+
+    const res = await call(harness, GET_ACTIVE_ROUTE, {
+      params: { connectionId: CONNECTION_ID },
+      tokenInfo: { pdpp_token_kind: "owner", subject_id: OWNER_SUBJECT_ID },
+    });
+
+    assert.deepEqual(harness.errors, []);
+    const body = asRecord(res.body);
+    assert.equal(
+      body.options_schema_status,
+      "not_declared",
+      "an undeclared connector must be distinguishable from one declaring zero options"
+    );
+    assert.equal(body.options_schema, null);
+    // The distinction is load-bearing: `null` alone would be indistinguishable
+    // from an empty declared form, so the status must carry it.
+    assert.notEqual(body.options_schema_status, "declared");
+    // And the config ledger still reads normally -- an undeclared schema is not
+    // an error condition.
+    assert.equal(body.base_revision, 0);
+    assert.equal(body.active_revision, null);
+  })
+);
+
+test(
+  "a connector declaring an EMPTY options schema is 'declared', not 'not_declared'",
+  withDb(async () => {
+    seedConnectorInstance(CONNECTION_ID);
+    // The other side of the same coin: this connector really does say it has
+    // no knobs. That is a claim the server may faithfully repeat.
+    const harness = mountHarness(OWNER_SUBJECT_ID, {
+      connectorOptionsSchema: () => ({
+        connectorKey: "slack",
+        description: "declares no knobs",
+        options: [],
+      }),
+    });
+
+    const res = await call(harness, GET_ACTIVE_ROUTE, {
+      params: { connectionId: CONNECTION_ID },
+      tokenInfo: { pdpp_token_kind: "owner", subject_id: OWNER_SUBJECT_ID },
+    });
+
+    assert.deepEqual(harness.errors, []);
+    const body = asRecord(res.body);
+    assert.equal(body.options_schema_status, "declared");
+    assert.deepEqual(asRecord(body.options_schema).options, []);
+  })
+);
+
+test(
+  "GUARDRAIL: a collection_scope option is never reported as self-activating",
+  withDb(async () => {
+    seedConnectorInstance(CONNECTION_ID);
+    // Real manifest + real platform registry: slack declares both kinds.
+    const harness = mountHarness();
+
+    const res = await call(harness, GET_ACTIVE_ROUTE, {
+      params: { connectionId: CONNECTION_ID },
+      tokenInfo: { pdpp_token_kind: "owner", subject_id: OWNER_SUBJECT_ID },
+    });
+
+    const options = asRecord(asRecord(res.body).options_schema).options as Record<string, unknown>[];
+    assert.ok(options.length > 0);
+
+    // Every option must carry BOTH guardrail facts, or a console cannot tell
+    // the owner which changes need confirmation.
+    for (const option of options) {
+      assert.ok(
+        option.option_kind === "collection_scope" || option.option_kind === "transport",
+        `${String(option.option_key)} must carry a platform-enforced option_kind`
+      );
+      assert.equal(
+        typeof option.platform_classified,
+        "boolean",
+        `${String(option.option_key)} must say whether the registry actually classified it`
+      );
+    }
+
+    const byKey = new Map(options.map((option) => [option.option_key as string, option]));
+    // CHANNEL_ALLOWLIST decides which channels are collected at all. If this
+    // ever surfaced as `transport`, a console would let it self-activate and
+    // silently widen the collection boundary without an owner confirm.
+    assert.equal(
+      byKey.get("CHANNEL_ALLOWLIST")?.option_kind,
+      "collection_scope",
+      "a collection-shaping knob must never be presented as self-activating"
+    );
+    assert.equal(byKey.get("LOOKBACK_DAYS")?.option_kind, "collection_scope");
+    assert.equal(byKey.get("MEMBER_ONLY")?.option_kind, "collection_scope");
+    // The registry does classify slack, so the fail-closed default is not what
+    // is being observed here.
+    assert.equal(byKey.get("CHANNEL_ALLOWLIST")?.platform_classified, true);
+    // And a genuine transport knob is still reported as transport, so the
+    // assertion above is not passing merely because everything says
+    // collection_scope.
+    assert.equal(byKey.get("SKIP_FILES")?.option_kind, "transport");
+  })
+);
+
+test(
+  "an unregistered connector's options fail CLOSED to collection_scope and say the registry never classified them",
+  withDb(async () => {
+    seedConnectorInstance(CONNECTION_ID);
+    // claude-code's manifest declares options, but the platform registry keys
+    // that connector as `claude_code` (underscore), so the hyphenated
+    // canonical key is unclassified. The safe direction: every field requires
+    // an owner confirm, and `platform_classified: false` says so out loud.
+    const harness = mountHarness(OWNER_SUBJECT_ID, { connectorKey: "claude-code" });
+
+    const res = await call(harness, GET_ACTIVE_ROUTE, {
+      params: { connectionId: CONNECTION_ID },
+      tokenInfo: { pdpp_token_kind: "owner", subject_id: OWNER_SUBJECT_ID },
+    });
+
+    assert.deepEqual(harness.errors, []);
+    const body = asRecord(res.body);
+    assert.equal(body.options_schema_status, "declared");
+    const options = asRecord(body.options_schema).options as Record<string, unknown>[];
+    assert.ok(options.length > 0);
+    for (const option of options) {
+      assert.equal(option.option_kind, "collection_scope", "an unclassified key must fail closed");
+      assert.equal(option.platform_classified, false, "and must not claim the platform classified it");
+    }
+  })
+);
+
+test(
+  "a malformed options_schema is a typed 400, not an opaque 500 and not an empty form",
+  withDb(async () => {
+    seedConnectorInstance(CONNECTION_ID);
+    const harness = mountHarness(OWNER_SUBJECT_ID, {
+      connectorOptionsSchema: () => {
+        throw new ConnectorOptionsSchemaError("slack.json: options_schema.properties must be an object");
+      },
+    });
+
+    const res = await call(harness, GET_ACTIVE_ROUTE, {
+      params: { connectionId: CONNECTION_ID },
+      tokenInfo: { pdpp_token_kind: "owner", subject_id: OWNER_SUBJECT_ID },
+    });
+
+    assert.equal(harness.errors.length, 1);
+    assert.equal(harness.errors[0]?.status, 400);
+    assert.equal(harness.errors[0]?.code, "connector_invalid");
+    assert.equal(codeToStatus.connector_invalid, 400, "the code must be registered in the shared status table");
+    // No body was emitted: a broken manifest must not degrade into a form.
+    assert.equal(res.body, undefined);
+    assert.notEqual(harness.errors[0]?.code, "unhandled");
+  })
+);
+
+test(
+  "an unexpected resolver failure is NOT swallowed as a 400",
+  withDb(async () => {
+    seedConnectorInstance(CONNECTION_ID);
+    const harness = mountHarness(OWNER_SUBJECT_ID, {
+      connectorOptionsSchema: () => {
+        throw new Error("disk exploded");
+      },
+    });
+
+    await call(harness, GET_ACTIVE_ROUTE, {
+      params: { connectionId: CONNECTION_ID },
+      tokenInfo: { pdpp_token_kind: "owner", subject_id: OWNER_SUBJECT_ID },
+    });
+
+    // Only ConnectorOptionsSchemaError is classified; anything else keeps its
+    // own handling rather than being mislabelled a manifest defect.
+    assert.equal(harness.errors[0]?.code, "unhandled");
+    assert.ok((harness.errors[0]?.message ?? "").includes("disk exploded"));
   })
 );
 
