@@ -846,5 +846,25 @@
     "claude_dir_not_found": "We couldn't find your Claude Code data folder",
     "scope_matched_no_sources": "None of your configured project folders matched any Claude Code projects",
     "source_unreadable": "We couldn't read this folder, so we don't know what's in it"
+  },
+  "options_schema": {
+    "type": "object",
+    "description": "Owner tuning knobs for the Claude Code connector, resolved from the connector_instance_config_revisions spine. declared_option_kind is this connector's CLAIM only; the platform registry in packages/polyfill-connectors/src/connector-config-option-kind-registry.ts decides what actually gates self-activation, and an option the registry does not classify is enforced as collection_scope.",
+    "properties": {
+      "CLAUDE_CODE_PROJECT_INCLUDE": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Substrings of project folder paths to include. A folder is collected if it contains any of these. Empty list means every project folder is eligible.",
+        "default": [],
+        "declared_option_kind": "collection_scope"
+      },
+      "CLAUDE_CODE_PROJECT_EXCLUDE": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Substrings of project folder paths to exclude. A folder is dropped if it contains any of these, even when the include list matched it.",
+        "default": [],
+        "declared_option_kind": "collection_scope"
+      }
+    }
   }
 }

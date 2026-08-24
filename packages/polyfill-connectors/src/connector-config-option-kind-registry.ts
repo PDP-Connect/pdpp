@@ -34,6 +34,23 @@ interface ConnectorOptionKinds {
  * has no options_schema wired yet and is not affected by this registry.
  */
 const PLATFORM_OPTION_KINDS: Readonly<Record<string, ConnectorOptionKinds>> = Object.freeze({
+  claude_code: Object.freeze({
+    // Both are substring filters over the project folders that get scanned
+    // (connectors/claude_code/parsers.ts applyProjectDirScope), so each one
+    // decides which sources are collected at all.
+    CLAUDE_CODE_PROJECT_EXCLUDE: "collection_scope",
+    CLAUDE_CODE_PROJECT_INCLUDE: "collection_scope",
+  }),
+  google_messages: Object.freeze({
+    // Caps how many conversations are scanned after a recency sort, so it
+    // decides WHICH chats are collected (connectors/google_messages/index.ts
+    // resolveMaxChats).
+    GMCLI_MAX_CHATS: "collection_scope",
+    // Caps messages fetched per chat, bounding how much history is collected.
+    GMCLI_MESSAGES_PER_CHAT_LIMIT: "collection_scope",
+    // Subprocess timeout for one helper invocation; changes no selection.
+    GMCLI_TIMEOUT_MS: "transport",
+  }),
   slack: Object.freeze({
     CHANNEL_ALLOWLIST: "collection_scope",
     CHANNEL_TYPES: "collection_scope",
