@@ -1553,6 +1553,7 @@
         "type": "array",
         "items": { "type": "string" },
         "description": "Channel types to export. Allowed values: public, private, im, mpim.",
+        "enum": ["public", "private", "im", "mpim"],
         "default": ["public", "private", "im", "mpim"],
         "declared_option_kind": "collection_scope"
       },
