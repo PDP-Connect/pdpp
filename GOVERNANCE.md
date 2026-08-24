@@ -42,7 +42,7 @@ Conformance status is a signal about parties. It is not permission to operate.
 
 The two principles in the preceding two paragraphs are not amendable: no status under this programme is a conformance requirement, and conformance status is not permission to operate. No vote of Partners, decision of the board, or act of the technical committee reaches them.
 
-The rest of this document is amended under §2.8.
+The rest of this document is amended under §2.9.
 
 ### Relationship to the Linux Foundation
 
@@ -66,6 +66,7 @@ The board:
 - grants and withdraws status, on the recommendation of the technical committee;
 - hears appeals under §4.8;
 - appoints the technical committee;
+- publishes specification versions the committee has approved;
 - represents the programme to the Linux Foundation;
 - publishes its decisions.
 
@@ -77,7 +78,7 @@ In addition to serving as a board member, the Chair:
 
 - convenes the board and records its decisions;
 - maintains the register;
-- administers submissions;
+- administers submissions, and merges them once the board has granted;
 - calls and organises elections;
 - publishes the criteria and decisions the board makes.
 
@@ -91,6 +92,8 @@ The board appoints a technical committee. The committee:
 - receives and considers community-proposed changes to the specification;
 - runs the change processes listed in §5;
 - recommends versions for publication.
+
+**Merge rights.** The committee approves and merges pull requests against the specification, its companion documents and the test suite. It does not merge conformance submissions. See §2.9.
 
 The committee is an expert panel. It recommends, and the board decides. It does not grant or withdraw status under §4 and does not set membership terms.
 
@@ -124,7 +127,7 @@ Until the transition below, the maintainers act as the board, discharge the Chai
 
 The criteria the maintainers apply are published from programme live.
 
-The maintainers cannot amend this document. See §2.8.
+The maintainers cannot amend this document. See §2.9.
 
 **Transition.** The interim arrangement ends at the sooner of 100 Partners or one year from programme live, and in no case earlier than six months from programme live. At that point an election is held and all five board seats are filled.
 
@@ -132,7 +135,29 @@ The maintainers cannot amend this document. See §2.8.
 
 Authoring the specification, operating commercially on it, and reviewing conformance submissions against it are not held by one organisation. The interim arrangement in §2.6 is an exception, made because no alternative exists at launch, and it ends on transition.
 
-### 2.8 Amendment
+### 2.8 What the committee decides and what the board decides
+
+Assessment and rule-setting are held by different bodies. The committee assesses. The board sets the rules and decides who holds status. Neither does the other's job.
+
+| | Technical committee | Board |
+| --- | --- | --- |
+| Specification text | Approves and merges | Publishes versions |
+| Test suite and review standard | Approves and merges | Sets the criteria the standard must meet |
+| Conformance submissions | Reviews and recommends | Grants or refuses |
+| Purpose codes, views, extensions | Decides, under §5 | Does not decide |
+| Membership terms | No role | Decides |
+| Appeals | No role | Hears, under §4.8 |
+| Committee membership | No role | Appoints and removes |
+
+Two consequences worth stating plainly.
+
+**The committee cannot grant itself a status.** It reviews conformance submissions but never merges them. A submission is merged by the Chair, and only once the board has granted. If the merge were the grant, the body that reviews would also be the body that decides, and the separation above would exist on paper only.
+
+**The board cannot rewrite the specification.** It publishes what the committee approves. A board that could edit protocol text on a majority vote would make the standard answerable to whoever holds four seats.
+
+`main` is protected. Nothing reaches it except by pull request with the approvals set out in this section.
+
+### 2.9 Amendment
 
 **This document** is amended by a majority of Partners, except for the two principles stated as unamendable in §1.
 
@@ -178,7 +203,9 @@ Membership carries no fee.
 
 The committee is an expert panel, not a tier of management. It is appointed by the board, serves at the board's discretion, and does not grant status.
 
-**The Chair** administers submissions and maintains the register.
+**The Chair** administers submissions, merges them once the board has granted, and maintains the register.
+
+Assessment and rule-setting sit with different bodies, and the split is set out in §2.8. The short version: the committee assesses and can merge specification changes, the board decides who holds status, and the committee never merges a conformance submission.
 
 There is no accreditation body and there are no licensed assessors. During the interim period in §2.6, the maintainers act in place of both the board and the committee.
 
@@ -189,7 +216,7 @@ Four steps, the same for every status:
 1. **Submit.** The applicant opens a pull request containing the evidence for the status sought, together with the participation form.
 2. **Review.** The technical committee examines the submission in public against the published review standard and recommends that it be granted or refused, with reasons.
 3. **Grant.** The board grants or refuses on that recommendation.
-4. **Publish.** The result is published to the register.
+4. **Publish.** On grant, the Chair merges the submission and the result is published to the register. The committee does not merge conformance submissions. See §2.8.
 
 What is submitted at step 1 differs by status:
 
