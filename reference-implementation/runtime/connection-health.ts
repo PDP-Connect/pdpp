@@ -2857,7 +2857,10 @@ function stalledCauseCopy(cause: OutboxStalledCause | null): StalledCauseCopy {
         exporterMessage:
           "The local collector has saved records that failed to upload. Prepare those uploads for retry, then run the collector again on the host.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG,
-        remediationLabel: "Recover local collector uploads",
+        // Kept verbatim in lockstep with the rendered verdict's own
+        // dead-letter label (`stalledOutboxRemediation`, `rendered-verdict.ts`)
+        // — two surfaces naming one state must not drift into two vocabularies.
+        remediationLabel: "Upload records stuck on your computer",
         severity: "error",
       };
     case "transient_upload_failure":

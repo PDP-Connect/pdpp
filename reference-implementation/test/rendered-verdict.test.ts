@@ -1070,7 +1070,7 @@ test("channel: dead-letter stalled outbox includes recover preview before apply"
     v.forward_statement,
     "The local collector has records on its host that failed to upload and will not retry on their own. Recovering them is a manual step."
   );
-  assert.equal(action.cta, "Recover local collector uploads");
+  assert.equal(action.cta, "Upload records stuck on your computer");
   assert.equal(action.remediation?.cause, "dead_letter_backlog");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.doesNotMatch(v.forward_statement, /dead[- ]letter/i);
@@ -1136,7 +1136,7 @@ test("dead-letter summary bounds the magnitude with thousands separators", () =>
   assert.match(action.remediation?.summary ?? "", /will not retry on their own/);
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.match(action.remediation?.summary ?? "", /Recovering them is a manual step\./);
-  assert.equal(action.cta, "Recover local collector uploads");
+  assert.equal(action.cta, "Upload records stuck on your computer");
 });
 
 test("dead-letter summary pluralizes a multi-record backlog", () => {
@@ -1147,7 +1147,7 @@ test("dead-letter summary pluralizes a multi-record backlog", () => {
     action?.remediation?.summary,
     "8,432 of 10,001 records on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step."
   );
-  assert.equal(action?.cta, "Recover local collector uploads");
+  assert.equal(action?.cta, "Upload records stuck on your computer");
 });
 
 test("dead-letter summary reads 'record' in the singular when the total is one", () => {
@@ -1159,7 +1159,7 @@ test("dead-letter summary reads 'record' in the singular when the total is one",
     action?.remediation?.summary,
     "1 of 1 record on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step."
   );
-  assert.equal(action?.cta, "Recover local collector uploads");
+  assert.equal(action?.cta, "Upload records stuck on your computer");
 });
 
 test("dead-letter summary falls back to the uncounted sentence when counts are unavailable", () => {
@@ -1186,7 +1186,7 @@ test("dead-letter summary falls back to the uncounted sentence when counts are u
     );
     // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
     assert.doesNotMatch(action?.remediation?.summary ?? "", /undefined|null|NaN|\b0 of\b/);
-    assert.equal(action?.cta, "Recover local collector uploads", "the recovery CTA survives a missing count");
+    assert.equal(action?.cta, "Upload records stuck on your computer", "the recovery CTA survives a missing count");
   }
 });
 
@@ -1293,7 +1293,7 @@ test("channel: transient upload failures do not ask the owner to recover local u
     "The local collector hit temporary server or network errors while uploading. It will retry without owner action."
   );
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
-  assert.doesNotMatch(JSON.stringify(v), /Recover local collector uploads/);
+  assert.doesNotMatch(JSON.stringify(v), /Upload records stuck on your computer/);
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.doesNotMatch(JSON.stringify(v), /Preview recovery/);
 });
