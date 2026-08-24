@@ -610,6 +610,78 @@ test("formatSchedule is honest about no schedule, paused, and policy-ineligible"
   assert.equal(formatSchedule({ ...base, interval_seconds: undefined as never }), "schedule details unavailable");
 });
 
+// ─── A policy-ineligible schedule on the PRIMARY list surface ────────────────
+//
+// Production, 2026-08-23: `chase` and `usaa` have carried `enabled = true`
+// schedules since 2026-08-18 on a 12h interval and have NEVER fired. Their
+// manifests declare `background_safe: false` ("never run a bank refresh in the
+// background"), so the scheduler drops them at construction time — no timer is
+// ever created, nothing is written to run history. Both DID succeed via manual
+// dispatch on 2026-08-21, so the list row's status, which is computed from run
+// history alone, rendered them green while automatic refresh was structurally
+// dead. The detail passport has said "paused by policy" all along; the list —
+// the surface actually scanned — said nothing.
+
+/** A schedule the runtime will never run, shaped like chase/usaa in prod. */
+function policyIneligibleSchedule(): RefSchedule {
+  return {
+    active_run_id: null,
+    automation_mode: "unattended",
+    automation_summary: "",
+    connector_id: "chase",
+    created_at: "2026-08-18T15:09:52.387Z",
+    effective_mode: "automatic",
+    enabled: true,
+    human_attention_needed: false,
+    ineligibility_reason: "manifest_policy",
+    interval_seconds: 43_200,
+    jitter_seconds: 0,
+    last_error_code: null,
+    last_finished_at: null,
+    last_started_at: null,
+    last_successful_at: null,
+    minimum_interval_warning: null,
+    next_due_at: null,
+    notification_posture: "none",
+    object: "schedule",
+    recommended_policy: null,
+    scheduler_backoff: null,
+    trigger_kind: "scheduled",
+    updated_at: "2026-08-18T15:09:52.387Z",
+  };
+}
+
+test("toSourceInstanceView: a schedule the runtime will never run says so on the list row", () => {
+  const view = toSourceInstanceView(
+    summary({ schedule: policyIneligibleSchedule(), total_records: 42, total_records_state: "known" })
+  );
+  assert.match(
+    view.accountLine,
+    /manual only/,
+    `an enabled-but-ineligible schedule must not read as ordinary on the list, got: ${JSON.stringify(view.accountLine)}`
+  );
+});
+
+test("toSourceInstanceView: an ordinary schedule adds no policy qualifier to the list row", () => {
+  const view = toSourceInstanceView(
+    summary({
+      schedule: { ...policyIneligibleSchedule(), ineligibility_reason: null },
+      total_records: 42,
+      total_records_state: "known",
+    })
+  );
+  assert.doesNotMatch(
+    view.accountLine,
+    /manual only/,
+    `a runnable schedule must stay uncluttered, got: ${JSON.stringify(view.accountLine)}`
+  );
+});
+
+test("toSourceInstanceView: a source with no schedule at all adds no policy qualifier", () => {
+  const view = toSourceInstanceView(summary({ schedule: null, total_records: 42, total_records_state: "known" }));
+  assert.doesNotMatch(view.accountLine, /manual only/);
+});
+
 test("exploreHrefFor encodes connection + stream into the Explore deep link", () => {
   const href = exploreHrefFor("conn_1", "current_activity");
   assert.equal(href, "/explore?connection=conn_1&stream=current_activity");
