@@ -512,7 +512,17 @@ function formatSourceListFacts(summary: RefConnectorSummary, streamCountOverride
   const streamCountRaw = streamCountOverride ?? summary.stream_count ?? summary.streams.length;
   const streamCount = Number.isFinite(streamCountRaw) ? Math.max(0, Math.floor(streamCountRaw)) : 0;
   const streamNoun = streamCount === 1 ? "stream" : "streams";
-  return `${recordsLabel} · ${streamCount.toLocaleString()} ${streamNoun}`;
+  const facts = `${recordsLabel} · ${streamCount.toLocaleString()} ${streamNoun}`;
+  // A schedule the runtime refuses to run (manifest policy: not
+  // background-safe) stays `enabled` forever and never fires, so the row's
+  // status — driven by run history alone — keeps rendering whatever the last
+  // MANUAL run left behind. Chase and USAA read green on this list while
+  // automatic refresh is structurally dead. The detail page has said "paused
+  // by policy" all along; this is the list saying it too.
+  if (summary.schedule?.ineligibility_reason) {
+    return `${facts} · manual only`;
+  }
+  return facts;
 }
 
 function normalizeLabelForContainment(value: string): string {
