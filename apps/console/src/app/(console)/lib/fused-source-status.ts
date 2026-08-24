@@ -104,6 +104,33 @@ function freshnessSlot(note: string | null, hasEverSucceeded: boolean): string |
 }
 
 /**
+ * Strips a pre-concatenated freshness note off a state label.
+ *
+ * `deriveRenderedSourceStatus` builds its `label` as
+ * `` `${pill.label} · ${freshnessNote}` `` because its own consumers — the row
+ * dot's tooltip and the passport status line — are SINGLE SLOTS that must carry
+ * freshness inside the label or not at all. This module is the opposite: it
+ * renders freshness in a slot of its own. Composing the concatenated label here
+ * printed the freshness sentence twice, once with its trailing period and once
+ * without (`freshnessSlot` strips the period), which is exactly what an owner
+ * reported on 2026-08-23:
+ *
+ *   Can't collect · Freshness has not been measured yet. · Freshness has not been measured yet
+ *
+ * Stripping here rather than changing what `deriveRenderedSourceStatus` returns
+ * keeps that function's contract intact for its single-slot consumers. Only an
+ * EXACT trailing `" · <note>"` is removed, so a label that merely happens to
+ * end in similar words is left alone.
+ */
+function stateLabelWithoutFreshness(label: string, note: string | null): string {
+  if (note === null) {
+    return label;
+  }
+  const suffix = ` · ${note}`;
+  return label.endsWith(suffix) ? label.slice(0, -suffix.length) : label;
+}
+
+/**
  * Picks the state slot. `running` must never overwrite a worse verdict, so when
  * a source is both syncing and unhealthy the unhealthy label wins the slot and
  * syncing moves to its own clause.
@@ -148,19 +175,24 @@ export function fuseSourceStatus(
   // survives.
   const freshness = freshnessSlot(state.freshnessNote ?? flag.freshnessNote, hasEverSucceeded);
 
+  // The state slot is the BARE label. `deriveRenderedSourceStatus` may have
+  // pre-concatenated the freshness note into it for its single-slot consumers;
+  // freshness has its own slot here, so keeping it would print it twice.
+  const stateLabel = stateLabelWithoutFreshness(state.label, state.freshnessNote);
+
   // A paused or revoked source is not syncing in any owner-meaningful sense,
   // and a stale in-flight run flag must not make it look like it is. Those
   // states already rank ahead of `running` in `deriveRenderedSourceStatus`;
   // this keeps the fused line consistent with that ranking.
   const showSyncing = syncing && state.kind !== "paused" && state.kind !== "revoked";
 
-  const line = [state.label, freshness, showSyncing ? SYNCING_CLAUSE : null].filter(Boolean).join(" · ");
+  const line = [stateLabel, freshness, showSyncing ? SYNCING_CLAUSE : null].filter(Boolean).join(" · ");
 
   return {
     freshness,
     kind: state.kind,
     line,
-    state: state.label,
+    state: stateLabel,
     syncing: showSyncing,
     tone: state.tone,
   };
