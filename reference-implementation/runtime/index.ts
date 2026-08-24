@@ -14,6 +14,8 @@ import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { resolveRunConnectorOptions } from "../server/connector-run-config.ts";
+import type { ConnectorInstanceConfigStore } from "../server/stores/connector-instance-config-store.ts";
 import { readStoredCollectionScope } from "../server/local-collection-scope.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
@@ -495,6 +497,13 @@ export interface RuntimeRunConnectorOptions {
   collectionMode?: RuntimeCollectionMode;
   /** Durable structured-attention store override for tests. */
   connectorAttentionStore?: AttentionWriterOptions["store"];
+  /**
+   * Owner-confirmed connector-config store override for tests and integration
+   * seams. Defaults to `getDefaultConnectorInstanceConfigStore()` when
+   * omitted. Only `getActiveRevision` is used: a run reads configuration
+   * exclusively from an ACTIVE revision, never a proposed one.
+   */
+  connectorConfigStore?: Pick<ConnectorInstanceConfigStore, "getActiveRevision">;
   connectorId: string;
   connectorInstanceId?: string | null;
   connectorPath: string;
@@ -2211,6 +2220,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   const explicitlyRequestedStreams = requestedRuntimeStreams(providedScope);
   const declaredCollectionScope = readStoredCollectionScope(state).scope;
   const startScope = buildStartScope(manifest, providedScope, declaredCollectionScope?.since ?? null);
+  // The connection's owner-CONFIRMED connector configuration, read from the
+  // propose/confirm revision spine. `resolveRunConnectorOptions` returns a
+  // config only for a revision the store reports `active`; a `proposed`
+  // (unconfirmed) collection_scope revision resolves to null and this run
+  // collects against manifest defaults instead. This is the only read path
+  // from that spine into a run — see server/connector-run-config.ts for why it
+  // fails closed and why it does not ride in on `state`.
+  const startConnectorOptions = await resolveRunConnectorOptions({
+    connectorInstanceId: resolvedConnectorInstanceId,
+    onDecision: (decision) => onProgress({ reference_only: true, type: "CONNECTOR_CONFIG_DECISION", ...decision }),
+    ...(opts.connectorConfigStore ? { store: opts.connectorConfigStore } : {}),
+  });
   const startCollectionMode = validateCollectionMode(collectionMode);
   const startState = persistState ? validateStartState(state) : null;
   // §4.3: validate and normalize recoveryOnly — must be a boolean if provided
@@ -2585,6 +2606,10 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     scope: startScope,
     state: startState,
     type: "START",
+    // Owner-confirmed connector configuration. Omitted entirely when no
+    // active revision exists, so a connector's `readOptions` falls through to
+    // its manifest defaults exactly as it did before this field existed.
+    ...(startConnectorOptions ? { connector_options: startConnectorOptions } : {}),
     // §4.3 (SLVP-ideal): forward recovery-only mode so the connector suppresses
     // the forward walk / list-phase fetches while the source-pressure cooldown
     // is active. Only included when true to keep the wire format backward-compat.
