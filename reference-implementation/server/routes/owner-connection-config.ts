@@ -30,6 +30,31 @@
 //    activation (only `confirm` does), but a caller that could forge
 //    attribution would defeat the ledger's purpose as an audit record.
 //
+// The options SCHEMA rides on `GET .../config` rather than getting its own
+// endpoint. That follows how this codebase already exposes manifest-derived
+// descriptive data: `owner-connector-templates.ts` inlines `setup_plan` (a
+// derived descriptor built from the manifest) on the template row instead of
+// carving out a `/setup-plan` sub-resource, and `owner-connection-intent.ts`
+// deliberately inlines state "without a second round trip". A sub-resource
+// here is reserved for things with their own lifecycle -- `collection-scope`
+// is GET/PUT/DELETE, `config/revisions` is an append-only ledger. The schema
+// is immutable read-only derivation, and a console rendering the config form
+// needs it in the SAME breath as `active_revision`/`base_revision`, so
+// splitting it would only buy a guaranteed second request.
+//
+// `options_schema_status` exists because "declared no options" and "has not
+// declared its options yet" are DIFFERENT owner-facing facts, and only 3 of
+// the 45 shipped manifests declare an `options_schema` at all. A bare `{}` or
+// `[]` would render as "this connector has no options", which is a claim the
+// server cannot support for the other 42 -- the truth is that nobody has
+// described them yet. This mirrors how the codebase already spends a distinct
+// enum value on absent-vs-present-but-empty (`ref-device-exporters.ts`
+// `deriveSourceInstanceOutboxState`: "unknown" for absent diagnostics,
+// "drained" for present-and-empty) and how `owner-connections.ts` surfaces
+// `label_status` so a caller can tell an owner-chosen value from a fallback
+// without re-deriving the rules. The route never synthesises a schema from
+// env vars or connector code; an undeclared connector reports the gap.
+//
 // Conflict mapping: `ConfigStaleWriteError` becomes
 // `connector_instance_config_stale_write` -> 409, matching how this codebase
 // reports every other optimistic-concurrency / wrong-state conflict
@@ -39,6 +64,14 @@
 // current revision/epoch so the caller can rebase explicitly rather than
 // re-reading and racing again.
 
+import type {
+  ResolvedConfigOption,
+  ResolvedConnectorOptionsSchema,
+} from "../../../packages/polyfill-connectors/src/connector-options-schema.ts";
+import {
+  ConnectorOptionsSchemaError,
+  connectorOptionsSchema as defaultConnectorOptionsSchema,
+} from "../../../packages/polyfill-connectors/src/connector-options-schema.ts";
 import type {
   ConfigOrigin,
   ConfigRevision,
@@ -71,6 +104,13 @@ interface AppLike {
 }
 
 export interface MountOwnerConnectionConfigContext {
+  /**
+   * Resolves a connector's declared options schema, or `null` when it
+   * declares none. Injected so a test can drive the undeclared and
+   * malformed-manifest paths without a scratch manifest directory; defaults
+   * to the real manifest-backed resolver.
+   */
+  connectorOptionsSchema?: (connectorKey: string) => ResolvedConnectorOptionsSchema | null;
   /** Resolves the AUTHENTICATED owner subject from the request. Never the body. */
   getOwnerTokenSubjectId: (req: unknown) => string;
   handleError: (res: unknown, err: unknown) => void;
@@ -135,6 +175,42 @@ function revisionForWire(revision: ConfigRevision): Record<string, unknown> {
     set_by: revision.setBy,
     source_of_change: revision.sourceOfChange,
     status: revision.status,
+  };
+}
+
+/**
+ * One option on the wire.
+ *
+ * `option_kind` and `platform_classified` are carried through verbatim from
+ * the resolver, which takes the kind from the PLATFORM registry and never
+ * from the manifest's own `declared_option_kind`. Dropping or recomputing
+ * either here would let a console present a `collection_scope` knob as
+ * self-activating -- the exact misrepresentation the propose/confirm split
+ * exists to prevent. `platform_classified: false` means the kind is the
+ * fail-closed `collection_scope` default (the registry has never heard of
+ * this key), which an owner-facing surface may want to say out loud.
+ */
+function optionForWire(option: ResolvedConfigOption): Record<string, unknown> {
+  return {
+    default: option.defaultValue,
+    description: option.description,
+    enum: option.enumValues,
+    maximum: option.maximum,
+    minimum: option.minimum,
+    object: "connector_config_option",
+    option_key: option.optionKey,
+    option_kind: option.optionKind,
+    platform_classified: option.platformClassified,
+    type: option.type,
+  };
+}
+
+function optionsSchemaForWire(schema: ResolvedConnectorOptionsSchema): Record<string, unknown> {
+  return {
+    connector_key: schema.connectorKey,
+    description: schema.description,
+    object: "connector_config_options_schema",
+    options: schema.options.map((option) => optionForWire(option)),
   };
 }
 
@@ -243,6 +319,47 @@ function classifyStoreError(err: unknown): { code: string; message: string; stat
   return null;
 }
 
+/**
+ * The three honest answers to "what can the owner configure here?".
+ *
+ * `declared`     the manifest declares an options_schema; `options_schema` is
+ *                present. An empty `options` array under this status is a real
+ *                claim: the connector says it has no knobs.
+ * `not_declared` the manifest declares none. This is NOT "no options exist" --
+ *                it is "nobody has described this connector's options yet", the
+ *                state 42 of 45 shipped manifests are in. A form must say so
+ *                rather than render an empty, authoritative-looking one.
+ * `unreadable`   the manifest declares one but it is malformed. Reported as a
+ *                typed error, never as an empty or partial schema.
+ */
+type OptionsSchemaStatus = "declared" | "not_declared" | "unreadable";
+
+interface ResolvedSchemaOutcome {
+  readonly schema: ResolvedConnectorOptionsSchema | null;
+  readonly status: OptionsSchemaStatus;
+}
+
+/**
+ * Resolve the connector's options schema without ever inventing one.
+ *
+ * A malformed manifest surfaces as `unreadable` so the caller can map it to a
+ * typed 400 instead of letting `ConnectorOptionsSchemaError` -- a plain Error
+ * with no `code` -- fall through `handleError` into an opaque 500 (see
+ * `handleError` in server/index.ts: `codeToStatus[code] || 500`).
+ */
+function resolveOptionsSchema(ctx: MountOwnerConnectionConfigContext, connectorKey: string): ResolvedSchemaOutcome {
+  const resolve = ctx.connectorOptionsSchema ?? defaultConnectorOptionsSchema;
+  try {
+    const schema = resolve(connectorKey);
+    return schema ? { schema, status: "declared" } : { schema: null, status: "not_declared" };
+  } catch (err) {
+    if (err instanceof ConnectorOptionsSchemaError) {
+      return { schema: null, status: "unreadable" };
+    }
+    throw err;
+  }
+}
+
 function buildGetActiveHandler(ctx: MountOwnerConnectionConfigContext): RouteHandler {
   return async (req: RouteRequest, res: RouteResponse) => {
     try {
@@ -256,6 +373,21 @@ function buildGetActiveHandler(ctx: MountOwnerConnectionConfigContext): RouteHan
         ctx.store.getActiveRevision(namespace.connectorInstanceId),
         ctx.store.getCurrentPointer(namespace.connectorInstanceId),
       ]);
+      // The connector key comes from the resolved namespace, which
+      // `server/index.ts` has already canonicalized (`canonicalConnectorKey`),
+      // so it matches the `connector_key` the manifest resolver keys on.
+      const resolved = resolveOptionsSchema(ctx, namespace.connectorId);
+      if (resolved.status === "unreadable") {
+        // A malformed manifest is a 400-class authoring defect, not a server
+        // fault, and it must never degrade into a silently empty form.
+        ctx.pdppError(
+          res,
+          400,
+          "connector_invalid",
+          `connector ${namespace.connectorId} declares a malformed options_schema; it cannot be rendered as a config form`
+        );
+        return;
+      }
       // `base_revision`/`base_epoch` are surfaced here because they are exactly
       // what a subsequent propose must echo back. A connection with no pointer
       // yet reports the store's own starting base (revision 0, epoch 1) rather
@@ -265,8 +397,14 @@ function buildGetActiveHandler(ctx: MountOwnerConnectionConfigContext): RouteHan
         base_epoch: pointer?.storageEpoch ?? 1,
         base_revision: pointer?.activeRevision ?? 0,
         connection_id: namespace.connectorInstanceId,
+        connector_key: namespace.connectorId,
         current: pointerForWire(pointer),
         object: "connector_config",
+        // `null` here NEVER means "no options exist" -- read
+        // `options_schema_status` to tell an undeclared connector from one
+        // that declares an empty form.
+        options_schema: resolved.schema ? optionsSchemaForWire(resolved.schema) : null,
+        options_schema_status: resolved.status,
       });
     } catch (err) {
       ctx.handleError(res, err);
