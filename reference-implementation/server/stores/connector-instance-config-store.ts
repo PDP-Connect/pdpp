@@ -41,7 +41,7 @@
 import { getMany, getOne, referenceQueries, writeTransaction } from "../../lib/db.ts";
 import { resolveEnforcedOptionKind } from "../../../packages/polyfill-connectors/src/connector-config-option-kind-registry.ts";
 import { getDb } from "../db.ts";
-import { postgresQuery } from "../postgres-storage.ts";
+import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 /** A config revision shapes what a connector collects, or only how it collects. */
 export type ConfigOptionKind = "collection_scope" | "transport";
@@ -594,4 +594,27 @@ export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceC
       return result.rows.map((row) => mapRevisionRow(row));
     },
   };
+}
+
+export function createConnectorInstanceConfigStore(): ConnectorInstanceConfigStore {
+  return isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceConfigStore()
+    : createSqliteConnectorInstanceConfigStore();
+}
+
+let defaultStore: ConnectorInstanceConfigStore | null = null;
+let defaultStoreBackend: string | null = null;
+
+/**
+ * Process-wide store bound to the active storage backend. Re-created when the
+ * backend changes so a test that switches SQLite<->Postgres mid-process does
+ * not keep talking to the previous backend.
+ */
+export function getDefaultConnectorInstanceConfigStore(): ConnectorInstanceConfigStore {
+  const backend = getStorageBackendKind();
+  if (!defaultStore || defaultStoreBackend !== backend) {
+    defaultStore = createConnectorInstanceConfigStore();
+    defaultStoreBackend = backend;
+  }
+  return defaultStore;
 }

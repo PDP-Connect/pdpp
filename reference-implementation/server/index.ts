@@ -311,6 +311,7 @@ import { mountAsPolyfillConnectorDetail, mountAsPolyfillConnectorRegister } from
 import { mountClientMetadata } from "./routes/client-metadata.ts";
 import { mountHostedUiCss } from "./routes/hosted-ui-asset.ts";
 import { mountOwnerConnectionCollectionScope } from "./routes/owner-connection-collection-scope.ts";
+import { mountOwnerConnectionConfig } from "./routes/owner-connection-config.ts";
 import { mountOwnerConnectionDelete } from "./routes/owner-connection-delete.ts";
 import { mountOwnerConnectionDiagnostics } from "./routes/owner-connection-diagnostics.ts";
 import { mountOwnerConnectionIntent } from "./routes/owner-connection-intent.ts";
@@ -501,6 +502,7 @@ import {
 } from "./stores/client-event-subscription-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
+import { getDefaultConnectorInstanceConfigStore } from "./stores/connector-instance-config-store.ts";
 import {
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
@@ -7179,6 +7181,24 @@ function buildRsApp(opts: ServerOpts = {}) {
       resolveOwnerConnectorNamespace,
     } as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[1]
   );
+
+  // The owner's read/write surface for a connection's attributed
+  // configuration-revision ledger. `propose` appends an immutable revision;
+  // `confirm` is the ONLY way a collection-shaping revision becomes active,
+  // and it takes the owner subject from the authenticated bearer session
+  // (`getOwnerTokenSubjectId`), never from the request body — a body-supplied
+  // owner subject would make owner confirmation forgeable by any agent
+  // holding the token. The runtime reads the confirmed result at run start
+  // via `server/connector-run-config.ts`.
+  mountOwnerConnectionConfig(app as unknown as Parameters<typeof mountOwnerConnectionConfig>[0], {
+    getOwnerTokenSubjectId,
+    handleError,
+    pdppError,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    store: getDefaultConnectorInstanceConfigStore(),
+  } as unknown as Parameters<typeof mountOwnerConnectionConfig>[1]);
 
   // POST /v1/owner/connections/:connectionId/run and
   // POST /v1/owner/connectors/:connectorId/run are the bearer-authed owner-agent
