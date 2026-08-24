@@ -62,9 +62,9 @@ The board has five seats, all elected by Partners.
 
 The board:
 
-- sets the conformance criteria and the currency requirements in §4.6;
-- grants and withdraws status, on the recommendation of a reviewer;
-- hears appeals under §4.7;
+- sets the conformance criteria and the currency requirements in §4.7;
+- grants and withdraws status, on the recommendation of the technical committee;
+- hears appeals under §4.8;
 - appoints the technical committee;
 - represents the programme to the Linux Foundation;
 - publishes its decisions.
@@ -86,15 +86,15 @@ In addition to serving as a board member, the Chair:
 The board appoints a technical committee. The committee:
 
 - maintains the conformance test suite;
-- publishes the review standard and trains the reviewer pool;
-- arbitrates disputes between reviewers;
+- reviews submissions and recommends that status be granted or refused;
+- publishes the review standard it applies;
 - receives and considers community-proposed changes to the specification;
 - runs the change processes listed in §5;
 - recommends versions for publication.
 
-The committee is a technical body. It does not grant or withdraw status under §4 and does not set membership terms.
+The committee is an expert panel. It recommends, and the board decides. It does not grant or withdraw status under §4 and does not set membership terms.
 
-Committee size and terms are set by the board. Appointment requires demonstrated technical qualification: contribution to the specification or its reference implementation, or equivalent standing in authorization, identity, or data portability standards work. The board publishes the qualification criteria it applies and the basis on which each appointment is made.
+Committee size and terms are set by the board, and members serve at the board's discretion. Appointment requires demonstrated technical qualification: contribution to the specification or its reference implementation, or equivalent standing in authorization, identity, or data portability standards work. The board publishes the qualification criteria it applies and the basis on which each appointment is made.
 
 ### 2.4 Elections, terms and removal
 
@@ -154,15 +154,15 @@ Each tier states who decides it.
 
 **Supporter.** A public statement of support. No implementation required, no assessment. Listed by name. *Self-declared. Nobody grants it, and it can be withdrawn by the company at any time.*
 
-**Partner.** The company holds at least one status under §4.2. The register entry states which. Partners participate in working groups, receive drafts ahead of publication, and vote under §2.5. *Granted by the board, on the recommendation of a reviewer, under §4.1. Withdrawn the same way.*
+**Partner.** The company holds at least one status under §4.3. The register entry states which. Partners participate in working groups, receive drafts ahead of publication, and vote under §2.5. *Granted by the board, on the recommendation of the technical committee, under §4.2. Withdrawn the same way.*
 
 **Steward.** The company holds no custody of user data and operates where the data lives.
 
 Steward opens at programme live as a declared commitment: the company states publicly that it takes no custody, and the register records the claim as declared. It converts to a confirmed Steward on Verified Operator status, once the test suite is published. Declared and confirmed are shown distinctly on the register.
 
-*Declared Steward is self-declared. Confirmed Steward is granted by the board under §4.1.*
+*Declared Steward is self-declared. Confirmed Steward is granted by the board under §4.2.*
 
-The board is the only body that grants or withdraws a status. Reviewers recommend and the technical committee arbitrates between them, but neither grants. No fee, no membership, and no commercial relationship affects a grant. See §4.6.
+The board is the only body that grants or withdraws a status. The technical committee reviews and recommends; it does not grant. No fee, no membership, and no commercial relationship affects a grant. See §4.7.
 
 Membership carries no fee.
 
@@ -170,25 +170,45 @@ Membership carries no fee.
 
 ## 4. Conformance
 
-### 4.1 How status is obtained
+### 4.1 Who does what
 
-There is no accreditation body and there are no licensed assessors. Status is obtained by submission and review in the open.
+**The board** grants and withdraws status, sets the criteria, and hears appeals. It is the only body that grants.
 
-1. The applicant runs the open source conformance test suite against its implementation.
-2. The applicant submits its results as a pull request to the conformance repository, together with the participation form.
-3. A reviewer examines the submission in public against the published review standard and recommends that it be granted or refused, with reasons.
-4. The board grants or refuses on that recommendation.
-5. On grant, the result is published to the register.
+**The technical committee** examines every submission in public against the published review standard and recommends that status be granted or refused, with reasons. It maintains the conformance test suite and the review standard it applies. Members are named on every recommendation they make.
 
-Anyone may reproduce a published result by running the same suite against the same implementation.
+The committee is an expert panel, not a tier of management. It is appointed by the board, serves at the board's discretion, and does not grant status.
 
-**The reviewer pool.** Reviews are carried out by volunteer reviewers trained by the technical committee against a published review standard. Reviewers are named on every recommendation they make. Where reviewers disagree, the technical committee arbitrates. The board grants; a reviewer does not.
+**The Chair** administers submissions and maintains the register.
 
-**Source submissions are reviewed, not tested.** No test suite establishes whether a description is accurate. A Source submission is examined against the published criteria for accuracy and completeness of what the connector produces.
+There is no accreditation body and there are no licensed assessors. During the interim period in §2.6, the maintainers act in place of both the board and the committee.
 
-**Recognition.** The board may recognise an external register as an alternative basis for a named status where that register makes the equivalent finding. Recognised registers are named individually with the reasoning published. At programme live the recognised list holds one entry: the Data Transfer Initiative's Data Trust Registry, recognised as a basis for Verified Accessor under §4.4.
+### 4.2 How status is obtained
 
-### 4.2 Statuses
+Four steps, the same for every status:
+
+1. **Submit.** The applicant opens a pull request containing the evidence for the status sought, together with the participation form.
+2. **Review.** The technical committee examines the submission in public against the published review standard and recommends that it be granted or refused, with reasons.
+3. **Grant.** The board grants or refuses on that recommendation.
+4. **Publish.** The result is published to the register.
+
+What is submitted at step 1 differs by status:
+
+| Status | What the applicant submits |
+| --- | --- |
+| Verified Source | The published description, and a named party accepting accountability for its accuracy |
+| Official Source | The same, plus the identifier check in Discovery and Trust §2, which is mechanical |
+| Verified Accessor | Identity and vetting evidence against the published criteria |
+| Verified Operator | Results of the open source conformance test suite, run by the applicant |
+
+Only Verified Operator involves a test suite. Source and Accessor submissions are assessed rather than tested, because no suite establishes whether a description is accurate or whether a party is who it claims to be.
+
+Anyone may reproduce a published Verified Operator result by running the same suite against the same implementation.
+
+**Recognition short-circuits steps 1 to 3.** Where a recognised external register has already made the equivalent finding, the board recognises it and the result is published.
+
+The board may recognise an external register as an alternative basis for a named status where that register makes the equivalent finding. Recognised registers are named individually with the reasoning published. At programme live the recognised list holds one entry: the Data Transfer Initiative's Data Trust Registry, recognised as a basis for Verified Accessor under §4.5.
+
+### 4.3 Statuses
 
 Four statuses. Each belongs to exactly one role, as defined in Core §2.
 
@@ -198,14 +218,14 @@ Four statuses. Each belongs to exactly one role, as defined in Core §2.
 
 | Status | Role | Finding | How established | Opens |
 | --- | --- | --- | --- | --- |
-| Verified Source | Source | The published description is accurate and a named party is accountable for it. | Review and grant | Programme live |
-| Official Source | Source | Verified, and the publisher is authenticated as the platform itself. Carries an official tag and display priority. | Review, grant, and identifier check | Programme live |
-| Verified Accessor | Accessor | The party is who it claims to be and has been vetted. | Recognition, or review and grant | Programme live |
-| Verified Operator | Operator | The implementation conforms to Core §9. | Test suite submission | Publication of the test suite |
+| Verified Source | Source | The published description is accurate and a named party is accountable for it. | Assessed | Programme live |
+| Official Source | Source | Verified, and the publisher is authenticated as the platform itself. Carries an official tag and display priority. | Assessed, plus identifier check | Programme live |
+| Verified Accessor | Accessor | The party is who it claims to be and has been vetted. | Assessed, or recognised | Programme live |
+| Verified Operator | Operator | The implementation conforms to Core §9. | Tested | Publication of the test suite |
 
-### 4.3 Source statuses
+### 4.4 Source statuses
 
-**Verified Source.** The published description is assessed against the data it describes, and a named party accepts accountability for its accuracy.
+**Verified Source.** The published description is assessed against the data it describes, and a named party accepts accountability for its accuracy. There is no test suite for this status. See §4.2.
 
 **Official Source.** Verified Source, plus authentication that the publisher is the platform whose data is described. Authentication uses the check in Discovery and Trust §2: `source.id` must be identical to the accepted protected-resource identifier, and the authorization server rejects any mismatch before consent.
 
@@ -219,29 +239,29 @@ Existing grants remain bound to the declaration snapshot they were issued agains
 
 **Why source descriptions carry the most weight.** A description that is wrong corrupts consent at its input, and nothing downstream catches it, because the system then behaves exactly as specified.
 
-### 4.4 Accessor status
+### 4.5 Accessor status
 
 The question is whether the party is who it claims to be.
 
 Two routes lead to Verified Accessor. Both confer the same status. The register records which was used.
 
-**Recognition.** A recognised external register has already made the equivalent finding under §4.1.
+**Assessment.** The applicant submits identity and vetting evidence through the four steps in §4.2.
 
-**Review.** A reviewer examines the submission against published identity and vetting criteria under §4.1, and the board grants on that recommendation.
+**Recognition.** A recognised external register has already made the equivalent finding, and the board recognises it rather than repeating it. See §4.2.
 
 Both routes exist because the populations differ. The Data Trust Registry vets services seeking access to platforms' portability interfaces. An accessor operating against a personal server may never approach one, and so may have no basis to appear there.
 
 Verified Accessor by either route is a positive trust signal for Core §6, which requires an authorization server to render verified status distinctly where it holds such a signal and to treat a client as unverified where it does not. Neither route is exclusive: an authorization server may recognise other signals, including local registration and domain verification, under its own policy.
 
-### 4.5 Operator status
+### 4.6 Operator status
 
-**Verified Operator.** The applicant runs the conformance test suite against its authorization server and resource server implementation and submits the results under §4.1.
+**Verified Operator.** The applicant runs the conformance test suite against its authorization server and resource server implementation and submits the results under §4.2.
 
 Core §9 notes that a conformance test suite is planned and not defined in v0.1. The suite is published within three months of programme live, and Verified Operator opens on its publication. Until then operator conformance is self-asserted and PDP-Connect makes no finding about it.
 
-### 4.6 Rules common to all statuses
+### 4.7 Rules common to all statuses
 
-**Grounds.** Standing depends on conduct alone. It does not depend on membership or on any commercial relationship with PDP-Connect or its members. A party that has never held membership may hold any status in §4.2.
+**Grounds.** Standing depends on conduct alone. It does not depend on membership or on any commercial relationship with PDP-Connect or its members. A party that has never held membership may hold any status in §4.3.
 
 **Change.** A Source description is versioned, and every version is compared against the one before it. A change that widens scope, meaning a new stream, a new field, or a new endpoint, returns to review before the new version carries the status. Any other change passes automatically and is recorded.
 
@@ -249,11 +269,11 @@ Core §9 notes that a conformance test suite is planned and not defined in v0.1.
 
 **Withdrawal.** Every status is revocable on evidence. Status held by recognition lapses when the underlying registry membership lapses, and an authorization server relying on it is responsible for ceasing to render verified status. Status held by submission is withdrawn by the board.
 
-**Scope.** A status is granted for a named role and does not extend to any other. A recognised external register confers only the status §4.1 names it for.
+**Scope.** A status is granted for a named role and does not extend to any other. A recognised external register confers only the status §4.2 names it for.
 
 **The register.** The register is authoritative and any badge or mark is a pointer to it. It shows lapsed and withdrawn status alongside current status, with the date, the ground, the specification version, and the route by which the status was held.
 
-### 4.7 Reports and appeals
+### 4.8 Reports and appeals
 
 **Reports.** Anyone may report a source description as inaccurate, or any other conduct bearing on a status, to reports@pdpp.dev.
 
