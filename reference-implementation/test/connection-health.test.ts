@@ -15,10 +15,11 @@ const TOP_LEVEL_REGEX_13 = /cannot read its last saved state/i;
 const TOP_LEVEL_REGEX_14 = /no failed uploads to retry/i;
 const TOP_LEVEL_REGEX_15 = /run the local collector again/i;
 const TOP_LEVEL_REGEX_16 = /saved records that failed to upload/i;
-const TOP_LEVEL_REGEX_17 = /recover local collector uploads/i;
+const TOP_LEVEL_REGEX_17 = /upload records stuck on your computer/i;
 const TOP_LEVEL_REGEX_18 = /dead[- ]letter/i;
 const TOP_LEVEL_REGEX_19 = /temporary server or network errors/i;
 const TOP_LEVEL_REGEX_20 = /runs only when you sync it/i;
+const TOP_LEVEL_REGEX_21 = /local collector/i;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -2348,6 +2349,11 @@ test("local exporter: dead_letter_backlog renders owner-readable failed-upload c
   assert.match(exporter?.remediation?.label ?? "", TOP_LEVEL_REGEX_17);
   assert.doesNotMatch(exporter?.message ?? "", TOP_LEVEL_REGEX_18);
   assert.doesNotMatch(exporter?.remediation?.label ?? "", TOP_LEVEL_REGEX_3);
+  // "local collector" is jargon for the program on the owner's own machine.
+  // This label is read by a non-engineer, so it must name the machine, not
+  // the component. Kept in lockstep with `stalledOutboxRemediation`'s own
+  // dead-letter label in `rendered-verdict.ts`.
+  assert.doesNotMatch(exporter?.remediation?.label ?? "", TOP_LEVEL_REGEX_21);
   assert.equal(findCondition(snap, "BacklogClear")?.reason, CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG);
 });
 
