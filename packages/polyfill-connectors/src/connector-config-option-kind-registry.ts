@@ -31,7 +31,15 @@ interface ConnectorOptionKinds {
 /**
  * connector_key -> option key -> platform-decided kind. Only connectors
  * migrated onto the config spine need an entry; a connector absent here
- * has no options_schema wired yet and is not affected by this registry.
+ * falls back to `collection_scope` for every option, so it is over-restricted
+ * rather than under-restricted.
+ *
+ * Keys here are written in the manifest DIRECTORY form (`claude_code`), while
+ * a manifest's own `connector_key` is the canonical hyphenated form
+ * (`claude-code`). Lookups normalize both sides -- see `normalizeConnectorKey`.
+ * Without that, `claude-code` missed `claude_code` entirely and every option
+ * silently fell through to the default: safe, but it made the registry's
+ * decisions dead letters and left the honesty test with nothing to compare.
  */
 const PLATFORM_OPTION_KINDS: Readonly<Record<string, ConnectorOptionKinds>> = Object.freeze({
   claude_code: Object.freeze({
@@ -68,8 +76,18 @@ const PLATFORM_OPTION_KINDS: Readonly<Record<string, ConnectorOptionKinds>> = Ob
  * transport" and default to the collection_scope (never-self-activating)
  * path, never to transport.
  */
+/**
+ * Manifests carry the canonical hyphenated `connector_key` (`claude-code`);
+ * this registry is written in the underscored directory form (`claude_code`).
+ * Normalizing to one form makes the lookup independent of which spelling the
+ * caller happens to hold.
+ */
+function normalizeConnectorKey(connectorKey: string): string {
+  return connectorKey.replaceAll("-", "_");
+}
+
 export function platformOptionKind(connectorKey: string, optionKey: string): ConfigOptionKind | null {
-  return PLATFORM_OPTION_KINDS[connectorKey]?.[optionKey] ?? null;
+  return PLATFORM_OPTION_KINDS[normalizeConnectorKey(connectorKey)]?.[optionKey] ?? null;
 }
 
 /**
