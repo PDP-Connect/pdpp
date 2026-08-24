@@ -23,6 +23,10 @@ import test from "node:test";
 
 import type { ResolvedConnectorOptionsSchema } from "../../packages/polyfill-connectors/src/connector-options-schema.ts";
 import { ConnectorOptionsSchemaError } from "../../packages/polyfill-connectors/src/connector-options-schema.ts";
+import {
+  platformOptionKind,
+  resolveEnforcedOptionKind,
+} from "../../packages/polyfill-connectors/src/connector-config-option-kind-registry.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { mountOwnerConnectionConfig } from "../server/routes/owner-connection-config.ts";
 import { codeToStatus } from "../server/routes/ref-error-status.ts";
@@ -684,11 +688,36 @@ test(
   "an unregistered connector's options fail CLOSED to collection_scope and say the registry never classified them",
   withDb(async () => {
     seedConnectorInstance(CONNECTION_ID);
-    // claude-code's manifest declares options, but the platform registry keys
-    // that connector as `claude_code` (underscore), so the hyphenated
-    // canonical key is unclassified. The safe direction: every field requires
-    // an owner confirm, and `platform_classified: false` says so out loud.
-    const harness = mountHarness(OWNER_SUBJECT_ID, { connectorKey: "claude-code" });
+    // A connector the platform registry has never classified. The safe
+    // direction: every field requires an owner confirm, and
+    // `platform_classified: false` says so out loud.
+    //
+    // This originally used `claude-code`, whose manifest declares options while
+    // the registry keyed it `claude_code` — so the hyphenated canonical key
+    // missed and the fixture was "unregistered" only by accident. `cb29060b0`
+    // normalized the lookup, which is what SHOULD happen for a real connector,
+    // and correctly broke that fixture. The invariant under test is unchanged;
+    // it now needs a connector genuinely absent from the registry.
+    //
+    // `notion` is such a connector, but it declares no options_schema, so the
+    // shape is injected here while the KIND still resolves through the real
+    // registry — which is the rule under test.
+    const harness = mountHarness(OWNER_SUBJECT_ID, {
+      connectorKey: "notion",
+      connectorOptionsSchema: (connectorKey: string) => ({
+        connectorKey,
+        options: [
+          {
+            name: "NOTION_PAGE_ALLOWLIST",
+            type: "string_array" as const,
+            default: [],
+            description: "Pages to collect.",
+            optionKind: resolveEnforcedOptionKind(connectorKey, "NOTION_PAGE_ALLOWLIST"),
+            platformClassified: platformOptionKind(connectorKey, "NOTION_PAGE_ALLOWLIST") !== null,
+          },
+        ],
+      }),
+    });
 
     const res = await call(harness, GET_ACTIVE_ROUTE, {
       params: { connectionId: CONNECTION_ID },
