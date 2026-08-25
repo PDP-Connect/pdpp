@@ -23,11 +23,11 @@ import { composeFleetHealthVerdict } from "../server/fleet-health.ts";
  * against nothing.
  *
  * Note this cast was INVISIBLE to `health-verdict-fixture-no-shape-cast.test.ts`,
- * which bans `as unknown as ConnectionHealthSnapshot` by NAME. Reaching the
- * same producer type indirectly (`Parameters<typeof fn>[0]`, then
- * `FleetSummary`'s `Pick` of `ConnectorSummary.connection_health`) walks
- * straight past that regex. Typing the builders is what actually closes the
- * hole here, rather than widening a name-matching ban.
+ * which bans the double-cast form by PRODUCER NAME. Reaching the same producer
+ * type indirectly (`Parameters<typeof fn>[0]`, then `FleetSummary`'s `Pick` of
+ * `ConnectorSummary.connection_health`) walks straight past that regex. Typing
+ * the builders is what actually closes the hole here, rather than widening a
+ * name-matching ban.
  *
  * `Partial<...>` overrides (not `Record<string, unknown>`) keep every call
  * site's customisation expressive while still checking each key against the
@@ -85,6 +85,16 @@ function inventory(id: string, overrides: Partial<FleetConfiguredConnection> = {
  * is everything else in this file — `FleetSummary`, `OwnerState`,
  * `RequiredAction` and `FleetConfiguredConnection` are all compiler-checked
  * now, which is where the actual drift had already accumulated.
+ *
+ * AND ONE HONEST CAVEAT ABOUT THE GUARD. `health-verdict-fixture-no-shape-cast.test.ts`
+ * matches the PRODUCER'S OWN type name, so a double cast spelled with that
+ * name is banned, while the line below — which targets the local alias
+ * `ConnectionHealth` (= `FleetSummary["connection_health"]`, the same type
+ * under a different name) — is outside its reach. The alias is used here
+ * because it is how this file already refers to the type, not to evade the
+ * ban; but a reader should know the ban is name-based and an alias sits
+ * outside it. The two casts left in this file are deliberate and documented,
+ * and neither is load-bearing for anything the producer reads today.
  */
 function summary(id: string, overrides: Partial<FleetSummary> = {}): FleetSummary {
   const base = {
@@ -208,14 +218,40 @@ function renderedVerdict(
   return {
     annotations: [],
     channel,
-    detail: {},
+    detail: {
+      collection_rate: null,
+      conditions: [],
+      detail_gap_backlog: null,
+      dominant_condition_id: null,
+      forward_disposition: "complete",
+      next_attempt_at: null,
+      reason_code: null,
+      state: "healthy",
+      suppressed: [],
+    },
     forward_statement: "",
-    pill: {},
-    progress: {},
+    pill: { label: "Healthy", tone: "green" },
+    progress: {
+      gaps_drained_last_run: null,
+      headline: "",
+      last_refreshed_at: null,
+      mode: "scheduled",
+      records_committed_last_run: null,
+      retained_records: null,
+    },
     required_actions: requiredActions,
     streams: [],
-    trace: {},
-  } as unknown as RenderedVerdict;
+    trace: {
+      channel_cause: "",
+      detail_destinations: [],
+      primary_action_kind: null,
+      runtime_capped: false,
+      satisfied_when: null,
+      suppressed_evidence: [],
+      tone_cause: "green",
+      tone_inputs: [],
+    },
+  };
 }
 
 test("ChatGPT owner action, USAA recovery gap, Chase code fix, and Slack policy stay distinct from coverage pass", () => {
