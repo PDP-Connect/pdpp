@@ -15,7 +15,7 @@
  */
 
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, test } from "node:test";
+import { test } from "node:test";
 import type { BrowserContext, Locator, Page } from "playwright";
 
 import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
@@ -85,16 +85,14 @@ function makeFakePage(state: FakePageState): Page {
   return page as Page;
 }
 
-const ORIGINAL_ENV = { ...process.env };
-
-beforeEach(() => {
-  process.env.AMAZON_USERNAME = "owner@example.test";
-  process.env.AMAZON_PASSWORD = "correct-horse";
-});
-
-afterEach(() => {
-  process.env = { ...ORIGINAL_ENV };
-});
+// `ensureAmazonSession` resolves credentials from the explicit `credentials`
+// argument only (see `resolveLoginCredentials` / `login-credentials.ts`) —
+// never from `process.env`. This fixture is threaded into every call below
+// that needs the automated-login (non-manual) path.
+const FAKE_CREDENTIALS: Readonly<Record<string, string | undefined>> = {
+  AMAZON_USERNAME: "owner@example.test",
+  AMAZON_PASSWORD: "correct-horse",
+};
 
 test("ensureAmazonSession invokes the checkpoint hook at each auth phase (non-2FA path)", async () => {
   // URL sequence:
@@ -133,6 +131,7 @@ test("ensureAmazonSession invokes the checkpoint hook at each auth phase (non-2F
     capture: null,
     checkpoint,
     context: fakeContext,
+    credentials: FAKE_CREDENTIALS,
     page,
     sendInteraction,
   });
