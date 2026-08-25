@@ -1887,7 +1887,31 @@ test("property: tone is worst-wins (never below base state) and (tone,channel) o
         for (const disposition of dispositions) {
           for (const attention of attentions) {
             for (const syncing of syncingValues) {
-              const conditions = attention === "open" ? [credentialRejectedCondition()] : [];
+              // `needs_attention`, `blocked` and `degraded` are never reachable
+              // with an empty condition set. The real projection only emits
+              // them from a FALSE condition: `AttentionClear` for
+              // `needs_attention` (`classifyOpenAttention`), a readiness or
+              // retry-policy blocker for `blocked` (`classifyReadinessBlocked`,
+              // `classifyRetryPolicyExhausted`), and
+              // `hasIndependentDegradingEvidence` — which is literally "some
+              // condition is false" — for `degraded`
+              // (`classifyDegradedEvidence`), all in `connection-health.ts`.
+              //
+              // Verified 2026-08-25 by sweeping the REAL producer: 720
+              // `computeConnectionHealth` inputs produced no
+              // `needs_attention`/`blocked` with a clean condition set, and
+              // 2,880 produced no such `degraded`.
+              //
+              // Leaving the set empty made this fixture assert on snapshots the
+              // producer cannot emit — a source claiming trouble while every
+              // condition reads clean — the same hand-built-fixture hazard
+              // `health-verdict-fixture-no-shape-cast.test.ts` documents. Give
+              // those states the failing condition they always carry in
+              // production.
+              const stateImpliesBlockingCondition =
+                state === "needs_attention" || state === "blocked" || state === "degraded";
+              const conditions =
+                attention === "open" || stateImpliesBlockingCondition ? [credentialRejectedCondition()] : [];
               const snap = snapshot({
                 axes: { attention, coverage, freshness },
                 badges: { syncing },
