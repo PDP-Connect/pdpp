@@ -177,9 +177,23 @@ test("every row in the fleet: CLI and console agree on dot, tone, label, and fus
         `${rowLabel}: pill label diverged — CLI="${cliRow.status.label}" page="${pageProjection.renderedStatus.label}"`
       );
     }
-    if (cliRow.fusedLine !== pageProjection.fusedStatus.line) {
+    // The CLI has NO fused line to compare yet — `fusedStatus` is the console's,
+    // and the CLI never calls `fuseSourceStatus`. That absence IS the defect:
+    // the card text the owner reads has no counterpart in the instrument that
+    // claims to report it.
+    //
+    // Asserting `undefined !== page.line` would pass trivially and prove
+    // nothing, so this records the missing field as its own divergence. The
+    // extraction that gives both surfaces one producer must replace this with
+    // a real comparison of the two fused lines.
+    const cliFusedLine = (cliRow as { fusedLine?: string }).fusedLine;
+    if (cliFusedLine === undefined) {
       divergences.push(
-        `${rowLabel}: fused summary line diverged — CLI="${cliRow.fusedLine}" page="${pageProjection.fusedStatus.line}"`
+        `${rowLabel}: CLI emits no fused summary line at all — page="${pageProjection.fusedStatus.line}"`
+      );
+    } else if (cliFusedLine !== pageProjection.fusedStatus.line) {
+      divergences.push(
+        `${rowLabel}: fused summary line diverged — CLI="${cliFusedLine}" page="${pageProjection.fusedStatus.line}"`
       );
     }
   }
