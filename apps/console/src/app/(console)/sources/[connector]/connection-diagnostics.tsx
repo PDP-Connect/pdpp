@@ -862,9 +862,7 @@ function LocalCollectorGapDiagnostics({ source }: { source: DeviceSourceInstance
       className={["pdpp-caption tabular-nums", localCollectorGapToneClass(gaps)].join(" ")}
       data-testid="diagnostics-local-gaps"
       title={
-        gaps.reasons.length > 0
-          ? `Reasons: ${gaps.reasons.map(localCollectorGapReasonLabel).join(", ")}`
-          : undefined
+        gaps.reasons.length > 0 ? `Reasons: ${gaps.reasons.map(localCollectorGapReasonLabel).join(", ")}` : undefined
       }
     >
       {formatLocalCollectorGaps(gaps)}
@@ -896,8 +894,7 @@ function formatLocalCollectorGaps(gaps: NonNullable<DeviceSourceInstance["local_
     return "Local gap diagnostics unreliable.";
   }
   if (gaps.pending_count > 0) {
-    const reason =
-      gaps.reasons.length > 0 ? ` · ${gaps.reasons.map(localCollectorGapReasonLabel).join(", ")}` : "";
+    const reason = gaps.reasons.length > 0 ? ` · ${gaps.reasons.map(localCollectorGapReasonLabel).join(", ")}` : "";
     return `${gaps.pending_count.toLocaleString()} local detail gap${
       gaps.pending_count === 1 ? "" : "s"
     } pending${reason}.`;
@@ -978,6 +975,17 @@ function outboxCauseExplanation(cause: RefActionRemediation["cause"], hostPhrase
       return `The server cannot read the collector's last saved state from ${hostPhrase}. Run ${commandPhrase} on ${hostPhrase}; no failed-upload retry is needed.`;
     case "stale_pending":
       return `The local collector has queued work that stopped moving on ${hostPhrase}. Run ${commandPhrase} on ${hostPhrase}.`;
+    // The server classified every failed upload as transient (see
+    // `deadLetterStalledCause` / `isCompleteTransientDeadLetterSummary`,
+    // runtime/connection-health.ts). Its own remediation is `action: "wait"`,
+    // so telling the owner to go run recovery commands on another host would
+    // overstate the problem — the retry is automatic.
+    case "transient_upload_failure":
+      return `The local collector on ${hostPhrase} hit temporary server or network errors while uploading. It retries on its own; no action is needed yet.`;
+    // Distinct from `stale_pending`: the QUEUE is not what stopped, the
+    // collector itself stopped checking in after reporting a start or retry.
+    case "stale_heartbeat":
+      return `The local collector on ${hostPhrase} reported it was starting or retrying, then stopped checking in. Run ${commandPhrase} on ${hostPhrase}.`;
     case "stalled_unknown":
       return `The local collector is not making progress on ${hostPhrase}. Run ${commandPhrase} on ${hostPhrase} to check it.`;
     default:
