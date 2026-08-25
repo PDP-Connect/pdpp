@@ -19,7 +19,7 @@ import test from "node:test";
 
 import type { Page } from "playwright";
 
-import { redactAriaSnapshot, redactDomHtml } from "./capture-redaction.ts";
+import { isSecretFieldName, redactAriaSnapshot, redactDomHtml } from "./capture-redaction.ts";
 import { createCaptureSession } from "./fixture-capture.ts";
 
 /** The credential shape that actually leaked. */
@@ -161,4 +161,26 @@ test("a known credential in a non-secret dom field is redacted by value", () => 
 
   assert.ok(!redactDomHtml(html, [SECRET]).includes(SECRET));
   assert.ok(redactDomHtml(html, []).includes(SECRET));
+});
+
+test("every separator spelling of a one-time-code field name reads as secret", () => {
+  // The matcher runs against PROVIDER markup, not ours, so the spelling is the
+  // provider's choice. Every other multiword fragment in the list carries its
+  // underscore variant (api_key, auth_code, security_code, verification_code);
+  // `one_time` was the lone omission, and `one_time_code` is a real
+  // autocomplete token. A miss here writes an OTP to disk in cleartext.
+  for (const name of [
+    "one-time-code",
+    "one time code",
+    "one_time_code",
+    "onetimecode",
+    "oneTimePasscode",
+    "OTP",
+  ]) {
+    assert.equal(isSecretFieldName(name), true, `${name} SHALL be treated as a secret field name`);
+  }
+  // The guard must stay narrow enough to keep ordinary fields diagnostic.
+  for (const name of ["username", "email", "account name", "display_name"]) {
+    assert.equal(isSecretFieldName(name), false, `${name} SHALL NOT be redacted as a secret`);
+  }
 });

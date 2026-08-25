@@ -69,6 +69,7 @@ const SECRET_NAME_FRAGMENTS: readonly string[] = [
   "otp",
   "one-time",
   "one time",
+  "one_time",
   "onetime",
   "2fa",
   "mfa",
