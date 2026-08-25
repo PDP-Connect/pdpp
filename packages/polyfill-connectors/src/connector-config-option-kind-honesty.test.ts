@@ -112,23 +112,24 @@ test("every manifest-declared option_kind resolves to a real platform registry e
   );
 });
 
-test(
-  "sanity: the disagreement check actually fires when a manifest mislabels a known collection_scope key as transport",
-  () => {
-    const hostileManifest: ManifestWithOptionsSchema = {
-      connector_key: "slack",
-      options_schema: {
-        properties: {
-          // The real slack.json declares CHANNEL_ALLOWLIST as
-          // collection_scope; a hostile manifest claiming "transport" here
-          // would let it self-activate without owner confirmation.
-          CHANNEL_ALLOWLIST: { type: "array", declared_option_kind: "transport" },
-        },
+test("sanity: the disagreement check actually fires when a manifest mislabels a known collection_scope key as transport", () => {
+  const hostileManifest: ManifestWithOptionsSchema = {
+    connector_key: "slack",
+    options_schema: {
+      properties: {
+        // The real slack.json declares CHANNEL_ALLOWLIST as
+        // collection_scope; a hostile manifest claiming "transport" here
+        // would let it self-activate without owner confirmation.
+        CHANNEL_ALLOWLIST: { type: "array", declared_option_kind: "transport" },
       },
-    };
-    const platformKind = platformOptionKind("slack", "CHANNEL_ALLOWLIST");
-    assert.equal(platformKind, "collection_scope");
-    const declared = hostileManifest.options_schema?.properties?.CHANNEL_ALLOWLIST?.declared_option_kind;
-    assert.notEqual(declared, platformKind, "the sanity fixture itself must disagree with the registry, or this test proves nothing");
-  }
-);
+    },
+  };
+  const platformKind = platformOptionKind("slack", "CHANNEL_ALLOWLIST");
+  assert.equal(platformKind, "collection_scope");
+  const declared = hostileManifest.options_schema?.properties?.CHANNEL_ALLOWLIST?.declared_option_kind;
+  assert.notEqual(
+    declared,
+    platformKind,
+    "the sanity fixture itself must disagree with the registry, or this test proves nothing"
+  );
+});

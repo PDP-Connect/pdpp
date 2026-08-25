@@ -53,6 +53,12 @@ import type { RecordData } from "@pdpp/connector-protocol";
 // construction boundary instead of two hand-rolled lifecycles.
 
 export interface CarryForwardCursor<T> {
+  /** Drop ids from the next map that were not `note`d this run. Idempotent.
+   *  Only valid on full-scan streams: a partial scan has no business
+   *  pruning ids it never looked at. If `note` was called zero times this
+   *  run, every prior id is dropped — the correct outcome for a requested
+   *  full-scan stream that returned zero records. */
+  dropUnseenIds: () => void;
   /** Record this id's fingerprint into the next-run map and the seen-set.
    *  Carry-forward and prune both depend on every observed id passing
    *  through here, even when the connector decides not to emit the record. */
@@ -62,12 +68,6 @@ export interface CarryForwardCursor<T> {
    *  the prior run's serialized fingerprint, never the one `note` recorded
    *  this run. */
   prior: (id: string) => T | undefined;
-  /** Drop ids from the next map that were not `note`d this run. Idempotent.
-   *  Only valid on full-scan streams: a partial scan has no business
-   *  pruning ids it never looked at. If `note` was called zero times this
-   *  run, every prior id is dropped — the correct outcome for a requested
-   *  full-scan stream that returned zero records. */
-  dropUnseenIds: () => void;
   /** Number of ids in the next map. */
   size: () => number;
   /** Serializable next-run map for STATE. */
@@ -137,12 +137,6 @@ export interface FingerprintCursorOptions {
 }
 
 export interface FingerprintCursor {
-  /** Prior cursor value for this id, if any. Use this when a connector
-   *  has a derived-field-preservation policy (e.g. Codex pulls counts
-   *  forward from the prior fingerprint when this run did not re-parse
-   *  the source). The primitive does not encode policy — it just
-   *  exposes the prior value. */
-  priorFingerprint: (id: string) => string | undefined;
   /** Drop ids from the next map that were not observed this run.
    *  Idempotent. Must only be called on streams whose run is a full
    *  scan, because partial-scan streams have no business pruning ids
@@ -151,6 +145,12 @@ export interface FingerprintCursor {
    *  outcome for a requested full-scan stream that returned zero
    *  records. */
   dropUnseenIds: () => void;
+  /** Prior cursor value for this id, if any. Use this when a connector
+   *  has a derived-field-preservation policy (e.g. Codex pulls counts
+   *  forward from the prior fingerprint when this run did not re-parse
+   *  the source). The primitive does not encode policy — it just
+   *  exposes the prior value. */
+  priorFingerprint: (id: string) => string | undefined;
   /** Returns `true` iff the record's fingerprint differs from the prior
    *  cursor value for this id (or no prior exists). Always records the
    *  computed fingerprint into the next map and the id into the seen

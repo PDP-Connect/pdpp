@@ -169,14 +169,7 @@ test("every separator spelling of a one-time-code field name reads as secret", (
   // underscore variant (api_key, auth_code, security_code, verification_code);
   // `one_time` was the lone omission, and `one_time_code` is a real
   // autocomplete token. A miss here writes an OTP to disk in cleartext.
-  for (const name of [
-    "one-time-code",
-    "one time code",
-    "one_time_code",
-    "onetimecode",
-    "oneTimePasscode",
-    "OTP",
-  ]) {
+  for (const name of ["one-time-code", "one time code", "one_time_code", "onetimecode", "oneTimePasscode", "OTP"]) {
     assert.equal(isSecretFieldName(name), true, `${name} SHALL be treated as a secret field name`);
   }
   // The guard must stay narrow enough to keep ordinary fields diagnostic.

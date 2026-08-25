@@ -8,8 +8,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Page } from "playwright";
 import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
+import type { Page } from "playwright";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { openStatementHydrationCursor, type StatementHydration } from "../../src/statement-hydration-carry-forward.ts";
@@ -78,7 +78,15 @@ test("statement enumeration failure is not an empty complete run and preserves c
   );
   const hydration = openStatementHydrationCursor(new Map([["S1", PRIOR_HYDRATION]]));
 
-  await runStatements(deps, fakeStatementsPage(async () => Promise.reject(new Error("fixture DOM failure"))), [], [], null, fingerprints, hydration);
+  await runStatements(
+    deps,
+    fakeStatementsPage(async () => Promise.reject(new Error("fixture DOM failure"))),
+    [],
+    [],
+    null,
+    fingerprints,
+    hydration
+  );
 
   const skip = statementSkip(messages);
   assert.ok(skip, "statement scrape failure must surface through Chase's own failure path");

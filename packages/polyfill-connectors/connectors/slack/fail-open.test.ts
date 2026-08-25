@@ -67,11 +67,7 @@ async function runStream(stream: string, db: DatabaseSync): Promise<{ deps: Stre
   return { deps, messages };
 }
 
-function emitStateFor(
-  deps: StreamDeps,
-  messages: EmittedMessage[],
-  stream: string
-): void {
+function emitStateFor(deps: StreamDeps, messages: EmittedMessage[], stream: string): void {
   emitStateCheckpoints({
     archivePath: "/tmp/slack-test-archive",
     baseArchiveResumedAt: {},
@@ -124,7 +120,9 @@ for (const stream of FAILED_STREAMS) {
 function healthyDb(stream: (typeof FAILED_STREAMS)[number]): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   if (stream === "workspace") {
-    db.exec("CREATE TABLE WORKSPACE (ID TEXT, TEAM TEXT, TEAM_ID TEXT, USERNAME TEXT, USER_ID TEXT, URL TEXT, ENTERPRISE_ID TEXT, DATA TEXT)");
+    db.exec(
+      "CREATE TABLE WORKSPACE (ID TEXT, TEAM TEXT, TEAM_ID TEXT, USERNAME TEXT, USER_ID TEXT, URL TEXT, ENTERPRISE_ID TEXT, DATA TEXT)"
+    );
     db.prepare("INSERT INTO WORKSPACE VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
       "T1",
       "Acme",
@@ -152,7 +150,9 @@ function healthyDb(stream: (typeof FAILED_STREAMS)[number]): DatabaseSync {
       1
     );
   } else {
-    db.exec("CREATE TABLE FILE (ID TEXT, FILENAME TEXT, URL TEXT, MODE TEXT, CHANNEL_ID TEXT, MESSAGE_ID INTEGER, DATA TEXT, CHUNK_ID INTEGER)");
+    db.exec(
+      "CREATE TABLE FILE (ID TEXT, FILENAME TEXT, URL TEXT, MODE TEXT, CHANNEL_ID TEXT, MESSAGE_ID INTEGER, DATA TEXT, CHUNK_ID INTEGER)"
+    );
     db.exec("CREATE TABLE CHANNEL (ID TEXT, DATA TEXT, CHUNK_ID INTEGER)");
     db.prepare("INSERT INTO FILE VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
       "F1",

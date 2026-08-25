@@ -77,17 +77,17 @@ export function isHydrated(h: StatementHydration | undefined): h is StatementHyd
 }
 
 export interface StatementHydrationCursor {
+  /** Drop ids not `note`d this run. Idempotent. Only valid on full-scan
+   *  streams (both statement streams are full scans of the documents index),
+   *  so a statement no longer listed stops being carried forever. Call in
+   *  lockstep with the fingerprint cursor's `dropUnseenIds()`. */
+  dropUnseenIds: () => void;
   /** Record this statement id's hydration pointers into the next-run map and
    *  the seen-set. MUST be called for every observed statement id this run —
    *  with the freshly hydrated pointers on success, and (after carry-forward)
    *  with the resolved pointers on failure — so the next run's prior map is
    *  complete and the prune step has the right inputs. */
   note: (id: string, value: StatementHydration) => void;
-  /** Drop ids not `note`d this run. Idempotent. Only valid on full-scan
-   *  streams (both statement streams are full scans of the documents index),
-   *  so a statement no longer listed stops being carried forever. Call in
-   *  lockstep with the fingerprint cursor's `dropUnseenIds()`. */
-  dropUnseenIds: () => void;
   /** The pointers to emit for a statement that failed hydration this run:
    *  the prior hydrated pointers if the statement was previously hydrated,
    *  otherwise the all-null index-only triple. Pure: does not mutate the
