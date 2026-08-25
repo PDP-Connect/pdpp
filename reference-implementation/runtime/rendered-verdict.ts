@@ -579,6 +579,63 @@ function hasNonOutboxFalseCondition(snapshot: ConnectionHealthSnapshot): boolean
 }
 
 /**
+ * Whether stale freshness is the ONLY reason the headline state degraded — a
+ * source that is collecting fine but is simply overdue for its next run.
+ *
+ * WHY THIS EXISTS (live defect 2026-08-25). A SCHEDULABLE connector whose data
+ * has aged past its staleness window reaches `state: "degraded"`, because the
+ * `Fresh` condition is `false` at `warning` severity and that is independent
+ * degrading evidence (`isDegradingCondition`, `connection-health.ts`). The two
+ * stale-advisory classifiers that would soften it to `idle`
+ * (`classifyManualStaleAdvisory` / `classifyAssistedStaleAdvisory`) are ordered
+ * AFTER `classifyDegradedEvidence` and only apply to manual-refresh-only or
+ * assisted-refresh connectors, so a plain `background_safe`/`automatic`
+ * connector never reaches them.
+ *
+ * `amberLabel` then read `degraded` as `stateIsBroken` and printed "Missing
+ * data", while `buildForwardStatement` — which reads the DISPOSITION, and the
+ * disposition stayed `complete` because `deriveForwardDisposition`'s Rule 4
+ * likewise fires only for manual/assisted refresh — printed "Current and
+ * collecting normally." Jellyfin, Notion and Steam rendered exactly that pair
+ * in production: an amber "Missing data" pill above a sentence claiming the
+ * source was current.
+ *
+ * The pill was the wrong side. Nothing was missing: coverage was green,
+ * attention clear, outbox clear. Per this module's own label vocabulary,
+ * "Missing data" is reserved for real collection trouble (coverage gaps,
+ * attention, a stalled outbox) and "Needs refresh" is the label for a
+ * connection "that is otherwise working but not current". So a
+ * staleness-only degradation takes "Needs refresh", the same label the
+ * manual-refresh path already produced for the identical owner-facing
+ * situation.
+ *
+ * The check is deliberately EVIDENCE-BASED rather than a new state in
+ * {@link NON_DEGRADING_AMBER_STATES}: `degraded` is a real degradation for
+ * every other cause, and blanket-listing it would relabel genuine coverage
+ * gaps. Requiring `Fresh` to be the sole current false condition keeps every
+ * other degrading cause on "Missing data".
+ */
+/**
+ * Whether the connection's most recent run failed. This is the `degraded` cause
+ * that leaves coverage complete and the disposition `complete` — the earlier
+ * runs still proved coverage, and no run owes more data — so it is invisible to
+ * both of those axes and must be read off the condition directly.
+ */
+function hasFailedCollectionCondition(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) => condition.current && condition.status === "false" && condition.type === "CollectionSucceeded"
+  );
+}
+
+function staleFreshnessIsSoleDegradation(snapshot: ConnectionHealthSnapshot): boolean {
+  if (snapshot.state !== "degraded" || snapshot.axes.freshness !== "stale") {
+    return false;
+  }
+  const falseConditions = snapshot.conditions.filter((condition) => condition.current && condition.status === "false");
+  return falseConditions.length > 0 && falseConditions.every((condition) => condition.type === "Fresh");
+}
+
+/**
  * Decide the amber label. Four outcomes, in order of specificity:
  *
  *   - "Some records stuck" when the sole degradation is a minority dead-letter
@@ -609,8 +666,10 @@ function amberLabel(
   if (optionalLossIsSoleDegradation(streams, toneInputs)) {
     return "Missing optional data";
   }
+  const stateIsNotActuallyBroken =
+    NON_DEGRADING_AMBER_STATES.has(snapshot.state) || staleFreshnessIsSoleDegradation(snapshot);
   const stateIsBroken =
-    !NON_DEGRADING_AMBER_STATES.has(snapshot.state) &&
+    !stateIsNotActuallyBroken &&
     TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
   const dispositionIsBroken =
     disposition !== "owner_refresh_due" && TONE_RANK[dispositionTone(disposition)] >= TONE_RANK.amber;
@@ -2052,11 +2111,19 @@ function unmeasuredCoverageForwardStatement(snapshot: ConnectionHealthSnapshot):
 /**
  * Single sentence DERIVED from disposition + primary action. NEVER claims resumed
  * collection while the disposition is terminal (honesty invariant 3 / spec scenario).
+ *
+ * `streams` is read ONLY by the all-clear branch at the bottom, and only to stop
+ * it claiming everything is normal when a stream has been permanently lost. The
+ * connection-level disposition cannot see that fact on its own: an optional
+ * terminal loss leaves the disposition `complete` (no run owes more data) while
+ * the pill correctly reads "Missing optional data". Without this the two halves
+ * contradicted — see inv 8.
  */
 function buildForwardStatement(
   disposition: ForwardDisposition,
   actions: readonly RequiredAction[],
-  snapshot: ConnectionHealthSnapshot
+  snapshot: ConnectionHealthSnapshot,
+  streams: readonly StreamRollup[] = []
 ): string {
   const primary = actions[0] ?? null;
 
@@ -2103,17 +2170,68 @@ function buildForwardStatement(
     case "awaiting_owner":
       return "Waiting on you before the next run can make progress.";
     default:
-      if (snapshot.axes.outbox === "active") {
-        return "The local collector is uploading saved records.";
-      }
-      if (freshnessNotApplicable(snapshot)) {
-        return "This one-time import finished. There is nothing left to run.";
-      }
-      if (snapshot.axes.freshness === "unknown") {
-        return "Freshness has not been measured yet.";
-      }
-      return "Current and collecting normally.";
+      return noActionOwedForwardStatement(snapshot, streams);
   }
+}
+
+/**
+ * What to say when the disposition owes no further run and no owner action is
+ * outstanding — the `complete` case, plus any disposition that falls through.
+ *
+ * "No run owes more data" is NOT the same claim as "everything is fine", and
+ * conflating the two is what produced the live 2026-08-25 contradiction. Each
+ * guard below names a fact the `complete` disposition is blind to, in
+ * descending order of how much it should dominate the sentence. Only when all
+ * of them are clear is the unconditional all-clear honest.
+ */
+function noActionOwedForwardStatement(
+  snapshot: ConnectionHealthSnapshot,
+  streams: readonly StreamRollup[]
+): string {
+  if (snapshot.axes.outbox === "active") {
+    return "The local collector is uploading saved records.";
+  }
+  if (freshnessNotApplicable(snapshot)) {
+    return "This one-time import finished. There is nothing left to run.";
+  }
+  if (snapshot.axes.freshness === "unknown") {
+    return "Freshness has not been measured yet.";
+  }
+  // A `complete` disposition does not mean the data is current. A schedulable
+  // connector that has aged past its staleness window keeps `complete` (the
+  // disposition's Rule 4 fires only for manual/assisted refresh) while
+  // `axes.freshness` reads `stale`, so without this guard the branch claimed
+  // "Current" of a source that demonstrably was not — the sentence half of the
+  // Jellyfin/Notion/Steam contradiction. The schedule is expected to catch it
+  // up on its own, so this states the fact without asking the owner for an
+  // action they do not owe.
+  if (snapshot.axes.freshness === "stale") {
+    return snapshot.badges.syncing
+      ? "Refreshing now."
+      : "Not current — the next scheduled run is expected to catch it up.";
+  }
+  // Nor does `complete` mean the last RUN went well. A failed run leaves
+  // coverage complete (earlier runs still proved it) and the disposition
+  // `complete` (no run owes more data), while the headline state is `degraded`
+  // and the pill correctly reads "Missing data". Found by the combination
+  // sweep in `verdict-pill-statement-agreement.test.ts`, not in production.
+  //
+  // Gated on the FAILED-RUN condition rather than on `state === "degraded"`
+  // alone: `degraded` has several causes, and a bare state check would silently
+  // absorb all of them — making this one sentence the catch-all answer for
+  // troubles it does not describe, and hiding any future cause from the very
+  // sweep that is supposed to find it.
+  if (snapshot.state === "degraded" && hasFailedCollectionCondition(snapshot)) {
+    return "The last run did not finish cleanly. The next run will try again.";
+  }
+  // A permanently-lost optional stream leaves the connection-level disposition
+  // `complete` — correctly, since no future run owes that data — while the pill
+  // reads "Missing optional data". Saying "collecting normally" underneath
+  // would deny the loss the pill just named.
+  if (streams.some((stream) => isOptionalTerminalLoss(stream))) {
+    return "Collecting normally, apart from optional data this source can no longer provide.";
+  }
+  return "Current and collecting normally.";
 }
 
 // ─── Progress ───────────────────────────────────────────────────────────────
@@ -2470,6 +2588,66 @@ function toneLabelViolation(
   return null;
 }
 
+/**
+ * A forward statement asserting the source is CURRENT and untroubled. This is
+ * the class of sentence that must never appear under a pill claiming trouble.
+ */
+const ALL_CLEAR_STATEMENT_RE = /^Current and collecting normally\.$/;
+
+/**
+ * Labels that assert something is WRONG with collection — as opposed to
+ * "Needs refresh" (working, not current) or the terminal//neutral labels.
+ * These are exactly the labels the module doc reserves for "real collection
+ * trouble".
+ */
+const TROUBLE_LABELS: ReadonlySet<VerdictLabel> = new Set<VerdictLabel>([
+  "Can't collect",
+  "Missing data",
+  "Missing optional data",
+  "Some records stuck",
+]);
+
+/**
+ * (inv 8) The pill and the forward statement are rendered from ONE verdict
+ * object and read together, top to bottom, by the owner. They must not make
+ * opposite claims.
+ *
+ * This gate exists because they are derived from DIFFERENT evidence and can
+ * therefore drift apart silently: the pill comes from `labelForPill` (headline
+ * state + per-axis tones + stream rollups) while the statement comes from
+ * `buildForwardStatement` (forward disposition + primary action). Those two
+ * inputs disagreed in production on 2026-08-25 — Jellyfin, Notion and Steam
+ * each rendered an amber "Missing data" pill directly above "Current and
+ * collecting normally." The individual producers were each self-consistent;
+ * nothing compared them, so nothing caught it.
+ *
+ * `staleFreshnessIsSoleDegradation` and the stale branch of
+ * `buildForwardStatement` fix that specific pair at the derivation. This
+ * invariant is the general guard: any FUTURE pairing of a trouble label with
+ * an all-clear sentence fails here rather than reaching an owner.
+ */
+function pillStatementContradictionViolation(verdict: RenderedVerdict): string | null {
+  if (TROUBLE_LABELS.has(verdict.pill.label) && ALL_CLEAR_STATEMENT_RE.test(verdict.forward_statement)) {
+    return `pill "${verdict.pill.label}" contradicts forward_statement "${verdict.forward_statement}" (inv 8)`;
+  }
+  return null;
+}
+
+/**
+ * (inv 8) The converse: a green/healthy pill must not sit above a sentence
+ * that says the source is NOT current. Same object, same reading order, same
+ * failure mode in the other direction.
+ */
+function healthyPillStaleStatementViolation(
+  verdict: RenderedVerdict,
+  snapshot: ConnectionHealthSnapshot
+): string | null {
+  if (verdict.pill.tone === "green" && snapshot.axes.freshness === "stale" && verdict.pill.label === "Healthy") {
+    return 'pill "Healthy" contradicts stale freshness evidence (inv 8)';
+  }
+  return null;
+}
+
 function terminalStreamResumeStatementViolation(row: VerdictStreamRow): string | null {
   if (row.disposition === "terminal" && RESUME_CLAIM_RE.test(row.statement)) {
     return `stream ${row.stream_id} pairs terminal disposition with a resume statement (inv 7)`;
@@ -2493,6 +2671,8 @@ function honestyViolations(
     toneBelowBaseStateViolation(verdict, snapshot),
     toneLabelViolation(verdict, snapshot, streams),
     ...verdict.streams.map(terminalStreamResumeStatementViolation),
+    pillStatementContradictionViolation(verdict),
+    healthyPillStaleStatementViolation(verdict, snapshot),
   ].filter(isViolation);
 }
 
@@ -2548,7 +2728,7 @@ function silenceViolations(verdict: RenderedVerdict, runtimeOk: boolean): string
 }
 
 /**
- * The eleven invariants (honesty 1–7, silence S1–S4) enforced on the WHOLE verdict —
+ * The twelve invariants (honesty 1–8, silence S1–S4) enforced on the WHOLE verdict —
  * one gate, not N scattered formatter checks.
  */
 function assertInvariants(
@@ -2634,7 +2814,7 @@ export function synthesizeRenderedVerdict(
 
   // ── annotations, statement, streams, progress ──
   const annotations = buildAnnotations(snapshot, channel, tone, refresh, scheduleEvidence, progress, actions);
-  const forwardStatement = buildForwardStatement(disposition, actions, snapshot);
+  const forwardStatement = buildForwardStatement(disposition, actions, snapshot, streams);
   const streamRows = buildStreamRows(streams, snapshot, refresh, scheduleEvidence, actions);
   const renderedProgress = buildProgress(progress, disposition, actions, snapshot.badges.syncing);
 
