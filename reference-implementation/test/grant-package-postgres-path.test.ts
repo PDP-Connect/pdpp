@@ -287,7 +287,9 @@ async function seedPackageInstance(connectorId: string): Promise<void> {
 }
 
 async function registerConnector(asUrl: string, name: string): Promise<Manifest> {
-  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `fixtures/seed-manifests/${name}.json`), "utf8")) as Manifest;
+  const raw = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, `fixtures/seed-manifests/${name}.json`), "utf8")
+  ) as Manifest;
   const canonical = canonicalConnectorKeyFromManifest(raw);
   const manifest: Manifest = !canonical || canonical === raw.connector_id ? raw : { ...raw, connector_id: canonical };
   const { status } = await fetchJson(`${asUrl}/connectors`, {
@@ -440,6 +442,23 @@ if (POSTGRES_URL) {
   test.after(async () => {
     if (server) {
       await closeServer(server);
+    }
+    // Remove the instances this suite seeded, before closing storage — the
+    // same order `token-refresh-postgres-path.test.ts` uses, because the
+    // DELETE needs a live pool.
+    //
+    // These suites share one PDPP_TEST_POSTGRES_URL when `pr89-case-5-lifecycle`
+    // spawns them in sequence. Leaving `cin_pkg_pg_spotify` active made a
+    // SECOND eligible instance for the `top_artists` stream, so the refresh
+    // suite's later authorize — which correctly names its own instance —
+    // resolved against an owner-visible ambiguity it never created and failed
+    // with "found 2". Proven by ordering: refresh alone 12/0, package alone
+    // 3/0, package-then-refresh 6/6.
+    const seededInstanceIds = [spotify?.connector_id, github?.connector_id]
+      .filter((id): id is string => typeof id === "string")
+      .map(packageInstanceId);
+    if (seededInstanceIds.length > 0) {
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = ANY($1)", [seededInstanceIds]);
     }
     await closePostgresStorage();
     closeDb();
