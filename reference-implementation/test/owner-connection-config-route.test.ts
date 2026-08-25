@@ -706,12 +706,16 @@ test(
       connectorKey: "notion",
       connectorOptionsSchema: (connectorKey: string) => ({
         connectorKey,
+        description: "Notion collection options.",
         options: [
           {
-            name: "NOTION_PAGE_ALLOWLIST",
+            optionKey: "NOTION_PAGE_ALLOWLIST",
             type: "string_array" as const,
-            default: [],
+            defaultValue: [],
             description: "Pages to collect.",
+            enumValues: null,
+            maximum: null,
+            minimum: null,
             optionKind: resolveEnforcedOptionKind(connectorKey, "NOTION_PAGE_ALLOWLIST"),
             platformClassified: platformOptionKind(connectorKey, "NOTION_PAGE_ALLOWLIST") !== null,
           },
