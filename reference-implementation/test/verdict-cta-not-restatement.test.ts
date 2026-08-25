@@ -199,7 +199,7 @@ test("the CTA carries no developer language", () => {
  * The gate on the fix. The owner's two H-E-B accounts fail for genuinely
  * different reasons and their differing verdicts are honest:
  *
- *   - `tnunamak@gmail.com` — the proven-empty guard fired (H-E-B served an
+ *   - `owner@example.com` — the proven-empty guard fired (H-E-B served an
  *     empty history for an account that previously had orders), leaving a
  *     stale-but-covered source whose next step is a refresh.
  *   - `gezalsatx@yahoo.com` — a terminal coverage gap with no owner recovery

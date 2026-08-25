@@ -1,0 +1,959 @@
+{
+  "generated_from": {
+    "repo_root": "/home/tnunamak/.tmp/hone-quality-0823/reference-implementation",
+    "repo_sha": "60612118bfd2171fdccfc0a1dcf29fefd7d88484",
+    "test_files": 1028,
+    "note": "static signals only — no test run, no mutation testing"
+  },
+  "skips": {
+    "total": 268,
+    "pattern": "static count: (test|it|describe|t).skip( modifiers + { skip: } options; runtime \"# skipped\" may differ",
+    "files": [
+      {
+        "file": "test/device-enroll-postgres-admission-decoupling.test.ts",
+        "skips": 12
+      },
+      {
+        "file": "test/provider-app-config-store-postgres.test.ts",
+        "skips": 12
+      },
+      {
+        "file": "test/agent-cli.test.ts",
+        "skips": 8
+      },
+      {
+        "file": "test/postgres-test-database-guard.test.ts",
+        "skips": 8
+      },
+      {
+        "file": "test/connector-instance-record-ingest-admission.test.ts",
+        "skips": 7
+      },
+      {
+        "file": "test/connector-summary-evidence-fold-budget-resume.test.ts",
+        "skips": 7
+      },
+      {
+        "file": "test/connector-summary-stream-facts-monotonic-postgres.test.ts",
+        "skips": 7
+      },
+      {
+        "file": "test/rs-records-ingest-hosted-rejection-coordinator.test.ts",
+        "skips": 7
+      },
+      {
+        "file": "test/browser-surface-lease-store.test.ts",
+        "skips": 6
+      },
+      {
+        "file": "test/connector-detail-gap-store.test.ts",
+        "skips": 5
+      },
+      {
+        "file": "test/manual-upload-whatsapp-no-whole-file-read.test.ts",
+        "skips": 5
+      },
+      {
+        "file": "test/browser-surface-readiness-generation-atomicity.test.ts",
+        "skips": 4
+      },
+      {
+        "file": "test/connector-maintenance-cursor-postgres-race.test.ts",
+        "skips": 4
+      },
+      {
+        "file": "test/connector-summary-source-revision.test.ts",
+        "skips": 4
+      },
+      {
+        "file": "test/connector-summary-stream-facts-reliability-postgres.test.ts",
+        "skips": 4
+      },
+      {
+        "file": "test/terminal-run-commit-store-postgres.test.ts",
+        "skips": 4
+      },
+      {
+        "file": "test/active-run-summary-zero-spine.test.ts",
+        "skips": 3
+      },
+      {
+        "file": "test/approval-review-seam.test.ts",
+        "skips": 3
+      },
+      {
+        "file": "test/connector-instance-store.test.ts",
+        "skips": 3
+      },
+      {
+        "file": "test/device-exporter-store.test.ts",
+        "skips": 3
+      },
+      {
+        "file": "test/forward-evidence-debt-wired-probe.test.ts",
+        "skips": 3
+      },
+      {
+        "file": "test/postgres-transaction-connector-instance-lock.test.ts",
+        "skips": 3
+      },
+      {
+        "file": "test/reconcile-active-summary-evidence-oracle.test.ts",
+        "skips": 3
+      },
+      {
+        "file": "test/run-history-interrupted-migration-reconciliation.test.ts",
+        "skips": 3
+      },
+      {
+        "file": "test/spine-events-connector-instance-id-backfill.test.ts",
+        "skips": 3
+      },
+      {
+        "file": "test/backup-table-inventory.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/browser-surface-external-loss-receipt-atomicity.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/browser-surface-replacement-correction-artifact.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/browser-surface-replacement-ledger-store.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/client-event-subscription-store-postgres.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/connector-instance-delete-vs-queued-write-fence.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/connector-instance-revoked-write-refusal.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/connector-summary-evidence-engine-n-slope-postgres.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/connector-summary-evidence-scoped-fold-unrelated-terminal-history.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/connector-summary-evidence-throughput-integration.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/device-exporter-postgres-proof.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/reconcile-summary-evidence-failure-persistence-postgres.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/record-reset-generation-checkpoint.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/ref-source-webhook-route.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/remote-surface-reference-boundary.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/retained-size-read-model.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/rs-explore-timeline-conformance.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/rs-explore-upcoming-concurrency.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/run-connection-identity-postgres.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/run-history-completed-at-fleet-migration.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/run-history-duplicate-run-id-identity.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/run-interaction-stream-cdp-live.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/run-interaction-stream-neko-live.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/scheduler-dispatch-wedge-health-reason.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/scheduler-owner-isolation.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/source-kind-runtime-neutrality.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/source-webhook-event-store.test.ts",
+        "skips": 2
+      },
+      {
+        "file": "test/adjudicate-orphaned-runs.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/aggregation-rows-conformance-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/auth-consent-device-postgres-path.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/checkpoint-dependency-profile-conformance-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/client-connector-postgres-path.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/client-expand-closure.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/compact-record-history-fingerprint-parity.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/compact-record-history.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/connector-cursor-reset.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/connector-instance-delete-upsert-two-process-race.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/connector-instance-writer-paths.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/connector-instances-status-draft-migration.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/connector-state-scheduler-conformance-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/connector-summary-dirty-hooks.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/connector-summary-evidence-scoped-route-n-slope.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/connector-summary-read-model.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/consent-device-auth-conformance-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/controller-browser-surface-leases-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/dataset-summary-postgres-boundary.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/device-batch-summary-evidence-convergence.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/device-ingest-attempt-context-store.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/device-ingest-conformance.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/device-ingest-reservation-migration.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/error-code-query-not-found.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/error-code-unsupported-version.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/grant-package-postgres-path.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/grant-scoped-state-postgres-routing.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/introspection-manifest-fail-closed.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/lexical-retrieval-conformance-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/lexical-retrieval.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/lexical-snapshot-pagination-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/live-shadow-comparison.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/local-coverage-state-parser-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/manual-upload-artifact-store-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/manual-upload-google-maps-no-whole-file-read.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/manual-upload-netflix-no-whole-file-read.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/manual-upload-write-stream-error.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/neko-browser-surface-cap-live-smoke.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/oauth-code-delivery-atomicity.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/physical-footprint-helper.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/polyfill-manifest-reconcile-bounded-work-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/polyfill-manifest-reconcile-invalidation-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-expand-hydration.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-lexical-backend-state.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-record-index-bootstrap.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-record-index-idempotency-oracle.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-record-index-repair-oracle.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-record-null-cursor-oracle.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-records-ingest-noop.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-records-version-floor.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-runtime-storage.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-semantic-pgvector.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/postgres-temp-database-helper.test.js",
+        "skips": 1
+      },
+      {
+        "file": "test/record-current-projection-repair.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/record-expand-instance-authorization.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/record-field-window-substrate.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/record-read-conformance-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/record-rejection-store.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/record-version-stats.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/record-window-count-parity.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/records-delete-postgres-routing.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/rs-explore-list-partitions-loose-scan.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/rs-explore-record-buckets.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/rs-explore-snapshot-at-capture-time.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/rs-explore-timeline-b1-b2-b3-regression.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/rs-explore-upcoming-reachability.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/rs-ingest-systemic-failure-contract.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/run-generation-fencing-terminal-write-failure.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/run-history-writer-authority.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/runtime-cancel-ingest-commit-boundary-probe.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/runtime-record-rejection-system-journey.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/scheduler-store-semantic-surface.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/semantic-retrieval.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/setup-binding-promotion.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/source-declaration-trust.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/source-field-name-records-parity.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/source-webhook-run-receipt.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/sources-visible-identity-page-postgres.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/spine-source-boot-backfill.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/storage-mode-startup-boundary.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/terminal-run-commit-collector-restart.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/token-refresh-postgres-path.test.ts",
+        "skips": 1
+      },
+      {
+        "file": "test/web-push-notifications.test.ts",
+        "skips": 1
+      }
+    ]
+  },
+  "zero_by_name": {
+    "by_name_only": true,
+    "note": "KNOWN-WEAK signal: dynamic call patterns make 0-by-name ≠ untested (B-inventory coverage caveat) — a lead for evidence-generation, never a coverage verdict",
+    "files": [
+      {
+        "file": "server/routes/ref-admin.ts",
+        "exports": 11,
+        "unreferenced": [
+          "mountRefApprovals",
+          "mountRefCimdClientDocuments",
+          "mountRefClientTokenRevoke",
+          "mountRefClientTokens",
+          "mountRefClients",
+          "mountRefDeployment",
+          "mountRefExploreRecordBuckets",
+          "mountRefExploreRecords",
+          "mountRefRecordsTimeline",
+          "mountRefSchedules",
+          "mountRefSearch"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/ref-grants.ts",
+        "exports": 8,
+        "unreferenced": [
+          "mountRefEventSubscriptionsDisable",
+          "mountRefEventSubscriptionsGet",
+          "mountRefEventSubscriptionsList",
+          "mountRefGrantPackagesCount",
+          "mountRefGrantPackagesCumulative",
+          "mountRefGrantPackagesGet",
+          "mountRefGrantPackagesList",
+          "mountRefGrantPackagesRevoke"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/scheduler-backoff-read.ts",
+        "exports": 6,
+        "unreferenced": [
+          "asBackoffRecord",
+          "asScheduleRecord",
+          "readIsoMillis",
+          "readNumber",
+          "schedulerFailureAnchorMillis",
+          "succeededRunSupersedesSchedulerBackoff"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/root-and-discovery.ts",
+        "exports": 5,
+        "unreferenced": [
+          "mountAsAuthorizationServerMetadata",
+          "mountAsRoot",
+          "mountRsMcpProtectedResourceMetadata",
+          "mountRsProtectedResourceMetadata",
+          "mountRsRoot"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/web-push.ts",
+        "exports": 5,
+        "unreferenced": [
+          "mountRefWebPushConfig",
+          "mountRefWebPushCreateSubscription",
+          "mountRefWebPushDeleteSubscription",
+          "mountRefWebPushListSubscriptions",
+          "mountRefWebPushTest"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/credential-response-cache.ts",
+        "exports": 4,
+        "unreferenced": [
+          "CREDENTIAL_RESPONSE_CACHE_CONTROL",
+          "CREDENTIAL_RESPONSE_PRAGMA",
+          "applyCredentialResponseNoStoreHeaders",
+          "credentialResponseNoStoreHeaders"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/retrieval-startup-backfill.ts",
+        "exports": 3,
+        "unreferenced": [
+          "collectRetrievalStartupBackfillManifests",
+          "runRetrievalStartupBackfill",
+          "scheduleRetrievalStartupBackfill"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/ref-provider-auth.ts",
+        "exports": 3,
+        "unreferenced": [
+          "createInProcessPendingAuthStore",
+          "mountRefProviderAuthCallback",
+          "mountRefProviderAuthInitiate"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/ref-spine-correlations.ts",
+        "exports": 3,
+        "unreferenced": [
+          "mountRefGrants",
+          "mountRefRuns",
+          "mountRefTraces"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "runtime/browser-surface/remote-surface-optional.ts",
+        "exports": 2,
+        "unreferenced": [
+          "createOptionalBrowserSurfaceLeaseManager",
+          "loadRemoteSurface"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/hosted-ingest-limits.ts",
+        "exports": 2,
+        "unreferenced": [
+          "HOSTED_INGEST_MAX_LINE_BYTES",
+          "HOSTED_INGEST_MAX_REQUEST_BYTES"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/manual-upload-limits.ts",
+        "exports": 2,
+        "unreferenced": [
+          "manualUploadMaxBytes",
+          "manualUploadMaxBytesAsNextBodySizeString"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/pending-pressure-gap-map.ts",
+        "exports": 2,
+        "unreferenced": [
+          "mapPendingPressureGaps",
+          "readPendingGapLastPressureAt"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/as-grant-revoke.ts",
+        "exports": 2,
+        "unreferenced": [
+          "buildApplyGrantRevokeSideEffects",
+          "mountAsGrantRevoke"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/as-polyfill-connectors.ts",
+        "exports": 2,
+        "unreferenced": [
+          "mountAsPolyfillConnectorDetail",
+          "mountAsPolyfillConnectorRegister"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/owner-connections.ts",
+        "exports": 2,
+        "unreferenced": [
+          "mountOwnerConnectionRename",
+          "mountOwnerConnectionsList"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/ref-connection-resume.ts",
+        "exports": 2,
+        "unreferenced": [
+          "HISTORICAL_ARCHIVE_SOURCE_BINDING_KIND",
+          "mountRefConnectionResume"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "lib/nullish.ts",
+        "exports": 1,
+        "unreferenced": [
+          "isNullish"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "operations/search-authority-key.ts",
+        "exports": 1,
+        "unreferenced": [
+          "searchAuthorityKey"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "runtime/browser-surface/window-settle-reconciliation.ts",
+        "exports": 1,
+        "unreferenced": [
+          "createWindowSettleReconciliation"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "runtime/scheduler/pre-run-gate.ts",
+        "exports": 1,
+        "unreferenced": [
+          "createPreRunGate"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/connector-instance-admission.ts",
+        "exports": 1,
+        "unreferenced": [
+          "assertConnectorInstanceWritableStatus"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/inbox.ts",
+        "exports": 1,
+        "unreferenced": [
+          "registerInboxRoutes"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/public-listing-tier.ts",
+        "exports": 1,
+        "unreferenced": [
+          "publicListingTierError"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/_route-contract.ts",
+        "exports": 1,
+        "unreferenced": [
+          "assertRemoteControlSupported"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/as-consent.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountAsConsent"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/as-dcr.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountAsDcr"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/as-device-ui.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountAsDeviceUi"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/client-metadata.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountClientMetadata"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/hosted-ui-asset.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountHostedUiCss"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/owner-connection-collection-scope.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountOwnerConnectionCollectionScope"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/owner-connection-delete.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountOwnerConnectionDelete"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/owner-connection-diagnostics.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountOwnerConnectionDiagnostics"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/owner-connection-intent.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountOwnerConnectionIntent"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/owner-connection-reactivate.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountOwnerConnectionReactivate"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/owner-connection-revoke.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountOwnerConnectionRevoke"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/owner-connection-schedule.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountOwnerConnectionSchedule"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/owner-control.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountOwnerControl"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/ref-connection-pause.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountRefConnectionPause"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/routes/ref-static-secret-credentials.ts",
+        "exports": 1,
+        "unreferenced": [
+          "mountRefStaticSecretCredentialCapture"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/storage-backend.ts",
+        "exports": 1,
+        "unreferenced": [
+          "createStorageBackend"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/stores/presentation-screen-state-store.ts",
+        "exports": 1,
+        "unreferenced": [
+          "createPresentationScreenStateStore"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/stores/static-secret-credential-probe.ts",
+        "exports": 1,
+        "unreferenced": [
+          "createStaticSecretCredentialProber"
+        ],
+        "by_name_only": true
+      },
+      {
+        "file": "server/streaming/routes.ts",
+        "exports": 1,
+        "unreferenced": [
+          "registerStreamingRoutes"
+        ],
+        "by_name_only": true
+      }
+    ]
+  }
+}

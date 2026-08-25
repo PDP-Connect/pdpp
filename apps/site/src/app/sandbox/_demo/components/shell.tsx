@@ -7,7 +7,7 @@
  */
 
 import type { ReactNode } from "react";
-import { SiteHeader } from "@/components/site-header.tsx";
+import { SiteHeader } from "@/components/layout/site-header.tsx";
 
 /**
  * Lightweight shell for support pages. It renders only the site header and

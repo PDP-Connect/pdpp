@@ -164,6 +164,28 @@ and never move; browse GHCR for the available tags. `:main` also exists and
 tracks the default branch, ahead of any release; it is a development tag, not
 an onboarding target.
 
+## Revision drift monitoring
+
+Production images bake `PDPP_REFERENCE_REVISION` at build time (see the
+Dockerfile). `check-prod-revision-drift.sh` reads that value back out of a
+running container, fetches origin, and confirms the running revision is
+actually reachable from origin and not too far behind `main`:
+
+```sh
+deploy/docker/check-prod-revision-drift.sh <container-name>
+```
+
+Exits nonzero on either finding, with the revision-not-on-origin case called
+out loudest since it means the running image cannot be traced to any
+reviewed commit:
+
+- revision missing, `unknown`, or not a resolvable commit, or not reachable
+  from any origin branch — the loudest failure
+- revision resolves and is on origin, but more than
+  `PDPP_DRIFT_THRESHOLD_DAYS` (default 7) behind `main`
+
+Run it on a schedule (e.g. a daily systemd timer) and alert on nonzero exit.
+
 ## Teardown
 
 ```sh

@@ -1,0 +1,125 @@
+candidate_id: server-connector-summary-evidence-engine-t0-2b50ec18
+created: "2026-08-23T14:48:49.658Z"
+repo_sha: "60612118bfd2171fdccfc0a1dcf29fefd7d88484"
+subsystem: server
+files: [server/connector-summary-evidence-engine.ts]
+symbols:
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L652"
+    line: 652
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L849"
+    line: 849
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L1081"
+    line: 1081
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L371"
+    line: 371
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L1693"
+    line: 1693
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L1893"
+    line: 1893
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L2401"
+    line: 2401
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L1256"
+    line: 1256
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L1470"
+    line: 1470
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L1353"
+    line: 1353
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L2595"
+    line: 2595
+  - file: server/connector-summary-evidence-engine.ts
+    parent_fn: "<module>"
+    anchor: "@L2732"
+    line: 2732
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 11, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn '@L652' cc=11. File attention: churn 17 × excess-cc mass 35 = 595; 12 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to @L652@L652(in <module>), @L849@L849(in <module>), @L1081@L1081(in <module>), @L371@L371(in <module>), @L1693@L1693(in <module>), @L1893@L1893(in <module>) (+6 more — see quality/inventory/tier-mass.json) in server/connector-summary-evidence-engine.ts (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: none
+priority:
+  score: 17.247
+  computed: "2026-08-23T14:48:49.658Z"
+  inputs:
+    mass: 35
+    churn: 17
+risk:
+  blast_radius: local
+  reversibility: branch-revert
+  silent_wrongness_cost: low
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/connector-summary-evidence-engine.ts, tier T0 (repo_sha 60612118bfd2171fdccfc0a1dcf29fefd7d88484)"
+    result: "12 flagged fn(s), Σ excess-cc 35, max cc 11, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/connector-summary-evidence-engine.ts"
+    result: "17 commits in window; coupling(fan-in proxy)=4"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && npx tsc --noEmit"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && node scripts/run-tests.ts"
+    expect: all tests pass; 0 fail; no new skips (skip counts compared baseline vs post)
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: file-complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/hone-quality-0823/reference-implementation --file 'server/connector-summary-evidence-engine.ts' --cog 5"
+    expect: "found=true and file_excess < 89 (packet baseline: whole-file Σ excess-cc) and strictly below the measured baseline; no NEW function above the cog-5 threshold vs baseline; red_scan unchanged"
+    expect_check:
+      type: file_excess_lt
+      value: 89
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: null
+judge_provider: null
+batch_key: preserve_refactor×certified_transform×server
+touchset: [server/connector-summary-evidence-engine.ts]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: pending
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts: []
+  tokens_actual: null
+  lesson: null

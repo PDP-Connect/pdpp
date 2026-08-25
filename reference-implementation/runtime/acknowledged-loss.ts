@@ -10,7 +10,7 @@
  * established but the page could not say (verified 2026-08-23 against live
  * Postgres):
  *
- *   - `heb` (tnunamak@gmail.com) rendered `Needs refresh` / "Run a refresh to
+ *   - `heb` (owner@example.com) rendered `Needs refresh` / "Run a refresh to
  *     bring this up to date." — a routine nudge — for orders H-E-B PURGED
  *     upstream. The refresh button cannot work, and each attempt costs an OTP.
  *   - `groupme` rendered "The next run is expected to fill the remaining data."

@@ -37,7 +37,7 @@ function seed(store: ReturnType<typeof createSqliteConnectorInstanceStore>, conn
     connectorId: "heb",
     connectorInstanceId,
     createdAt: NOW,
-    displayName: "HEB - tnunamak@gmail.com",
+    displayName: "HEB - owner@example.com",
     ownerSubjectId: "owner_local",
     sourceBinding: { kind: "account", local_binding_name: "primary" },
     sourceBindingKey: "acknowledged-loss-test",

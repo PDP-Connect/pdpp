@@ -4,7 +4,7 @@
 /**
  * Owner-meaningful consent-card connection labels.
  *
- * The public consent surface (`apps/site/src/components/pdpp/consent-card.tsx`)
+ * The public consent surface (`apps/site/src/components/sections/consent-card.tsx`)
  * renders `ConsentCardConnection.displayName` verbatim. Per
  *   openspec/changes/expose-connection-identity-on-public-read
  * the consent card SHALL NOT surface a storage placeholder (`legacy`,

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import robots from "@/app/robots.ts";
-import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
+import { SITE_ORIGIN } from "@/lib/site-facts.ts";
 import { buildSitemap, type DocPageRef } from "@/lib/sitemap-entries.ts";
 import { MAINTAINER_DOC_SLUGS, maintainersRoute } from "@/lib/spec-nav-slugs.ts";
 

@@ -57,7 +57,7 @@
     "verify": "pnpm typecheck && pnpm check"
   },
   "dependencies": {
-    "@fastify/formbody": "^8.0.2",
+    "@fastify/formbody": "^9.0.0",
     "@huggingface/transformers": "^4.2.0",
     "@pdpp/collector-runtime": "file:../vendor/pdpp-collector-runtime-0.0.1.tgz",
     "@pdpp/connector-protocol": "file:../vendor/pdpp-connector-protocol-0.0.1.tgz",
@@ -66,7 +66,7 @@
     "@pdpp/reference-contract": "workspace:*",
     "better-sqlite3": "^13.0.3",
     "express": "^5.2.1",
-    "fastify": "^5.11.3",
+    "fastify": "^5.12.0",
     "ipaddr.js": "2.5.0",
     "patchright": "1.61.1",
     "pg": "^8.23.0",
@@ -77,12 +77,12 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "@babel/parser": "7.29.2",
-    "@biomejs/biome": "2.5.7",
+    "@babel/parser": "8.0.4",
+    "@biomejs/biome": "2.5.8",
     "@types/pg": "8.21.0",
     "jsdom": "^30.0.1",
     "pino-pretty": "^13.0.0",
-    "ultracite": "7.10.2"
+    "ultracite": "7.10.5"
   },
   "optionalDependencies": {
     "@opendatalabs/remote-surface": "^1.5.2"

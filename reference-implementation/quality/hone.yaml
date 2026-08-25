@@ -1,0 +1,52 @@
+# hone repo profile — the PDPP reference implementation.
+#
+# Adapted from hone's example-pdpp profile. Two things differ from that example
+# and both are load-bearing:
+#
+#   1. `commands.test` is this repo's own runner, not `pnpm test`. The runner is
+#      a TypeScript entrypoint executed by node directly.
+#   2. `owned_dirs` adds `operations`, which the example omits. Operations carry
+#      ingest and webhook logic — the paths where a silent data loss lands.
+#
+# `nogo_path_pattern` earns its place here: this repo's founding failure mode is
+# a source reported GREEN while data is missing. Coverage, verdict, and health
+# derivation are where that lie is manufactured, so they are ranked and flagged
+# but never auto-targeted by a maker.
+version: 1
+
+commands:
+  biome: npx biome
+  test: node scripts/run-tests.ts
+  typecheck: npx tsc --noEmit
+
+analysis:
+  owned_dirs: [server, runtime, lib, operations]
+  scan_depth: 2
+  cog_threshold: 5
+  seam_cc: 12
+  churn_window: 6 months ago
+
+markers:
+  security: ["grant.streams", grant_stream_not_allowed, streamGrant, requireGrant, field_not_granted,
+    "access_mode", bearer, introspect, oauth, "redirect_uri", forbiddenIp, isForbiddenIp, issueToken,
+    signToken, consent, "scope_enforce", "ai_training", "CREATE TABLE", "ALTER TABLE", "DROP TABLE",
+    "CREATE INDEX", "authorization_details", pkce, "code_verifier"]
+  storage: ["INSERT INTO", "UPDATE ", "DELETE FROM", "db.prepare", "db.exec", "pool.query",
+    "client.query", "transaction(", BEGIN, COMMIT, ROLLBACK, sqlite, postgres, better-sqlite3]
+  public_contract: [openapi, "mcp_", mcpTool, toolResult, structuredContent, pagination, paginate,
+    nextCursor, "next_cursor", projection, "error_code", errorCode, "problem+json", problemJson,
+    "grant_model", grantModel, "content_ladder", contentLadder, "authorization_details",
+    "resource_indicator", "scope_enforce", well-known, openid-configuration]
+  # Coverage/verdict/health derivation is added to the stock no-go set: these are
+  # the paths that can turn a missing-data source green, so a maker never edits
+  # them unattended.
+  nogo_path_pattern: auth|grant|consent|token|bearer|owner-session|csrf|scoping|spine-security|manifest-resolution|coverage|verdict|health
+
+classification:
+  behavior_status_default: likely_intended
+  public_surface_globs: ["server/routes/**", "server/openapi*", "server/mcp*", "lib/errors*"]
+  generated_globs: ["**/*.generated.*", "**/generated/**", "openapi/*.json"]
+  freeze_globs: []
+
+policy:
+  autonomy: autonomous_branch

@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
+import { repoBlobUrl } from "@/lib/site-facts.ts";
 
 /**
  * The self-host command model.

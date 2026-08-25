@@ -571,20 +571,34 @@ function scanDynamicImportSpecifiers(
   report: ReportFn
 ): void {
   walk(program, (node, _parent, ancestors) => {
+    const enclosingFunctionName = enclosingFunctionNameOf(ancestors);
+
+    // Dynamic `import(...)` parses as its own `ImportExpression` node (its
+    // specifier is `.source`, not a `CallExpression`'s first argument) —
+    // @babel/parser has never modeled it as a call with an `Import`
+    // pseudo-callee.
+    if (node.type === "ImportExpression") {
+      const source = nodeField(node, "source");
+      if (source) {
+        const resolvedPath = resolveImportSpecifierPath(source, analysis, enclosingFunctionName, fileDir);
+        if (resolvedPath && isConnectorModulePath(resolvedPath)) {
+          report(node, "connector-module-import");
+        }
+      }
+      return;
+    }
+
     if (node.type !== "CallExpression") {
       return;
     }
     const callee = node.callee as Node;
-    const isDynamicImport = callee.type === "Import";
-    const isRequire = isIdentifier(callee, "require");
-    if (!(isDynamicImport || isRequire)) {
+    if (!isIdentifier(callee, "require")) {
       return;
     }
     const [first] = nodeArrayField(node, "arguments");
     if (!first) {
       return;
     }
-    const enclosingFunctionName = enclosingFunctionNameOf(ancestors);
     const resolvedPath = resolveImportSpecifierPath(first, analysis, enclosingFunctionName, fileDir);
     if (resolvedPath && isConnectorModulePath(resolvedPath)) {
       report(node, "connector-module-import");
@@ -620,13 +634,18 @@ function collectManifestImportBindings(program: Node, fileDir: string): Set<stri
       return;
     }
     const init = node.init as Node;
-    const isRequireOrImportCall =
-      init.type === "CallExpression" &&
-      (isIdentifier(init.callee as Node, "require") || (init.callee as Node).type === "Import");
-    if (!isRequireOrImportCall) {
-      return;
+    // Dynamic `import(...)` parses as its own `ImportExpression` node (its
+    // specifier is `.source`, not a `CallExpression`'s first argument) —
+    // @babel/parser has never modeled it as a call with an `Import`
+    // pseudo-callee.
+    const isRequireCall = init.type === "CallExpression" && isIdentifier(init.callee as Node, "require");
+    let first: Node | undefined;
+    if (init.type === "ImportExpression") {
+      first = nodeField(init, "source");
+    } else if (isRequireCall) {
+      const [requireArg] = nodeArrayField(init, "arguments");
+      first = requireArg;
     }
-    const [first] = nodeArrayField(init, "arguments");
     if (first?.type !== "StringLiteral" || !isRelativeSpecifier(first.value as string)) {
       return;
     }

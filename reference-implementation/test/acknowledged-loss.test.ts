@@ -234,7 +234,7 @@ test("acknowledged-loss: the mechanism is generic — the same path serves a dif
 });
 
 test("acknowledged-loss: the unmeasured-coverage HEB shape drops its maintainer code_fix", () => {
-  // The live `heb` (tnunamak@gmail.com) shape on 2026-08-23: an unmeasured
+  // The live `heb` (owner@example.com) shape on 2026-08-23: an unmeasured
   // coverage axis over a prior success, which synthesizes a maintainer
   // `code_fix`. No connector change can un-delete the orders H-E-B purged, so
   // the acknowledgement withdraws that action entirely.

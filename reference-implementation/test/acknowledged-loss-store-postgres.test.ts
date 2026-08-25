@@ -54,7 +54,7 @@ async function seedConnection(): Promise<void> {
     `INSERT INTO connector_instances(
        connector_instance_id, owner_subject_id, connector_id, display_name, status,
        source_kind, source_binding_key, source_binding_json, created_at, updated_at
-     ) VALUES ($1, 'owner_local', $2, 'HEB - tnunamak@gmail.com', 'active',
+     ) VALUES ($1, 'owner_local', $2, 'HEB - owner@example.com', 'active',
        'account', 'acknowledged-loss-test-pg', $3::jsonb, $4, $4)`,
     [CONNECTOR_INSTANCE_ID, CONNECTOR_ID, JSON.stringify({ kind: "account", local_binding_name: "primary" }), NOW]
   );

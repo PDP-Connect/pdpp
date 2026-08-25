@@ -92,7 +92,8 @@
     {
       // Architectural shim waiver — NOT a barrel-file pattern.
       //
-      // src/components/{ui,pdpp,theme}/*.tsx and src/components/pdpp-logo.tsx
+      // src/components/ui/*, five sections/*.tsx PDPP-surface files,
+      // elements/pdpp-logo.tsx, elements/theme-toggle.tsx, and lib/theme-state.ts
       // are one-line re-export shims that forward to @pdpp/operator-ui. They
       // exist so that every existing `@/components/ui/badge` import continues
       // to resolve without touching 20 call-site files. Each shim exports
@@ -102,17 +103,26 @@
       // the Next.js bundler both handle single-export re-exports correctly;
       // no unnecessary modules are pulled in.
       //
+      // The five sections/*.tsx entries (consent-card, connector-card,
+      // grant-inspector, spec-citation, stream-inventory) and lib/theme-state.ts
+      // are named explicitly rather than globbed by directory: those
+      // directories also hold ordinary, non-shim view/state modules (e.g.
+      // sections/hero.tsx, lib/site-facts.ts) that must keep the rule active.
+      //
       // Exit condition: remove this override if/when call-sites are repointed
       // directly to @pdpp/operator-ui subpath imports and the shim files are
       // deleted.
       "includes": [
         "src/components/ui/*.ts",
         "src/components/ui/*.tsx",
-        "src/components/pdpp/*.ts",
-        "src/components/pdpp/*.tsx",
-        "src/components/theme/*.ts",
-        "src/components/theme/*.tsx",
-        "src/components/pdpp-logo.tsx"
+        "src/components/elements/pdpp-logo.tsx",
+        "src/components/elements/theme-toggle.tsx",
+        "src/components/sections/consent-card.tsx",
+        "src/components/sections/connector-card.tsx",
+        "src/components/sections/grant-inspector.tsx",
+        "src/components/sections/spec-citation.tsx",
+        "src/components/sections/stream-inventory.tsx",
+        "src/lib/theme-state.ts"
       ],
       "linter": {
         "rules": {

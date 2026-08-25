@@ -1,0 +1,157 @@
+candidate_id: server-ref-control-t0-c118414d
+created: "2026-08-23T14:48:49.646Z"
+repo_sha: "60612118bfd2171fdccfc0a1dcf29fefd7d88484"
+subsystem: server
+files: [server/ref-control.ts]
+symbols:
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L2683"
+    line: 2683
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L2823"
+    line: 2823
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L3697"
+    line: 3697
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L4150"
+    line: 4150
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L4207"
+    line: 4207
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L9219"
+    line: 9219
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L1562"
+    line: 1562
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L3770"
+    line: 3770
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L5345"
+    line: 5345
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L5814"
+    line: 5814
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L8082"
+    line: 8082
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L8198"
+    line: 8198
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L8543"
+    line: 8543
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L2352"
+    line: 2352
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L2626"
+    line: 2626
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L5701"
+    line: 5701
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L7975"
+    line: 7975
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L8704"
+    line: 8704
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L3596"
+    line: 3596
+  - file: server/ref-control.ts
+    parent_fn: "<module>"
+    anchor: "@L4420"
+    line: 4420
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 11, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn '@L2683' cc=11. File attention: churn 36 × excess-cc mass 148 = 5328; 48 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to @L2683@L2683(in <module>), @L2823@L2823(in <module>), @L3697@L3697(in <module>), @L4150@L4150(in <module>), @L4207@L4207(in <module>), @L9219@L9219(in <module>) (+42 more — see quality/inventory/tier-mass.json) in server/ref-control.ts (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: high
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 30.086
+  computed: "2026-08-23T14:48:49.646Z"
+  inputs:
+    mass: 148
+    churn: 36
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: low
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/ref-control.ts, tier T0 (repo_sha 60612118bfd2171fdccfc0a1dcf29fefd7d88484)"
+    result: "48 flagged fn(s), Σ excess-cc 148, max cc 11, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/ref-control.ts"
+    result: "36 commits in window; coupling(fan-in proxy)=36"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && npx tsc --noEmit"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && node scripts/run-tests.ts"
+    expect: all tests pass; 0 fail; no new skips (skip counts compared baseline vs post)
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: file-complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/hone-quality-0823/reference-implementation --file 'server/ref-control.ts' --cog 5"
+    expect: "found=true and file_excess < 285 (packet baseline: whole-file Σ excess-cc) and strictly below the measured baseline; no NEW function above the cog-5 threshold vs baseline; red_scan unchanged"
+    expect_check:
+      type: file_excess_lt
+      value: 285
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: null
+judge_provider: null
+batch_key: preserve_refactor×certified_transform×server
+touchset: [server/ref-control.ts]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: pending
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts: []
+  tokens_actual: null
+  lesson: null
