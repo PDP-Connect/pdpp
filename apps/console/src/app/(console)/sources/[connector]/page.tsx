@@ -28,6 +28,7 @@ import {
   runStatusWithCollectionReportGaps,
   type StreamCollectionFacts,
 } from "../../lib/collection-report.ts";
+import { getConnectionConfig, listConnectionConfigRevisions } from "../../lib/connection-config-client.ts";
 import {
   type AutoPausedBanner,
   deriveAutoPausedBanner,
@@ -73,6 +74,8 @@ import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } fr
 import { findManifestForConnectorId } from "../lib/relationships.ts";
 import { formatConnectorHeaderCount } from "../sources-view-model.ts";
 import { pauseConnectionAction, resumeConnectionAction, resumeConnectorScheduleAction } from "./actions.ts";
+import type { ConfigRevisionWire, ConnectionConfigWire } from "./connection-config-view-model.ts";
+import { ConnectionConfiguration } from "./connection-configuration.tsx";
 import { ConnectionDangerZone } from "./connection-danger-zone.tsx";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { RenameConnection } from "./rename-connection.tsx";
@@ -133,6 +136,14 @@ export interface ConnectorPageModel {
    */
   collectionFactsByStream: Map<string, StreamCollectionFacts>;
   collectionOwnerActionByStream: SourceStreamOwnerActionAvailability;
+  /** The attributed revision ledger, for the history timeline. */
+  configRevisions: ConfigRevisionWire[];
+  /**
+   * The connection's live configuration read (active revision, options schema,
+   * and the base a later propose must echo). `null` when the read failed — the
+   * configuration panel then says so instead of the page failing.
+   */
+  configuration: ConnectionConfigWire | null;
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string;
   /**
@@ -425,12 +436,23 @@ async function loadConnectorPageModel(
   // surface, so using the owner-only summary read-model is the SLVP construction
   // boundary: one cheap projection read, no duplicate expensive RS metadata read.
   const streams = streamsFromConnectorSummary(summary);
-  const [diagnostics, providerOrigin] = await Promise.all([
+  // `connectorInstanceIdForConnection` already falls back to `connection_id`,
+  // so this is the concrete instance selector the config routes resolve.
+  const configConnectionId = connectorInstanceId;
+  const [diagnostics, providerOrigin, configuration, configRevisions] = await Promise.all([
     loadConnectorDiagnostics(connectorId, connectorInstanceId),
     // Resolve the public origin to late-bind `<provider-url>` in remediation
     // command templates. Failure → null → the command fails closed (no broken
     // copy-paste command), never throws and breaks the page.
     getReferencePublicOrigin().catch(() => null),
+    // Configuration reads join this existing phase rather than adding a serial
+    // await — `page-performance.test.ts` pins that shape. Both degrade to null
+    // on failure: a connector whose manifest declares a malformed
+    // `options_schema` answers 400, and that must cost the owner the
+    // configuration panel only, never the health and streams they opened this
+    // page for.
+    getConnectionConfig(configConnectionId).catch(() => null),
+    listConnectionConfigRevisions(configConnectionId).catch(() => []),
   ]);
   const { schedule } = diagnostics;
   const overview = toConnectorOverview(summary, streams);
@@ -486,6 +508,8 @@ async function loadConnectorPageModel(
 
   return {
     activeRunId: schedule?.active_run_id ?? null,
+    configRevisions,
+    configuration,
     collectionFactsByStream,
     collectionOwnerActionByStream,
     connectionHealth: summary.connection_health ?? null,
@@ -620,6 +644,8 @@ function ConnectorPageView({
     activeRunId: scheduleActiveRunId,
     collectionFactsByStream,
     collectionOwnerActionByStream,
+    configRevisions,
+    configuration,
     connectionHealth,
     connectionRenderedVerdict,
     connectionId,
@@ -788,7 +814,7 @@ function ConnectorPageView({
       <Section
         description={
           collectionFactsByStream.size > 0
-            ? "Record counts show what this source currently retains. Coverage and next-run disposition come from the latest collection report; when the total is unmeasured, coverage reads \"not measured\", never complete."
+            ? 'Record counts show what this source currently retains. Coverage and next-run disposition come from the latest collection report; when the total is unmeasured, coverage reads "not measured", never complete.'
             : undefined
         }
         title={`Streams (${streams.length})`}
@@ -843,6 +869,21 @@ function ConnectorPageView({
       </Section>
 
       <RecentRunsSection autoPausedBanner={autoPausedBanner} connectorId={connectorId} recentRuns={recentRuns} />
+
+      {/* Configuration belongs to the source, not to Deployment: this route
+          already owns the connection's identity, health, coverage, streams and
+          runs, so moving settings elsewhere would make the owner carry that
+          identity across a context switch. It sits above diagnostics because it
+          is owner-decision content, and above the danger zone because it is not
+          destructive. */}
+      {configuration ? (
+        <ConnectionConfiguration
+          config={configuration}
+          connectionId={connectorInstanceId ?? connectionId}
+          connectorId={connectorId}
+          revisions={configRevisions}
+        />
+      ) : null}
 
       {/* Diagnostics is operator-debug detail. It sat first, above the
           streams and runs an owner actually opens this page for, so the
