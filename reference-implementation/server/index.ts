@@ -4831,6 +4831,19 @@ export function buildAsApp(opts: ServerOpts = {}) {
     isInternalConnectorId,
     listActiveBindingsForGrant,
     listRegisteredConnectorIds,
+    listStreamsWithRecords: async ({
+      connectorId,
+      connectorInstanceId,
+    }: {
+      connectorId: string;
+      connectorInstanceId: string | null;
+    }): Promise<string[]> => {
+      const rows = await listRetainedSizeStreams({
+        connectorId,
+        ...(connectorInstanceId ? { connectorInstanceId } : {}),
+      });
+      return rows.filter((row) => Number(row.record_count || 0) > 0).map((row) => String(row.stream));
+    },
     projectBindingForWire,
   };
   const explicitAsBaseUrl = opts.asPublicUrl || (opts.ignoreAmbientPublicUrls ? null : process.env.AS_PUBLIC_URL);

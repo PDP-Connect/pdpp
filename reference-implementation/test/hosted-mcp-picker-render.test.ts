@@ -112,6 +112,14 @@ const BINDINGS: Record<string, FixtureBinding[]> = {
   ],
 };
 
+// Default fixture: every manifest-declared stream actually holds data for
+// every connection, so the pre-existing render assertions (written before
+// the picker distinguished "grantable" from "held") keep passing unchanged.
+// Tests that exercise the honesty fix override this per-case.
+function defaultListStreamsWithRecords({ connectorId }: { connectorId: string }): Promise<string[]> {
+  return Promise.resolve((MANIFESTS[connectorId]?.streams ?? []).map((stream) => stream.name));
+}
+
 function makeCaps(overrides: Partial<ConsentPickerCapabilities> = {}): ConsentPickerCapabilities {
   return {
     canonicalConnectorKey,
@@ -122,6 +130,7 @@ function makeCaps(overrides: Partial<ConsentPickerCapabilities> = {}): ConsentPi
     isInternalConnectorId: (connectorId: string) => connectorId === INTERNAL_ID,
     listActiveBindingsForGrant: async ({ connectorId }: { connectorId: string }) => BINDINGS[connectorId] ?? [],
     listRegisteredConnectorIds: async () => [SPOTIFY_ID, GITHUB_ID, INTERNAL_ID],
+    listStreamsWithRecords: defaultListStreamsWithRecords,
     projectBindingForWire: (conn) => ({
       connection_id: conn.connectorInstanceId ?? null,
       // biome-ignore lint/suspicious/noUnnecessaryConditions: the runtime fixture intentionally maps absent display names to null.
@@ -309,6 +318,92 @@ test("a connector with zero bindings still yields one unconfigured-connector row
   const row = mustExist(rows[0], "the unconfigured-connector row must exist");
   assert.equal(row.connectionId, null, "unconfigured row has a null connection id");
   assert.equal(row.connectorTypeLabel, "Spotify");
+});
+
+// ── Honesty fix: "N streams available" must describe holdings, not catalog ───
+//
+// Root cause: the picker's "N streams available" meta line was sourced from
+// `manifest.streams.length` — the connector's full grantable catalog — for
+// EVERY row, including a connector the owner has never connected. An owner
+// reading "2 streams available" on a source they don't hold reasonably reads
+// that as "I have 2 streams of data here", which is false. The owner's own
+// framing: "it's weird that the consent page showed me data I don't have."
+//
+// This is the "connector the owner does NOT hold" reproduction: Spotify is
+// registered (so it appears in the picker at all — the picker only lists
+// registered connectors) but has zero active bindings, mirroring production's
+// 25 offerable-but-not-held manifests (e.g. `google_maps_data_portability`)
+// against 20 actually-held connectors.
+test("an unheld connector never claims manifest streams are 'available'", async () => {
+  const caps = makeCaps({
+    listActiveBindingsForGrant: async () => [],
+    listRegisteredConnectorIds: async () => [SPOTIFY_ID],
+    // Must not even be consulted for a connector with zero bindings — there
+    // is no connection to ask "which of your streams have records". If this
+    // fires, buildConnectorPickerRows regressed to querying holdings for a
+    // source the owner was never asked to grant anything real from.
+    listStreamsWithRecords: () => {
+      throw new Error("listStreamsWithRecords must not be called for an unheld connector");
+    },
+  });
+  const rows = await listHostedMcpPickerRows(caps, "owner_local");
+  const row = mustExist(rows[0], "the unconfigured-connector row must exist");
+
+  // Spotify's manifest declares 2 streams (saved_tracks, top_artists). The
+  // OLD behavior rendered "2 streams available" here, sourced straight from
+  // manifest.streams.length regardless of whether the owner held anything.
+  assert.equal(
+    row.meta.includes("streams available") || row.meta.includes("stream available"),
+    false,
+    `an unheld connector must not claim any stream count as "available" (got meta: ${row.meta})`
+  );
+  assert.match(row.meta, /not connected/i, "an unheld connector states plainly that it isn't connected");
+
+  // The checkbox and its full stream list must still be present and enabled:
+  // the owner can still pre-authorize this source for future data. Hiding it
+  // would be the opposite defect (P1: no real grant capability disappears).
+  assert.equal(row.streams.length, 2, "the manifest's full stream catalog must remain grantable, not hidden");
+});
+
+// ── Anti-over-correction guard: a HELD connector still renders its real streams ──
+//
+// The fix must not degrade a connector the owner genuinely holds. GitHub's
+// manifest declares 3 streams (repositories, starred_repos, issues); this
+// connection has actually synced records for only 2 of them (starred_repos
+// has none yet). The picker must report the true held count (2), matching
+// the `/sources` console idiom of counting streams that hold data, not the
+// manifest's full catalog (3) and not zero (which would wrongly say the
+// connector holds nothing at all).
+test("a held connector's 'streams available' count reflects real per-connection holdings, not the manifest catalog", async () => {
+  const heldByConnection: Record<string, string[]> = {
+    cin_github_echo: ["repositories", "issues"],
+  };
+  const caps = makeCaps({
+    listActiveBindingsForGrant: async ({ connectorId }: { connectorId: string }) =>
+      connectorId === GITHUB_ID ? [BINDINGS[GITHUB_ID]?.[2] as FixtureBinding] : [],
+    listRegisteredConnectorIds: async () => [GITHUB_ID],
+    listStreamsWithRecords: async ({ connectorInstanceId }: { connectorInstanceId: string | null }) =>
+      Promise.resolve((connectorInstanceId && heldByConnection[connectorInstanceId]) || []),
+  });
+  const rows = await listHostedMcpPickerRows(caps, "owner_local");
+  assert.equal(rows.length, 1, "GitHub's single connected binding yields one row");
+  const row = mustExist(rows[0], "the GitHub connection row must exist");
+
+  // Real holdings (2), not the manifest's full offering (3) and not 0.
+  assert.match(row.meta, /\b2 streams available\b/, `expected the real held count of 2, got meta: ${row.meta}`);
+  assert.equal(row.meta.includes("3 streams available"), false, "must not fall back to the manifest catalog count");
+
+  // The full manifest catalog must still be present in the grantable stream
+  // list — including `starred_repos`, which has no data yet — so the owner
+  // can still choose to pre-authorize it. Real data the owner DOES hold
+  // (repositories, issues) must also still be present: this is the anti-
+  // hiding guard (P1: no data known to the system may be invisible).
+  const grantableNames = row.streams.map((s) => s.name).sort();
+  assert.deepEqual(
+    grantableNames,
+    ["issues", "repositories", "starred_repos"],
+    "every manifest stream stays selectable regardless of whether it currently holds data"
+  );
 });
 
 // ── Acceptance criterion 5: orphaned-stream rejection is user-friendly ───────
