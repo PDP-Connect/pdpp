@@ -1,7 +1,7 @@
 # Authentication Design
 
 Status: Informative
-Date: 2026-08-14 (revised from 2026-03-30)
+Date: 2026-08-18 (revised from 2026-03-30)
 
 ## Decision: Bearer tokens at both boundaries, mechanism out of scope
 
