@@ -2440,7 +2440,9 @@ test("golden: synthetic terminal code_fix — maintainer status, no dead owner b
   const codeFix = v.required_actions.find((a) => a.kind === "code_fix");
   assert.ok(codeFix);
   assert.equal(codeFix.audience, "maintainer");
-  assert.equal(codeFix.cta, "Some data from this source can't be collected");
+  // A condition label, not the forward statement repeated — see inv 9 and
+  // `test/verdict-cta-not-restatement.test.ts`.
+  assert.equal(codeFix.cta, "Missing data needs review");
   assert.deepEqual(codeFix.satisfied_when, { kind: "none" });
   assert.notEqual(v.channel, "attention"); // maintainer status never raises attention
   assert.equal(v.forward_statement, "Some data from this source can't be collected.");

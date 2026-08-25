@@ -1093,11 +1093,48 @@ function softensTerminalCoverageToDegraded(
   return disposition === "terminal" && snapshot.state === "degraded" && latestCollectionSucceeded(snapshot);
 }
 
+/**
+ * The softened maintainer `code_fix` status text: the latest collection
+ * SUCCEEDED and left a known coverage gap behind.
+ */
+const SOFTENED_COVERAGE_CTA = "Coverage gap needs review";
+
+/**
+ * The hard maintainer `code_fix` status text: data that cannot be collected
+ * at all.
+ */
+const TERMINAL_COVERAGE_CTA = "Missing data needs review";
+
+/**
+ * The status text for a maintainer `code_fix`. This slot is NOT a button: a
+ * maintainer-audience action is not owner-satisfiable (`satisfied_when: {
+ * kind: "none" }`), so the console renders it as inert status text
+ * (`sources-view.tsx`, the `!ownerRunnable` branch). 428898c92 established the
+ * register deliberately — for a defect the owner cannot act on, this slot
+ * states a CONDITION rather than inviting an action he cannot take.
+ *
+ * It must not restate the sentence beside it. The console stacks the two:
+ * `source-actionability.ts` sets the row's `what` from
+ * `verdict.forward_statement` and its `actionLabel` from this `cta`. The hard
+ * branch used to return the forward statement's own sentence verbatim, so
+ * `HEB - gezalsatx@yahoo.com` rendered "Some data from this source can't be
+ * collected." above "Some data from this source can't be collected" — one
+ * fact, printed twice, in the slot reserved for what happens next.
+ *
+ * Both branches now read as the softened one always did: a short condition
+ * label that names the source's state without re-spending the sentence below.
+ *
+ * The wording stays inside 428898c92's constraint. That commit removed
+ * "Connector code needs a fix" because naming whose code is broken is
+ * developer language, unhelpful on a surface where the owner is running the
+ * software himself. "Missing data needs review" names the owner's data and
+ * the disposition of the case — nothing about our code — and mirrors the
+ * softened branch one line up. Severity still separates the two: the softened
+ * case is a coverage GAP in an otherwise-succeeding run, this one is data that
+ * cannot be collected at all, and the sentence beside it says so in full.
+ */
 function terminalCoverageCta(snapshot: ConnectionHealthSnapshot, disposition: ForwardDisposition): string {
-  if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
-    return "Coverage gap needs review";
-  }
-  return "Some data from this source can't be collected";
+  return softensTerminalCoverageToDegraded(snapshot, disposition) ? SOFTENED_COVERAGE_CTA : TERMINAL_COVERAGE_CTA;
 }
 
 /** Open structured owner attention (the `needs_attention` driver). */
@@ -2261,11 +2298,12 @@ function terminalProgressHeadline(retained: number | null, actions: readonly Req
     return `${held}; reconnect this account before further collection.`;
   }
   if (actions.some((action) => action.kind === "code_fix")) {
-    if (
-      actions.some(
-        (action) => action.kind === "code_fix" && action.cta !== "Some data from this source can't be collected"
-      )
-    ) {
+    // Which of the two `terminalCoverageCta` branches produced this action.
+    // 428898c92 flagged this string-equality coupling as pre-existing and
+    // fragile and left it as found; it now compares against that function's
+    // own constant instead of a third copy of the sentence, so the two cannot
+    // silently disagree when the copy changes.
+    if (actions.some((action) => action.kind === "code_fix" && action.cta === SOFTENED_COVERAGE_CTA)) {
       return `${held}; source coverage has known gaps.`;
     }
     return `${held}; some of this source's data can't be collected.`;
@@ -2633,6 +2671,51 @@ function pillStatementContradictionViolation(verdict: RenderedVerdict): string |
   return null;
 }
 
+const TRAILING_TERMINATOR_RE = /[.!]+$/;
+
+/**
+ * Reduce owner-facing copy to its claim, so two sentences that differ only in
+ * punctuation or casing compare equal. Trailing periods and case are exactly
+ * the difference between the CTA and the statement in the live defect below.
+ */
+function copyClaim(text: string): string {
+  return text.trim().toLowerCase().replace(TRAILING_TERMINATOR_RE, "");
+}
+
+/**
+ * (inv 9) An action's `cta` and the `forward_statement` beside it are rendered
+ * TOGETHER, from one verdict object, in one row: `source-actionability.ts`
+ * builds each source row's `what` from `verdict.forward_statement` and its
+ * `actionLabel` from `required_actions[0].cta`. The `cta` slot is the row's
+ * answer to "so what now?" — whether it renders as a button (owner-satisfiable)
+ * or as inert status text (maintainer). A `cta` that merely repeats the
+ * sentence next to it spends that slot saying nothing.
+ *
+ * THE LIVE DEFECT (2026-08-25). `HEB - gezalsatx@yahoo.com` rendered:
+ *
+ *     pill:              "Can't collect"
+ *     forward_statement: "Some data from this source can't be collected."
+ *     action cta:        "Some data from this source can't be collected"
+ *
+ * `terminalCoverageCta` and `terminalForwardStatement` are two functions that
+ * independently chose the same sentence for the hard terminal branch. Each was
+ * self-consistent; nothing compared them, so the duplication shipped — the
+ * same structural failure as inv 8, one field over.
+ *
+ * This is a duplication gate, NOT a "must offer an owner action" gate. A
+ * maintainer `code_fix` is legitimately not an owner task, and the honest
+ * answer for it is a short condition label rather than an invented button.
+ * What it may not be is the sentence below it, again.
+ */
+function ctaRestatesForwardStatementViolation(verdict: RenderedVerdict): string | null {
+  const statement = copyClaim(verdict.forward_statement);
+  const duplicate = verdict.required_actions.find((action) => copyClaim(action.cta) === statement);
+  if (duplicate) {
+    return `action ${duplicate.kind} cta restates forward_statement "${verdict.forward_statement}" (inv 9)`;
+  }
+  return null;
+}
+
 /**
  * (inv 8) The converse: a green/healthy pill must not sit above a sentence
  * that says the source is NOT current. Same object, same reading order, same
@@ -2673,6 +2756,7 @@ function honestyViolations(
     ...verdict.streams.map(terminalStreamResumeStatementViolation),
     pillStatementContradictionViolation(verdict),
     healthyPillStaleStatementViolation(verdict, snapshot),
+    ctaRestatesForwardStatementViolation(verdict),
   ].filter(isViolation);
 }
 
