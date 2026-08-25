@@ -328,7 +328,19 @@ test("gate: an enabled schedule row stays scheduled-active — never owner_pause
 });
 
 test("gate: explicit revoked lifecycle resolves to retired, maintainer-owned, regardless of health shape", () => {
-  const snap = snapshot({ last_success_at: "2026-06-01T00:00:00.000Z", state: "blocked" });
+  // `state: "blocked"` needs a blocking axis to go with it. The builder's
+  // defaults are fully healthy, so blocked-plus-defaults renders the all-clear
+  // forward statement under a "Can't collect" pill — the self-contradiction
+  // invariant 8 now rejects at the seam. The intent here is that a revoked
+  // lifecycle wins REGARDLESS of health shape, so the health shape just has to
+  // be internally coherent; `coverage: "terminal_gap"` is the cheapest one that
+  // genuinely blocks.
+  const snap = snapshot({
+    axes: { coverage: "terminal_gap" },
+    forward_disposition: "terminal",
+    last_success_at: "2026-06-01T00:00:00.000Z",
+    state: "blocked",
+  });
   const { state } = ownerStateFor(snap, [], {
     lifecycle: { status: "revoked" },
     schedule: scheduleRow(),
