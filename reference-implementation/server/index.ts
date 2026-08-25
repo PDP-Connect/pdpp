@@ -513,6 +513,7 @@ import {
   ConnectorInstanceResolutionError,
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
+  isExpectedMissingConnectorInstance,
   makeConnectorInstanceSourceBindingKey,
   resolveOwnerConnectorInstanceNamespace,
 } from "./stores/connector-instance-store.ts";
@@ -8904,6 +8905,32 @@ export function isManagedNekoSurfaceApproved(
   return normalizedUrlWithoutTrailingSlash(surface.stream_base_url) === baseUrl;
 }
 
+// Reports one skipped schedule row at the level its cause deserves. A schedule
+// row naming a connection that no longer exists is expected and fully handled —
+// the row is skipped and the scheduler keeps running — so it reports at debug
+// WITHOUT a stack. Reporting it at warn with a stack made every boot emit one
+// stack trace per such row (ten on the live deployment), which trains the
+// reader to ignore the message. A genuine fault (owner/connector mismatch,
+// inactive instance, store failure) still reports at warn with its stack.
+function logScheduleRefreshSkip(
+  logger: { debug?: (...args: unknown[]) => void; warn?: (...args: unknown[]) => void } | null | undefined,
+  schedule: { connector_id?: string; connector_instance_id?: string } | null | undefined,
+  err: unknown
+): void {
+  if (isExpectedMissingConnectorInstance(err)) {
+    logger?.debug?.(
+      {
+        connector_id: schedule?.connector_id,
+        connector_instance_id: schedule?.connector_instance_id ?? null,
+        reason: "connector_instance_not_found",
+      },
+      "skipping scheduled connector whose connection no longer exists"
+    );
+    return;
+  }
+  logger?.warn?.({ connector_id: schedule?.connector_id, err }, "skipping scheduled connector during scheduler refresh");
+}
+
 function createReferenceSchedulerManager({
   connectionScopedRunEnvResolver = buildConnectionScopedRunEnvResolver(),
   controller,
@@ -9025,10 +9052,7 @@ function createReferenceSchedulerManager({
           ownerToken: await controller.issueRuntimeOwnerToken(ownerSubjectId),
         });
       } catch (err) {
-        logger?.warn?.(
-          { connector_id: schedule?.connector_id, err },
-          "skipping scheduled connector during scheduler refresh"
-        );
+        logScheduleRefreshSkip(logger, schedule, err);
       }
     }
     return connectors;
