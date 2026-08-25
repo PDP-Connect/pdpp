@@ -34,9 +34,17 @@ import { deriveRecommendedMode } from "../runtime/refresh-mode-derivation.ts";
 
 const DEFAULT_INTERVAL_SECONDS = 3600;
 
+export interface ConnectorInstanceOptionsLike {
+  readonly connectorInstanceId?: string;
+}
+
 export interface AutoEnrollControllerLike {
-  getSchedule: (connectorId: string) => Promise<ScheduleApi | null>;
-  upsertSchedule: (connectorId: string, input: ConnectorSchedulePatch) => Promise<ScheduleUpsertResult>;
+  getSchedule: (connectorId: string, options?: ConnectorInstanceOptionsLike) => Promise<ScheduleApi | null>;
+  upsertSchedule: (
+    connectorId: string,
+    input: ConnectorSchedulePatch,
+    options?: ConnectorInstanceOptionsLike
+  ) => Promise<ScheduleUpsertResult>;
 }
 
 export interface AutoEnrollConnectorRow {
@@ -69,10 +77,27 @@ export interface AutoEnrollOptions {
    * must still auto-enroll. Only presence is consulted; never secret bytes.
    */
   hasStoredCredential?: (connectorId: string) => Promise<boolean>;
+  /**
+   * The owner's ACTIVE connection ids for this connector, oldest first.
+   *
+   * A schedule row must be keyed by the connection it refreshes. Without
+   * this probe the controller falls back to keying the row by the bare
+   * connector id (`upsertSchedule`'s `options.connectorInstanceId ||
+   * resolvedConnectorId`), which matches no `connector_instances` row: the
+   * scheduler dispatches it, admission raises `connector_instance_not_found`,
+   * and the owner's connection silently never refreshes while every later
+   * boot counts the orphan as `skipped_existing` and declines to repair it.
+   *
+   * Returning an empty list means "no connection to schedule yet" and the
+   * connector is skipped rather than enrolled under an unroutable key.
+   * Omitting the probe entirely preserves the prior connector-keyed
+   * behavior for callers that have no instance store (tests, embedders).
+   */
+  listActiveConnectorInstanceIds?: (connectorId: string) => Promise<readonly string[]>;
   listConnectors: AutoEnrollListConnectors;
+  log?: (line: string) => void;
   /** Record the decision on the owner-visible connector instance binding. */
   recordSkipReason?: (connectorId: string, reason: string | null) => Promise<void>;
-  log?: (line: string) => void;
 }
 
 export interface AutoEnrollSummary {
@@ -367,30 +392,41 @@ function classifyManifestEligibility(manifest: unknown): ManifestClassification 
 
 async function attachScheduleForEligibleConnector(args: {
   connectorId: string;
+  connectorInstanceId?: string;
   controller: AutoEnrollControllerLike;
   intervalSeconds: number;
   log: (line: string) => void;
 }): Promise<"enrolled" | "errors" | "skipped_existing"> {
+  // Scope every read AND write to the same connection so an existing row is
+  // never confused with another connection's, and a new row is routable.
+  const scope: ConnectorInstanceOptionsLike | undefined = args.connectorInstanceId
+    ? { connectorInstanceId: args.connectorInstanceId }
+    : undefined;
+  const label = args.connectorInstanceId ? `${args.connectorId} (${args.connectorInstanceId})` : args.connectorId;
   let existing: ScheduleApi | null;
   try {
-    existing = await args.controller.getSchedule(args.connectorId);
+    existing = await args.controller.getSchedule(args.connectorId, scope);
   } catch (err) {
-    args.log(`[auto-enroll] getSchedule failed for ${args.connectorId}: ${errorMessage(err)}`);
+    args.log(`[auto-enroll] getSchedule failed for ${label}: ${errorMessage(err)}`);
     return "errors";
   }
   if (existing) {
     return "skipped_existing";
   }
   try {
-    await args.controller.upsertSchedule(args.connectorId, {
-      enabled: true,
-      interval_seconds: args.intervalSeconds,
-      jitter_seconds: 0,
-    });
-    args.log(`[auto-enroll] enrolled ${args.connectorId} at ${args.intervalSeconds}s interval`);
+    await args.controller.upsertSchedule(
+      args.connectorId,
+      {
+        enabled: true,
+        interval_seconds: args.intervalSeconds,
+        jitter_seconds: 0,
+      },
+      scope
+    );
+    args.log(`[auto-enroll] enrolled ${label} at ${args.intervalSeconds}s interval`);
     return "enrolled";
   } catch (err) {
-    args.log(`[auto-enroll] upsertSchedule failed for ${args.connectorId}: ${errorMessage(err)}`);
+    args.log(`[auto-enroll] upsertSchedule failed for ${label}: ${errorMessage(err)}`);
     return "errors";
   }
 }
@@ -400,6 +436,7 @@ async function decideScheduleAttachmentForConnector(args: {
   controller: AutoEnrollControllerLike;
   env: Readonly<Record<string, string | undefined>>;
   hasStoredCredential: ((connectorId: string) => Promise<boolean>) | undefined;
+  listActiveConnectorInstanceIds?: (connectorId: string) => Promise<readonly string[]>;
   log: (line: string) => void;
   manifest: unknown;
   recordSkipReason?: (connectorId: string, reason: string | null) => Promise<void>;
@@ -436,18 +473,94 @@ async function decideScheduleAttachmentForConnector(args: {
     );
     return authGateFailure;
   }
-  const result = await attachScheduleForEligibleConnector({
-    connectorId: args.connectorId,
-    controller: args.controller,
-    intervalSeconds: manifestEligibility.intervalSeconds,
-    log: args.log,
-  });
-  if (result === "enrolled" || result === "skipped_existing") {
-    await recordReason(null);
-  } else {
-    await recordReason("schedule enrollment failed");
+  const instanceIds = await resolveActiveConnectorInstanceIds(args);
+  if (instanceIds === null) {
+    await recordReason("connector instances could not be resolved");
+    return "errors";
   }
-  return result;
+  // No probe supplied: preserve the prior connector-keyed behavior.
+  if (instanceIds.length === 0 && !args.listActiveConnectorInstanceIds) {
+    const result = await attachScheduleForEligibleConnector({
+      connectorId: args.connectorId,
+      controller: args.controller,
+      intervalSeconds: manifestEligibility.intervalSeconds,
+      log: args.log,
+    });
+    await recordReason(result === "errors" ? "schedule enrollment failed" : null);
+    return result;
+  }
+  if (instanceIds.length === 0) {
+    args.log(`[auto-enroll] ${args.connectorId} has no active connection to schedule`);
+    await recordReason("no active connection to schedule");
+    return "skipped_policy";
+  }
+  return await enrollEveryActiveConnection({
+    ...args,
+    instanceIds,
+    intervalSeconds: manifestEligibility.intervalSeconds,
+    recordReason,
+  });
+}
+
+/**
+ * Resolve the owner's active connections for this connector. Returns `null`
+ * when the probe itself failed — a failure to LOOK is not the same fact as
+ * "there is nothing there", and must never be recorded as one.
+ */
+async function resolveActiveConnectorInstanceIds(args: {
+  connectorId: string;
+  listActiveConnectorInstanceIds?: (connectorId: string) => Promise<readonly string[]>;
+  log: (line: string) => void;
+}): Promise<readonly string[] | null> {
+  if (!args.listActiveConnectorInstanceIds) {
+    return [];
+  }
+  try {
+    return await args.listActiveConnectorInstanceIds(args.connectorId);
+  } catch (err) {
+    args.log(`[auto-enroll] could not resolve connections for ${args.connectorId}: ${errorMessage(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Enroll each active connection independently. A connector may hold several
+ * (the owner's two H-E-B accounts, two ChatGPT accounts): each is its own
+ * refresh subject and needs its own row. The connector-level counter reports
+ * the most significant outcome — an error dominates, then a real enrollment,
+ * otherwise every connection already had a row.
+ */
+async function enrollEveryActiveConnection(args: {
+  connectorId: string;
+  controller: AutoEnrollControllerLike;
+  instanceIds: readonly string[];
+  intervalSeconds: number;
+  log: (line: string) => void;
+  recordReason: (reason: string | null) => Promise<void>;
+}): Promise<AutoEnrollSummaryCounter> {
+  let enrolledAny = false;
+  let erroredAny = false;
+  for (const connectorInstanceId of args.instanceIds) {
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+    const outcome = await attachScheduleForEligibleConnector({
+      connectorId: args.connectorId,
+      connectorInstanceId,
+      controller: args.controller,
+      intervalSeconds: args.intervalSeconds,
+      log: args.log,
+    });
+    if (outcome === "errors") {
+      erroredAny = true;
+    } else if (outcome === "enrolled") {
+      enrolledAny = true;
+    }
+  }
+  if (erroredAny) {
+    await args.recordReason("schedule enrollment failed");
+    return "errors";
+  }
+  await args.recordReason(null);
+  return enrolledAny ? "enrolled" : "skipped_existing";
 }
 
 /**
@@ -462,6 +575,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
     env = process.env,
     controller,
     hasStoredCredential,
+    listActiveConnectorInstanceIds,
     listConnectors,
     recordSkipReason,
     log = () => {
@@ -493,6 +607,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
       hasStoredCredential,
       log,
       manifest: row.manifest,
+      ...(listActiveConnectorInstanceIds ? { listActiveConnectorInstanceIds } : {}),
       ...(recordSkipReason ? { recordSkipReason } : {}),
     });
     summary[counter] += 1;

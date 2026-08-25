@@ -8457,6 +8457,19 @@ export async function startServer(opts: ServerOpts = {}) {
         }
         return false;
       },
+      // Key each schedule row to the connection it refreshes. Without this the
+      // controller falls back to the bare connector id, producing a row that
+      // matches no `connector_instances` row: the scheduler dispatches it,
+      // admission raises `connector_instance_not_found`, and the connection
+      // never refreshes while later boots count the orphan `skipped_existing`.
+      listActiveConnectorInstanceIds: async (connectorId: string) => {
+        const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+        const instances = await createRequestConnectorInstanceStore().listActiveByConnector(
+          ownerAuthSubjectId,
+          canonicalId
+        );
+        return instances.map((instance) => instance.connectorInstanceId);
+      },
       listConnectors: async () => {
         const manifests = await collectValidRegisteredConnectorManifests({ logger });
         return manifests.map(({ connectorId, manifest }) => ({ connector_id: connectorId, manifest }));
