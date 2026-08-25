@@ -164,11 +164,7 @@ async function fetchAllSummaries(
 
 function renderRow(row: SourceRow, withStreams: boolean): string {
   const lines: string[] = [];
-  // `row.fusedLine` is the exact text the `/sources` card row renders
-  // (`fusedStatus.line` — state · freshness · syncing, worst-honest-axis
-  // first). Printing it here, not the bare `status.label`, is what makes
-  // this CLI say the same thing the owner reads on the page.
-  lines.push(`${row.status.dot} ${row.displayName}  [${row.fusedLine}]`);
+  lines.push(`${row.status.dot} ${row.displayName}  [${row.status.label}]`);
   const identity = [row.connectorId, row.connectionId].filter(Boolean).join("  ");
   if (identity) {
     lines.push(`    ${identity}`);
@@ -237,13 +233,23 @@ const topLevelHeaders: Record<string, string> = {
   ...(cookieHeader ? { Cookie: cookieHeader } : {}),
 };
 
-const rows = await projectSourceRows(await fetchAllSummaries(asUrl, topLevelHeaders));
+const rows = projectSourceRows(await fetchAllSummaries(asUrl, topLevelHeaders));
 const streamsRequested = flags.streams === true || flags.streams === "true" || flags.json === true;
 
 if (flags.json === true || flags.json === "true") {
   process.stdout.write(`${JSON.stringify({ as_url: asUrl, sources: rows }, null, 2)}\n`);
 } else {
-  process.stdout.write(`sources @ ${asUrl}  (${rows.length} visible)\n\n`);
+  process.stdout.write(`sources @ ${asUrl}  (${rows.length} visible)\n`);
+  // This model re-derives the row verdict rather than calling the one the
+  // console calls (`apps/console/.../lib/source-actionability.ts`), so the two
+  // can disagree — proven: six `setup_failed` Venmo connections print
+  // "Revoked" here and "Setup never completed" on the page.
+  //
+  // Consuming the console's module directly breaks the zero-connector-knowledge
+  // boundary, so the fix is to extract the derivation into a package both
+  // surfaces import; that is backlogged. Until it ships, an instrument that
+  // cannot guarantee parity has to say so rather than let a reader assume it.
+  process.stdout.write("derivation may diverge from the console; the page is authoritative\n\n");
   for (const row of rows) {
     process.stdout.write(`${renderRow(row, streamsRequested)}\n\n`);
   }
