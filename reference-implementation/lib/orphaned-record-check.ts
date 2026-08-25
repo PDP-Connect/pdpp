@@ -39,6 +39,17 @@ import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-stor
 /** One stranded connector-instance id and how much live data it holds. */
 export interface OrphanedRecordGroup {
   readonly connectorInstanceId: string;
+  /**
+   * Which connector the stranded rows belong to, read from `records` itself
+   * rather than from the `connector_instances` row that no longer exists.
+   *
+   * Without it the line names only opaque `cin_*` ids, so the first question
+   * it provokes — *which source is this?* — cannot be answered from the log at
+   * all. A group whose rows disagree on `connector_id` reports `"mixed"`,
+   * which is itself a finding worth seeing rather than a detail to average
+   * away.
+   */
+  readonly connectorId: string;
   readonly liveRecords: number;
   readonly streams: number;
 }
@@ -76,6 +87,7 @@ export const ORPHAN_REPORT_LIMIT = 20;
 // separately from the full set, never from the capped page.
 const ORPHAN_GROUPS_SQL_SQLITE = `
 SELECT r.connector_instance_id AS connector_instance_id,
+       CASE WHEN COUNT(DISTINCT r.connector_id) = 1 THEN MIN(r.connector_id) ELSE 'mixed' END AS connector_id,
        COUNT(*) AS live_records,
        COUNT(DISTINCT r.stream) AS streams
 FROM records r
@@ -105,6 +117,9 @@ WITH orphan_ids AS (
   )
 )
 SELECT o.connector_instance_id AS connector_instance_id,
+       (SELECT CASE WHEN COUNT(DISTINCT x.connector_id) = 1 THEN MIN(x.connector_id) ELSE 'mixed' END
+          FROM records x
+         WHERE x.connector_instance_id = o.connector_instance_id AND NOT x.deleted) AS connector_id,
        (SELECT COUNT(*) FROM records x
          WHERE x.connector_instance_id = o.connector_instance_id AND NOT x.deleted) AS live_records,
        (SELECT COUNT(DISTINCT x.stream) FROM records x
@@ -145,6 +160,7 @@ FROM orphan_ids o`;
 type CountValue = number | string | bigint;
 
 interface GroupRow {
+  connector_id: string | null;
   connector_instance_id: string;
   live_records: CountValue;
   streams: CountValue;
@@ -189,6 +205,10 @@ export async function findOrphanedRecords(limit: number = ORPHAN_REPORT_LIMIT): 
 
   const groups = groupRows.map((row) => ({
     connectorInstanceId: row.connector_instance_id,
+    // A stranded group always has rows (that is what made it a group), so a
+    // null here would mean the column was not selected, not that the data is
+    // absent. Say "unknown" rather than render an empty string as a name.
+    connectorId: row.connector_id ?? "unknown",
     liveRecords: toCount(row.live_records),
     streams: toCount(row.streams),
   }));
@@ -233,10 +253,15 @@ export async function checkOrphanedRecordsAtBoot(logger: OrphanCheckLogger): Pro
   logger.error(
     {
       groups: result.groups.map((group) => ({
+        connector_id: group.connectorId,
         connector_instance_id: group.connectorInstanceId,
         live_records: group.liveRecords,
         streams: group.streams,
       })),
+      // Which sources are affected, deduped. The itemised `groups` list is
+      // capped, so on a database with many strands this is the only field that
+      // still answers "which of my sources is this about?" without arithmetic.
+      orphaned_connectors: [...new Set(result.groups.map((group) => group.connectorId))].sort(),
       orphaned_instances: result.orphanedInstanceCount,
       orphaned_records: result.orphanedRecordCount,
       truncated: result.truncated,
