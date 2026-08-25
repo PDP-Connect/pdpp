@@ -252,6 +252,11 @@ export function buildRecoveryDemoModel(): ConnectorPageModel {
     activeRunId: null,
     collectionFactsByStream,
     collectionOwnerActionByStream: { messages: true, sessions: true },
+    // The demo fixture carries no configuration read. `null` renders the panel
+    // as unavailable rather than inventing a schema this demo connector never
+    // declared — the same honesty the live path keeps.
+    configRevisions: [],
+    configuration: null,
     connectionHealth,
     connectionId,
     connectionLabelSeed: "Claude Code workstation",
