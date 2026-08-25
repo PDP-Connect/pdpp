@@ -42,12 +42,33 @@ COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/pack
 COPY packages/polyfill-connectors/scripts/install-patchright-browser.ts packages/polyfill-connectors/scripts/install-patchright-browser.ts
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
 COPY reference-implementation/package.json reference-implementation/package.json
+# Two workspace manifests depend on `file:../../vendor/*.tgz`, so the tarballs
+# are install inputs exactly like the manifests above — not source. Without
+# them `pnpm install` fails with ENOENT on the tarball path. This stage is
+# cached on the manifests, so the omission stayed invisible for as long as the
+# deps layer kept hitting cache and only surfaced on the first cold build.
+COPY vendor/ vendor/
 
-RUN pnpm install --frozen-lockfile
+# `--ignore-scripts`, then run the lifecycle in `source` below. Workspace
+# `prepare` hooks compile their own package (`@pdpp/mcp-server` runs
+# `pnpm build`, which needs `@pdpp/cli` and its own `src/`), and none of that
+# source exists yet in this stage — nor should it, since the whole point of
+# resolving dependencies against manifests alone is that a source edit does not
+# invalidate the layer. Running the hooks here fails with ERR_MODULE_NOT_FOUND
+# on `packages/mcp-server/scripts/build.ts`.
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 FROM deps AS source
 
 COPY . .
+
+# Now that every workspace's source is present, run the `prepare` hooks the
+# install deliberately skipped. `@pdpp/mcp-server` builds its gitignored
+# `dist/` here, which its `bin` entry points at — so skipping this entirely
+# would produce an image whose MCP binary silently does not exist.
+# `pnpm rebuild` is NOT the right verb: it runs install/postinstall, not
+# `prepare`. Invoke the hook directly, and only where one is declared.
+RUN pnpm --recursive --if-present run prepare
 
 FROM base AS reference
 
