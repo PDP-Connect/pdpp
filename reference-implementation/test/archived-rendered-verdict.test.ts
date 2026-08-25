@@ -33,11 +33,30 @@ const OWNER_BLAME_RE = /you (did not|didn't|failed to)/i;
 
 // A verdict that reads healthy AND actionable — the shape whose survival into
 // an archived row would be the fabricated-green defect.
+//
+// The green-pill/attention-channel pairing here is DELIBERATELY incoherent: the
+// real synthesizer always pairs green with `calm`, and the point of this fixture
+// is to construct a verdict that would otherwise lie, so the archival override
+// cannot pass vacuously. What is not deliberate is shape drift — hence no
+// `as unknown as`. The compiler must still see every field of `RenderedVerdict`,
+// so a field the synthesizer later adds (say a `progress` resumption promise
+// that archival would spread through untouched) shows up here as a build error
+// rather than a silently unstripped promise on a dead source.
 function livingVerdict(): RenderedVerdict {
   return {
     annotations: [],
     channel: "attention",
-    detail: {},
+    detail: {
+      collection_rate: null,
+      conditions: [],
+      detail_gap_backlog: null,
+      dominant_condition_id: null,
+      forward_disposition: "complete",
+      next_attempt_at: null,
+      reason_code: null,
+      state: "healthy",
+      suppressed: [],
+    },
     forward_statement: "Reconnect this account and collection resumes.",
     pill: { label: "Healthy", tone: "green" },
     progress: {
@@ -60,8 +79,17 @@ function livingVerdict(): RenderedVerdict {
       },
     ],
     streams: [],
-    trace: {},
-  } as unknown as RenderedVerdict;
+    trace: {
+      channel_cause: "attention_open",
+      detail_destinations: [],
+      primary_action_kind: "reauth",
+      runtime_capped: false,
+      satisfied_when: { kind: "credential_present_and_unrejected" },
+      suppressed_evidence: [],
+      tone_cause: "green",
+      tone_inputs: [{ axis: "state", tone: "green" }],
+    },
+  };
 }
 
 test("an archived source never reports a healthy pill", () => {

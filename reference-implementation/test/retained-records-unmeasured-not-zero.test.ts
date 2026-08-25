@@ -72,7 +72,15 @@ test("liveRetainedRecordsOrNull: a positive total always stands on its own", () 
 
 // ─── Renderer: null renders "unavailable", a real count renders the number ───
 
-/** Paused manual import: no schedule, no prior success — the live shape. */
+/**
+ * Paused manual import: no schedule, no prior success — the live shape.
+ *
+ * Complete and uncast, so the compiler enforces that this stays a shape
+ * `computeConnectionHealth` can emit. The headline path this file asserts reads
+ * `axes.outbox` (`rendered-verdict.ts`), so an omitted axis here would silently
+ * change the very sentence these tests exist to pin. Do not reintroduce
+ * `as unknown as`.
+ */
 function pausedManualSnapshot(): ConnectionHealthSnapshot {
   return {
     axes: {
@@ -90,12 +98,15 @@ function pausedManualSnapshot(): ConnectionHealthSnapshot {
     ephemeral_browser_runtime: null,
     forward_disposition: "complete",
     last_success_at: null,
+    local_device_outbox_counts: null,
     next_action: null,
     next_attempt_at: null,
     reason_code: null,
+    remote_surface: null,
     state: "healthy",
+    supporting_condition_ids: [],
     unknown_reasons: [],
-  } as unknown as ConnectionHealthSnapshot;
+  };
 }
 
 function renderManual(retainedRecords: number | null) {
