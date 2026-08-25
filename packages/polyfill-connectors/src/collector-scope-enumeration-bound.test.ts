@@ -40,11 +40,33 @@ import { walkRollouts } from "../connectors/codex/index.ts";
 const CONNECTORS_DIR = join(import.meta.dirname, "..", "connectors");
 
 /**
- * Malformed content for the excluded file. A connector that reads it records
- * the file in its STATE cursor (and may complain about the content), so either
- * signal betrays a read that the boundary should have prevented.
+ * Malformed content for codex's excluded rollout. `walkRollouts` prunes whole
+ * calendar-year directories before listing their files, so this content is
+ * never opened when the boundary holds; a connector that reads it anyway
+ * would surface a parse complaint, betraying the read the boundary should
+ * have prevented.
  */
 const POISONED_SENTINEL = '{"broken json PDPP_SENTINEL_MUST_NOT_BE_READ\n';
+
+/**
+ * Well-formed content for claude_code's excluded project. Unlike codex,
+ * claude_code's excluded-project test proves exclusion by asserting the
+ * connector's own emitted output for this session id is absent, not by
+ * detecting a crash — so this fixture must be readable JSONL. If it were
+ * malformed instead, opening it by mistake would abort the WHOLE run
+ * (`connectors/claude_code/index.ts` re-throws on a malformed line), which
+ * would make an unrelated crash indistinguishable from a successful prune and
+ * defeat the "baseline: an unscoped run DOES read it" half of the proof.
+ */
+const CLAUDE_EXCLUDED_SESSION_ID = "eeeeeeee-9999-4999-8999-999999999999";
+const CLAUDE_EXCLUDED_SENTINEL = `${JSON.stringify({
+  cwd: "/home/u/code/excluded",
+  message: { content: [{ text: "PDPP_SENTINEL_MUST_NOT_BE_READ", type: "text" }], role: "user" },
+  sessionId: CLAUDE_EXCLUDED_SESSION_ID,
+  timestamp: "2026-07-01T00:00:00.000Z",
+  type: "user",
+  uuid: "ffffffff-9999-4999-8999-999999999999",
+})}\n`;
 
 /** The excluded file's path fragment — what a scanned-file cursor would name. */
 const CLAUDE_SENTINEL_PATH = join("-home-u-code-excluded", "session.jsonl");
@@ -53,8 +75,10 @@ const CODEX_SENTINEL_PATH = join("2020", "01", "05");
 const noopEmit = (): Promise<void> => Promise.resolve();
 
 /**
- * Two Claude projects. The excluded one holds a poisoned sentinel so ANY code
- * path that opens it surfaces loudly instead of failing silently.
+ * Two Claude projects. The excluded one holds a well-formed but distinctly
+ * marked session (see `CLAUDE_EXCLUDED_SENTINEL`) so a read that the boundary
+ * should have prevented shows up as that session id appearing in the run's
+ * own output, rather than as a crash.
  */
 async function seedClaudeHome(): Promise<{ claudeHome: string; projectsDir: string }> {
   const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-home-"));
@@ -73,7 +97,7 @@ async function seedClaudeHome(): Promise<{ claudeHome: string; projectsDir: stri
     })}\n`,
     "utf8"
   );
-  await writeFile(join(projectsDir, "-home-u-code-excluded", "session.jsonl"), POISONED_SENTINEL, "utf8");
+  await writeFile(join(projectsDir, "-home-u-code-excluded", "session.jsonl"), CLAUDE_EXCLUDED_SENTINEL, "utf8");
   return { claudeHome, projectsDir };
 }
 
@@ -192,16 +216,23 @@ test("codex discovery prunes a whole out-of-range calendar year before listing i
   );
 });
 
-test("claude_code: a real scoped run never reads the excluded project's poisoned file", async () => {
+test("claude_code: a real scoped run never reads the excluded project's session", async () => {
   const { claudeHome, projectsDir } = await seedClaudeHome();
   const env = { CLAUDE_CODE_HOME: claudeHome, CLAUDE_CODE_PROJECTS_DIR: projectsDir };
 
   // Counterweight to the discovery assertion above: proves no OTHER code path
-  // opens the excluded file behind discovery's back.
+  // opens the excluded file behind discovery's back. Both the excluded
+  // session's file path (cursor state keys files by absolute path) and its
+  // distinct session id (an emitted RECORD) are checked, so this holds
+  // whether "read" surfaces as a cursor entry or as collected data.
   const unbounded = await runConnectorChild({ connector: "claude_code", env, streams: ["sessions", "messages"] });
   assert.ok(
     unbounded.includes(CLAUDE_SENTINEL_PATH),
     "baseline: an unscoped run DOES scan the excluded file and records it in its cursor"
+  );
+  assert.ok(
+    unbounded.includes(CLAUDE_EXCLUDED_SESSION_ID),
+    "baseline: an unscoped run DOES collect the excluded project's session"
   );
 
   const bounded = await runConnectorChild({
@@ -214,6 +245,11 @@ test("claude_code: a real scoped run never reads the excluded project's poisoned
     bounded.includes(CLAUDE_SENTINEL_PATH),
     false,
     "the excluded file must appear in NO cursor or diagnostic — it was never opened"
+  );
+  assert.equal(
+    bounded.includes(CLAUDE_EXCLUDED_SESSION_ID),
+    false,
+    "the excluded project's session must never be collected — it was never opened"
   );
 });
 
