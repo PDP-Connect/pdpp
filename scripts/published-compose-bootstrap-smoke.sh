@@ -31,7 +31,20 @@ cleanup() {
     echo "published-compose-bootstrap-smoke: cleanup failed for $PROJECT_NAME" >&2
     exit_code=1
   fi
-  rm -rf "$SMOKE_ROOT"
+  # The containers write into the bind mounts as root (postgres data, the
+  # downloaded embedding model), so a plain user-side `rm -rf` cannot remove
+  # them and would otherwise report failure on an otherwise passing run.
+  # Delete them from inside a container, which owns the same uid, then sweep
+  # whatever is left. Only this run's temporary host directory is touched --
+  # never a Docker volume.
+  docker run --rm \
+    --volume "$SMOKE_ROOT:/smoke-root" \
+    "${PDPP_POSTGRES_IMAGE:-pgvector/pgvector:pg16}" \
+    sh -c 'rm -rf /smoke-root/..?* /smoke-root/.[!.]* /smoke-root/*' >/dev/null 2>&1 || true
+  rm -rf "$SMOKE_ROOT" 2>/dev/null || true
+  if [[ -e "$SMOKE_ROOT" ]]; then
+    echo "published-compose-bootstrap-smoke: could not fully remove $SMOKE_ROOT" >&2
+  fi
   exit "$exit_code"
 }
 
@@ -82,6 +95,20 @@ require_command node
 trap cleanup EXIT
 
 cp "$ENV_TEMPLATE" "$ENV_FILE"
+# Run the documented step 2 exactly as selfhost-quickstart.md tells a new user
+# to. Without it PDPP_OWNER_PASSWORD stays empty and the reference container
+# refuses to boot ("Refusing to start: ... PDPP_OWNER_PASSWORD is unset"), so a
+# smoke test that skips this step can never pass and never guards the real path.
+# `--write` patches only empty values and resolves `.env.docker` relative to the
+# working directory, so run it from the smoke root: the isolated copy is patched
+# and the operator's real .env.docker is never touched.
+(cd "$SMOKE_ROOT" && bash "$REPOSITORY_ROOT/scripts/generate-secrets.sh" --write >/dev/null)
+for required_secret in PDPP_OWNER_PASSWORD PDPP_CREDENTIAL_ENCRYPTION_KEY; do
+  if ! grep -qE "^${required_secret}=.+" "$ENV_FILE"; then
+    echo "published-compose-bootstrap-smoke: $required_secret was not populated by generate-secrets.sh" >&2
+    exit 1
+  fi
+done
 mkdir -p \
   "$SMOKE_ROOT/reference-data" \
   "$SMOKE_ROOT/reference-transformers" \
