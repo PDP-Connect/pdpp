@@ -51,13 +51,31 @@ jobs:
         # Monorepo root install so pnpm workspace resolves @pdpp/* packages.
         # --frozen-lockfile catches drift between pnpm-lock.yaml and
         # package.json without letting CI silently upgrade deps.
-        # PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: verify + test don't spin up a
-        # browser, and patchright's postinstall (which downloads ~150MB of
-        # Chromium) would otherwise add ~60s to every run.
+        # The postinstall browser downloads (~150MB each) stay off: this job
+        # needs ONE browser, installed explicitly in the next step, not two
+        # pulled implicitly on every install.
+        #
+        # This previously read "verify + test don't spin up a browser". That
+        # stopped being true when `src/capture-trace-redaction.test.ts` began
+        # importing `chromium` from `playwright` and launching it for real, to
+        # prove a trace zip cannot leak a credential. Six of its tests failed
+        # in CI with "Executable doesn't exist" for as long as the run reached
+        # them — which it only started doing once an earlier `verify` failure
+        # stopped short-circuiting the chain.
         env:
           PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for the capture-redaction proofs
+        # `src/capture-trace-redaction.test.ts` launches a real browser: the
+        # thing under test is what Playwright WRITES to disk (trace zips,
+        # screenshots, DOM snapshots), so a stub cannot prove the redaction.
+        # `--with-deps` because the runner image carries no shared libs for it.
+        # Run from the package: `playwright` is a dependency of
+        # polyfill-connectors, not of the workspace root, so `pnpm exec
+        # playwright` at the root resolves to patchright instead.
+        run: pnpm --dir packages/polyfill-connectors exec playwright install --with-deps chromium
 
       - name: Verify (typecheck + biome check)
         run: pnpm --dir packages/polyfill-connectors run verify
