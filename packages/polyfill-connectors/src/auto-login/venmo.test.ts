@@ -2137,3 +2137,148 @@ test("isVenmoSignInUrl: only the https identity host counts as a live sign-in sc
   assert.equal(isVenmoSignInUrl("http://id.venmo.com/signin"), false, "a downgraded origin is not trusted");
   assert.equal(isVenmoSignInUrl("https://id.venmo.com.evil.example/signin"), false, "a lookalike host is rejected");
 });
+
+// ─── Handoff surface readiness (production run_1787537596833) ─────────────
+//
+// The owner was handed a page that satisfied every URL check and rendered
+// nothing he could act on. `isVenmoSignInUrl` matches on origin alone, so a
+// page mid-navigation to a FRESH sign-in context (new `ctxId`, no `#/lgn`)
+// passes the guard while showing only Venmo's pre-hydration skeleton. The
+// evidence, read from the run's own capture inside pdpp-core-prod-drain:
+// the handoff screenshot is byte-identical (md5 da2529a174ff25c160ceca54cd5ea4ef)
+// to the `venmo-signin-loaded` shell captured five seconds earlier, and its
+// aria snapshot is the single line `- iframe [ref=e2]`, versus the filled
+// password form present at `venmo-final-verify` two seconds before.
+//
+// The fix must NOT be another navigation — that would undo the captcha/OTP
+// state-preservation guarantee pinned above. It waits for the page to paint.
+
+/**
+ * A fresh sign-in context, exactly like the production handoff frame: same
+ * identity host, different ctxId, no `#/lgn` fragment. `isVenmoSignInUrl`
+ * accepts it, so the handoff does NOT navigate — which is the whole point.
+ */
+const SIGN_IN_URL = "https://id.venmo.com/signin?country.x=US&ctxId=AAEkSlyLMSWJ8X310aVa0Sbj";
+
+/**
+ * A page parked on the identity host that renders nothing actionable until
+ * `paintAfterMs` elapses. Models the production frame exactly: correct origin,
+ * empty surface. `never` keeps it blank for the whole handoff.
+ */
+function makeBlankHandoffPage({ paintAfterMs }: { paintAfterMs: number | "never" }): {
+  gotoUrls: string[];
+  page: Page;
+} {
+  const gotoUrls: string[] = [];
+  let currentUrl = SIGN_IN_URL;
+  let painted = false;
+  if (paintAfterMs !== "never") {
+    setTimeout(() => {
+      painted = true;
+    }, paintAfterMs).unref?.();
+  }
+  const blankUntilPainted = (): Locator => {
+    const fake: Pick<Locator, "click" | "count" | "fill" | "first" | "isEnabled" | "isVisible" | "waitFor"> = {
+      click: (): Promise<void> => Promise.resolve(),
+      count: (): Promise<number> => Promise.resolve(painted ? 1 : 0),
+      fill: (): Promise<void> => Promise.resolve(),
+      first(): Locator {
+        return fake as Locator;
+      },
+      isEnabled: (): Promise<boolean> => Promise.resolve(painted),
+      isVisible: (): Promise<boolean> => Promise.resolve(painted),
+      async waitFor(options?: { timeout?: number }): Promise<void> {
+        const deadline = Date.now() + (options?.timeout ?? 30_000);
+        while (!painted) {
+          if (Date.now() >= deadline) {
+            throw new Error("Timeout waiting for locator");
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      },
+    };
+    return fake as Locator;
+  };
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    // Never live: the owner has not finished signing in during the window
+    // this test observes, so the re-probe reports dead and the flow throws.
+    evaluate: (): Promise<unknown> => Promise.resolve({ kind: "dead" }),
+    getByRole: (): Locator => makeLocator({ count: 0, visible: false }),
+    goto(url: string): ReturnType<Page["goto"]> {
+      gotoUrls.push(url);
+      // Venmo's real redirect: /login lands on the identity host, where the
+      // sign-in form, the captcha, and the OTP screen all live.
+      currentUrl = url === "https://venmo.com/login" ? SIGN_IN_URL : url;
+      return Promise.resolve(null);
+    },
+    locator: (): Locator => blankUntilPainted(),
+    url: (): string => currentUrl,
+    waitForLoadState: (): ReturnType<Page["waitForLoadState"]> => Promise.resolve(),
+    waitForTimeout: (): ReturnType<Page["waitForTimeout"]> => Promise.resolve(),
+  };
+  return { gotoUrls, page: page as Page };
+}
+
+test("waitForManualLogin: a sign-in surface that has not painted yet is awaited before the owner is asked to act", async () => {
+  const { gotoUrls, page } = makeBlankHandoffPage({ paintAfterMs: 300 });
+  const { requests, sendInteraction } = recordingSendInteraction();
+  let surfacePaintedAtHandoff: boolean | null = null;
+
+  await assert.rejects(
+    ensureVenmoSession({
+      credentials: {},
+      page,
+      sendInteraction: async (req) => {
+        // Sampled at the instant the owner is notified — the only moment that
+        // matters. Before the fix this reads 0 (the blank card he actually got).
+        surfacePaintedAtHandoff = (await page.locator("input").first().isVisible()) satisfies boolean;
+        return await sendInteraction(req);
+      },
+    }),
+    /venmo_login_manual_incomplete/
+  );
+
+  assert.equal(requests.length, 1, "exactly one handoff");
+  assert.equal(
+    surfacePaintedAtHandoff,
+    true,
+    "the owner must not be asked to complete a sign-in on a page that has rendered nothing"
+  );
+  // The paint-wait itself must add NO navigation. Everything here is
+  // pre-existing flow: the probe establishes the venmo.com CORS origin, which
+  // moves the page off the identity host, so the existing F2 guard navigates
+  // to /login once (landing back on the identity host); the trailing
+  // `venmo.com/` is the post-response re-probe, necessarily after the owner is
+  // done. The invariant that matters is that the paint-wait added nothing —
+  // exactly ONE /login navigation, the same count as before the fix.
+  assert.deepEqual(
+    gotoUrls,
+    ["https://venmo.com/", "https://venmo.com/login", "https://venmo.com/"],
+    "the paint-wait must add no navigation of its own"
+  );
+  assert.equal(
+    gotoUrls.filter((url): boolean => url === "https://venmo.com/login").length,
+    1,
+    "the screen the owner was asked to act on must not be re-navigated by the wait"
+  );
+});
+
+test("waitForManualLogin: a surface that never paints still reaches the owner, with an honest message", async () => {
+  // Failing closed matters more than waiting: the owner can reload inside the
+  // secure browser, but only if he is told that is the situation. Silently
+  // burning his 30-minute window on a blank card is the worse outcome.
+  const { page } = makeBlankHandoffPage({ paintAfterMs: "never" });
+  const { requests, sendInteraction } = recordingSendInteraction();
+
+  await assert.rejects(ensureVenmoSession({ credentials: {}, page, sendInteraction }), /venmo_login_manual_incomplete/);
+
+  assert.equal(requests.length, 1, "a blank surface must still hand off rather than fail silently");
+  assert.match(
+    requests[0]?.message ?? "",
+    /has not finished loading|empty card|reload/i,
+    "the message must name the blank surface and the action that recovers it"
+  );
+});

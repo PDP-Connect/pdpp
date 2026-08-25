@@ -80,6 +80,100 @@ test("captureDom writes html, aria, page metadata, and screenshot in raw local c
   }
 });
 
+test("captureLocatorProbe calls getBy* helpers as methods, not detached (production run_1787537596833)", async () => {
+  // COUNTERWEIGHT to the object-literal page used by every other test in this
+  // file: arrow-function properties ignore `this`, so a literal cannot detect a
+  // lost receiver at all. Playwright's real `Page.getByRole` is a PROTOTYPE
+  // method whose whole body is `return this.mainFrame().getByRole(...)`, so
+  // calling it detached throws `Cannot read properties of undefined (reading
+  // 'mainFrame')` — the exact error the `submit-role` probe recorded at
+  // `venmo-login-after-submit` in production run_1787537596833, while the css
+  // probes beside it (invoked as `page.locator(...)`, receiver intact) returned
+  // real counts.
+  //
+  // This class reproduces that delegation shape faithfully; it is the only
+  // reason the test can fail when the bind is removed.
+  const previous = process.env.PDPP_CAPTURE_FIXTURES;
+  process.env.PDPP_CAPTURE_FIXTURES = "1";
+  const connectorName = `fixture_capture_bind_test_${process.pid}_${Date.now()}`;
+  const capture = createCaptureSession(connectorName);
+  assert.ok(capture);
+
+  try {
+    const fakeLocator = {
+      ariaSnapshot: () => Promise.resolve('- button "Log in" [ref=e48]'),
+      count: () => Promise.resolve(1),
+      first() {
+        return this;
+      },
+      isEnabled: () => Promise.resolve(true),
+      isVisible: () => Promise.resolve(true),
+    };
+    class DelegatingPage {
+      readonly _mainFrame = {
+        getByLabel: () => fakeLocator,
+        getByPlaceholder: () => fakeLocator,
+        getByRole: () => fakeLocator,
+        getByText: () => fakeLocator,
+        locator: () => fakeLocator,
+      };
+      mainFrame(): DelegatingPage["_mainFrame"] {
+        return this._mainFrame;
+      }
+      getByRole(): typeof fakeLocator {
+        return this.mainFrame().getByRole();
+      }
+      getByLabel(): typeof fakeLocator {
+        return this.mainFrame().getByLabel();
+      }
+      getByPlaceholder(): typeof fakeLocator {
+        return this.mainFrame().getByPlaceholder();
+      }
+      getByText(): typeof fakeLocator {
+        return this.mainFrame().getByText();
+      }
+      locator(): typeof fakeLocator {
+        return this.mainFrame().locator();
+      }
+      title(): Promise<string> {
+        return Promise.resolve("Log in | Venmo");
+      }
+      url(): string {
+        return "https://id.venmo.com/signin#/lgn";
+      }
+    }
+    const page = new DelegatingPage() as unknown as LocatorProbePage;
+
+    await capture.captureLocatorProbe?.(page, "venmo-login-after-submit", [
+      {
+        id: "submit-role",
+        kind: "role",
+        nameFlags: "i",
+        namePattern: "^(log in|sign in|continue|next)$",
+        role: "button",
+      },
+      { id: "by-label", kind: "label", text: "Password" },
+      { id: "by-placeholder", kind: "placeholder", text: "Password" },
+      { id: "by-text", kind: "text", text: "Log in" },
+    ]);
+
+    const report = JSON.parse(readFileSync(`${capture.baseDir}/locators/venmo-login-after-submit.json`, "utf8")) as {
+      probes: readonly { readonly count?: number; readonly error?: string; readonly id: string }[];
+    };
+    for (const probe of report.probes) {
+      assert.equal(probe.error, undefined, `probe ${probe.id} must not lose its receiver: ${probe.error ?? ""}`);
+      assert.equal(probe.count, 1, `probe ${probe.id} must resolve a real count`);
+    }
+  } finally {
+    rmSync(capture.baseDir, { force: true, recursive: true });
+    if (previous === undefined) {
+      delete process.env.PDPP_CAPTURE_FIXTURES;
+    } else {
+      process.env.PDPP_CAPTURE_FIXTURES = previous;
+    }
+  }
+});
+
 test("captureLocatorProbe writes locator counts and first-match state", async () => {
   const previous = process.env.PDPP_CAPTURE_FIXTURES;
   process.env.PDPP_CAPTURE_FIXTURES = "1";

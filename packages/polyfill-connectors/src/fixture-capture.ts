@@ -185,6 +185,22 @@ export interface CaptureSession {
   setTraceCheckpointHook?: (hook: ((label: string) => Promise<void>) | null) => void;
 }
 
+/**
+ * Look up a `getBy*` helper on the page AND bind it back to that page.
+ *
+ * The bind is load-bearing, not defensive style. Playwright's `Page.getByRole`
+ * (and every sibling `getBy*`/`locator`) is a thin delegator whose body is
+ * `return this.mainFrame().getByRole(...)`, so extracting the method and
+ * calling it detached makes `this` `undefined` and throws the exact string
+ * `Cannot read properties of undefined (reading 'mainFrame')`.
+ *
+ * That is production run_1787537596833's `submit-role` probe: at
+ * `venmo-login-after-submit` the role probe recorded that error while the css
+ * probes beside it (which call `page.locator(...)` as a method, and so keep
+ * their receiver) reported real counts. It reads like a frame/navigation race
+ * but is deterministic — it fails on the very first call, on any page, with no
+ * navigation involved.
+ */
 function requireProbeMethod<K extends keyof LocatorProbePage>(
   page: LocatorProbePage,
   key: K
@@ -193,7 +209,7 @@ function requireProbeMethod<K extends keyof LocatorProbePage>(
   if (typeof method !== "function") {
     throw new Error(`locator probe page is missing ${String(key)}`);
   }
-  return method as NonNullable<LocatorProbePage[K]>;
+  return (method as (...args: readonly unknown[]) => unknown).bind(page) as NonNullable<LocatorProbePage[K]>;
 }
 
 function locatorForProbe(page: LocatorProbePage, probe: LocatorProbe): LocatorProbeLocator {

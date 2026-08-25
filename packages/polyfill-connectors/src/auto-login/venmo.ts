@@ -291,6 +291,36 @@ const MAX_SPLIT_CODE_DIGITS = 10;
 const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
   "No optional Venmo sign-in details were provided. Sign in to Venmo in the secure browser, then respond success.";
 
+/**
+ * Anything the owner could actually act on during a handoff: the sign-in form
+ * itself, a code box, or a rendered human-verification challenge.
+ *
+ * Deliberately a UNION rather than the sign-in form alone. The handoff exists
+ * precisely for the screens this connector could not drive, so waiting only for
+ * `USERNAME_SELECTOR`/`PASSWORD_SELECTOR` would time out on the captcha and OTP
+ * handoffs — the two cases most likely to need a human — and hand over an
+ * unpainted page anyway.
+ */
+const ACTIONABLE_HANDOFF_SELECTOR = `${USERNAME_SELECTOR}, ${PASSWORD_SELECTOR}, ${OTP_SELECTOR}, ${CAPTCHA_FRAME_SELECTOR}`;
+
+/**
+ * Appended to a handoff message when the page never painted anything the owner
+ * could act on. Names the state and the one action that recovers it, instead of
+ * leaving them to guess at an empty card.
+ */
+const HANDOFF_BLANK_SURFACE_SUFFIX =
+  "(Venmo's sign-in screen has not finished loading — if the browser shows an empty card, reload the page to bring the form back.)";
+
+/**
+ * How long to wait for a handoff page to paint something actionable.
+ *
+ * Bounds a wait that resolves the instant the page is usable; it is not a
+ * sleep. Sized well under the 1800s handoff window so a page that never paints
+ * still reaches the owner (with an honest message) rather than silently
+ * consuming their whole window.
+ */
+const HANDOFF_PAINT_TIMEOUT_MS = 15_000;
+
 const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
   {
     id: "username",
@@ -716,6 +746,28 @@ async function waitForVenmoPasswordScreen(page: Page, timeoutMs: number): Promis
     .catch((): false => false);
 }
 
+/**
+ * Wait, bounded, for a handoff page to render something the owner can act on.
+ *
+ * Returns whether anything actionable painted. Never throws and never
+ * navigates: a page that stays blank is still handed over (the owner can
+ * reload or navigate themselves inside the secure browser), it is just handed
+ * over with an honest message rather than a silent empty card.
+ *
+ * This exists because URL is a poor proxy for "ready". Venmo's sign-in is a
+ * client-rendered SPA whose shell — logo, one input outline, two rounded
+ * buttons — paints on the correct origin well before hydration fills it in,
+ * so a URL check alone cannot tell a usable screen from a placeholder.
+ */
+async function waitForActionableHandoffSurface(page: Page, timeoutMs: number): Promise<boolean> {
+  return await page
+    .locator(ACTIONABLE_HANDOFF_SELECTOR)
+    .first()
+    .waitFor({ state: "attached", timeout: timeoutMs })
+    .then((): true => true)
+    .catch((): false => false);
+}
+
 async function captureLoginState(capture: CaptureSession | null | undefined, page: Page, label: string): Promise<void> {
   if (!capture) {
     return;
@@ -772,9 +824,32 @@ async function waitForManualLogin({
   if (!isVenmoSignInUrl(page.url())) {
     await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
   }
+  // Being on the right URL is not the same as having something on screen.
+  // `isVenmoSignInUrl` matches on origin alone, so a page that is mid-
+  // navigation to a fresh sign-in context satisfies the guard above while
+  // rendering only Venmo's pre-hydration skeleton. That is production
+  // run_1787537596833: the handoff frame's screenshot is byte-identical
+  // (md5 da2529a174ff25c160ceca54cd5ea4ef) to the `venmo-signin-loaded`
+  // shell captured 5s earlier, and its aria snapshot is the single line
+  // `- iframe [ref=e2]` — an empty placeholder, not the filled password form
+  // the owner had been looking at 2s before. The owner was asked to finish
+  // signing in on a blank card.
+  //
+  // Waiting for the page to paint something actionable costs nothing on a
+  // healthy handoff (it resolves as soon as the form is up) and converts the
+  // blank-surface failure into either a usable screen or an honest message.
+  // It never navigates, so the captcha/OTP state-preservation guarantee above
+  // is untouched.
+  const painted = await waitForActionableHandoffSurface(page, HANDOFF_PAINT_TIMEOUT_MS);
+  if (!painted) {
+    // Still hand off — the owner can reload or navigate inside the secure
+    // browser — but say so, rather than letting them stare at an empty card
+    // wondering what they are supposed to complete.
+    await captureLoginState(capture, page, "venmo-handoff-surface-blank");
+  }
   return await manualBrowserLogin({
     ...(capture ? { capture } : {}),
-    message,
+    message: painted ? message : `${message} ${HANDOFF_BLANK_SURFACE_SUFFIX}`,
     page,
     probe: () => probeVenmoAccount(page, phase),
     ...(reason ? { reason } : {}),
