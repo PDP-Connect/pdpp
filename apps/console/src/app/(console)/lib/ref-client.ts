@@ -900,6 +900,7 @@ export interface RefVerdictPill {
     | "Import complete"
     | "Missing data"
     | "Missing optional data"
+    | "Some records stuck"
     | "Needs refresh"
     | "Not measured"
     | "Setup never completed"
@@ -928,9 +929,11 @@ export type RefActionUrgency = "now" | "overdue" | "soon" | "verifying";
 
 export type RefActionRemediationCause =
   | "dead_letter_backlog"
+  | "stale_heartbeat"
   | "stale_pending"
   | "state_read_failed"
-  | "stalled_unknown";
+  | "stalled_unknown"
+  | "transient_upload_failure";
 
 export type RefActionRemediationCommandKind =
   | "local_collector_doctor"
