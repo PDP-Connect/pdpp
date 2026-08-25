@@ -7485,3 +7485,28 @@ test("regression: ProviderBudgetController present but WITHOUT retryBudget termi
   assert.ok(gaps.length > 0, "controller-present-no-retryBudget: tail deferred as DETAIL_GAP after cycle cap");
   assert.ok(coverage.gapKeys.length > 0, "controller-present-no-retryBudget: gapKeys populated after cycle cap");
 });
+
+test("a missing credential asks the owner to re-enter it, never to await a connector upgrade", () => {
+  // The exact string this connector throws in production. It is
+  // underscore-delimited, which is what defeated the old `\b` boundary: the
+  // owner's live instance rendered `retry_on_connector_upgrade` for a source
+  // that needed nothing but its credential re-entered, and no connector
+  // release could ever have fixed it.
+  const normalized = normalizeChatGptTerminalError({
+    message: "chatgpt_credentials_missing",
+    retryable: false,
+  });
+  assert.equal(normalized.recovery_hint, "refresh_credentials");
+  assert.notEqual(normalized.recovery_hint, "retry_on_connector_upgrade");
+
+  // The separator fix must not swallow unrelated words that merely contain
+  // "credential" — an over-broad match would relabel real runtime faults as
+  // credential problems and send the owner to re-enter a working password.
+  for (const benign of ["accreditation", "discredited", "uncredentialed"]) {
+    assert.equal(
+      normalizeChatGptTerminalError({ message: `parser failed: ${benign}`, retryable: false }).recovery_hint,
+      "retry_on_connector_upgrade",
+      `${benign} SHALL NOT be read as a credential failure`
+    );
+  }
+});
