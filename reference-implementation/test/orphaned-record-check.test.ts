@@ -163,3 +163,52 @@ test("a clean database reports positively rather than silently", async () => {
     );
   });
 });
+
+test("a stranded group names the connector it belongs to, not just an opaque id", async () => {
+  await withDb(async () => {
+    insertRecord("cin_gone", "amazon", "orders", "k1");
+    insertRecord("cin_gone", "amazon", "order_items", "k2");
+
+    const result = await findOrphanedRecords();
+
+    // The whole point of the field: "which of my sources is this?" must be
+    // answerable from the report alone. `cin_gone` names nothing to a reader.
+    assert.equal(result.groups[0]?.connectorId, "amazon");
+  });
+});
+
+test("a group whose rows disagree on connector reports mixed rather than picking one", async () => {
+  await withDb(async () => {
+    // Not expected in practice, but silently reporting whichever id sorted
+    // first would turn a data-integrity finding into a confident wrong answer.
+    insertRecord("cin_gone", "amazon", "orders", "k1");
+    insertRecord("cin_gone", "gmail", "messages", "k2");
+
+    const result = await findOrphanedRecords();
+
+    assert.equal(result.groups[0]?.connectorId, "mixed");
+  });
+});
+
+test("the boot log lists the affected connectors, deduped, alongside the capped group list", async () => {
+  await withDb(async () => {
+    insertRecord("cin_gone_a", "amazon", "orders", "k1");
+    insertRecord("cin_gone_b", "amazon", "orders", "k2");
+    insertRecord("cin_gone_c", "gmail", "messages", "k3");
+    const logger = capturingLogger();
+
+    await checkOrphanedRecordsAtBoot(logger);
+
+    const [entry] = logger.entries.filter((e) => e.level === "error");
+    assert.deepEqual(
+      entry?.obj.orphaned_connectors,
+      ["amazon", "gmail"],
+      "two amazon strands are one affected source, and the list must be stable to read"
+    );
+    assert.equal(
+      (entry?.obj.groups as { connector_id: string }[])[0]?.connector_id !== undefined,
+      true,
+      "each itemised group carries its connector too"
+    );
+  });
+});
