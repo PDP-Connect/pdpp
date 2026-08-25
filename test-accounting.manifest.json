@@ -121,7 +121,7 @@
       "execution": "direct",
       "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
       "command": ["bash", "scripts/test-accounting/root-shell-leaf.sh"],
-      "include": ["scripts/**/*.test.sh"]
+      "include": ["deploy/**/*.test.sh", "scripts/**/*.test.sh"]
     },
     {
       "id": "docker-python",
