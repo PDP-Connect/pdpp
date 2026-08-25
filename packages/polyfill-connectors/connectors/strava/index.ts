@@ -14,8 +14,10 @@
  *   Doc: https://developers.strava.com/docs/rate-limits/
  */
 
-import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
-import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { isMainModule } from "@pdpp/connector-protocol";
+import { type ConnectorHttpGovernor, createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
+import { type CollectContext, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { walkPagesWithCeiling } from "../../src/page-ceiling.ts";
 import { stravaPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
@@ -32,6 +34,12 @@ const httpGovernor = createConnectorHttpGovernor({
   maxAttempts: 1,
   profile: stravaPacingProfile(),
 });
+
+/** Governor the walk actually sends through. Production always uses the paced
+ *  module-level one; a test may substitute an unpaced governor so a two-page
+ *  fixture does not have to wait out the real 10s-per-request rate ceiling.
+ *  The ceiling itself stays covered by `stravaPacingProfile()`'s own tests. */
+type StravaHttpGovernor = Pick<ConnectorHttpGovernor, "request">;
 
 interface StravaActivity {
   achievement_count?: number | null;
@@ -72,6 +80,7 @@ interface ProgressExtra {
 }
 
 async function fetchActivitiesPage(
+  governor: StravaHttpGovernor,
   token: string,
   page: number,
   afterEpoch: number | undefined,
@@ -86,7 +95,7 @@ async function fetchActivitiesPage(
   }
   let raw: { body: string; status: number };
   try {
-    const r = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+    const r = await governor.request<{ body: string; status: number }, { body: string; status: number }>(
       async () => {
         const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
         const retryAfter = res.headers.get("retry-after");
@@ -140,29 +149,36 @@ function toActivityRecord(a: StravaActivity): RecordData {
   };
 }
 
-runConnector({
-  name: "strava",
-  validateRecord,
-  retryablePattern: /ECONN|fetch failed|rate_limited/i,
-  auth: { kind: "env", required: ["STRAVA_ACCESS_TOKEN"] },
-  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
-    const progressWithSignals = progress as (message: string, extra?: ProgressExtra) => Promise<void>;
-    const token = credentials.STRAVA_ACCESS_TOKEN;
-    if (!token) {
-      throw new Error("strava_auth_failed");
-    }
+export interface StravaCollectOptions {
+  /** @see StravaHttpGovernor */
+  readonly httpGovernor?: StravaHttpGovernor;
+  /** Page ceiling actually enforced by this walk. Injectable so a test can
+   *  reach the capped exit with a two-page fixture instead of 200 real pages. */
+  readonly maxPages?: number;
+}
 
-    if (!requested.has("activities")) {
-      return;
-    }
-    await progressWithSignals("Fetching activities", { stream: "activities", phase: "start" });
-    const activitiesState = state.activities as { last_start_epoch?: number } | undefined;
-    const lastEpoch = activitiesState?.last_start_epoch;
-    let page = 1;
-    let latest = lastEpoch || 0;
-    let totalSeen = 0;
-    while (page <= MAX_PAGES) {
-      const pageIndex = page - 1;
+export async function collectStrava(ctx: CollectContext, options: StravaCollectOptions = {}): Promise<void> {
+  const { state, requested, credentials, emit, emitRecord, progress } = ctx;
+  const maxPages = options.maxPages ?? MAX_PAGES;
+  const governor = options.httpGovernor ?? httpGovernor;
+  const progressWithSignals = progress as (message: string, extra?: ProgressExtra) => Promise<void>;
+  const token = credentials.STRAVA_ACCESS_TOKEN;
+  if (!token) {
+    throw new Error("strava_auth_failed");
+  }
+
+  if (!requested.has("activities")) {
+    return;
+  }
+  await progressWithSignals("Fetching activities", { stream: "activities", phase: "start" });
+  const activitiesState = state.activities as { last_start_epoch?: number } | undefined;
+  const lastEpoch = activitiesState?.last_start_epoch;
+  let latest = lastEpoch || 0;
+  let totalSeen = 0;
+  const walk = await walkPagesWithCeiling({
+    maxPages,
+    fetchPage: async (pageNumber) => {
+      const pageIndex = pageNumber - 1;
       const pageExtra = {
         stream: "activities",
         phase: "fetch",
@@ -171,7 +187,7 @@ runConnector({
         cursor_present: Boolean(lastEpoch),
       };
       await progressWithSignals("Fetching Strava activities page", pageExtra);
-      const acts = await fetchActivitiesPage(token, page, lastEpoch, progressWithSignals, pageExtra);
+      const acts = await fetchActivitiesPage(governor, token, pageNumber, lastEpoch, progressWithSignals, pageExtra);
       totalSeen += acts.length;
       await progressWithSignals("Fetched Strava activities page", {
         stream: "activities",
@@ -182,7 +198,7 @@ runConnector({
         cursor_present: acts.length === PAGE_SIZE,
       });
       if (!acts.length) {
-        break;
+        return false;
       }
       for (const a of acts) {
         const epoch = Math.floor(new Date(a.start_date).getTime() / 1000);
@@ -191,15 +207,43 @@ runConnector({
           latest = epoch;
         }
       }
-      if (acts.length < PAGE_SIZE) {
-        break;
-      }
-      page += 1;
-    }
+      // A short page is the provider saying it has nothing more. A full page
+      // means another page is listed — on the LAST permitted page that is
+      // exactly the truncation the ceiling helper exists to report.
+      return acts.length === PAGE_SIZE;
+    },
+  });
+
+  if (walk.truncated) {
     await emit({
-      type: "STATE",
+      type: "SKIP_RESULT",
       stream: "activities",
-      cursor: { last_start_epoch: latest },
+      reason: "older_pages_deferred_page_budget",
+      // The ceiling reported here is the one actually enforced, not the module
+      // default — otherwise a lowered cap would disclose a limit the walk
+      // never applied.
+      message: `Strava stopped at the ${String(maxPages)}-page limit with more activities still listed`,
+      diagnostics: { page_limit: maxPages, total_seen: totalSeen, unread_pages: 1 },
     });
-  },
-});
+  }
+
+  await emit({
+    type: "STATE",
+    stream: "activities",
+    // `last_start_epoch` is a newest-first watermark and the next run asks for
+    // activities AFTER it. Advancing it past a capped walk would make the
+    // unread remainder unreachable forever, so a truncated walk holds the
+    // cursor it started from and re-reads the same prefix next time.
+    cursor: { last_start_epoch: walk.truncated ? (lastEpoch ?? 0) : latest },
+  });
+}
+
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "strava",
+    validateRecord,
+    retryablePattern: /ECONN|fetch failed|rate_limited/i,
+    auth: { kind: "env", required: ["STRAVA_ACCESS_TOKEN"] },
+    collect: (ctx) => collectStrava(ctx),
+  });
+}
