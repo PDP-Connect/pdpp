@@ -61,7 +61,15 @@ const SNAPSHOT_SHAPE_RE = /snapshot shape is unsupported/;
 const SNAPSHOT_DERIVATION_RE = /not derivable from the retained declaration/;
 const INELIGIBLE_INSTANCE_RE = /does not exist|not found|not active|does not belong/;
 const LEGACY_CONNECTION_ID_RE = /additional properties|Unsupported stream selection fields.*connection_id/;
-const NO_ACTIVE_INSTANCE_RE = /exactly one eligible instance.*found 0/;
+// Zero eligible instances degrades that stream out of the resolved set
+// rather than failing with the "found 0" message (fix/coverage-flush-ordering
+// change): a stream nobody can serve is dropped, not fatal by itself. When
+// that stream was the ONLY one requested, dropping it empties the resolved
+// scope entirely, which is still an error — now an actionable one naming the
+// affected stream(s) instead of a generic "found 0" count. The genuinely
+// ambiguous case (>1 eligible instance, MULTIPLE_ACTIVE_INSTANCES_RE below)
+// is unchanged.
+const NO_ACTIVE_INSTANCE_RE = /No eligible instance for any requested stream/;
 const MULTIPLE_ACTIVE_INSTANCES_RE = /exactly one eligible instance.*found 2/;
 const MULTIPLE_LOCAL_BINDINGS_RE = /multiple local fulfillment bindings/;
 const PURPOSE_CODE_RE = /purpose_code/;
