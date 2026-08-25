@@ -1,7 +1,7 @@
 # System Architecture: How the Spec Components Relate
 
 Status: Informative
-Date: 2026-08-18
+Date: 2026-08-14
 
 ## Components
 

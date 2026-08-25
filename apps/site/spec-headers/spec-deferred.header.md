@@ -6,7 +6,7 @@ description: "Issues identified during design and review that are intentionally 
 <Callout type="info" title="Spec status">
   Status: **Informative**
 
-  Date: 2026-08-18 (revised)
+  Date: 2026-08-14 (revised)
 
   Scope: Deferred-concerns register: open design questions, decided items recorded for history, and v0.2 implementation TODOs.
 </Callout>
