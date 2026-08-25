@@ -110,8 +110,22 @@ async function runAppleContacts(args: { readonly priorSyncToken?: string }): Pro
     // slashes stripped (`addressBookId`), so the state key must match exactly
     // or the prior token is silently ignored and the run takes the full path.
     const bookKeySource = `${server.origin}${BOOK_URL_KEY_SOURCE}`.replace(/\/+$/, "");
+    // `initial_sync_completed: true` marks this as a post-boundary-tracking
+    // cursor (see `resolveResumableSyncToken` in the connector): only such a
+    // cursor is trusted for the delta path this test means to exercise. A
+    // token without that marker is treated as a legacy pre-boundary-tracking
+    // cursor and forces re-enumeration instead — a different case, covered by
+    // its own fixture, not this one.
     const state = args.priorSyncToken
-      ? { contacts: { [bookKeySource]: { fingerprints: {}, sync_token: args.priorSyncToken } } }
+      ? {
+          contacts: {
+            [bookKeySource]: {
+              fingerprints: {},
+              initial_sync_completed: true,
+              sync_token: args.priorSyncToken,
+            },
+          },
+        }
       : {};
 
     const result = await runConnectorProtocolSubprocess({
