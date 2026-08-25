@@ -39,7 +39,7 @@ import { getSyncState, putSyncState } from "./records.ts";
 import { getConnectorAttentionProjection, getConnectorSummaryForRoute } from "./ref-control.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
-import { admitOwnerRunConnection } from "./stores/connector-instance-store.ts";
+import { admitOwnerRunConnection, isExpectedMissingConnectorInstance } from "./stores/connector-instance-store.ts";
 import { getDefaultSchedulerStore } from "./stores/scheduler-store.ts";
 import type { StaticSecretCredentialStore } from "./stores/static-secret-run-credentials.ts";
 import {
@@ -57,6 +57,7 @@ const SURFACE_UNAVAILABLE_HANDLE_STATUSES = Object.freeze([
 ]);
 
 interface Logger {
+  debug: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   info: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -231,6 +232,32 @@ function interactionDisplayName(interaction: Interaction): string {
     return interaction.connector_id.trim();
   }
   return "Connector";
+}
+
+// Reports one skipped schedule row at the level its cause deserves. A schedule
+// row naming a connection that no longer exists is expected and fully handled —
+// the row is skipped and the scheduler keeps running — so it reports at debug
+// WITHOUT a stack. Reporting it at warn with a stack made every boot emit one
+// stack trace per such row, which trains the reader to ignore the message. A
+// genuine fault (owner/connector mismatch, inactive instance, store failure)
+// still reports at warn with its stack.
+function logScheduleRefreshSkip(
+  logger: Logger,
+  schedule: { connector_id?: string; connector_instance_id?: string } | null | undefined,
+  err: unknown
+): void {
+  if (isExpectedMissingConnectorInstance(err)) {
+    logger.debug(
+      {
+        connector_id: schedule?.connector_id,
+        connector_instance_id: schedule?.connector_instance_id ?? null,
+        reason: "connector_instance_not_found",
+      },
+      "skipping scheduled connector whose connection no longer exists"
+    );
+    return;
+  }
+  logger.warn({ connector_id: schedule?.connector_id, err }, "skipping scheduled connector during scheduler refresh");
 }
 
 async function resolveOwnerActionEvidence(
@@ -465,10 +492,7 @@ export function createReferenceSchedulerManager({
             ownerToken: await controller.issueRuntimeOwnerToken(),
           };
         } catch (err) {
-          logger.warn(
-            { connector_id: schedule?.connector_id, err },
-            "skipping scheduled connector during scheduler refresh"
-          );
+          logScheduleRefreshSkip(logger, schedule, err);
           return null;
         }
       })();

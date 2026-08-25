@@ -514,6 +514,21 @@ export class ConnectorInstanceResolutionError extends Error {
   }
 }
 
+// A scheduler row that names a connection which no longer exists is an
+// EXPECTED, fully handled outcome, not an operational fault: the scheduler
+// skips the row and keeps running. Callers use this to log the skip at debug
+// without a stack, so a real fault (owner mismatch, connector mismatch, an
+// inactive instance, a store failure) stays visible at warn with its stack.
+//
+// Scope note: this deliberately does NOT cover the case where the row IS a
+// default-account hint and `allowDefaultAccount` is true — that path returns
+// FALL_THROUGH_TO_CONNECTOR_ID and never throws. What reaches a caller as a
+// throw here is the `allowDefaultAccount: false` legacy-hint case, which the
+// caller handles by skipping the row.
+export function isExpectedMissingConnectorInstance(err: unknown): boolean {
+  return err instanceof ConnectorInstanceResolutionError && err.code === "connector_instance_not_found";
+}
+
 // Thrown by `deleteConnection` when the cascade is refused for a typed reason
 // (an in-flight run holds the active-run lease, or the connection is a
 // default-account binding whose deterministic id would silently re-materialize
