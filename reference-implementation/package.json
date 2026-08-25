@@ -44,6 +44,7 @@
     "example-client": "node examples/third-party-app/server.ts",
     "fix": "ultracite fix",
     "generate:connector-registry": "node --experimental-strip-types scripts/generate-connector-registry.ts",
+    "provision:test-database": "node --experimental-strip-types scripts/provision-test-database.ts",
     "server": "sh -c 'PDPP_REFERENCE_OPERATIONAL_DEFAULTS=${PDPP_REFERENCE_OPERATIONAL_DEFAULTS:-1} node --env-file-if-exists=../.env.local server/index.ts'",
     "test": "node --import tsx ../scripts/test-scratch/run-command.ts -- node scripts/run-tests.ts",
     "test:live-cdp": "PDPP_TEST_LIVE_CDP=1 node --import tsx ../scripts/test-scratch/run-command.ts -- node --test test/run-interaction-stream-cdp-live.test.ts",
