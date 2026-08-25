@@ -37,9 +37,29 @@ State is authoritative on the server. Before each connector pass the runner fetc
   work.
 - On an operator host, install a **published** version and confirm the
   `pdpp-local-collector` binary does not resolve into a repo `dist/` tree before
-  trusting its output as operator evidence. If the install reports version
-  `0.0.0`, it resolved the retired bootstrap placeholder — upgrade to the
-  current published release. See
+  trusting its output as operator evidence.
+- **A `0.0.0` version alone does not tell you which build you have** — two very
+  different builds report it. Read `deployment_posture`, not the bare version:
+
+  ```sh
+  pdpp-local-collector status | sed -n '/"deployment_posture"/,/}/p'
+  ```
+
+  - `kind: published_package` with `is_placeholder_version: true` — the npm
+    install resolved the **retired bootstrap placeholder**, which is older than
+    every real build and is not a working collector. Upgrade to the current
+    published release, or pin an exact version.
+  - `kind: repo_dist_override` — a **local build from a monorepo checkout**.
+    The in-repo `package.json` version is `0.0.0` by design (published versions
+    are assigned at publish time, see
+    `docs/reference/package-release-policy.md`§"Versioning"), so `0.0.0` here is
+    expected and does **not** mean the retired placeholder. A repo build cut
+    from a newer `main` can be ahead of the published release; label it as a dev
+    override wherever you record evidence rather than downgrading onto a staler
+    published build.
+
+  Only `published_package` with `is_placeholder_version: false` should back
+  operator-host evidence. See
   `docs/reference/local-collector.md`§"Deployment Posture: Published vs Dev".
 
 ## Signal Desktop prerequisites
