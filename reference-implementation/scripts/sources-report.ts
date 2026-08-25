@@ -164,7 +164,11 @@ async function fetchAllSummaries(
 
 function renderRow(row: SourceRow, withStreams: boolean): string {
   const lines: string[] = [];
-  lines.push(`${row.status.dot} ${row.displayName}  [${row.status.label}]`);
+  // `row.fusedLine` is the exact text the `/sources` card row renders
+  // (`fusedStatus.line` — state · freshness · syncing, worst-honest-axis
+  // first). Printing it here, not the bare `status.label`, is what makes
+  // this CLI say the same thing the owner reads on the page.
+  lines.push(`${row.status.dot} ${row.displayName}  [${row.fusedLine}]`);
   const identity = [row.connectorId, row.connectionId].filter(Boolean).join("  ");
   if (identity) {
     lines.push(`    ${identity}`);
@@ -233,7 +237,7 @@ const topLevelHeaders: Record<string, string> = {
   ...(cookieHeader ? { Cookie: cookieHeader } : {}),
 };
 
-const rows = projectSourceRows(await fetchAllSummaries(asUrl, topLevelHeaders));
+const rows = await projectSourceRows(await fetchAllSummaries(asUrl, topLevelHeaders));
 const streamsRequested = flags.streams === true || flags.streams === "true" || flags.json === true;
 
 if (flags.json === true || flags.json === "true") {
