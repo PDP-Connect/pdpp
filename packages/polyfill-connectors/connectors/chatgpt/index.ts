@@ -98,8 +98,16 @@ import type {
 const validateRecord = validateRecordRaw as ValidateRecord;
 
 const CHATGPT_TERMINAL_DIAGNOSTIC_MAX = 240;
+// The trailing boundary is `(?:$|[^A-Za-z0-9])`, not `\b`. The leading class
+// already treats `_` as a separator, but `\b` does not close inside an
+// identifier — `_` is a word character — so `chatgpt_credentials_missing`
+// entered at the `_` before `credentials` and then failed to terminate before
+// the `_` after it. The ONE error shape this connector actually throws for a
+// missing credential therefore fell through to the generic branch and was
+// labelled `retry_on_connector_upgrade`, telling the owner to await a code
+// release for something only re-entering a credential can fix.
 const CHATGPT_AUTH_FAILURE_RE =
-  /(?:^|[^A-Za-z0-9])(?:401|403|auth_missing|session_required|session_failed|unauthorized|forbidden|credentials|CHATGPT_USERNAME\/PASSWORD not set)\b/iu;
+  /(?:^|[^A-Za-z0-9])(?:401|403|auth_missing|session_required|session_failed|unauthorized|forbidden|credentials|CHATGPT_USERNAME\/PASSWORD not set)(?:$|[^A-Za-z0-9])/iu;
 const CHATGPT_MANUAL_ACTION_RE =
   /(?:^|[^A-Za-z0-9_])(?:chatgpt_login_unexpected_ui|chatgpt_login_no_password_field|chatgpt_login_post_submit_failed|cloudflare|challenge|captcha|manual_action|2fa|verification code)(?:$|[^A-Za-z0-9_])/iu;
 const CHATGPT_SENSITIVE_DIAGNOSTIC_FIELD_RE =
