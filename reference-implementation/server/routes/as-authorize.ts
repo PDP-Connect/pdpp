@@ -146,8 +146,19 @@ export interface MountAsAuthorizeContext {
   ) => Promise<IssuedCode | null>;
   /** Resolved native manifest for this server instance, or null. */
   nativeManifest: unknown;
-  /** Writes an OAuth error envelope and returns. */
-  oauthError: (res: unknown, status: number, code: string, message: string) => unknown;
+  /**
+   * Writes an OAuth error envelope and returns. `extras` is merged into the
+   * top-level envelope so a resolvable client/scope condition (e.g. a stream
+   * with no eligible connector instance) can name the affected stream(s) in
+   * structured form, not only inside `message` prose.
+   */
+  oauthError: (
+    res: unknown,
+    status: number,
+    code: string,
+    message: string,
+    extras?: Readonly<Record<string, unknown>>
+  ) => unknown;
   /** Provider name for picker HTML rendering. */
   providerName: string;
   /** CSRF enforcement middleware. */
@@ -582,6 +593,69 @@ async function buildPackageAndRedirect(
   return issuePackageAuthCodeRedirect(res, packageResult, pkce, ctx);
 }
 
+// ─── Request-intake resolution (extracted to reduce POST handler complexity) ─
+
+interface McpPackageIntake {
+  packageAccessMode: string;
+  selections: Array<{ connectorId: string; connectionId: string | null }>;
+  streamSelectionsBySource: Map<string, Set<string>>;
+}
+
+// Resolves the client, decodes the picker selections/streams, and validates
+// the access_mode for the POST /oauth/authorize/mcp-package body. Returns
+// null once it has already written a response (unknown client, missing
+// selection, or an unsupported access_mode) — the caller must stop.
+// Extracted to reduce cognitive complexity of the POST handler.
+async function resolveMcpPackageIntake(
+  req: RouteRequest,
+  res: RouteResponse,
+  body: Record<string, unknown>,
+  pkce: { clientId: string; redirectUri: string },
+  ctx: Pick<
+    MountAsAuthorizeContext,
+    | "consentPickerCaps"
+    | "consentUi"
+    | "ensureCsrfToken"
+    | "ensureRequestId"
+    | "getRegisteredClient"
+    | "oauthError"
+    | "providerName"
+    | "selectionParsers"
+  >
+): Promise<McpPackageIntake | null> {
+  const client = await ctx.getRegisteredClient(pkce.clientId, {
+    requestId: ctx.ensureRequestId(res),
+    traceId: null,
+  });
+  if (!client) {
+    ctx.oauthError(res, 400, "invalid_client", "Unknown client_id");
+    return null;
+  }
+  requireRegisteredRedirectUri(client, pkce.redirectUri);
+
+  const selections = ctx.selectionParsers.parseHostedMcpSelections(body.selection);
+  if (selections.length === 0) {
+    await rejectMissingHostedMcpSelection(req, res, ctx, body.selection);
+    return null;
+  }
+
+  // Per-source stream subsets submitted by the picker. Each entry is a
+  // base64url(JSON) payload identifying `(connector, connection, stream)`;
+  // stream entries whose source was not also checked are ignored so an
+  // orphaned stream toggle cannot smuggle authority into a deselected source.
+  const { bySource: streamSelectionsBySource } = ctx.selectionParsers.parseHostedMcpStreamSelections(body.stream);
+
+  // Package-level access mode: absent → "continuous" default, unknown → 400.
+  const rawAccessMode = typeof body.access_mode === "string" ? body.access_mode.trim() : "";
+  const packageAccessMode = resolvePackageAccessMode(rawAccessMode);
+  if (!packageAccessMode) {
+    ctx.oauthError(res, 400, "invalid_request", "access_mode must be 'single_use' or 'continuous'");
+    return null;
+  }
+
+  return { packageAccessMode, selections, streamSelectionsBySource };
+}
+
 // ─── Route mount ─────────────────────────────────────────────────────────────
 
 export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): void {
@@ -694,32 +768,11 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
         const state = typeof body.state === "string" ? body.state : null;
         validateAuthorizePkce({ codeChallenge, codeChallengeMethod, responseType });
 
-        const client = await ctx.getRegisteredClient(clientId, {
-          requestId: ctx.ensureRequestId(res),
-          traceId: null,
-        });
-        if (!client) {
-          return ctx.oauthError(res, 400, "invalid_client", "Unknown client_id");
+        const intake = await resolveMcpPackageIntake(req, res, body, { clientId, redirectUri }, ctx);
+        if (!intake) {
+          return;
         }
-        requireRegisteredRedirectUri(client, redirectUri);
-
-        const selections = ctx.selectionParsers.parseHostedMcpSelections(body.selection);
-        if (selections.length === 0) {
-          return rejectMissingHostedMcpSelection(req, res, ctx, body.selection);
-        }
-
-        // Per-source stream subsets submitted by the picker. Each entry is a
-        // base64url(JSON) payload identifying `(connector, connection, stream)`;
-        // stream entries whose source was not also checked are ignored so an
-        // orphaned stream toggle cannot smuggle authority into a deselected source.
-        const { bySource: streamSelectionsBySource } = ctx.selectionParsers.parseHostedMcpStreamSelections(body.stream);
-
-        // Package-level access mode: absent → "continuous" default, unknown → 400.
-        const rawAccessMode = typeof body.access_mode === "string" ? body.access_mode.trim() : "";
-        const packageAccessMode = resolvePackageAccessMode(rawAccessMode);
-        if (!packageAccessMode) {
-          return ctx.oauthError(res, 400, "invalid_request", "access_mode must be 'single_use' or 'continuous'");
-        }
+        const { selections, streamSelectionsBySource, packageAccessMode } = intake;
 
         // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const ownerSubjectId = req?.ownerAuth?.subjectId || "owner_local";
@@ -737,7 +790,17 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
         }
 
         // Stage, issue, and redirect — or error if all streams were deselected.
-        return buildPackageAndRedirect(
+        //
+        // MUST be awaited (not bare-returned) inside this try block: a
+        // `return somePromise` from a try block resolves the async function
+        // via that promise WITHOUT routing its rejection through this
+        // function's own catch (JS semantics — the catch only sees
+        // synchronous throws and awaited rejections within the try's own
+        // execution). A bare return here let CoreSourceAuthorizationError
+        // (e.g. a stream with zero eligible connector instances) escape
+        // straight past this handler to Fastify's default error handler,
+        // producing a raw 500 instead of the typed 4xx envelope below.
+        return await buildPackageAndRedirect(
           req,
           res,
           acc,
@@ -746,11 +809,13 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
           ctx
         );
       } catch (err) {
+        const { streams } = err as { streams?: readonly string[] };
         return ctx.oauthError(
           res,
           400,
           (err as { code?: string }).code || "invalid_request",
-          (err as Error).message || "Hosted MCP package authorization rejected"
+          (err as Error).message || "Hosted MCP package authorization rejected",
+          Array.isArray(streams) && streams.length > 0 ? { streams } : undefined
         );
       }
     }

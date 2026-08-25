@@ -4867,7 +4867,8 @@ export function buildAsApp(opts: ServerOpts = {}) {
         typeof mountAsAuthorize
       >[1]["issueOAuthAuthorizationCodeForPackageDeviceCode"],
     nativeManifest: resolveNativeManifest(opts),
-    oauthError: (res, status, code, message) => oauthError(res as ResLike, status, code, message),
+    oauthError: (res, status, code, message, extras) =>
+      oauthError(res as ResLike, status, code, message, null, extras),
     providerName,
     requireCsrf: ownerAuth.requireCsrf as unknown as Parameters<typeof mountAsAuthorize>[1]["requireCsrf"],
     requireOwnerSession: ownerAuth.requireOwnerSession as unknown as Parameters<
