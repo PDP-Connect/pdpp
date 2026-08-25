@@ -374,7 +374,7 @@ test("grant-scope: a maintainer-audience code_fix action does NOT reach a grant-
   const maintainer = owner.required_actions.filter((a) => a.audience === "maintainer");
   assert.equal(maintainer.length, 1, "owner verdict carries the maintainer code_fix action");
   assert.equal(maintainer[0]?.kind, "code_fix");
-  assert.equal(maintainer[0]?.cta, "Some data from this source can't be collected");
+  assert.equal(maintainer[0]?.cta, "Missing data needs review");
 
   const scoped = toGrantScopedVerdict(owner);
   assert.deepEqual(
@@ -443,7 +443,7 @@ test("grant-scope: dropping a non-owner action renumbers streams[].action_ref", 
       {
         affects: ["s1"],
         audience: "maintainer",
-        cta: "Some data from this source can't be collected",
+        cta: "Missing data needs review",
         kind: "code_fix",
         satisfied_when: { kind: "none" },
         surface: { kind: "maintainer" },
