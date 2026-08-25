@@ -38,6 +38,21 @@
  * projection never emits. Removing the cast is the floor, not the ceiling — the
  * ceiling is asserting on the projection the owner actually reads (see the
  * control test at the top of `rendered-verdict-proof-age.test.ts`).
+ *
+ * IT ALSO DOES NOT CATCH A HAND-TYPED UNION. A mirror that RE-DECLARES a
+ * producer's closed union has no cast to ban and no check to switch off. That
+ * is a different door to the same room, and it is held by
+ * `apps/console/src/app/(console)/lib/ref-client-union-parity.test.ts`, not by
+ * this file.
+ *
+ * FIXED 2026-08-25 — two defects in this guard's own construction, both of
+ * which made it an instance of the class it polices:
+ *   1. `BANNED_CAST_PATTERN` hand-typed the two producer names, so a rename
+ *      would have left it matching nothing while still passing. The names are
+ *      now read off `computeConnectionHealth` / `synthesizeRenderedVerdict`.
+ *   2. It walked only the reference test tree and could not see the console app
+ *      at all — the tree where the drifts actually shipped. Both trees are
+ *      walked now, and the subscripted `T["axes"]` form is no longer a bypass.
  */
 
 import assert from "node:assert/strict";
@@ -47,15 +62,72 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(TEST_DIR, "..", "..");
+
+const TEST_FILE_RE = /\.test\.tsx?$/;
 
 /**
  * The producer output types whose hand-built fixtures must stay compiler-checked.
- * `as unknown as` is matched with flexible whitespace so a reformat cannot
- * smuggle one past.
+ *
+ * DERIVED, NOT HAND-TYPED — and that is a correction, not a flourish. This list
+ * used to be the literal string `(ConnectionHealthSnapshot|RenderedVerdict)`,
+ * which made this guard an instance of the very class it polices: a second,
+ * unversioned copy of a producer's name. If `computeConnectionHealth`'s return
+ * type were renamed, the ban would silently stop matching anything and this
+ * suite would still pass, green and useless.
+ *
+ * So read the names off the producers' own signatures. If either function is
+ * renamed or its return type changes, this throws instead of quietly narrowing.
  */
-const BANNED_CAST_PATTERN = /as\s+unknown\s+as\s+(ConnectionHealthSnapshot|RenderedVerdict)\b/;
+function bannedTypeNames(): string[] {
+  const sources: readonly { readonly file: string; readonly fn: string }[] = [
+    { file: "reference-implementation/runtime/connection-health.ts", fn: "computeConnectionHealth" },
+    { file: "reference-implementation/runtime/rendered-verdict.ts", fn: "synthesizeRenderedVerdict" },
+  ];
+  return sources.map(({ file, fn }) => {
+    const source = readFileSync(join(REPO_ROOT, file), "utf8");
+    const match = source.match(new RegExp(`export function ${fn}\\([\\s\\S]*?\\)\\s*:\\s*([A-Za-z0-9_]+)`));
+    assert.ok(
+      match?.[1],
+      `Could not read the return type of \`${fn}\` from ${file}. This guard is now blind — fix it.`
+    );
+    return match[1];
+  });
+}
 
-function listTestFiles(): string[] {
+/**
+ * `as unknown as` is matched with flexible whitespace so a reformat cannot
+ * smuggle one past. The trailing `\b` deliberately allows a subscripted form
+ * (`as unknown as ConnectionHealthSnapshot["axes"]`) to match, because casting
+ * to a slice of the producer's type erases the same check as casting to all of
+ * it — with ONE exemption, documented at the call site below.
+ */
+function bannedCastPattern(): RegExp {
+  return new RegExp(`as\\s+unknown\\s+as\\s+(${bannedTypeNames().join("|")})\\b`);
+}
+
+/**
+ * SCOPE. Round 1 walked only the reference test tree, so the console app — the
+ * other consumer of these exact producer types, and the one where the
+ * `RefActionRemediationCause` and `RefVerdictPill.label` drifts actually
+ * shipped — was entirely outside this guard's reach. Both trees are walked now.
+ *
+ * The console mirrors these types under a `Ref` prefix, so the ban is applied
+ * to `RefConnectionHealthSnapshot` / `RefRenderedVerdict` there as well; see
+ * `bannedCastPatternFor`.
+ */
+const SCANNED_TREES: readonly { readonly label: string; readonly dir: string; readonly prefix: string }[] = [
+  { dir: TEST_DIR, label: "reference-implementation/test", prefix: "" },
+  { dir: join(REPO_ROOT, "apps", "console", "src"), label: "apps/console", prefix: "Ref" },
+];
+
+function bannedCastPatternFor(prefix: string): RegExp {
+  return prefix === ""
+    ? bannedCastPattern()
+    : new RegExp(`as\\s+unknown\\s+as\\s+${prefix}(${bannedTypeNames().join("|")})\\b`);
+}
+
+function listTestFiles(root: string): string[] {
   const out: string[] = [];
   function walk(dir: string) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -65,26 +137,52 @@ function listTestFiles(): string[] {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         walk(full);
-      } else if (entry.name.endsWith(".test.ts")) {
+      } else if (TEST_FILE_RE.test(entry.name)) {
         out.push(full);
       }
     }
   }
-  walk(TEST_DIR);
+  walk(root);
   return out;
 }
 
-test("no reference test casts around ConnectionHealthSnapshot or RenderedVerdict", () => {
+/**
+ * The ONE justified exemption, stated per-site rather than as a silent hole.
+ *
+ * `connection-evidence.test.ts` casts to `RefConnectionHealthSnapshot["axes"]`
+ * in order to inject axis values the current producer CANNOT emit
+ * (`"future_gap"`, `"future_outbox"`) and assert that `summarizeAxisChips`
+ * degrades them to neutral chips instead of crashing. That is the exact
+ * OPPOSITE of assuming a contract: the test is proving the consumer survives
+ * values the producer has not invented yet, which is only expressible by
+ * escaping the current type. Verified 2026-08-25 that both sites are
+ * forward-compat degradation tests and neither omits a field the consumer reads.
+ */
+const EXEMPT_SITES: readonly { readonly file: string; readonly why: string }[] = [
+  {
+    file: "apps/console/src/app/(console)/lib/connection-evidence.test.ts",
+    why: "injects deliberately novel axis values to test forward-compatible degradation",
+  },
+];
+
+test("no test casts around the health/verdict producer types, in either tree", () => {
   const offenders: string[] = [];
-  for (const file of listTestFiles()) {
-    // This file names the banned pattern in order to ban it.
-    if (file === fileURLToPath(import.meta.url)) {
-      continue;
-    }
-    const lines = readFileSync(file, "utf8").split("\n");
-    for (const [index, line] of lines.entries()) {
-      if (BANNED_CAST_PATTERN.test(line)) {
-        offenders.push(`${file.slice(TEST_DIR.length + 1)}:${index + 1}: ${line.trim()}`);
+  for (const tree of SCANNED_TREES) {
+    const pattern = bannedCastPatternFor(tree.prefix);
+    for (const file of listTestFiles(tree.dir)) {
+      // This file names the banned pattern in order to ban it.
+      if (file === fileURLToPath(import.meta.url)) {
+        continue;
+      }
+      const relative = file.slice(REPO_ROOT.length + 1);
+      if (EXEMPT_SITES.some((exempt) => relative === exempt.file)) {
+        continue;
+      }
+      const lines = readFileSync(file, "utf8").split("\n");
+      for (const [index, line] of lines.entries()) {
+        if (pattern.test(line)) {
+          offenders.push(`${relative}:${index + 1}: ${line.trim()}`);
+        }
       }
     }
   }
@@ -110,9 +208,25 @@ test("no reference test casts around ConnectionHealthSnapshot or RenderedVerdict
  * stop matching it.
  */
 test("the ban matches the exact cast that hid the empty-pill defect", () => {
-  assert.match("  } as unknown as ConnectionHealthSnapshot;", BANNED_CAST_PATTERN);
-  assert.match("  } as unknown as RenderedVerdict;", BANNED_CAST_PATTERN);
-  assert.match("} as  unknown  as  RenderedVerdict;", BANNED_CAST_PATTERN);
+  const pattern = bannedCastPattern();
+  assert.match("  } as unknown as ConnectionHealthSnapshot;", pattern);
+  assert.match("  } as unknown as RenderedVerdict;", pattern);
+  assert.match("} as  unknown  as  RenderedVerdict;", pattern);
+  // The subscripted form erases the same check and must not slip past — this is
+  // the second of round 1's two documented blind spots.
+  assert.match('} as unknown as ConnectionHealthSnapshot["axes"];', pattern);
+  // ...and the console's prefixed mirror of the same types.
+  assert.match('} as unknown as RefConnectionHealthSnapshot["axes"];', bannedCastPatternFor("Ref"));
+});
+
+/**
+ * The derivation is the whole point of the fix, so pin it: these names must
+ * come from the producers' signatures, not from a literal in this file. If a
+ * future edit re-hardcodes them, the assertion below still passes — but the
+ * `bannedTypeNames()` call is what proves the read works today.
+ */
+test("the banned type names are read from the producers, not hand-typed here", () => {
+  assert.deepEqual(bannedTypeNames(), ["ConnectionHealthSnapshot", "RenderedVerdict"]);
 });
 
 /**
@@ -120,6 +234,7 @@ test("the ban matches the exact cast that hid the empty-pill defect", () => {
  * already in this tree; the ban must not creep into a blanket style rule.
  */
 test("the ban does not touch legitimate casts elsewhere in the tree", () => {
+  const pattern = bannedCastPattern();
   for (const legitimate of [
     "  } as unknown as ComputeConnectionHealthInput;",
     "} as unknown as Parameters<typeof liveRetainedRecordsOrNull>[0];",
@@ -127,6 +242,6 @@ test("the ban does not touch legitimate casts elsewhere in the tree", () => {
     "approved.grant.streams as unknown as ResolvedStream[];",
     "  const snapshot: ConnectionHealthSnapshot = build();",
   ]) {
-    assert.doesNotMatch(legitimate, BANNED_CAST_PATTERN);
+    assert.doesNotMatch(legitimate, pattern);
   }
 });
