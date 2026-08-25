@@ -1,0 +1,158 @@
+candidate_id: server-routes-ref-device-exporters-t0-6a12908a
+created: "2026-08-23T14:48:49.654Z"
+repo_sha: "60612118bfd2171fdccfc0a1dcf29fefd7d88484"
+subsystem: server/routes
+files: [server/routes/ref-device-exporters.ts]
+symbols:
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L812"
+    line: 812
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L3065"
+    line: 3065
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1635"
+    line: 1635
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L2969"
+    line: 2969
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1021"
+    line: 1021
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1082"
+    line: 1082
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1162"
+    line: 1162
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1525"
+    line: 1525
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L2316"
+    line: 2316
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L2927"
+    line: 2927
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L3145"
+    line: 3145
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1304"
+    line: 1304
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L660"
+    line: 660
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1329"
+    line: 1329
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1365"
+    line: 1365
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1578"
+    line: 1578
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1899"
+    line: 1899
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L1935"
+    line: 1935
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L2074"
+    line: 2074
+  - file: server/routes/ref-device-exporters.ts
+    parent_fn: "<module>"
+    anchor: "@L2419"
+    line: 2419
+public_surface:
+  - "file matches public-surface glob 'server/routes/**' (v1 path heuristic — enumerate actual routes/tools in wave 2)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 11, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn '@L812' cc=11. File attention: churn 7 × excess-cc mass 53 = 371; 20 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to @L812@L812(in <module>), @L3065@L3065(in <module>), @L1635@L1635(in <module>), @L2969@L2969(in <module>), @L1021@L1021(in <module>), @L1082@L1082(in <module>) (+14 more — see quality/inventory/tier-mass.json) in server/routes/ref-device-exporters.ts (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+priority:
+  score: 20.718
+  computed: "2026-08-23T14:48:49.654Z"
+  inputs:
+    mass: 53
+    churn: 7
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/routes/ref-device-exporters.ts, tier T0 (repo_sha 60612118bfd2171fdccfc0a1dcf29fefd7d88484)"
+    result: "20 flagged fn(s), Σ excess-cc 53, max cc 11, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/routes/ref-device-exporters.ts"
+    result: "7 commits in window; coupling(fan-in proxy)=9"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && npx tsc --noEmit"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && node scripts/run-tests.ts"
+    expect: all tests pass; 0 fail; no new skips (skip counts compared baseline vs post)
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: file-complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/hone-quality-0823/reference-implementation --file 'server/routes/ref-device-exporters.ts' --cog 5"
+    expect: "found=true and file_excess < 167 (packet baseline: whole-file Σ excess-cc) and strictly below the measured baseline; no NEW function above the cog-5 threshold vs baseline; red_scan unchanged"
+    expect_check:
+      type: file_excess_lt
+      value: 167
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting, public-shape-change]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: null
+judge_provider: null
+batch_key: preserve_refactor×certified_transform×server/routes
+touchset: [server/routes/ref-device-exporters.ts]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: pending
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts: []
+  tokens_actual: null
+  lesson: null

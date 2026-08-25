@@ -1,0 +1,157 @@
+candidate_id: server-index-t0-04396802
+created: "2026-08-23T14:48:49.650Z"
+repo_sha: "60612118bfd2171fdccfc0a1dcf29fefd7d88484"
+subsystem: server
+files: [server/index.ts]
+symbols:
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L1123"
+    line: 1123
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L1704"
+    line: 1704
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L1795"
+    line: 1795
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L2739"
+    line: 2739
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L4046"
+    line: 4046
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L8378"
+    line: 8378
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L2198"
+    line: 2198
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L9642"
+    line: 9642
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L3882"
+    line: 3882
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L3955"
+    line: 3955
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L4893"
+    line: 4893
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L6428"
+    line: 6428
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L9280"
+    line: 9280
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L2419"
+    line: 2419
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L3920"
+    line: 3920
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L4297"
+    line: 4297
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L4383"
+    line: 4383
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L5326"
+    line: 5326
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L5403"
+    line: 5403
+  - file: server/index.ts
+    parent_fn: "<module>"
+    anchor: "@L7503"
+    line: 7503
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 11, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn '@L1123' cc=11. File attention: churn 26 × excess-cc mass 119 = 3094; 41 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to @L1123@L1123(in <module>), @L1704@L1704(in <module>), @L1795@L1795(in <module>), @L2739@L2739(in <module>), @L4046@L4046(in <module>), @L8378@L8378(in <module>) (+35 more — see quality/inventory/tier-mass.json) in server/index.ts (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: high
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 26.273
+  computed: "2026-08-23T14:48:49.650Z"
+  inputs:
+    mass: 119
+    churn: 26
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: low
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/index.ts, tier T0 (repo_sha 60612118bfd2171fdccfc0a1dcf29fefd7d88484)"
+    result: "41 flagged fn(s), Σ excess-cc 119, max cc 11, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/index.ts"
+    result: "26 commits in window; coupling(fan-in proxy)=173"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && npx tsc --noEmit"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && node scripts/run-tests.ts"
+    expect: all tests pass; 0 fail; no new skips (skip counts compared baseline vs post)
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: file-complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/hone-quality-0823/reference-implementation --file 'server/index.ts' --cog 5"
+    expect: "found=true and file_excess < 437 (packet baseline: whole-file Σ excess-cc) and strictly below the measured baseline; no NEW function above the cog-5 threshold vs baseline; red_scan unchanged"
+    expect_check:
+      type: file_excess_lt
+      value: 437
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: null
+judge_provider: null
+batch_key: preserve_refactor×certified_transform×server
+touchset: [server/index.ts]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: pending
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts: []
+  tokens_actual: null
+  lesson: null

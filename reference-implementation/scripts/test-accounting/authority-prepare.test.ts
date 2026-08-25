@@ -54,7 +54,7 @@ async function siteSuite(): Promise<Suite> {
  * TSX_TSCONFIG_PATH is repository-relative: from anywhere else tsx reports
  * "Config not found in chain" and, again, fails for the wrong reason.
  */
-const ALIAS_CONSUMER = "./apps/site/src/components/pdpp-concept/spec-status.ts";
+const ALIAS_CONSUMER = "./apps/site/src/lib/spec-status.ts";
 
 function importThroughAlias(suite: Suite): Promise<string | null> {
   const driver = `await import(${JSON.stringify(ALIAS_CONSUMER)});`;

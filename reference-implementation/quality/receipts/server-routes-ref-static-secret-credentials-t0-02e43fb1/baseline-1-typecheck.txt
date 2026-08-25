@@ -1,0 +1,8 @@
+# hone work server-routes-ref-static-secret-credentials-t0-02e43fb1 — baseline rung 'typecheck'
+# command: cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && npx tsc --noEmit
+# expect: exit 0
+# timeout: 1800s (engine-default)
+# exit: 0  duration: 3s  verdict: PASS
+
+npm notice run pdpp-reference-implementation@0.1.0 npx
+npm notice run 'tsc' --noEmit

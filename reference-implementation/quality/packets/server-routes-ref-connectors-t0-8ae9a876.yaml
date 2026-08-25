@@ -1,0 +1,110 @@
+candidate_id: server-routes-ref-connectors-t0-8ae9a876
+created: "2026-08-23T14:48:49.653Z"
+repo_sha: "60612118bfd2171fdccfc0a1dcf29fefd7d88484"
+subsystem: server/routes
+files: [server/routes/ref-connectors.ts]
+symbols:
+  - file: server/routes/ref-connectors.ts
+    parent_fn: "<module>"
+    anchor: "@L530"
+    line: 530
+  - file: server/routes/ref-connectors.ts
+    parent_fn: "<module>"
+    anchor: "@L1498"
+    line: 1498
+  - file: server/routes/ref-connectors.ts
+    parent_fn: "<module>"
+    anchor: "@L395"
+    line: 395
+  - file: server/routes/ref-connectors.ts
+    parent_fn: "<module>"
+    anchor: "@L425"
+    line: 425
+  - file: server/routes/ref-connectors.ts
+    parent_fn: "<module>"
+    anchor: "@L713"
+    line: 713
+  - file: server/routes/ref-connectors.ts
+    parent_fn: "<module>"
+    anchor: "@L370"
+    line: 370
+  - file: server/routes/ref-connectors.ts
+    parent_fn: "<module>"
+    anchor: "@L952"
+    line: 952
+  - file: server/routes/ref-connectors.ts
+    parent_fn: "<module>"
+    anchor: "@L1364"
+    line: 1364
+public_surface:
+  - "file matches public-surface glob 'server/routes/**' (v1 path heuristic — enumerate actual routes/tools in wave 2)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 11, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn '@L530' cc=11. File attention: churn 13 × excess-cc mass 28 = 364; 8 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to @L530@L530(in <module>), @L1498@L1498(in <module>), @L395@L395(in <module>), @L425@L425(in <module>), @L713@L713(in <module>), @L370@L370(in <module>) (+2 more — see quality/inventory/tier-mass.json) in server/routes/ref-connectors.ts (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+priority:
+  score: 22.195
+  computed: "2026-08-23T14:48:49.653Z"
+  inputs:
+    mass: 28
+    churn: 13
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/routes/ref-connectors.ts, tier T0 (repo_sha 60612118bfd2171fdccfc0a1dcf29fefd7d88484)"
+    result: "8 flagged fn(s), Σ excess-cc 28, max cc 11, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/routes/ref-connectors.ts"
+    result: "13 commits in window; coupling(fan-in proxy)=22"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && npx tsc --noEmit"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && node scripts/run-tests.ts"
+    expect: all tests pass; 0 fail; no new skips (skip counts compared baseline vs post)
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: file-complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/hone-quality-0823/reference-implementation --file 'server/routes/ref-connectors.ts' --cog 5"
+    expect: "found=true and file_excess < 35 (packet baseline: whole-file Σ excess-cc) and strictly below the measured baseline; no NEW function above the cog-5 threshold vs baseline; red_scan unchanged"
+    expect_check:
+      type: file_excess_lt
+      value: 35
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting, public-shape-change]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: null
+judge_provider: null
+batch_key: preserve_refactor×certified_transform×server/routes
+touchset: [server/routes/ref-connectors.ts]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: pending
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts: []
+  tokens_actual: null
+  lesson: null

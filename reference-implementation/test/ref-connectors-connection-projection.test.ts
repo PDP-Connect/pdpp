@@ -2473,7 +2473,7 @@ test(
     await seedInstance({
       connectorInstanceId: PERSONAL_INSTANCE_ID,
       displayName: "",
-      sourceBinding: { kind: "static_secret", verified_identity: "tnunamak@gmail.com" },
+      sourceBinding: { kind: "static_secret", verified_identity: "owner@example.com" },
       sourceBindingKey: "identity_b",
       sourceKind: "account",
     });
@@ -2483,7 +2483,7 @@ test(
     assert.ok(a);
     assert.ok(b);
     assert.equal(a.display_name, "Connection First Records - gezalsatx@yahoo.com");
-    assert.equal(b.display_name, "Connection First Records - tnunamak@gmail.com");
+    assert.equal(b.display_name, "Connection First Records - owner@example.com");
     assert.notEqual(a.display_name, b.display_name, "two accounts of one connector must never render identically");
   })
 );
