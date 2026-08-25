@@ -27,8 +27,8 @@ function summary(overrides: Partial<ConnectorSummaryLike>): ConnectorSummaryLike
   return { connector_id: "example", display_name: "Example", status: "active", ...overrides };
 }
 
-test("apple contacts: grey pill renders an empty circle and 'Not measured'", () => {
-  const row = projectSourceRow(
+test("apple contacts: grey pill renders an empty circle and 'Not measured'", async () => {
+  const row = await projectSourceRow(
     summary({
       connection_health: { axes: { coverage: "unknown", freshness: "fresh", outbox: "unknown" } },
       connector_id: "apple_contacts",
@@ -58,8 +58,8 @@ test("apple contacts: grey pill renders an empty circle and 'Not measured'", () 
   assert.equal(row.streams[0]?.countsLabel, "0 of 1 covered");
 });
 
-test("peregrine Claude Code: red pill renders the interdict glyph and carries the freshness note", () => {
-  const row = projectSourceRow(
+test("peregrine Claude Code: red pill renders the interdict glyph and carries the freshness note", async () => {
+  const row = await projectSourceRow(
     summary({
       connection_health: { axes: { coverage: "unknown", freshness: "unknown", outbox: "stalled" } },
       display_name: "peregrine Claude Code",
@@ -86,8 +86,8 @@ test("peregrine Claude Code: red pill renders the interdict glyph and carries th
   assert.equal(row.axes.outbox, "stalled");
 });
 
-test('gmail: terminal_gap renders "won\'t backfill", never the wire key', () => {
-  const row = projectSourceRow(
+test('gmail: terminal_gap renders "won\'t backfill", never the wire key', async () => {
+  const row = await projectSourceRow(
     summary({
       display_name: "Gmail",
       rendered_verdict: {
@@ -106,8 +106,8 @@ test('gmail: terminal_gap renders "won\'t backfill", never the wire key', () => 
   assert.equal(row.streams[2]?.coverageKey, "terminal_gap");
 });
 
-test("usaa: complete-with-uncommitted-checkpoint is reported, not hidden (ledger B5)", () => {
-  const row = projectSourceRow(
+test("usaa: complete-with-uncommitted-checkpoint is reported, not hidden (ledger B5)", async () => {
+  const row = await projectSourceRow(
     summary({
       collection_report: [
         { checkpoint: "not_committed", coverage_condition: "complete", stream: "accounts" },
@@ -146,8 +146,8 @@ test("usaa: complete-with-uncommitted-checkpoint is reported, not hidden (ledger
   ]);
 });
 
-test("a revoked connection never shows a stale verdict tone as its health", () => {
-  const row = projectSourceRow(
+test("a revoked connection never shows a stale verdict tone as its health", async () => {
+  const row = await projectSourceRow(
     summary({
       display_name: "Venmo",
       rendered_verdict: { pill: { label: "Healthy", tone: "green" } },
@@ -159,13 +159,13 @@ test("a revoked connection never shows a stale verdict tone as its health", () =
   assert.equal(row.status.label, "Revoked");
 });
 
-test("an archived source reads 'Archived', not the paused lifecycle it usually also carries", () => {
+test("an archived source reads 'Archived', not the paused lifecycle it usually also carries", async () => {
   // The regression this pins: an archived row is USUALLY `paused` and still
   // carries the stored verdict from when it was live. Ranking `paused` (or the
   // verdict) first printed "⏸ Paused" — and, before the server-side fix,
   // "Reconnect this account", a promise that leads nowhere because
   // reconnecting mints a new connection and resumes nothing.
-  const row = projectSourceRow(
+  const row = await projectSourceRow(
     summary({
       display_name: "Amazon (recovered fragment)",
       rendered_verdict: {
@@ -183,11 +183,12 @@ test("an archived source reads 'Archived', not the paused lifecycle it usually a
   assert.doesNotMatch(row.status.label, PAUSED_WORD_RE, "an archived row must not read as merely paused");
 });
 
-test("archived outranks revoked and the verdict tone, matching the console's ranking", () => {
+test("archived outranks revoked and the verdict tone, matching the console's ranking", async () => {
   // Ordering proof: if the archived branch were moved below either check, one
   // of these would fall through to "Revoked" or to the green verdict.
   for (const status of ["revoked", "paused", "active"]) {
-    const row = projectSourceRow(
+    // biome-ignore lint/performance/noAwaitInLoops: fixed 3-item test loop; each iteration's assertion should attribute to its own status value.
+    const row = await projectSourceRow(
       summary({
         rendered_verdict: { pill: { label: "Healthy", tone: "green" } },
         source_visibility: "archived",
@@ -198,10 +199,10 @@ test("archived outranks revoked and the verdict tone, matching the console's ran
   }
 });
 
-test("the retired 'hidden_from_sources' spelling still classifies as archived", () => {
+test("the retired 'hidden_from_sources' spelling still classifies as archived", async () => {
   // An older reference server has not been renamed yet; failing toward the
   // safe reading keeps those rows from rendering as live sources.
-  const row = projectSourceRow(
+  const row = await projectSourceRow(
     summary({
       rendered_verdict: { pill: { label: "Healthy", tone: "green" } },
       source_visibility: "hidden_from_sources",
@@ -210,18 +211,18 @@ test("the retired 'hidden_from_sources' spelling still classifies as archived", 
   assert.equal(row.status.kind, "archived");
 });
 
-test("an active source_visibility never triggers the archived branch", () => {
+test("an active source_visibility never triggers the archived branch", async () => {
   // Guards the inverse mutation: a predicate that returned true unconditionally
   // would archive the whole fleet, and every other test here would still pass.
-  const row = projectSourceRow(
+  const row = await projectSourceRow(
     summary({ rendered_verdict: { pill: { label: "Healthy", tone: "green" } }, source_visibility: "active" })
   );
   assert.equal(row.status.kind, "healthy");
   assert.equal(row.status.label, "Healthy");
 });
 
-test("a summary with no rendered_verdict reads honest 'Verdict unavailable', never a guess", () => {
-  const row = projectSourceRow(
+test("a summary with no rendered_verdict reads honest 'Verdict unavailable', never a guess", async () => {
+  const row = await projectSourceRow(
     summary({
       connection_health: { axes: { coverage: "complete", freshness: "fresh", outbox: "idle" }, state: "healthy" },
     })
@@ -234,13 +235,15 @@ test("a summary with no rendered_verdict reads honest 'Verdict unavailable', nev
   assert.equal(row.status.label, "Verdict unavailable");
 });
 
-test("an unrecognized tone from a newer server degrades to unknown rather than throwing", () => {
-  const row = projectSourceRow(summary({ rendered_verdict: { pill: { label: "Sparkling", tone: "chartreuse" } } }));
+test("an unrecognized tone from a newer server degrades to unknown rather than throwing", async () => {
+  const row = await projectSourceRow(
+    summary({ rendered_verdict: { pill: { label: "Sparkling", tone: "chartreuse" } } })
+  );
   assert.equal(row.status.kind, "unknown");
   assert.equal(row.status.label, "Verdict unavailable");
 });
 
-test("the tone→glyph table matches the console's VERDICT_TONE_STATUS", () => {
+test("the tone→glyph table matches the console's VERDICT_TONE_STATUS", async () => {
   // The CLI restates the console's tone table (it drops the CSS tone token,
   // which is meaningless in a terminal). This asserts the shared part against
   // the console source so the two cannot drift silently apart.
@@ -271,7 +274,8 @@ test("the tone→glyph table matches the console's VERDICT_TONE_STATUS", () => {
       `console uses a different kind for "${tone}" than the CLI: ${line.trim()}`
     );
 
-    const row = projectSourceRow(summary({ rendered_verdict: { pill: { label: "x", tone } } }));
+    // biome-ignore lint/performance/noAwaitInLoops: fixed 4-item test loop asserting per iteration; not a hot path.
+    const row = await projectSourceRow(summary({ rendered_verdict: { pill: { label: "x", tone } } }));
     assert.equal(row.status.dot, expected.dot);
     assert.equal(row.status.kind, expected.kind);
   }
@@ -364,7 +368,8 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
     const coverageChip = consoleChips.find((c) => c.dimension === "Coverage");
     assert.ok(coverageChip, `console produced no coverage chip for ${cov}`);
 
-    const cliRow = projectSourceRow(
+    // biome-ignore lint/performance/noAwaitInLoops: fixed 10-item test loop asserting per iteration; not a hot path.
+    const cliRow = await projectSourceRow(
       summary({
         connection_health: {
           axes: { attention: "none", coverage: cov, freshness: "fresh", outbox: "idle" },
@@ -398,7 +403,8 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
     const freshnessChip = consoleChips.find((c) => c.dimension === "Freshness");
     assert.ok(freshnessChip, `console produced no freshness chip for ${fresh}`);
 
-    const cliRow = projectSourceRow(
+    // biome-ignore lint/performance/noAwaitInLoops: fixed 3-item test loop asserting per iteration; not a hot path.
+    const cliRow = await projectSourceRow(
       summary({
         connection_health: {
           axes: { attention: "none", coverage: "complete", freshness: fresh, outbox: "idle" },
@@ -427,7 +433,8 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
     const outboxChip = consoleChips.find((c) => c.dimension === "Outbox");
     assert.ok(outboxChip, `console produced no outbox chip for ${outbox}`);
 
-    const cliRow = projectSourceRow(
+    // biome-ignore lint/performance/noAwaitInLoops: fixed 4-item test loop asserting per iteration; not a hot path.
+    const cliRow = await projectSourceRow(
       summary({
         connection_health: {
           axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox },
@@ -450,7 +457,7 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
 
   // 4. Invariant assertions on owner-facing display copy:
   // These pin the owner-approved vocabulary. Any accidental rollback or typo fails immediately.
-  const unknownRow = projectSourceRow(
+  const unknownRow = await projectSourceRow(
     summary({
       connection_health: {
         axes: { coverage: "unknown", freshness: "unknown", outbox: "unknown" },
@@ -465,7 +472,7 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
   assert.equal(unknownRow.axes.outbox, "not measured");
   assert.equal(unknownRow.streams[0]?.coverageLabel, "coverage not measured");
 
-  const inventoryRow = projectSourceRow(
+  const inventoryRow = await projectSourceRow(
     summary({
       rendered_verdict: {
         streams: [{ coverage: "inventory_only", stream_id: "stream2" }],
@@ -474,7 +481,7 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
   );
   assert.equal(inventoryRow.streams[0]?.coverageLabel, "coverage complete (list only, by design)");
 
-  const terminalRow = projectSourceRow(
+  const terminalRow = await projectSourceRow(
     summary({
       rendered_verdict: {
         streams: [{ coverage: "terminal_gap", stream_id: "stream3" }],
@@ -483,7 +490,7 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
   );
   assert.equal(terminalRow.streams[0]?.coverageLabel, "coverage won't backfill");
 
-  const deferredRow = projectSourceRow(
+  const deferredRow = await projectSourceRow(
     summary({
       rendered_verdict: {
         streams: [{ coverage: "deferred", stream_id: "stream4" }],
