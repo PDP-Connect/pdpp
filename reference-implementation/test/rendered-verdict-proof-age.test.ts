@@ -38,16 +38,23 @@ const SCHEDULED_REFRESH: ConnectionRefreshEvidence = {
   recommendedMode: "automatic",
 };
 
-/** A green, fresh, fully-covered connection — the shape that renders "Fresh today.". */
+/**
+ * A green, fresh, fully-covered connection — the shape that renders "Fresh today.".
+ *
+ * Every field is present and NO cast is used, so the compiler enforces that this
+ * stays a shape `computeConnectionHealth` can actually emit. Do not reintroduce
+ * `as unknown as` here: see the headline assertion below for what that hid.
+ */
 function healthySnapshot(): ConnectionHealthSnapshot {
   return {
     axes: {
+      attention: "none",
       coverage: "complete",
-      credential: "valid",
       freshness: "fresh",
-      runtime: "ok",
+      outbox: "idle",
+      remote_surface: "none",
     },
-    badges: { syncing: false },
+    badges: { stale: false, syncing: false },
     collection_rate: null,
     conditions: [],
     detail_gap_backlog: {
@@ -60,10 +67,19 @@ function healthySnapshot(): ConnectionHealthSnapshot {
       recovered: 0,
       terminal: null,
     },
+    dominant_condition_id: null,
+    ephemeral_browser_runtime: null,
     forward_disposition: "complete",
     last_success_at: "2026-06-15T08:00:00.000Z",
+    local_device_outbox_counts: null,
+    next_action: null,
+    next_attempt_at: null,
+    reason_code: null,
+    remote_surface: null,
     state: "healthy",
-  } as unknown as ConnectionHealthSnapshot;
+    supporting_condition_ids: [],
+    unknown_reasons: [],
+  };
 }
 
 function completeStream(): StreamRollup {
@@ -89,16 +105,39 @@ function progress(overrides: Partial<ProgressEvidence> = {}): ProgressEvidence {
   };
 }
 
+function renderHealthy(progressEvidence: ProgressEvidence) {
+  return synthesizeRenderedVerdict(healthySnapshot(), [completeStream()], SCHEDULED_REFRESH, true, progressEvidence);
+}
+
 function freshnessText(progressEvidence: ProgressEvidence): string | null {
-  const verdict = synthesizeRenderedVerdict(
-    healthySnapshot(),
-    [completeStream()],
-    SCHEDULED_REFRESH,
-    true,
-    progressEvidence
-  );
+  const verdict = renderHealthy(progressEvidence);
   return verdict.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? null;
 }
+
+// ─── 0. The fixture is what it claims to be ──────────────────────────────────
+
+/**
+ * Every other test in this file reads ONLY the freshness annotation, so the
+ * rest of the headline can be anything at all and nothing fails. That is not
+ * hypothetical: until this test existed, `healthySnapshot()` carried two
+ * invented axes (`credential`, `runtime`) and omitted the two the renderer
+ * actually reads (`attention`, `outbox`), hidden behind an `as unknown as`
+ * cast. Measured through the real renderer, this self-described "green, fresh,
+ * fully-covered connection" produced `pill: {}` — no label, no tone — and
+ * `channel: "attention"`, which would fire a notification on a healthy
+ * connection. All ten tests passed throughout.
+ *
+ * This test is the control: it proves the fixture really is the green
+ * connection the other tests assume, so a freshness assertion can never again
+ * pass on top of an empty headline.
+ */
+test("proof age: the fixture really is a green, calm connection (control for every test below)", () => {
+  const verdict = renderHealthy(progress({ last_refreshed_at: "2026-06-15T08:00:00.000Z" }));
+
+  assert.equal(verdict.pill.tone, "green", "the fixture must render a green pill, not an empty one");
+  assert.equal(verdict.pill.label, "Healthy", "the fixture must render a labeled pill");
+  assert.equal(verdict.channel, "calm", "a healthy connection must not route to the attention channel");
+});
 
 // ─── 1. A recent proof stays clean ───────────────────────────────────────────
 
