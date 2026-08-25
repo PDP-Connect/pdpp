@@ -33,6 +33,25 @@ export const PRIMARY_SLUGS = [
   "spec-semantic-retrieval-extension",
 ] as const;
 
+// The canonical URL for the governance programme document.
+//
+// It is NOT /specification/governance. Those six documents are specifications
+// under CSL-1.0 that change through the Community Specification process;
+// governance is a programme document amended by a vote of Partners. Serving it
+// from inside the specification route would imply one amendment route where
+// there are two, and would undercut its own §1 clause that no status it
+// defines is a conformance requirement.
+//
+// It is still authored as a fumadocs page under content/docs, because that is
+// what gives it the TOC, the Copy Markdown affordance and search indexing the
+// spec pages get (the search route indexes the fumadocs source and nothing
+// else). fumadocs therefore also routes it at /specification/governance, which
+// 308-redirects here — the same duplicate-URL fix spec-core already uses.
+export const governanceRoute = "/governance";
+
+// The slug of that page inside the fumadocs collection.
+export const GOVERNANCE_SLUG = "governance";
+
 // Everything the repository carries that is not normative protocol text:
 // guides, design rationale, architectural context, deferred concerns, open
 // questions, and the superseded Data Query API.

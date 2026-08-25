@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { MetadataRoute } from "next";
-import { MAINTAINER_DOC_SLUGS } from "./spec-nav-slugs.ts";
+import { GOVERNANCE_SLUG, governanceRoute, MAINTAINER_DOC_SLUGS } from "./spec-nav-slugs.ts";
 
 // Pure by design: takes plain { path, url } pairs rather than a fumadocs
 // Page, so this can be unit-tested without loading the generated MDX source
@@ -28,8 +28,13 @@ export interface DocPageRef {
 //   and their own noindex all keep out. Derived from MAINTAINER_DOC_SLUGS
 //   rather than repeated, so the rail and the sitemap cannot disagree about
 //   what is unlisted.
+// - governance.md: canonical at /governance, not at the /specification/governance
+//   URL fumadocs derives for it (that URL 308-redirects). Listing the fumadocs
+//   URL would put a redirect in the sitemap; the canonical route is added as a
+//   static entry below instead.
 const NON_CANONICAL_DOC_PATHS = new Set([
   "README.md",
+  `${GOVERNANCE_SLUG}.md`,
   ...MAINTAINER_DOC_SLUGS.map((slug) => `${slug}.md`),
 ]);
 
@@ -41,6 +46,7 @@ export function buildSitemap(siteOrigin: string, docPages: readonly DocPageRef[]
   // layouts and robots.ts) and must not appear here.
   const staticEntries: MetadataRoute.Sitemap = [
     { url: siteOrigin },
+    { url: `${siteOrigin}${governanceRoute}` },
     { url: `${siteOrigin}/self-host` },
     { url: `${siteOrigin}/participate` },
   ];
