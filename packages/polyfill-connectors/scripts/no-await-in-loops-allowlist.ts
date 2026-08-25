@@ -1056,14 +1056,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/oura/index.ts",
-    line: 149,
-    column: 18,
-    category: "dependent_pagination",
-    note: "oura(): next request depends on the prior page's cursor/offset/response",
-  },
-  {
-    path: "connectors/oura/index.ts",
-    line: 242,
+    line: 271,
     column: 5,
     category: "ordered_protocol_emission",
     note: "emitRecord(): Collection Profile protocol emission requiring in-order delivery",
@@ -1280,14 +1273,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/strava/index.ts",
-    line: 173,
-    column: 7,
-    category: "dependent_pagination",
-    note: "progressWithSignals(): next request depends on the prior page's cursor/offset/response",
-  },
-  {
-    path: "connectors/strava/index.ts",
-    line: 189,
+    line: 205,
     column: 9,
     category: "ordered_protocol_emission",
     note: "emitRecord(): Collection Profile protocol emission requiring in-order delivery",
