@@ -545,6 +545,43 @@ async function ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client: PoolCl
   }
 }
 
+/**
+ * Widen the config-revision status CHECK to admit `'rejected'`.
+ *
+ * An existing deployment carries the four-value constraint, so the owner's
+ * refusal would be rejected by the DATABASE even with the store and route in
+ * place (reproduced 2026-08-26: `CHECK constraint failed: status IN
+ * ('proposed', 'active', 'superseded', 'quarantined')`). Widening only ADDS an
+ * allowed value — no existing row can violate the new constraint, so this is
+ * safe to run against live data and needs no backfill.
+ */
+async function migratePostgresConfigRevisionRejectedStatus(client: PoolClient): Promise<void> {
+  const constraints = await client.query<ConstraintRow>(`
+    SELECT conname, pg_get_constraintdef(oid) AS definition
+    FROM pg_constraint
+    WHERE conrelid = 'connector_instance_config_revisions'::regclass AND contype = 'c'
+      AND conname = 'connector_instance_config_revisions_status_check'
+  `);
+  const definition = constraints.rows[0]?.definition;
+  if (!definition || definition.includes("'rejected'")) {
+    return;
+  }
+  await client.query("BEGIN");
+  try {
+    await client.query(
+      "ALTER TABLE connector_instance_config_revisions DROP CONSTRAINT connector_instance_config_revisions_status_check"
+    );
+    await client.query(
+      `ALTER TABLE connector_instance_config_revisions ADD CONSTRAINT connector_instance_config_revisions_status_check
+       CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined', 'rejected'))`
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
 async function migratePostgresRetainedSizeRejectionColumns(client: PoolClient): Promise<void> {
   const existingColumn = await client.query(
     `SELECT 1 FROM information_schema.columns
@@ -1366,7 +1403,7 @@ export async function bootstrapPostgresSchema({
         option_kind TEXT NOT NULL CHECK (option_kind IN ('collection_scope', 'transport')),
         origin TEXT NOT NULL CHECK (origin IN ('owner', 'agent', 'migration', 'default')),
         is_explicit BOOLEAN NOT NULL,
-        status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+        status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined', 'rejected')),
         collection_boundary_fingerprint TEXT,
         source_of_change TEXT NOT NULL,
         set_by TEXT NOT NULL,
@@ -3064,6 +3101,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresBrowserSurfaceLeaseLifecycleChecks(client);
     await migratePostgresBrowserSurfaceLeasePriority(client);
     await migratePostgresRecordRejectionBytePayload(client);
+    await migratePostgresConfigRevisionRejectedStatus(client);
     await migratePostgresRetainedSizeRejectionColumns(client);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
