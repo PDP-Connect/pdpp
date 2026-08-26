@@ -1252,17 +1252,26 @@ async function repairCandidate(connectorInstanceId: string, deadline: number | n
     };
   }
   try {
-    if (isPostgresStorageBackend()) {
-      const repaired = await repairCandidatePostgres(connectorInstanceId, deadline);
+    const repaired = isPostgresStorageBackend()
+      ? await repairCandidatePostgres(connectorInstanceId, deadline)
+      : await repairCandidateSqlite(connectorInstanceId);
+    // Clear the back-off ONLY on a real repair. A `deferred` result is not
+    // success: the Postgres branch returns `deferred` for exactly the
+    // statement_timeout case that just armed the back-off, so clearing here
+    // unconditionally would disarm it one frame after it was set and leave
+    // the unit retrying unpaced — the same production defect, relocated.
+    if (!repaired.deferred) {
       repairTimeoutBackoffUntil.delete(connectorInstanceId);
       repairTimeoutStrikes.delete(connectorInstanceId);
-      return repaired;
     }
-    const repaired = await repairCandidateSqlite(connectorInstanceId);
-    repairTimeoutBackoffUntil.delete(connectorInstanceId);
-    repairTimeoutStrikes.delete(connectorInstanceId);
     return repaired;
   } catch (err) {
+    // A `PostgresStatementTimeoutError` does NOT reach this catch on the
+    // Postgres branch — `repairCandidatePostgres` handles and returns it
+    // (that unreachability is why the original wiring never fired). It is
+    // still armed here for the lock-acquisition path and any future branch
+    // that lets the error propagate, so the throttle cannot be lost again
+    // by a change in who catches what.
     if (err instanceof PostgresStatementTimeoutError) {
       noteRepairTimeout(connectorInstanceId);
     }
@@ -1865,7 +1874,46 @@ function postgresRepairReadQuery<R extends Row = Row>(
   if (budget === 0) {
     throw new PostgresStatementTimeoutError();
   }
-  return postgresQueryBounded<R>(sql, params, budget);
+  return postgresQueryBounded<R>(testOnlySlowRepairRead(sql), params, budget);
+}
+
+/**
+ * Test-only: make a repair unit's own read genuinely slow, so Postgres itself
+ * cancels it under the real per-unit bound. Production is a no-op (the env var
+ * is unset), matching this file's existing seam convention
+ * (`PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS`, `PDPP_TEST_REPAIR_FAILURE_*`).
+ *
+ * This exists because the condition is otherwise unreachable in a test: a
+ * scratch row's repair finishes far inside the 500ms floor, while production
+ * only times out on connections holding ~1.3M records. Faking the error
+ * instead — or mirroring the handler's contract — is what let a back-off ship
+ * wired to an unreachable catch (2026-08-26); the timeout has to be REAL, from
+ * Postgres, on the real call path.
+ *
+ * The sleep runs in a leading CTE so it costs real server time while the
+ * original statement — and therefore the caller's result shape — is returned
+ * completely unchanged.
+ */
+const LEADING_SELECT_PATTERN = /^\s*select\b/i;
+
+function testOnlySlowRepairRead(sql: string): string {
+  const raw = process.env.PDPP_TEST_SLOW_REPAIR_READ_SECONDS;
+  const seconds = raw ? Number.parseFloat(raw) : 0;
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return sql;
+  }
+  // Only the repair unit's own `connector_instances` read is slowed. Wrapping
+  // every statement that flows through here also rewrote the advisory-lock
+  // acquisition query, which recursed in `tryAcquire` — the seam must target
+  // exactly the read whose cancellation this test is about, and leave the
+  // lock/transaction machinery alone.
+  if (!(LEADING_SELECT_PATTERN.test(sql) && sql.includes("FROM connector_instances"))) {
+    return sql;
+  }
+  return `WITH pdpp_test_slow_read AS MATERIALIZED (SELECT pg_sleep(${seconds}) AS slept),
+               pdpp_test_original AS (${sql})
+          SELECT pdpp_test_original.* FROM pdpp_test_original
+          WHERE (SELECT count(*) FROM pdpp_test_slow_read) >= 0`;
 }
 
 async function repairCandidatePostgres(
@@ -2036,6 +2084,16 @@ async function repairCandidatePostgres(
       // and defer — the SAME candidate reclassifies and retries on the
       // next observation pass (design.md "Startup is acceleration, not
       // authority": nothing here is ever permanently lost, only deferred).
+      //
+      // Arm the back-off HERE, at the only site this error is actually
+      // handled. It was originally wired into `repairCandidate`'s outer
+      // catch, which this `return` makes unreachable — so the throttle
+      // never fired in production (2026-08-26: codex, 1,311,001 records,
+      // 14 cancelled attempts in 15 minutes, back-off activations 0, row
+      // frozen over an hour). "Retries on the next pass" is only honest
+      // when the retries are paced; unpaced, this unit consumes the round
+      // every pass and the rows behind it never recompute.
+      noteRepairTimeout(connectorInstanceId);
       return {
         deferred: true,
         failed: false,
