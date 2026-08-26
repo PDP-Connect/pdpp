@@ -29,7 +29,102 @@ import {
 } from "../server/auto-enroll-eligible-schedules.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { closeDb, initDb } from "../server/db.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { getDefaultSchedulerStore } from "../server/stores/scheduler-store.ts";
+
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-08-16T00:00:00.000Z";
+
+// `connector_instances.connector_id` has a `FOREIGN KEY ... REFERENCES
+// connectors(connector_id)` constraint, so a connector must be registered
+// before an instance can reference it. Registers a minimal manifest under a
+// synthetic registry slug and returns the canonical key `registerConnector`
+// stored it under (matching how `canonicalConnectorKey` derives short keys
+// from `https://registry.pdpp.dev/connectors/<slug>` in production).
+async function registerConnectorWithKey(slug: string): Promise<string> {
+  const manifest = {
+    capabilities: {
+      auth: { kind: "env", required: [] },
+      public_listing: { tier: "supported" },
+      refresh_policy: {
+        background_safe: true,
+        interaction_posture: "none",
+        rationale: "Synthetic manifest for the getSchedule active-connection filter contract.",
+        recommended_interval_seconds: 3600,
+        recommended_mode: "automatic",
+      },
+    },
+    connector_id: `https://registry.pdpp.dev/connectors/${slug}`,
+    display_name: slug,
+    manifest_uri: `https://registry.pdpp.dev/connectors/${slug}`,
+    protocol_version: "0.1.0",
+    runtime_requirements: {},
+    streams: [
+      {
+        name: "records",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
+      },
+    ],
+    version: "1.0.0",
+  };
+  const connectorId = await registerConnector(manifest);
+  return canonicalConnectorKey(connectorId) ?? connectorId;
+}
+
+interface SeedInstanceOptions {
+  connectorId: string;
+  connectorInstanceId: string;
+  sourceBindingKey: string;
+}
+
+// Seeds a real, active `connector_instances` row so `getSchedule`'s
+// active-connection filter has something authoritative to check.
+async function seedInstance({
+  connectorId,
+  connectorInstanceId,
+  sourceBindingKey,
+}: SeedInstanceOptions): Promise<void> {
+  const store = createSqliteConnectorInstanceStore();
+  await store.upsert({
+    connectorId,
+    connectorInstanceId,
+    createdAt: NOW,
+    displayName: sourceBindingKey,
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: sourceBindingKey },
+    sourceBindingKey,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
+}
+
+interface SeedScheduleOptions {
+  connectorId: string;
+  connectorInstanceId: string;
+}
+
+// Seeds a schedule row keyed by `connector_instance_id`, same as a real
+// per-connection schedule created by `upsertSchedule`/activation — done
+// directly against the store so a test can create two schedule rows for one
+// connector_id without going through `getSchedule`'s own ambiguity guard.
+async function seedSchedule({ connectorId, connectorInstanceId }: SeedScheduleOptions): Promise<void> {
+  const store = getDefaultSchedulerStore();
+  await Promise.resolve(
+    store.createSchedule({
+      connector_id: connectorId,
+      connector_instance_id: connectorInstanceId,
+      created_at: NOW,
+      enabled: true,
+      interval_seconds: 3600,
+      jitter_seconds: 0,
+      updated_at: NOW,
+    })
+  );
+}
 
 const TEST_ENV_KEY = "TEST_AUTO_ENROLL_TOKEN";
 
@@ -210,5 +305,64 @@ test(
     assert.ok(schedule, "explicit owner schedule should be persisted");
     assert.equal(schedule.enabled, true);
     assert.equal(schedule.interval_seconds, 21_600);
+  })
+);
+
+// Reproduces the live-production defect: `getSchedule`'s bare-connector-id
+// lookup path (no `connector_instance_id` given, e.g. the auto-enroll caller)
+// counted every schedule row for a connector_id, including rows whose
+// connector_instance_id names a connection that no longer exists at all.
+// `connector_schedules` carries no foreign key to `connector_instances` (see
+// `CREATE TABLE connector_schedules` in `server/db.ts`), so a schedule row can
+// outlive its connection with nothing enforcing referential cleanup — exactly
+// the live shape: one connector_instances row backing amazon's live
+// connection, plus a second amazon schedule row whose connector_instance_id
+// has NO connector_instances row at all (an orphaned fragment). One live
+// connection plus that orphaned schedule row was misreported as ambiguous,
+// and the connector became silently unschedulable (`[auto-enroll] getSchedule
+// failed for amazon: ambiguous_connector_instance`). `getSchedule` must count
+// only schedules whose connection is still active.
+test(
+  "getSchedule resolves the single active connection's schedule when a second schedule row names a connection that no longer exists (amazon shape)",
+  withTmpDb(async () => {
+    const connectorId = await registerConnectorWithKey("test-auto-enroll-amazon-shape");
+    const activeInstanceId = "cin_5b8b839dde239f15c325c04d";
+    const orphanedInstanceId = "cin_cd523fe54af1881cc18d7368";
+    await seedInstance({ connectorId, connectorInstanceId: activeInstanceId, sourceBindingKey: "live" });
+    // No `seedInstance` call for `orphanedInstanceId`: production's "NO
+    // CONNECTION (orphaned fragment)" shape is a schedule row with zero
+    // matching connector_instances rows, not merely a revoked one.
+    await seedSchedule({ connectorId, connectorInstanceId: activeInstanceId });
+    await seedSchedule({ connectorId, connectorInstanceId: orphanedInstanceId });
+
+    const controller = createController({});
+    const schedule = await controller.getSchedule(connectorId);
+    assert.ok(schedule, "the single active connection's schedule should resolve without throwing");
+    assert.equal(schedule.connector_instance_id, activeInstanceId);
+  })
+);
+
+// Companion negative case: two connections that are BOTH genuinely active is
+// real ambiguity (the pr89 exactly-one-guard principle — never resolve
+// ambiguity by implicit fallback), so `getSchedule` must still throw here.
+// This must pass before AND after the fix above; if it stops throwing, the
+// active-connection filter has been widened into "pick one" and the guard is
+// broken.
+test(
+  "getSchedule still throws ambiguous_connector_instance when two connections are both active (heb shape)",
+  withTmpDb(async () => {
+    const connectorId = await registerConnectorWithKey("test-auto-enroll-heb-shape");
+    const firstInstanceId = "cin_8997c14400adc5ddba7b36a8";
+    const secondInstanceId = "cin_c875ca3ec8b6ce2c283a4288";
+    await seedInstance({ connectorId, connectorInstanceId: firstInstanceId, sourceBindingKey: "account-1" });
+    await seedInstance({ connectorId, connectorInstanceId: secondInstanceId, sourceBindingKey: "account-2" });
+    await seedSchedule({ connectorId, connectorInstanceId: firstInstanceId });
+    await seedSchedule({ connectorId, connectorInstanceId: secondInstanceId });
+
+    const controller = createController({});
+    await assert.rejects(
+      () => controller.getSchedule(connectorId),
+      (err: unknown) => err instanceof Error && (err as { code?: string }).code === "ambiguous_connector_instance"
+    );
   })
 );

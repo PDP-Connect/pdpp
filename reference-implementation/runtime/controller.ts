@@ -51,6 +51,10 @@ import {
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 import {
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from "../server/stores/connector-instance-store.ts";
+import {
   type ActiveRunRecord,
   getDefaultSchedulerStore,
   type ScheduleRecord,
@@ -2405,6 +2409,27 @@ function browserSurfaceReplacementReceiptStoreFor(
   );
 }
 
+// Connector-instance ids that currently resolve to a live, active connection
+// for `ownerSubjectId`/`connectorId`. Schedule rows are keyed by
+// `connector_instance_id`, but that id can outlive the connection it named —
+// revocation and owner-delete both leave the schedule row in place. Without
+// this filter, `getSchedule`'s exactly-one-schedule ambiguity guard (below)
+// counts orphaned rows as real ambiguity and throws even when only one
+// connection is actually live. Reuses the same `resolveActiveByConnector`
+// backing query (`status = 'active'`) that `server/routes/owner-connection-schedule.ts`
+// already relies on for the same disambiguation, via the non-throwing
+// `listActiveByConnector` sibling so a zero-match connector can still resolve
+// to "no schedule" instead of an error.
+async function listActiveConnectorInstanceIds(ownerSubjectId: string, connectorId: string): Promise<Set<string>> {
+  const connectorInstanceStore = isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceStore()
+    : createSqliteConnectorInstanceStore();
+  const activeInstances = await Promise.resolve(
+    connectorInstanceStore.listActiveByConnector(ownerSubjectId, connectorId)
+  );
+  return new Set(activeInstances.map((instance) => instance.connectorInstanceId));
+}
+
 /**
  * Create a new controller instance.
  */
@@ -2927,8 +2952,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const directSchedule = await getScheduleRecord(connectorInstanceId);
     let schedule = directSchedule;
     if (!(schedule || options.connectorInstanceId)) {
+      const activeConnectorInstanceIds = await listActiveConnectorInstanceIds(ownerSubjectId, resolvedConnectorId);
       const matches = (await schedulerStore.listSchedules()).filter(
-        (candidate) => candidate.connector_id === resolvedConnectorId
+        (candidate) =>
+          candidate.connector_id === resolvedConnectorId &&
+          activeConnectorInstanceIds.has(candidate.connector_instance_id)
       );
       if (matches.length > 1) {
         throw new ControllerError(
