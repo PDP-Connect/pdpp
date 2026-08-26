@@ -14,9 +14,8 @@ import { MAINTAINER_DOC_SLUGS, maintainersRoute } from "@/lib/spec-nav-slugs.ts"
 // standard's MUST #3 crawler-access matrix (search/grounding vs.
 // model-training vs. user-fetch, decided per named bot) is an explicit
 // governance decision the policy owner has not recorded; this file does not
-// invent one. /design and /palette (contributor-only, feature-flagged,
-// already `noindex, nofollow` in their own layouts), /sandbox (mock demo
-// data, already `noindex, nofollow` in its layout), /specification/README
+// invent one. /sandbox (mock demo data, already `noindex, nofollow` in its
+// layout), /specification/README
 // (contributor-facing authoring notes, already `noindex, nofollow` in its own
 // generateMetadata), and /maintainers with every document it lists (unlisted
 // non-normative material, already `noindex, nofollow` in their own metadata)
@@ -30,8 +29,6 @@ export default function robots(): MetadataRoute.Robots {
       // them: disallowing the index alone left the documents open, so a crawler
       // that never saw the index still indexed every one of them.
       disallow: [
-        "/design",
-        "/palette",
         "/sandbox",
         "/specification/README",
         maintainersRoute,
