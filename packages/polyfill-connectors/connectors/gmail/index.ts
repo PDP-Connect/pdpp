@@ -1542,16 +1542,64 @@ function hasPendingAttachmentBacklog(detailGaps: readonly DetailGapStartEntry[] 
 }
 
 /**
- * Historical attachment backfill should run when the operator asked for it or
- * when the runtime hands the connector pending attachment detail gaps. The
- * latter is the recovery-first seam: durable attachment backlog should not
- * look healthy just because the ordinary messages cursor is current.
+ * True when the attachments All Mail cursor made real prior progress
+ * (`backfilled_through_uid > 0`, so a run genuinely opted in and scanned at
+ * least one page) but stalled short of the mailbox's current UID range with
+ * `completed_at` still unset. Deliberately excludes a fresh/never-started
+ * cursor (`backfilled_through_uid` 0 or absent): a connector that has never
+ * been asked to backfill attachments must not have this signal alone force
+ * one on every future scheduled run — that stays opt-in via
+ * `streamsToBackfill` or a pending detail gap. This only catches the case
+ * where backfill started, then the trigger that was driving it (an explicit
+ * `streamsToBackfill` request) stopped arriving before the cursor reached
+ * `completed_at`, leaving the cursor permanently stuck with no pending gaps
+ * to signal it. Mirrors the range math in `selectAttachmentBackfillFetchRange`
+ * without requiring a full session object, so the trigger and the range
+ * selector agree on what "done" means.
+ */
+function hasIncompleteAttachmentBackfill(args: {
+  attachmentBackfill?: AttachmentAllMailCursor | undefined;
+  priorUidnext?: number | undefined;
+}): boolean {
+  const cursor = args.attachmentBackfill;
+  if (!cursor || cursor.completed_at) {
+    return false;
+  }
+  const backfilledThrough = cursor.backfilled_through_uid ?? 0;
+  if (backfilledThrough <= 0) {
+    return false;
+  }
+  if (args.priorUidnext === undefined) {
+    return false;
+  }
+  const endUid = Math.max(0, args.priorUidnext - 1);
+  return backfilledThrough < endUid;
+}
+
+/**
+ * Historical attachment backfill should run when the operator asked for it,
+ * when the runtime hands the connector pending attachment detail gaps, or
+ * when the attachments All Mail cursor already made progress and then
+ * stalled. The gap check alone is not enough: a durable per-attachment gap
+ * only exists once an attachment has been attempted and failed, so a cursor
+ * that started backfilling (e.g. via a one-time `streamsToBackfill` request)
+ * and then stopped receiving that request has zero pending gaps and would
+ * otherwise look healthy forever, even though the overwhelming majority of
+ * the mailbox was never scanned for attachments at all. The gap check is
+ * still the recovery-first seam: durable attachment backlog should not look
+ * healthy just because the ordinary messages cursor is current.
  */
 export function shouldBackfillAttachments(args: {
+  attachmentBackfill?: AttachmentAllMailCursor | undefined;
   detailGaps?: readonly DetailGapStartEntry[] | undefined;
+  priorUidnext?: number | undefined;
   streamsToBackfill?: readonly string[] | undefined;
 }): boolean {
-  return isAttachmentBackfillRequested(args.streamsToBackfill) || hasPendingAttachmentBacklog(args.detailGaps);
+  return (
+    isAttachmentBackfillRequested(args.streamsToBackfill) ||
+    hasPendingAttachmentBacklog(args.detailGaps) ||
+    hasIncompleteAttachmentBackfill({ attachmentBackfill: args.attachmentBackfill, priorUidnext: args.priorUidnext })
+  );
 }
 
 export function selectAttachmentBackfillFetchRange(session: {
@@ -3172,7 +3220,9 @@ export async function runAllMailPasses(
   const sinceDate = timeRange?.since ? isoToImapDate(timeRange.since) : null;
   const sinceIso = timeRange?.since ?? null;
   const attachmentBackfillRequested = shouldBackfillAttachments({
+    attachmentBackfill: session.attachmentBackfill,
     detailGaps: deps.detailGaps,
+    priorUidnext: session.priorUidnext,
     streamsToBackfill: deps.streamsToBackfill,
   });
   const servedAttachmentRecoveryRequested = servedAttachmentDetailGaps(deps.detailGaps).length > 0;

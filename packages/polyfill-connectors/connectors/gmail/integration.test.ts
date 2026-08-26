@@ -100,7 +100,7 @@ import {
   type UploadBodyBlobFn,
   validateAttachmentHydrationPreflight,
 } from "./index.ts";
-import type { AttachmentRecord, ProgressMessage, StreamRequest } from "./types.ts";
+import type { AttachmentAllMailCursor, AttachmentRecord, ProgressMessage, StreamRequest } from "./types.ts";
 
 interface RecordingHarness {
   deps: PerMessageDeps;
@@ -1448,6 +1448,68 @@ test("shouldBackfillAttachments: pending attachment detail gaps trigger historic
   assert.equal(shouldBackfillAttachments({ detailGaps: [attachmentGap] }), true);
   assert.equal(shouldBackfillAttachments({ detailGaps: [messageGap] }), false);
   assert.equal(shouldBackfillAttachments({ streamsToBackfill: ["attachments"] }), true);
+});
+
+test("shouldBackfillAttachments: an incomplete attachment cursor triggers backfill with no pending gaps and no CLI flag", () => {
+  // Reproduces the live cin_12407c1afb78d56848fe0b20 state: the attachments
+  // All Mail cursor stalled at backfilled_through_uid=3 (completed_at still
+  // null) while the mailbox's uidnext moved on to 324394 and every attempted
+  // attachment gap already resolved (recovered or terminal, none pending).
+  // With zero pending gaps and no explicit streamsToBackfill, the connector
+  // must still recognize the cursor itself as unfinished — otherwise a
+  // mailbox with 140k+ messages never gets its attachments scanned past the
+  // very first window, forever, on ordinary scheduled runs.
+  const stalledCursor: AttachmentAllMailCursor = {
+    backfilled_through_uid: 3,
+    completed_at: null,
+    uidvalidity: 1,
+  };
+
+  assert.equal(
+    shouldBackfillAttachments({
+      attachmentBackfill: stalledCursor,
+      detailGaps: [],
+      priorUidnext: 324_394,
+    }),
+    true
+  );
+
+  // A cursor that has actually finished the mailbox's current UID range must
+  // not force a backfill pass on every run.
+  const completedCursor: AttachmentAllMailCursor = {
+    backfilled_through_uid: 324_393,
+    completed_at: "2026-08-26T20:39:04.433Z",
+    uidvalidity: 1,
+  };
+  assert.equal(
+    shouldBackfillAttachments({
+      attachmentBackfill: completedCursor,
+      detailGaps: [],
+      priorUidnext: 324_394,
+    }),
+    false
+  );
+
+  // No prior cursor at all (first run) and no known uidnext yet: nothing to
+  // compare against, so this signal alone must not force a spurious backfill.
+  assert.equal(shouldBackfillAttachments({ detailGaps: [] }), false);
+
+  // A fresh/never-started cursor (backfilled_through_uid 0, no prior
+  // streamsToBackfill opt-in) must NOT be treated as "incomplete" — this
+  // signal only recovers a cursor that already made progress and then
+  // stalled, not a connector that was simply never asked to backfill
+  // attachments. Regression guard for the fallout this fix caused in
+  // "runAllMailPasses: scheduled runs advance historical pages while
+  // forwarding new mail" before this assertion was added.
+  const freshCursor: AttachmentAllMailCursor = { backfilled_through_uid: 0, completed_at: null, uidvalidity: 123 };
+  assert.equal(
+    shouldBackfillAttachments({
+      attachmentBackfill: freshCursor,
+      detailGaps: [],
+      priorUidnext: 1201,
+    }),
+    false
+  );
 });
 
 test("validateAttachmentHydrationPreflight: pending attachment detail gaps require blob upload config even without explicit backfill", () => {
