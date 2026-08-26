@@ -5769,8 +5769,24 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
 
 /**
  * Default interaction handler — prompts via stdin/stdout of the runtime process itself
+ *
+ * This is the CLI fallback, and it is only ever correct when a person is at the
+ * keyboard. A server-hosted run has no terminal, so `rl.question` never
+ * resolves and the interaction sits until its timeout expires — a silent
+ * 30-minute strand whose logs show a human being asked and never answering,
+ * which reads as "the owner ignored it" rather than "nobody could have seen
+ * it". Refusing up front turns that into an immediate, named failure.
+ *
+ * The check is on the INPUT stream specifically. A run can hold a writable
+ * stderr for logs while having no readable stdin at all, so testing the output
+ * side would pass exactly where the prompt is unanswerable.
  */
-async function defaultInteractionHandler(interaction: ConnectorMessage): Promise<InteractionResponse> {
+export async function defaultInteractionHandler(interaction: ConnectorMessage): Promise<InteractionResponse> {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `interaction_handler_unattended: this run asked for human input (kind=${String(interaction.kind)}) but no interaction handler was wired and there is no terminal to prompt. A server-hosted run must supply its own onInteraction handler.`
+    );
+  }
   const { createInterface } = await import("node:readline");
   const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
 
