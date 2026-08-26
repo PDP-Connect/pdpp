@@ -105,6 +105,12 @@ const RETRYABLE_ERROR_RE = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
 // last `@` is treated as the domain delimiter so quoted local-parts that embed
 // an `@` still redact (the domain is whatever follows the final `@`).
 const EMAIL_SPLIT_RE = /^(.*)@([^@]+)$/;
+// RFC 6838 restricted-name token for both the type and subtype half of a
+// media type, rejecting the wildcard forms IMAP servers report for some
+// legacy/malformed messages (observed live: BODYSTRUCTURE type "image/*").
+// A wildcard is valid IMAP metadata but not a media type the reference
+// server's blob-upload endpoint will accept.
+const VALID_MEDIA_TYPE_RE = /^[a-zA-Z0-9][a-zA-Z0-9!#$&\-^_.+]*\/[a-zA-Z0-9][a-zA-Z0-9!#$&\-^_.+]*$/;
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
@@ -117,6 +123,24 @@ const HYDRATION_ERROR_MAX_CHARS = 240;
 const DEFAULT_ATTACHMENT_MIME_TYPE = "application/octet-stream";
 const BLOB_UPLOAD_ENV_ERROR =
   "blob upload unavailable: PDPP_RS_URL and PDPP_OWNER_TOKEN must be provided by the runtime";
+
+/**
+ * Resolve the MIME type to upload an attachment's blob under, substituting
+ * the safe default whenever the IMAP-reported type is absent OR present but
+ * not a real media type (e.g. "image/*"). A truthy-but-invalid type used to
+ * flow straight through `||` fallbacks into the blob upload, which the
+ * reference server permanently rejects with 400 "mime_type must be a valid
+ * media type" — an unrecoverable, ever-quarantined attachment for a value
+ * this connector already knows how to substitute.
+ */
+function resolveAttachmentMimeType(...candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    if (candidate && VALID_MEDIA_TYPE_RE.test(candidate)) {
+      return candidate;
+    }
+  }
+  return DEFAULT_ATTACHMENT_MIME_TYPE;
+}
 // Conservative default chosen to align with Gmail's per-message attachment
 // cap (25 MiB). Operators can raise/lower with PDPP_GMAIL_MAX_ATTACHMENT_BYTES;
 // the value is enforced both before download (when source size is known) and
@@ -2814,7 +2838,7 @@ export function makeAttachmentHydrator(args: AttachmentHydratorArgs): HydrateAtt
       const blobRef = await args.uploadBlob({
         content: guarded,
         connectorId: args.connectorId,
-        mimeType: downloaded.mimeType || attachment.content_type || DEFAULT_ATTACHMENT_MIME_TYPE,
+        mimeType: resolveAttachmentMimeType(downloaded.mimeType, attachment.content_type),
         recordKey: attachment.id,
         stream: "attachments",
       });
@@ -2875,7 +2899,7 @@ export async function fetchAttachmentPart(
   return {
     content: response.content,
     expectedSize: typeof response.meta?.expectedSize === "number" ? response.meta.expectedSize : attachment.size_bytes,
-    mimeType: response.meta?.contentType || attachment.content_type || DEFAULT_ATTACHMENT_MIME_TYPE,
+    mimeType: resolveAttachmentMimeType(response.meta?.contentType, attachment.content_type),
   };
 }
 

@@ -403,6 +403,57 @@ test("processMessage: hydrates requested attachments with blob_ref, hash, MIME t
   assert.deepEqual(uploadCalls, [{ recordKey: "gmmsgid-1111:2", sha256: expectedSha }]);
 });
 
+test('makeAttachmentHydrator: a wildcard BODYSTRUCTURE type (e.g. "image/*") is not sent to blob upload', async () => {
+  // Live incident: a legacy message's BODYSTRUCTURE reported content type
+  // "image/*". `downloaded.mimeType || attachment.content_type || DEFAULT`
+  // treats a truthy-but-invalid type as good, so it flowed straight into
+  // the blob upload and was permanently rejected (400 "mime_type must be a
+  // valid media type"), quarantining the attachment after 8 retries because
+  // the invalid type never changed between attempts.
+  const bytes = Buffer.from("wildcard mime attachment");
+  let uploadedMimeType: string | null = null;
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: Readable.from([bytes]),
+        expectedSize: bytes.length,
+        mimeType: "",
+      }),
+    uploadBlob: async ({ content, mimeType }) => {
+      uploadedMimeType = mimeType;
+      const chunks: Buffer[] = [];
+      for await (const chunk of content) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(chunks);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+
+  const result = await hydrateAttachment({ emailId: "gmmsgid-1111", uid: 1 } as unknown as FetchMessageObject, {
+    id: "gmmsgid-1111:2",
+    message_id: "gmmsgid-1111",
+    filename: "logo.jpg",
+    content_type: "image/*",
+    size_bytes: bytes.length,
+    content_id: null,
+    is_inline: false,
+    encoding: "base64",
+    part_index: "2",
+    message_received_at: "2015-11-22T09:25:07.000Z",
+    blob_ref: null,
+    content_sha256: null,
+    hydration_status: "deferred",
+    hydration_error: null,
+  });
+
+  assert.equal(result.record.hydration_status, "hydrated", "must not quarantine on an invalid-but-truthy MIME type");
+  assert.equal(uploadedMimeType, "application/octet-stream", "must substitute the safe default, not forward image/*");
+  assert.equal(result.record.hydration_error, null);
+});
+
 test("processMessage: emits DETAIL_GAP_RECOVERED only after the matching attachment record lands", async () => {
   const bytes = Buffer.from("recoverable attachment");
   const hydrateAttachment = makeAttachmentHydrator({
