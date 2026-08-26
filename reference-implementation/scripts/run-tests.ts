@@ -135,7 +135,29 @@ if (accountingAuthority?.profile === "postgres" && !process.env.PDPP_TEST_POSTGR
 // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- Biome's narrowing conflates the equality guard above (only reachable when accountingAuthority is set) with the accountingAuthority-undefined branch, where PDPP_TEST_PROFILE is genuinely string|undefined; an isolated tsc repro confirms both `??` fallbacks are real, live branches.
 const selectedProfile = accountingAuthority?.profile ?? process.env.PDPP_TEST_PROFILE ?? "memory-default";
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || "", 10);
-const scrubbedBaseEnv = storageProfileEnvironment(selectedProfile, buildScrubbedTestEnv(process.env));
+// Boot-time schedule auto-enrollment is OFF by default under the test harness.
+//
+// A test that seeds a connection and then calls `startServer` does not want a
+// live schedule attached to it: the scheduler starts real background runs and
+// its interval timer holds the event loop open, so the file finishes every
+// assertion and then never exits and this runner kills it on the idle timeout.
+// ~60 server fixtures force-close their sockets without stopping the scheduler,
+// so they would each need their own teardown fix; defaulting the enroller off
+// here fixes the class at the seam that owns it.
+//
+// This stayed invisible until auto-enrollment began keying schedule rows to the
+// connection. While rows were keyed by the bare connector id they matched no
+// connection, so the scheduler never had anything to start.
+//
+// A test that genuinely exercises enrollment sets `autoEnrollEligibleSchedules:
+// true` on its own `startServer` call (the explicit opt beats this env default),
+// and an operator can still force the old behavior with
+// PDPP_SKIP_AUTO_SCHEDULE_ENROLLMENT=0.
+const testHarnessEnv: NodeJS.ProcessEnv = {
+  PDPP_SKIP_AUTO_SCHEDULE_ENROLLMENT: "1",
+  ...process.env,
+};
+const scrubbedBaseEnv = storageProfileEnvironment(selectedProfile, buildScrubbedTestEnv(testHarnessEnv));
 const configuredPostgresTestUrl = scrubbedBaseEnv.PDPP_TEST_POSTGRES_URL;
 const dedicatedBasePostgresTestUrl: string | null = configuredPostgresTestUrl
   ? dedicatedPostgresTestUrl(configuredPostgresTestUrl)
