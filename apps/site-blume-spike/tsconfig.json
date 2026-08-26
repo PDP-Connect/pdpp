@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "target": "ES2022",
+    "paths": {
+      "@/*": ["../site/src/*"]
+    }
+  },
+  "include": ["islands/**/*.tsx"]
+}
