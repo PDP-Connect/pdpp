@@ -262,6 +262,7 @@ export function buildCurrentSettings(
   schema: ConfigOptionsSchemaWire,
   activeRevision: ConfigRevisionWire | null
 ): CurrentSettingRow[] {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: activeRevision is ConfigRevisionWire | null; tsc rejects removing this guard.
   const config = activeRevision?.config ?? {};
   return schema.options.map((option) => {
     const stored = Object.hasOwn(config, option.option_key)
@@ -638,7 +639,7 @@ export function originLabel(origin: ConfigOrigin, actor: string): string {
 }
 
 /** `client:daisy` is an internal handle; render the readable half. */
-function describeAgentActor(actor: string): string {
+export function describeAgentActor(actor: string): string {
   const trimmed = actor.trim();
   if (trimmed.startsWith("client:")) {
     const name = trimmed.slice("client:".length).trim();
