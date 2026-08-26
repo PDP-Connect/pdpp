@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fuseSourceStatus } from "./fused-source-status.ts";
+import { fuseSourceStatus } from "@pdpp/display";
 import type { SourceStatusFlag } from "./source-actionability.ts";
 
 function flag(over: Partial<SourceStatusFlag> = {}): SourceStatusFlag {

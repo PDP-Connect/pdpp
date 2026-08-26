@@ -3,8 +3,22 @@
 
 // One public surface for framework-independent display policy. Internal modules
 // stay grouped by the knowledge they own; consumers import only @pdpp/display.
-export type { ConnectorDisplayInput, SourceDisplayInput } from "./identity/connector-display.ts";
+export type {
+  AttentionAxis,
+  AxisChip,
+  CoverageAxis,
+  EvidenceTone,
+  FreshnessAxis,
+  OutboxAxis,
+} from "./health/axis-vocabulary.ts";
 // biome-ignore lint/performance/noBarrelFile: this package intentionally provides one stable public import surface.
+export {
+  formatAttentionAxis,
+  formatCoverageAxis,
+  formatFreshnessAxis,
+  formatOutboxAxis,
+} from "./health/axis-vocabulary.ts";
+export type { ConnectorDisplayInput, SourceDisplayInput } from "./identity/connector-display.ts";
 export {
   deriveSourceDisplayNameFallback,
   formatConnectorKeyForDisplay,
@@ -22,20 +36,6 @@ export type {
   TraceLabelInput,
 } from "./identity/summary-row-label.ts";
 export { grantRowLabel, runRowLabel, traceRowLabel } from "./identity/summary-row-label.ts";
-export type {
-  AttentionAxis,
-  AxisChip,
-  CoverageAxis,
-  EvidenceTone,
-  FreshnessAxis,
-  OutboxAxis,
-} from "./health/axis-vocabulary.ts";
-export {
-  formatAttentionAxis,
-  formatCoverageAxis,
-  formatFreshnessAxis,
-  formatOutboxAxis,
-} from "./health/axis-vocabulary.ts";
 export type { DeclaredFieldRoles, FieldRole } from "./record/declared-field-roles.ts";
 export {
   EMPTY_DECLARED_FIELD_ROLES,
@@ -62,6 +62,35 @@ export type { GenericField, RecordPreview } from "./record/record-preview.ts";
 export { buildRecordPreview, rowPrimary, rowSecondary } from "./record/record-preview.ts";
 export type { StructuredCell } from "./record/structured-value.ts";
 export { formatStructuredCell } from "./record/structured-value.ts";
+export type { FusedSourceStatus } from "./source/fused-source-status.ts";
+export { fuseSourceStatus } from "./source/fused-source-status.ts";
+export type {
+  SourceLifecycleFacts,
+  SourceStatusFlag,
+  SourceStatusInput,
+  SourceStatusKind,
+  SourceStatusTone,
+  SourceTerminalSetupDisposition,
+  SourceVerdictInput,
+  SourceVerdictTone,
+  TerminalSetupDispositionCopy,
+} from "./source/source-status.ts";
+export {
+  deriveRenderedSourceStatus,
+  deriveSourceLifecycleFacts,
+  deriveSourceVerdictStatus,
+  freshnessNoteFromVerdict,
+  isActiveSourceRunStatus,
+  isArchivedSource,
+  isPausedSource,
+  isRevokedSource,
+  isSetupFailedSource,
+  isSetupInProgressSource,
+  renderedSourceStatus,
+  TERMINAL_SETUP_DISPOSITION_COPY,
+} from "./source/source-status.ts";
+export type { SourceVerdictProjection } from "./source/source-verdict.ts";
+export { projectSourceVerdict } from "./source/source-verdict.ts";
 export type {
   ParsedTimestamp,
   TimestampPrecision,

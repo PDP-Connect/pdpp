@@ -27,7 +27,7 @@
  * a false zero or green.
  */
 
-import type { StreamManifestEntry } from "@pdpp/display";
+import type { FusedSourceStatus, StreamManifestEntry } from "@pdpp/display";
 import {
   deriveSourceDisplayNameFallback,
   formatConnectorNameForDisplay,
@@ -41,7 +41,6 @@ import {
 } from "pdpp-reference-implementation/connection-setup-plan";
 import { formatStreamCollectionFacts, indexCollectionReportByStream } from "../lib/collection-report.ts";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
-import type { FusedSourceStatus } from "../lib/fused-source-status.ts";
 import type { FormattedNextAction } from "../lib/next-action.ts";
 import type {
   RefConnectorRunSummary,

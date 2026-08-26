@@ -16,8 +16,8 @@
  * because the sync that would refresh it keeps failing. Today's code resolves
  * that disagreement by LAST-WRITER-WINS: `deriveRenderedSourceStatus` returns
  * early on `running` with `label: "Syncing"`, `tone: "muted"`, and
- * `freshnessNote: null` (`source-actionability.ts`), so an in-flight run erases
- * both the freshness note and whatever the verdict said was wrong. That is the
+ * `freshnessNote: null` (`source-status.ts`), so an in-flight run erases both
+ * the freshness note and whatever the verdict said was wrong. That is the
  * fabricated-green defect in miniature: the most reassuring axis silently wins.
  *
  * This module fuses instead of overwriting, under one rule:
@@ -27,13 +27,9 @@
  * "Syncing" is something a source is DOING, not something it IS. So the state
  * slot always keeps the worst honest verdict, and syncing is appended as
  * context. The fused line can never read cheerier than its worst axis.
- *
- * This module deliberately owns no label VALUES that `connection-evidence.ts`
- * already owns — it composes the strings that module and
- * `deriveRenderedSourceStatus` produce.
  */
 
-import type { SourceStatusFlag, SourceStatusKind, SourceStatusTone } from "./source-actionability.ts";
+import type { SourceStatusFlag, SourceStatusKind, SourceStatusTone } from "./source-status.ts";
 
 /**
  * How much confidence the fused line is entitled to. Ordered worst-to-best so

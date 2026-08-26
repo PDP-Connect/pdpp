@@ -22,6 +22,13 @@ import {
 } from "../scripts/sources-report-model.ts";
 
 const PAUSED_WORD_RE = /paused/i;
+const VERDICT_TONE_STATUS_DEF_RE = /const VERDICT_TONE_STATUS\s*[:=]/;
+const COVERAGE_LABELS_DEF_RE = /const COVERAGE_LABELS\s*[:=]/;
+const FRESHNESS_LABELS_DEF_RE = /const FRESHNESS_LABELS\s*[:=]/;
+const OUTBOX_LABELS_DEF_RE = /const OUTBOX_LABELS\s*[:=]/;
+const ATTENTION_LABELS_DEF_RE = /const ATTENTION_LABELS\s*[:=]/;
+const DISPLAY_IMPORT_RE = /from "@pdpp\/display"/;
+const DISPLAY_HEALTH_IMPORT_RE = /from "@pdpp\/display\/health"/;
 
 function summary(overrides: Partial<ConnectorSummaryLike>): ConnectorSummaryLike {
   return { connector_id: "example", display_name: "Example", status: "active", ...overrides };
@@ -240,19 +247,22 @@ test("an unrecognized tone from a newer server degrades to unknown rather than t
   assert.equal(row.status.label, "Verdict unavailable");
 });
 
-test("the tone→glyph table matches the console's VERDICT_TONE_STATUS", () => {
-  // The CLI restates the console's tone table (it drops the CSS tone token,
-  // which is meaningless in a terminal). This asserts the shared part against
-  // the console source so the two cannot drift silently apart.
-  const consoleSource = readFileSync(
-    fileURLToPath(new URL("../../apps/console/src/app/(console)/lib/source-actionability.ts", import.meta.url)),
+test("the tone→glyph table has exactly ONE definition, in @pdpp/display", () => {
+  // This test used to diff the CLI's own tone table against the console's,
+  // because there were two. The extraction left one, owned by
+  // `packages/display/src/source/source-status.ts`, so the check that matters
+  // changed shape: assert the table lives THERE and that neither surface has
+  // grown a replacement copy. A restated table is the drift this whole change
+  // was made to prevent.
+  const packageSource = readFileSync(
+    fileURLToPath(new URL("../../packages/display/src/source/source-status.ts", import.meta.url)),
     "utf8"
   );
-  const table = consoleSource.slice(
-    consoleSource.indexOf("const VERDICT_TONE_STATUS"),
-    consoleSource.indexOf("};", consoleSource.indexOf("const VERDICT_TONE_STATUS"))
+  const table = packageSource.slice(
+    packageSource.indexOf("const VERDICT_TONE_STATUS"),
+    packageSource.indexOf("};", packageSource.indexOf("const VERDICT_TONE_STATUS"))
   );
-  assert.ok(table.length > 0, "could not locate VERDICT_TONE_STATUS in the console source");
+  assert.ok(table.length > 0, "could not locate VERDICT_TONE_STATUS in @pdpp/display");
 
   for (const [tone, expected] of [
     ["amber", { dot: "◐", kind: "degraded" }],
@@ -261,19 +271,33 @@ test("the tone→glyph table matches the console's VERDICT_TONE_STATUS", () => {
     ["red", { dot: "⊘", kind: "blocked" }],
   ] as const) {
     const line = table.split("\n").find((l) => l.trim().startsWith(`${tone}:`));
-    assert.ok(line, `console table has no row for tone "${tone}"`);
+    assert.ok(line, `the shared table has no row for tone "${tone}"`);
     assert.ok(
       line.includes(`dot: "${expected.dot}"`),
-      `console draws a different glyph for "${tone}" than the CLI: ${line.trim()}`
+      `shared table draws a different glyph for "${tone}": ${line.trim()}`
     );
     assert.ok(
       line.includes(`kind: "${expected.kind}"`),
-      `console uses a different kind for "${tone}" than the CLI: ${line.trim()}`
+      `shared table uses a different kind for "${tone}": ${line.trim()}`
     );
 
+    // And the CLI actually renders through that table.
     const row = projectSourceRow(summary({ rendered_verdict: { pill: { label: "x", tone } } }));
     assert.equal(row.status.dot, expected.dot);
     assert.equal(row.status.kind, expected.kind);
+  }
+
+  // Neither surface may restate it.
+  for (const relPath of [
+    "../../apps/console/src/app/(console)/lib/source-actionability.ts",
+    "../scripts/sources-report-model.ts",
+  ]) {
+    const source = readFileSync(fileURLToPath(new URL(relPath, import.meta.url)), "utf8");
+    assert.doesNotMatch(
+      source,
+      VERDICT_TONE_STATUS_DEF_RE,
+      `${relPath} must not define a second tone→glyph table; @pdpp/display owns it`
+    );
   }
 });
 
@@ -285,27 +309,27 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
   );
   assert.doesNotMatch(
     consoleEvidenceSource,
-    /const COVERAGE_LABELS\s*[:=]/,
+    COVERAGE_LABELS_DEF_RE,
     "apps/console/src/app/(console)/lib/connection-evidence.ts must not define a duplicate COVERAGE_LABELS table"
   );
   assert.doesNotMatch(
     consoleEvidenceSource,
-    /const FRESHNESS_LABELS\s*[:=]/,
+    FRESHNESS_LABELS_DEF_RE,
     "apps/console/src/app/(console)/lib/connection-evidence.ts must not define a duplicate FRESHNESS_LABELS table"
   );
   assert.doesNotMatch(
     consoleEvidenceSource,
-    /const OUTBOX_LABELS\s*[:=]/,
+    OUTBOX_LABELS_DEF_RE,
     "apps/console/src/app/(console)/lib/connection-evidence.ts must not define a duplicate OUTBOX_LABELS table"
   );
   assert.doesNotMatch(
     consoleEvidenceSource,
-    /const ATTENTION_LABELS\s*[:=]/,
+    ATTENTION_LABELS_DEF_RE,
     "apps/console/src/app/(console)/lib/connection-evidence.ts must not define a duplicate ATTENTION_LABELS table"
   );
   assert.match(
     consoleEvidenceSource,
-    /from "@pdpp\/display"/,
+    DISPLAY_IMPORT_RE,
     "apps/console/src/app/(console)/lib/connection-evidence.ts must import formatters from @pdpp/display"
   );
 
@@ -316,7 +340,7 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
   );
   assert.match(
     cliModelSource,
-    /from "@pdpp\/display\/health"/,
+    DISPLAY_HEALTH_IMPORT_RE,
     "reference-implementation/scripts/sources-report-model.ts must import formatters from @pdpp/display/health"
   );
 
@@ -333,9 +357,7 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
     axes: { attention: string; coverage: string; freshness: string; outbox: string },
     context?: { isLocalDeviceBacked?: boolean }
   ) => Array<{ dimension: string; value: string }>;
-  const consoleEvidenceModuleSpecifier = ["..", "..", "apps", "console", "src", "app", "(console)", "lib"].join(
-    "/"
-  );
+  const consoleEvidenceModuleSpecifier = ["..", "..", "apps", "console", "src", "app", "(console)", "lib"].join("/");
   const consoleEvidenceModule: { summarizeAxisChips: SummarizeAxisChips } = await import(
     `${consoleEvidenceModuleSpecifier}/connection-evidence.ts`
   );
@@ -437,14 +459,14 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
 
     // Note: on unknown with local-device backing, console sharpens to "evidence unavailable"
     // whereas bare axis formatter produces "not measured". Both are derived from display vocabulary.
-    if (outbox !== "unknown") {
+    if (outbox === "unknown") {
+      assert.equal(cliRow.axes.outbox, "not measured");
+    } else {
       assert.equal(
         cliRow.axes.outbox,
         outboxChip.value,
         `CLI axes.outbox (${cliRow.axes.outbox}) diverged from console chip value (${outboxChip.value}) for axis "${outbox}"`
       );
-    } else {
-      assert.equal(cliRow.axes.outbox, "not measured");
     }
   }
 
@@ -491,4 +513,66 @@ test("structural divergence guard: console and CLI share exactly ONE definition 
     })
   );
   assert.equal(deferredRow.streams[0]?.coverageLabel, "coverage optional, not collected");
+});
+
+/**
+ * The defect this CLI's extraction closed, pinned on the CLI side.
+ *
+ * A setup-failed connection arrives as status `revoked` AND
+ * `source_visibility: "setup_failed"`. The CLI's old hand-ported ranking had no
+ * `setup_failed` branch, so those rows fell through to its generic `revoked`
+ * branch and printed "Revoked" while the `/sources` page printed the more
+ * specific "Setup never completed". Six real Venmo rows read that way.
+ *
+ * This test does NOT go through the fleet-parity test's comparison, and that is
+ * deliberate. Now that both surfaces call one producer they agree by
+ * construction, so a parity assertion cannot catch a regression INSIDE the
+ * shared ranking — both sides would move together and still match. This pins
+ * the CLI's output to the literal owner-facing words instead.
+ */
+test("setup-failed source: the CLI prints the specific terminal state, never the generic 'Revoked'", () => {
+  const row = projectSourceRow(
+    summary({
+      connector_id: "venmo",
+      display_name: "Venmo",
+      rendered_verdict: {
+        annotations: [],
+        forward_statement: "Setup never completed for this connection.",
+        pill: { label: "Archived", tone: "grey" },
+      },
+      source_visibility: "setup_failed",
+      status: "revoked",
+    })
+  );
+
+  assert.equal(row.status.kind, "setup_failed");
+  assert.equal(row.status.label, "Setup never completed");
+  assert.notEqual(row.status.label, "Revoked");
+  // The card text the owner reads, which the CLI had no counterpart to at all
+  // before the extraction. "Never updated" because no run ever succeeded here.
+  assert.equal(row.fusedLine, "Setup never completed · Never updated");
+});
+
+/**
+ * The archived branch ranks ahead of every verdict-derived tone, including a
+ * stale green one. Pinned CLI-side for the same reason as the test above: this
+ * is the fabricated-green defect class, and parity alone cannot see it.
+ */
+test("archived source: a stale green verdict never renders as healthy", () => {
+  const row = projectSourceRow(
+    summary({
+      last_successful_run: { status: "succeeded" },
+      rendered_verdict: {
+        annotations: [],
+        forward_statement: "Collection is complete.",
+        pill: { label: "Healthy", tone: "green" },
+      },
+      source_visibility: "archived",
+      status: "paused",
+    })
+  );
+
+  assert.equal(row.status.kind, "archived");
+  assert.equal(row.status.label, "Archived · not collecting");
+  assert.equal(row.fusedLine, "Archived · not collecting");
 });

@@ -165,6 +165,8 @@ async function fetchAllSummaries(
 function renderRow(row: SourceRow, withStreams: boolean): string {
   const lines: string[] = [];
   lines.push(`${row.status.dot} ${row.displayName}  [${row.status.label}]`);
+  // The same fused line the `/sources` card shows, from the same producer.
+  lines.push(`    ${row.fusedLine}`);
   const identity = [row.connectorId, row.connectionId].filter(Boolean).join("  ");
   if (identity) {
     lines.push(`    ${identity}`);
@@ -240,16 +242,12 @@ if (flags.json === true || flags.json === "true") {
   process.stdout.write(`${JSON.stringify({ as_url: asUrl, sources: rows }, null, 2)}\n`);
 } else {
   process.stdout.write(`sources @ ${asUrl}  (${rows.length} visible)\n`);
-  // This model re-derives the row verdict rather than calling the one the
-  // console calls (`apps/console/.../lib/source-actionability.ts`), so the two
-  // can disagree — proven: six `setup_failed` Venmo connections print
-  // "Revoked" here and "Setup never completed" on the page.
-  //
-  // Consuming the console's module directly breaks the zero-connector-knowledge
-  // boundary, so the fix is to extract the derivation into a package both
-  // surfaces import; that is backlogged. Until it ships, an instrument that
-  // cannot guarantee parity has to say so rather than let a reader assume it.
-  process.stdout.write("derivation may diverge from the console; the page is authoritative\n\n");
+  // The row verdict and the fused line come from `@pdpp/display`'s
+  // `projectSourceVerdict` — the same function the console `/sources` page
+  // calls. The standing "derivation may diverge" caveat was retired with the
+  // extraction that made it untrue; `sources-report-fleet-parity.test.ts`
+  // holds both surfaces to identical output across the fleet.
+  process.stdout.write("\n");
   for (const row of rows) {
     process.stdout.write(`${renderRow(row, streamsRequested)}\n\n`);
   }

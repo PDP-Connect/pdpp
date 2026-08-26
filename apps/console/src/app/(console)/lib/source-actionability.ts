@@ -1,9 +1,27 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * The source status derivation itself lives in `@pdpp/display` so this page and
+ * the `sources-report` CLI read one producer rather than two hand-synced
+ * copies. See `packages/display/src/source/source-status.ts` for why: the CLI's
+ * partial copy never learned the `setup_failed` branch and printed "Revoked"
+ * where this page printed "Setup never completed".
+ *
+ * This module keeps what is genuinely console-only: work grouping, CTA copy,
+ * and route ids.
+ */
+import type { FusedSourceStatus, SourceStatusFlag } from "@pdpp/display";
+import {
+  isArchivedSource,
+  isPausedSource,
+  isRevokedSource,
+  isSetupFailedSource,
+  isSetupInProgressSource,
+  projectSourceVerdict,
+  TERMINAL_SETUP_DISPOSITION_COPY,
+} from "@pdpp/display";
 import { deriveFailureSummary, type FailureSummary } from "./connection-evidence.ts";
-import { isActiveConnectorRunSummaryStatus } from "./connector-run-summary-status.ts";
-import { type FusedSourceStatus, fuseSourceStatus } from "./fused-source-status.ts";
 import type { FormattedNextAction } from "./next-action.ts";
 import type {
   RefActionRemediation,
@@ -12,31 +30,24 @@ import type {
   RefRequiredAction,
   RefSourceWorkGroup,
   RefTerminalSetupDisposition,
-  RefVerdictTone,
 } from "./ref-client.ts";
 
+export type {
+  FusedSourceStatus,
+  SourceStatusFlag,
+  SourceStatusKind,
+  SourceStatusTone,
+  TerminalSetupDispositionCopy,
+} from "@pdpp/display";
+// biome-ignore lint/performance/noBarrelFile: these are the extracted derivation's console-facing names; re-exporting keeps existing call sites pointed at one producer.
+export {
+  deriveRenderedSourceStatus,
+  deriveSourceVerdictStatus,
+  fuseSourceStatus,
+  TERMINAL_SETUP_DISPOSITION_COPY,
+} from "@pdpp/display";
+
 export type SourceWorkGroupId = "needsOwner" | "notMeasured" | "review" | "systemIssue" | "unavailable" | "working";
-
-export type SourceStatusKind =
-  | "archived"
-  | "blocked"
-  | "degraded"
-  | "healthy"
-  | "paused"
-  | "pending"
-  | "revoked"
-  | "setup_failed"
-  | "unknown";
-
-export type SourceStatusTone = "destructive" | "muted" | "success" | "warning";
-
-export interface SourceStatusFlag {
-  dot: string;
-  freshnessNote: string | null;
-  kind: SourceStatusKind;
-  label: string;
-  tone: SourceStatusTone;
-}
 
 export interface SourcePrimaryVerdictAction {
   audience: RefRequiredAction["audience"];
@@ -141,31 +152,6 @@ export const SOURCE_WORK_GROUP_COPY: Record<SourceWorkGroupId, { label: string; 
   },
 };
 
-export interface TerminalSetupDispositionCopy {
-  actionLabel: string;
-  statusLabel: string;
-  what: string;
-}
-
-/** Shared owner copy for the server-owned terminal setup dispositions. */
-export const TERMINAL_SETUP_DISPOSITION_COPY: Record<RefTerminalSetupDisposition, TerminalSetupDispositionCopy> = {
-  unverified_missing_counts: {
-    actionLabel: "Review setup",
-    statusLabel: "needs review",
-    what: "The first sync completed without durable count evidence. Review the connection before retrying.",
-  },
-  unverified_zero: {
-    actionLabel: "Retry first sync",
-    statusLabel: "needs review",
-    what: "The first sync returned zero records without proving the account was empty. Review the connection and retry.",
-  },
-  verified_empty: {
-    actionLabel: "Review empty result",
-    statusLabel: "verified empty",
-    what: "The first sync verified that this source has no records. Review the setup result before trying again.",
-  },
-};
-
 /** The one owner-facing meaning of the headline "needs you" attention number. */
 export interface SourceAttentionHeadline {
   /** Count of sources genuinely blocked on the owner's action (the needs-you group). */
@@ -210,13 +196,6 @@ const SERVER_GROUP_STATUS_LABEL: Readonly<Record<Exclude<RefSourceWorkGroup, "no
   working: "is working",
 };
 
-const VERDICT_TONE_STATUS: Record<RefVerdictTone, Pick<SourceStatusFlag, "dot" | "kind" | "tone">> = {
-  amber: { dot: "◐", kind: "degraded", tone: "warning" },
-  green: { dot: "●", kind: "healthy", tone: "success" },
-  grey: { dot: "○", kind: "unknown", tone: "muted" },
-  red: { dot: "⊘", kind: "blocked", tone: "destructive" },
-};
-
 function readableConnectorId(connectorId: string): string {
   return connectorId.replace(UNDERSCORE_RE, " ").trim() || connectorId;
 }
@@ -233,40 +212,22 @@ function connectorLabel(connector: RefConnectorSummary): string {
   );
 }
 
+/**
+ * The lifecycle predicates below keep their console-facing `*Connector` names
+ * (dozens of call sites read them) but delegate to `@pdpp/display`, so the
+ * console and the `sources-report` CLI branch on the SAME definition of
+ * revoked/paused/draft/archived/setup-failed.
+ */
 export function isRevokedConnector(connector: RefConnectorSummary): boolean {
-  return connector.status === "revoked" || Boolean(connector.revoked_at);
+  return isRevokedSource(connector);
 }
 
-/**
- * A `paused` connection: collection is stopped, but nothing was given up —
- * records, grants, schedule, and the stored credential all survive, and the
- * owner can resume from the same detail page they paused on. Like
- * {@link isRevokedConnector} this is a LIFECYCLE check independent of the
- * verdict, because `rendered_verdict` carries no lifecycle concept: a paused
- * row's health/coverage evidence describes the collection that stopped, and
- * rendering that as the source's status would tell the owner about a state
- * the connection is no longer in.
- *
- * Deliberately does NOT treat a revoked row as paused — `isRevokedConnector`
- * is checked first everywhere the two meet, so the durable state always wins
- * over the reversible one.
- */
 export function isPausedConnector(connector: RefConnectorSummary): boolean {
-  return connector.status === "paused";
+  return isPausedSource(connector);
 }
 
-/**
- * A `draft` connection has completed neither its credential capture nor its
- * first ingest — `rendered_verdict`/`connection_health` carry no lifecycle
- * concept (they are built from health/coverage/schedule evidence that a
- * draft simply does not have yet), so this is a lifecycle check independent
- * of the verdict, exactly like {@link isRevokedConnector}. Prefers the
- * server-derived `owner_state.resolver` (the closed, exhaustively-tested
- * source of truth — `runtime/owner-state.ts`). A missing server state is not
- * reconstructed from the raw lifecycle field.
- */
 export function isSetupInProgressConnector(connector: RefConnectorSummary): boolean {
-  return connector.owner_state?.resolver === "setup_in_progress";
+  return isSetupInProgressSource(connector);
 }
 
 export function isOwnerSatisfiableAction(action: RefRequiredAction | null | undefined): action is RefRequiredAction {
@@ -301,123 +262,6 @@ export function hasPrimaryOwnerLocalDeviceRemediation(verdict: RefRenderedVerdic
 
 export function verdictRequiresOwnerNow(verdict: RefRenderedVerdict | null | undefined): boolean {
   return verdict?.channel === "attention" && primaryOwnerSatisfiableAction(verdict) !== null;
-}
-
-function freshnessNoteFromVerdict(verdict: RefRenderedVerdict): string | null {
-  return verdict.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? null;
-}
-
-/**
- * The status a verdict alone implies, ignoring lifecycle and activity.
- *
- * `deriveRenderedSourceStatus` returns early on `running` (and on
- * paused/revoked/pending) and throws the verdict away. That is right for the
- * single-slot dot, but it means an in-flight run hides a "Needs attention" or
- * "Blocked" verdict entirely. The fused status line needs the discarded
- * verdict back so activity can be shown ALONGSIDE the real state instead of
- * replacing it — see `fuseSourceStatus`.
- *
- * Returns null when there is no verdict to recover, in which case the caller
- * should keep whatever `deriveRenderedSourceStatus` decided.
- */
-export function deriveSourceVerdictStatus(verdict: RefRenderedVerdict | null | undefined): SourceStatusFlag | null {
-  if (!verdict) {
-    return null;
-  }
-  const status = VERDICT_TONE_STATUS[verdict.pill.tone];
-  // `label` is the BARE pill label here, unlike `deriveRenderedSourceStatus`,
-  // which concatenates the freshness note into it. The fused line renders
-  // freshness in its own slot, so pre-concatenating would print it twice.
-  return {
-    ...status,
-    freshnessNote: freshnessNoteFromVerdict(verdict),
-    label: verdict.pill.label,
-  };
-}
-
-function labelWithFreshness(base: string, note: string | null): string {
-  return note ? `${base} · ${note}` : base;
-}
-
-export function deriveRenderedSourceStatus(
-  verdict: RefRenderedVerdict | null | undefined,
-  revoked: boolean,
-  pending = false,
-  terminalSetupDisposition: RefTerminalSetupDisposition | null = null,
-  running = false,
-  paused = false,
-  archived = false,
-  setupFailed = false
-): SourceStatusFlag {
-  // Ranked FIRST, ahead of every verdict-derived tone. An archived source's
-  // last run may well have succeeded, so its stored verdict can still be
-  // green — rendering that would tell the owner a source that will never
-  // collect again is healthy, which is exactly the fabricated-green defect
-  // class. Archived is terminal and muted: the records are real, the
-  // collection is over, and no tone implies otherwise.
-  if (archived) {
-    return { dot: "⊘", freshnessNote: null, kind: "archived", label: "Archived · not collecting", tone: "muted" };
-  }
-  // Ranked alongside archived, ahead of plain `revoked`: a setup-failed
-  // source is a MORE SPECIFIC terminal state than "Revoked" — it says the
-  // connection never worked in the first place, not that a working one was
-  // taken away. Muted, never a warning/destructive tone: the owner already
-  // knows this attempt did not finish (server-side `archiveRenderedVerdict`
-  // built this label), so there is nothing new to flag as a problem here.
-  if (setupFailed) {
-    return { dot: "⊘", freshnessNote: null, kind: "setup_failed", label: "Setup never completed", tone: "muted" };
-  }
-  if (revoked) {
-    return { dot: "⊘", freshnessNote: null, kind: "revoked", label: "Revoked", tone: "muted" };
-  }
-  // Ranked directly after `revoked` and ahead of `running`/`pending`: a paused
-  // connection is not collecting, so a stale in-flight run flag or a verdict
-  // tone must never render it as "Syncing" or as a health colour. Muted (not
-  // a warning tone) because pause is a state the owner chose, not a problem
-  // to fix — the way back is an action, which the detail page offers.
-  if (paused) {
-    return { dot: "⏸", freshnessNote: null, kind: "paused", label: "Paused", tone: "muted" };
-  }
-  if (running) {
-    return { dot: "◌", freshnessNote: null, kind: "pending", label: "Syncing", tone: "muted" };
-  }
-  // NOTE: the `running` collapse above intentionally discards the verdict, so a
-  // caller that wants the fused status line must recover it via
-  // `deriveSourceVerdictStatus` and pass it to `fuseSourceStatus` as the
-  // fallback. See `fused-source-status.ts` for why activity must not overwrite
-  // a worse verdict.
-  if (terminalSetupDisposition) {
-    return {
-      dot: "◐",
-      freshnessNote: null,
-      kind: "degraded",
-      label: TERMINAL_SETUP_DISPOSITION_COPY[terminalSetupDisposition].statusLabel,
-      tone: "warning",
-    };
-  }
-  // Setup-in-progress overrides any verdict shape, same priority as revoked:
-  // a draft has no meaningful health/coverage evidence yet (see
-  // `isSetupInProgressConnector`), so its verdict tone (if any) must never be
-  // shown as the status.
-  if (pending) {
-    return { dot: "◌", freshnessNote: null, kind: "pending", label: "Setup in progress", tone: "muted" };
-  }
-  if (!verdict) {
-    return {
-      dot: "○",
-      freshnessNote: null,
-      kind: "unknown",
-      label: "Verdict unavailable",
-      tone: "muted",
-    };
-  }
-  const status = VERDICT_TONE_STATUS[verdict.pill.tone];
-  const freshnessNote = freshnessNoteFromVerdict(verdict);
-  return {
-    ...status,
-    freshnessNote,
-    label: labelWithFreshness(verdict.pill.label, freshnessNote),
-  };
 }
 
 /** The one owner-facing CTA label for a draft, not-yet-ingested connection. */
@@ -600,27 +444,17 @@ function itemFromConnector(
  * rather than dropping them, but the no-work rule is unchanged and applies
  * to every owner-facing work surface (`/syncs`, the dashboard "Needs you"
  * section) that reads `sourceWorkFromConnectors`.
- */
-export function isArchivedSource(connector: RefConnectorSummary): boolean {
-  return connector.source_visibility === "archived" || connector.source_visibility === "hidden_from_sources";
-}
-
-/**
- * A SETUP-FAILED source: a revoked retired-setup-shell binding
- * (`browser_enrollment_shell`/etc.) that never had a successful run.
- * Server-derived in `deriveSourceVisibility` (`ref-control.ts`) as
- * `source_visibility: "setup_failed"`.
  *
- * Holds zero records by construction — no run against this shell ever
- * emitted any. Distinct from {@link isArchivedSource}: an archived source
- * once collected and is now terminal; a setup-failed source never collected
- * at all. It must never generate owner-facing work on `/syncs`/the
- * dashboard for the same reason an archived source does not — there is no
- * live connection behind it, only spent setup mechanics.
+ * A SETUP-FAILED source is the sibling case: a revoked retired-setup-shell
+ * binding that never had a successful run. It holds zero records by
+ * construction and must never generate owner-facing work either — an archived
+ * source once collected and is now terminal; a setup-failed source never
+ * collected at all.
+ *
+ * Both predicates are `@pdpp/display`'s, re-exported here so the console and
+ * the `sources-report` CLI classify these rows identically.
  */
-export function isSetupFailedSource(connector: RefConnectorSummary): boolean {
-  return connector.source_visibility === "setup_failed";
-}
+export { isArchivedSource, isSetupFailedSource } from "@pdpp/display";
 
 /** The one owner-facing CTA label for resuming a paused connection. */
 export const RESUME_PAUSED_CTA_LABEL = "Resume";
@@ -701,13 +535,12 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
 export function projectSourceActionability(connector: RefConnectorSummary): SourceActionabilityProjection {
   const routeId = connectionRouteId(connector);
   const label = connectorLabel(connector);
-  const revoked = isRevokedConnector(connector);
-  const archived = isArchivedSource(connector);
-  const setupFailed = isSetupFailedSource(connector);
-  const paused = !revoked && isPausedConnector(connector);
-  const terminalSetupDisposition = connector.terminal_setup_disposition ?? null;
-  const pending = !revoked && isSetupInProgressConnector(connector) && terminalSetupDisposition === null;
-  const running = connector.last_run !== null && isActiveConnectorRunSummaryStatus(connector.last_run.status);
+  // ONE producer for the status the owner reads. `projectSourceVerdict`
+  // (@pdpp/display) derives the lifecycle facts, the single-slot
+  // `renderedStatus`, and the fused line together, so this page and the
+  // `sources-report` CLI cannot rank the same connection differently.
+  const verdict = projectSourceVerdict(connector);
+  const { archived, paused, pending, revoked, setupFailed, terminalSetupDisposition } = verdict.facts;
   // An archived or setup-failed source offers NO action ON THIS ROW. An
   // archived source's stored verdict still carries the required actions from
   // when it was live — typically "Reconnect this account and collection
@@ -741,57 +574,8 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
     paused,
     primaryAction,
     primaryVerdictAction,
-    // Every lifecycle fact `renderedStatus` gets, the fused line gets too.
-    // Omitting `archived`/`setupFailed` here (and passing them below) let the
-    // two projections disagree: the lifecycle override in
-    // `deriveRenderedSourceStatus` ranks archived FIRST, but it cannot fire on
-    // arguments it was never given, so an archived source with a green stored
-    // verdict fused to a green "Healthy" line. The list row renders THIS line
-    // (`sources-view.tsx`); `renderedStatus` reaches only the decorative dot,
-    // so the fabricated-green tone was the one the owner actually read.
-    fusedStatus: fuseSourceStatus(
-      deriveRenderedSourceStatus(
-        connector.rendered_verdict,
-        revoked,
-        pending,
-        terminalSetupDisposition,
-        running,
-        paused,
-        archived,
-        setupFailed
-      ),
-      {
-        hasEverSucceeded: connector.last_successful_run !== null,
-        syncing: running,
-        // Hand back the verdict the `running` collapse discards, so a source
-        // that is syncing AND failing still says it is failing.
-        //
-        // Only for the `running` collapse. `archived`/`setupFailed`/`revoked`/
-        // `paused`/`pending` are LIFECYCLE facts that outrank any verdict — a
-        // revoked source is revoked no matter how its last verdict read — and
-        // `deriveRenderedSourceStatus` already ranks them ahead of `running`
-        // for exactly that reason. Passing the verdict for those states would
-        // let a stale "Blocked" overwrite "Revoked". `archived`/`setupFailed`
-        // matter most here: they sit at severity 0 in `SEVERITY_BY_KIND`
-        // alongside `blocked`, and `stateSlot` prefers the fallback on a TIE,
-        // so a stale red verdict would displace the terminal lifecycle label
-        // even though the lifecycle override had correctly produced it.
-        verdictFallback:
-          running && !archived && !setupFailed && !revoked && !paused && !pending
-            ? deriveSourceVerdictStatus(connector.rendered_verdict)
-            : null,
-      }
-    ),
-    renderedStatus: deriveRenderedSourceStatus(
-      connector.rendered_verdict,
-      revoked,
-      pending,
-      terminalSetupDisposition,
-      running,
-      paused,
-      archived,
-      setupFailed
-    ),
+    fusedStatus: verdict.fusedStatus,
+    renderedStatus: verdict.renderedStatus,
     revoked,
     routeId,
     work: sourceWorkItemFromConnector(connector),
