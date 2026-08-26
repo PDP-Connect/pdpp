@@ -28,8 +28,8 @@ import {
   type StreamHealthAuthorityResult,
 } from "../../scripts/stream-health-audit/authority.ts";
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../lib/controller-boot.ts";
-import { checkOrphanedRecordsAtBoot } from "../lib/orphaned-record-check.ts";
 import { exec, getOne, referenceQueries, transaction } from "../lib/db.ts";
+import { checkOrphanedRecordsAtBoot } from "../lib/orphaned-record-check.ts";
 import {
   createTraceContext,
   emitSpineEvent,
@@ -4880,8 +4880,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
         typeof mountAsAuthorize
       >[1]["issueOAuthAuthorizationCodeForPackageDeviceCode"],
     nativeManifest: resolveNativeManifest(opts),
-    oauthError: (res, status, code, message, extras) =>
-      oauthError(res as ResLike, status, code, message, null, extras),
+    oauthError: (res, status, code, message, extras) => oauthError(res as ResLike, status, code, message, null, extras),
     providerName,
     requireCsrf: ownerAuth.requireCsrf as unknown as Parameters<typeof mountAsAuthorize>[1]["requireCsrf"],
     requireOwnerSession: ownerAuth.requireOwnerSession as unknown as Parameters<
@@ -7205,15 +7204,18 @@ function buildRsApp(opts: ServerOpts = {}) {
   // owner subject would make owner confirmation forgeable by any agent
   // holding the token. The runtime reads the confirmed result at run start
   // via `server/connector-run-config.ts`.
-  mountOwnerConnectionConfig(app as unknown as Parameters<typeof mountOwnerConnectionConfig>[0], {
-    getOwnerTokenSubjectId,
-    handleError,
-    pdppError,
-    requireOwner,
-    requireToken,
-    resolveOwnerConnectorNamespace,
-    store: getDefaultConnectorInstanceConfigStore(),
-  } as unknown as Parameters<typeof mountOwnerConnectionConfig>[1]);
+  mountOwnerConnectionConfig(
+    app as unknown as Parameters<typeof mountOwnerConnectionConfig>[0],
+    {
+      getOwnerTokenSubjectId,
+      handleError,
+      pdppError,
+      requireOwner,
+      requireToken,
+      resolveOwnerConnectorNamespace,
+      store: getDefaultConnectorInstanceConfigStore(),
+    } as unknown as Parameters<typeof mountOwnerConnectionConfig>[1]
+  );
 
   // POST /v1/owner/connections/:connectionId/run and
   // POST /v1/owner/connectors/:connectorId/run are the bearer-authed owner-agent
@@ -8421,12 +8423,14 @@ export async function startServer(opts: ServerOpts = {}) {
         // The reason is merged atomically with the existing source binding,
         // following the same write-time evidence pattern as revocation_reason.
         // It is deliberately non-secret and connector-neutral.
-        await Promise.resolve(instanceStore.updateStatus(instance.connectorInstanceId, {
-          revokedAt: instance.revokedAt ?? null,
-          sourceBindingPatch: { auto_enroll_skip_reason: reason },
-          status: instance.status,
-          updatedAt: new Date().toISOString(),
-        }));
+        await Promise.resolve(
+          instanceStore.updateStatus(instance.connectorInstanceId, {
+            revokedAt: instance.revokedAt ?? null,
+            sourceBindingPatch: { auto_enroll_skip_reason: reason },
+            status: instance.status,
+            updatedAt: new Date().toISOString(),
+          })
+        );
       }
     };
     const enrollmentSummary = await autoEnrollEligibleSchedules({
@@ -8456,6 +8460,19 @@ export async function startServer(opts: ServerOpts = {}) {
           }
         }
         return false;
+      },
+      // Key each schedule row to the connection it refreshes. Without this the
+      // controller falls back to the bare connector id, producing a row that
+      // matches no `connector_instances` row: the scheduler dispatches it,
+      // admission raises `connector_instance_not_found`, and the connection
+      // never refreshes while later boots count the orphan `skipped_existing`.
+      listActiveConnectorInstanceIds: async (connectorId: string) => {
+        const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+        const instances = await createRequestConnectorInstanceStore().listActiveByConnector(
+          ownerAuthSubjectId,
+          canonicalId
+        );
+        return instances.map((instance) => instance.connectorInstanceId);
       },
       listConnectors: async () => {
         const manifests = await collectValidRegisteredConnectorManifests({ logger });
@@ -8942,7 +8959,10 @@ function logScheduleRefreshSkip(
     );
     return;
   }
-  logger?.warn?.({ connector_id: schedule?.connector_id, err }, "skipping scheduled connector during scheduler refresh");
+  logger?.warn?.(
+    { connector_id: schedule?.connector_id, err },
+    "skipping scheduled connector during scheduler refresh"
+  );
 }
 
 function createReferenceSchedulerManager({
