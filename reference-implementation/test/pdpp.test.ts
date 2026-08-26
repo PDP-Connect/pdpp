@@ -1012,6 +1012,20 @@ function requireAt<T>(values: readonly T[], index: number, description: string):
 }
 
 async function closeServer(server: Awaited<ReturnType<typeof startServer>>): Promise<void> {
+  // Stop the background workers too, not just the HTTP listeners. The real
+  // shutdown path (`server/index.ts`) stops the scheduler manager and the
+  // sweeps; closing only the sockets leaves their interval timers holding the
+  // event loop open, so the file finishes every assertion and never exits.
+  // That stayed invisible only while no schedule row existed to start the
+  // scheduler's timer in the first place.
+  try {
+    server.schedulerManager?.stop?.();
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: Best-effort teardown; a stop failure must not mask the test result.
+  } catch {}
+  server.stopBrowserSurfaceLeaseSweep?.();
+  server.stopConnectorMaintenanceSweep?.();
+  await server.stopClientEventDeliveryWorker?.();
+
   // Force-close keep-alive connections to prevent hanging.
   // Clear fallback timers when close callbacks win so the harness does not
   // retain stray timer handles after an otherwise clean shutdown.
