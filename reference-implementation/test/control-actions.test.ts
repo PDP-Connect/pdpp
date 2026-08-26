@@ -1101,6 +1101,12 @@ test("controller startup reconciles abandoned controller-managed runs after rest
 
     server = (await startServer({
       asPort: 0,
+      // This fixture observes how the boot reconciler adjudicates ONE
+      // abandoned run. Auto-enrollment would attach a live schedule to the
+      // seeded Spotify connection, the scheduler would start a fresh run, and
+      // that run — not the orphan — would become `last_run`. Opting out keeps
+      // the assertions about the orphan, not about scheduling.
+      autoEnrollEligibleSchedules: false,
       connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
       dbPath,
       quiet: true,

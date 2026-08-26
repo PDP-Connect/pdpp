@@ -87,6 +87,19 @@ type TestServer = Awaited<ReturnType<typeof startServer>> & {
 };
 
 async function closeServer(server: TestServer): Promise<void> {
+  // Stop the background workers too, not just the HTTP listeners. The real
+  // shutdown path (`server/index.ts`) stops the scheduler manager and the
+  // sweeps; a teardown that closes only the sockets leaves their interval
+  // timers holding the event loop open, so the test process finishes every
+  // assertion and then never exits. That stayed invisible only while no
+  // schedule row existed to start the scheduler's timer in the first place.
+  try {
+    server.schedulerManager?.stop?.();
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: Best-effort teardown; a stop failure must not mask the test result.
+  } catch {}
+  server.stopBrowserSurfaceLeaseSweep?.();
+  server.stopConnectorMaintenanceSweep?.();
+  await server.stopClientEventDeliveryWorker?.();
   server.asServer.closeAllConnections();
   server.rsServer.closeAllConnections();
   const closeOne = (srv: TestServer["asServer"] | TestServer["rsServer"]) =>
