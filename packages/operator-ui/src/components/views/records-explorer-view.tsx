@@ -198,7 +198,12 @@ function buildExplorerFilterItems({
         ? formatConnectorKeyForDisplay(conn?.connectorId ?? id)
         : formatConnectorNameForDisplay({
             connectorId: conn?.connectorId ?? id,
-            displayName: conn?.displayName,
+            // ConnectorDisplayInput.displayName is `string | null` (no
+            // `undefined`) by that package's own deliberate contract; `conn`
+            // itself (not displayName) is what's actually optional here (a
+            // connection id with no matching facet), so normalize to `null`
+            // rather than widen a sibling package's public type.
+            displayName: conn?.displayName ?? null,
           }),
     });
   }

@@ -29,7 +29,11 @@ export function PageHeader({
 }: {
   title: ReactNode;
   description?: ReactNode;
-  breadcrumbs?: Breadcrumb[];
+  // Read only via `breadcrumbs?.length ? ... : null` below; callers (e.g.
+  // DeploymentDiagnosticsView) forward their own same-shaped optional prop
+  // verbatim, so "absent" and "present but undefined" are already the same
+  // "no breadcrumbs" one level up.
+  breadcrumbs?: Breadcrumb[] | undefined;
   actions?: ReactNode;
   meta?: ReactNode;
   count?: ReactNode;
@@ -373,7 +377,11 @@ export function FilterSummary({
    * which keeps every existing caller backward compatible.
    */
   items: Array<{ label: string; value: string; removeHref?: string }>;
-  resetHref?: string;
+  // Read only via `resetHref ? <Link .../> : null` below; callers (e.g.
+  // records-explorer-view.tsx) build this from a ternary that ends in an
+  // explicit `: undefined`, so "absent" and "present but undefined" are
+  // already the same "no reset link" one level up.
+  resetHref?: string | undefined;
 }) {
   if (items.length === 0) {
     return null;

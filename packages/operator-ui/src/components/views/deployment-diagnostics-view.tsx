@@ -518,11 +518,21 @@ function DatabaseSection({
 }: {
   database: DeploymentDiagnostics["database"];
   indexKind: DeploymentDiagnostics["semantic"]["index"]["kind"];
-  projection?: DatasetSummaryProjectionMetadata | null;
-  projectionActionError?: string | null;
-  projectionActionNotice?: string | null;
-  rebuildDatasetSummaryAction?: () => Promise<void>;
-  retainedBytes?: number | null;
+  // Forwarded verbatim into buildDatasetSummaryProjectionStatusModel, whose
+  // own parameter is already declared `| undefined`.
+  projection?: DatasetSummaryProjectionMetadata | null | undefined;
+  // Forwarded verbatim from the view's own same-shaped optional prop and
+  // read only via truthiness below (`projectionActionError ? ... : null`).
+  projectionActionError?: string | null | undefined;
+  // Forwarded verbatim into DatasetSummaryProjectionStatus's `notice`, which
+  // is already declared `| undefined`.
+  projectionActionNotice?: string | null | undefined;
+  // Forwarded verbatim into DatasetSummaryProjectionStatus's `rebuildAction`,
+  // which is already declared `| undefined`.
+  rebuildDatasetSummaryAction?: (() => Promise<void>) | undefined;
+  // Forwarded verbatim into buildStorageFootprintModel, whose own parameter
+  // is already declared `| undefined`.
+  retainedBytes?: number | null | undefined;
 }) {
   const footprint = buildStorageFootprintModel(database, retainedBytes);
   const projectionStatus = buildDatasetSummaryProjectionStatusModel(projection);
@@ -573,8 +583,13 @@ function DatasetSummaryProjectionStatus({
   rebuildAction,
   status,
 }: {
-  notice?: string | null;
-  rebuildAction?: () => Promise<void>;
+  // Forwarded verbatim from the view's own projectionActionNotice /
+  // rebuildDatasetSummaryAction props (also plain optionals, no
+  // re-defaulting) and read only via truthiness below (`notice ? ... :
+  // null`, `rebuildAction ? ... : undefined`), so "absent" and "present but
+  // undefined" are already the same one level up.
+  notice?: string | null | undefined;
+  rebuildAction?: (() => Promise<void>) | undefined;
   status: ReturnType<typeof buildDatasetSummaryProjectionStatusModel>;
 }) {
   if (!status.needsAttention) {
@@ -637,8 +652,12 @@ function SourceStorageSection({
   sources,
   truncated,
 }: {
-  sources?: readonly SourceStorageInput[];
-  truncated?: boolean;
+  // Forwarded verbatim from the view's own `sources`/`sourcesTruncated`
+  // props (also plain optionals) and read only via `!sources ||
+  // sources.length === 0` / truthiness below, so "absent" and "present but
+  // undefined" are already the same one level up.
+  sources?: readonly SourceStorageInput[] | undefined;
+  truncated?: boolean | undefined;
 }) {
   if (!sources || sources.length === 0) {
     return null;
@@ -707,8 +726,12 @@ function StreamSizeSection({
   connections,
   rows,
 }: {
-  connections?: readonly SourceStorageInput[];
-  rows?: readonly DatasetStreamSizeInput[];
+  // Forwarded verbatim from the view's own `sources`/`streamSizes` props
+  // (also plain optionals) and read only via `connections ?? []` / `!rows ||
+  // rows.length === 0` below, so "absent" and "present but undefined" are
+  // already the same one level up.
+  connections?: readonly SourceStorageInput[] | undefined;
+  rows?: readonly DatasetStreamSizeInput[] | undefined;
 }) {
   if (!rows || rows.length === 0) {
     return null;
@@ -759,8 +782,12 @@ function TopRecordsAndBlobsSection({
   topRecords,
   topBlobs,
 }: {
-  topRecords?: readonly DatasetTopRowInput[];
-  topBlobs?: readonly DatasetTopRowInput[];
+  // Forwarded verbatim from the view's own `topRecords`/`topBlobs` props
+  // (also plain optionals) and read only via truthiness below
+  // (`topRecords ? ... : null`), so "absent" and "present but undefined" are
+  // already the same one level up.
+  topRecords?: readonly DatasetTopRowInput[] | undefined;
+  topBlobs?: readonly DatasetTopRowInput[] | undefined;
 }) {
   const recordsModel = topRecords ? buildDatasetTopModel(topRecords, "record", "total_retained_bytes") : null;
   const blobsModel = topBlobs ? buildDatasetTopModel(topBlobs, "blob", "blob_bytes") : null;
