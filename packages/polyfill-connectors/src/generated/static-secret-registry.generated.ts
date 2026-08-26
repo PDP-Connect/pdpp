@@ -142,7 +142,6 @@ export const GENERATED_STATIC_SECRET_REGISTRY: Readonly<Record<string, Generated
     },
     "venmo": {
       credentialKind: "username_password",
-      captureRequired: false,
       secretFieldEnvVars: {
         "password": ["VENMO_PASSWORD"],
         "username": ["VENMO_USERNAME"],

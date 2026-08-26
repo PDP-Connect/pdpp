@@ -47,8 +47,20 @@ test("static-secret registry knows static-secret connectors and rejects non-stat
 // a missing credential here mean the owner chose manual sign-in" — see its
 // doc for why this exists instead of threading the manifest itself through
 // that seam.
-test("isStaticSecretCaptureOptional reads captureRequired: false for venmo only, true/absent for every other connector", () => {
-  assert.equal(isStaticSecretCaptureOptional("venmo"), true);
+test("isStaticSecretCaptureOptional is false for EVERY connector — no connector is left in an unattended-incapable mode", () => {
+  // venmo was the only `captureRequired: false` connector until 2026-08-26.
+  // That flag meant "an empty bundle is the owner's valid sign-in-by-hand
+  // choice", so the run-env resolver returned `null` and the child process got
+  // no VENMO_* env at all. On a SERVER-SIDE browser there is no hand to sign in
+  // with: seven setup attempts parked at an empty login form, ~30 min each,
+  // while a valid saved credential sat one field away. The browser-session
+  // mechanism (Venmo rejects synthetic client credentials) is unchanged — only
+  // who types into it. See manifests/venmo.json's description.
+  assert.equal(
+    isStaticSecretCaptureOptional("venmo"),
+    false,
+    "venmo now injects its stored credential like every other connector"
+  );
   assert.equal(isStaticSecretCaptureOptional("jellyfin"), false, "jellyfin has no block-level required:false fact");
   assert.equal(isStaticSecretCaptureOptional("usaa"), false);
   assert.equal(isStaticSecretCaptureOptional("gmail"), false);
@@ -426,15 +438,25 @@ test("venmo injection throws on a partial username/password bundle — BOTH-OR-N
   );
 });
 
-test("venmo injection sets nothing for a fully empty bundle, never throwing (browser sign-in is always valid)", () => {
-  const env = buildConnectionScopedSecretEnv("venmo", {
-    credentialKind: "username_password",
-    secret: "{}",
-  });
-  assert.deepEqual(env, {});
+test("venmo injection FAILS CLOSED on an empty bundle — silently injecting nothing is what stranded the owner", () => {
+  // Before 2026-08-26 this returned `{}` and the run proceeded with no
+  // credentials, because an empty bundle was treated as "the owner chose to
+  // sign in by hand". On a server-side browser nobody ever signs in by hand,
+  // so that silent success became a 30-minute park at an empty login form and
+  // a "Setup never completed" card. venmo is now a required capture, so an
+  // empty bundle is a genuinely broken row and says so, using the SAME typed
+  // error a partial bundle already used.
+  assert.throws(
+    () =>
+      buildConnectionScopedSecretEnv("venmo", {
+        credentialKind: "username_password",
+        secret: "{}",
+      }),
+    (err: unknown) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_field_missing"
+  );
 });
 
-test("venmo registry secret-bundle env vars match its connector manifest — fields stay required, only the block-level capture is optional", () => {
+test("venmo registry secret-bundle env vars match its connector manifest — capture is REQUIRED and both fields stay required", () => {
   const manifest = JSON.parse(readFileSync(new URL("../manifests/venmo.json", import.meta.url), "utf8"));
   const fields = manifest.setup.credential_capture.fields as Array<{
     name: string;
@@ -443,12 +465,20 @@ test("venmo registry secret-bundle env vars match its connector manifest — fie
   }>;
   const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY.venmo;
   assert.ok(descriptor, "registry must include venmo");
+  // Flipped 2026-08-26: the optional capture let the resolver return `null`,
+  // so the connector got no env and parked on a login page no human could
+  // reach. The manifest is the source of truth; the registry is generated from
+  // it, so this asserts BOTH ends of that derivation.
   assert.equal(
     manifest.setup.credential_capture.required,
-    false,
-    "venmo's BLOCK-level credential_capture.required must be false"
+    true,
+    "venmo's BLOCK-level credential_capture.required must be true"
   );
-  assert.equal(descriptor.captureRequired, false, "the registry must carry the block-level fact through");
+  assert.notEqual(
+    descriptor.captureRequired,
+    false,
+    "the registry must NOT carry an optional-capture fact for venmo any more"
+  );
   for (const bundleField of ["username", "password"]) {
     const manifestField = fields.find((field) => field.name === bundleField);
     assert.equal(
@@ -749,4 +779,35 @@ test("two gmail connections run with distinct injected secrets, scoped per run, 
     }
     await harness.close();
   }
+});
+
+/**
+ * (b) of the 2026-08-26 owner ruling: "any connector in a mode that cannot
+ * complete unattended must say 'needs you to sign in' with a reachable
+ * handoff, never 'Setup never completed'."
+ *
+ * The strongest available form of that guarantee today is to keep the mode
+ * from existing at all. `captureRequired: false` means the run-env resolver
+ * returns `null`, the child gets no credential env, and the connector falls
+ * back to a hand-sign-in path — which is unreachable on the server-side
+ * browser that actually runs collection. The owner then sees "Setup never
+ * completed" with no action he can take, which is what happened to venmo
+ * seven times.
+ *
+ * There is deliberately NO owner-facing "needs you to sign in" state added
+ * here: with venmo flipped, no connector can reach that condition, and adding
+ * a state no producer can emit would be dead copy pretending to be a fix. If
+ * this guard ever fails, the honest-state work becomes real and must ship
+ * WITH the connector that reintroduced the mode — a `required: false` capture
+ * is only safe on a deployment where a human can actually reach the browser.
+ */
+test("(b) no connector may sit in an unattended-incapable capture mode", () => {
+  const optional = Object.keys(STATIC_SECRET_CONNECTOR_REGISTRY).filter((connectorId) =>
+    isStaticSecretCaptureOptional(connectorId)
+  );
+  assert.deepEqual(
+    optional,
+    [],
+    `these connectors declare credential_capture.required:false, so their runs get NO credential env and park on a login page nobody can reach: ${optional.join(", ")}. Either give the connector a required capture, or ship the owner-facing "needs you to sign in" state with a reachable handoff before landing it.`
+  );
 });
