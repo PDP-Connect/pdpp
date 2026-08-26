@@ -277,7 +277,11 @@ export function listDashboardCommands({
 }: {
   basePath?: string;
   mode?: DashboardMode;
-  segments?: DashboardSegments;
+  // The destructuring default above already treats "key absent" and "key
+  // present holding undefined" as the same "use CONSOLE_SEGMENTS" -- see
+  // matchDashboardCommands's forwarding comment for why callers can pass
+  // undefined explicitly.
+  segments?: DashboardSegments | undefined;
 } = {}): DashboardCommand[] {
   const nav = buildNavigationCommands(basePath, segments);
   if (mode === "live") {
@@ -288,7 +292,11 @@ export function listDashboardCommands({
 
 export function matchDashboardCommands(
   query: string,
-  options: { basePath?: string; mode?: DashboardMode; segments?: DashboardSegments } = {}
+  // segments is `| undefined` because callers (CommandPalette) destructure their
+  // own optional prop straight through without re-defaulting it; this function's
+  // sole consumer, listDashboardCommands, already treats "key absent" and "key
+  // present holding undefined" the same way via its own destructuring default.
+  options: { basePath?: string; mode?: DashboardMode; segments?: DashboardSegments | undefined } = {}
 ): DashboardCommand[] {
   const needle = query.trim().toLowerCase();
   if (!needle) {

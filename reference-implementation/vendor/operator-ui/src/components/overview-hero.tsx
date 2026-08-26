@@ -115,7 +115,7 @@ export function OverviewHero({
  * the numbers align. Elevation is the surface ladder — `bg-card`/tint fill + a
  * hairline border, radius-md, no drop shadow; spacing from the named 4px scale.
  */
-function MetricStrip({ summary, computedAt }: { summary: DatasetSummary; computedAt?: string | null }) {
+function MetricStrip({ summary, computedAt }: { summary: DatasetSummary; computedAt?: string | null | undefined }) {
   const bytes = splitBytes(summary.total_retained_bytes);
   return (
     <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.9fr)]">
@@ -150,7 +150,13 @@ function MetricStrip({ summary, computedAt }: { summary: DatasetSummary; compute
  * instant the status line already uses (reusing <Timestamp> so the "N ago" tick
  * stays consistent). Muted, single line, tabular-nums on the numbers.
  */
-function RecordsSummaryLine({ summary, computedAt }: { summary: DatasetSummary; computedAt?: string | null }) {
+function RecordsSummaryLine({
+  summary,
+  computedAt,
+}: {
+  summary: DatasetSummary;
+  computedAt?: string | null | undefined;
+}) {
   return (
     <span className="pdpp-caption text-muted-foreground">
       <span className="tabular-nums">{formatCompactInteger(summary.record_count)}</span> records across{" "}
@@ -303,7 +309,7 @@ export function OverviewHeroPlaceholder() {
   );
 }
 
-export function OverviewHeroError({ message }: { message?: string }) {
+export function OverviewHeroError({ message }: { message?: string | undefined }) {
   return (
     <section aria-label="Dataset overview" className="mb-8">
       <p className="pdpp-heading font-semibold text-foreground">
@@ -323,7 +329,11 @@ function EmptyHero({
 }: {
   projection: DatasetSummary["projection"];
   status: ProjectionStatus | null;
-  addSourceHref?: string;
+  // Read only via `addSourceHref ? <Link .../> : null` below; the caller
+  // (OverviewHero) forwards its own same-shaped optional prop verbatim, so
+  // "absent" and "present but undefined" are already the same "no href" one
+  // level up.
+  addSourceHref?: string | undefined;
 }) {
   return (
     <section aria-label="Dataset overview" className="mb-8">

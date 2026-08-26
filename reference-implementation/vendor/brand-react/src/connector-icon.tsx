@@ -29,8 +29,13 @@ export interface ConnectorIconLike {
 
 interface ConnectorIconProps {
   className?: string;
-  /** Manifest-declared icon, or undefined/null for the Monogram fallback. */
-  icon?: ConnectorIconLike | null;
+  /**
+   * Manifest-declared icon, or undefined/null for the Monogram fallback.
+   * Read only via the `icon && isRenderableInlineSvgIcon(icon)` truthiness
+   * check below — "key present holding undefined" and "key absent" are the
+   * same "no icon" to that check, so the type says so.
+   */
+  icon?: ConnectorIconLike | null | undefined;
   /** Owner-facing connector name — drives the Monogram fallback's initials and color. */
   name: string;
 }

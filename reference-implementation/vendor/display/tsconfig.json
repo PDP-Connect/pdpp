@@ -12,6 +12,7 @@
     "forceConsistentCasingInFileNames": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,
     "useUnknownInCatchVariables": true,

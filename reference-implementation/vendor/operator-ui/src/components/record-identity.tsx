@@ -93,8 +93,14 @@ export interface RecordIdentityView {
   kind: RecordKind;
   /** = rowPrimary(preview, recordKey) — declared title → honest generic field → neutral fallback. */
   primary: string;
-  /** = rowSecondary(preview) — the next distinct honest slot, or undefined. */
-  secondary?: string;
+  /**
+   * = rowSecondary(preview) — the next distinct honest slot, or undefined.
+   * rowSecondary's own return type is `string | undefined`; the field is read
+   * only via `Boolean(view.secondary)` and rendered directly in JSX (which
+   * treats `undefined` and "absent" identically), so the type matches its
+   * source.
+   */
+  secondary?: string | undefined;
 }
 
 /**

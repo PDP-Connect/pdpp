@@ -64,9 +64,13 @@ export function PdppLogo({
 // ─── The full split-P (plate I.1 / I.2) ───────────────────────────────────────
 
 interface MarkProps {
-  className?: string;
+  // Forwarded verbatim from PdppLogoProps (no default applied to either prop
+  // there) straight into the <svg>'s own className/style attributes -- React
+  // treats an `undefined` className/style identically to an absent one, so
+  // the type says so.
+  className?: string | undefined;
   size: number;
-  style?: CSSProperties;
+  style?: CSSProperties | undefined;
   surface: Surface;
   title: string;
 }

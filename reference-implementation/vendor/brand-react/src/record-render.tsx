@@ -39,8 +39,14 @@ import {
 // ─── RecordField — the dual-key row ───────────────────────────────
 
 interface RecordFieldProps {
-  /** The declared presentation type for this field (drives money formatting). */
-  declaredType?: string;
+  /**
+   * The declared presentation type for this field (drives money formatting).
+   * Passed straight through to `resolveFieldValue`, whose own parameter is
+   * `string | undefined` (a plain lookup result, e.g. `declaredTypes[k]`) —
+   * "absent" and "present but undefined" are the same "no declared type" all
+   * the way down, so the type says so here too.
+   */
+  declaredType?: string | undefined;
   /** The wire key — what a client literally receives. Mono voice. */
   fieldKey: string;
   /** The raw value from `data`. */

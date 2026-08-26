@@ -32,8 +32,14 @@ export interface ExplorerConnectionFacet {
 }
 
 export interface ExplorerFeedEntry {
-  /** Grant-aware blob link/unavailable marker, present only when declared by stream metadata. */
-  blobAffordance?: ExplorerBlobAffordance;
+  /**
+   * Grant-aware blob link/unavailable marker, present only when declared by
+   * stream metadata. Assemblers build this via an explicit
+   * `cond ? blob : undefined` ternary, and it is read only via
+   * `entry.blobAffordance ? ... : null` truthiness in records-explorer-view.tsx,
+   * so "absent" and "present but undefined" are already the same "no blob".
+   */
+  blobAffordance?: ExplorerBlobAffordance | undefined;
   connectionDisplayName: string | null;
   connectionId: string | null;
   connectorId: string;
@@ -60,9 +66,13 @@ export interface ExplorerFeedEntry {
    * Kind-specific structured preview pulled from the record body, present only
    * for lenses that hold the body (recency / time-range). Drives the type-aware
    * card layout; absent for search hits, which carry only the matched `snippet`.
-   * Presentation metadata only — see `record-preview.ts`.
+   * Presentation metadata only — see `record-preview.ts`. Assemblers build this
+   * via `buildRecordPreview(...) ?? undefined` (that function itself returns
+   * `RecordPreview | null`), and it is read only via `entry.preview?.` /
+   * truthiness in records-explorer-view.tsx, so "absent" and "present but
+   * undefined" are already the same "no preview".
    */
-  preview?: RecordPreview;
+  preview?: RecordPreview | undefined;
   recordId: string;
   /** Present when the entry came from a search hit, drives the badge. */
   retrievalMode?: "lexical" | "semantic" | "hybrid";
@@ -74,16 +84,22 @@ export interface ExplorerFeedEntry {
    * matched text. Timeline rows (which carry a body-backed `preview`) leave this
    * absent. This deliberately REPLACES the old `summary` field: the row content
    * for body rows comes from declared-role `preview` slots, never a field-name
-   * -guessing timeline summary.
+   * -guessing timeline summary. Assemblers build this via an explicit
+   * `cond ? text : undefined` ternary, and it is read only via
+   * `entry.snippet ?? entry.recordId` in records-explorer-view.tsx, so
+   * "absent" and "present but undefined" are already the same "no snippet".
    */
-  snippet?: string;
+  snippet?: string | undefined;
   /**
    * The matched snippet parsed into ordered segments, where `marked` runs are the
    * server's match-highlight terms — rendered BOLD as real React elements (never via
    * dangerouslySetInnerHTML). Present alongside `snippet` on retrieval rows; the row
    * renders these for the bold-match excerpt, falling back to plain `snippet` if absent.
    */
-  snippetSegments?: readonly { marked: boolean; text: string }[];
+  // Assemblers build this via an explicit `cond ? segments : undefined`
+  // ternary, matching `snippet`'s own construction, so "absent" and "present
+  // but undefined" carry the same "no highlighted segments" meaning.
+  snippetSegments?: readonly { marked: boolean; text: string }[] | undefined;
   stream: string;
 }
 
@@ -146,10 +162,18 @@ export interface ExplorerBlobAffordance {
 }
 
 export interface ExplorerPeekField {
-  blobAffordance?: ExplorerBlobAffordance;
+  /**
+   * Built via `blob?.fieldName === name ? blob : undefined` in
+   * buildPeekFields — an explicit ternary to `undefined`, not an omitted
+   * key. Read only via truthiness (`field.blobAffordance ? ... : null`) in
+   * records-explorer-view.tsx, so "absent" and "present but undefined" are
+   * already the same "no blob" to every consumer.
+   */
+  blobAffordance?: ExplorerBlobAffordance | undefined;
   name: string;
   state: "visible" | "withheld";
-  type?: string;
+  /** = capabilityByName(...).get(name)?.type — a plain optional-chain read. */
+  type?: string | undefined;
   valueJson: string | null;
 }
 
@@ -306,8 +330,13 @@ export interface RecordsExplorerData {
    * should render.
    */
   connectionsPageIsPaged: boolean;
-  /** Opaque continuation for the connector-summary facet page above; undefined when exhausted or on the last page. */
-  connectionsPageNextCursor?: string;
+  /**
+   * Opaque continuation for the connector-summary facet page above; undefined
+   * when exhausted or on the last page. assembleExplorerData assigns this
+   * from its own `string | undefined` local (already-optional facet-page
+   * result), so "absent" and "present but undefined" carry the same meaning.
+   */
+  connectionsPageNextCursor?: string | undefined;
   /**
    * The accumulating cursor TRAIL backing the recent merged-timeline lens
    * (`cursors=c1,c2,…` in the URL). Each element is a `next_cursor` already
@@ -724,7 +753,11 @@ export function buildExplorerHref(
   opts: {
     query?: string;
     connectionIds?: string[];
-    streams?: string[];
+    // Callers (e.g. exploreHrefFromEnvelope) build this from a
+    // `cond ? streams : undefined` ternary, and it is read only via
+    // `opts.streams ?? []` below, so "absent" and "present but undefined"
+    // are already the same "no streams" one level up.
+    streams?: string[] | undefined;
     peek?: string;
     since?: string;
     until?: string;

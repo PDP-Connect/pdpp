@@ -70,7 +70,11 @@ export function ScheduleReadRow({ summary }: { summary: RefConnectorSummary }) {
   const displayName = formatConnectorNameForDisplay({
     connectorId: connector_id,
     displayName: display_name,
-    name: connector_display_name,
+    // ConnectorDisplayInput.name is `string | null` (no `undefined`) by that
+    // package's own deliberate contract; connector_display_name is a
+    // genuinely optional wire field (RefConnectorSummary), so normalize to
+    // `null` rather than widen a sibling package's public type.
+    name: connector_display_name ?? null,
   });
   const connectorKey = formatConnectorKeyForDisplay(connector_id);
   return (

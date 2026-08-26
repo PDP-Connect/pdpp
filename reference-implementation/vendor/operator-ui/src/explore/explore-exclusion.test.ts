@@ -81,8 +81,11 @@ const ALL_UPCOMING = [
  * (i.e. exclusion is server-side, not a client post-filter).
  */
 function serverExcludingPage(opts?: {
-  excludeConnectionIds?: readonly string[];
-  excludeStreams?: readonly string[];
+  // Read only via `opts?.field ?? []` below, so "absent" and "present but
+  // undefined" (the caller forwards `o?.excludeConnectionIds` verbatim from
+  // another already-optional field) are already the same "no exclusions".
+  excludeConnectionIds?: readonly string[] | undefined;
+  excludeStreams?: readonly string[] | undefined;
 }): ExploreTimelinePage {
   const xc = new Set(opts?.excludeConnectionIds ?? []);
   const xs = new Set(opts?.excludeStreams ?? []);
