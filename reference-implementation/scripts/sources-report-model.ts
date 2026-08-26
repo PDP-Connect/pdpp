@@ -16,53 +16,27 @@
  *
  * WHAT IS AND IS NOT COMPUTED HERE
  * --------------------------------
- * The per-source verdict is NOT recomputed. The reference server already
- * owns it: `rendered_verdict.pill` ({label, tone}) arrives pre-computed over
- * the wire, and the console does not second-guess it either (see
- * `apps/console/src/app/(console)/lib/source-actionability.ts`, whose header
- * records the 2026-07-09 state-model convergence: "There is no client-side
- * fallback to raw connection-health `state`"). This module reproduces only
- * the console's own thin presentation step:
+ * The per-source verdict is NOT recomputed, and — since 2026-08-25 — it is no
+ * longer RE-RANKED here either. `@pdpp/display`'s `projectSourceVerdict` is the
+ * one producer of the dot/tone/label and the fused status line, and the console
+ * `/sources` page calls exactly the same function. This module used to hand-port
+ * a partial copy of that ranking; it never learned the `setup_failed` branch, so
+ * six setup-failed Venmo connections printed "Revoked" here and "Setup never
+ * completed" on the page. One producer, two consumers: a divergence like that
+ * can no longer be written.
  *
- *   1. `pill.tone` → the dot glyph and status kind, via the SAME table shape
- *      the console uses (`VERDICT_TONE_STATUS`), and
- *   2. the axis keys → owner-facing words, via `@pdpp/display/health`, which is the
- *      one definition the console imports too.
- *
- * A source with no `rendered_verdict` reads an honest "Verdict unavailable" —
- * never a guess reconstructed from raw axes.
+ * What remains this module's own work is CLI presentation: stream rows,
+ * coverage counts, checkpoints, and required-action lines.
  */
 
+import { projectSourceVerdict, type SourceStatusFlag, type SourceStatusInput } from "@pdpp/display";
 import { formatCoverageAxis, formatFreshnessAxis, formatOutboxAxis } from "@pdpp/display/health";
 
-/** The four tones the reference's `rendered_verdict.pill` can carry. */
-export type VerdictTone = "amber" | "green" | "grey" | "red";
-
-export interface SourceStatusFlag {
-  /** The glyph the console draws for this tone. */
-  dot: string;
-  kind: "archived" | "blocked" | "degraded" | "healthy" | "pending" | "revoked" | "unknown";
-  label: string;
-}
-
 /**
- * Mirrors `VERDICT_TONE_STATUS` in
- * `apps/console/src/app/(console)/lib/source-actionability.ts`.
- *
- * This is the one piece of console presentation the CLI restates rather than
- * imports: the console's table also carries a CSS tone token ("destructive",
- * "muted") that means nothing in a terminal, and that module additionally
- * pulls in console-local `rs-client`/`next-action` types. The GLYPHS and the
- * KINDS are the load-bearing part and are asserted against the console's
- * table by `sources-report-model.test.ts`, so a change on either side fails
- * the build rather than silently drifting.
+ * The row status the CLI prints. Re-exported from `@pdpp/display` so the CLI
+ * and the console name the same shape; the CLI never declares a second one.
  */
-const VERDICT_TONE_STATUS: Record<VerdictTone, Pick<SourceStatusFlag, "dot" | "kind">> = {
-  amber: { dot: "◐", kind: "degraded" },
-  green: { dot: "●", kind: "healthy" },
-  grey: { dot: "○", kind: "unknown" },
-  red: { dot: "⊘", kind: "blocked" },
-};
+export type { SourceStatusFlag, SourceStatusKind, SourceVerdictTone as VerdictTone } from "@pdpp/display";
 
 export interface SummaryStreamVerdict {
   readonly collected?: number | null;
@@ -82,7 +56,18 @@ export interface SummaryRenderedVerdict {
   readonly streams?: readonly SummaryStreamVerdict[] | null;
 }
 
-export interface ConnectorSummaryLike {
+/**
+ * Extends `SourceStatusInput` (@pdpp/display) rather than restating it: the
+ * fields the status ranking reads are the package's to declare, and the
+ * compiler now rejects a CLI payload that cannot be ranked.
+ *
+ * `source_visibility` is deliberately NOT narrowed to a union here. It used to
+ * read `"active" | "archived" | "hidden_from_sources"`, which silently omitted
+ * `"setup_failed"` — the very value that made six Venmo rows print "Revoked"
+ * instead of "Setup never completed". A closed union that lags the server is
+ * how a wire value becomes invisible to the instrument reading it.
+ */
+export interface ConnectorSummaryLike extends SourceStatusInput {
   readonly collection_report?: readonly CollectionReportEntryLike[] | null;
   readonly connection_health?: {
     readonly axes?: {
@@ -97,8 +82,6 @@ export interface ConnectorSummaryLike {
   readonly connector_id?: string | null;
   readonly display_name?: string | null;
   readonly rendered_verdict?: SummaryRenderedVerdict | null;
-  readonly source_visibility?: "active" | "archived" | "hidden_from_sources" | null;
-  readonly status?: string | null;
   readonly total_records?: number | null;
 }
 
@@ -142,65 +125,16 @@ export interface SourceRow {
   readonly displayName: string;
   readonly forwardStatement: string | null;
   readonly freshnessNote: string | null;
+  /**
+   * The SAME fused state/freshness/activity line the `/sources` card renders.
+   * The CLI had no counterpart to it until 2026-08-25, so the text the owner
+   * actually reads on the page had nothing to be compared against here.
+   */
+  readonly fusedLine: string;
   readonly headline: string | null;
   readonly requiredActions: readonly string[];
   readonly status: SourceStatusFlag;
   readonly streams: readonly StreamRow[];
-}
-
-/**
- * Mirrors the console's `labelWithFreshness`: the row label an owner reads is
- * the pill label plus the co-required freshness annotation, so a red
- * "Can't collect" row reads "Can't collect · freshness has not been measured
- * yet" exactly as it does on the page.
- */
-function freshnessNoteFromVerdict(verdict: SummaryRenderedVerdict): string | null {
-  for (const annotation of verdict.annotations ?? []) {
-    if (annotation?.kind === "freshness" && typeof annotation.text === "string" && annotation.text.length > 0) {
-      return annotation.text;
-    }
-  }
-  return null;
-}
-
-/**
- * `"archived"` is the current spelling; `"hidden_from_sources"` is the retired
- * one, still accepted so a report run against an older reference classifies
- * those rows as archived instead of rendering them as live sources.
- */
-function isArchivedSource(summary: ConnectorSummaryLike): boolean {
-  return summary.source_visibility === "archived" || summary.source_visibility === "hidden_from_sources";
-}
-
-function deriveStatus(summary: ConnectorSummaryLike): SourceStatusFlag {
-  // Lifecycle outranks the verdict, exactly as `deriveRenderedSourceStatus`
-  // ranks it: a revoked or paused connection is not collecting, so a stale
-  // verdict tone must never be shown as its health.
-  //
-  // Archived is ranked FIRST, ahead of even `revoked`, matching the console.
-  // An archived row is usually `paused` carrying a stored verdict from when it
-  // was live, so ranking `paused` first printed "⏸ Paused" — and, before the
-  // server-side fix, "Reconnect this account", a promise that leads nowhere
-  // because reconnecting mints a new connection and resumes nothing. The
-  // records are real; the collection is over.
-  if (isArchivedSource(summary)) {
-    return { dot: "⊘", kind: "archived", label: "Archived · not collecting" };
-  }
-  if (summary.status === "revoked") {
-    return { dot: "⊘", kind: "revoked", label: "Revoked" };
-  }
-  if (summary.status === "paused") {
-    return { dot: "⏸", kind: "pending", label: "Paused" };
-  }
-  const verdict = summary.rendered_verdict;
-  const tone = verdict?.pill?.tone;
-  if (!verdict || typeof tone !== "string" || !Object.hasOwn(VERDICT_TONE_STATUS, tone)) {
-    return { dot: "○", kind: "unknown", label: "Verdict unavailable" };
-  }
-  const base = VERDICT_TONE_STATUS[tone as VerdictTone];
-  const pillLabel = typeof verdict.pill?.label === "string" ? verdict.pill.label : "Verdict unavailable";
-  const note = freshnessNoteFromVerdict(verdict);
-  return { ...base, label: note ? `${pillLabel} · ${note}` : pillLabel };
 }
 
 /**
@@ -268,6 +202,8 @@ export function projectSourceRow(summary: ConnectorSummaryLike): SourceRow {
   const axes = summary.connection_health?.axes ?? null;
   const streams = projectStreamRows(verdict, indexCollectionReport(summary.collection_report));
   const requiredActions = projectRequiredActions(verdict);
+  // The one producer the console `/sources` page also calls.
+  const projection = projectSourceVerdict(summary);
 
   return {
     axes: {
@@ -279,10 +215,11 @@ export function projectSourceRow(summary: ConnectorSummaryLike): SourceRow {
     connectorId: summary.connector_id ?? null,
     displayName: summary.display_name || summary.connector_id || "(unnamed source)",
     forwardStatement: verdict?.forward_statement ?? null,
-    freshnessNote: verdict ? freshnessNoteFromVerdict(verdict) : null,
+    freshnessNote: projection.renderedStatus.freshnessNote,
+    fusedLine: projection.fusedStatus.line,
     headline: verdict?.progress?.headline ?? null,
     requiredActions,
-    status: deriveStatus(summary),
+    status: projection.renderedStatus,
     streams,
   };
 }

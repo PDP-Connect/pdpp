@@ -32,84 +32,30 @@
  * terminal_setup_disposition) is untouched, so this fixture reproduces the
  * exact ranking decisions the console and CLI must agree on.
  *
- * This is a FIXTURE-based test (per the task's hard rule): no live server,
- * no network call. Both "surfaces" are computed by calling real production
- * code against the same in-memory snapshot:
- *   - "page" = the console's own `projectSourceActionability` (source-
- *     actionability.ts), called directly by this test — NOT through the CLI
- *     module, so this is a genuine cross-surface comparison rather than the
- *     CLI being compared to itself.
- *   - "CLI" = `sources-report-model.ts`'s `projectSourceRow`, which (after
- *     this change) also calls `projectSourceActionability` internally, via a
- *     dynamic import of the same console module.
+ * This is a FIXTURE-based test (per the task's hard rule): no live server, no
+ * network call. Both "surfaces" are computed by calling real production code
+ * against the same in-memory snapshot:
+ *   - "page" = `@pdpp/display`'s `projectSourceVerdict`, called directly by
+ *     this test. It is the function the console's `projectSourceActionability`
+ *     calls for `renderedStatus`/`fusedStatus`, so this compares the CLI to the
+ *     page's real producer without importing `apps/console/**` — which
+ *     `ri-zero-connector-knowledge-conformance` bars, and rightly: an earlier
+ *     attempt reached across that boundary and was reverted.
+ *   - "CLI" = `sources-report-model.ts`'s `projectSourceRow`, which calls the
+ *     SAME package function.
+ *
+ * That both sides now route to one producer is the point. The test still earns
+ * its keep: it pins the CLI's row projection (dot/kind/label/fusedLine) to that
+ * producer's output across every lifecycle branch, so re-introducing a local
+ * re-derivation in the CLI — the exact defect this replaced — fails here.
  */
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { projectSourceVerdict, type SourceStatusInput } from "@pdpp/display";
 import { type ConnectorSummaryLike, projectSourceRow } from "../scripts/sources-report-model.ts";
-
-interface ConsoleRenderedStatus {
-  dot: string;
-  kind: string;
-  label: string;
-  tone: string;
-}
-
-interface ConsoleActionabilityProjection {
-  fusedStatus: { line: string; tone: string };
-  renderedStatus: ConsoleRenderedStatus;
-}
-
-interface ConsoleSourceActionabilityModule {
-  projectSourceActionability: (connector: unknown) => ConsoleActionabilityProjection;
-}
-
-async function loadConsoleModule(): Promise<ConsoleSourceActionabilityModule> {
-  const specifier = ["..", "..", "apps", "console", "src", "app", "(console)", "lib", "source-actionability.ts"].join(
-    "/"
-  );
-  return (await import(specifier)) as ConsoleSourceActionabilityModule;
-}
-
-/**
- * Mirrors `normalizeForConsoleActionability`/`normalizeVerdictForConsoleActionability`
- * in `sources-report-model.ts` — filling the same `RefConnectorSummary`
- * always-present fields this fixture's rows already carry (a real
- * `/_ref/connectors` payload), so the "page" side of this test calls the
- * console function with the same shape the CLI internally normalizes to.
- * This is intentionally duplicated rather than imported: importing the
- * CLI's own normalizer would make this test partly check the CLI against
- * itself instead of an independent re-derivation.
- */
-function normalizeForConsole(summary: Record<string, unknown>): unknown {
-  const verdict = summary.rendered_verdict as Record<string, unknown> | null | undefined;
-  return {
-    ...summary,
-    connection_health: summary.connection_health ?? { axes: {}, state: "unknown" },
-    connection_id: summary.connection_id ?? "",
-    connector_id: summary.connector_id ?? "",
-    display_name: summary.display_name ?? "",
-    freshness: {},
-    last_run: summary.last_run ?? null,
-    last_successful_run: summary.last_successful_run ?? null,
-    manifest_version: null,
-    next_action: null,
-    rendered_verdict: verdict
-      ? {
-          ...verdict,
-          annotations: verdict.annotations ?? [],
-          channel: "calm",
-          forward_statement: verdict.forward_statement ?? "",
-          pill: verdict.pill ?? { label: "Verdict unavailable", tone: "grey" },
-          required_actions: verdict.required_actions ?? [],
-          streams: verdict.streams ?? [],
-        }
-      : null,
-    schedule: null,
-  };
-}
 
 const fixturePath = fileURLToPath(new URL("./fixtures/sources-report-fleet-parity-0825.json", import.meta.url));
 const fleet: Record<string, unknown>[] = JSON.parse(readFileSync(fixturePath, "utf8"));
@@ -138,29 +84,18 @@ test("fleet fixture is non-trivial: covers every pill tone and every lifecycle b
   assert.ok(visibilities.has("setup_failed"), "fixture is missing a setup_failed row");
 });
 
-// `todo`, not `skip`: this assertion is CORRECT and currently FAILS, because
-// the divergence it detects is real and unfixed — six `setup_failed` Venmo
-// connections read "Revoked" from the CLI and "Setup never completed" on the
-// page. The fix (extract the shared derivation into a package both surfaces
-// import) is backlogged; reaching into `apps/console/**` from here is barred
-// by `ri-zero-connector-knowledge-conformance`.
-//
-// Marking it `todo` keeps the guard in the tree and keeps the tree honest: the
-// runner reports it as a known-pending expectation rather than a pass. Deleting
-// it would lose the guard the extraction has to land against; leaving it red
-// would report a broken tree for a defect already dispositioned. Remove this
-// marker in the same commit that ships the extraction — it must go green by
-// being FIXED, never by being retired.
-test("every row in the fleet: CLI and console agree on dot, tone, label, and fused line", { todo: true }, async () => {
-  const { projectSourceActionability } = await loadConsoleModule();
+// The `todo` marker this test carried from 2026-08-25 is GONE, removed in the
+// same commit that shipped the extraction — it had to go green by being FIXED,
+// never by being retired. It now asserts, and it passes fleet-wide.
+test("every row in the fleet: CLI and console agree on dot, tone, label, and fused line", () => {
   const divergences: string[] = [];
 
   for (const [index, summary] of fleet.entries()) {
     const rowLabel = `#${index} ${summary.connector_id ?? "?"} / ${summary.connection_id ?? "?"}`;
 
-    const pageProjection = projectSourceActionability(normalizeForConsole(summary));
-    // biome-ignore lint/performance/noAwaitInLoops: whole-fleet fixture assertion, not a hot path; sequential awaits keep failures attributable to a specific row.
-    const cliRow = await projectSourceRow(summary as ConnectorSummaryLike);
+    // The page's producer, called directly on the raw fixture row.
+    const pageProjection = projectSourceVerdict(summary as SourceStatusInput);
+    const cliRow = projectSourceRow(summary as ConnectorSummaryLike);
 
     if (cliRow.status.dot !== pageProjection.renderedStatus.dot) {
       divergences.push(
@@ -177,23 +112,11 @@ test("every row in the fleet: CLI and console agree on dot, tone, label, and fus
         `${rowLabel}: pill label diverged — CLI="${cliRow.status.label}" page="${pageProjection.renderedStatus.label}"`
       );
     }
-    // The CLI has NO fused line to compare yet — `fusedStatus` is the console's,
-    // and the CLI never calls `fuseSourceStatus`. That absence IS the defect:
-    // the card text the owner reads has no counterpart in the instrument that
-    // claims to report it.
-    //
-    // Asserting `undefined !== page.line` would pass trivially and prove
-    // nothing, so this records the missing field as its own divergence. The
-    // extraction that gives both surfaces one producer must replace this with
-    // a real comparison of the two fused lines.
-    const cliFusedLine = (cliRow as { fusedLine?: string }).fusedLine;
-    if (cliFusedLine === undefined) {
+    // A real two-line comparison now: the CLI emits its own fused line, so the
+    // absence-as-divergence placeholder this test used to record is gone.
+    if (cliRow.fusedLine !== pageProjection.fusedStatus.line) {
       divergences.push(
-        `${rowLabel}: CLI emits no fused summary line at all — page="${pageProjection.fusedStatus.line}"`
-      );
-    } else if (cliFusedLine !== pageProjection.fusedStatus.line) {
-      divergences.push(
-        `${rowLabel}: fused summary line diverged — CLI="${cliFusedLine}" page="${pageProjection.fusedStatus.line}"`
+        `${rowLabel}: fused summary line diverged — CLI="${cliRow.fusedLine}" page="${pageProjection.fusedStatus.line}"`
       );
     }
   }
