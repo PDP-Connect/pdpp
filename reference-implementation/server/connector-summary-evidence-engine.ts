@@ -116,11 +116,73 @@ const RECONCILE_PAGE_SIZE = 25;
  */
 const MIN_STATEMENT_TIMEOUT_MS = 500;
 
-function remainingStatementBudgetMs(deadline: number | null): number | null {
+/**
+ * Returns the statement budget for a unit starting NOW, or `0` when the
+ * admission allowance is already gone.
+ *
+ * The 500ms floor (above) is an absolute MINIMUM for an admitted unit — not a
+ * licence to admit a unit that has no allowance left. Returning the floor
+ * unconditionally made those two things the same thing, and that is the
+ * production starvation this closes (2026-08-26): a repair that CANNOT finish
+ * inside 500ms is re-admitted on every single pass, is cancelled by
+ * `statement_timeout` every time, and consumes the round. Measured on the
+ * owner's instance: one connection (1,573,722 records) timed out 58 times in
+ * one hour — roughly 29 minutes of wall clock — while the fleet as a whole
+ * recomputed 3 rows in that hour and 0 in the final 15 minutes. Two other
+ * connections sat unmeasured for 2h and 5h behind it.
+ *
+ * `0` means "no allowance" and callers must not begin a unit; it is distinct
+ * from `null`, which means "no deadline at all" (every caller except the
+ * maintenance sweep) and preserves the original unbounded behavior.
+ */
+export function remainingStatementBudgetMs(deadline: number | null): number | null {
   if (deadline === null) {
     return null;
   }
-  return Math.max(MIN_STATEMENT_TIMEOUT_MS, deadline - Date.now());
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    return 0;
+  }
+  return Math.max(MIN_STATEMENT_TIMEOUT_MS, remaining);
+}
+
+/**
+ * Exponential back-off for a repair unit that keeps being cancelled by the
+ * per-unit `statement_timeout` bound.
+ *
+ * Zeroing the depleted allowance (above) stops a doomed unit from being
+ * admitted with no budget, but it does not stop it being RE-SELECTED: a row
+ * whose repair genuinely cannot finish inside the bound stays `dirty`, is
+ * discovered again next pass, and — because `repairCandidates` guarantees the
+ * FIRST selected candidate is always attempted regardless of the deadline
+ * (deliberately, to close a different 2026-08-18 starvation) — consumes the
+ * whole round before any other dirty row is reached. Measured on the owner's
+ * instance 2026-08-26: 58 cancellations in one hour for a single connection,
+ * while two healthy connections sat unmeasured for 2h and 5h behind it.
+ *
+ * So the unit backs off: retry after 1 minute, then 2, 4, 8 … capped at
+ * `MAX_REPAIR_TIMEOUT_BACKOFF_MS`. It still retries — a connection that grew
+ * past the bound must be able to recover on its own once the underlying cause
+ * is fixed — just not once a minute at ~30s of wall clock each.
+ *
+ * Deliberately IN-PROCESS, not a new column on `connector_summary_evidence`:
+ * this is scheduling state, not evidence about the owner's data, and it must
+ * never be mistaken for a fact about a connection. A process restart clears
+ * it, which costs exactly one extra attempt per affected row.
+ */
+const REPAIR_TIMEOUT_BACKOFF_BASE_MS = 60_000;
+const MAX_REPAIR_TIMEOUT_BACKOFF_MS = 30 * 60_000;
+const repairTimeoutBackoffUntil = new Map<string, number>();
+const repairTimeoutStrikes = new Map<string, number>();
+
+function noteRepairTimeout(connectorInstanceId: string): void {
+  const strikes = (repairTimeoutStrikes.get(connectorInstanceId) ?? 0) + 1;
+  repairTimeoutStrikes.set(connectorInstanceId, strikes);
+  const delayMs = Math.min(MAX_REPAIR_TIMEOUT_BACKOFF_MS, REPAIR_TIMEOUT_BACKOFF_BASE_MS * 2 ** (strikes - 1));
+  repairTimeoutBackoffUntil.set(connectorInstanceId, Date.now() + delayMs);
+  console.error(
+    `[connector-summary-evidence] repair for ${connectorInstanceId} has now been cancelled by statement_timeout ${strikes} time(s); backing off ${Math.round(delayMs / 1000)}s so other dirty rows are not starved behind it`
+  );
 }
 
 function decimalText(value: unknown): string | null {
@@ -843,6 +905,14 @@ function postgresDiscoveryQuery<R extends Row = Row>(
   if (budget === null) {
     return postgresQuery<R>(sql, params);
   }
+  // A depleted allowance must NOT reach `postgresQueryBounded`: Postgres reads
+  // `statement_timeout = 0` as UNLIMITED, so passing it through would remove
+  // the very bound this path exists to enforce. Refuse admission instead —
+  // callers already treat `PostgresStatementTimeoutError` as "this round made
+  // no progress on this unit; leave its evidence untouched and retry later".
+  if (budget === 0) {
+    throw new PostgresStatementTimeoutError();
+  }
   return postgresQueryBounded<R>(sql, params, budget);
 }
 
@@ -1166,12 +1236,36 @@ function missingInstanceRepairResult(connectorInstanceId: string, deleted: boole
  * it — trading a bounded pre-read for an unbounded correctness question.
  */
 async function repairCandidate(connectorInstanceId: string, deadline: number | null = null): Promise<RepairedEvidence> {
+  const backoffUntil = repairTimeoutBackoffUntil.get(connectorInstanceId);
+  if (backoffUntil !== undefined && Date.now() < backoffUntil) {
+    // `deferred` is the established "consumed its turn, wrote nothing" outcome
+    // (see `repairCandidates`' attempt-order doc): the fairness cursor advances
+    // past this id and its existing evidence is left exactly as-is. A deferred
+    // result's `row` is never recorded (`recordRepairOutcome` is skipped for
+    // `deferred`), so the id-only row below asserts nothing about this
+    // connection's facts — it is a shape, not a claim.
+    return {
+      deferred: true,
+      failed: false,
+      persisted: true,
+      row: { connector_instance_id: connectorInstanceId },
+    };
+  }
   try {
     if (isPostgresStorageBackend()) {
-      return await repairCandidatePostgres(connectorInstanceId, deadline);
+      const repaired = await repairCandidatePostgres(connectorInstanceId, deadline);
+      repairTimeoutBackoffUntil.delete(connectorInstanceId);
+      repairTimeoutStrikes.delete(connectorInstanceId);
+      return repaired;
     }
-    return await repairCandidateSqlite(connectorInstanceId);
+    const repaired = await repairCandidateSqlite(connectorInstanceId);
+    repairTimeoutBackoffUntil.delete(connectorInstanceId);
+    repairTimeoutStrikes.delete(connectorInstanceId);
+    return repaired;
   } catch (err) {
+    if (err instanceof PostgresStatementTimeoutError) {
+      noteRepairTimeout(connectorInstanceId);
+    }
     logRepairFailure(connectorInstanceId, REASON_CODES.LOCK_UNAVAILABLE, err);
     const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.LOCK_UNAVAILABLE, err);
     // The lock itself could not be acquired, so nothing about this
@@ -1762,6 +1856,14 @@ function postgresRepairReadQuery<R extends Row = Row>(
   const budget = remainingStatementBudgetMs(deadline);
   if (budget === null) {
     return postgresQuery<R>(sql, params);
+  }
+  // A depleted allowance must NOT reach `postgresQueryBounded`: Postgres reads
+  // `statement_timeout = 0` as UNLIMITED, so passing it through would remove
+  // the very bound this path exists to enforce. Refuse admission instead —
+  // callers already treat `PostgresStatementTimeoutError` as "this round made
+  // no progress on this unit; leave its evidence untouched and retry later".
+  if (budget === 0) {
+    throw new PostgresStatementTimeoutError();
   }
   return postgresQueryBounded<R>(sql, params, budget);
 }
