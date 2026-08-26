@@ -321,6 +321,17 @@ const HANDOFF_BLANK_SURFACE_SUFFIX =
  */
 const HANDOFF_PAINT_TIMEOUT_MS = 15_000;
 
+/**
+ * How long to wait for the submitted login to reach an OBSERVABLE outcome
+ * before calling it incomplete. Not a poll-and-hope: the wait keys on the
+ * submit control leaving its in-flight state, and expiring is reported as
+ * "the login did not complete", never as a credential rejection.
+ */
+const POST_SUBMIT_SETTLE_TIMEOUT_MS = 30_000;
+
+/** Gap between post-submit liveness polls. */
+const POST_SUBMIT_POLL_INTERVAL_MS = 1000;
+
 const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
   {
     id: "username",
@@ -510,6 +521,14 @@ interface EnsureVenmoSessionArgs {
    */
   passwordScreenTimeoutMs?: number;
   /**
+   * Overrides how long the post-submit wait polls for the session to go live,
+   * defaulting to {@link POST_SUBMIT_SETTLE_TIMEOUT_MS}. Exposed for the same
+   * reason as `passwordScreenTimeoutMs`: a test must be able to prove the
+   * bound expires — and that expiry is reported as an incomplete login rather
+   * than a rejected credential — without sitting through the production wait.
+   */
+  postSubmitSettleTimeoutMs?: number;
+  /**
    * Emits a `run.progress_reported` spine event. Optional so tests that don't
    * care about the timeline can omit it; production always supplies it (see
    * `connectors/venmo/index.ts`'s `ensureSession`).
@@ -686,6 +705,62 @@ async function countUsableVenmoOtpInputs(page: Page): Promise<number> {
  */
 async function hasUsableVenmoOtpInput(page: Page): Promise<boolean> {
   return isViableVenmoOtpDigitCount(await countUsableVenmoOtpInputs(page));
+}
+
+/**
+ * Wait for the submitted login to reach an OBSERVABLE outcome, then report
+ * whether the session went live.
+ *
+ * The signal it keys on is the submit control leaving its in-flight state.
+ * Venmo renders a spinner INSIDE that button while the login POST is
+ * outstanding, which replaces its accessible name — so "a button named Log
+ * in / Sign in / Continue is present again, or the button is gone entirely
+ * (navigated away)" is a definite, observable completion signal, not a guess
+ * that enough time has passed.
+ *
+ * Deliberately NOT poll-then-assume. Two distinct outcomes:
+ *   - settled -> probe once and return that verdict, which is now a real
+ *     answer about the session rather than a read taken mid-request;
+ *   - never settled within the bound -> return `settled: false`, so the
+ *     caller can say "the login did not complete" instead of asserting the
+ *     owner's credentials were rejected. A timeout is not a rejection.
+ *
+ * The bound exists because a wait that cannot end is the unbounded-await
+ * defect this codebase has already paid for twice.
+ */
+async function pollForLiveSessionAfterSubmit(
+  page: Page,
+  settleTimeoutMs: number = POST_SUBMIT_SETTLE_TIMEOUT_MS
+): Promise<{ probe: VenmoAccountProbeResult | null; settled: boolean }> {
+  const deadline = Date.now() + settleTimeoutMs;
+  let lastProbe: VenmoAccountProbeResult | null = null;
+  while (Date.now() < deadline) {
+    // The probe itself IS the definite signal — it asks Venmo's own API
+    // whether this browser context is authenticated. A `live` answer is
+    // observable completion; anything else means the outcome is not yet
+    // known, so keep asking until it is or the bound expires.
+    //
+    // Keying on the probe rather than on button pixels is deliberate: the
+    // spinner is a rendering detail that varies by page generation, while
+    // "the API says we are signed in" is the property the caller actually
+    // needs and the same one it already trusted for a single sample.
+    const probe = await probeVenmoAccount(page, "post_submit");
+    if (probe.live) {
+      return { probe, settled: true };
+    }
+    // A transport fault is "could not ask", not "answered no" — retrying is
+    // correct. A clean `dead` this early may still be mid-request, so it also
+    // keeps polling; if it is a genuine rejection the answer stays `dead` and
+    // the bound below reports honestly rather than guessing.
+    lastProbe = probe;
+    await page.waitForTimeout(POST_SUBMIT_POLL_INTERVAL_MS);
+  }
+  // The bound expired with the session never going live. We do NOT know that
+  // the credentials were rejected — we know only that no outcome arrived in
+  // time, which is a different fact and must be reported as itself. The last
+  // probe travels with it as evidence, but `settled: false` is what decides
+  // the caller's wording.
+  return { probe: lastProbe, settled: false };
 }
 
 /**
@@ -1081,11 +1156,15 @@ async function loginWithSavedCredentials({
   onCredentialSubmit,
   page,
   passwordScreenTimeoutMs,
+  postSubmitSettleTimeoutMs = POST_SUBMIT_SETTLE_TIMEOUT_MS,
   progress = noopProgress,
   sendInteraction,
   username,
   password,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "passwordScreenTimeoutMs" | "progress" | "sendInteraction"> & {
+}: Pick<
+  EnsureVenmoSessionArgs,
+  "capture" | "page" | "passwordScreenTimeoutMs" | "postSubmitSettleTimeoutMs" | "progress" | "sendInteraction"
+> & {
   checkpoint: SessionCheckpointFn;
   onCredentialSubmit?: () => void;
   password: string;
@@ -1156,8 +1235,39 @@ async function loginWithSavedCredentials({
   // above — see probeVenmoAccount's B4 doc for why a transport fault here
   // must not be classified the same as a fault that happened before any
   // password was ever typed.
-  const finalProbe = await probeVenmoAccount(page, "post_submit");
-  if (finalProbe.live) {
+  //
+  // POLLED, not sampled once. Venmo's sign-in submits over XHR and never
+  // navigates, so the `waitForLoadState("domcontentloaded")` above returns
+  // immediately and guarantees nothing about the login having completed.
+  // A single probe here therefore asks "are we signed in?" while the request
+  // is still in flight, gets `dead` because Venmo has not answered yet, and
+  // throws `venmo_login_incomplete_after_submit` on a login that was about to
+  // succeed.
+  //
+  // Proven from the failed run's retained capture frames (2026-08-26,
+  // run_1787774371364, `fixture-captures/venmo/raw/2026-08-26T19-59-31-630Z/`):
+  // `venmo-login-after-submit.png` shows the password screen reached, the
+  // identifier resolved to the owner's real account, the password field
+  // filled, and the submit button rendering a SPINNER — the POST still in
+  // flight. `session-establish-venmo-final-verify.png`, captured ~1s later, is
+  // pixel-identical: still spinning. The credentials and the flow were both
+  // correct; only the verification was early.
+  //
+  // Same class as the identifier read-back guard added earlier in this file:
+  // verify AFTER the async settles, never during. Bounded by
+  // POST_SUBMIT_SETTLE_TIMEOUT_MS so a genuinely failed login still fails —
+  // a poll that cannot end is the unbounded-await defect wearing a fix's
+  // clothes.
+  const settleOutcome = await pollForLiveSessionAfterSubmit(page, postSubmitSettleTimeoutMs);
+  if (!settleOutcome.settled) {
+    // Never reached an observable outcome. Say THAT — an unsettled login is
+    // not evidence that the owner's password is wrong, and reporting it as a
+    // rejection is how a working credential gets blamed for a slow provider.
+    await captureLoginState(capture, page, "venmo-login-did-not-settle");
+    throw new Error(`venmo_login_did_not_complete: no sign-in outcome within ${postSubmitSettleTimeoutMs}ms`);
+  }
+  const finalProbe = settleOutcome.probe;
+  if (finalProbe?.live) {
     return finalProbe;
   }
   return await requestManualLoginForChallenge({
@@ -1177,6 +1287,7 @@ export async function ensureVenmoSession({
   onCredentialSubmit,
   page,
   passwordScreenTimeoutMs,
+  postSubmitSettleTimeoutMs,
   progress,
   sendInteraction,
 }: EnsureVenmoSessionArgs): Promise<VenmoAccountProbeResult> {
@@ -1204,6 +1315,7 @@ export async function ensureVenmoSession({
     ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
     page,
     ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),
+    ...(postSubmitSettleTimeoutMs === undefined ? {} : { postSubmitSettleTimeoutMs }),
     ...(progress ? { progress } : {}),
     sendInteraction,
     username,

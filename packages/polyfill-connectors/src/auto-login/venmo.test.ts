@@ -770,12 +770,23 @@ test("ensureVenmoSession: a code input that vanishes after classification fails 
  */
 function makeTwoStepVenmoPage({
   captchaVisible = false,
+  deadProbesAfterSubmit = 0,
   identifierSelectorMatches = true,
   passwordAppearsAfterNext = true,
   passwordScreenDelayMs = 0,
   semanticSubmitVisible = true,
 }: {
   captchaVisible?: boolean;
+  /**
+   * How many post-submit probes answer `dead` before Venmo's session cookie
+   * lands. This is the production race the retained capture frames showed: the
+   * password was accepted and the submit button was still spinning, so the
+   * session simply did not exist yet at the instant the connector asked. A
+   * single-sample probe reads that not-yet as a rejection and hands off to a
+   * human who is not there. Non-zero is the only setting that can tell a poll
+   * from one sample — at 0 the two are indistinguishable.
+   */
+  deadProbesAfterSubmit?: number;
   identifierSelectorMatches?: boolean;
   passwordAppearsAfterNext?: boolean;
   /**
@@ -878,8 +889,13 @@ function makeTwoStepVenmoPage({
     async evaluate(): Promise<unknown> {
       probeCount += 1;
       // Probe 1 is the pre-submit liveness check (dead — this is why we log
-      // in at all). Everything after the password submit reports live.
-      return probeCount > 1 && onPasswordScreen ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
+      // in at all). After the password submit the session goes live, but only
+      // once `deadProbesAfterSubmit` further probes have answered `dead`,
+      // modeling the in-flight window before Venmo sets the session cookie.
+      const liveFromProbe = 1 + deadProbesAfterSubmit + 1;
+      return probeCount >= liveFromProbe && onPasswordScreen
+        ? { kind: "live", ownerId: "1234567890123456789" }
+        : { kind: "dead" };
     },
     getByRole: (): Locator => roleSubmit,
     goto(url: string): ReturnType<Page["goto"]> {
@@ -1034,6 +1050,67 @@ test("ensureVenmoSession: an unnamed step-one control is advanced via #btnNext, 
       "the identifier screen must advance via Venmo's exact id, not a positional guess among submit buttons"
     );
     assert.deepEqual(requests, [], "an id-addressable step-one control needs no owner handoff");
+  });
+});
+
+// (2b) The post-submit race, taken from the retained capture frames of the
+// 2026-08-26 failure: the password WAS accepted, the submit button was still
+// spinning, and the session cookie had not landed yet. A connector that
+// samples liveness exactly once reads that not-yet as a rejection and hands
+// off to an owner who is not sitting at the browser. The session goes live on
+// its own a moment later, so the correct behavior is to keep asking until the
+// answer is definite or the bound expires.
+test("ensureVenmoSession: a session that goes live only after the submit request settles is signed in, not handed off", async () => {
+  await withVenmoCredentials(async () => {
+    const { fillCalls, page } = makeTwoStepVenmoPage({ deadProbesAfterSubmit: 3 });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
+    assert.equal(
+      result.live,
+      true,
+      "a session that is merely not-yet-live is not a rejection — a single-sample probe reports false here"
+    );
+    assert.equal(fillCalls.password, "test-password", "the password was accepted; only the cookie was late");
+    assert.deepEqual(
+      requests,
+      [],
+      "no owner handoff may be raised for a login that succeeds on its own — this is the defect that stranded seven runs"
+    );
+  });
+});
+
+// (2c) The other half of the same fix: the wait must END. A login that never
+// reaches an outcome is reported as exactly that — an incomplete login — and
+// never as a rejected credential, because we have no evidence the password was
+// wrong. Getting this backwards is how a working credential gets blamed for a
+// slow provider, which is the failure mode that stranded Venmo for a week.
+test("ensureVenmoSession: a login that never settles fails as incomplete, never as a rejected credential", async () => {
+  await withVenmoCredentials(async () => {
+    // Never goes live within the bound, no matter how many times it is asked.
+    const { page } = makeTwoStepVenmoPage({ deadProbesAfterSubmit: Number.MAX_SAFE_INTEGER });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        postSubmitSettleTimeoutMs: 2000,
+        sendInteraction,
+      }),
+      (error: Error) => {
+        assert.match(
+          error.message,
+          /^venmo_login_did_not_complete:/,
+          "an expired wait must name itself; a generic failure here is indistinguishable from a bad password"
+        );
+        assert.match(error.message, /2000ms/, "the message must carry the bound the owner actually waited");
+        return true;
+      }
+    );
+    assert.deepEqual(requests, [], "an unsettled login is not a challenge — there is nothing for the owner to do");
   });
 });
 
