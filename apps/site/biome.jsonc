@@ -133,6 +133,32 @@
       }
     },
     {
+      // App Router icon convention file — NOT an inline SVG component.
+      //
+      // `src/app/icon.svg` is consumed by Next.js as a generated ASSET: it is
+      // served at /icon.svg and referenced by `manifest.ts` as a PWA icon. It
+      // is never imported, never rendered as JSX, and never reaches an
+      // accessibility tree, so `noSvgWithoutTitle` — which exists to give
+      // inline SVG *components* an accessible name — cannot apply. Adding a
+      // <title> would not help any assistive technology here; it would put a
+      // tooltip string inside a favicon.
+      //
+      // Scoped to this ONE file. Every inline SVG component in src/** keeps
+      // the rule active, which is where the rule earns its keep.
+      //
+      // Exit condition: drop this override if the file stops being an App
+      // Router icon convention file (e.g. it becomes an imported component),
+      // or if Biome learns to skip non-JSX `.svg` assets.
+      "includes": ["src/app/icon.svg"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "noSvgWithoutTitle": "off"
+          }
+        }
+      }
+    },
+    {
       // Concept primitive tokens: keep color-mix/font stacks single-line for TW LS.
       // Biome wraps them multiline on save; comments inside :root also trip false
       // `{ expected` squiggles — notes live in the file header only (AGENTS.md).
