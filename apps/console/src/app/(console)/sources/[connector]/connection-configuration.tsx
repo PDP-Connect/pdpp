@@ -20,6 +20,7 @@ import {
   type ConfigValue,
   type ConnectionConfigWire,
   confirmationReason,
+  describeAgentActor,
   describeCommit,
   diffDraft,
   findPendingProposal,
@@ -329,7 +330,8 @@ function CurrentSettings({
       ))}
       {revision ? (
         <p className="pdpp-caption text-muted-foreground">
-          Last changed by {revision.origin === "owner" ? "you" : "an app"} — “{revision.source_of_change}”
+          Last changed by {revision.origin === "owner" ? "you" : describeAgentActor(revision.set_by)} — “
+          {revision.source_of_change}”
         </p>
       ) : (
         <p className="pdpp-caption text-muted-foreground">
@@ -636,7 +638,7 @@ function PendingProposal({
   schema: NonNullable<ConnectionConfigWire["options_schema"]>;
 }) {
   const byKey = new Map(schema.options.map((option) => [option.option_key, option]));
-  const proposedBy = revision.origin === "owner" ? "you" : "an app";
+  const proposedBy = revision.origin === "owner" ? "you" : describeAgentActor(revision.set_by);
   return (
     <div className="flex flex-col gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-4">
       <div className="flex flex-col gap-0.5">
@@ -679,6 +681,7 @@ function HistoryBlock({
   schema: ConnectionConfigWire["options_schema"];
 }) {
   const entries = useMemo(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: activeRevision is ConfigRevisionWire | null; tsc rejects removing this guard.
     () => buildHistory(revisions, schema, activeRevision?.revision ?? null),
     [revisions, schema, activeRevision]
   );
