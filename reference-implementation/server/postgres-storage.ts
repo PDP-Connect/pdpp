@@ -2746,6 +2746,31 @@ export async function bootstrapPostgresSchema({
         lease_expires_at TEXT
       );
 
+      -- Durable per-connection resume state for a canonical-count repair scan
+      -- that could not finish inside one bounded admission (a "whale"
+      -- connection with millions of live records). Keyed by
+      -- connector_instance_id, NOT by name like connector_maintenance_cursor
+      -- above -- that table models fleet-wide sweep cursors, a different
+      -- resource; this one is scoped to exactly the connection whose own
+      -- repair is too large for a single statement_timeout admission.
+      -- Scheduling/accumulation state only, never evidence about the owner's
+      -- data: a row here asserts nothing until the scan completes and
+      -- buildRepairedRow's normal upsert publishes it.
+      CREATE TABLE IF NOT EXISTS connector_summary_evidence_repair_chunk (
+        connector_instance_id TEXT PRIMARY KEY,
+        resume_after_id BIGINT,
+        accumulator_json JSONB NOT NULL,
+        -- The canonical source_revision this chunk sequence started against.
+        -- A later admission that finds the live source_revision no longer
+        -- matches this receipt must discard the accumulator and restart the
+        -- scan from the beginning -- resuming a partial sum against a
+        -- revision it was never computed against would silently under- or
+        -- over-count.
+        source_revision TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS manifest_write_violations (
         connector_instance_id TEXT NOT NULL,
         stream TEXT NOT NULL,
