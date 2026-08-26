@@ -540,9 +540,14 @@ interface FeedLoadResult {
 }
 
 interface StreamUiMetadata {
-  declaredFieldTypes?: DeclaredFieldTypes;
+  // Built directly from streamUiMetadataFromManifest's / loadStreamUiMetadata's
+  // own `| undefined`-typed parameters (already-optional caller inputs, no
+  // re-defaulting), and read only by forwarding into classifyRecordKind's
+  // optional parameters (which tolerate `undefined` the same as omission) --
+  // never a presence check on this object itself.
+  declaredFieldTypes?: DeclaredFieldTypes | undefined;
   fieldCapabilities: ExplorerFieldCapability[];
-  fieldNames?: readonly string[];
+  fieldNames?: readonly string[] | undefined;
 }
 
 export function fieldCapabilitiesFromMetadata(metadata: StreamMetadata | null): ExplorerFieldCapability[] {

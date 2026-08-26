@@ -40,7 +40,12 @@ export interface DatasetStreamSizeInput {
  */
 export interface StreamConnectionLabelInput {
   readonly connector_instance_id?: string | null;
-  readonly display_name?: string | null;
+  // Read only via `typeof connection.display_name === "string"` below; any
+  // non-string value (including `undefined`) falls through to the same
+  // connector_instance_id fallback, so "absent" and "present but undefined"
+  // are already the same "no display name". SourceStorageInput.display_name
+  // (the caller's own shape) is `string | undefined` for the same reason.
+  readonly display_name?: string | null | undefined;
   readonly revoked_at?: string | null;
 }
 

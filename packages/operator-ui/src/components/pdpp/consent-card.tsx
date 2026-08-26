@@ -179,7 +179,17 @@ function DecidedState({
   );
 }
 
-function RequesterAvatar({ logoSrc, monogram }: { logoSrc?: string; monogram: string }) {
+function RequesterAvatar({
+  logoSrc,
+  monogram,
+}: {
+  // Forwarded verbatim from ConsentCardProps["requester"].logoSrc (also
+  // `?: string`, no re-defaulting in between) and read only via `logoSrc ?
+  // ... : ...` truthiness below, so "absent" and "present but undefined" are
+  // already the same "no logo" one level up.
+  logoSrc?: string | undefined;
+  monogram: string;
+}) {
   // CLIENT authorship — the brand mark the client supplied. When the server has
   // no approved logo we fall back to a neutral monogram tile so the avatar never
   // borrows the trusted "human/manifest" warmth for client-supplied art.
@@ -372,7 +382,10 @@ function RequiredStreamRow({
   label,
   onToggle,
 }: {
-  connections?: ConsentCardConnection[];
+  // Forwarded verbatim from ConsentCardStream.connections (also `?:`, no
+  // re-defaulting) and read only via `Array.isArray(connections)` below,
+  // which treats "absent" and "present but undefined" identically.
+  connections?: ConsentCardConnection[] | undefined;
   detail: string;
   expanded: boolean;
   label: string;

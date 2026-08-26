@@ -40,14 +40,19 @@ import { formatTotalRecordsLabel } from "./total-records-label.ts";
  */
 export interface SourceStorageInput {
   readonly connection_id: string;
-  readonly connector_display_name?: string;
+  // Read only via `typeof item.connector_display_name === "string"` below —
+  // any non-string value (including `undefined`) falls through to the same
+  // "try the next fallback" branch, so "absent" and "present but undefined"
+  // are already the same "no connector display name".
+  readonly connector_display_name?: string | undefined;
   /**
    * Present so the deployment view's stream-size disambiguator
    * ({@link StreamConnectionLabelInput} in `dataset-grains.ts`) can reuse
    * this same connector-summary list without a second fetch.
    */
   readonly connector_instance_id?: string | null;
-  readonly display_name?: string;
+  // Same `typeof ... === "string"` fallback read as connector_display_name.
+  readonly display_name?: string | undefined;
   readonly retained_bytes?: {
     readonly blob_bytes?: number | null;
     readonly record_changes_json_bytes?: number | null;
@@ -55,8 +60,16 @@ export interface SourceStorageInput {
   } | null;
   readonly revoked_at?: string | null;
   readonly total_records?: number;
-  readonly total_records_state?: RefCountState;
-  readonly total_retained_bytes?: number | null;
+  // formatTotalRecordsLabel's own parameter is already
+  // `RefCountState | undefined`, and the trusted-state check below is
+  // `=== "known" || === "known_zero" || === undefined` -- an older server
+  // that never sent this field is deliberately treated as trusted, the same
+  // as one that explicitly can't distinguish "absent" from "undefined" here.
+  readonly total_records_state?: RefCountState | undefined;
+  // isFiniteNonNegative's own parameter is already
+  // `number | null | undefined`, treating a non-finite/absent/undefined
+  // value identically as "unmeasured" (renders "—", never a fabricated 0).
+  readonly total_retained_bytes?: number | null | undefined;
 }
 
 export interface SourceStorageRow {

@@ -58,7 +58,12 @@ export interface TimelineEnvelope {
 export interface ListResponse<T> {
   data: T[];
   has_more: boolean;
-  next_cursor?: string;
+  // Every consumer reads this via `?? null` or truthiness
+  // (`result.has_more && result.next_cursor ? ... : null`), and callers often
+  // forward another optional cursor field verbatim (e.g. an upstream
+  // `options?.cursor`), so "absent" and "present but undefined" are already
+  // the same "no more pages" everywhere this is read.
+  next_cursor?: string | undefined;
   object: "list";
 }
 
@@ -498,7 +503,14 @@ export interface DatasetSummary {
 }
 
 export interface DatasetSummaryProjectionMetadata {
-  computed_at?: string | null;
+  /**
+   * Every read (overview-hero.tsx) is a truthiness/nullish check
+   * (`!projection.computed_at`, `?.computed_at ? ... : null`, `!= null`) or a
+   * plain pass-through of another optional `string | null` field of the same
+   * shape (DatasetSummary.computed_at) -- none distinguishes "key present
+   * holding undefined" from "key absent", so the type says so.
+   */
+  computed_at?: string | null | undefined;
   last_error?: string | null;
   rebuild_status?: "idle" | "running" | "failed";
   source_high_watermark?: string | null;

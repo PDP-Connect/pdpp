@@ -99,16 +99,22 @@ export interface DashboardDataSource {
    * preserves the exact prior full-summary behavior.
    */
   listConnectorSummaries: {
+    // Optional fields are `| undefined` because callers (e.g.
+    // loadExploreConnectionsFacet) build this options object from their own
+    // already-optional locals (`typeof x === "string" ? x : undefined`)
+    // without re-narrowing, and every implementation reads them via `??`/
+    // truthiness — never a presence check distinguishing "omitted" from
+    // "explicitly undefined".
     (options: {
-      connectionRouteId?: string;
-      cursor?: string;
-      limit?: number;
+      connectionRouteId?: string | undefined;
+      cursor?: string | undefined;
+      limit?: number | undefined;
       profile: "identity_inventory";
     }): Promise<ListResponse<RefConnectorIdentitySummary>>;
     (options?: {
-      connectionRouteId?: string;
-      cursor?: string;
-      limit?: number;
+      connectionRouteId?: string | undefined;
+      cursor?: string | undefined;
+      limit?: number | undefined;
       profile?: undefined;
     }): Promise<ListResponse<RefConnectorSummary>>;
   };

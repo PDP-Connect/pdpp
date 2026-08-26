@@ -87,7 +87,17 @@ function groupTimeline(events: SpineEvent[]): TimelineNode[] {
   return nodes;
 }
 
-export function TimelineView({ events, loadMoreHref }: { events: SpineEvent[]; loadMoreHref?: string | null }) {
+export function TimelineView({
+  events,
+  loadMoreHref,
+}: {
+  events: SpineEvent[];
+  // Forwarded verbatim from TimelineDetailView's own same-shaped optional
+  // prop and read only via `loadMoreHref ? ... : null` below, so "absent"
+  // and "present but undefined" are already the same "no more pages" one
+  // level up.
+  loadMoreHref?: string | null | undefined;
+}) {
   const nodes = groupTimeline(events);
   return (
     <>
