@@ -1,0 +1,32 @@
+---
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import data from "blume:data";
+---
+
+<PageLayout
+  analytics={data.config.analytics}
+  banner={data.config.banner}
+  favicon={data.config.favicon}
+  fontCssVars={data.fontCssVars}
+  logo={data.config.logo}
+  navigation={data.navigation}
+  ogEnabled={data.config.og.enabled}
+  page={{ description: "Ask a question about the PDPP draft, or propose a change to the protocol.", route: "/participate", title: "Participate" }}
+  searchEnabled={data.config.search.enabled}
+  site={{ description: data.config.description, title: data.config.title }}
+  siteUrl={data.config.site}
+  themeMode={data.config.theme.mode}
+>
+  <main class="mx-auto grid max-w-4xl gap-8 px-6 py-20">
+    <header class="grid gap-3">
+      <p class="text-sm font-semibold text-primary">PDPP participation</p>
+      <h1 class="text-4xl font-semibold tracking-tight text-foreground">Participate</h1>
+      <p class="max-w-2xl text-lg text-muted-foreground">Ask a question about the draft, or propose a change to the protocol.</p>
+    </header>
+    <div class="grid gap-4 sm:grid-cols-3">
+      <a class="rounded-blume border border-border bg-card p-5 transition-colors hover:bg-muted" href="https://github.com/PDP-Connect/pdpp/issues/new"><strong>Open an issue</strong><span class="mt-2 block text-sm text-muted-foreground">In an issue, name the part of the specification your question applies to and what the text does not let you decide.</span></a>
+      <a class="rounded-blume border border-border bg-card p-5 transition-colors hover:bg-muted" href="https://github.com/PDP-Connect/pdpp"><strong>PDP-Connect/pdpp</strong><span class="mt-2 block text-sm text-muted-foreground">Normative text lives in the root spec-*.md files.</span></a>
+      <a class="rounded-blume border border-border bg-card p-5 transition-colors hover:bg-muted" href="https://discord.gg/FV4bkZBdmA"><strong>#pdp-connect on Discord</strong><span class="mt-2 block text-sm text-muted-foreground">A maintainer answers there.</span></a>
+    </div>
+  </main>
+</PageLayout>
