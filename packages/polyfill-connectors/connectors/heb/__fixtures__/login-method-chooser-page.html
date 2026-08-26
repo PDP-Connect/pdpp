@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<!--
+  The live login-method chooser observed in run_1787109487130 at
+  https://accounts.heb.com/interaction/<id>/login, reduced to the elements that
+  drive surface classification.
+
+  This is the page that caused the fabricated-OTP defect. It advertises
+  "Email me a one-time code" as a RADIO LABEL, so VERIFICATION_CODE_RE matches,
+  but it has NO verification-code input: the only code-ish token on the page is
+  the radio's own `value="otp"`. "Enter password" is already selected and the
+  password field is the sole text input. No code has been sent at this point.
+-->
+<html>
+<body>
+  <main>
+    <img alt="H-E-B logo" src="/logo.svg" />
+    <form novalidate>
+      <fieldset>
+        <input type="hidden" data-testid="requestId" name="requestId" value="1787109491543.WSWsa1" />
+        <input type="hidden" name="step" value="1" />
+        <div>
+          <h1>Choose how you log in</h1>
+          <h2></h2>
+        </div>
+        <div class="flex flex-col hidden">
+          <div class="form-control-group">
+            <input
+              autocomplete="username webauthn"
+              aria-hidden="true"
+              type="email"
+              id="email-input"
+              placeholder="Email"
+              aria-label="Email"
+              name="email"
+            />
+          </div>
+          <label class="ml-1 text-xs form-label order-1" for="email-input">Email</label>
+        </div>
+        <fieldset data-testid="credentials-fieldset">
+          <label for="emailOtp">
+            <input type="radio" id="emailOtp" class="peer mr-2" name="authType" value="otp" />
+            <span class="peer-checked:font-bold">Email me a one-time code</span><br />
+            <div class="ml-6 font-normal text-sm break-all">owner@example.com</div>
+          </label>
+          <label for="credentials">
+            <input
+              type="radio"
+              id="credentials"
+              aria-label="Enter password"
+              class="peer mr-2 mb-3"
+              name="authType"
+              checked
+              value="password"
+            />
+            <span class="peer-checked:font-bold">Enter password</span>
+            <div class="hidden peer-checked:flex flex-col gap-3 ml-6">
+              <div class="flex flex-col">
+                <div class="form-control-group">
+                  <input
+                    autocomplete="current-password"
+                    type="password"
+                    id="password-input"
+                    aria-label="Password"
+                    name="password"
+                  />
+                  <button type="button">Show</button>
+                </div>
+                <a href="/interaction/5iuOgIGpIH0ju9UJKtBiK/forgot-pw">Forgot your password?</a>
+              </div>
+            </div>
+          </label>
+        </fieldset>
+        <p>
+          I agree to the H&#8209;E&#8209;B
+          <a href="https://www.heb.com/terms">Terms &amp; Conditions</a>
+          and acknowledge the
+          <a href="https://www.heb.com/privacy">Privacy Policy</a>.
+        </p>
+        <div>
+          <button type="submit" disabled>Submit</button>
+          <button type="button" disabled>Back</button>
+        </div>
+      </fieldset>
+    </form>
+  </main>
+  <p>Copyright &copy; 2026 H&#8209;E&#8209;B, LP</p>
+</body>
+</html>

@@ -43,6 +43,11 @@
  *   SLACK_CHANNEL_ALLOWLIST   (csv of channel IDs — maps to slackdump positional args)
  *   SLACK_CHANNEL_TYPES       (csv: public,private,im,mpim — default all four)
  *   SLACK_MEMBER_ONLY         (bool, default true — -member-only flag)
+ *                             Set false to archive EVERY channel the workspace
+ *                             lists, including public channels this account has
+ *                             left and channels Slack has archived. The flag
+ *                             filters on `is_member` alone; archived is a
+ *                             separate axis slackdump never filters on.
  *   SLACK_SKIP_FILES          (bool, default true)
  *
  * PDPP scope mapping:
@@ -95,6 +100,7 @@ import {
   parseMessageRow,
   selectCommittedMaxTs,
   toSlackTime,
+  tsToIso,
   WORKSPACE_LIST_ARROW,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
@@ -134,12 +140,23 @@ export function formatSlackdumpMissingError(bin: string): string {
   ].join(" ");
 }
 
+/**
+ * Slack's archive normalizer marks a deletion-shaped message with the exact
+ * boolean `is_tombstone` field. Do not infer deletion from omission, text,
+ * timestamps, or any other subtype: a false positive would delete the
+ * owner's retained message. The stream guard also prevents this message
+ * marker from affecting derived Slack streams.
+ */
+export function isSlackMessageTombstone(stream: string, data: RecordData): boolean {
+  return stream === "messages" && data.is_tombstone === true;
+}
+
 // safeAll: typed SQL wrapper. Rows returned as unknown[] → caller casts.
-function safeAll<T>(db: DatabaseSync, sql: string): T[] {
+function safeAll<T>(db: DatabaseSync, sql: string): T[] | null {
   try {
     return db.prepare(sql).all() as T[];
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -186,7 +203,11 @@ function currentArchiveChannelIds(db: DatabaseSync): string[] {
     FROM CHANNEL
     WHERE ID IS NOT NULL AND ID != ''
   `
-  ).map((r) => r.id);
+  );
+  if (channels === null) {
+    return [];
+  }
+  const channelIds = channels.map((r) => r.id);
   const messageChannels = safeAll<{ id: string }>(
     db,
     `
@@ -194,8 +215,11 @@ function currentArchiveChannelIds(db: DatabaseSync): string[] {
     FROM MESSAGE
     WHERE CHANNEL_ID IS NOT NULL AND CHANNEL_ID != ''
   `
-  ).map((r) => r.id);
-  return [...new Set([...channels, ...messageChannels])].sort();
+  );
+  if (messageChannels === null) {
+    return [];
+  }
+  return [...new Set([...channelIds, ...messageChannels.map((r) => r.id)])].sort();
 }
 
 function missingPreviouslyObservedChannelIds(
@@ -204,6 +228,191 @@ function missingPreviouslyObservedChannelIds(
 ): string[] {
   const current = new Set(currentChannelIds);
   return priorObservedChannelIds.filter((id) => !current.has(id)).sort();
+}
+
+/**
+ * Channel ids slackdump proved it finished paginating.
+ *
+ * `CHUNK.FINAL` is slackdump's OWN end-of-pagination marker for a chunk
+ * (see its schema: "FINAL SMALLINT NOT NULL DEFAULT FALSE" alongside
+ * `NUM_REC`), and `TYPE_ID = 0` is the MESSAGES chunk type per the
+ * archive's `TYPES` table. A channel with a final messages chunk is one
+ * slackdump walked to the end; a channel with only non-final message
+ * chunks was cut short mid-walk.
+ *
+ * This is the provider-side completeness anchor for Slack messages. It is
+ * measured from the archive tool's own bookkeeping, not from anything this
+ * connector emitted, and it is the only per-channel completeness fact
+ * slackdump exposes — there is no per-channel message count and no
+ * `has_more` flag anywhere in the archive schema.
+ *
+ * Returns an empty set on an archive too old to carry `CHUNK` (the
+ * `safeAll` fallback). The caller treats an empty result as "cannot
+ * prove", never as "nothing is complete".
+ */
+function archiveFinalizedChannelIds(db: DatabaseSync): Set<string> {
+  const rows = safeAll<{ id: string }>(
+    db,
+    `
+    SELECT DISTINCT CHANNEL_ID AS id
+    FROM CHUNK
+    WHERE TYPE_ID = 0 AND FINAL = 1 AND CHANNEL_ID IS NOT NULL AND CHANNEL_ID != ''
+  `
+  );
+  if (rows === null) {
+    return new Set();
+  }
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Every channel id in the archive's own CHANNEL inventory — what Slack told
+ * slackdump this account can see, independent of how much of each channel
+ * was actually archived.
+ *
+ * This is the denominator side of the message-coverage set comparison:
+ * inventory minus finalized is the set of channels whose history is NOT
+ * proven complete. On this owner's workspace that difference is large (973
+ * channels in PDPP's inventory against 552 with a finalized message chunk
+ * across all archives), and before this evidence existed it was entirely
+ * invisible.
+ */
+function archiveInventoryChannelIds(db: DatabaseSync): Set<string> {
+  const rows = safeAll<{ id: string }>(
+    db,
+    `
+    SELECT DISTINCT ID AS id
+    FROM CHANNEL
+    WHERE ID IS NOT NULL AND ID != ''
+  `
+  );
+  if (rows === null) {
+    return new Set();
+  }
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Channels present in the archive's inventory whose message history
+ * slackdump never proved it finished walking.
+ *
+ * Deliberately a SET difference over channel ids, not a count comparison.
+ * A count cannot distinguish "we are short N channels" from "we hold N
+ * extra" from "N are duplicated", and — critically for a preservation
+ * product — a channel we hold history for that Slack has since archived or
+ * deleted must NOT read as loss. This asks only the one-directional
+ * question: which channels does the SOURCE list that we cannot prove we
+ * finished? Channels we hold but Slack no longer lists never appear here.
+ */
+export function unprovenChannelIds(inventory: ReadonlySet<string>, finalized: ReadonlySet<string>): string[] {
+  return [...inventory].filter((id) => !finalized.has(id)).sort((a, b) => a.localeCompare(b));
+}
+
+/** Per-channel membership facts needed to classify an unproven channel. */
+export interface ChannelReachability {
+  isArchived: boolean;
+  isMember: boolean;
+}
+
+/**
+ * Does `-member-only` cause slackdump to skip this channel?
+ *
+ * Mirrors slackdump's own filter exactly. In v4.4.2
+ * (`internal/chunk/control/processors.go`):
+ *
+ *     if c.memberOnly && !structures.IsMember(&ch) { continue }
+ *
+ * and `structures.IsMember` (`internal/structures/conversation.go`):
+ *
+ *     if ChannelType(*ch) != CPublic || (ch.ID != "" && ch.ID[0] != 'C') {
+ *         return true    // member of any non-public channel by assumption
+ *     }
+ *     return ch.IsMember
+ *
+ * Two facts follow, and both were previously stated backwards in this file:
+ *
+ *   1. The filter reads ONLY `is_member`. `is_archived` is never consulted,
+ *      here or anywhere else in slackdump. Archiving a channel does not
+ *      remove the account's membership, so an archived channel the account
+ *      belongs to IS walked under `-member-only` — verified on this owner's
+ *      own Aug-17 archive, where all 15 archived channels were members and
+ *      all 15 finished with 16,173 messages collected.
+ *   2. Only `C`-prefixed public channels can ever be skipped. DMs, MPIMs and
+ *      private channels are unconditionally in scope.
+ *
+ * So `-member-only` excludes exactly: public channels the account has left or
+ * never joined. That is the real axis, and it is orthogonal to archived.
+ */
+export function memberOnlySkipsChannel(id: string, facts: ChannelReachability): boolean {
+  return id.startsWith("C") && !facts.isMember;
+}
+
+/**
+ * Split unproven channels by whether this run could ever have walked them.
+ *
+ * `outOfScope` — the run's own configuration guaranteed slackdump would never
+ * request this channel's history, so a re-run changes nothing. Under
+ * `-member-only` that is precisely the public channels the account is not a
+ * member of (see `memberOnlySkipsChannel`). With member-only OFF, nothing is
+ * out of scope: slackdump requests every channel Slack enumerates, archived
+ * included.
+ *
+ * `inScope` — slackdump was allowed to walk it and still did not finish. This
+ * is the only genuinely unexplained bucket, and the only one a re-archive can
+ * close.
+ *
+ * Being ARCHIVED is deliberately NOT a reason to call a channel out of scope.
+ * Slack's `conversations.list` includes archived channels by default
+ * (`exclude_archived` defaults to false and slackdump never sets it), so an
+ * archived channel that went unwalked is a real gap that must be reported as
+ * one. Treating archived as "explained" is what buried this owner's 95
+ * archived channels behind a message telling him they were absent by design.
+ *
+ * A channel missing from `reachability` is treated as IN scope: absent
+ * evidence must never silently downgrade a gap into "explained".
+ */
+export function partitionUnprovenChannels(
+  unproven: readonly string[],
+  reachability: ReadonlyMap<string, ChannelReachability>,
+  memberOnly: boolean
+): { inScope: string[]; outOfScope: string[] } {
+  const inScope: string[] = [];
+  const outOfScope: string[] = [];
+  for (const id of unproven) {
+    const facts = reachability.get(id);
+    if (memberOnly && facts && memberOnlySkipsChannel(id, facts)) {
+      outOfScope.push(id);
+    } else {
+      inScope.push(id);
+    }
+  }
+  return { inScope, outOfScope };
+}
+
+/**
+ * Membership/archived facts for every channel in the archive inventory, read
+ * from the newest CHUNK per channel (same latest-row join
+ * `currentDmMpimChannelIds` uses, so a stale early chunk cannot win).
+ */
+function archiveChannelReachability(db: DatabaseSync): Map<string, ChannelReachability> {
+  const rows = safeAll<ChannelRow>(
+    db,
+    `
+    SELECT c.ID AS id, c.DATA AS data
+    FROM CHANNEL c
+    JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM CHANNEL GROUP BY ID) m
+      ON m.ID = c.ID AND m.mx = c.CHUNK_ID
+  `
+  );
+  if (rows === null) {
+    return new Map();
+  }
+  const out = new Map<string, ChannelReachability>();
+  for (const r of rows) {
+    const d = parseBlob(r.data);
+    out.set(r.id, { isArchived: d.is_archived === true, isMember: d.is_member === true });
+  }
+  return out;
 }
 
 async function emitMissingChannelDiagnostic(
@@ -234,6 +443,124 @@ async function emitMissingChannelDiagnostic(
   });
 }
 
+/**
+ * Emit the per-channel message-completeness evidence for this archive: the
+ * set of inventoried channels slackdump never proved it finished walking.
+ *
+ * Before this existed, a channel that the archive simply never visited was
+ * indistinguishable from a channel with no messages — an invisible hole
+ * (403 of this owner's 973 channels hold zero messages, 278 of them public).
+ * This converts that into durable, operator-visible evidence.
+ *
+ * Emits nothing when the archive carries no `CHUNK` bookkeeping at all: an
+ * archive that cannot report finality cannot prove anything is missing
+ * either, and inventing a gap from absent evidence is the same defect as
+ * inventing coverage from it.
+ */
+async function emitUnprovenChannelDiagnostic(
+  emit: CollectContext["emit"],
+  db: DatabaseSync,
+  messageFamilyRequested: boolean,
+  memberOnly: boolean
+): Promise<void> {
+  if (!messageFamilyRequested) {
+    return;
+  }
+  const inventory = archiveInventoryChannelIds(db);
+  const finalized = archiveFinalizedChannelIds(db);
+  if (finalized.size === 0) {
+    return;
+  }
+  const unproven = unprovenChannelIds(inventory, finalized);
+  if (unproven.length === 0) {
+    return;
+  }
+  const { inScope, outOfScope } = partitionUnprovenChannels(unproven, archiveChannelReachability(db), memberOnly);
+  // Split the in-scope gap by whether slackdump ever opened a messages chunk
+  // for the channel. Both are gaps, but they have different causes and
+  // different fixes, and reporting them as one bucket is what made this
+  // owner's real defect unreadable for months: "unproven history, a
+  // re-archive is required" was emitted every run while every run was
+  // choosing `resume`, which by construction could never close it.
+  const untouched = untouchedChannelIds(db);
+  const neverRequested = inScope.filter((id) => untouched.has(id));
+  const startedUnfinished = inScope.filter((id) => !untouched.has(id));
+  if (neverRequested.length > 0) {
+    const visibleIds = neverRequested.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "channel_history_never_requested",
+      message:
+        `${String(neverRequested.length)} in-scope Slack channel(s) hold no message data at all: the ` +
+        "archive's channel enumeration was cut short before it reached them, so their history has never been " +
+        "requested even once. This is recoverable — a full archive pass (not a resume) collects them.",
+      diagnostics: {
+        inventory_count: inventory.size,
+        finalized_count: finalized.size,
+        never_requested_count: neverRequested.length,
+        never_requested_channel_ids: visibleIds,
+        truncated: visibleIds.length < neverRequested.length,
+      },
+      recovery_hint: {
+        action: "retry_by_runtime",
+        retryable: true,
+      },
+    });
+  }
+  if (startedUnfinished.length > 0) {
+    const visibleIds = startedUnfinished.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "channel_history_not_finalized",
+      message:
+        `Slack archive lists ${String(inventory.size)} channels but slackdump proved a finished message walk for only ` +
+        `${String(finalized.size)}; ${String(startedUnfinished.length)} in-scope channel(s) were walked ` +
+        "part-way and never finished. Their messages are partial. A further archive pass is required to close this.",
+      diagnostics: {
+        inventory_count: inventory.size,
+        finalized_count: finalized.size,
+        unproven_count: startedUnfinished.length,
+        unproven_channel_ids: visibleIds,
+        truncated: visibleIds.length < startedUnfinished.length,
+      },
+      recovery_hint: {
+        action: "retry_by_runtime",
+        retryable: true,
+      },
+    });
+  }
+  if (outOfScope.length > 0) {
+    const visibleIds = outOfScope.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "channel_history_out_of_member_scope",
+      message:
+        `${String(outOfScope.length)} public Slack channel(s) were never walked because this account is not a member ` +
+        "of them. This is a setting you control: set the connector's Slack option MEMBER_ONLY to false and run a " +
+        "full archive to collect every channel the workspace lists for you, including channels you have left and " +
+        "channels that have been archived. Their messages are not lost — they have simply never been requested.",
+      diagnostics: {
+        inventory_count: inventory.size,
+        finalized_count: finalized.size,
+        out_of_scope_count: outOfScope.length,
+        out_of_scope_channel_ids: visibleIds,
+        truncated: visibleIds.length < outOfScope.length,
+        collect_by_setting: "SLACK_MEMBER_ONLY=false",
+      },
+      recovery_hint: {
+        // `not_retriable` (not a free-form token) — RECOVERY_ACTIONS is a closed
+        // set in the runtime's gap normalizer; an unrecognized action is
+        // silently replaced by a regex guess over the reason/message text.
+        action: "not_retriable",
+        retryable: false,
+      },
+    });
+  }
+}
+
 function selectCommittedChannelLastTs(
   priorChannelLastTs: Record<string, string>,
   runChannelMaxTs: Record<string, string>
@@ -247,20 +574,33 @@ function selectCommittedChannelLastTs(
   return out;
 }
 
+/**
+ * Emits a `messages` record only when its channel is inside the run's
+ * resource scope, and REPORTS whether it did.
+ *
+ * The boolean is the whole point. This guard drops rows, and the durable
+ * per-channel cursor must never advance past a row this guard dropped: the
+ * next run asks the archive for `TS > cursor`, so a dropped row that moved
+ * the cursor is unreachable forever. Returning `void` here made that
+ * silent — the caller had no way to distinguish "emitted" from "swallowed"
+ * and so recorded a watermark for both. See `emitMessagesPass`, which
+ * threads this outcome into `channelMaxTs`.
+ */
 async function emitMessageRecordScopedByChannel(deps: {
   channelIds: ReadonlySet<string>;
   emitRecord: CollectContext["emitRecord"];
   record: RecordData;
-}): Promise<void> {
+}): Promise<boolean> {
   if (
     // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
     deps.record.id == null ||
     typeof deps.record.channel_id !== "string" ||
     !deps.channelIds.has(deps.record.channel_id)
   ) {
-    return;
+    return false;
   }
   await deps.emitRecord("messages", deps.record, { skipResourceFilter: true });
+  return true;
 }
 
 interface SlackdumpProgressSnapshot {
@@ -848,8 +1188,10 @@ function unionStrings(...values: ReadonlyArray<readonly string[]>): string[] {
 function mergeMessagesPassResults(left: MessagesPassResult, right: MessagesPassResult): MessagesPassResult {
   return {
     channelMaxTs: selectCommittedChannelLastTs(left.channelMaxTs, right.channelMaxTs),
+    iteratedChannelMaxTs: selectCommittedChannelLastTs(left.iteratedChannelMaxTs, right.iteratedChannelMaxTs),
     maxMessageTs: selectMaxSlackTs(left.maxMessageTs, right.maxMessageTs),
     considered: left.considered + right.considered,
+    covered: left.covered + right.covered,
   };
 }
 
@@ -1388,17 +1730,151 @@ async function mergeScopedMessageArchivePasses(deps: {
 }
 
 /**
+ * Channel ids the archive's own inventory lists that slackdump never opened
+ * a single messages chunk for.
+ *
+ * Distinct from `unprovenChannelIds`, and the distinction is the whole point.
+ * "Unproven" spans two very different states: a channel slackdump STARTED and
+ * did not finish (non-final chunks exist — `resume` closes it), and a channel
+ * slackdump NEVER TOUCHED (no chunk of any type — `resume` will never reach
+ * it). `resume` walks the channels already recorded in the archive within a
+ * lookback window; it does not re-enumerate the workspace, so a channel absent
+ * from the archive stays absent no matter how many times it runs.
+ *
+ * On this owner's workspace the `archive` pass (SESSION 1) died 16 minutes in
+ * having opened messages chunks for 5 channels. The 1360 `resume` sessions
+ * that followed over the next three months never grew that set past 5 — the
+ * set of channels with any messages chunk is still exactly the 5 SESSION 1
+ * reached. Twelve joined, unarchived channels have never been requested even
+ * once.
+ */
+function untouchedChannelIds(db: DatabaseSync): Set<string> {
+  const rows = safeAll<{ id: string }>(
+    db,
+    `
+    SELECT DISTINCT c.ID AS id
+    FROM CHANNEL c
+    WHERE c.ID IS NOT NULL AND c.ID != ''
+      AND NOT EXISTS (
+        SELECT 1 FROM CHUNK k
+        WHERE k.TYPE_ID = 0 AND k.CHANNEL_ID = c.ID
+      )
+  `
+  );
+  if (rows === null) {
+    return new Set();
+  }
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Whether this archive still owes a full `archive` enumeration.
+ *
+ * `resume` is the right tool for an archive whose enumeration finished: it
+ * carries every channel forward cheaply within its lookback. It is the WRONG
+ * tool for an archive whose enumeration never finished, because the channels
+ * that enumeration never reached are not in the archive for `resume` to walk.
+ * Choosing resume purely on `existsSync(archivePath)` — which is what this
+ * connector did — makes that state permanent: the directory exists, so every
+ * subsequent run resumes, so the missing channels are never requested, so the
+ * directory keeps existing in exactly the same incomplete shape.
+ *
+ * The archive records the fact needed to tell the two apart. slackdump writes
+ * a SESSION row per invocation with its own `FINISHED` flag and `MODE`. An
+ * archive whose `MODE = 'archive'` session never set `FINISHED = 1` is one
+ * whose enumeration was cut short, and it stays owed until an `archive` pass
+ * actually completes.
+ *
+ * Reads as "not owed" when the archive carries no SESSION bookkeeping at all.
+ * An archive that cannot report its own session state cannot prove it was
+ * interrupted either, and forcing a multi-GB re-archive off absent evidence is
+ * the same defect in the other direction.
+ */
+/**
+ * `archiveEnumerationIncomplete` for an archive on disk, by path.
+ *
+ * Opens read-only and always closes. A path that does not exist, or a file
+ * too damaged to open, reports `false` — same absent-evidence rule as the
+ * in-DB check: never force a multi-GB re-archive off a failure to read.
+ */
+export function archivePathEnumerationIncomplete(sqlitePath: string): boolean {
+  if (!existsSync(sqlitePath)) {
+    return false;
+  }
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(sqlitePath, { readOnly: true });
+  } catch {
+    return false;
+  }
+  try {
+    return archiveEnumerationIncomplete(db);
+  } finally {
+    db.close();
+  }
+}
+
+function archiveEnumerationIncomplete(db: DatabaseSync): boolean {
+  const rows = safeAll<{ finished: number }>(
+    db,
+    `
+    SELECT MAX(FINISHED) AS finished
+    FROM SESSION
+    WHERE MODE = 'archive'
+  `
+  );
+  if (rows === null) {
+    return false;
+  }
+  const finished = rows[0]?.finished;
+  if (finished === undefined || finished === null) {
+    return false;
+  }
+  return Number(finished) !== 1;
+}
+
+/**
+ * Whether the archive at `sqlitePath` still owes a full enumeration, saying so
+ * in the run log when it does.
+ *
+ * The disclosure matters as much as the decision. This run is about to spend a
+ * full `archive` pass instead of a cheap `resume`, and the owner's run log is
+ * the only place that choice — and the reason for it — is visible.
+ */
+function reportOwedEnumeration(sqlitePath: string, archivePath: string, progress: CollectContext["progress"]): boolean {
+  if (!archivePathEnumerationIncomplete(sqlitePath)) {
+    return false;
+  }
+  progress(
+    `Slack: the archive at ${archivePath} has no completed 'archive' session — its channel enumeration was cut ` +
+      "short, so channels it never reached hold no data and 'resume' would never request them. Running a full " +
+      "'archive' against the existing directory to finish the enumeration.",
+    { stream: "messages" }
+  );
+  return true;
+}
+
+/**
  * Incremental via slackdump resume, full via archive.
  * Resume path: (a) explicit state.archive_dir from a prior successful run,
  * or (b) an archive directory already exists on disk from a timed-out or
  * crashed prior run. Resuming salvages partial progress — slackdump picks
- * up from the last recorded chunk for each channel, so a previously-timed-
- * out 1.1 GB archive turns into "finish the rest" rather than "restart".
+ * up from the last recorded chunk for each channel it already holds.
+ *
+ * `forceFullArchive` overrides both: an archive whose enumeration never
+ * completed (see `archiveEnumerationIncomplete`) must re-run `archive`, not
+ * resume, or the channels enumeration never reached stay unreachable forever.
+ * slackdump's `archive` is itself resumable against the same directory, so
+ * this finishes the interrupted enumeration rather than discarding the 4.8 GB
+ * already on disk.
  */
-function pickResumeTarget(
+export function pickResumeTarget(
   state: CollectContext["state"],
   archivePath: string,
-  { allowStateArchive = true }: { allowStateArchive?: boolean } = {}
+  {
+    allowStateArchive = true,
+    forceFullArchive = false,
+  }: { allowStateArchive?: boolean; forceFullArchive?: boolean } = {}
 ): { resumeTarget: string | null; priorArchive: string | undefined } {
   // STATE is stream-keyed per Collection Profile: state is returned as
   // { <stream>: <cursor>, ... }. We write `archive_dir` into the messages
@@ -1406,6 +1882,12 @@ function pickResumeTarget(
   const messagesState = state.messages as MessagesState | undefined;
   const legacyArchiveDir = (state as Record<string, unknown>).archive_dir as string | undefined;
   const priorArchive = messagesState?.archive_dir || legacyArchiveDir; // fallback for pre-fix state
+  if (forceFullArchive) {
+    // `priorArchive` is still reported: callers use it to distinguish an
+    // archive named by STATE from one merely discovered on disk, and that
+    // fact is unchanged by which subcommand we choose to run.
+    return { resumeTarget: null, priorArchive };
+  }
   const discoveredArchive = existsSync(archivePath) ? archivePath : null;
   const resumeTarget = allowStateArchive && priorArchive && existsSync(priorArchive) ? priorArchive : discoveredArchive;
   return { resumeTarget, priorArchive };
@@ -1506,21 +1988,76 @@ async function runArchiveOrResume(deps: RunArchiveDeps): Promise<void> {
 // ─── Cross-stream messages pass (sqlite-free, testable) ───────────────
 
 /**
+ * Emits one record, optionally reporting whether it was accepted.
+ *
+ * Resolving `false` means the record was deliberately dropped downstream
+ * and never reached the runtime. Resolving anything else — including no
+ * value at all, which is what every non-filtering caller does — means it
+ * landed.
+ *
+ * The reported outcome exists so that dropping a record is VISIBLE to the
+ * cursor logic. While the drop was silent, the messages pass advanced the
+ * durable watermark past rows it had not emitted, and the next run — which
+ * queries `TS > cursor` — could never fetch them again.
+ *
+ * Written as a union of two Promise types rather than `Promise<boolean |
+ * void>`: it keeps `void` in return position (where it is not the
+ * confusing-union that Biome's noConfusingVoidType rejects) while letting
+ * the many existing `Promise<void>` callbacks satisfy it unchanged.
+ */
+type EmitRecordFn = (stream: string, data: RecordData) => Promise<boolean> | Promise<void>;
+
+/**
  * Subset of the per-stream dependency bag that the unified messages pass
  * actually needs. The sqlite-bound helpers in this file extend this with a
  * `db: DatabaseSync` field; tests can satisfy this narrower interface
  * without opening a DB. Mirrors the gmail/chase/usaa EmitDeps shape.
  */
 export interface MessagesPassDeps {
-  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  /**
+   * Only a record this reports as accepted may advance the emitting
+   * channel's durable cursor. See `EmitRecordFn`.
+   */
+  emitRecord: EmitRecordFn;
   emittedAt: string;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
 }
 
 export interface MessagesPassResult {
+  /**
+   * The DURABLE per-channel cursor contribution: the max Slack ts among
+   * rows this pass actually EMITTED and had accepted, per channel. A row
+   * that was iterated but dropped (out of channel scope, or `messages` not
+   * requested) contributes nothing here, because the next run refetches
+   * strictly above this value — advancing it past an unemitted row makes
+   * that row permanently unreachable.
+   *
+   * Distinct from `iteratedChannelMaxTs`, which is progress reporting only.
+   */
   channelMaxTs: Record<string, string>;
   considered: number;
+  /**
+   * Rows this pass actually accounted for: enumerated AND successfully
+   * shaped into a record. Measured per-row from the parse outcome, never
+   * aliased to `considered` — a row whose timestamp could not be parsed is
+   * counted in `considered` but not here, so it reads an honest `partial`
+   * instead of the tautological `complete` the prior `covered: considered`
+   * produced.
+   */
+  covered: number;
+  /**
+   * The max Slack ts per channel among rows this pass WALKED, emitted or
+   * not. Observational: safe for progress/diagnostics, never durable.
+   * Kept separate from `channelMaxTs` so neither can be mistaken for the
+   * other at a call site.
+   */
+  iteratedChannelMaxTs: Record<string, string>;
+  /**
+   * Durable global cursor contribution: max Slack ts among EMITTED rows.
+   * Same rule as `channelMaxTs` — it is written to `messages.last_ts`, which
+   * the next run uses as a floor, so an unemitted row must not raise it.
+   */
   maxMessageTs: string | null;
 }
 
@@ -1547,7 +2084,18 @@ function recordChannelMaxTs(channelMaxTs: Record<string, string>, channelId: str
 /**
  * Single-pass co-traversal of pre-loaded MESSAGE rows, emitting into
  * messages, reactions, and message_attachments streams as requested.
- * Tracks maxMessageTs across every row for the post-loop STATE checkpoint.
+ *
+ * Cursor rule (the load-bearing invariant): the DURABLE watermarks
+ * (`maxMessageTs`, `channelMaxTs`) advance only for rows this pass actually
+ * emitted AND had accepted. Rows that were merely walked feed
+ * `iteratedChannelMaxTs`, which is observational only.
+ *
+ * Why the split exists: the archive query the next run issues is
+ * `TS > cursor`. A row that raises the cursor without being emitted is
+ * therefore never fetched again — silent, permanent loss. This pass walks
+ * rows for channels outside the run's scope (a scoped run reads the whole
+ * base archive), so "walked" and "emitted" genuinely differ, and conflating
+ * them lost data rather than merely mis-reporting it.
  *
  * Contract pinned by integration.test.ts:
  *   - Per row, the `messages` record emits BEFORE its reactions and
@@ -1555,11 +2103,11 @@ function recordChannelMaxTs(channelMaxTs: Record<string, string>, channelId: str
  *   - Scope gating is per-stream: disabling one of the three does not
  *     suppress the other two — they share the pass but not the guard.
  *   - When all three are disabled, the loop still runs (rows are iterated)
- *     but emits nothing; maxMessageTs still advances so the STATE
- *     checkpoint is accurate. This is the current pre-decomposition
- *     behavior: the caller guards entry to this function on
+ *     but emits nothing, and the DURABLE watermarks stay put — an
+ *     unemitted row must not be checkpointed as collected. Only
+ *     `iteratedChannelMaxTs` moves. The caller guards entry on
  *     `requested.has("messages" | "reactions" | "message_attachments")`,
- *     so in practice an all-disabled call is a harmless no-op.
+ *     so an all-disabled call is a no-op in practice either way.
  *   - A message with no reactions / no attachments still emits its
  *     messages record; enrichment is additive, not gating.
  *   - This function does not dedupe — dedup happens in `iterateMessageRows`
@@ -1593,19 +2141,35 @@ export async function emitMessagesPass(
   const wantMsgAttachments = deps.requested.has("message_attachments");
 
   const channelMaxTs: Record<string, string> = {};
+  const iteratedChannelMaxTs: Record<string, string> = {};
   let maxMessageTs: string | null = null;
   let considered = 0;
+  let covered = 0;
   for (const r of rows) {
     considered += 1;
+    // A row whose Slack `ts` will not parse gets a fabricated `sent_at`
+    // (parseMessageRow's `?? sentAtFallback`). It is still emitted — the
+    // body is real — but it is NOT objectively accounted for, so it must
+    // not raise the coverage numerator. Measured here, at the enumeration
+    // site, from the row's own parse outcome.
+    if (tsToIso(r.TS) !== null) {
+      covered += 1;
+    }
     const parsed = parseMessageRow(r, nowIso());
     const { ts } = parsed;
-    // Track the max ts seen in this run for the post-loop STATE emit.
-    // Slack ts is a fixed-shape "seconds.micros" string; string compare
-    // matches numeric order because both halves are zero-padded by Slack.
-    maxMessageTs = selectMaxSlackTs(maxMessageTs, ts);
-    recordChannelMaxTs(channelMaxTs, r.CHANNEL_ID, ts);
+    // Observational max: every row we walked, emitted or not. Slack ts is a
+    // fixed-shape "seconds.micros" string; string compare matches numeric
+    // order because both halves are zero-padded by Slack.
+    recordChannelMaxTs(iteratedChannelMaxTs, r.CHANNEL_ID, ts);
     if (wantMessages) {
-      await deps.emitRecord("messages", buildMessageRecord(parsed));
+      // The durable cursor advances HERE and only here — after the emit
+      // resolved and reported acceptance. A `void`-returning emitRecord
+      // (every non-scoping caller) counts as accepted.
+      const accepted = (await deps.emitRecord("messages", buildMessageRecord(parsed))) !== false;
+      if (accepted) {
+        maxMessageTs = selectMaxSlackTs(maxMessageTs, ts);
+        recordChannelMaxTs(channelMaxTs, r.CHANNEL_ID, ts);
+      }
     }
     if (wantReactions) {
       for (const rec of buildReactionRecords(parsed)) {
@@ -1618,7 +2182,7 @@ export async function emitMessagesPass(
       }
     }
   }
-  return { channelMaxTs, maxMessageTs, considered };
+  return { channelMaxTs, covered, iteratedChannelMaxTs, maxMessageTs, considered };
 }
 
 // ─── Per-stream helpers ────────────────────────────────────────────────
@@ -1633,7 +2197,7 @@ export async function emitMessagesPass(
  * archive-rebuild churn produces a fresh RECORD per (record, run) pair
  * even when source state hasn't moved. One cursor per fingerprinted
  * stream; cursors for streams not requested this run carry forward
- * untouched (their `pruneStale` is never called).
+ * untouched (their `dropUnseenIds` is never called).
  */
 export interface StreamDeps {
   db: DatabaseSync;
@@ -1645,8 +2209,17 @@ export interface StreamDeps {
    * accidentally route here instead of `emitRecord`.
    */
   emit: (msg: Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }>) => Promise<void>;
-  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  /**
+   * Reports whether the record landed — today a `messages` record outside
+   * the run's channel scope is dropped and reports `false`.
+   * `emitMessagesPass` needs that to keep the durable cursor off unemitted
+   * rows. See `EmitRecordFn`.
+   */
+  emitRecord: EmitRecordFn;
   emittedAt: string;
+  /** Streams whose source enumeration failed; failed streams must not prove
+   * coverage, prune fingerprints, or checkpoint STATE in this run. */
+  failedStreams: Set<string>;
   fingerprintCursors: Map<string, FingerprintCursor>;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
@@ -1704,21 +2277,69 @@ async function declareListConsidered(
   );
 }
 
-async function declareMessageFamilyCoverage(deps: StreamDeps, considered: number): Promise<void> {
-  for (const stream of ["reactions", "message_attachments"] as const) {
-    if (deps.requested.has(stream)) {
-      await deps.emit(
-        buildDetailCoverageMessage({
-          stream,
-          stateStream: "messages",
-          requiredKeys: [],
-          hydratedKeys: [],
-          considered,
-          covered: considered,
-        })
-      );
-    }
+function markEnumerationFailed(deps: StreamDeps, stream: string): void {
+  deps.failedStreams.add(stream);
+}
+
+async function emitEnumerationFailureGap(
+  deps: StreamDeps,
+  emit: CollectContext["emit"],
+  stream: string
+): Promise<void> {
+  if (!deps.failedStreams.has(stream)) {
+    return;
   }
+  await emit(
+    buildDetailGap({
+      stream,
+      recordKey: "enumeration",
+      reason: "temporary_unavailable",
+      locator: { kind: "slack.sqlite_enumeration", stream },
+      error: { class: "sqlite_enumeration_failed" },
+    })
+  );
+}
+
+/**
+ * Declares the messages self-coverage ONCE, using the fully-merged
+ * `considered` total (the base archive plus every scoped archive
+ * `mergeScopedMessageArchivePasses` folded in). A no-op when the message
+ * family wasn't requested this run. Called unconditionally, once per run,
+ * from `collect()` — never from inside `runRequestedStreams`, which runs once
+ * per scoped archive during a fold, and the runtime rejects a repeated
+ * (state_stream, stream) DETAIL_COVERAGE pair.
+ *
+ * `reactions` and `message_attachments` deliberately emit NO DETAIL_COVERAGE.
+ * The manifest declares both `state_stream: messages`, i.e. static
+ * single-parent detail streams, whose checkpoint status is projected from the
+ * parent's own commit outcome — so `validateDetailCoverageAgainstManifest`
+ * fails the ENTIRE run if either emits coverage of its own.
+ *
+ * Withholding is also the honest outcome on the numbers alone. The only counts
+ * in scope here are the PARENT message pass's: how many messages were walked,
+ * not how many reactions or attachments were derived against a per-key
+ * denominator. Reporting them under a child stream's name asserts
+ * `covered == considered` for children that were never accounted for — the
+ * fabricated-denominator anti-pattern this codebase has worked to remove. The
+ * children are left honestly unproven rather than falsely complete, exactly as
+ * `apple_contacts` withholds a contacts claim it cannot establish.
+ */
+async function declareMergedMessageCoverage(deps: StreamDeps, considered: number, covered: number): Promise<void> {
+  if (
+    !(deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments"))
+  ) {
+    return;
+  }
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream: "messages",
+      stateStream: "messages",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered,
+      covered,
+    })
+  );
 }
 
 /**
@@ -1837,6 +2458,10 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
     deps.db,
     "SELECT ID, TEAM, TEAM_ID, USERNAME, USER_ID, URL, ENTERPRISE_ID, DATA FROM WORKSPACE"
   );
+  if (rows === null) {
+    markEnumerationFailed(deps, "workspace");
+    return;
+  }
   const { considered, covered } = await runFingerprintedFullSync(deps, "workspace", rows, (r) =>
     buildWorkspaceRecord(r, deps.emittedAt)
   );
@@ -1920,6 +2545,10 @@ async function runChannelMembershipsStream(deps: StreamDeps): Promise<void> {
     SELECT DISTINCT CHANNEL_ID, USER_ID FROM CHANNEL_USER
   `
   );
+  if (rows === null) {
+    markEnumerationFailed(deps, "channel_memberships");
+    return;
+  }
   const { considered, covered } = await runFingerprintedFullSync(deps, "channel_memberships", rows, (r) =>
     buildChannelMembershipRecord(r, deps.emittedAt)
   );
@@ -1936,6 +2565,10 @@ export async function runUsersStream(deps: StreamDeps): Promise<void> {
       ON m.ID = u.ID AND m.mx = u.CHUNK_ID
   `
   );
+  if (rows === null) {
+    markEnumerationFailed(deps, "users");
+    return;
+  }
   const { considered, covered } = await runFingerprintedFullSync(deps, "users", rows, buildUserRecord);
   await declareListConsidered(deps, "users", considered, covered);
 }
@@ -2020,11 +2653,37 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   // (the 6-digit suffix). This is exact and handles all epoch widths correctly.
   const dedupJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
   let dedupWhere = "";
-  if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
-    dedupWhere = "WHERE m.TS > COALESCE(t.last_ts, ?)";
-    params.push(thresholds.legacyLastTs);
-  } else if (channelThresholds.length > 0) {
-    dedupWhere = "WHERE t.last_ts IS NULL OR m.TS > t.last_ts";
+  if (channelThresholds.length > 0) {
+    // A channel with NO row in `thresholds` has never had a cursor
+    // committed for it, so nothing about it has been walked. It therefore
+    // starts from zero (fetch its full history), NOT from the global
+    // `legacyLastTs` floor — which is why `legacyLastTs` is deliberately
+    // NOT consulted on this branch even when it is set.
+    //
+    // The prior shape was `m.TS > COALESCE(t.last_ts, ?)`, which handed an
+    // unwalked channel an unrelated global floor derived from OTHER
+    // channels' progress. Every message in that channel older than the
+    // floor was then permanently unreachable: the query never returns it,
+    // so it is never emitted, so no cursor is ever written for it, so the
+    // next run applies the same floor again. The cursor committed past data
+    // it had never processed — the exact failure this connector's cursor
+    // rule forbids. It suppressed no rows on this owner's archive only
+    // because every channel present there already had a cursor row; that
+    // made it latent, not safe.
+    //
+    // Cost of starting at zero is bounded and one-time: the channel is
+    // walked in full once, after which it has its own row here and rejoins
+    // the incremental path. Correctness is not traded for that.
+    //
+    // `legacyLastTs` still applies on the branch below, where there is no
+    // per-channel map at all: that is a pre-migration cursor covering the
+    // whole workspace uniformly, so it floors every channel legitimately.
+    //
+    // Parenthesized as one clause. SQL binds AND tighter than OR, so a bare
+    // `a IS NULL OR ts > a` composed with `AND <since>` would parse as
+    // `a IS NULL OR (ts > a AND <since>)` — letting an unwalked channel
+    // escape the since boundary entirely.
+    dedupWhere = "WHERE (t.last_ts IS NULL OR m.TS > t.last_ts)";
   } else if (thresholds.legacyLastTs) {
     dedupWhere = "WHERE m.TS > ?";
     params.push(thresholds.legacyLastTs);
@@ -2213,6 +2872,10 @@ export async function runFilesStream(deps: StreamDeps): Promise<void> {
     WHERE f.MODE != 'quip'
   `
   );
+  if (rows === null) {
+    markEnumerationFailed(deps, "files");
+    return;
+  }
   const { considered, covered } = await runFingerprintedFullSync(deps, "files", rows, buildFileRecord);
   await declareListConsidered(deps, "files", considered, covered);
 }
@@ -2240,6 +2903,10 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
     WHERE f.MODE = 'quip'
   `
   );
+  if (canvasRows === null) {
+    markEnumerationFailed(deps, "canvases");
+    return;
+  }
   const chanRows = safeAll<ChannelRow>(
     deps.db,
     `
@@ -2249,6 +2916,10 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
   );
+  if (chanRows === null) {
+    markEnumerationFailed(deps, "canvases");
+    return;
+  }
   const channelCanvasIndex = buildChannelCanvasIndex(chanRows);
   for (const r of canvasRows) {
     await deps.emitRecord("canvases", buildCanvasRecord(r, channelCanvasIndex));
@@ -2311,6 +2982,9 @@ function currentDmMpimChannelIds(db: DatabaseSync): string[] {
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
   );
+  if (rows === null) {
+    return [];
+  }
   const ids: string[] = [];
   for (const r of rows) {
     const d = parseBlob(r.data);
@@ -2337,12 +3011,13 @@ export async function runDmReadStatesStream(deps: StreamDeps, token: string, coo
   await deps.emit(buildFullScanCoverageMessage("dm_read_states", states.length));
 }
 
-interface StateEmitDeps {
+export interface StateEmitDeps {
   archivePath: string;
   baseArchiveResumedAt: Record<string, string>;
   channelLastTs: Record<string, string>;
   committedMaxTs: string | null;
   emit: CollectContext["emit"];
+  failedStreams: ReadonlySet<string>;
   fingerprintCursors: Map<string, FingerprintCursor>;
   observedChannelIds: readonly string[];
   requested: CollectContext["requested"];
@@ -2367,20 +3042,22 @@ interface StateEmitDeps {
  *   low cardinality, we full-sync each run; the cursor is just a freshness
  *   marker for visibility.
  */
-function emitStateCheckpoints(deps: StateEmitDeps): void {
-  deps.emit({
-    type: "STATE",
-    stream: "messages",
-    cursor: {
-      last_ts: deps.committedMaxTs,
-      channel_last_ts: deps.channelLastTs,
-      observed_channel_ids: [...deps.observedChannelIds].sort(),
-      archive_dir: deps.archivePath,
-      base_archive_resumed_at: deps.baseArchiveResumedAt,
-      scoped_archive_resumed_at: deps.scopedArchiveResumedAt,
-      fetched_at: nowIso(),
-    },
-  });
+export function emitStateCheckpoints(deps: StateEmitDeps): void {
+  if (!deps.failedStreams.has("messages")) {
+    deps.emit({
+      type: "STATE",
+      stream: "messages",
+      cursor: {
+        last_ts: deps.committedMaxTs,
+        channel_last_ts: deps.channelLastTs,
+        observed_channel_ids: [...deps.observedChannelIds].sort(),
+        archive_dir: deps.archivePath,
+        base_archive_resumed_at: deps.baseArchiveResumedAt,
+        scoped_archive_resumed_at: deps.scopedArchiveResumedAt,
+        fetched_at: nowIso(),
+      },
+    });
+  }
   for (const stream of [
     "channels",
     "channel_stats",
@@ -2394,7 +3071,7 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
     "reminders",
     "dm_read_states",
   ]) {
-    if (deps.requested.has(stream)) {
+    if (deps.requested.has(stream) && !deps.failedStreams.has(stream)) {
       const cursor: Record<string, unknown> = { synced_at: nowIso() };
       const fingerprintCursor = deps.fingerprintCursors.get(stream);
       if (fingerprintCursor && fingerprintCursor.size() > 0) {
@@ -2405,6 +3082,20 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
         stream,
         cursor,
       });
+    }
+  }
+}
+
+/** Prune only fingerprints from streams that completed their full source
+ * enumeration. A failed read leaves the prior map intact for the retry. */
+export function pruneRequestedFingerprintCursors(
+  requested: CollectContext["requested"],
+  failedStreams: ReadonlySet<string>,
+  fingerprintCursors: Map<string, FingerprintCursor>
+): void {
+  for (const stream of FINGERPRINTED_STREAMS) {
+    if (requested.has(stream) && !failedStreams.has(stream)) {
+      fingerprintCursors.get(stream)?.dropUnseenIds();
     }
   }
 }
@@ -2578,6 +3269,7 @@ export async function runRequestedStreams(
   if (deps.requested.has("workspace")) {
     deps.progress("Slack: emitting workspace record", { stream: "workspace" });
     await runWorkspaceStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "workspace");
   }
   if (deps.requested.has("channels") || deps.requested.has("channel_stats")) {
     deps.progress("Slack: emitting channels", { stream: "channels" });
@@ -2586,13 +3278,21 @@ export async function runRequestedStreams(
   if (deps.requested.has("channel_memberships")) {
     deps.progress("Slack: emitting channel memberships", { stream: "channel_memberships" });
     await runChannelMembershipsStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "channel_memberships");
   }
   if (deps.requested.has("users")) {
     deps.progress("Slack: emitting users", { stream: "users" });
     await runUsersStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "users");
   }
   // Messages, reactions, message_attachments share one pass for efficiency.
-  let result: MessagesPassResult = { channelMaxTs: {}, maxMessageTs: null, considered: 0 };
+  let result: MessagesPassResult = {
+    channelMaxTs: {},
+    covered: 0,
+    iteratedChannelMaxTs: {},
+    maxMessageTs: null,
+    considered: 0,
+  };
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
     const priorTs = options.allowLegacyMessageCursorFallback === false ? null : (messagesState?.last_ts ?? null);
@@ -2605,32 +3305,22 @@ export async function runRequestedStreams(
       legacyLastTs: priorTs,
       sinceTs: options.sinceTs ?? null,
     });
-    // One archive traversal supplies the parent denominator. Reactions and
-    // attachments ride this checkpoint window via manifest state_stream and
-    // must not receive a fabricated child-row denominator.
-    await deps.emit(
-      buildDetailCoverageMessage({
-        stream: "messages",
-        stateStream: "messages",
-        requiredKeys: [],
-        hydratedKeys: [],
-        considered: result.considered,
-        covered: result.considered,
-      })
-    );
-    // Reactions and message attachments are derived from the same retained
-    // MESSAGE rows. Declare that archive enumeration as their measured
-    // checkpoint boundary too; never use the child-record counts, which are
-    // not the boundary this pass enumerates.
-    await declareMessageFamilyCoverage(deps, result.considered);
+    // The messages/reactions/message_attachments DETAIL_COVERAGE is NOT
+    // emitted here: a scoped-archive fold calls this function once per
+    // archive (mergeScopedMessageArchivePasses), and the runtime rejects a
+    // repeated (state_stream, stream) DETAIL_COVERAGE pair. The caller emits
+    // coverage once, after every archive this run touches has been folded
+    // into a single merged `considered` total.
   }
   if (deps.requested.has("files")) {
     deps.progress("Slack: emitting files", { stream: "files" });
     await runFilesStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "files");
   }
   if (deps.requested.has("canvases")) {
     deps.progress("Slack: emitting canvases", { stream: "canvases" });
     await runCanvasesStream(deps);
+    await emitEnumerationFailureGap(deps, emit, "canvases");
   }
   if (deps.requested.has("stars")) {
     deps.progress("Slack: emitting stars", { stream: "stars" });
@@ -2707,6 +3397,7 @@ if (isMainModule(import.meta.url)) {
     retryablePattern: SLACK_RETRYABLE_FAILURE_RE,
     timeRangeField: "sent_at",
     validateRecord,
+    isTombstone: isSlackMessageTombstone,
     auth: {
       kind: "env",
       required: ["SLACK_WORKSPACE", "SLACK_TOKEN", "SLACK_COOKIE"],
@@ -2757,8 +3448,13 @@ if (isMainModule(import.meta.url)) {
       const { archivePath, sqlitePath } = resolveScopedArchivePaths(baseArchivePaths, positionalChannels);
       await mkdir(dumpDir, { recursive: true });
 
+      // An archive whose `archive` enumeration never finished still owes one.
+      // Resuming it can only ever re-walk the channels enumeration already
+      // reached, so the ones it never reached would stay missing forever.
+      const enumerationIncomplete = reportOwedEnumeration(sqlitePath, archivePath, progress);
       const { resumeTarget, priorArchive } = pickResumeTarget(state, archivePath, {
         allowStateArchive: isUnscopedMessageBoundary,
+        forceFullArchive: enumerationIncomplete,
       });
       const useResume = Boolean(resumeTarget);
       const messagesState = state.messages as MessagesState | undefined;
@@ -2853,6 +3549,7 @@ if (isMainModule(import.meta.url)) {
               })
             : ctx.emitRecord(stream, data),
         emittedAt: ctx.emittedAt,
+        failedStreams: new Set(),
         fingerprintCursors,
         progress,
         requested,
@@ -2889,6 +3586,14 @@ if (isMainModule(import.meta.url)) {
         await emitMissingChannelDiagnostic(emit, reconciledSourceCache.missingChannelIds);
       }
 
+      // The existing diagnostic above compares the archive against this
+      // connector's OWN prior state, so a channel never archived in the
+      // first place is invisible to it forever. This one compares the
+      // archive's inventory against slackdump's own per-channel
+      // end-of-pagination marker — a source-side fact — and so surfaces
+      // exactly that never-visited hole.
+      await emitUnprovenChannelDiagnostic(emit, db, messageFamilyRequested, opts.MEMBER_ONLY);
+
       // Register the opt-in __uploads reclaim once every archive this run
       // actually read is known: the base/scoped archive, every scoped archive
       // reconcileMessageSourceCache refreshed or repaired AND folded into the
@@ -2910,6 +3615,20 @@ if (isMainModule(import.meta.url)) {
           ]
         : null;
 
+      // Everything from here through mergeScopedMessageArchivePasses below
+      // reads only the already-downloaded local sqlite archive(s) and posts
+      // to this run's own ingest endpoint — no further slackdump subprocess,
+      // no further Slack API call, no provider rate limit. `maxRunWallClockMs`
+      // (run-executor.ts) is sized for the external walk that already
+      // finished above; this marker tells the scheduler watchdog to stop
+      // applying it for the remainder of the attempt, so a large local
+      // archive being read into the store is not truncated as if it were
+      // still rate-limited by Slack. See run_1787407222861: slackdump had
+      // archived 1,066,135 messages to disk and only this local read-and-emit
+      // pass was in flight when the external-walk ceiling killed the run.
+      progress("Slack: external archive walk complete; beginning local archive read", {
+        phase_boundary: "local_only_phase_started",
+      });
       let messageResult = await timedPhase(progress, "read-and-emit", () =>
         runRequestedStreams(deps, state, { workspace, token, cookie }, emit, {
           allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
@@ -2929,15 +3648,13 @@ if (isMainModule(import.meta.url)) {
         });
       }
 
+      await declareMergedMessageCoverage(deps, messageResult.considered, messageResult.covered);
+
       // Drop fingerprint entries for IDs that disappeared from the source
       // since the prior run on streams we actually requested. Streams the
       // caller did not exercise keep their full carry-forward — an
       // unrequested stream's cursor must not be silently wiped.
-      for (const stream of FINGERPRINTED_STREAMS) {
-        if (requested.has(stream)) {
-          fingerprintCursors.get(stream)?.pruneStale();
-        }
-      }
+      pruneRequestedFingerprintCursors(requested, deps.failedStreams, fingerprintCursors);
 
       const priorMaxTs = messagesState?.last_ts || null;
       const committedMaxTs = selectCommittedMaxTs(priorMaxTs, messageResult.maxMessageTs);
@@ -2955,6 +3672,7 @@ if (isMainModule(import.meta.url)) {
         channelLastTs: committedChannelLastTs,
         committedMaxTs,
         emit,
+        failedStreams: deps.failedStreams,
         fingerprintCursors,
         observedChannelIds,
         requested,

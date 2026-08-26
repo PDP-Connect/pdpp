@@ -42,6 +42,29 @@ test("410 with companion_unavailable code classifies as companion_unavailable", 
   assert.equal(reason, "companion_unavailable");
 });
 
+test("503 with streaming_companion_unavailable code classifies as companion_unavailable", () => {
+  // Regression: the reference server raises StreamingCompanionUnavailableError
+  // as HTTP 503 with body code `streaming_companion_unavailable`
+  // (reference-implementation/server/streaming/routes.ts). That fell through
+  // to `unknown`, whose copy ("Couldn't reach the browser stream after
+  // several tries.") reads as a network/reachability problem when the server
+  // in fact answered with a specific, actionable reason.
+  const { reason, troubleMessage } = classifyStreamReachFailure({
+    probeCode: "streaming_companion_unavailable",
+    probeStatus: 503,
+  });
+  assert.equal(reason, "companion_unavailable");
+  assert.equal(troubleMessage, "The browser session is no longer running on the server. Start the browser step again.");
+});
+
+test("503 with an unrelated or absent code still classifies as unknown", () => {
+  // Other 503s (e.g. the managed n.eko window-settle probe's
+  // managed_surface_window_settle_unavailable) are a distinct condition;
+  // only the companion-unavailable body code should map to companion_unavailable.
+  const { reason } = classifyStreamReachFailure({ probeCode: null, probeStatus: 503 });
+  assert.equal(reason, "unknown");
+});
+
 test("a thrown probe (no HTTP response) classifies as unreachable_origin", () => {
   const { reason } = classifyStreamReachFailure({ probeError: true, probeStatus: null });
   assert.equal(reason, "unreachable_origin");
@@ -59,9 +82,12 @@ test("an answered-but-unrecognized status (5xx) classifies as unknown", () => {
   assert.equal(reason, "unknown");
 });
 
-test("unknown preserves the prior generic give-up message verbatim (no regression)", () => {
+test("unknown with a known status appends the status code to the generic give-up message", () => {
+  // A future unmapped status must not hide behind identical generic copy the
+  // way 503/streaming_companion_unavailable did before this fix — the status
+  // is now visible in the message even though the reason stays `unknown`.
   const { troubleMessage } = classifyStreamReachFailure({ probeStatus: 500 });
-  assert.equal(troubleMessage, "Couldn't reach the browser stream after several tries.");
+  assert.equal(troubleMessage, "Couldn't reach the browser stream after several tries. (server responded 500)");
 });
 
 test("every reason yields a non-empty operator message that never claims success", () => {

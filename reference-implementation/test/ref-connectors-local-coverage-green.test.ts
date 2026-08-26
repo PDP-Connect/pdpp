@@ -1173,6 +1173,110 @@ test("coverage proof eligibility ignores wall-clock ordering when generations ma
   assert.equal(deriveLocalCoverageAxis({ ...base, manifestGeneration: 5 }).reliable, false);
 });
 
+test("unreliableReason distinguishes coverage genuinely unproven from a refused-to-read snapshot", () => {
+  const base = {
+    duplicateStores: [],
+    hasAuthoritativeInventory: true,
+    hasCommittedSnapshot: true,
+    malformed: false,
+    manifestGeneration: 4,
+    missingStores: [],
+    nowIso: "2026-06-03T12:00:00.000Z",
+    rows: [{ status: "collected", store: "projects", stream: "sessions" }],
+    state: { fetched_at: "2026-06-03T12:05:01.000Z" },
+    stateManifestGeneration: 4,
+    unexpectedStores: [],
+    updatedAt: "2026-06-03T12:05:01.000Z",
+  };
+
+  // Genuinely unproven: a real required store (e.g. an older collector build
+  // that predates a derived-stream descriptor such as claude_code's
+  // derived_messages) never showed up in the committed snapshot at all.
+  const genuinelyUnproven = deriveLocalCoverageAxis({
+    ...base,
+    missingStores: ["derived_messages"],
+  });
+  assert.equal(genuinelyUnproven.reliable, false);
+  assert.equal(genuinelyUnproven.axis, "unknown");
+  assert.equal(genuinelyUnproven.unreliableReason, "missing_stores");
+
+  // Proven but the server refused to read it: every required store IS present
+  // and accounted for, but the read-side generation fence rejects the proof as
+  // stale relative to the connection's current manifest generation.
+  const refusedToRead = deriveLocalCoverageAxis({ ...base, manifestGeneration: 5 });
+  assert.equal(refusedToRead.reliable, false);
+  assert.equal(refusedToRead.axis, "unknown");
+  assert.equal(refusedToRead.unreliableReason, "generation_mismatch");
+
+  // Reliable proof carries no unreliableReason at all -- the field only
+  // exists to explain a refusal, never to annotate a trusted result.
+  assert.equal(deriveLocalCoverageAxis(base).unreliableReason, undefined);
+});
+
+test("SourceCoverageComplete names a stale collector build, not a generic 'evidence missing', when local coverage is unknown specifically because a required store was never reported", () => {
+  // Reproduces the four production local-device connections (peregrine
+  // Claude Code/Codex, vivid fish Claude Code, Simon VM Claude Code): their
+  // collector builds predate 4d9e6b7e4 (the commit that added
+  // derived_messages/derived_attachments/derived_memory_notes to the
+  // descriptor authority), so their committed coverage_diagnostics snapshot
+  // structurally cannot contain those stores. `deriveLocalCoverageAxis`
+  // correctly reports `reliable: false` / `unreliableReason: "missing_stores"`
+  // for this shape -- fixed and asserted above. Before this change,
+  // `SourceCoverageComplete` collapsed every `unknown` cause into the same
+  // generic "Source coverage evidence is missing." message with no
+  // remediation, so an owner staring at a connection that is visibly
+  // collecting (fresh heartbeat, drained outbox, thousands of records) had no
+  // way to tell "never measured yet" apart from "measured by a build too old
+  // to prove it" without hand-tracing the server projection.
+  const missingStoresCoverage = {
+    axis: "unknown" as const,
+    evidenceAsOf: null,
+    reliable: false as const,
+    unaccountedStores: [] as readonly string[],
+    unreliableReason: "missing_stores" as const,
+  };
+  const health = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH_FRESHNESS,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    localCoverage: missingStoresCoverage,
+    localDeviceBacked: true,
+    manifestStreams: [{ name: "messages" }],
+    nowIso: NOW,
+    outbox: { axis: "idle" },
+    pendingDetailGaps: [],
+    schedule: null,
+  });
+  assert.equal(health.axes.coverage, "unknown");
+  const coverageCondition = health.conditions.find((c) => c.type === "SourceCoverageComplete");
+  assert.ok(coverageCondition);
+  assert.equal(coverageCondition.status, "unknown");
+  assert.equal(coverageCondition.reason, "coverage_unknown_stale_collector");
+  assert.ok(coverageCondition.message.toLowerCase().includes("collector build"));
+  assert.ok(coverageCondition.message.toLowerCase().includes("update"));
+  assert.equal(coverageCondition.remediation?.action, "update_connector");
+
+  // Every OTHER `unknown` cause (no evidence read at all) keeps the prior
+  // generic message and reason -- this is purely an additive label for the
+  // one specific, owner-actionable cause, never a general rewording.
+  const noEvidenceHealth = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH_FRESHNESS,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    localCoverage: null,
+    localDeviceBacked: true,
+    manifestStreams: [{ name: "messages" }],
+    nowIso: NOW,
+    outbox: { axis: "idle" },
+    pendingDetailGaps: [],
+    schedule: null,
+  });
+  const genericCondition = noEvidenceHealth.conditions.find((c) => c.type === "SourceCoverageComplete");
+  assert.ok(genericCondition);
+  assert.equal(genericCondition.reason, "coverage_unknown");
+  assert.equal(genericCondition.message, "Source coverage evidence is missing.");
+});
+
 test(
   "local collector with unaccounted stores projects coverage gaps with actionable reason, not unknown",
   withTmpDb(async () => {

@@ -80,7 +80,7 @@ test("note: a successful (re)hydration overwrites the carried pointers", () => {
   assert.deepEqual(cursorB.toState().S1, rehydrated, "a fresh hydration replaces the prior pointers");
 });
 
-test("pruneStale: a statement no longer listed stops being carried forward", () => {
+test("dropUnseenIds: a statement no longer listed stops being carried forward", () => {
   const cursorA = openStatementHydrationCursor(new Map());
   cursorA.note("S1", HYD);
   cursorA.note("S2", HYD);
@@ -89,7 +89,7 @@ test("pruneStale: a statement no longer listed stops being carried forward", () 
   // Run B only sees S1 (S2 fell off the documents index).
   const cursorB = openStatementHydrationCursor(priorMapFrom(stateA));
   cursorB.note("S1", cursorB.resolveOnFailure("S1"));
-  cursorB.pruneStale();
+  cursorB.dropUnseenIds();
   const next = cursorB.toState();
   assert.ok(next.S1, "still-listed statement is retained");
   assert.equal(next.S2, undefined, "delisted statement is pruned");

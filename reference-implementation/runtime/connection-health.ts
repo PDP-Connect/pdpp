@@ -48,7 +48,11 @@
 
 import type { EphemeralBrowserRuntimeProjection } from "./browser-surface/ephemeral-health-projection.ts";
 import { type BrowserSurfaceRepairEvidence, decideBrowserSurfaceRepair } from "./browser-surface/repair-decision.ts";
-import { BLOCKED_PROMOTION_THRESHOLD, OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS } from "./connection-health-policy.ts";
+import {
+  BLOCKED_PROMOTION_THRESHOLD,
+  OUTBOX_BLOCKED_BACKLOG_TOLERANCE,
+  OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS,
+} from "./connection-health-policy.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -128,17 +132,22 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_FAILED: "collection_failed",
   COLLECTION_NOT_OBSERVED: "collection_not_observed",
   COLLECTION_SUCCEEDED: "collection_succeeded",
+  COLLECTION_SUCCEEDED_IMPORT_COMPLETE: "collection_succeeded_import_complete",
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
+  COVERAGE_COMPLETE_UNFILLABLE_ACCOUNTED: "coverage_complete_unfillable_accounted",
   COVERAGE_UNKNOWN: "coverage_unknown",
+  COVERAGE_UNKNOWN_STALE_COLLECTOR: "coverage_unknown_stale_collector",
   CREDENTIAL_CONTINUITY_NOT_APPLICABLE: "credential_continuity_not_applicable",
   CREDENTIAL_CONTINUITY_PROVEN: "credential_continuity_proven",
   CREDENTIAL_CONTINUITY_UNPROVEN: "credential_continuity_unproven",
   CREDENTIAL_REJECTED: "credential_rejected",
   CREDENTIAL_REQUIRED: "credential_required",
   CREDENTIALS_ACCEPTED: "credentials_accepted",
+  CREDENTIALS_NOT_APPLICABLE_FILE_IMPORT: "credentials_not_applicable_file_import",
   CREDENTIALS_NOT_PROBED: "credentials_not_probed",
   EXTERNAL_TOOL_UNAVAILABLE: "external_tool_unavailable",
   FRESH: "fresh",
+  FRESHNESS_NOT_APPLICABLE_COMPLETE: "freshness_not_applicable_complete",
   FRESHNESS_UNKNOWN: "freshness_unknown",
   LOCAL_EXPORTER_ACTIVE: "local_exporter_active",
   LOCAL_EXPORTER_DEAD_LETTER_BACKLOG: "local_exporter_dead_letter_backlog",
@@ -164,6 +173,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   OUTBOX_TRANSIENT_UPLOAD_FAILURE: "outbox_transient_upload_failure",
   OUTBOX_UNKNOWN: "outbox_unknown",
   PROJECTION_CURRENT: "projection_current",
+  PROJECTION_SUPERSEDED_BY_DEFINITION_CHANGE: "projection_superseded_by_definition_change",
   PROJECTION_UNRELIABLE: "projection_unreliable",
   REMOTE_SURFACE_AVAILABLE: "remote_surface_available",
   REMOTE_SURFACE_FAILED: "remote_surface_failed",
@@ -873,6 +883,18 @@ export interface ConnectionHealthSnapshot {
    */
   readonly forward_disposition: ForwardDisposition;
   readonly last_success_at: string | null;
+  /**
+   * Additive, nullable local-device outbox count breakdown carried through
+   * from {@link ConnectionOutboxEvidence.counts}. Pure annotation: no
+   * classification step reads it, so it cannot move the headline `state`, any
+   * axis, any condition, the `forward_disposition`, or `next_action`. It lets
+   * the rendered verdict size a dead-letter backlog the system already
+   * counted instead of describing it as an unbounded "records". Carries only
+   * non-negative integer counts and optional ISO-8601 timestamps; never a
+   * stream body, payload, source name, or token. `null` when no trusted
+   * device rows stand behind a count.
+   */
+  readonly local_device_outbox_counts: OutboxDiagnosticCounts | null;
   /** Non-secret CTA. `null` when the connection does not need attention. */
   readonly next_action: NextAction | null;
   readonly next_attempt_at: string | null;
@@ -994,6 +1016,52 @@ export interface ConnectionCoverageEvidence {
    * only to non-required streams and does not block healthy".
    */
   readonly requiredButAccepted?: boolean;
+  /**
+   * `true` only when EVERY outstanding gap behind a `terminal_gap` axis is
+   * backed by durable, per-item evidence that the item can never be
+   * collected — not merely that recovery has been attempted and failed.
+   *
+   * The canonical example is Gmail's `attachments` stream: an attachment
+   * whose `size_bytes` exceeds the connector's byte cap is a permanent,
+   * by-policy skip the connector itself already counts as covered in its
+   * own per-run `DETAIL_COVERAGE` accounting (`optionalSkipKeys`) — the
+   * gate condition here is just catching up to evidence the connector
+   * already has. `size_bytes > max_bytes` is a durable fact recorded once;
+   * it does not change on retry, so retrying can never resolve it.
+   *
+   * This is DELIBERATELY NOT satisfied by "we retried N times and it kept
+   * failing", however large N is (see `temporary_unavailable`'s attempt
+   * count). Attempt exhaustion proves the current strategy hasn't worked;
+   * it does not prove the item is impossible. Only a caller with concrete,
+   * per-item durable evidence of impossibility (a recorded byte size against
+   * a recorded limit, a provider 410 Gone, etc.) may set this `true` — never
+   * an inferred, absent-answer, or attempt-count heuristic. Setting this from
+   * a missing answer manufactures exactly the false green
+   * `design-notes/source-state-truth-2026-08-18.md`'s safety property
+   * forbids.
+   *
+   * Optional; absent/`false` preserves the shipped behavior exactly — a
+   * `terminal_gap` axis blocks `SourceCoverageComplete` regardless of
+   * `requiredButAccepted`. Ignored for every axis other than `terminal_gap`;
+   * `unsupported`/`unavailable` already have their own accepted-coverage
+   * path and a caller has no reason to combine the two.
+   */
+  readonly unfillableAccounted?: boolean;
+  /**
+   * `true` when `axis === "unknown"` specifically because a local-device
+   * collector's committed coverage snapshot is missing a store the current
+   * descriptor authority requires (`deriveLocalCoverageAxis`'s
+   * `unreliableReason === "missing_stores"` in `ref-control.ts`) — the
+   * collector build genuinely predates the server's coverage requirements
+   * and never measured those stores at all. Distinct from every other
+   * `unknown` cause (no evidence yet, a stale generation, a malformed
+   * snapshot): this one names a concrete, owner-actionable fix (update the
+   * collector) instead of leaving the owner to guess why a connection that
+   * is visibly collecting still reads "coverage evidence is missing".
+   * Optional/absent preserves the prior generic `unknown` message for every
+   * other cause.
+   */
+  readonly unknownStaleCollectorBuild?: boolean;
 }
 
 /** Outbox/work rollup from local collector or other durable executor. */
@@ -1007,6 +1075,21 @@ export interface ConnectionOutboxEvidence {
    * generic copy.
    */
   readonly cause?: OutboxStalledCause | null;
+  /**
+   * The already-rolled-up local-device outbox breakdown
+   * (`rollupOutboxDiagnosticCounts` over the trusted heartbeat rows). Purely
+   * additive annotation: NO classification step reads it, so it cannot move an
+   * axis, a condition, the headline state, or the cause. It exists so the
+   * owner-facing remediation summary can BOUND a dead-letter backlog the
+   * system already counted — "1 of 10,001" and "8,432 of 10,001" demand
+   * completely different reactions, and telling the owner only "records"
+   * leaves a known magnitude invisible.
+   *
+   * Absent/`null` when no trusted device rows stand behind a count. The
+   * renderer must fall back to uncounted wording rather than fabricate a
+   * zero; see `deadLetterMagnitude` in `rendered-verdict.ts`.
+   */
+  readonly counts?: OutboxDiagnosticCounts | null;
 }
 
 /**
@@ -1015,6 +1098,32 @@ export interface ConnectionOutboxEvidence {
  */
 export interface ConnectionFreshnessEvidence {
   readonly axis: FreshnessAxis;
+}
+
+/**
+ * Acquisition-completeness evidence: whether this connection's data collection
+ * is FINISHED by design rather than recurring.
+ *
+ * A one-time import (`source_kind = 'manual'`) ingests a file the owner
+ * supplied and then never collects again. Google Maps Timeline Import holds
+ * 299,248 records and WhatsApp-brennan holds 120,042; both have zero rows in
+ * `run_history` and no schedule, because there is nothing left to run. Their
+ * data is not stale — it is *final*. Asking "is it current?" of a completed
+ * import is a category error, and the shipped model answers it `unknown`
+ * forever, which the owner reads as "broken".
+ *
+ * `complete: true` makes freshness `not_applicable` (a settled answer) instead
+ * of `unknown` (a pending one), and lets the healthy predicate accept the
+ * absence of a freshness proof it can never obtain. It deliberately does NOT
+ * relax coverage: a completed import must still prove it ingested what it
+ * claimed, so a gap or unknown coverage keeps it out of green.
+ *
+ * Omit/`null` for every recurring source. That preserves the shipped behavior
+ * exactly — staleness still degrades a source the system was supposed to
+ * refresh and did not.
+ */
+export interface ConnectionAcquisitionEvidence {
+  readonly complete: boolean;
 }
 
 /**
@@ -1124,9 +1233,52 @@ export interface ConnectionCredentialEvidence {
   readonly rejected?: boolean;
 }
 
+/**
+ * Authentication-applicability evidence: whether this connection authenticates
+ * to a provider AT ALL.
+ *
+ * A file-import connector (`setup.modality = 'manual_or_upload'` with no
+ * `setup.credential_capture`) parses an artifact the owner already exported and
+ * handed over. It holds no credential, opens no session, and contacts no
+ * provider — Google Maps Timeline Import and WhatsApp both ingest a local file.
+ * There is no authentication to probe, so "are the credentials valid?" has no
+ * referent for them. The shipped projection answers it `credentials_not_probed`
+ * / `unknown` forever, which reads as an outstanding question that no owner
+ * action and no future run can ever close.
+ *
+ * `authenticates: false` makes `CredentialsValid` `not_applicable` — a settled
+ * answer that the question does not apply — instead of `unknown`, a pending one.
+ * This is the same distinction {@link ConnectionAcquisitionEvidence} draws for
+ * freshness, and it obeys the same safety property: inapplicability may only
+ * come from durable evidence that the question is MEANINGLESS, never from the
+ * mere absence of an answer. A connector that authenticates but has simply not
+ * been probed yet keeps its honest `unknown`.
+ *
+ * This deliberately grants no exemption from coverage. An import must still
+ * prove it ingested what it claimed; see `sourceCoverageCondition`.
+ *
+ * Omit/`null` for every connector that authenticates, preserving the shipped
+ * behavior exactly.
+ */
+export interface ConnectionAuthenticationEvidence {
+  readonly authenticates: boolean;
+}
+
 export interface ComputeConnectionHealthInput {
+  /**
+   * Acquisition-completeness evidence. Present and `complete` only for sources
+   * whose collection is finished by design (one-time imports). See
+   * {@link ConnectionAcquisitionEvidence}.
+   */
+  readonly acquisition?: ConnectionAcquisitionEvidence | null;
   readonly activity: ConnectionActivityEvidence | null;
   readonly attention: ConnectionAttentionEvidence | null;
+  /**
+   * Authentication-applicability evidence. Present and `authenticates: false`
+   * only for connectors that contact no provider (file imports). See
+   * {@link ConnectionAuthenticationEvidence}.
+   */
+  readonly authentication?: ConnectionAuthenticationEvidence | null;
   readonly backoff: ConnectionBackoffEvidence | null;
   /**
    * True when this connection has a browser/session repair path. This is a
@@ -1251,6 +1403,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const ephemeralBrowserRuntime = input.ephemeralBrowserRuntime;
   const remoteSurface = projectRemoteSurfaceDetail(input.remoteSurface ?? null);
+  const localDeviceOutboxCounts = input.outbox?.counts ?? null;
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
   const nextAttemptAt = conditionExpired(input.backoff?.nextRunAt ?? null, input.observedAt ?? null)
     ? null
@@ -1277,6 +1430,10 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       dominantConditionId,
       ephemeralBrowserRuntime,
       forwardDisposition,
+      // Attached at the single funnel every classification step returns
+      // through, so the annotation rides along without any step being able to
+      // classify on it.
+      localDeviceOutboxCounts,
       supportingConditionIds: pickSupportingConditionIds(conditions, dominantConditionId),
     });
   };
@@ -1736,11 +1893,29 @@ export function hasIndependentDegradingEvidence(conditions: readonly ConnectionH
   return conditions.some(isDegradingCondition);
 }
 
+/**
+ * A required condition is satisfied when it is affirmatively `true`, or when it
+ * is `not_applicable` — a settled answer that the question does not apply to
+ * this connection.
+ *
+ * `unknown` is NOT satisfaction. That distinction is the whole point: a source
+ * whose coverage cannot be proven because its collector is out of date stays
+ * out of green, while a completed one-time import that will never refresh is
+ * not held to a freshness proof it can never produce.
+ */
+function conditionIsSettledSatisfied(
+  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
+  type: ConnectionConditionType
+): boolean {
+  const status = conditions.get(type)?.status;
+  return status === "true" || status === "not_applicable";
+}
+
 function isHealthyConditionSet(conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>): boolean {
   return (
     conditionIsTrue(conditions, "CollectionSucceeded") &&
     conditionIsTrue(conditions, "SourceCoverageComplete") &&
-    conditionIsTrue(conditions, "Fresh") &&
+    conditionIsSettledSatisfied(conditions, "Fresh") &&
     !conditionIsFalse(conditions, "AttentionClear") &&
     !conditionIsFalse(conditions, "ProjectionReliable") &&
     !conditionIsFalse(conditions, "RetryPolicyClear") &&
@@ -1835,26 +2010,84 @@ function conditionExpired(expiresAt: string | null, observedAt: string | null): 
   return expiresAtMs <= observedAtMs;
 }
 
+/**
+ * Projection sources that a new run must clear, because no amount of waiting
+ * can.
+ *
+ * `terminal_facts_historical` is emitted by `foldTerminalEventFacts` when
+ * every terminal event on record carries a manifest generation that is not
+ * the connection's current one. The fold is right to refuse it — a
+ * prior-generation event is not proof about the current manifest — but the
+ * consequence is a state that cannot self-heal: the drain re-reads the same
+ * historical events and re-derives the identical verdict forever. Only a
+ * fresh successful run, stamped at the current generation, emits the
+ * evidence that clears it.
+ *
+ * Telling the owner to "wait" here is the one instruction guaranteed not to
+ * work, which is what made several connections read as an unexplained
+ * "Can't collect" indefinitely.
+ */
+const RUN_CLEARABLE_PROJECTION_SOURCES: ReadonlySet<string> = new Set(["terminal_facts_historical"]);
+
+/**
+ * Remediation is a pure function of the condition's `reason`, computed here at
+ * projection time — never a static string owned by the condition TYPE.
+ *
+ * `ProjectionReliable` is `false` for at least two causes that need opposite
+ * advice. A projection still catching up clears itself, so "wait" is true. A
+ * projection superseded by a definition change never clears on its own, so
+ * "wait" is the one instruction guaranteed to fail — it is what left several
+ * connections reading "Not measured" for half a day while the owner waited for
+ * an event that could not arrive. Binding the remedy to the CONDITION rather
+ * than to the CAUSE is the mechanism of that bug, so the two are bound
+ * together here instead: one reason, one remedy, no way to add a cause without
+ * choosing its advice.
+ */
+function projectionRemediationForReason(reason: string): ConnectionHealthCondition["remediation"] {
+  if (reason === CONDITION_REASON.PROJECTION_SUPERSEDED_BY_DEFINITION_CHANGE) {
+    // Same shape as every other owner-runnable remediation in this file (see
+    // `stale_manual_refresh` and the retryable-gap coverage condition): the
+    // runtime performs the retry, and the console's Refresh CTA is the
+    // owner's way to ask for it now.
+    return {
+      action: "retry_by_runtime",
+      label: "Run the connector to rebuild its evidence",
+      retryable: true,
+      target: "run",
+    };
+  }
+  return {
+    action: "wait",
+    label: "Wait for the reference read model to refresh",
+    retryable: true,
+    target: null,
+  };
+}
+
 function projectionReliableCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   // This is the canonical projection-reliability composition boundary. Several
   // failed components can share one closed reason code (for example a repair
   // lock failure); retain first-seen order while exposing each cause once.
   const sources = canonicalProjectionUnreliableSources(input.projection?.unreliableSources ?? []);
   if (sources.length > 0) {
+    // "Wait" stays the default, and stays correct whenever ANY source can
+    // still clear on its own — a mixed set is only as stuck as its most
+    // recoverable member. Only an entirely run-clearable set changes advice.
+    const requiresRun = sources.every((source) => RUN_CLEARABLE_PROJECTION_SOURCES.has(source));
+    const reason = requiresRun
+      ? CONDITION_REASON.PROJECTION_SUPERSEDED_BY_DEFINITION_CHANGE
+      : CONDITION_REASON.PROJECTION_UNRELIABLE;
     return condition({
-      message: `Projection evidence is unreliable: ${sources.join(", ")}.`,
+      message: requiresRun
+        ? `Projection evidence has not run since the connection's setup changed: ${sources.join(", ")}. A new successful run will restore it.`
+        : `Projection evidence is unreliable: ${sources.join(", ")}.`,
       origin: "read_model",
-      reason: CONDITION_REASON.PROJECTION_UNRELIABLE,
+      reason,
       // The first unreliable source is surfaced as the machine-readable
       // reason_code; callers that need the complete set still have the full
       // list in `unreliableSources`/the human-readable `message` below.
       reasonCode: sources[0] ?? null,
-      remediation: {
-        action: "wait",
-        label: "Wait for the reference read model to refresh",
-        retryable: true,
-        target: null,
-      },
+      remediation: projectionRemediationForReason(reason),
       severity: "blocked",
       status: "false",
       type: "ProjectionReliable",
@@ -2025,6 +2258,23 @@ function collectionSucceededCondition(input: ComputeConnectionHealthInput): Conn
         type: "CollectionSucceeded",
       });
     }
+    // A completed one-time import writes no spine run either: the owner
+    // supplied a file, the ingest finished, and there is nothing to schedule.
+    // Its completeness declaration is the collection verdict, exactly as the
+    // local-device verdict is above. Coverage is still proven independently —
+    // the caller only sets `complete` once the import finished ingesting, and
+    // `SourceCoverageComplete` is checked separately by the healthy predicate.
+    if (input.acquisition?.complete === true) {
+      return condition({
+        message: "The one-time import finished ingesting.",
+        observedAt: input.run?.lastSuccessAt ?? null,
+        origin: "connector",
+        reason: CONDITION_REASON.COLLECTION_SUCCEEDED_IMPORT_COMPLETE,
+        severity: "info",
+        status: "true",
+        type: "CollectionSucceeded",
+      });
+    }
     return condition({
       message: "No terminal collection run has been observed.",
       origin: "connector",
@@ -2136,6 +2386,21 @@ function credentialsNotProvenCondition(): ConnectionHealthCondition {
   });
 }
 
+// A connection that authenticates to nothing has no credential to probe, so
+// "are the credentials valid?" is a category error rather than an open
+// question. `not_applicable` is the settled answer; `unknown` would keep an
+// unanswerable question open forever. See {@link ConnectionAuthenticationEvidence}.
+function credentialsNotApplicableCondition(): ConnectionHealthCondition {
+  return condition({
+    message: "This source imports a file you provide, so it has no credentials to verify.",
+    origin: "readiness",
+    reason: CONDITION_REASON.CREDENTIALS_NOT_APPLICABLE_FILE_IMPORT,
+    severity: "info",
+    status: "not_applicable",
+    type: "CredentialsValid",
+  });
+}
+
 function browserSessionRepairCapabilityUnknownCondition(reason: string): ConnectionHealthCondition {
   return condition({
     message: "The source requires a session, but this connection has no browser-session repair capability.",
@@ -2154,6 +2419,18 @@ function credentialsValidCondition(input: ComputeConnectionHealthInput): Connect
   const credential = input.credential ?? null;
   const credentialAbsent = credential?.capable === true && credential.present !== true;
   const credentialRejectedDurably = credential?.capable === true && credential.rejected === true;
+  // A connector that authenticates to no provider has no credential to probe.
+  // Answered before every other branch because for these connections the
+  // question has no referent at all — but deliberately NOT when contradicting
+  // evidence exists. A stored credential, or a credential-shaped run reason,
+  // means something DID authenticate; the durable declaration is then wrong or
+  // stale, and silently converting a real credential problem into
+  // `not_applicable` would hide exactly the failure the owner must act on.
+  // Evidence wins over declaration, so those cases fall through to the honest
+  // classification below.
+  if (input.authentication?.authenticates === false && credential === null && !(reason && isCredentialReason(reason))) {
+    return credentialsNotApplicableCondition();
+  }
   // A credential-shaped run reason is present: classify honestly by durable
   // credential-presence evidence when we have it. No usable stored credential ->
   // Precedence is durable rejection, then applicable static-secret absence,
@@ -2580,7 +2857,10 @@ function stalledCauseCopy(cause: OutboxStalledCause | null): StalledCauseCopy {
         exporterMessage:
           "The local collector has saved records that failed to upload. Prepare those uploads for retry, then run the collector again on the host.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG,
-        remediationLabel: "Recover local collector uploads",
+        // Kept verbatim in lockstep with the rendered verdict's own
+        // dead-letter label (`stalledOutboxRemediation`, `rendered-verdict.ts`)
+        // — two surfaces naming one state must not drift into two vocabularies.
+        remediationLabel: "Upload records stuck on your computer",
         severity: "error",
       };
     case "transient_upload_failure":
@@ -2697,12 +2977,54 @@ function localExporterAvailableCondition(
 
 function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
   if (axes.coverage === "unknown") {
+    if (input.coverage?.unknownStaleCollectorBuild === true) {
+      return condition({
+        message: "This local collector build predates coverage evidence the server now requires. Update the collector.",
+        origin: "connector",
+        reason: CONDITION_REASON.COVERAGE_UNKNOWN_STALE_COLLECTOR,
+        remediation: {
+          action: "update_connector",
+          label: "Update the local collector",
+          retryable: false,
+          target: "coverage",
+        },
+        severity: "warning",
+        status: "unknown",
+        type: "SourceCoverageComplete",
+      });
+    }
     return condition({
       message: "Source coverage evidence is missing.",
       origin: "connector",
       reason: CONDITION_REASON.COVERAGE_UNKNOWN,
       severity: "warning",
       status: "unknown",
+      type: "SourceCoverageComplete",
+    });
+  }
+  // A `terminal_gap` axis whose ENTIRE outstanding shortfall is backed by
+  // durable per-item evidence of impossibility (never an attempt count, never
+  // an absent answer — see `ConnectionCoverageEvidence.unfillableAccounted`)
+  // is coverage the connector has already fully accounted for: it collected
+  // everything collectible and can name exactly what it could not and why.
+  // This is satisfaction, not exemption — deliberately status `true`, not
+  // `not_applicable`, because the question "is coverage complete" has a real
+  // yes here, the same way the connector's own per-run DETAIL_COVERAGE already
+  // counts a by-policy skip as covered. `requiredButAccepted` (a contradictory
+  // manifest) and every other degrading axis are evaluated first and are
+  // unaffected — this branch only ever softens `terminal_gap`.
+  if (
+    axes.coverage === "terminal_gap" &&
+    input.coverage?.requiredButAccepted !== true &&
+    input.coverage?.unfillableAccounted === true
+  ) {
+    return condition({
+      message:
+        "Source coverage is complete: every collectible item was collected, and the rest is permanently uncollectable with a recorded reason.",
+      origin: "connector",
+      reason: CONDITION_REASON.COVERAGE_COMPLETE_UNFILLABLE_ACCOUNTED,
+      severity: "info",
+      status: "true",
       type: "SourceCoverageComplete",
     });
   }
@@ -2791,6 +3113,26 @@ export function isAssistedRefresh(refresh: ConnectionRefreshEvidence | null | un
 }
 
 function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
+  // A source whose acquisition is complete by design has no future capture to
+  // age against, so freshness is a question that does not apply here rather
+  // than one awaiting an answer. This branch is first because a completed
+  // import legitimately has no freshness axis at all: it never ran, so the
+  // axis is `unknown`, and that `unknown` is certainty, not doubt.
+  //
+  // Deliberately settled as `not_applicable` rather than `true`: claiming a
+  // finished 2023 export is "fresh" would be a second lie replacing the first.
+  // The healthy predicate accepts the not-applicable answer instead.
+  if (input.acquisition?.complete === true) {
+    return condition({
+      message: "This is a one-time import — its data is complete and will not refresh.",
+      observedAt: input.run?.lastSuccessAt ?? null,
+      origin: "connector",
+      reason: CONDITION_REASON.FRESHNESS_NOT_APPLICABLE_COMPLETE,
+      severity: "info",
+      status: "not_applicable",
+      type: "Fresh",
+    });
+  }
   if (axes.freshness === "fresh") {
     return condition({
       message: "Retained data satisfies the freshness policy.",
@@ -2908,6 +3250,26 @@ export interface ForwardDispositionInput {
    * force the manual-refresh advisory.
    */
   readonly schedule?: ConnectionScheduleEvidence | null;
+  /**
+   * Whether the stream's ENTIRE terminal shortfall is backed by durable
+   * per-item proof of impossibility — the same already-computed boolean the
+   * coverage rollup threads onto `SourceCoverageComplete`
+   * (`ConnectionCoverageEvidence.unfillableAccounted`). The sole owner of the
+   * predicate is `isStreamFullyUnfillableAccounted`
+   * (`server/connector-gap-classification.ts`); this field only carries its
+   * verdict, and is never re-derived from gap rows here.
+   *
+   * Meaningful ONLY paired with the `terminal_gap` condition it was proven
+   * against — exactly the pairing `deriveCollectionReportEntryCoverage`
+   * (`server/ref-control.ts`) already enforces when it withdraws the claim on a
+   * stale evidence scope. `unsupported` and `unavailable` are different claims
+   * (the source or connector cannot serve the stream at all, not that a bounded
+   * set of items was measured and proven impossible), so they are never
+   * softened by this flag.
+   *
+   * Optional; absent/`false` preserves the shipped behavior exactly.
+   */
+  readonly unfillableAccounted?: boolean;
 }
 
 /**
@@ -2931,11 +3293,42 @@ function hasOutstandingGap(coverage: CoverageAxis): boolean {
 }
 
 /**
+ * A `terminal_gap` whose ENTIRE shortfall is proven permanently uncollectable
+ * carries no OUTSTANDING gap: there is no future run, owner action, or code fix
+ * that could fill it, because the items were measured and shown impossible (a
+ * recorded observed size strictly above a recorded cap). The stream owes
+ * nothing further, so it must not take the outstanding-gap branch — the same
+ * fact `sourceCoverageCondition` already reads to answer `SourceCoverageComplete`
+ * with a real `true`. Keeping both readings of the same evidence in agreement is
+ * the point: a healthy condition set must not coexist with a `terminal`
+ * disposition.
+ *
+ * Deliberately narrow in exactly the two ways the evidence is narrow:
+ *
+ *   - ONLY `terminal_gap`. `unsupported` / `unavailable` are claims about the
+ *     stream as a whole rather than about a measured set of items, and keep
+ *     returning `terminal`.
+ *   - ONLY when the proof covers everything. Partial proof is not proof; the
+ *     caller's boolean is already all-or-nothing
+ *     (`isStreamFullyUnfillableAccounted`), so one unproven terminal gap leaves
+ *     this `false` and the stream stays `terminal`.
+ *
+ * Open owner attention is checked BEFORE this softening in the gap block below,
+ * so an attention-blocked connection still reads `awaiting_owner` — accounted
+ * coverage is not a reason to stop asking the owner for what they owe.
+ */
+function isUnfillableAccountedTerminalGap(input: ForwardDispositionInput): boolean {
+  return input.coverage === "terminal_gap" && input.unfillableAccounted === true && !input.attentionOpen;
+}
+
+/**
  * Derive a stream's forward disposition as a pure function of its coverage
  * condition, gap retryability, open-attention presence, freshness axis, and the
  * connection's refresh policy. First match wins, and gaps are evaluated before
  * freshness so a real coverage gap is never masked by staleness:
  *
+ *   0. `terminal_gap` whose whole shortfall is proven unfillable, no
+ *      attention                                          -> not a gap; falls to 4/5
  *   1. outstanding gap + open owner attention             -> `awaiting_owner`
  *   2. outstanding recoverable detail gap or ordinary
  *      partial boundary, no attention                     -> `resumable`
@@ -2949,10 +3342,21 @@ function hasOutstandingGap(coverage: CoverageAxis): boolean {
  * considered denominator is unknown carries an `unmeasured` disposition instead
  * of `complete`, `checking`, or `resumable`.
  *
+ * Rule 0 resolves to `complete` rather than a distinct disposition because
+ * `complete` already means "no outstanding gap; a future run is not expected to
+ * collect anything new", which is precisely true here — it has never meant "no
+ * gap was ever recorded". The accepted-absence conditions `deferred` and
+ * `inventory_only` already reach `complete` the same way, with a recorded reason
+ * for data that will not arrive. The distinguishing fact (WHY nothing is owed)
+ * stays on the coverage axis, which reports the dedicated
+ * `coverage_complete_unfillable_accounted` reason and keeps the per-stream
+ * `coverage_condition: "terminal_gap"` visible; the disposition axis answers
+ * only "what does the next run do".
+ *
  * See `define-connector-progress-evidence-contract`.
  */
 export function deriveForwardDisposition(input: ForwardDispositionInput): ForwardDisposition {
-  if (hasOutstandingGap(input.coverage)) {
+  if (hasOutstandingGap(input.coverage) && !isUnfillableAccountedTerminalGap(input)) {
     // Rule 1: a gap blocked on structured owner attention awaits the owner,
     // regardless of whether the gap would otherwise be retryable. The owner must
     // act before any run can make progress.
@@ -3059,6 +3463,13 @@ function deriveConnectionForwardDisposition(
     gapRetryable: coverage === "retryable_gap",
     refresh: input.refresh ?? null,
     schedule: input.schedule ?? null,
+    // The SAME already-computed boolean `sourceCoverageCondition` reads for
+    // `SourceCoverageComplete`, so the condition set and the disposition can
+    // never disagree about a fully-accounted terminal gap. A contradictory
+    // manifest (`requiredButAccepted`) is excluded here exactly as it is there:
+    // the flag must never become a bypass for a manifest that both requires a
+    // stream and accepts its absence.
+    unfillableAccounted: input.coverage?.requiredButAccepted !== true && input.coverage?.unfillableAccounted === true,
   });
 }
 
@@ -3413,6 +3824,7 @@ interface SnapshotArgs {
   readonly ephemeralBrowserRuntime?: EphemeralBrowserRuntimeProjection | null | undefined;
   readonly forwardDisposition: ForwardDisposition;
   readonly lastSuccessAt: string | null;
+  readonly localDeviceOutboxCounts?: OutboxDiagnosticCounts | null;
   readonly nextAction?: NextAction | null;
   readonly nextAttemptAt: string | null;
   readonly reasonCode: string | null;
@@ -3433,6 +3845,7 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     ephemeral_browser_runtime: runtimeAnnotationForSnapshot(args.ephemeralBrowserRuntime),
     forward_disposition: args.forwardDisposition,
     last_success_at: args.lastSuccessAt,
+    local_device_outbox_counts: args.localDeviceOutboxCounts ?? null,
     next_action: args.nextAction ?? null,
     next_attempt_at: args.nextAttemptAt,
     reason_code: args.reasonCode,
@@ -3507,11 +3920,27 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
  */
 export interface HeartbeatOutboxEvidence {
   /**
+   * Open-backlog row count the device last reported (from its rolled-up
+   * outbox diagnostics `backlog_open` field). For a `gap`-kind row this
+   * counts `ready`, `leased`, AND `succeeded` — `succeeded` means the gap
+   * NOTIFICATION uploaded, not that the gap is resolved (see
+   * `local-device-outbox.ts::countOpenGaps`), so a small nonzero count can be
+   * pure debris from a superseded collector attempt rather than a live
+   * backlog. Distinguishes that bounded-debris case from a genuine
+   * state-read failure when a `blocked` heartbeat carries no dead letters —
+   * see `OUTBOX_BLOCKED_BACKLOG_TOLERANCE`. `null`/absent is treated as
+   * unknown magnitude, which does NOT get the debris carve-out (conservative:
+   * missing evidence classifies as `state_read_failed`, same as before this
+   * field existed).
+   */
+  readonly backlogOpenCount?: number | null;
+  /**
    * Dead-lettered record depth the device last reported (from its rolled-up
    * outbox diagnostics). Distinguishes a `blocked` heartbeat that is a pure
    * state-read failure (no dead letters) from one carrying a dead-letter
    * backlog. `null`/absent is treated as zero — a `blocked` heartbeat with no
-   * dead-letter evidence is classified `state_read_failed`.
+   * dead-letter evidence is classified `state_read_failed` (subject to the
+   * bounded-debris carve-out above).
    */
   readonly deadLetterCount?: number | null;
   readonly deadLetterErrorClasses?: readonly DeadLetterErrorClassEvidence[] | null;
@@ -3582,6 +4011,24 @@ export interface HeartbeatOutboxEvidence {
  * owner, owns recovery. A missing or unparseable `oldestRetryingAt` (no row
  * has ever failed) never triggers this path, so an ordinary healthy
  * backlog fails conservatively rather than fabricating a stall.
+ *
+ * Bounded-debris carve-out for `blocked` heartbeats: a device-side `gap`
+ * outbox row counts toward `backlog_open` while `succeeded` — for that
+ * row kind, `succeeded` means the gap NOTIFICATION uploaded, not that the
+ * gap is resolved (see `local-device-outbox.ts::countOpenGaps`). A failed
+ * collector attempt immediately superseded by a successful one leaves
+ * exactly this debris behind, and nothing ever re-drains a `succeeded`
+ * row, so without this carve-out the connection would sit `stalled`
+ * forever despite fully healthy collection evidence. When a `blocked`
+ * heartbeat has zero dead letters, a small (`<= OUTBOX_BLOCKED_BACKLOG_
+ * TOLERANCE`) `backlogOpenCount`, zero pending records, and a fresh
+ * heartbeat, the axis is `idle` rather than `stalled` — the notification
+ * already delivered; there is nothing left to retry or drain, and no
+ * owner action can resolve a row in a local SQLite file that will never
+ * be picked up again. Any of those signals failing (large or unknown
+ * backlog count, real pending work, or a stale heartbeat) falls through
+ * to the pre-existing `state_read_failed` classification, which stays the
+ * conservative default.
  */
 export function deriveOutboxAxisFromHeartbeat(
   evidence: HeartbeatOutboxEvidence,
@@ -3596,26 +4043,24 @@ export function deriveOutboxAxisFromHeartbeat(
   if (!evidence.lastHeartbeatAt) {
     return { axis: "unknown", cause: null, unreliable: false };
   }
-  if (evidence.lastHeartbeatStatus === "blocked") {
-    // A blocked heartbeat with dead letters is a backlog to retry+re-run; a
-    // blocked heartbeat with none is a failed state read cleared by re-running.
-    // Mirrors the device-side `last_error.kind` split.
-    const cause: OutboxStalledCause =
-      (evidence.deadLetterCount ?? 0) > 0
-        ? deadLetterStalledCause(evidence.deadLetterCount ?? 0, evidence.deadLetterErrorClasses ?? null)
-        : "state_read_failed";
-    return { axis: "stalled", cause, unreliable: false };
-  }
-
   const heartbeatAgeMs = ageMs(evidence.lastHeartbeatAt, options.nowIso);
-  const pending = evidence.recordsPending ?? 0;
+  const pending = evidence.recordsPending;
   const heartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > options.staleHeartbeatThresholdMs;
 
-  if (pending > 0 && heartbeatStale) {
+  if (evidence.lastHeartbeatStatus === "blocked") {
+    return classifyBlockedHeartbeat(evidence, { heartbeatStale, pending });
+  }
+
+  if (pending !== null && pending > 0 && heartbeatStale) {
     return { axis: "stalled", cause: "stale_pending", unreliable: false };
   }
   const retryingBacklogAgeMs = ageMs(evidence.oldestRetryingAt ?? null, options.nowIso);
-  if (pending > 0 && retryingBacklogAgeMs !== null && retryingBacklogAgeMs > OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS) {
+  if (
+    pending !== null &&
+    pending > 0 &&
+    retryingBacklogAgeMs !== null &&
+    retryingBacklogAgeMs > OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS
+  ) {
     return { axis: "stalled", cause: "transient_upload_failure", unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "starting" || evidence.lastHeartbeatStatus === "retrying") {
@@ -3624,13 +4069,67 @@ export function deriveOutboxAxisFromHeartbeat(
     }
     return { axis: "active", cause: null, unreliable: false };
   }
-  if (pending > 0) {
+  if (pending !== null && pending > 0) {
     return { axis: "active", cause: null, unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "healthy" || evidence.lastHeartbeatStatus === "stopped") {
+    if (evidence.recordsPending === null) {
+      return { axis: "unknown", cause: null, unreliable: false };
+    }
     return { axis: "idle", cause: null, unreliable: false };
   }
   return { axis: "unknown", cause: null, unreliable: false };
+}
+
+/**
+ * Classifies a `blocked` heartbeat: dead letters -> retry+re-run backlog;
+ * none -> either a bounded-debris carve-out (`idle`) or a genuine
+ * state-read failure. Extracted from `deriveOutboxAxisFromHeartbeat` to
+ * keep that function's cognitive complexity within the repo's lint budget.
+ */
+function classifyBlockedHeartbeat(
+  evidence: HeartbeatOutboxEvidence,
+  age: { heartbeatStale: boolean; pending: number | null }
+): { axis: OutboxAxis; cause: OutboxStalledCause | null; unreliable: boolean } {
+  // A blocked heartbeat with dead letters is a backlog to retry+re-run; a
+  // blocked heartbeat with none is a failed state read cleared by re-running.
+  // Mirrors the device-side `last_error.kind` split.
+  if ((evidence.deadLetterCount ?? 0) > 0) {
+    return {
+      axis: "stalled",
+      cause: deadLetterStalledCause(evidence.deadLetterCount ?? 0, evidence.deadLetterErrorClasses ?? null),
+      unreliable: false,
+    };
+  }
+  if (qualifiesForBoundedDebrisCarveOut(evidence, age)) {
+    return { axis: "idle", cause: null, unreliable: false };
+  }
+  return { axis: "stalled", cause: "state_read_failed", unreliable: false };
+}
+
+/**
+ * Bounded-debris carve-out: a small `backlog_open` count with zero dead
+ * letters, zero pending records, and a fresh heartbeat is read as stray
+ * gap-NOTIFICATION rows left behind by a superseded attempt (see
+ * `OUTBOX_BLOCKED_BACKLOG_TOLERANCE`), not a genuinely unreadable exporter
+ * state — the notification already uploaded; nothing is waiting to drain.
+ * `backlogOpenCount` absent/null does not qualify (unknown magnitude
+ * classifies conservatively, same as before this carve-out existed). A
+ * stale heartbeat or nonzero pending work also disqualifies: those are
+ * exactly the signals that distinguish "collector genuinely stuck" from
+ * "one clean row".
+ */
+function qualifiesForBoundedDebrisCarveOut(
+  evidence: HeartbeatOutboxEvidence,
+  age: { heartbeatStale: boolean; pending: number | null }
+): boolean {
+  return (
+    typeof evidence.backlogOpenCount === "number" &&
+    evidence.backlogOpenCount > 0 &&
+    evidence.backlogOpenCount <= OUTBOX_BLOCKED_BACKLOG_TOLERANCE &&
+    age.pending === 0 &&
+    !age.heartbeatStale
+  );
 }
 
 function deadLetterStalledCause(

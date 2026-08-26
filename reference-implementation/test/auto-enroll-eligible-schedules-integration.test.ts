@@ -38,8 +38,14 @@ function testManifest(recommendedMode: "automatic" | "manual" = "automatic"): Re
     capabilities: {
       auth: { kind: "env", required: [TEST_ENV_KEY] },
       public_listing: { tier: "supported" },
+      // Mode is DERIVED from these facts, so the synthetic manifest has to
+      // declare a coherent pair rather than just asserting a mode string:
+      // the manual variant is an interactive-login connector that has not
+      // declared session persistence (the Chase/USAA shape), and the
+      // automatic variant needs no per-run owner gesture.
       refresh_policy: {
-        background_safe: true,
+        background_safe: recommendedMode === "automatic",
+        interaction_posture: recommendedMode === "automatic" ? "none" : "otp_likely",
         rationale: "Synthetic manifest for the scheduler integration contract.",
         recommended_interval_seconds: 3600,
         recommended_mode: recommendedMode,

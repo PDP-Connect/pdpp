@@ -681,33 +681,41 @@ test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT flag set, unproven connectors 
   });
 });
 
-test("Development Venmo stays unavailable even when legacy UAT exposure is enabled", async () => {
+test("Development-tier connector stays unavailable even when legacy UAT exposure is enabled", async () => {
+  // Uses spotify (publicTier "development": hidden pending a credentialed
+  // proof run) as the development-tier fixture for this legacy-UAT-exposure
+  // gate. Venmo previously served this role, but it has since been promoted
+  // to publicTier "preview" -- see packages/polyfill-connectors/manifests/
+  // venmo.json's public_listing.rationale and source-setup-presentation.
+  // test.ts's "preview + browser_collector_manual (Venmo) is offered on
+  // /sources/add" -- so it no longer exercises the development-tier path
+  // this test targets.
   const previous = process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
   try {
     delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
     await withServer(async ({ asUrl, rsUrl }) => {
-      await registerConnector(asUrl, loadManifest("venmo"));
+      await registerConnector(asUrl, loadManifest("spotify"));
       const ownerToken = await issueOwnerToken(asUrl);
       const hidden = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
         headers: { Authorization: `Bearer ${ownerToken}` },
       });
       assert.equal(hidden.status, 200);
-      assert.equal(byConnector(hidden.body, "venmo").uat_expose_unlisted_connectors, false);
+      assert.equal(byConnector(hidden.body, "spotify").uat_expose_unlisted_connectors, false);
     });
 
     process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
     await withServer(async ({ asUrl, rsUrl }) => {
-      await registerConnector(asUrl, loadManifest("venmo"));
+      await registerConnector(asUrl, loadManifest("spotify"));
       const ownerToken = await issueOwnerToken(asUrl);
       const exposed = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
         headers: { Authorization: `Bearer ${ownerToken}` },
       });
       assert.equal(exposed.status, 200);
-      const venmo = byConnector(exposed.body, "venmo");
-      const listing = asRecord(venmo.public_listing);
-      const setup = asRecord(venmo.setup_plan);
+      const spotify = byConnector(exposed.body, "spotify");
+      const listing = asRecord(spotify.public_listing);
+      const setup = asRecord(spotify.setup_plan);
       assert.equal(listing.tier, "development");
-      assert.equal(venmo.uat_expose_unlisted_connectors, false);
+      assert.equal(spotify.uat_expose_unlisted_connectors, false);
       assert.equal(setup.setup_modality, "static_secret");
       assert.equal(setup.next_step_kind, "capture_static_secret");
     });
@@ -801,9 +809,22 @@ test("UAT allowlist: development connector exposed only when flag+key+valid-setu
   try {
     // Scenario table: all combinations of flag, allowlist, setup validity
     const scenarios = [
-      { connectorKey: "venmo", expectedExposed: false, label: "no flag, with allowlist", list: "", uat: false },
-      { connectorKey: "venmo", expectedExposed: false, label: "flag ON, empty allowlist", list: "", uat: true },
-      { connectorKey: "venmo", expectedExposed: true, label: "flag+allowlist+valid-setup", list: "venmo", uat: true },
+      // spotify is the development-tier fixture (publicTier "development",
+      // setup modality static_secret — hidden pending a credentialed proof
+      // run). Venmo previously filled this role but is now publicTier
+      // "preview", so it is offered on its own merits and can no longer
+      // exercise the development-tier gate. This mirrors the same swap already
+      // made in "Development-tier connector stays unavailable even when legacy
+      // UAT exposure is enabled" above.
+      { connectorKey: "spotify", expectedExposed: false, label: "no flag, with allowlist", list: "", uat: false },
+      { connectorKey: "spotify", expectedExposed: false, label: "flag ON, empty allowlist", list: "", uat: true },
+      {
+        connectorKey: "spotify",
+        expectedExposed: true,
+        label: "flag+allowlist+valid-setup",
+        list: "spotify",
+        uat: true,
+      },
       {
         connectorKey: "doordash",
         expectedExposed: false,
@@ -829,8 +850,8 @@ test("UAT allowlist: development connector exposed only when flag+key+valid-setu
 
       await withServer(async ({ asUrl, rsUrl }) => {
         // Register the connector to test
-        if (scenario.connectorKey === "venmo") {
-          await registerConnector(asUrl, loadManifest("venmo"));
+        if (scenario.connectorKey === "spotify") {
+          await registerConnector(asUrl, loadManifest("spotify"));
         }
         if (scenario.connectorKey === "doordash") {
           const m = loadManifest("doordash");

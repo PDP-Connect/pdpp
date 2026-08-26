@@ -59,6 +59,7 @@ function makeHarness(
     emit: recording.emit,
     emitRecord: recording.emitRecord,
     emittedAt: "2026-05-26T12:00:00.000Z",
+    failedStreams: new Set(),
     fingerprintCursors: cursors,
     progress: () => Promise.resolve(),
     requested,
@@ -69,7 +70,7 @@ function makeHarness(
 function pruneRequested(harness: SlackTestHarness): void {
   for (const stream of FINGERPRINTED_STREAMS) {
     if (harness.deps.requested.has(stream)) {
-      harness.cursors.get(stream)?.pruneStale();
+      harness.cursors.get(stream)?.dropUnseenIds();
     }
   }
 }

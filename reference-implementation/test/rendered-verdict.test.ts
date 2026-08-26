@@ -144,6 +144,7 @@ interface SnapshotOverrides {
   readonly dominant_condition_id?: string | null;
   readonly forward_disposition?: ForwardDisposition;
   readonly last_success_at?: string | null;
+  readonly local_device_outbox_counts?: ConnectionHealthSnapshot["local_device_outbox_counts"];
   readonly next_attempt_at?: string | null;
   readonly reason_code?: string | null;
   readonly state?: ConnectionHealthState;
@@ -170,6 +171,7 @@ function snapshot(overrides: SnapshotOverrides = {}): ConnectionHealthSnapshot {
     ephemeral_browser_runtime: null,
     forward_disposition: overrides.forward_disposition ?? "complete",
     last_success_at: overrides.last_success_at ?? null,
+    local_device_outbox_counts: overrides.local_device_outbox_counts ?? null,
     next_action: null,
     next_attempt_at: overrides.next_attempt_at ?? null,
     reason_code: overrides.reason_code ?? null,
@@ -188,7 +190,9 @@ function stream(overrides: Partial<StreamRollup> = {}): StreamRollup {
     coverage: overrides.coverage ?? "complete",
     gap_retryable: overrides.gap_retryable ?? false,
     priority: overrides.priority ?? "required",
+    ...(overrides.recovery_action === undefined ? {} : { recovery_action: overrides.recovery_action }),
     stream_id: overrides.stream_id ?? "s1",
+    unfillable_accounted: overrides.unfillable_accounted ?? false,
   };
 }
 
@@ -217,7 +221,7 @@ const ASSISTED_REFRESH: ConnectionRefreshEvidence = {
 
 const TONE_RANK: Record<VerdictTone, number> = { amber: 2, green: 0, grey: 1, red: 3 };
 const TONE_TO_LABEL: Record<VerdictTone, string> = {
-  amber: "Degraded",
+  amber: "Missing data",
   green: "Healthy",
   grey: "Not measured",
   red: "Can't collect",
@@ -232,6 +236,19 @@ const BASE_STATE_TONE: Record<ConnectionHealthState, VerdictTone> = {
   needs_attention: "amber",
   unknown: "grey",
 };
+// Mirrors rendered-verdict.ts coverageTone.
+const COVERAGE_TONE: Record<StreamRollup["coverage"], VerdictTone> = {
+  complete: "green",
+  deferred: "green",
+  gaps: "amber",
+  inventory_only: "green",
+  partial: "amber",
+  retryable_gap: "amber",
+  terminal_gap: "red",
+  unavailable: "red",
+  unknown: "grey",
+  unsupported: "red",
+};
 const DISPOSITION_TONE: Record<ForwardDisposition, VerdictTone> = {
   awaiting_owner: "amber",
   checking: "grey",
@@ -242,19 +259,47 @@ const DISPOSITION_TONE: Record<ForwardDisposition, VerdictTone> = {
   unmeasured: "grey",
 };
 
-// Mirrors rendered-verdict.ts amberLabel: "Needs refresh" only when every
-// reason the tone reached amber-or-worse is a not-actually-broken shape
-// (idle-with-prior-success or passive cooling-off state, stale freshness,
-// owner_refresh_due disposition); any coverage/attention/outbox axis, a
-// broken state, or a broken disposition keeps "Degraded". An active run then
-// further softens a "Needs refresh" (never a "Degraded") verdict to "Syncing"
-// (active-run visibility fix) — active work dominates a routine nudge, never
-// a genuine defect.
+// Mirrors rendered-verdict.ts amberLabel, in the same order:
+//
+//   1. "Missing optional data" when the SOLE degradation is a permanently-lost
+//      non-required, collect-intent stream (owner decision 2026-08-23).
+//   2. "Needs refresh" when every reason the tone reached amber-or-worse is a
+//      not-actually-broken shape (idle-with-prior-success or passive
+//      cooling-off state, stale freshness, owner_refresh_due disposition).
+//   3. "Missing data" otherwise — any coverage/attention/outbox axis, a broken
+//      state, or a broken disposition.
+//
+// An active run then further softens a "Needs refresh" (never a "Missing
+// data"/"Missing optional data") verdict to "Syncing" (active-run visibility
+// fix) — active work dominates a routine nudge, never a genuine defect, and it
+// certainly cannot recover a terminal loss.
+//
+// `streams` are the synthesizer INPUT rollups (which carry `priority`), not the
+// rendered rows — priority is the whole discriminator and the rows do not
+// carry it.
 function expectedAmberLabel(
   snap: ConnectionHealthSnapshot,
   disposition: ForwardDisposition,
-  toneInputs: readonly { readonly axis: string; readonly tone: VerdictTone }[]
+  toneInputs: readonly { readonly axis: string; readonly tone: VerdictTone }[],
+  streams: readonly StreamRollup[] = []
 ): string {
+  const isOptionalTerminalLoss = (s: StreamRollup) =>
+    s.priority === "optional" && s.coverage === "terminal_gap" && s.unfillable_accounted !== true;
+  const requiredCoverageDegrading = streams.some(
+    (s) =>
+      s.priority === "required" &&
+      !(s.coverage === "terminal_gap" && s.unfillable_accounted === true) &&
+      TONE_RANK[COVERAGE_TONE[s.coverage]] >= TONE_RANK.amber
+  );
+  const nonCoverageDegrading = toneInputs.some(
+    (input) =>
+      input.axis !== "coverage" &&
+      ["coverage", "attention", "outbox"].includes(input.axis) &&
+      TONE_RANK[input.tone] >= TONE_RANK.amber
+  );
+  if (streams.some(isOptionalTerminalLoss) && !nonCoverageDegrading && !requiredCoverageDegrading) {
+    return "Missing optional data";
+  }
   const stateIsBroken =
     snap.state !== "idle" && snap.state !== "cooling_off" && TONE_RANK[BASE_STATE_TONE[snap.state]] >= TONE_RANK.amber;
   const dispositionIsBroken =
@@ -262,11 +307,16 @@ function expectedAmberLabel(
   const hasDegradingAxis = toneInputs.some(
     (input) => ["coverage", "attention", "outbox"].includes(input.axis) && TONE_RANK[input.tone] >= TONE_RANK.amber
   );
-  const label = stateIsBroken || dispositionIsBroken || hasDegradingAxis ? "Degraded" : "Needs refresh";
+  const label = stateIsBroken || dispositionIsBroken || hasDegradingAxis ? "Missing data" : "Needs refresh";
   return label === "Needs refresh" && snap.badges.syncing ? "Syncing" : label;
 }
 
-function assertAllInvariants(verdict: RenderedVerdict, snap: ConnectionHealthSnapshot, runtimeOk: boolean) {
+function assertAllInvariants(
+  verdict: RenderedVerdict,
+  snap: ConnectionHealthSnapshot,
+  runtimeOk: boolean,
+  streams: readonly StreamRollup[] = []
+) {
   // (1) freshness-mandatory-off-fresh
   if (snap.axes.freshness !== "fresh") {
     assert.ok(
@@ -302,7 +352,7 @@ function assertAllInvariants(verdict: RenderedVerdict, snap: ConnectionHealthSna
   );
   // (6) label follows tone plus active-work evidence. Grey is only "Checking"
   // when current activity evidence proves the system is actively checking.
-  // Amber splits into "Needs refresh" (not-actually-broken) vs "Degraded"
+  // Amber splits into "Needs refresh" (not-actually-broken) vs "Missing data"
   // (real trouble) — see expectedAmberLabel.
   const expectedLabel =
     verdict.pill.tone === "grey" && snap.badges.syncing
@@ -312,7 +362,7 @@ function assertAllInvariants(verdict: RenderedVerdict, snap: ConnectionHealthSna
         ? "Syncing"
         : // biome-ignore lint/style/noNestedTernary: localized test assertion preserves its explicit contract.
           verdict.pill.tone === "amber"
-          ? expectedAmberLabel(snap, verdict.detail.forward_disposition, verdict.trace.tone_inputs)
+          ? expectedAmberLabel(snap, verdict.detail.forward_disposition, verdict.trace.tone_inputs, streams)
           : TONE_TO_LABEL[verdict.pill.tone];
   assert.equal(verdict.pill.label, expectedLabel, "inv6: label matches tone plus active-work evidence");
   // (7) no contradictory chip pair
@@ -472,7 +522,7 @@ test("tone: an active run does not mask genuine open owner attention — attenti
     exactSyncAttention()
   );
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "attention");
   assert.equal(v.required_actions[0]?.kind, "add_info");
   assert.equal(v.forward_statement, "Complete the requested action and collection resumes.");
@@ -493,7 +543,7 @@ test("connection-level terminal disposition is not erased by a retryable stream 
 
   assert.equal(v.detail.forward_disposition, "terminal");
   assert.equal(v.pill.tone, "red");
-  assert.equal(v.forward_statement, "This connector needs a code fix before it can collect again.");
+  assert.equal(v.forward_statement, "Some data from this source can't be collected.");
   assert.equal(v.required_actions[0]?.kind, "code_fix");
   assert.equal(v.required_actions[0]?.terminal, true);
   assert.notEqual(v.required_actions[0]?.kind, "retry_gap");
@@ -566,6 +616,59 @@ test("tone: unknown coverage renders Not measured and no retry action", () => {
   assert.notEqual(v.forward_statement, "The next run is expected to fill the remaining data.");
 });
 
+test("tone: unknown coverage on a finished one-time import never says 'not measured YET' (B10)", () => {
+  // Production shape (owner ledger 2026-08-22, Google Maps Timeline Import
+  // cin_50f5bf4b7ecbc7acd6f4c254): a one-time import whose only run died
+  // before it could emit DETAIL_COVERAGE. `freshnessNotApplicable` is true
+  // (a completed one-time import has no future capture to age — see
+  // `connection-health-completed-import.test.ts`), so there is no future run
+  // that could ever measure this stream. The generic "has not been measured
+  // YET" copy implies one is coming; for this shape that implication is false
+  // and must not render.
+  const notApplicableFresh = condition({
+    id: "Fresh:freshness_not_applicable_complete",
+    reason: CONNECTION_CONDITION_REASONS.FRESHNESS_NOT_APPLICABLE_COMPLETE,
+    status: "not_applicable",
+    type: "Fresh",
+  });
+  const snap = snapshot({
+    axes: { coverage: "unknown", freshness: "unknown" },
+    conditions: [notApplicableFresh, collectionSucceededCondition()],
+    forward_disposition: "unmeasured",
+    state: "idle",
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: "unknown", priority: "optional", stream_id: "timeline_points" })],
+    null,
+    true
+  );
+  assert.notEqual(v.forward_statement, "Coverage has not been measured yet.");
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(v.forward_statement, /will not run again|ended before/i);
+  assert.notEqual(v.streams[0]?.statement, "Coverage has not been measured yet.");
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(v.streams[0]?.statement ?? "", /can't be measured/i);
+  const maintainerAction = v.required_actions.find((a) => a.audience === "maintainer");
+  assert.notEqual(maintainerAction?.cta, "Some data from this source isn't being measured yet");
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(maintainerAction?.cta ?? "", /will not run again/i);
+});
+
+test("tone: unknown coverage on an ordinary (still-refreshing) source keeps the YET copy", () => {
+  // Control: the SAME unknown-coverage shape without the one-time-import
+  // condition must keep the existing "yet" wording — most connectors really
+  // will measure it on their next scheduled run.
+  const snap = snapshot({
+    axes: { coverage: "unknown", freshness: "fresh" },
+    forward_disposition: "unmeasured",
+    state: "idle",
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream({ coverage: "unknown" })], null, true);
+  assert.equal(v.forward_statement, "Coverage has not been measured yet.");
+  assert.equal(v.streams[0]?.statement, "Coverage has not been measured yet.");
+});
+
 test("tone: active unknown coverage renders Checking because work is active", () => {
   const snap = snapshot({
     axes: { coverage: "unknown", freshness: "fresh" },
@@ -606,14 +709,14 @@ test("tone: degraded evidence wins over active local-device outbox label", () =>
   });
   const v = synthesizeRenderedVerdict(snap, [stream({ coverage: "retryable_gap", gap_retryable: true })], null, true);
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
 });
 
 test("tone: worst axis (degrading coverage) wins over a healthy state", () => {
   const snap = snapshot({ axes: { coverage: "retryable_gap" }, state: "healthy" });
   const v = synthesizeRenderedVerdict(snap, [stream({ coverage: "retryable_gap", gap_retryable: true })], null, true);
   assert.equal(v.pill.tone, "amber"); // not the state-implied green
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
 });
 
 test("coverage: optional stale stream annotates but does not downgrade the pill", () => {
@@ -630,7 +733,19 @@ test("coverage: optional stale stream annotates but does not downgrade the pill"
   assert.equal(v.pill.tone, "green", "optional partial must not amber the pill");
 });
 
-test("coverage: a terminal optional stream stays visible without downgrading required coverage", () => {
+// EXPECTATION CHANGED — owner decision, 2026-08-23.
+//
+// This asserted green/"Healthy" for a terminal OPTIONAL stream. That encoded
+// the old policy, where `required: false` alone kept a source green — which
+// overloaded the flag to mean both "not load-bearing" and "we accept its
+// absence". A collect-intent stream that is lost forever is a real loss to the
+// owner, so it now ambers. It does NOT go red: the source still delivers
+// everything load-bearing, which is why the tone is capped at amber and the
+// label is the narrower "Missing optional data" rather than "Missing data".
+//
+// The stream row assertions are unchanged and still matter: the point was
+// always that the stream stays VISIBLE, and it still does.
+test("coverage: a terminal optional stream ambers the pill while staying visible", () => {
   const snap = snapshot({ forward_disposition: "complete", state: "healthy" });
   const v = synthesizeRenderedVerdict(
     snap,
@@ -638,10 +753,25 @@ test("coverage: a terminal optional stream stays visible without downgrading req
     null,
     true
   );
-  assert.equal(v.pill.tone, "green");
-  assert.equal(v.pill.label, "Healthy");
+  assert.equal(v.pill.tone, "amber");
+  assert.equal(v.pill.label, "Missing optional data");
   assert.equal(v.streams[0]?.stream_id, "opt");
   assert.equal(v.streams[0]?.coverage, "terminal_gap");
+});
+
+// The accepted-absence counterpart, added alongside the changed expectation so
+// the two cannot silently re-collapse: the SAME terminal gap, differing only in
+// priority, must still read green.
+test("coverage: a terminal accepted_absence stream keeps the pill green", () => {
+  const snap = snapshot({ forward_disposition: "complete", state: "healthy" });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: "terminal_gap", priority: "accepted_absence", stream_id: "acc" })],
+    null,
+    true
+  );
+  assert.equal(v.pill.tone, "green");
+  assert.equal(v.pill.label, "Healthy");
 });
 
 // ─── 3.3 collected clamp ──────────────────────────────────────────────────────
@@ -938,9 +1068,9 @@ test("channel: dead-letter stalled outbox includes recover preview before apply"
   assert.equal(v.channel, "attention");
   assert.equal(
     v.forward_statement,
-    "The local collector has saved records on its host that did not upload to this server."
+    "The local collector has records on its host that failed to upload and will not retry on their own. Recovering them is a manual step."
   );
-  assert.equal(action.cta, "Recover local collector uploads");
+  assert.equal(action.cta, "Upload records stuck on your computer");
   assert.equal(action.remediation?.cause, "dead_letter_backlog");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.doesNotMatch(v.forward_statement, /dead[- ]letter/i);
@@ -961,6 +1091,103 @@ test("channel: dead-letter stalled outbox includes recover preview before apply"
       "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply",
     ]
   );
+});
+
+// ─── Dead-letter magnitude (P1: no count the system knows may stay invisible) ──
+//
+// The owner cannot size a loss they cannot see. "1 of 10,001" and "8,432 of
+// 10,001" demand completely different reactions, and the system already holds
+// the numbers on the source-instance outbox diagnostics. These four cases pin
+// the whole contract: the count renders, the singular case reads correctly, an
+// absent count falls back to the exact prior sentence rather than fabricating a
+// zero, and the recovery CTA survives every one of those paths.
+
+/** Dead-letter stalled snapshot with optional outbox counts attached. */
+function deadLetterSnapshot(counts: ConnectionHealthSnapshot["local_device_outbox_counts"]): ConnectionHealthSnapshot {
+  return snapshot({
+    axes: { coverage: "complete", freshness: "fresh", outbox: "stalled" },
+    conditions: [
+      localExporterStalledCondition(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG),
+      backlogStalledCondition(CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG),
+    ],
+    forward_disposition: "complete",
+    local_device_outbox_counts: counts,
+    reason_code: "local_exporter_dead_letter_backlog",
+    state: "degraded",
+  });
+}
+
+function deadLetterVerdict(counts: ConnectionHealthSnapshot["local_device_outbox_counts"]) {
+  return synthesizeRenderedVerdict(deadLetterSnapshot(counts), [stream({ coverage: "complete" })], null, true);
+}
+
+test("dead-letter summary bounds the magnitude with thousands separators", () => {
+  // Real production state for one source: total 10001, dead_letter 1.
+  const v = deadLetterVerdict({ dead_letter: 1, succeeded: 10_000, total: 10_001 });
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.ok(action, "primary required action exists");
+  assert.equal(
+    action.remediation?.summary,
+    "1 of 10,001 records on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step."
+  );
+  // The permanence wording is the load-bearing half; the count only sizes it.
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(action.remediation?.summary ?? "", /will not retry on their own/);
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.match(action.remediation?.summary ?? "", /Recovering them is a manual step\./);
+  assert.equal(action.cta, "Upload records stuck on your computer");
+});
+
+test("dead-letter summary pluralizes a multi-record backlog", () => {
+  const v = deadLetterVerdict({ dead_letter: 8432, succeeded: 1569, total: 10_001 });
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.equal(
+    action?.remediation?.summary,
+    "8,432 of 10,001 records on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step."
+  );
+  assert.equal(action?.cta, "Upload records stuck on your computer");
+});
+
+test("dead-letter summary reads 'record' in the singular when the total is one", () => {
+  const v = deadLetterVerdict({ dead_letter: 1, succeeded: 0, total: 1 });
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  // "1 of 1 records" is exactly the sloppiness the owner notices.
+  assert.equal(
+    action?.remediation?.summary,
+    "1 of 1 record on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step."
+  );
+  assert.equal(action?.cta, "Upload records stuck on your computer");
+});
+
+test("dead-letter summary falls back to the uncounted sentence when counts are unavailable", () => {
+  // Fail-closed: a fabricated zero is as bad as a fabricated green. With no
+  // counts, no partial counts, and no zeroed counts may the sentence invent a
+  // magnitude — it must read exactly as it did before counts were plumbed.
+  const uncounted =
+    "The local collector has records on its host that failed to upload and will not retry on their own. Recovering them is a manual step.";
+  for (const counts of [
+    null,
+    {},
+    { total: 10_001 },
+    { dead_letter: 1 },
+    { dead_letter: 0, total: 10_001 },
+    { dead_letter: 1, total: 0 },
+  ] as const) {
+    const v = deadLetterVerdict(counts);
+    // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+    const action = v.required_actions[0];
+    assert.equal(
+      action?.remediation?.summary,
+      uncounted,
+      `counts ${JSON.stringify(counts)} must not fabricate a magnitude`
+    );
+    // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+    assert.doesNotMatch(action?.remediation?.summary ?? "", /undefined|null|NaN|\b0 of\b/);
+    assert.equal(action?.cta, "Upload records stuck on your computer", "the recovery CTA survives a missing count");
+  }
 });
 
 test("channel: structured attention carries the exact sync target from its own run id", () => {
@@ -1066,7 +1293,7 @@ test("channel: transient upload failures do not ask the owner to recover local u
     "The local collector hit temporary server or network errors while uploading. It will retry without owner action."
   );
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
-  assert.doesNotMatch(JSON.stringify(v), /Recover local collector uploads/);
+  assert.doesNotMatch(JSON.stringify(v), /Upload records stuck on your computer/);
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.doesNotMatch(JSON.stringify(v), /Preview recovery/);
 });
@@ -1151,7 +1378,7 @@ test("channel: degraded resumable stale coverage is advisory Retry now, not calm
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(action.kind, "retry_gap");
@@ -1182,7 +1409,7 @@ test("channel: failed deferred history is retryable, not a passive collecting wa
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(v.progress.headline, "Holding 136,907 records; retry to continue.");
@@ -1207,7 +1434,7 @@ test("channel: idle assisted retryable gap offers retry instead of passive colle
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(action.kind, "retry_gap");
@@ -1215,6 +1442,103 @@ test("channel: idle assisted retryable gap offers retry instead of passive colle
   assert.equal(action.cta, "Retry now");
   assert.deepEqual(action.affects, ["messages"]);
   assert.ok(!v.required_actions.some((a) => a.kind === "wait" && a.cta === "Collecting — no action needed"));
+});
+
+test("channel: a retryable gap whose only contributing stream is retry_by_runtime does not offer Retry now", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "unknown" },
+      forward_disposition: "resumable",
+      state: "idle",
+    }),
+    [
+      stream({
+        coverage: "retryable_gap",
+        gap_retryable: true,
+        recovery_action: "retry_by_runtime",
+        stream_id: "group_messages",
+      }),
+    ],
+    ASSISTED_REFRESH,
+    true,
+    null,
+    { hasPriorSuccess: true, mode: "scheduled-active" }
+  );
+  assert.ok(
+    !v.required_actions.some((a) => a.kind === "retry_gap"),
+    "no retry_gap action when every contributing stream is retry_by_runtime"
+  );
+  // The gap itself must still render — never fabricated-complete.
+  assert.equal(v.pill.tone, "amber");
+  assert.equal(v.pill.label, "Missing data");
+});
+
+test("channel: retry_by_runtime without an active schedule still offers Retry now", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "unknown" },
+      forward_disposition: "resumable",
+      state: "idle",
+    }),
+    [
+      stream({
+        coverage: "retryable_gap",
+        gap_retryable: true,
+        recovery_action: "retry_by_runtime",
+        stream_id: "messages",
+      }),
+    ],
+    ASSISTED_REFRESH,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.ok(action, "missing schedule evidence must keep an owner action visible");
+  assert.equal(action.kind, "retry_gap");
+  assert.equal(action.audience, "owner");
+  assert.equal(action.cta, "Retry now");
+});
+
+test("channel: MUTATION-SAFETY a genuinely owner-actionable retryable gap still offers Retry now", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "unknown" },
+      forward_disposition: "resumable",
+      state: "idle",
+    }),
+    [
+      stream({
+        coverage: "retryable_gap",
+        gap_retryable: true,
+        recovery_action: "owner_reauth_required",
+        stream_id: "transactions",
+      }),
+    ],
+    ASSISTED_REFRESH,
+    true
+  );
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.ok(action, "primary required action exists");
+  assert.equal(action.kind, "retry_gap");
+  assert.equal(action.cta, "Retry now");
+});
+
+test("channel: an unknown/absent recovery_action fails open and still offers Retry now", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "unknown" },
+      forward_disposition: "resumable",
+      state: "idle",
+    }),
+    [stream({ coverage: "retryable_gap", gap_retryable: true, stream_id: "messages" })],
+    ASSISTED_REFRESH,
+    true
+  );
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.ok(action, "primary required action exists — absent recovery_action must never suppress the CTA");
+  assert.equal(action.kind, "retry_gap");
+  assert.equal(action.cta, "Retry now");
 });
 
 test("channel: explicit manual-default background-safe schedule stays scheduled and does not offer Retry now", () => {
@@ -1241,7 +1565,7 @@ test("channel: explicit manual-default background-safe schedule stays scheduled 
   assert.ok(action, "primary required action exists");
   assert.equal(v.progress.mode, "scheduled");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "calm");
   assert.equal(v.forward_statement, "The next run is expected to fill the remaining data.");
   assert.equal(action.kind, "wait");
@@ -1279,7 +1603,7 @@ test("channel: background-unsafe active schedule stays manual and still offers R
   assert.ok(action, "primary required action exists");
   assert.equal(v.progress.mode, "manual");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(action.kind, "retry_gap");
@@ -1316,7 +1640,7 @@ test("channel: paused active schedule stays manual and still offers Retry now", 
   assert.ok(action, "primary required action exists");
   assert.equal(v.progress.mode, "manual");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.forward_statement, "Retry now to give the recoverable gap another run.");
   assert.equal(action.kind, "retry_gap");
@@ -1350,7 +1674,7 @@ test("channel: source-pressure deferred recovery is a self-handled wait, not an 
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "calm");
   assert.equal(v.forward_statement, "The next run is expected to fill the remaining data.");
   assert.equal(action.kind, "wait");
@@ -1428,7 +1752,7 @@ test("progress: terminal manual source never says refresh to update", () => {
     true,
     { last_refreshed_at: "2026-06-15T12:00:00.000Z", mode: "manual", retained_records: 1169 }
   );
-  assert.equal(v.progress.headline, "Holding 1,169 records; connector code needs a fix before new collection.");
+  assert.equal(v.progress.headline, "Holding 1,169 records; some of this source's data can't be collected.");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.doesNotMatch(v.progress.headline, /refresh|retry|resum|next run/i);
 });
@@ -1525,7 +1849,7 @@ test("composite: all eleven invariants hold across representative snapshots", ()
   ];
   for (const c of cases) {
     const v = synthesizeRenderedVerdict(c.snap, c.streams, c.refresh, c.ok);
-    assertAllInvariants(v, c.snap, c.ok);
+    assertAllInvariants(v, c.snap, c.ok, c.streams);
   }
 });
 
@@ -1563,7 +1887,31 @@ test("property: tone is worst-wins (never below base state) and (tone,channel) o
         for (const disposition of dispositions) {
           for (const attention of attentions) {
             for (const syncing of syncingValues) {
-              const conditions = attention === "open" ? [credentialRejectedCondition()] : [];
+              // `needs_attention`, `blocked` and `degraded` are never reachable
+              // with an empty condition set. The real projection only emits
+              // them from a FALSE condition: `AttentionClear` for
+              // `needs_attention` (`classifyOpenAttention`), a readiness or
+              // retry-policy blocker for `blocked` (`classifyReadinessBlocked`,
+              // `classifyRetryPolicyExhausted`), and
+              // `hasIndependentDegradingEvidence` — which is literally "some
+              // condition is false" — for `degraded`
+              // (`classifyDegradedEvidence`), all in `connection-health.ts`.
+              //
+              // Verified 2026-08-25 by sweeping the REAL producer: 720
+              // `computeConnectionHealth` inputs produced no
+              // `needs_attention`/`blocked` with a clean condition set, and
+              // 2,880 produced no such `degraded`.
+              //
+              // Leaving the set empty made this fixture assert on snapshots the
+              // producer cannot emit — a source claiming trouble while every
+              // condition reads clean — the same hand-built-fixture hazard
+              // `health-verdict-fixture-no-shape-cast.test.ts` documents. Give
+              // those states the failing condition they always carry in
+              // production.
+              const stateImpliesBlockingCondition =
+                state === "needs_attention" || state === "blocked" || state === "degraded";
+              const conditions =
+                attention === "open" || stateImpliesBlockingCondition ? [credentialRejectedCondition()] : [];
               const snap = snapshot({
                 axes: { attention, coverage, freshness },
                 badges: { syncing },
@@ -1572,18 +1920,14 @@ test("property: tone is worst-wins (never below base state) and (tone,channel) o
                 state,
               });
               const refresh = freshness === "stale" ? MANUAL_REFRESH : null;
-              const v = synthesizeRenderedVerdict(
-                snap,
-                [
-                  stream({
-                    attention_open: attention === "open",
-                    coverage,
-                    gap_retryable: coverage === "retryable_gap",
-                  }),
-                ],
-                refresh,
-                true
-              );
+              const streams = [
+                stream({
+                  attention_open: attention === "open",
+                  coverage,
+                  gap_retryable: coverage === "retryable_gap",
+                }),
+              ];
+              const v = synthesizeRenderedVerdict(snap, streams, refresh, true);
               // worst-wins: never below base state tone
               assert.ok(
                 TONE_RANK[v.pill.tone] >= TONE_RANK[BASE_STATE_TONE[state]],
@@ -1596,7 +1940,7 @@ test("property: tone is worst-wins (never below base state) and (tone,channel) o
                   ? "Checking"
                   : // biome-ignore lint/style/noNestedTernary: localized test assertion preserves its explicit contract.
                     v.pill.tone === "amber"
-                    ? expectedAmberLabel(snap, v.detail.forward_disposition, v.trace.tone_inputs)
+                    ? expectedAmberLabel(snap, v.detail.forward_disposition, v.trace.tone_inputs, streams)
                     : TONE_TO_LABEL[v.pill.tone];
               assert.equal(v.pill.label, expectedLabel);
               // active work never co-occurs with a conflicting refresh_now CTA.
@@ -1863,7 +2207,7 @@ test("golden: Acme Slack-shaped paused schedule + stale freshness + cancelled la
   // aged past the staleness window, and the last run was cancelled rather than
   // succeeded (no fresh CollectionSucceeded evidence). This must not render green,
   // and — since nothing about the connector itself is broken — it must not
-  // overstate the situation as "Degraded" either.
+  // overstate the situation as "Missing data" either.
   const snap = snapshot({
     axes: { coverage: "complete", freshness: "stale" },
     forward_disposition: "owner_refresh_due",
@@ -1874,7 +2218,7 @@ test("golden: Acme Slack-shaped paused schedule + stale freshness + cancelled la
   assert.equal(v.pill.tone, "amber");
   assert.equal(v.pill.label, "Needs refresh");
   assert.notEqual(v.pill.label, "Healthy");
-  assert.notEqual(v.pill.label, "Degraded");
+  assert.notEqual(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
 });
 
@@ -1896,7 +2240,7 @@ test("golden: Chase-shaped resumable retryable gap stays Degraded, not Needs ref
     true
   );
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
 });
 
@@ -1915,7 +2259,7 @@ test("golden: USAA-shaped awaiting_owner attention-open gap stays Degraded, not 
     MANUAL_REFRESH,
     true
   );
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.notEqual(v.pill.label, "Needs refresh");
 });
 
@@ -1949,7 +2293,7 @@ test("degraded state (real degrading condition) with only stale freshness, no co
   });
   const v = synthesizeRenderedVerdict(snap, [stream()], MANUAL_REFRESH, true);
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
 });
 
 test("idle never-run (no prior success, no stale evidence) stays neutral, not amber", () => {
@@ -1994,7 +2338,7 @@ test("golden: Chase — degraded/advisory with a retryable transactions gap", ()
     { mode: "manual", retained_records: 1200 }
   );
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.ok(v.annotations.some((a) => a.kind === "freshness" && a.text === "Transactions stuck since Apr 22."));
   const retry = v.required_actions.find((a) => a.kind === "retry_gap");
@@ -2032,7 +2376,7 @@ test("golden: Amazon order_items stream name does not trip calm/advisory count i
     { mode: "manual", retained_records: 6525 }
   );
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(v.trace.channel_cause, "owner_optional_or_status:retry_gap");
   assert.ok(v.annotations.some((a) => a.kind === "freshness" && a.text === "Order items stuck since Jun 30."));
@@ -2096,10 +2440,12 @@ test("golden: synthetic terminal code_fix — maintainer status, no dead owner b
   const codeFix = v.required_actions.find((a) => a.kind === "code_fix");
   assert.ok(codeFix);
   assert.equal(codeFix.audience, "maintainer");
-  assert.equal(codeFix.cta, "Connector code needs a fix");
+  // A condition label, not the forward statement repeated — see inv 9 and
+  // `test/verdict-cta-not-restatement.test.ts`.
+  assert.equal(codeFix.cta, "Missing data needs review");
   assert.deepEqual(codeFix.satisfied_when, { kind: "none" });
   assert.notEqual(v.channel, "attention"); // maintainer status never raises attention
-  assert.equal(v.forward_statement, "This connector needs a code fix before it can collect again.");
+  assert.equal(v.forward_statement, "Some data from this source can't be collected.");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.ok(!/we|we're|nothing for you/i.test(`${codeFix.cta} ${v.forward_statement}`));
   // No owner-audience action (no dead owner button).
@@ -2121,14 +2467,14 @@ test("golden: succeeded terminal coverage reads as degraded coverage review, not
   const action = v.required_actions[0];
   assert.ok(action, "primary required action exists");
   assert.equal(v.pill.tone, "amber");
-  assert.equal(v.pill.label, "Degraded");
+  assert.equal(v.pill.label, "Missing data");
   assert.equal(v.channel, "advisory");
   assert.equal(action?.kind, "code_fix");
   assert.equal(action?.audience, "maintainer");
   assert.equal(action?.cta, "Coverage gap needs review");
   assert.equal(v.forward_statement, "Latest collection completed with known coverage gaps.");
   assert.equal(v.progress.headline, "Holding 369,931 records; source coverage has known gaps.");
-  assert.ok(!JSON.stringify(v).includes("Connector code needs a fix"));
+  assert.ok(!JSON.stringify(v).includes("Some data from this source can't be collected"));
 });
 
 test("golden: synthetic runtime fault — channel capped at calm, pill stays honest", () => {
@@ -2371,4 +2717,114 @@ test("refresh_now: paused active schedule stays manual and keeps the owner refre
     // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
     /refreshes when you run it/i
   );
+});
+
+// ─── unfillable-accounted terminal_gap: the live Gmail shape ─────────────────
+//
+// Live Gmail (2026-08-18) reached a fully healthy condition set — including
+// `SourceCoverageComplete: true` with reason
+// `coverage_complete_unfillable_accounted` — while the disposition still read
+// `terminal`, so `buildRequiredActions` emitted a maintainer `code_fix` and the
+// pill rendered red ("Can't collect"). All five streams were settled; the only
+// shortfall was `attachments`, whose every terminal gap carried durable
+// size-vs-cap proof (a 29MB attachment against a 25MB cap is not a bug, and
+// there is no code fix to make). These tests pin the whole rendered verdict.
+
+test("unfillable-accounted: an all-proven terminal_gap stream renders non-red with no maintainer code_fix", () => {
+  const snap = snapshot({
+    axes: { coverage: "terminal_gap", freshness: "fresh" },
+    conditions: [collectionSucceededCondition()],
+    forward_disposition: "complete",
+    state: "healthy",
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [
+      stream({ coverage: "terminal_gap", stream_id: "attachments", unfillable_accounted: true }),
+      stream({ coverage: "complete", stream_id: "messages" }),
+    ],
+    null,
+    true
+  );
+
+  assert.equal(v.detail.forward_disposition, "complete");
+  assert.notEqual(v.pill.tone, "red");
+  assert.notEqual(v.pill.label, "Can't collect");
+  assert.ok(
+    !v.required_actions.some((a) => a.kind === "code_fix"),
+    "a fully-accounted terminal gap has no code fix to make"
+  );
+  assert.ok(!JSON.stringify(v).includes("Some data from this source can't be collected"));
+});
+
+test("ANTI-FALSE-GREEN: one unproven terminal gap beside a proven one stays red with the code_fix", () => {
+  // Partial proof is not proof. `attachments` is fully accounted; `messages`
+  // has an unproven terminal gap, so the connection is still genuinely stuck.
+  const snap = snapshot({
+    axes: { coverage: "terminal_gap", freshness: "fresh" },
+    forward_disposition: "terminal",
+    state: "degraded",
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [
+      stream({ coverage: "terminal_gap", stream_id: "attachments", unfillable_accounted: true }),
+      stream({ coverage: "terminal_gap", stream_id: "messages", unfillable_accounted: false }),
+    ],
+    null,
+    true
+  );
+
+  assert.equal(v.detail.forward_disposition, "terminal");
+  assert.equal(v.pill.tone, "red");
+  assert.equal(v.pill.label, "Can't collect");
+  const codeFix = v.required_actions.find((a) => a.kind === "code_fix");
+  assert.ok(codeFix, "an unproven terminal gap still owes a maintainer code_fix");
+  assert.equal(codeFix.audience, "maintainer");
+  // The action names the genuinely-stuck stream and ONLY that one: a stream
+  // already proven fully accounted is not something a maintainer can fix, and
+  // listing it would overstate the blast radius.
+  assert.deepEqual(codeFix.affects, ["messages"]);
+});
+
+test("ANTI-FALSE-GREEN: the USAA shape — a quarantined terminal gap with no size-vs-cap proof stays red", () => {
+  // A quarantined gap carries no per-item impossibility evidence, so
+  // `isStreamFullyUnfillableAccounted` leaves the flag false and nothing softens.
+  const snap = snapshot({
+    axes: { coverage: "terminal_gap", freshness: "fresh" },
+    forward_disposition: "terminal",
+    state: "degraded",
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: "terminal_gap", stream_id: "transactions", unfillable_accounted: false })],
+    null,
+    true
+  );
+
+  assert.equal(v.detail.forward_disposition, "terminal");
+  assert.equal(v.pill.tone, "red");
+  assert.equal(v.required_actions.find((a) => a.kind === "code_fix")?.audience, "maintainer");
+});
+
+test("ANTI-FALSE-GREEN: unsupported/unavailable streams are unaffected by the unfillable flag", () => {
+  for (const coverage of ["unsupported", "unavailable"] as const) {
+    const snap = snapshot({
+      axes: { coverage, freshness: "fresh" },
+      forward_disposition: "terminal",
+      state: "degraded",
+    });
+    const v = synthesizeRenderedVerdict(
+      snap,
+      [stream({ coverage, stream_id: "lost", unfillable_accounted: true })],
+      null,
+      true
+    );
+    assert.equal(v.detail.forward_disposition, "terminal", `${coverage} stays terminal`);
+    assert.equal(v.pill.tone, "red", `${coverage} stays red`);
+    assert.ok(
+      v.required_actions.some((a) => a.kind === "code_fix"),
+      `${coverage} still owes a code_fix`
+    );
+  }
 });

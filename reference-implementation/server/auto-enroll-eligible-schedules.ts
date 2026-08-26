@@ -3,9 +3,15 @@
 
 /**
  * Reference-server boot pass that enrolls a default enabled schedule for
- * every first-party connector whose manifest is automatic, background-safe,
- * publicly listed with `status: proven`, AND whose declared
+ * every first-party connector that DERIVES an automatic refresh mode from
+ * its declared capability facts, AND whose declared
  * `capabilities.auth.required` env names are populated in `process.env`.
+ * A connector that declares no auth requirement is already satisfied; the
+ * boot pass has no credential gate to wait for in that case.
+ *
+ * The mode is derived, never read from the hand-written `recommended_mode`
+ * string — see `runtime/refresh-mode-derivation.ts` for the rule and why
+ * the hand-written field stopped being trustworthy.
  *
  * Spec: openspec/changes/auto-enroll-eligible-connector-schedules/.
  *
@@ -24,6 +30,7 @@
  */
 
 import type { ConnectorSchedulePatch, ScheduleApi, ScheduleUpsertResult } from "../runtime/controller.ts";
+import { deriveRecommendedMode } from "../runtime/refresh-mode-derivation.ts";
 
 const DEFAULT_INTERVAL_SECONDS = 3600;
 
@@ -63,6 +70,8 @@ export interface AutoEnrollOptions {
    */
   hasStoredCredential?: (connectorId: string) => Promise<boolean>;
   listConnectors: AutoEnrollListConnectors;
+  /** Record the decision on the owner-visible connector instance binding. */
+  recordSkipReason?: (connectorId: string, reason: string | null) => Promise<void>;
   log?: (line: string) => void;
 }
 
@@ -106,6 +115,7 @@ function getCapabilities(manifest: unknown): ManifestCapabilities | null {
 interface PolicyFacts {
   readonly assistedAfterOwnerAuth: boolean | null;
   readonly backgroundSafe: boolean | null;
+  readonly interactionPosture: string | null;
   readonly recommendedIntervalSeconds: number | null;
   readonly recommendedMode: string | null;
 }
@@ -116,6 +126,7 @@ function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {
     return {
       assistedAfterOwnerAuth: null,
       backgroundSafe: null,
+      interactionPosture: null,
       recommendedIntervalSeconds: null,
       recommendedMode: null,
     };
@@ -131,22 +142,10 @@ function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {
   return {
     assistedAfterOwnerAuth: assisted,
     backgroundSafe: safe,
+    interactionPosture: typeof p.interaction_posture === "string" ? (p.interaction_posture as string) : null,
     recommendedIntervalSeconds: interval,
     recommendedMode: mode,
   };
-}
-
-interface ListingFacts {
-  readonly tier: string | null;
-}
-
-function getListingFacts(caps: ManifestCapabilities): ListingFacts {
-  const listing = caps.public_listing;
-  if (!listing || typeof listing !== "object" || Array.isArray(listing)) {
-    return { tier: null };
-  }
-  const l = listing as Record<string, unknown>;
-  return { tier: typeof l.tier === "string" ? l.tier : null };
 }
 
 function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | null {
@@ -161,7 +160,7 @@ function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | 
   }
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const required = a.required;
-  if (!Array.isArray(required) || required.length === 0) {
+  if (!Array.isArray(required)) {
     return null;
   }
   return required;
@@ -275,20 +274,37 @@ interface PolicyEligibility {
   readonly reason?: string;
 }
 
+/**
+ * Decides whether a connector's declared facts permit an automatic schedule.
+ *
+ * Mode is DERIVED (see runtime/refresh-mode-derivation.ts), not read from the
+ * hand-written `recommended_mode` string, so a manifest cannot opt itself out
+ * of scheduling by contradicting its own interaction posture. An explicit
+ * `recommended_mode: "paused"` is still honored: pausing is a deliberate
+ * operator intent rather than a claim about capability.
+ *
+ * `assisted_after_owner_auth` is deliberately NOT a disqualifier here. It
+ * means "a background run may ask the owner for bounded help", which
+ * runtime/run-automation-policy.ts already handles by projecting
+ * `automation_mode: "assisted"` while still ALLOWING the run to start.
+ * Treating it as a hard gate contradicted that policy engine and was what
+ * kept Amazon, Reddit and H-E-B unscheduled despite each declaring itself
+ * background-safe.
+ */
 function checkPolicyEligibility(caps: ManifestCapabilities): PolicyEligibility {
   const policy = getPolicyFacts(caps);
-  if (policy.recommendedMode !== "automatic") {
-    return { eligible: false, reason: `recommended_mode=${policy.recommendedMode ?? "<missing>"}` };
+  if (policy.recommendedMode === "paused") {
+    return { eligible: false, reason: "recommended_mode=paused" };
   }
-  if (policy.backgroundSafe === false) {
-    return { eligible: false, reason: "background_safe=false" };
-  }
-  if (policy.assistedAfterOwnerAuth === true) {
-    return { eligible: false, reason: "assisted_after_owner_auth=true" };
-  }
-  const listing = getListingFacts(caps);
-  if (listing.tier !== "supported") {
-    return { eligible: false, reason: `public_listing.tier=${listing.tier ?? "<missing>"}` };
+  const derivedMode = deriveRecommendedMode({
+    background_safe: policy.backgroundSafe ?? undefined,
+    interaction_posture: policy.interactionPosture ?? undefined,
+  });
+  if (derivedMode !== "automatic") {
+    return {
+      eligible: false,
+      reason: `derived_mode=${derivedMode} (interaction_posture=${policy.interactionPosture ?? "<missing>"}, background_safe=${String(policy.backgroundSafe)})`,
+    };
   }
   return { eligible: true };
 }
@@ -306,21 +322,42 @@ interface EligibleManifest {
   readonly requirements: readonly string[];
 }
 
-function classifyManifestEligibility(manifest: unknown): EligibleManifest | null {
+/**
+ * Why a manifest was not eligible, so the summary can say which. Policy
+ * failures remain distinct from the separate env/store credential gate.
+ */
+interface ManifestIneligibility {
+  readonly kind: "policy";
+  readonly reason: string;
+}
+
+type ManifestClassification = EligibleManifest | ManifestIneligibility;
+
+function isEligibleManifest(classification: ManifestClassification): classification is EligibleManifest {
+  return !("kind" in classification);
+}
+
+function classifyManifestEligibility(manifest: unknown): ManifestClassification {
   const caps = getCapabilities(manifest);
   if (!caps) {
-    return null;
+    return { kind: "policy", reason: "manifest declares no capabilities" };
   }
   const policy = checkPolicyEligibility(caps);
   if (!policy.eligible) {
-    return null;
+    return { kind: "policy", reason: policy.reason ?? "ineligible" };
+  }
+  // An absent auth capability means this connector has no credential to
+  // gate on. Non-env auth remains ineligible here: this boot pass can prove
+  // only env-backed requirements (or their encrypted store equivalent).
+  if (caps.auth === undefined) {
+    return {
+      intervalSeconds: resolveIntervalSeconds(caps),
+      requirements: [],
+    };
   }
   const requirements = extractEnvRequirement(caps);
   if (!requirements) {
-    // Eligibility includes "manifest declares its env requirements".
-    // A proven, automatic connector without auth.required cannot be
-    // auto-enrolled by this pass because we have nothing to gate on.
-    return null;
+    return { kind: "policy", reason: "manifest declares an unsupported auth requirement" };
   }
   return {
     intervalSeconds: resolveIntervalSeconds(caps),
@@ -365,11 +402,25 @@ async function decideScheduleAttachmentForConnector(args: {
   hasStoredCredential: ((connectorId: string) => Promise<boolean>) | undefined;
   log: (line: string) => void;
   manifest: unknown;
+  recordSkipReason?: (connectorId: string, reason: string | null) => Promise<void>;
 }): Promise<AutoEnrollSummaryCounter> {
-  const manifestEligibility = classifyManifestEligibility(args.manifest);
-  if (!manifestEligibility) {
+  const recordReason = async (reason: string | null): Promise<void> => {
+    if (!args.recordSkipReason) {
+      return;
+    }
+    try {
+      await args.recordSkipReason(args.connectorId, reason);
+    } catch (err) {
+      args.log(`[auto-enroll] could not persist decision for ${args.connectorId}: ${errorMessage(err)}`);
+    }
+  };
+  const classification = classifyManifestEligibility(args.manifest);
+  if (!isEligibleManifest(classification)) {
+    args.log(`[auto-enroll] ${args.connectorId} not eligible: ${classification.reason}`);
+    await recordReason(classification.reason);
     return "skipped_policy";
   }
+  const manifestEligibility = classification;
   const authGateFailure = await evaluateAuthRequirementGate({
     connectorId: args.connectorId,
     env: args.env,
@@ -378,14 +429,25 @@ async function decideScheduleAttachmentForConnector(args: {
     requirements: manifestEligibility.requirements,
   });
   if (authGateFailure) {
+    await recordReason(
+      authGateFailure === "skipped_env"
+        ? "capabilities.auth.required not satisfied"
+        : "stored credential availability could not be verified"
+    );
     return authGateFailure;
   }
-  return attachScheduleForEligibleConnector({
+  const result = await attachScheduleForEligibleConnector({
     connectorId: args.connectorId,
     controller: args.controller,
     intervalSeconds: manifestEligibility.intervalSeconds,
     log: args.log,
   });
+  if (result === "enrolled" || result === "skipped_existing") {
+    await recordReason(null);
+  } else {
+    await recordReason("schedule enrollment failed");
+  }
+  return result;
 }
 
 /**
@@ -401,6 +463,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
     controller,
     hasStoredCredential,
     listConnectors,
+    recordSkipReason,
     log = () => {
       /* default no-op logger */
     },
@@ -430,6 +493,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
       hasStoredCredential,
       log,
       manifest: row.manifest,
+      ...(recordSkipReason ? { recordSkipReason } : {}),
     });
     summary[counter] += 1;
   }

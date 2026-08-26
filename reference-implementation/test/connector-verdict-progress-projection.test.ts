@@ -147,6 +147,9 @@ test("buildProgressEvidence: maps camelCase input to snake_case evidence verbati
   assert.deepEqual(
     out,
     {
+      // No `coverageProvenAt` passed, so the coverage anchor is null: this
+      // mapper never invents a proof time.
+      coverage_proven_at: null,
       gaps_drained_last_run: 7,
       last_refreshed_at: "2026-07-02T10:00:00.000Z",
       mode: "deferred",
@@ -170,6 +173,7 @@ test("buildProgressEvidence: preserves null facts (never fabricates a number)", 
   assert.deepEqual(
     out,
     {
+      coverage_proven_at: null,
       gaps_drained_last_run: null,
       last_refreshed_at: null,
       mode: "scheduled",

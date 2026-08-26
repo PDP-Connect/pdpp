@@ -155,6 +155,7 @@ interface QuarantinedRequeueScope {
   connectorInstanceId: string;
   limit: number;
   now: string;
+  reason: string;
   streams: string[] | null;
 }
 
@@ -660,6 +661,93 @@ function mergeSqlitePendingGapsByConnectorInstanceId(
   mergeGapRowsByConnectorInstanceId(result, rows);
 }
 
+// Result of the page-scoped terminal-gap read. `gapsByConnectorInstanceId`
+// carries only instances whose terminal gaps were read IN FULL;
+// `truncatedConnectorInstanceIds` names the instances whose row count exceeded
+// the per-instance cap, and those instances appear in neither map — they are
+// unmeasured, not empty. Keeping the two apart at the store boundary is what
+// stops a caller from mistaking "no rows returned" for "no terminal gaps".
+export interface TerminalGapPageRead {
+  readonly gapsByConnectorInstanceId: ReadonlyMap<string, readonly DetailGap[]>;
+  readonly truncatedConnectorInstanceIds: ReadonlySet<string>;
+}
+
+// Per-instance row cap for `listTerminalGapsByConnectorInstanceIds`. The
+// single-connection read (`listTerminalGapsForConnector`) caps at 500; a page
+// read fans that out across every connection on the page, so the per-instance
+// cap is deliberately smaller. It is a *detection* bound, not a silent
+// truncation: the query selects one row PAST the cap so the caller can tell
+// "this instance had at most `cap` terminal gaps and you have all of them"
+// apart from "there were more and you are holding a partial set". Fleet-wide
+// terminal-gap volume is order-10s per connection, so a real page never
+// reaches this.
+const TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE = 200;
+
+// Clamp a caller-supplied per-instance cap into [1, TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE].
+// The ceiling is the store's, not the caller's: a page read must never be
+// talked into an unbounded scan. Tests lower it to exercise truncation.
+function normalizeTerminalGapRowsPerInstance(rowsPerInstance: unknown): number {
+  const n = Number(rowsPerInstance);
+  if (!Number.isFinite(n)) {
+    return TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE;
+  }
+  return Math.max(1, Math.min(Math.floor(n), TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE));
+}
+
+// Splits an over-cap instance's rows out of a per-instance accumulator.
+// Selecting `cap + 1` rows per instance means an instance that comes back with
+// MORE than `cap` rows is provably truncated: we return its identity in
+// `truncatedConnectorInstanceIds` and drop its rows entirely rather than hand
+// the caller a partial set. A partial terminal-gap set cannot support an
+// "every gap in this stream is proven unfillable" verdict — the unproven row
+// could be exactly the one past the cap — so "unmeasured" is the only honest
+// answer. Trimming to `cap` and staying silent would be the false-green this
+// whole read path exists to refuse.
+function partitionTruncatedTerminalGaps(gapsByInstanceId: Map<string, DetailGap[]>, cap: number): Set<string> {
+  const truncated = new Set<string>();
+  for (const [connectorInstanceId, gaps] of gapsByInstanceId) {
+    if (gaps.length > cap) {
+      truncated.add(connectorInstanceId);
+      gapsByInstanceId.delete(connectorInstanceId);
+    }
+  }
+  return truncated;
+}
+
+// One SQLite bind-limited chunk of the
+// `listTerminalGapsByConnectorInstanceIds` per-instance selection: queries a
+// single chunk of connector-instance ids, taking `cap + 1` rows per instance
+// so the caller can detect truncation (see
+// `partitionTruncatedTerminalGaps`). Ordered by `stream, gap_id` to match the
+// single-connection `listTerminalGapsForConnector` read, so the two paths see
+// the same rows in the same order for the same data. Carries no lease/CAS
+// semantics — read-only.
+function mergeSqliteTerminalGapsByConnectorInstanceId(
+  result: Map<string, DetailGap[]>,
+  connectorInstanceIdChunk: readonly string[],
+  perInstanceRowBudget: number
+): void {
+  const placeholders = connectorInstanceIdChunk.map(() => "?").join(", ");
+  // REVIEWED-DYNAMIC: bounded status='terminal' read over the store-owned
+  // detail-gap table, scoped to an explicit connector-instance-id set. Feeds
+  // the unfillable-proof classifier only — read-only.
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<DetailGapRow>(
+      `WITH ranked AS (
+       SELECT connector_detail_gaps.*, ROW_NUMBER() OVER (
+         PARTITION BY connector_instance_id
+         ORDER BY stream, gap_id
+       ) AS row_number
+       FROM connector_detail_gaps
+       WHERE connector_instance_id IN (${placeholders})
+         AND status = 'terminal'
+     ) SELECT * FROM ranked WHERE row_number <= ? ORDER BY connector_instance_id, row_number`,
+      [...connectorInstanceIdChunk, perInstanceRowBudget]
+    ),
+  ];
+  mergeGapRowsByConnectorInstanceId(result, rows);
+}
+
 // Groups a batch of already-ranked/limited detail-gap rows by their durable
 // connector-instance identity, merging into a caller-owned accumulator.
 // Shared by both backends' `listPendingGapsByConnectorInstanceIds`: the
@@ -781,6 +869,76 @@ function normalizeLease(
   return { gapId, leaseId, runId };
 }
 
+/**
+ * Terminal `reason` values this repair tool is allowed to reopen, and why.
+ *
+ * Every value here means "the terminal state can plausibly have been caused
+ * by a connector/runtime defect that has since been fixed" — retrying is a
+ * legitimate re-measurement, not wishful thinking:
+ *   - `quarantined`   — a per-item no-progress budget was exhausted without
+ *     ever recording a reason (the original defect this tool was built for).
+ *   - `temporary_unavailable` — the row's own class name says "this may
+ *     resolve"; it was terminalized only because it exhausted a bounded
+ *     attempt budget while looking transient, not because of any proof of
+ *     permanence.
+ *   - `retry_exhausted` / `run_cap_deferred` — same shape: a bounded budget
+ *     ran out on a signal that was never non-transient.
+ *
+ * Deliberately EXCLUDED — durable-impossibility reasons a bulk reopen must
+ * never touch:
+ *   - `not_found` / `gone` / `permanent_forbidden` — `classifyRecoveryError`
+ *     (server/stores/terminal-gap-classifier.ts) only assigns these from an
+ *     explicit non-transient HTTP signal (404/410/permanent-403). Reopening
+ *     a proven-gone resource just re-wastes the recovery budget confirming
+ *     it is still gone.
+ *   - `too_large` — Gmail's `AttachmentTooLargeError` terminal class. A
+ *     `too_large` row can carry durable per-item proof (observed byte size
+ *     recorded strictly greater than the configured cap — see
+ *     `isProvenUnfillableGap` in `server/connector-gap-classification.ts`):
+ *     requeuing a 29 MB attachment against a 25 MB cap can never converge,
+ *     it would just spin the recovery budget forever. This generic bulk
+ *     path has no way to check that per-row proof safely, so the reason is
+ *     refused categorically rather than requeued speculatively. (A prior,
+ *     narrowly-scoped one-off bridge — `too_large` + unproven rows only,
+ *     Gmail/attachments-locked — existed for exactly this distinction; see
+ *     commit 10ed92599. That per-row-proof check does not exist on this
+ *     branch, so this tool does not attempt to replicate it.)
+ *   - `auth_failure` — requires owner re-authentication, not a data retry;
+ *     silently requeuing it would not fix anything and would mask that the
+ *     owner still needs to act.
+ *   - `not_available_in_mode` / `out_of_scope` / `user_disabled` —
+ *     informational, by-design terminal states, not failures to retry.
+ */
+export const TERMINAL_REQUEUE_REASON_ALLOWLIST: ReadonlySet<string> = new Set([
+  "quarantined",
+  "retry_exhausted",
+  "run_cap_deferred",
+  "temporary_unavailable",
+]);
+
+/** Durable-impossibility reasons called out by name in refusal errors, so an operator sees WHY, not just a generic rejection. */
+const TERMINAL_REQUEUE_REASON_IMPOSSIBILITY_NOTE: ReadonlyMap<string, string> = new Map([
+  ["too_large", "carries a durable size-vs-cap proof and can never converge on retry"],
+  ["not_found", "is a proven-gone resource (404); retrying only re-confirms it is gone"],
+  ["gone", "is a proven-gone resource (410); retrying only re-confirms it is gone"],
+  ["permanent_forbidden", "is a proven-permanent access denial; retrying cannot change that"],
+  ["auth_failure", "requires owner re-authentication, not a data retry"],
+]);
+
+function assertRequeueableReason(reason: string): void {
+  if (TERMINAL_REQUEUE_REASON_ALLOWLIST.has(reason)) {
+    return;
+  }
+  const note = TERMINAL_REQUEUE_REASON_IMPOSSIBILITY_NOTE.get(reason);
+  throw new Error(
+    note
+      ? `refusing to requeue terminal reason '${reason}': ${note}`
+      : `refusing to requeue terminal reason '${reason}': not in the allowed set (${[
+          ...TERMINAL_REQUEUE_REASON_ALLOWLIST,
+        ].join(", ")})`
+  );
+}
+
 function requeueReasonForQuarantinedGap(gap: DetailGap): string {
   const lastError =
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
@@ -796,12 +954,36 @@ function requeueReasonForQuarantinedGap(gap: DetailGap): string {
   return "temporary_unavailable";
 }
 
-function buildQuarantineRetryLastError(gap: DetailGap, now: string): unknown {
+/**
+ * The reason to stamp on a row being requeued out of terminal. `quarantined`
+ * rows get the special unwrap ({@link requeueReasonForQuarantinedGap}): the
+ * quarantine path always stamps `reason = 'quarantined'` regardless of what
+ * looked transient beforehand, so the row's OWN `last_error.reason` is the
+ * only place the pre-quarantine class survives. Every other allowed terminal
+ * reason (`temporary_unavailable`, `retry_exhausted`, `run_cap_deferred`) IS
+ * already its own honest class — a bounded-budget exhaustion on a signal
+ * that was never proven non-transient — so requeuing simply keeps it.
+ */
+function requeueReasonForGap(gap: DetailGap, scopeReason: string): string {
+  return scopeReason === "quarantined" ? requeueReasonForQuarantinedGap(gap) : scopeReason;
+}
+
+/**
+ * Audit trail written into the requeued row's `last_error`, so the operator
+ * repair is visible in the row's own history rather than silently
+ * overwriting the evidence that got it terminalized. `class` names the
+ * scope's own reason so a `temporary_unavailable` requeue reads honestly
+ * (not as a borrowed "quarantine" label) — `retry_requested` for every
+ * allowed reason, `quarantine_retry_requested` kept as the exact prior
+ * string when the scope reason is `quarantined` so historical row shapes
+ * and any consumer keyed on that literal are unaffected.
+ */
+function buildQuarantineRetryLastError(gap: DetailGap, now: string, scopeReason: string): unknown {
   const prior =
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     gap?.last_error && typeof gap.last_error === "object" ? (gap.last_error as Record<string, unknown>) : {};
   return sanitizeDetailGapMetadata({
-    class: "quarantine_retry_requested",
+    class: scopeReason === "quarantined" ? "quarantine_retry_requested" : `${scopeReason}_retry_requested`,
     previous_class: typeof prior.class === "string" ? prior.class : null,
     previous_failure_class: typeof prior.failure_class === "string" ? prior.failure_class : null,
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
@@ -813,26 +995,33 @@ function buildQuarantineRetryLastError(gap: DetailGap, now: string): unknown {
 function normalizeQuarantinedRequeueScope(
   connectorId: unknown,
   connectorInstanceId: unknown,
-  options: { limit?: unknown; now?: unknown; streams?: unknown } = {}
+  options: { limit?: unknown; now?: unknown; reason?: unknown; streams?: unknown } = {}
 ): QuarantinedRequeueScope {
   const cid = nonEmptyString(connectorId);
   if (!cid) {
     throw new Error("requeueQuarantinedTerminalGapsForConnectorInstance requires connectorId");
   }
+  const reason = nonEmptyString(options.reason) || "quarantined";
+  assertRequeueableReason(reason);
   return {
     connectorId: cid,
     connectorInstanceId: nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(cid),
     limit: normalizeGapMutationLimit(options.limit),
     now: nonEmptyString(options.now) || nowIso(),
+    reason,
     streams: normalizeStreamScope(options.streams),
   };
 }
 
 function sqliteQuarantinedRequeueRows(scope: QuarantinedRequeueScope): DetailGap[] {
   const streamPlaceholders = optionalSqlPlaceholders(scope.streams);
-  // REVIEWED-DYNAMIC: bounded repair selection for terminal quarantined
-  // detail gaps. Only non-payload row metadata is read and the caller must
-  // scope by one connector instance; terminal rows are never blanket-reset.
+  // REVIEWED-DYNAMIC: bounded repair selection for terminal detail gaps
+  // whose reason is on the operator-requeueable allowlist (asserted by
+  // `normalizeQuarantinedRequeueScope` before this ever runs — `too_large`,
+  // `not_found`, `gone`, `permanent_forbidden`, and `auth_failure` can never
+  // reach this query). Only non-payload row metadata is read and the caller
+  // must scope by one connector instance; terminal rows are never
+  // blanket-reset across reasons or instances.
   return [
     ...iterateDynamicSqlAcknowledged<DetailGapRow>(
       `
@@ -840,12 +1029,12 @@ function sqliteQuarantinedRequeueRows(scope: QuarantinedRequeueScope): DetailGap
     WHERE connector_id = ?
       AND connector_instance_id = ?
       AND status = 'terminal'
-      AND reason = 'quarantined'
+      AND reason = ?
       ${streamPlaceholders ? `AND stream IN (${streamPlaceholders})` : ""}
     ORDER BY updated_at, created_at
     LIMIT ?
   `,
-      [scope.connectorId, scope.connectorInstanceId, ...(scope.streams ?? []), scope.limit]
+      [scope.connectorId, scope.connectorInstanceId, scope.reason, ...(scope.streams ?? []), scope.limit]
     ),
   ].map((row) => rowToGap(row) as DetailGap);
 }
@@ -854,7 +1043,10 @@ function requeueSqliteQuarantinedRows(rows: DetailGap[], scope: QuarantinedReque
   let requeued = 0;
   for (const gap of rows) {
     // REVIEWED-DYNAMIC: scoped status reset for operator-approved retry of
-    // quarantined no-progress detail gaps after a connector/runtime fix.
+    // an allowlisted terminal reason after a connector/runtime fix. The
+    // WHERE clause re-checks `reason = scope.reason` (not just `status =
+    // 'terminal'`) so a row that changed reason between the read and this
+    // write is never silently requeued under the wrong class.
     const result = execDynamicSqlAcknowledged(
       `
       UPDATE connector_detail_gaps
@@ -869,15 +1061,16 @@ function requeueSqliteQuarantinedRows(rows: DetailGap[], scope: QuarantinedReque
         AND connector_id = ?
         AND connector_instance_id = ?
         AND status = 'terminal'
-        AND reason = 'quarantined'
+        AND reason = ?
     `,
       [
-        requeueReasonForQuarantinedGap(gap),
-        encodeJson(buildQuarantineRetryLastError(gap, scope.now)),
+        requeueReasonForGap(gap, scope.reason),
+        encodeJson(buildQuarantineRetryLastError(gap, scope.now, scope.reason)),
         scope.now,
         gap.gap_id,
         scope.connectorId,
         scope.connectorInstanceId,
+        scope.reason,
       ]
     );
     requeued += Number(result.changes || 0);
@@ -892,12 +1085,12 @@ async function postgresQuarantinedRequeueRows(scope: QuarantinedRequeueScope): P
     WHERE connector_id = $1
       AND connector_instance_id = $2
       AND status = 'terminal'
-      AND reason = 'quarantined'
-      AND ($3::text[] IS NULL OR stream = ANY($3::text[]))
+      AND reason = $3
+      AND ($4::text[] IS NULL OR stream = ANY($4::text[]))
     ORDER BY updated_at, created_at
-    LIMIT $4
+    LIMIT $5
   `,
-    [scope.connectorId, scope.connectorInstanceId, scope.streams, scope.limit]
+    [scope.connectorId, scope.connectorInstanceId, scope.reason, scope.streams, scope.limit]
   );
   return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
 }
@@ -923,15 +1116,16 @@ async function requeuePostgresQuarantinedRows(
         AND connector_id = $5
         AND connector_instance_id = $6
         AND status = 'terminal'
-        AND reason = 'quarantined'
+        AND reason = $7
     `,
       [
-        requeueReasonForQuarantinedGap(gap),
-        encodeJson(buildQuarantineRetryLastError(gap, scope.now)),
+        requeueReasonForGap(gap, scope.reason),
+        encodeJson(buildQuarantineRetryLastError(gap, scope.now, scope.reason)),
         scope.now,
         gap.gap_id,
         scope.connectorId,
         scope.connectorInstanceId,
+        scope.reason,
       ]
     );
     requeued += Number(updated.rowCount || 0);
@@ -1153,6 +1347,7 @@ export function createSqliteConnectorDetailGapStore() {
       ];
       return rows.map((row) => rowToGap(row) as DetailGap);
     },
+
     // Page-scoped summary evidence. Each map is keyed only by the durable
     // connection identity; callers must not fall back to connector_id.
     listPendingGapsByConnectorInstanceIds(
@@ -1215,6 +1410,59 @@ export function createSqliteConnectorDetailGapStore() {
         LIMIT ?
       `,
           [connectorId, connectorInstanceId, Math.max(1, Math.min(limit, 500))]
+        ),
+      ];
+      return rows.map((row) => rowToGap(row) as DetailGap);
+    },
+
+    // Page-scoped batch analogue of `listTerminalGapsForConnector`, keyed only
+    // by durable connection identity (never connector_id). See
+    // `TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE` / `partitionTruncatedTerminalGaps`
+    // for the truncation contract: an instance whose terminal gaps exceed the
+    // per-instance cap is reported in `truncatedConnectorInstanceIds` with NO
+    // rows, so the caller reads it as unmeasured instead of deciding a
+    // proof verdict from a partial set.
+    listTerminalGapsByConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { rowsPerInstance = TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE }: { rowsPerInstance?: number } = {}
+    ): Promise<TerminalGapPageRead> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return Promise.resolve({ gapsByConnectorInstanceId: new Map(), truncatedConnectorInstanceIds: new Set() });
+      }
+      const cap = normalizeTerminalGapRowsPerInstance(rowsPerInstance);
+      const gapsByConnectorInstanceId = new Map<string, DetailGap[]>();
+      for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
+        mergeSqliteTerminalGapsByConnectorInstanceId(gapsByConnectorInstanceId, chunk, cap + 1);
+      }
+      return Promise.resolve({
+        gapsByConnectorInstanceId,
+        truncatedConnectorInstanceIds: partitionTruncatedTerminalGaps(gapsByConnectorInstanceId, cap),
+      });
+    },
+
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async listTerminalGapsForConnector(
+      connectorId: string,
+      options: { connectorInstanceId?: string | null; limit?: number } = {}
+    ): Promise<DetailGap[]> {
+      const scopedConnectorInstanceId = nonEmptyString(options.connectorInstanceId);
+      const limit = Math.max(1, Math.min(Math.floor(Number(options.limit) || 500), 1000));
+      // REVIEWED-DYNAMIC: bounded status='terminal' read over the store-owned
+      // detail-gap table, scoped to one connector (and optionally one
+      // instance). Feeds the unfillable-proof classifier only — no
+      // lease/CAS semantics, read-only.
+      const rows = [
+        ...iterateDynamicSqlAcknowledged<DetailGapRow>(
+          `
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = ?
+          AND status = 'terminal'
+          AND (? IS NULL OR connector_instance_id = ?)
+        ORDER BY stream, gap_id
+        LIMIT ?
+      `,
+          [connectorId, scopedConnectorInstanceId, scopedConnectorInstanceId, limit]
         ),
       ];
       return rows.map((row) => rowToGap(row) as DetailGap);
@@ -1361,7 +1609,7 @@ export function createSqliteConnectorDetailGapStore() {
     async requeueQuarantinedTerminalGapsForConnectorInstance(
       connectorId: string,
       connectorInstanceId: string,
-      options: { limit?: number; now?: string; streams?: string[] | null } = {}
+      options: { limit?: number; now?: string; reason?: string; streams?: string[] | null } = {}
     ): Promise<RequeueResult> {
       const scope = normalizeQuarantinedRequeueScope(connectorId, connectorInstanceId, options);
       return requeueSqliteQuarantinedRows(sqliteQuarantinedRequeueRows(scope), scope);
@@ -1771,6 +2019,7 @@ export function createPostgresConnectorDetailGapStore() {
       );
       return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
     },
+
     async listPendingGapsByConnectorInstanceIds(
       connectorInstanceIds: readonly (string | null | undefined)[],
       { limit = 100, now = nowIso() }: { limit?: number; now?: string } = {}
@@ -1829,6 +2078,58 @@ export function createPostgresConnectorDetailGapStore() {
         LIMIT $3
       `,
         [connectorId, connectorInstanceId, Math.max(1, Math.min(limit, 500))]
+      );
+      return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
+    },
+
+    // Postgres analogue of the SQLite page-scoped terminal-gap read. Same
+    // `cap + 1` truncation-detection contract, same `stream, gap_id` ordering
+    // as `listTerminalGapsForConnector`; no bind-limit chunking is needed
+    // because `= ANY($1::text[])` binds the whole id set as one parameter.
+    async listTerminalGapsByConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { rowsPerInstance = TERMINAL_GAP_PAGE_ROWS_PER_INSTANCE }: { rowsPerInstance?: number } = {}
+    ): Promise<TerminalGapPageRead> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return { gapsByConnectorInstanceId: new Map(), truncatedConnectorInstanceIds: new Set() };
+      }
+      const cap = normalizeTerminalGapRowsPerInstance(rowsPerInstance);
+      const query = await postgresQuery<DetailGapRow>(
+        `WITH ranked AS (
+           SELECT connector_detail_gaps.*, ROW_NUMBER() OVER (
+             PARTITION BY connector_instance_id
+             ORDER BY stream, gap_id
+           ) AS row_number
+           FROM connector_detail_gaps
+           WHERE connector_instance_id = ANY($1::text[])
+             AND status = 'terminal'
+         ) SELECT * FROM ranked WHERE row_number <= $2 ORDER BY connector_instance_id, row_number`,
+        [ids, cap + 1]
+      );
+      const gapsByConnectorInstanceId = groupGapRowsByConnectorInstanceId(query.rows as DetailGapRow[]);
+      return {
+        gapsByConnectorInstanceId,
+        truncatedConnectorInstanceIds: partitionTruncatedTerminalGaps(gapsByConnectorInstanceId, cap),
+      };
+    },
+
+    async listTerminalGapsForConnector(
+      connectorId: string,
+      options: { connectorInstanceId?: string | null; limit?: number } = {}
+    ): Promise<DetailGap[]> {
+      const scopedConnectorInstanceId = nonEmptyString(options.connectorInstanceId);
+      const limit = Math.max(1, Math.min(Math.floor(Number(options.limit) || 500), 1000));
+      const result = await postgresQuery<DetailGapRow>(
+        `
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = $1
+          AND status = 'terminal'
+          AND ($2::text IS NULL OR connector_instance_id = $2)
+        ORDER BY stream, gap_id
+        LIMIT $3
+      `,
+        [connectorId, scopedConnectorInstanceId, limit]
       );
       return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
     },
@@ -1960,7 +2261,7 @@ export function createPostgresConnectorDetailGapStore() {
     async requeueQuarantinedTerminalGapsForConnectorInstance(
       connectorId: string,
       connectorInstanceId: string,
-      options: { limit?: number; now?: string; streams?: string[] | null } = {}
+      options: { limit?: number; now?: string; reason?: string; streams?: string[] | null } = {}
     ): Promise<RequeueResult> {
       const scope = normalizeQuarantinedRequeueScope(connectorId, connectorInstanceId, options);
       return requeuePostgresQuarantinedRows(await postgresQuarantinedRequeueRows(scope), scope);

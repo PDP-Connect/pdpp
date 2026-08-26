@@ -1,0 +1,157 @@
+candidate_id: runtime-controller-t0-f84c0b6c
+created: "2026-08-23T14:48:49.651Z"
+repo_sha: "60612118bfd2171fdccfc0a1dcf29fefd7d88484"
+subsystem: runtime
+files: [runtime/controller.ts]
+symbols:
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L1411"
+    line: 1411
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L1702"
+    line: 1702
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L2222"
+    line: 2222
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L2411"
+    line: 2411
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L2473"
+    line: 2473
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L2733"
+    line: 2733
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L2924"
+    line: 2924
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L3230"
+    line: 3230
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L3676"
+    line: 3676
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L1184"
+    line: 1184
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L2637"
+    line: 2637
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L2955"
+    line: 2955
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L3374"
+    line: 3374
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L3572"
+    line: 3572
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L3939"
+    line: 3939
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L2110"
+    line: 2110
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L2658"
+    line: 2658
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L4311"
+    line: 4311
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L1327"
+    line: 1327
+  - file: runtime/controller.ts
+    parent_fn: "<module>"
+    anchor: "@L1661"
+    line: 1661
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 11, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn '@L1411' cc=11. File attention: churn 17 × excess-cc mass 144 = 2448; 44 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to @L1411@L1411(in <module>), @L1702@L1702(in <module>), @L2222@L2222(in <module>), @L2411@L2411(in <module>), @L2473@L2473(in <module>), @L2733@L2733(in <module>) (+38 more — see quality/inventory/tier-mass.json) in runtime/controller.ts (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: none
+priority:
+  score: 23.952
+  computed: "2026-08-23T14:48:49.651Z"
+  inputs:
+    mass: 144
+    churn: 17
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: low
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for runtime/controller.ts, tier T0 (repo_sha 60612118bfd2171fdccfc0a1dcf29fefd7d88484)"
+    result: "44 flagged fn(s), Σ excess-cc 144, max cc 11, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- runtime/controller.ts"
+    result: "17 commits in window; coupling(fan-in proxy)=77"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && npx tsc --noEmit"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/hone-quality-0823/reference-implementation && node scripts/run-tests.ts"
+    expect: all tests pass; 0 fail; no new skips (skip counts compared baseline vs post)
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: file-complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/hone-quality-0823/reference-implementation --file 'runtime/controller.ts' --cog 5"
+    expect: "found=true and file_excess < 218 (packet baseline: whole-file Σ excess-cc) and strictly below the measured baseline; no NEW function above the cog-5 threshold vs baseline; red_scan unchanged"
+    expect_check:
+      type: file_excess_lt
+      value: 218
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: null
+judge_provider: null
+batch_key: preserve_refactor×certified_transform×runtime
+touchset: [runtime/controller.ts]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: pending
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts: []
+  tokens_actual: null
+  lesson: null

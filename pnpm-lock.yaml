@@ -545,6 +545,9 @@ importers:
       '@pdpp/connector-protocol':
         specifier: file:../vendor/pdpp-connector-protocol-0.0.1.tgz
         version: file:vendor/pdpp-connector-protocol-0.0.1.tgz
+      '@pdpp/display':
+        specifier: workspace:*
+        version: link:../packages/display
       '@pdpp/mcp-server':
         specifier: workspace:*
         version: link:../packages/mcp-server

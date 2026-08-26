@@ -1,0 +1,15 @@
+{
+  "generated_from": {
+    "repo_root": "/home/tnunamak/.tmp/hone-quality-0823/reference-implementation",
+    "repo_sha": "60612118bfd2171fdccfc0a1dcf29fefd7d88484",
+    "cog_threshold": 5,
+    "callbacks": 0,
+    "total_excess_mass": 0,
+    "resolver": "ast-scope (TS compiler API)"
+  },
+  "by_class": {},
+  "mass_by_class": {},
+  "by_kind": {},
+  "b_flagged": 0,
+  "callbacks": []
+}

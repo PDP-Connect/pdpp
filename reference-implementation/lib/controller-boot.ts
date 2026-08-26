@@ -26,13 +26,48 @@ import { type BootEpoch, emitSpineEvent, setCurrentBootEpoch } from "./spine.ts"
 export interface BootControllerOpts {
   /** Override for testing; defaults to randomUUID. */
   bootEpoch?: string;
-  /** Override for testing; defaults to PDPP_CONTROLLER_ID || os.hostname(). */
+  /**
+   * Override for testing; otherwise resolved from `PDPP_CONTROLLER_ID`, then
+   * from the durable `controller_identity` row (seeded from the hostname on
+   * first boot). See `resolveControllerId`.
+   */
   controllerId?: string;
   /** Process fingerprint fields. */
   gitSha?: string | null;
 }
 
-function resolveControllerId(opts: BootControllerOpts): string {
+/**
+ * The single row id in `controller_identity`. The table holds one row for
+ * the whole deployment; the constant keeps that intent in the SQL.
+ */
+const CONTROLLER_IDENTITY_ROW_ID = "singleton";
+
+/**
+ * Resolve the identity this deployment uses to claim and adjudicate runs.
+ *
+ * Precedence, and the reason for each step:
+ *
+ *  1. An explicit `opts.controllerId` — tests and multi-controller callers
+ *     that must pin an identity.
+ *  2. `PDPP_CONTROLLER_ID` — the operator override. Kept first among the
+ *     durable options so a genuine multi-controller deployment can still
+ *     partition ownership without touching the database.
+ *  3. The `controller_identity` row — the durable default. Written once, on
+ *     the first boot that finds the table empty, then read back unchanged
+ *     forever.
+ *
+ * Step 3 is the fix for the production defect. The previous fallback was
+ * `os.hostname()`, which under Docker is the container ID and is therefore
+ * fresh on every `docker run`. Because the boot reconciler only adjudicates
+ * orphans whose `controller_id` matches its own, a hostname identity meant
+ * every container replacement started with an empty claim: 121 production
+ * runs from 106 distinct controller ids were left permanently non-terminal.
+ *
+ * `os.hostname()` survives only as the seed for the first row, never as the
+ * live answer. That keeps a fresh deployment's identity readable to a human
+ * without making process-lifetime the identity's lifetime.
+ */
+async function resolveControllerId(opts: BootControllerOpts): Promise<string> {
   if (opts.controllerId && opts.controllerId.length > 0) {
     return opts.controllerId;
   }
@@ -40,7 +75,79 @@ function resolveControllerId(opts: BootControllerOpts): string {
   if (fromEnv && fromEnv.length > 0) {
     return fromEnv;
   }
-  return os.hostname();
+  return await loadOrCreateDurableControllerId();
+}
+
+/**
+ * Read the persisted controller identity, seeding it on first boot.
+ *
+ * The seed is `os.hostname()` so a fresh deployment gets a human-readable
+ * id; what matters is that it is written down once rather than recomputed
+ * per process.
+ *
+ * The INSERT is conditional on the row's absence and the value is re-read
+ * after writing, so two processes racing a first boot converge on whichever
+ * row landed rather than each trusting its own seed.
+ *
+ * If no database is available (SQLite tests that never open one), this falls
+ * back to the hostname. That path cannot strand orphans because without a
+ * database there is no spine to strand them in.
+ */
+async function loadOrCreateDurableControllerId(): Promise<string> {
+  const seed = os.hostname();
+
+  if (isPostgresStorageBackend()) {
+    const existing = await postgresQuery<{ controller_id: string }>(
+      "SELECT controller_id FROM controller_identity WHERE id = $1",
+      [CONTROLLER_IDENTITY_ROW_ID]
+    );
+    const found = existing.rows[0]?.controller_id;
+    if (found) {
+      return found;
+    }
+    await postgresQuery(
+      `INSERT INTO controller_identity (id, controller_id, created_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO NOTHING`,
+      [CONTROLLER_IDENTITY_ROW_ID, seed, new Date().toISOString()]
+    );
+    // Re-read rather than assume the seed won: a concurrent first boot may
+    // have inserted its own, and both processes must agree on one identity.
+    const settled = await postgresQuery<{ controller_id: string }>(
+      "SELECT controller_id FROM controller_identity WHERE id = $1",
+      [CONTROLLER_IDENTITY_ROW_ID]
+    );
+    return settled.rows[0]?.controller_id ?? seed;
+  }
+
+  const db = getDb();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+  if (!db) {
+    return seed;
+  }
+  const raw = db as unknown as {
+    prepare: (sql: string) => {
+      get: (...args: unknown[]) => { controller_id: string } | undefined;
+      run: (...args: unknown[]) => unknown;
+    };
+  };
+  const found = raw
+    .prepare("SELECT controller_id FROM controller_identity WHERE id = ?")
+    .get(CONTROLLER_IDENTITY_ROW_ID)?.controller_id;
+  if (found) {
+    return found;
+  }
+  raw
+    .prepare(
+      `INSERT INTO controller_identity (id, controller_id, created_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT (id) DO NOTHING`
+    )
+    .run(CONTROLLER_IDENTITY_ROW_ID, seed, new Date().toISOString());
+  return (
+    raw.prepare("SELECT controller_id FROM controller_identity WHERE id = ?").get(CONTROLLER_IDENTITY_ROW_ID)
+      ?.controller_id ?? seed
+  );
 }
 
 /**
@@ -93,7 +200,7 @@ async function nextSeqForController(controllerId: string): Promise<number> {
  * it to the orphan reconciler (Stage 6).
  */
 export async function emitControllerBootedAndStashEpoch(opts: BootControllerOpts = {}): Promise<BootEpoch> {
-  const controllerId = resolveControllerId(opts);
+  const controllerId = await resolveControllerId(opts);
   const bootEpoch = opts.bootEpoch && opts.bootEpoch.length > 0 ? opts.bootEpoch : randomUUID();
   const seq = await nextSeqForController(controllerId);
 
@@ -161,11 +268,52 @@ export interface ReconcileResult {
  * log give the same account of why the run ended.
  */
 const ABANDONED_AT_BOOT_REASON = "controller_terminated_before_run_finished";
+/**
+ * The typed terminal reason for the subset of those runs that died while
+ * BLOCKED ON A PENDING OWNER INTERACTION — the connector had asked the owner
+ * for input (an OTP, a security code) and was still waiting when the
+ * controller died.
+ *
+ * This is a distinct reason because the owner has already paid a real-world
+ * cost by the time it happens: an OTP is single-use and is delivered out of
+ * band to a real phone. "We asked you for a code and then crashed" is a
+ * materially different account from "the run was cut short", and only the
+ * former tells the owner why a code they were sent became useless.
+ *
+ * It does NOT imply the interaction is recoverable. The owner's answer is
+ * delivered over the connector child's stdin to a live browser session that
+ * holds the authenticated pre-OTP page state, and that child is SIGTERMed by
+ * the runtime's `process.on('exit')` sweep when the controller dies. The
+ * session cannot outlive the process, so a successor cannot reattach and the
+ * next attempt necessarily costs a fresh code. This reason reports that
+ * honestly rather than implying a resumable state that does not exist.
+ */
+const ABANDONED_AWAITING_INTERACTION_REASON = "controller_terminated_while_awaiting_owner_interaction";
 /** Matches the status `run-history-writer.ts` derives for `run.abandoned`. */
 const ABANDONED_RUN_HISTORY_STATUS = "abandoned";
 
+/**
+ * Picks the honest terminal reason for one orphan. A run counts as
+ * interaction-blocked only when its last interaction lifecycle event was a
+ * REQUEST that never reached a terminal interaction event — i.e. the owner
+ * was genuinely still being waited on at the moment the controller died.
+ */
+function terminalReasonFor(orphan: OrphanRow): string {
+  return orphan.awaiting_interaction ? ABANDONED_AWAITING_INTERACTION_REASON : ABANDONED_AT_BOOT_REASON;
+}
+
 interface OrphanRow {
   actor_id: string;
+  /**
+   * True when this run had an interaction request outstanding at the moment
+   * the controller died: at least one `run.interaction_required` /
+   * `run.assistance_requested` event whose `interaction_id` never reached a
+   * terminal interaction event. Selected in SQL (rather than derived later)
+   * so both backends answer the question from the same spine facts.
+   *
+   * `1`/`0` from SQLite, boolean from Postgres; normalized by `readOrphanRows`.
+   */
+  awaiting_interaction: boolean;
   /**
    * The abandoned run's connection. Carried from the `run.started` event so
    * the `run_history` projection can be fenced by the real run identity —
@@ -219,7 +367,24 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
         s.scenario_id,
         s.connector_instance_id,
         s.data_json->>'boot_epoch'    AS original_boot_epoch,
-        s.data_json->>'controller_id' AS original_controller_id
+        s.data_json->>'controller_id' AS original_controller_id,
+        -- Was the owner still being waited on when the controller died?
+        -- True iff some interaction was REQUESTED for this run and that same
+        -- interaction_id never reached a terminal interaction event.
+        EXISTS (
+          SELECT 1 FROM spine_events q
+          WHERE q.run_id = s.run_id
+            AND q.event_type IN ('run.interaction_required', 'run.assistance_requested')
+            AND q.interaction_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM spine_events d
+              WHERE d.interaction_id = q.interaction_id
+                AND d.event_type IN (
+                  'run.interaction_completed', 'run.assistance_resolved',
+                  'run.assistance_cancelled', 'run.assistance_timed_out'
+                )
+            )
+        ) AS awaiting_interaction
       FROM spine_events s
       WHERE s.event_type = 'run.started'
         AND (s.data_json->>'boot_epoch') IS DISTINCT FROM $1
@@ -278,7 +443,23 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
       s.scenario_id,
       s.connector_instance_id,
       json_extract(s.data_json, '$.boot_epoch')    AS original_boot_epoch,
-      json_extract(s.data_json, '$.controller_id') AS original_controller_id
+      json_extract(s.data_json, '$.controller_id') AS original_controller_id,
+      -- Mirrors the Postgres EXISTS above: an interaction was requested for
+      -- this run and never reached a terminal interaction event.
+      EXISTS (
+        SELECT 1 FROM spine_events q
+        WHERE q.run_id = s.run_id
+          AND q.event_type IN ('run.interaction_required', 'run.assistance_requested')
+          AND q.interaction_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM spine_events d
+            WHERE d.interaction_id = q.interaction_id
+              AND d.event_type IN (
+                'run.interaction_completed', 'run.assistance_resolved',
+                'run.assistance_cancelled', 'run.assistance_timed_out'
+              )
+          )
+      ) AS awaiting_interaction
     FROM spine_events s
     WHERE s.event_type = 'run.started'
       AND COALESCE(json_extract(s.data_json, '$.boot_epoch'), '') <> ?
@@ -295,7 +476,18 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
       )
     `
   );
-  const orphans = selectStmt.all(epoch.boot_epoch, epoch.controller_id, epoch.controller_id) as OrphanRow[];
+  // SQLite has no boolean type: EXISTS(...) yields 1/0, so normalize to the
+  // boolean `OrphanRow.awaiting_interaction` declares before any consumer
+  // reads it. (`0` is falsy in JS, but relying on that would leave the row
+  // shape lying about its own type.)
+  const orphans = (
+    selectStmt.all(epoch.boot_epoch, epoch.controller_id, epoch.controller_id) as (Omit<
+      OrphanRow,
+      "awaiting_interaction"
+    > & {
+      awaiting_interaction: unknown;
+    })[]
+  ).map((row) => ({ ...row, awaiting_interaction: Boolean(row.awaiting_interaction) }));
 
   let abandoned = 0;
   for (const orphan of orphans) {
@@ -323,7 +515,7 @@ async function emitRunAbandoned(
     caused_by_event_id: orphan.event_id,
     original_boot_epoch: orphan.original_boot_epoch,
     original_controller_id: orphan.original_controller_id,
-    reason: ABANDONED_AT_BOOT_REASON,
+    reason: terminalReasonFor(orphan),
     reconciled_by_boot_epoch: epoch.boot_epoch,
     reconciled_by_controller_id: epoch.controller_id,
     reconciled_by_seq: epoch.seq,
@@ -353,7 +545,7 @@ async function emitRunAbandoned(
         dataJson,
       ]
     );
-    await projectAbandonedRunHistoryPostgres(client, orphan, occurredAt);
+    await projectAbandonedRunHistoryPostgres(client, orphan, occurredAt, dataJson);
     return true;
   } catch (err) {
     // Idempotency: a prior reconciler already abandoned this orphan.
@@ -383,7 +575,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
     caused_by_event_id: orphan.event_id,
     original_boot_epoch: orphan.original_boot_epoch,
     original_controller_id: orphan.original_controller_id,
-    reason: ABANDONED_AT_BOOT_REASON,
+    reason: terminalReasonFor(orphan),
     reconciled_by_boot_epoch: epoch.boot_epoch,
     reconciled_by_controller_id: epoch.controller_id,
     reconciled_by_seq: epoch.seq,
@@ -413,7 +605,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
       orphan.run_id,
       dataJson
     );
-    projectAbandonedRunHistorySqlite(orphan, occurredAt);
+    projectAbandonedRunHistorySqlite(orphan, occurredAt, dataJson);
     return true;
   } catch (err) {
     // Idempotency on SQLite: better-sqlite3 throws SqliteError with
@@ -460,9 +652,23 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
 // finalizing a run some other path already terminalised. The
 // `connector_instance_id` fence is load-bearing for the same reason it is
 // on the generic writer: run_id alone is not unique across connections.
+//
+// `facts_json` carries the same epoch-transition provenance
+// (original_boot_epoch/reconciled_by_boot_epoch/etc.) already written to
+// the spine event's data_json, verbatim. Without it, "controller_terminated_
+// before_run_finished" is an unverifiable claim from run_history alone --
+// confirming a real restart happened requires correlating raw spine events
+// against container logs across a deploy (see the investigation this
+// closed: run_1787406305278, 2026-08-22, where a real deploy-triggered
+// container replacement left no trace in `docker inspect`'s RestartCount).
 // ─────────────────────────────────────────────────────────────────────────
 
-async function projectAbandonedRunHistoryPostgres(client: PgClient, orphan: OrphanRow, at: string): Promise<void> {
+async function projectAbandonedRunHistoryPostgres(
+  client: PgClient,
+  orphan: OrphanRow,
+  at: string,
+  factsJson: string
+): Promise<void> {
   if (!(orphan.run_id && orphan.connector_instance_id)) {
     // No connection identity on the started event means no row can be
     // matched without guessing. Leave it rather than fence on run_id alone.
@@ -472,11 +678,19 @@ async function projectAbandonedRunHistoryPostgres(client: PgClient, orphan: Orph
     `UPDATE run_history
      SET status = $1,
          completed_at = $2,
-         terminal_reason = $3
-     WHERE run_id = $4
-       AND connector_instance_id = $5
+         terminal_reason = $3,
+         facts_json = COALESCE(facts_json, '{}'::jsonb) || $4::jsonb
+     WHERE run_id = $5
+       AND connector_instance_id = $6
        AND status = 'running'`,
-    [ABANDONED_RUN_HISTORY_STATUS, at, ABANDONED_AT_BOOT_REASON, orphan.run_id, orphan.connector_instance_id]
+    [
+      ABANDONED_RUN_HISTORY_STATUS,
+      at,
+      terminalReasonFor(orphan),
+      factsJson,
+      orphan.run_id,
+      orphan.connector_instance_id,
+    ]
   );
 }
 
@@ -509,6 +723,11 @@ async function projectAbandonedRunHistoryPostgres(client: PgClient, orphan: Orph
 //
 // `records_emitted` is left untouched for the same reason as above:
 // records validly committed before the run died stay committed.
+//
+// `facts_json` adopts the terminal event's own `data_json` verbatim, same
+// as `status`/`terminal_reason`/`completed_at` — the projection should
+// carry whatever evidence the terminal event actually recorded, not a
+// reason string with no way to check it.
 // ─────────────────────────────────────────────────────────────────────────
 
 /** The spine's canonical terminal set, as SQL literals for the drift query. */
@@ -540,6 +759,7 @@ interface DriftedRunRow {
   connector_instance_id: string;
   event_status: string | null;
   event_type: string;
+  facts_json: string | null;
   occurred_at: string;
   reason: string | null;
   run_id: string;
@@ -570,7 +790,8 @@ function repairTerminalRunHistoryDriftSqlite(): number {
         t.event_type,
         t.status AS event_status,
         t.occurred_at,
-        json_extract(t.data_json, '$.reason') AS reason
+        json_extract(t.data_json, '$.reason') AS reason,
+        t.data_json AS facts_json
       FROM run_history h
       JOIN spine_events t
         ON t.run_id = h.run_id
@@ -592,7 +813,8 @@ function repairTerminalRunHistoryDriftSqlite(): number {
     `UPDATE run_history
      SET status = ?,
          completed_at = ?,
-         terminal_reason = ?
+         terminal_reason = ?,
+         facts_json = ?
      WHERE run_id = ?
        AND connector_instance_id = ?
        AND status = 'running'`
@@ -604,6 +826,7 @@ function repairTerminalRunHistoryDriftSqlite(): number {
       terminalStatusForEventType(row.event_type, row.event_status),
       row.occurred_at,
       row.reason,
+      row.facts_json,
       row.run_id,
       row.connector_instance_id
     );
@@ -626,7 +849,8 @@ async function repairTerminalRunHistoryDriftPostgres(client: PgClient): Promise<
                    ELSE 'failed'
                  END,
         completed_at = t.occurred_at,
-        terminal_reason = t.data_json->>'reason'
+        terminal_reason = t.data_json->>'reason',
+        facts_json = t.data_json
     FROM (
       SELECT DISTINCT ON (run_id) run_id, event_type, status, occurred_at, data_json
       FROM spine_events
@@ -642,7 +866,7 @@ async function repairTerminalRunHistoryDriftPostgres(client: PgClient): Promise<
   return rowCount ?? 0;
 }
 
-function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string): void {
+function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string, factsJson: string): void {
   if (!(orphan.run_id && orphan.connector_instance_id)) {
     return;
   }
@@ -659,10 +883,35 @@ function projectAbandonedRunHistorySqlite(orphan: OrphanRow, at: string): void {
       `UPDATE run_history
        SET status = ?,
            completed_at = ?,
-           terminal_reason = ?
+           terminal_reason = ?,
+           facts_json = json_set(
+             COALESCE(facts_json, '{}'),
+             '$.caused_by_event_id', json_extract(json(?), '$.caused_by_event_id'),
+             '$.original_boot_epoch', json_extract(json(?), '$.original_boot_epoch'),
+             '$.original_controller_id', json_extract(json(?), '$.original_controller_id'),
+             '$.reason', json_extract(json(?), '$.reason'),
+             '$.reconciled_by_boot_epoch', json_extract(json(?), '$.reconciled_by_boot_epoch'),
+             '$.reconciled_by_controller_id', json_extract(json(?), '$.reconciled_by_controller_id'),
+             '$.reconciled_by_seq', json_extract(json(?), '$.reconciled_by_seq'),
+             '$.source', json_extract(json(?), '$.source')
+           )
        WHERE run_id = ?
          AND connector_instance_id = ?
          AND status = 'running'`
     )
-    .run(ABANDONED_RUN_HISTORY_STATUS, at, ABANDONED_AT_BOOT_REASON, orphan.run_id, orphan.connector_instance_id);
+    .run(
+      ABANDONED_RUN_HISTORY_STATUS,
+      at,
+      terminalReasonFor(orphan),
+      factsJson,
+      factsJson,
+      factsJson,
+      factsJson,
+      factsJson,
+      factsJson,
+      factsJson,
+      factsJson,
+      orphan.run_id,
+      orphan.connector_instance_id
+    );
 }

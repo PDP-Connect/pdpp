@@ -3,6 +3,7 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: localized test assertion preserves its explicit contract.
 import pg from "pg";
+import { provisionTestDatabase } from "../../server/postgres-test-database-guard.ts";
 
 const { Pool } = pg;
 
@@ -74,7 +75,16 @@ export async function withTemporaryPostgresDatabase(
     await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
     await admin.query(`CREATE DATABASE ${database}`);
     created = true;
-    result = await callback(databaseUrl(connectionString, databaseName));
+    const createdUrl = databaseUrl(connectionString, databaseName);
+    // This helper is the OTHER place (besides the test runner) that brings a
+    // scratch Postgres database into existence, so it is the other place that
+    // must stamp the test sentinel. Without the stamp, `initPostgresStorage`
+    // fail-closed refuses the database the callback was just handed --
+    // correctly, since an unmarked database is indistinguishable from
+    // production to the guard. The database was created empty one statement
+    // ago, so stamping it is honest.
+    await provisionTestDatabase(createdUrl);
+    result = await callback(createdUrl);
   } catch (error) {
     operationError = error;
   }

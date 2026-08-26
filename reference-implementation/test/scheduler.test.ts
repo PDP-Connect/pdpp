@@ -569,15 +569,28 @@ test("server-owned scheduler refreshes after schedule route mutations", async ()
     });
     assert.equal(registerResp.status, 201, JSON.stringify(registerResp.body));
 
+    // A 1s interval, not 60s. The pause assertion below is a NEGATIVE ("no
+    // further attempt"), and a negative is only meaningful if a live scheduler
+    // would actually have ticked again in the observation window. At the
+    // previous 60s interval nothing could tick a second time regardless, so
+    // that assertion held whether or not pause refreshed anything — it was
+    // vacuous. `minimum_interval_seconds: 1` in the fixture manifest permits
+    // this, and `setInterval` arms at `min(intervalMs, 60_000)`.
     const putResp = await fetch(
       `${asUrl}/_ref/connectors/${encodeURIComponent(spotifyManifest.connector_id)}/schedule`,
       {
-        body: JSON.stringify({ enabled: true, interval_seconds: 60, jitter_seconds: 0 }),
+        body: JSON.stringify({ enabled: true, interval_seconds: 1, jitter_seconds: 0 }),
         headers: { "Content-Type": "application/json" },
         method: "PUT",
       }
     );
     assert.equal(putResp.status, 200);
+    // The route awaits `onScheduleMutation` -> `schedulerManager.refresh()`, so
+    // by the time it answers, the rebuilt scheduler has already fired its
+    // startup tick. Dispatch then crosses a connector SUBPROCESS boundary, so
+    // the attempt lands asynchronously and must be converged on rather than
+    // read straight out. This is a convergence wait on a spawn, not a race
+    // against a deadline: it settles in one 25ms poll locally.
     await waitFor(() => readAttempts(attemptsPath).length === 1, 5000);
 
     const pauseResp = await fetch(
@@ -587,8 +600,37 @@ test("server-owned scheduler refreshes after schedule route mutations", async ()
       }
     );
     assert.equal(pauseResp.status, 200);
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    assert.equal(readAttempts(attemptsPath).length, 1, "paused route mutation should stop the live scheduler");
+
+    // No barrier call here on purpose. The pause ROUTE is what must rebuild the
+    // scheduler; calling `schedulerManager.refresh()` from the test would
+    // perform that rebuild itself and mask a route that had stopped doing it —
+    // the assertion would then pass for the wrong reason.
+
+    // The negative still needs an observation window, but it is now a window in
+    // which a surviving scheduler would DEMONSTRABLY have acted: the schedule's
+    // 1s interval fits 2.5 times into it, so a scheduler that outlived the pause
+    // gets two full chances to append a second attempt. That is what makes this
+    // assertion discriminating rather than vacuous; verified by disabling the
+    // pause route's refresh, which fails this loop ~1.5s in.
+    //
+    // Sampling throughout, rather than once at the end, also reports the
+    // violation at the tick that caused it instead of after the fact.
+    const PAUSE_OBSERVATION_SAMPLES = 25;
+    const PAUSE_OBSERVATION_SAMPLE_MS = 100;
+    for (let sample = 0; sample < PAUSE_OBSERVATION_SAMPLES; sample += 1) {
+      assert.equal(
+        readAttempts(attemptsPath).length,
+        1,
+        `paused route mutation should stop the live scheduler (sample ${sample})`
+      );
+      // biome-ignore lint/performance/noAwaitInLoops: sequential sampling of a negative is the point
+      await new Promise((resolve) => setTimeout(resolve, PAUSE_OBSERVATION_SAMPLE_MS));
+    }
+    assert.equal(
+      readAttempts(attemptsPath).length,
+      1,
+      "paused route mutation should stop the live scheduler (final)"
+    );
   } finally {
     await closeServer(server);
     rmSync(tmpDir, { force: true, recursive: true });

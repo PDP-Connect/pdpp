@@ -95,6 +95,8 @@ function lastSubstantiveCommitDate(file: string): string | null {
 
 const HUNK_SPLIT_PATTERN = /^@@ /m;
 const HUNK_HEADER_PATTERN = /^-(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+// The new-side line COUNT, which `-U0` omits entirely for a single-line hunk.
+const HUNK_NEW_COUNT_PATTERN = /\+\d+,(\d+)/;
 
 function commitIsSubstantive(diffText: string): boolean {
   const hunks = diffText.split(HUNK_SPLIT_PATTERN).slice(1);
@@ -107,10 +109,23 @@ function commitIsSubstantive(diffText: string): boolean {
       .slice(1)
       .filter((l) => l.startsWith("+") || l.startsWith("-"));
 
-    // A hunk that starts at or before the header block's last line and whose
-    // touched lines are all within the header window is header-only.
-    const withinHeader = newStart !== null && newStart <= HEADER_LINE_COUNT;
-    if (withinHeader && lines.every((l) => isHeaderOnlyOrWhitespaceHunk([l]))) {
+    // A hunk confined to the header block (lines 1..HEADER_LINE_COUNT) is
+    // header-only regardless of what it says, because the header IS the
+    // title/Status/Date housekeeping this check must not treat as a revision.
+    //
+    // `isHeaderOnlyOrWhitespaceHunk` cannot decide this: it only recognises
+    // WHITESPACE, so a `Date:` edit came back "substantive" and every stamp
+    // became the next run's revision date. That made the check self-triggering
+    // — the exact loop the file comment says it prevents — and it is why the
+    // specs carried dates nobody had edited on.
+    //
+    // The window is checked against the hunk's own extent (`@@ -a,b +c,d @@`,
+    // where `-U0` omits the count for a single line), not per-line content.
+    const newLineCount = hunkHeaderMatch?.[0].match(HUNK_NEW_COUNT_PATTERN)?.[1];
+    const hunkSpan = newLineCount ? Number.parseInt(newLineCount, 10) : 1;
+    const hunkEnd = newStart === null ? null : newStart + hunkSpan - 1;
+    const withinHeader = newStart !== null && hunkEnd !== null && hunkEnd <= HEADER_LINE_COUNT;
+    if (withinHeader) {
       continue;
     }
     if (isHeaderOnlyOrWhitespaceHunk(lines)) {

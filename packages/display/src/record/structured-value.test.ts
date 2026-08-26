@@ -19,11 +19,11 @@ test("an empty array reads as an explicit empty state, not a blank or raw '[]'",
 
 test("an array of objects with `name` fields renders as joined names — the Gmail `cc` case", () => {
   const cc = [
-    { email: "mmarco@law.harvard.edu", name: "Meg Marco" },
-    { email: "anna@opendatalabs.xyz", name: "Anna Kazlauskas" },
+    { email: "rowan.diaz@example.edu", name: "Rowan Diaz" },
+    { email: "sasha.lindqvist@example.org", name: "Sasha Lindqvist" },
   ];
   const result = formatStructuredCell(cc);
-  assert.equal(result?.text, "Meg Marco, Anna Kazlauskas");
+  assert.equal(result?.text, "Rowan Diaz, Sasha Lindqvist");
   assert.equal(result?.detail, undefined, "under the item cap, no separate detail is needed");
 });
 

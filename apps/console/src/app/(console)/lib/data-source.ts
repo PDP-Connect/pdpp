@@ -133,6 +133,8 @@ export interface DashboardDataSource {
       includeFleetHealth?: boolean;
       limit?: number;
       profile?: undefined;
+      /** See `ref-client.ts`'s `listConnectorSummaries` — Sources-page-only opt-in. */
+      sourcesVisibility?: boolean;
     }): Promise<RefConnectorSummariesResponse>;
   };
   /**

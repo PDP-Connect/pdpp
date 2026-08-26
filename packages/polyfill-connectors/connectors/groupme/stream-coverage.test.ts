@@ -373,6 +373,18 @@ test("collectGroupMessages: cold start (no prior cursor) walks backward, clean p
       considered: 3,
       failed: false,
       nextCursors: { "group-1": "m1", "group-2": "m3" },
+      // The `group()` fixture declares `messages_count: 10` but the stubbed
+      // pages supply only 2 and 1 messages, so the provider-count anchor
+      // correctly reports both groups short. This is the anchor doing its
+      // job against the fixture's own numbers, not a regression.
+      // `unprovenBoundary: false` on both: each walk ended on a page the
+      // provider actually served, so the boundary evidence is coherent and
+      // the shortfall is an ordinary one, not an ambiguous empty-page case.
+      shortfalls: [
+        { groupId: "group-1", providerCount: 10, unprovenBoundary: false, walked: 2 },
+        { groupId: "group-2", providerCount: 10, unprovenBoundary: false, walked: 1 },
+      ],
+      unanchoredGroupIds: [],
     });
     assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 3);
   } finally {
@@ -474,7 +486,7 @@ test("collectGroupMessages: genuine zero groups reports failed: false, considere
 
     assert.deepEqual(
       outcome,
-      { considered: 0, failed: false, nextCursors: {} },
+      { considered: 0, failed: false, nextCursors: {}, shortfalls: [], unanchoredGroupIds: [] },
       "no groups means no messages — a proven-empty walk"
     );
     assert.equal(emitted.length, 0);
@@ -1250,6 +1262,183 @@ test("collect(): failed direct_chat_messages reports failure while preserving su
       false,
       "the failed stream must not advance its checkpoint"
     );
+  } finally {
+    restore();
+  }
+});
+
+// ─── throttle-blindness: an empty page against a non-zero count ───────────
+//
+// GroupMe answers with HTTP 200 + `messages: []` both when it has nothing to
+// serve and when it is declining to serve content it still counts. Measured
+// live, those two responses are identical apart from `content-length` — same
+// status, same `meta.code`, no `Retry-After`, no rate-limit header — so the
+// status-based retry governor cannot tell them apart.
+//
+// The connector must therefore refuse to claim a PROVEN walk in that case,
+// and must not assert the gap is unrecoverable either. These tests pin both
+// halves at the `collectGroupMessages` boundary.
+
+test("collectGroupMessages: an empty page short of the provider count marks the boundary unproven", async () => {
+  const restore = stubFetchSequence([
+    { body: { response: [group({ id: "group-1" })] } }, // /groups
+    // The provider counts 10 messages and serves none — the exact live shape.
+    { body: { response: { count: 10, messages: [] } } },
+  ]);
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, false, "nothing errored — only the completeness claim is withheld");
+    assert.equal(outcome.shortfalls.length, 1);
+    assert.equal(
+      outcome.shortfalls[0]?.unprovenBoundary,
+      true,
+      "an empty page short of the provider total must never pass for a proven walk"
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("collectGroupMessages: an empty page whose count AGREES at zero stays a proven walk", async () => {
+  const restore = stubFetchSequence([
+    { body: { response: [group({ id: "group-1", messages_count: 0 })] } }, // /groups
+    // Provider says zero and serves zero: coherent, an ordinary natural end.
+    { body: { response: { count: 0, messages: [] } } },
+  ]);
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, false);
+    assert.deepEqual(outcome.shortfalls, [], "a coherent zero is a real anchor, not a gap");
+  } finally {
+    restore();
+  }
+});
+
+test("collectGroupMessages: GroupMe's documented 304 end-of-history is a PROVEN walk, not a shortfall", async () => {
+  // GroupMe documents: "If no messages are found (e.g. when filtering with
+  // `before_id`) we return code 304." That is the ordinary, correct way a
+  // fully-collected group signals it has nothing left — it must NEVER be
+  // reported as the provider withholding data.
+  //
+  // MUTATION GUARD. `fetchMessagesPage` normalizes the 304 into a SYNTHETIC
+  // `{count: 0, messages: []}`; GroupMe sends no body with a 304, so that
+  // zero is ours, not the provider's. If it is ever synthesized as non-zero,
+  // this group — which served its whole history and then said "nothing more"
+  // — would be accused of a gap it does not have. The `messages_count: 1`
+  // below is load-bearing: it makes the provider total non-zero, so only the
+  // synthesized count decides the verdict.
+  // Page 1 must be FULL (PAGE_SIZE), or the walk exits on the short-page
+  // natural end and never requests the page that 304s.
+  const fullPage = Array.from({ length: PAGE_SIZE }, (_, i) =>
+    groupMessage({ id: `m${String(i)}`, created_at: 1_700_000_100 - i })
+  );
+  // `new Response(..., { status: 304 })` throws (undici forbids constructing a
+  // null-body status), so the 304 is stubbed as a minimal response-shaped
+  // object rather than through `stubFetchSequence`.
+  const original = globalThis.fetch;
+  const bodies: unknown[] = [
+    // The provider total EXCEEDS the page we walked, so only the count
+    // synthesized for the 304 decides whether this reads as a shortfall.
+    { response: [group({ id: "group-1", messages_count: PAGE_SIZE + 5 })] }, // /groups
+    { response: { count: PAGE_SIZE, messages: fullPage } }, // page 1: full
+  ];
+  let call = 0;
+  globalThis.fetch = ((): Promise<Response> => {
+    const index = call;
+    call += 1;
+    const body = bodies[index];
+    if (body === undefined) {
+      // Page 2 and beyond: GroupMe's documented end-of-history signal.
+      return Promise.resolve({ status: 304, text: () => Promise.resolve(""), headers: new Headers() } as Response);
+    }
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  }) as typeof globalThis.fetch;
+  const restore = (): void => {
+    globalThis.fetch = original;
+  };
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, false, "a 304 terminal page is a clean end, not a failure");
+    // The provider total is higher than the walk, so a shortfall IS expected.
+    // What matters is which KIND: the 304 is a boundary GroupMe actually
+    // served, so it must be a plain `partial`, never an unproven boundary.
+    assert.equal(outcome.shortfalls.length, 1);
+    assert.equal(
+      outcome.shortfalls[0]?.unprovenBoundary,
+      false,
+      "GroupMe's documented 304 end-of-history is a PROVEN boundary — reporting it as unproven would accuse a group that served everything it had"
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("collect(): an ambiguous empty page is reported as unexplained AND retryable, never as proven-unrecoverable", async () => {
+  const restore = stubFetchSequence([
+    { body: { response: [group()] } }, // /groups
+    // The short-of-total page: provider total is 10, serves none.
+    { body: { response: { count: 10, messages: [] } } },
+    { body: { response: [] } }, // /chats
+  ]);
+  try {
+    const messages: EmittedMessage[] = [];
+    await collect({
+      state: {},
+      requested: new Map<string, StreamScope>([["group_messages", { name: "group_messages" }]]),
+      credentials: { GROUPME_ACCESS_TOKEN: TOKEN },
+      emit: (message: EmittedMessage) => {
+        messages.push(message);
+        return Promise.resolve();
+      },
+      emitRecord: async () => {
+        await Promise.resolve();
+      },
+      progress: async () => {
+        await Promise.resolve();
+      },
+      assist: async () => "",
+      capture: null,
+      completeAssistance: async () => {
+        await Promise.resolve();
+      },
+      detailGaps: [],
+      emittedAt: new Date().toISOString(),
+      requestDetailGapPage: async () => [],
+      scope: { streams: [{ name: "group_messages" }] },
+      sendInteraction: async () => ({}) as never,
+    } satisfies CollectContext);
+
+    const skips = messages.filter(
+      (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+        m.type === "SKIP_RESULT" && m.stream === "group_messages"
+    );
+    const ambiguous = skips.find((s) => s.reason === "history_ended_before_provider_count");
+
+    assert.ok(ambiguous, "the ambiguous gap must be reported under its own reason");
+    // The load-bearing assertion. Claiming `not_retriable` here would assert a
+    // certainty the response cannot support: being throttled produces this
+    // exact same body, so the honest hint leaves the door open.
+    const hint = ambiguous.recovery_hint;
+    assert.ok(typeof hint === "object" && hint !== null, "recovery_hint must be the structured form");
+    assert.equal(hint.action, "retry_by_runtime");
+    assert.equal(hint.retryable, true);
+    assert.equal(
+      skips.some((s) => s.reason === "provider_serves_no_messages_for_group"),
+      false,
+      "the retired proven-unrecoverable verdict must not come back"
+    );
+    // Never subtracted: the counted-but-unserved messages stay reported missing.
+    const diagnostics = ambiguous.diagnostics as { unexplained_message_total?: number } | undefined;
+    assert.equal(diagnostics?.unexplained_message_total, 10);
   } finally {
     restore();
   }

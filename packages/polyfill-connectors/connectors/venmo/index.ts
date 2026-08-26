@@ -54,8 +54,9 @@
  * Tested surfaces: fixture-driven only (pilot-fixture.test.ts,
  * parsers.test.ts, schemas.test.ts, integration.test.ts,
  * src/auto-login/venmo.test.ts). No live network call has proven this
- * redesign against a real account yet. The manifest therefore keeps the
- * connector in Development until a live run is verified.
+ * redesign against a real account yet. The manifest lists it at Preview
+ * (see public_listing.rationale) so the owner can opt in to perform that
+ * first live run, matching the signal connector's precedent.
  *
  * CHANGES
  *   v0.2.0 (2026-08-10) — browser-session redesign; removed
@@ -74,6 +75,7 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { walkPagesWithCeiling } from "../../src/page-ceiling.ts";
 import { API_BASE, profileRecord, transactionRecord, userRecord } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type {
@@ -86,8 +88,8 @@ import type {
 
 const FRIENDS_PAGE_SIZE = 200;
 const TRANSACTIONS_PAGE_SIZE = 50;
-const MAX_FRIENDS_PAGES = 200;
-const MAX_TRANSACTION_PAGES = 400;
+export const MAX_FRIENDS_PAGES = 200;
+export const MAX_TRANSACTION_PAGES = 400;
 
 /**
  * `venmo_transport_error` (collect()'s page-fetch, see `makePageFetch` below)
@@ -121,6 +123,7 @@ const MAX_TRANSACTION_PAGES = 400;
  * hand-copied stand-in that could silently drift from it.
  */
 export const VENMO_RETRYABLE_PATTERN = /venmo_rate_limited|venmo_transport_error|venmo_probe_transport_error/i;
+
 // The redesign dropped `venmoPacingProfile`/the HTTP governor (page-context
 // fetch has no direct outbound Node HTTP to pace — F10 in
 // /tmp/review-venmo-browser-redesign-0810.md), but the page loops below
@@ -198,6 +201,29 @@ function makePageFetch(page: Page): VenmoPageFetch {
   };
 }
 
+/**
+ * `collect()`'s own call to `ensureVenmoOrigin`, extracted so it is
+ * unit-testable without a real Playwright `page` (mirrors `errorDetail`/
+ * `assertVenmoOk` below, both pulled out of the fetch loop for the same
+ * reason). `ensureVenmoOrigin` now throws `venmo_origin_navigation_failed`
+ * when the one-time navigation doesn't land on venmo.com (see its doc —
+ * production run_1787101857760, the owner's first-ever Venmo run). Folded
+ * into this connector's own `venmo_transport_error` naming so it matches
+ * `VENMO_RETRYABLE_PATTERN` the same way any other transport fault in this
+ * file's fetch loop already does, rather than escaping `collect()` as an
+ * unrecognized, non-retryable name.
+ */
+export async function establishVenmoCollectOrigin(page: Page): Promise<void> {
+  try {
+    await ensureVenmoOrigin(page);
+  } catch (err) {
+    throw new Error(
+      `venmo_transport_error [origin navigation]: ${redactTransportDetail(err instanceof Error ? err.message : String(err))}`,
+      { cause: err }
+    );
+  }
+}
+
 export function errorDetail(body: string): string {
   try {
     const parsed = JSON.parse(body) as { error?: { message?: string } };
@@ -233,32 +259,40 @@ export async function fetchAllFriends(
   ownerId: string,
   progress: VenmoProgress,
   delay: (ms: number) => Promise<void> = politeDelay
-): Promise<VenmoUser[]> {
+): Promise<{ friends: VenmoUser[]; truncated: boolean }> {
   const all: VenmoUser[] = [];
   let offset = 0;
-  for (let page = 0; page < MAX_FRIENDS_PAGES; page += 1) {
-    await progress("Fetching Venmo friends page", { stream: "friends", phase: "fetch", offset_ordinal: page });
-    const { status, body } = await fetchPath(`/users/${ownerId}/friends`, {
-      limit: String(FRIENDS_PAGE_SIZE),
-      offset: String(offset),
-    });
-    assertVenmoOk(status, body, "/users/{id}/friends");
-    const parsed = JSON.parse(body) as VenmoFriendsResponse;
-    const batch = parsed.data ?? [];
-    all.push(...batch);
-    await progress("Fetched Venmo friends page", {
-      stream: "friends",
-      phase: "page",
-      item_count: batch.length,
-      total_seen: all.length,
-    });
-    if (batch.length < FRIENDS_PAGE_SIZE) {
-      break;
-    }
-    offset += batch.length;
-    await delay(PAGE_DELAY_MS);
-  }
-  return all;
+  const walk = await walkPagesWithCeiling({
+    maxPages: MAX_FRIENDS_PAGES,
+    fetchPage: async (pageNumber) => {
+      const pageIndex = pageNumber - 1;
+      await progress("Fetching Venmo friends page", { stream: "friends", phase: "fetch", offset_ordinal: pageIndex });
+      const { status, body } = await fetchPath(`/users/${ownerId}/friends`, {
+        limit: String(FRIENDS_PAGE_SIZE),
+        offset: String(offset),
+      });
+      assertVenmoOk(status, body, "/users/{id}/friends");
+      const parsed = JSON.parse(body) as VenmoFriendsResponse;
+      const batch = parsed.data ?? [];
+      all.push(...batch);
+      await progress("Fetched Venmo friends page", {
+        stream: "friends",
+        phase: "page",
+        item_count: batch.length,
+        total_seen: all.length,
+      });
+      // EXIT A — an empty page proves the offset walk is exhausted. A short
+      // non-empty page is not terminal: Venmo can return fewer than `limit`
+      // rows while more rows remain.
+      if (batch.length === 0) {
+        return false;
+      }
+      offset += batch.length;
+      await delay(PAGE_DELAY_MS);
+      return true;
+    },
+  });
+  return { friends: all, truncated: walk.truncated };
 }
 
 export async function fetchTransactionsPage(
@@ -301,7 +335,7 @@ export async function collectTransactions(
   fetchPath: VenmoPageFetch,
   ownerId: string,
   delay: (ms: number) => Promise<void> = politeDelay
-): Promise<{ considered: number; covered: number; latestSeenAt: string | null }> {
+): Promise<{ considered: number; covered: number; latestSeenAt: string | null; truncated: boolean }> {
   const { emitRecord } = ctx;
   const progress = ctx.progress as VenmoProgress;
   // `before_id` pages backward (toward older history) with no documented
@@ -315,42 +349,55 @@ export async function collectTransactions(
   let totalModeled = 0;
   let latestSeenAt: string | null = null;
 
-  for (let page = 0; page < MAX_TRANSACTION_PAGES; page += 1) {
-    await progress("Fetching Venmo transactions page", {
-      stream: "transactions",
-      phase: "fetch",
-      offset_ordinal: page,
-      cursor_present: Boolean(beforeId),
-      total_seen: totalSeen,
-    });
-    const stories = await fetchTransactionsPage(fetchPath, ownerId, beforeId);
-    if (stories.length === 0) {
-      break;
-    }
+  const walk = await walkPagesWithCeiling({
+    maxPages: MAX_TRANSACTION_PAGES,
+    fetchPage: async (pageNumber) => {
+      const pageIndex = pageNumber - 1;
+      await progress("Fetching Venmo transactions page", {
+        stream: "transactions",
+        phase: "fetch",
+        offset_ordinal: pageIndex,
+        cursor_present: Boolean(beforeId),
+        total_seen: totalSeen,
+      });
+      const stories = await fetchTransactionsPage(fetchPath, ownerId, beforeId);
+      if (stories.length === 0) {
+        // EXIT A — an empty page is the provider's terminal boundary.
+        return false;
+      }
 
-    const { latestSeenAt: pageLatest, modeled } = await emitTransactionsPage(emitRecord, stories, ownerId);
-    if (pageLatest && (!latestSeenAt || pageLatest > latestSeenAt)) {
-      latestSeenAt = pageLatest;
-    }
-    totalSeen += stories.length;
-    totalModeled += modeled;
-    await progress("Fetched Venmo transactions page", {
-      stream: "transactions",
-      phase: "page",
-      item_count: modeled,
-      total_seen: totalSeen,
-      cursor_present: stories.length === TRANSACTIONS_PAGE_SIZE,
-    });
+      const { latestSeenAt: pageLatest, modeled } = await emitTransactionsPage(emitRecord, stories, ownerId);
+      if (pageLatest && (!latestSeenAt || pageLatest > latestSeenAt)) {
+        latestSeenAt = pageLatest;
+      }
+      totalSeen += stories.length;
+      totalModeled += modeled;
+      await progress("Fetched Venmo transactions page", {
+        stream: "transactions",
+        phase: "page",
+        item_count: modeled,
+        total_seen: totalSeen,
+        cursor_present: stories.length === TRANSACTIONS_PAGE_SIZE,
+      });
 
-    const lastStory = stories.at(-1);
-    if (!lastStory?.id || stories.length < TRANSACTIONS_PAGE_SIZE) {
-      break;
-    }
-    beforeId = lastStory.id;
-    await delay(PAGE_DELAY_MS);
-  }
+      const lastStory = stories.at(-1);
+      // A short non-empty page is not terminal. Continue whenever Venmo gives us
+      // a cursor; a page without a usable id is the other honest terminal exit.
+      if (!lastStory?.id) {
+        return false;
+      }
+      beforeId = lastStory.id;
+      await delay(PAGE_DELAY_MS);
+      return true;
+    },
+  });
 
-  return { considered: totalSeen, covered: totalModeled, latestSeenAt };
+  return {
+    considered: totalSeen + (walk.truncated ? 1 : 0),
+    covered: totalModeled,
+    latestSeenAt,
+    truncated: walk.truncated,
+  };
 }
 
 async function collectProfile(
@@ -370,7 +417,7 @@ async function collectProfile(
       await emitRecord("profile", record);
     }
     covered = 1;
-    cursor.pruneStale();
+    cursor.dropUnseenIds();
     await emit({ type: "STATE", stream: "profile", cursor: { fingerprints: cursor.toState() } });
   }
   await emit(
@@ -389,10 +436,11 @@ async function collectFriends(
   ctx: BrowserCollectContext,
   fetchPath: VenmoPageFetch,
   ownerId: string,
-  progress: VenmoProgress
+  progress: VenmoProgress,
+  delay: (ms: number) => Promise<void>
 ): Promise<void> {
   const { emit, emitRecord } = ctx;
-  const friends = await fetchAllFriends(fetchPath, ownerId, progress);
+  const { friends, truncated } = await fetchAllFriends(fetchPath, ownerId, progress, delay);
   const cursor = openFingerprintCursor(ctx.state.friends, { excludeFromFingerprint: [] });
   let covered = 0;
   for (const friend of friends) {
@@ -402,15 +450,35 @@ async function collectFriends(
     }
     covered += 1;
   }
-  cursor.pruneStale();
-  await emit({ type: "STATE", stream: "friends", cursor: { fingerprints: cursor.toState() } });
+  if (!truncated) {
+    cursor.dropUnseenIds();
+  }
+  const priorCursor = ctx.state.friends;
+  const priorFingerprints =
+    priorCursor && typeof priorCursor === "object" && !Array.isArray(priorCursor)
+      ? (priorCursor as { fingerprints?: unknown }).fingerprints
+      : undefined;
+  const fingerprints =
+    truncated && priorFingerprints && typeof priorFingerprints === "object" && !Array.isArray(priorFingerprints)
+      ? (priorFingerprints as Record<string, string>)
+      : cursor.toState();
+  if (truncated) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "friends",
+      reason: "friends_deferred_page_budget",
+      message: `Venmo friends stopped at the ${MAX_FRIENDS_PAGES}-page limit with more rows still listed`,
+      diagnostics: { page_limit: MAX_FRIENDS_PAGES, total_seen: friends.length, unread_pages: 1 },
+    });
+  }
+  await emit({ type: "STATE", stream: "friends", cursor: { fingerprints } });
   await emit(
     buildDetailCoverageMessage({
       stream: "friends",
       stateStream: "friends",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: friends.length,
+      considered: friends.length + (truncated ? 1 : 0),
       covered,
     })
   );
@@ -421,7 +489,8 @@ export async function collectAllStreams(
   ctx: BrowserCollectContext,
   fetchPath: VenmoPageFetch,
   ownerId: string,
-  account: VenmoUser | null
+  account: VenmoUser | null,
+  delay: (ms: number) => Promise<void> = politeDelay
 ): Promise<void> {
   const { emit, requested } = ctx;
   const progress = ctx.progress as VenmoProgress;
@@ -431,15 +500,33 @@ export async function collectAllStreams(
   }
 
   if (requested.has("friends")) {
-    await collectFriends(ctx, fetchPath, ownerId, progress);
+    await collectFriends(ctx, fetchPath, ownerId, progress, delay);
   }
 
   if (requested.has("transactions")) {
-    const { considered, covered, latestSeenAt } = await collectTransactions(ctx, fetchPath, ownerId);
+    const { considered, covered, latestSeenAt, truncated } = await collectTransactions(ctx, fetchPath, ownerId, delay);
+    const priorCursor = ctx.state.transactions;
+    const priorLatestSeenAt =
+      priorCursor && typeof priorCursor === "object" && !Array.isArray(priorCursor)
+        ? (priorCursor as { last_seen_date_created?: unknown }).last_seen_date_created
+        : undefined;
+    if (truncated) {
+      await emit({
+        type: "SKIP_RESULT",
+        stream: "transactions",
+        reason: "transactions_deferred_page_budget",
+        message: `Venmo transactions stopped at the ${MAX_TRANSACTION_PAGES}-page limit with more rows still listed`,
+        diagnostics: { page_limit: MAX_TRANSACTION_PAGES, total_seen: considered - 1, unread_pages: 1 },
+      });
+    }
+    let nextLatestSeenAt = latestSeenAt;
+    if (truncated) {
+      nextLatestSeenAt = typeof priorLatestSeenAt === "string" || priorLatestSeenAt === null ? priorLatestSeenAt : null;
+    }
     await emit({
       type: "STATE",
       stream: "transactions",
-      cursor: { last_seen_date_created: latestSeenAt },
+      cursor: { last_seen_date_created: nextLatestSeenAt },
     });
     await emit(
       buildDetailCoverageMessage({
@@ -469,6 +556,7 @@ if (isMainModule(import.meta.url)) {
       credentials,
       onCredentialSubmit,
       page,
+      progress,
       sendInteraction,
     }): Promise<void> {
       await ensureVenmoSession({
@@ -477,6 +565,7 @@ if (isMainModule(import.meta.url)) {
         credentials,
         onCredentialSubmit,
         page,
+        progress,
         sendInteraction,
       });
     },
@@ -486,8 +575,9 @@ if (isMainModule(import.meta.url)) {
       // (e.g. `id.venmo.com`); `api.venmo.com`'s CORS allowlist only grants
       // a credentialed fetch from `https://venmo.com`, so collect must
       // establish that origin itself rather than assume ensureSession left
-      // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md).
-      await ensureVenmoOrigin(page);
+      // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md). See
+      // `establishVenmoCollectOrigin`'s doc for why this is wrapped.
+      await establishVenmoCollectOrigin(page);
       const fetchPath = makePageFetch(page);
       const account = await fetchProfile(fetchPath);
       const ownerId = account?.id;

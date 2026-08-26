@@ -23,12 +23,16 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/v1/owner/connectors/{connectorId}/schedule/resume` | `ownerResumeConnectorSchedule` | Owner-agent bearer: resume a connector's paused schedule addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **DELETE** | `/v1/owner/connections/{connectionId}/schedule` | `ownerDeleteConnectionSchedule` | Owner-agent bearer: delete one configured connection's schedule config, addressed by `connection_id`. Returns 204 when the schedule was deleted and a typed 404 when no schedule existed. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `deleteSchedule` semantics with the cookie-authed `/_ref` delete route under a separate owner-bearer auth adapter. |
 | **DELETE** | `/v1/owner/connectors/{connectorId}/schedule` | `ownerDeleteConnectorSchedule` | Owner-agent bearer: delete a connector's schedule config addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Returns 204 on delete and a typed 404 when no schedule existed. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
-| **POST** | `/v1/owner/connections/{connectionId}/run` | `ownerRunConnection` | Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter. |
+| **POST** | `/v1/owner/connections/{connectionId}/run` | `ownerRunConnection` | Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter. Optional JSON body field `full_refresh: true` requests a full re-enumeration (`collection_mode: "full_refresh"`) instead of resuming from the connection's stored cursor, so a source whose ordinary runs are incremental deltas can re-establish an enumeration boundary and prove coverage; it does not clear stored state. |
 | **POST** | `/v1/owner/connectors/{connectorId}/run` | `ownerRunConnector` | Owner-agent bearer: start a run-now for a connector addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **POST** | `/v1/owner/connections/{connectionId}/revoke` | `ownerRevokeConnection` | Owner-agent bearer: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, spine evidence, device rows, and sibling connections are untouched (zero cascade), and the revoke is durable across owner reads and grant/polyfill scope resolution. A double-revoke returns a typed `connector_instance_inactive` (400). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. `/mcp` owner-bearer rejection is untouched. |
 | **POST** | `/v1/owner/connectors/{connectorId}/revoke` | `ownerRevokeConnector` | Owner-agent bearer: revoke a connector's connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Flips the resolved connection to status `revoked` (zero cascade, durable). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **POST** | `/v1/owner/connections/{connectionId}/reactivate` | `ownerReactivateConnection` | Owner-agent bearer: reactivate one revoked connection, addressed by `connection_id`. The clean inverse of `ownerRevokeConnection`: flips the connection from `revoked` back to `active`, clears `revoked_at`, and resumes future collection. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). A non-revoked (active/draft) connection returns `connector_instance_not_revoked` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **POST** | `/v1/owner/connectors/{connectorId}/reactivate` | `ownerReactivateConnector` | Owner-agent bearer: reactivate a connector's revoked connection addressed by `connector_id`. Auto-selects the only revoked connection for that connector. When more than one connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `revoked` to `active` (zero cascade). Owner bearers only. |
+| **POST** | `/v1/owner/connections/{connectionId}/resume` | `ownerResumeConnection` | Owner-agent bearer: resume one paused connection, addressed by `connection_id`. The `paused`-status sibling of `ownerReactivateConnection`: flips the connection from `paused` back to `active` so it becomes runnable again. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). Resume does not itself validate or supply a credential — repair the credential first (e.g. via the static-secret credential-capture route, which admits a `paused` target) if the connection needs one; a resumed connection with a missing/invalid credential surfaces a typed credential error on its next collection run. A non-paused (active/draft/revoked) connection returns `connector_instance_not_paused` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **POST** | `/v1/owner/connectors/{connectorId}/resume` | `ownerResumeConnector` | Owner-agent bearer: resume a connector's paused connection addressed by `connector_id`. Auto-selects the only paused connection for that connector. When more than one paused connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `paused` to `active` (zero cascade). Owner bearers only. |
+| **POST** | `/v1/owner/connections/{connectionId}/pause` | `ownerPauseConnection` | Owner-agent bearer: pause one active connection, addressed by `connection_id`. The inverse of `ownerResumeConnection`: flips the connection from `active` to `paused` so no future scheduled or manual run lands for it. Already-collected records, grants, schedule, the stored credential, and the audit spine are untouched (zero cascade) — pause is the reversible 'stop collecting for now, keep everything' act, distinct from revoke, which is the durable end of an account relationship. Resume it with `ownerResumeConnection`. A non-active (already-paused/draft/revoked) connection returns `connector_instance_not_active` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **POST** | `/v1/owner/connectors/{connectorId}/pause` | `ownerPauseConnector` | Owner-agent bearer: pause a connector's active connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `active` to `paused` (zero cascade). Owner bearers only. |
 | **DELETE** | `/v1/owner/connections/{connectionId}` | `ownerDeleteConnection` | Owner-agent bearer: DESTRUCTIVELY delete one configured connection, addressed by `connection_id`. Erases that connection's records, record-change history, version counters, blobs, blob bindings, search indices, and attention records, deletes its schedule, clears its device source-instance back-reference, and removes the connector_instances row — all keyed strictly on one connection_id, never widening to connector_id (sibling connections of the same connector type are untouched). It does NOT erase a running collection: a connection with an in-flight run is REFUSED, not deleted (no active-run row is erased while running). The source-of-truth deletion (records, history, version counters, blobs, blob bindings, attention, schedule, device back-ref, and the connector_instances row) is transactional all-or-nothing across one connector_instance_id; the search-index teardown is a rebuildable projection cleaned up after that commit. PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Delete is NOT revoke: it erases the past and removes the configuration, where revoke only stops the future. A repeat/unknown/foreign-owner id returns a typed `connector_instance_not_found` (404) without leaking existence. An in-flight run returns `connection_run_active` (409). A default-account binding returns `default_account_delete_unsupported` (409) — revoke it instead. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. `/mcp` owner-bearer rejection is untouched. |
 | **DELETE** | `/v1/owner/connectors/{connectorId}` | `ownerDeleteConnector` | Owner-agent bearer: DESTRUCTIVELY delete a connector's connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Erases the resolved connection's data + configuration per the connection-scoped cascade (see ownerDeleteConnection). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **GET** | `/v1/owner/connections/{connectionId}/diagnostics` | `ownerInspectConnectionDiagnostics` | Owner-agent bearer: read connection-scoped diagnostics for one configured connection, addressed by `connection_id` — last run status, last successful run, last successful ingest time, current schedule state, freshness, and a typed health classification. Connection-scoped by construction: the response describes only the addressed connection and carries no device-exporter subsystem or sibling-connection state. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
@@ -52,7 +56,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/terminal-run-commits` | `refCommitDeviceExporterTerminalRun` | Atomically commit a local collector state delta, terminal evidence event, receipt, and run-history projection. Exact retries return the stored receipt; the same commit identity with a different authenticated binding or body returns a typed conflict. |
 | **GET** | `/_ref/schedules` | `refListSchedules` | List all configured schedules with runtime status. |
 | **POST** | `/_ref/connectors/{connectorId}/run` | `refRunConnector` | Start a connector run asynchronously. Returns 202 with run_id + trace_id, or 409 run_already_active. |
-| **POST** | `/_ref/connections/{connectorInstanceId}/run` | `refRunConnection` | Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active. |
+| **POST** | `/_ref/connections/{connectorInstanceId}/run` | `refRunConnection` | Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active. Optional JSON body field `full_refresh: true` requests a full re-enumeration (`collection_mode: "full_refresh"`) instead of resuming from the connection's stored cursor, so a source whose ordinary runs are incremental deltas can re-establish an enumeration boundary and prove coverage; it does not clear stored state. |
 | **PUT** | `/_ref/connectors/{connectorId}/schedule` | `refPutConnectorSchedule` | Create or replace the single schedule for a connector. |
 | **PUT** | `/_ref/connections/{connectorInstanceId}/schedule` | `refPutConnectionSchedule` | Create or replace the schedule for one configured connection. |
 | **POST** | `/_ref/connectors/{connectorId}/schedule/pause` | `refPauseConnectorSchedule` | Pause the connector schedule without deleting its config. |
@@ -423,7 +427,7 @@ Owner-agent bearer: delete a connector's schedule config addressed by `connector
 
 `POST /v1/owner/connections/{connectionId}/run`
 
-Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter.
+Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter. Optional JSON body field `full_refresh: true` requests a full re-enumeration (`collection_mode: "full_refresh"`) instead of resuming from the connection's stored cursor, so a source whose ordinary runs are incremental deltas can re-establish an enumeration boundary and prove coverage; it does not clear stored state.
 
 ### Path parameters
 
@@ -517,6 +521,74 @@ Owner-agent bearer: reactivate a connector's revoked connection addressed by `co
 ### Responses
 
 - `200` — Reactivated
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerResumeConnection
+
+`POST /v1/owner/connections/{connectionId}/resume`
+
+Owner-agent bearer: resume one paused connection, addressed by `connection_id`. The `paused`-status sibling of `ownerReactivateConnection`: flips the connection from `paused` back to `active` so it becomes runnable again. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). Resume does not itself validate or supply a credential — repair the credential first (e.g. via the static-secret credential-capture route, which admits a `paused` target) if the connection needs one; a resumed connection with a missing/invalid credential surfaces a typed credential error on its next collection run. A non-paused (active/draft/revoked) connection returns `connector_instance_not_paused` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
+
+### Path parameters
+
+- `connectionId` — string
+
+### Responses
+
+- `200` — Resumed
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerResumeConnector
+
+`POST /v1/owner/connectors/{connectorId}/resume`
+
+Owner-agent bearer: resume a connector's paused connection addressed by `connector_id`. Auto-selects the only paused connection for that connector. When more than one paused connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `paused` to `active` (zero cascade). Owner bearers only.
+
+### Path parameters
+
+- `connectorId` — string
+
+### Responses
+
+- `200` — Resumed
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerPauseConnection
+
+`POST /v1/owner/connections/{connectionId}/pause`
+
+Owner-agent bearer: pause one active connection, addressed by `connection_id`. The inverse of `ownerResumeConnection`: flips the connection from `active` to `paused` so no future scheduled or manual run lands for it. Already-collected records, grants, schedule, the stored credential, and the audit spine are untouched (zero cascade) — pause is the reversible 'stop collecting for now, keep everything' act, distinct from revoke, which is the durable end of an account relationship. Resume it with `ownerResumeConnection`. A non-active (already-paused/draft/revoked) connection returns `connector_instance_not_active` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
+
+### Path parameters
+
+- `connectionId` — string
+
+### Responses
+
+- `200` — Paused
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerPauseConnector
+
+`POST /v1/owner/connectors/{connectorId}/pause`
+
+Owner-agent bearer: pause a connector's active connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `active` to `paused` (zero cascade). Owner bearers only.
+
+### Path parameters
+
+- `connectorId` — string
+
+### Responses
+
+- `200` — Paused
 - `400` — Invalid request
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
@@ -981,7 +1053,7 @@ Start a connector run asynchronously. Returns 202 with run_id + trace_id, or 409
 
 `POST /_ref/connections/{connectorInstanceId}/run`
 
-Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active.
+Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active. Optional JSON body field `full_refresh: true` requests a full re-enumeration (`collection_mode: "full_refresh"`) instead of resuming from the connection's stored cursor, so a source whose ordinary runs are incremental deltas can re-establish an enumeration boundary and prove coverage; it does not clear stored state.
 
 ### Path parameters
 

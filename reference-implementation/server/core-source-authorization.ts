@@ -99,10 +99,25 @@ const validateSelectionRequestSchema = ajv.compile(SelectionRequestSchema);
 
 export class CoreSourceAuthorizationError extends Error {
   readonly code = "source.authorization_details_invalid";
+  /**
+   * Stream names implicated by this error, in structured form. Populated so
+   * a client can act on the failure programmatically instead of parsing
+   * `message` prose — e.g. the hosted MCP picker re-render or an
+   * authorization_details retry that narrows to the streams that remain
+   * resolvable.
+   */
+  readonly streams?: readonly string[];
+
+  constructor(message: string, streams?: readonly string[]) {
+    super(message);
+    if (streams) {
+      this.streams = streams;
+    }
+  }
 }
 
-function fail(message: string): never {
-  throw new CoreSourceAuthorizationError(message);
+function fail(message: string, streams?: readonly string[]): never {
+  throw new CoreSourceAuthorizationError(message, streams);
 }
 
 function cloneJson<T>(value: T): T {
@@ -442,6 +457,10 @@ export function renderRetainedCoreConsent(args: Parameters<typeof readRetainedCo
   };
 }
 
+// Sentinel distinguishing "this stream has zero eligible instances, drop it"
+// from every other outcome of resolving one stream's instance_ids.
+const ZERO_ELIGIBLE_INSTANCES = Symbol("zero_eligible_instances");
+
 export function resolveCoreEligibleInstanceIds({
   eligibleInstanceIdsByStream,
   streams,
@@ -449,23 +468,43 @@ export function resolveCoreEligibleInstanceIds({
   eligibleInstanceIdsByStream: Readonly<Record<string, readonly string[]>>;
   streams: CoreStreamSelection[];
 }): CoreStreamSelection[] {
-  return streams.map((stream) => {
+  const droppedStreamNames: string[] = [];
+  const resolved = streams.map((stream) => {
     const eligible = new Set(eligibleInstanceIdsByStream[stream.name] ?? []);
     const requested = stream.instance_ids ?? [];
     if (requested.length === 0) {
-      if (eligible.size !== 1) {
+      // Zero eligible instances is not the same failure as genuine ambiguity
+      // (eligible.size > 1, handled below — that case MUST keep failing: the
+      // owner must disambiguate). Zero means no installed connector can serve
+      // this stream at all, so it is dropped from the resolved set rather
+      // than detonating authorization for every other requested stream.
+      if (eligible.size === 0) {
+        droppedStreamNames.push(stream.name);
+        return ZERO_ELIGIBLE_INSTANCES;
+      }
+      if (eligible.size > 1) {
         fail(
-          `Omitted instance_ids requires exactly one eligible instance for stream '${stream.name}', found ${eligible.size}`
+          `Omitted instance_ids requires exactly one eligible instance for stream '${stream.name}', found ${eligible.size}`,
+          [stream.name]
         );
       }
       return projectResolvedStream({ ...stream, instance_ids: [...eligible] }, true);
     }
     const unauthorized = requested.filter((instanceId) => !eligible.has(instanceId));
     if (unauthorized.length > 0) {
-      fail(`Stream '${stream.name}' requested an ineligible instance handle`);
+      fail(`Stream '${stream.name}' requested an ineligible instance handle`, [stream.name]);
     }
     return projectResolvedStream(stream, true);
   });
+  const kept = resolved.filter((entry): entry is CoreStreamSelection => entry !== ZERO_ELIGIBLE_INSTANCES);
+  if (kept.length === 0 && droppedStreamNames.length > 0) {
+    // Every requested stream dropped — an empty scope is still an error, but
+    // now an actionable one naming exactly which streams had no eligible
+    // instance, instead of a generic "found 0" for whichever stream happened
+    // to be scanned first.
+    fail(`No eligible instance for any requested stream: ${droppedStreamNames.join(", ")}`, droppedStreamNames);
+  }
+  return kept;
 }
 
 export function materializeCoreResolvedGrant({

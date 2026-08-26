@@ -94,16 +94,31 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   ambiguous_connector_instance: 400,
   ambiguous_schema_detail: 409,
   approval_conflict: 409,
+  archive_reconnect_resume_failed: 502,
   authentication_error: 401,
   blob_not_found: 404,
   browser_enrollment_shell_required: 400,
+  connection_is_grouping_canonical: 409,
   connection_not_found: 404,
   connection_run_active: 409,
   connection_tombstoned: 409,
   connector_instance_busy: 503,
+  // The caller's `base_revision`/`base_epoch` did not match the connection's
+  // current pointer. 409 matches how every other optimistic-concurrency and
+  // wrong-state conflict in this table is reported (`approval_conflict`,
+  // `interaction_id_mismatch`, `static_secret_identity_conflict`). The caller
+  // must rebase against the returned current revision and retry — the store
+  // never merges and never last-write-wins.
+  connector_instance_config_stale_write: 409,
+  // A revision exists but is not in a state the requested transition allows
+  // (e.g. confirming an already-active or superseded revision).
+  connector_instance_config_not_proposed: 409,
+  connector_instance_config_revision_not_found: 404,
   connector_instance_connector_mismatch: 400,
   connector_instance_inactive: 400,
+  connector_instance_not_active: 409,
   connector_instance_not_found: 404,
+  connector_instance_not_paused: 409,
   connector_instance_not_revoked: 409,
   connector_instance_not_writable: 409,
   connector_instance_owner_mismatch: 403,

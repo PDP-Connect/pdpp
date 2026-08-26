@@ -124,6 +124,17 @@ interface GroupMeGroup {
   id: string;
   image_url?: string | null;
   members_count?: number | null;
+  /**
+   * GroupMe's own documented per-group message envelope on `GET /groups`:
+   * `{ count, last_message_id, last_message_created_at, preview }`.
+   *
+   * The connector previously read only a FLAT `messages_count`, which is
+   * absent from that documented shape — and live evidence agrees: all 156
+   * of this owner's groups carry `messages_count: null` across every
+   * version ever collected, while the sibling `members_count` populates
+   * normally. So the flat field was never the real one.
+   */
+  messages?: { count?: number | null } | null;
   messages_count?: number | null;
   muted?: boolean | null;
   name?: string | null;
@@ -132,6 +143,33 @@ interface GroupMeGroup {
   share_url?: string | null;
   show_full_last_message?: boolean | null;
   updated_at?: number | null;
+}
+
+/**
+ * The provider-reported message count for one group, read from whichever
+ * shape the API actually returned: the documented nested
+ * `messages.count`, or the flat `messages_count` this connector has always
+ * modelled.
+ *
+ * Returns `null` when NEITHER is present or usable. That distinction is
+ * load-bearing: `null` means "the provider did not tell us", which is
+ * different from `0` ("the provider says this group is empty"). A missing
+ * count must never collapse into a zero denominator — that would assert an
+ * empty group that was simply never reported on.
+ *
+ * Rejects non-integer, negative, and non-finite values rather than
+ * coercing them, so a malformed provider value degrades to "unknown"
+ * instead of silently becoming a fabricated anchor.
+ */
+export function providerMessageCount(group: GroupMeGroup): number | null {
+  const candidate = group.messages?.count ?? group.messages_count;
+  if (typeof candidate !== "number" || !Number.isFinite(candidate)) {
+    return null;
+  }
+  if (!Number.isInteger(candidate) || candidate < 0) {
+    return null;
+  }
+  return candidate;
 }
 
 interface GroupMeAttachment {
@@ -841,7 +879,9 @@ function toGroupRecord(g: GroupMeGroup): RecordData {
     created_at: convertTimestamp(g.created_at),
     updated_at: convertTimestamp(g.updated_at),
     member_count: g.members_count ?? null,
-    messages_count: g.messages_count ?? null,
+    // Reads whichever shape the API returned. The prior flat-only read is
+    // why all 156 of this owner's groups persisted `messages_count: null`.
+    messages_count: providerMessageCount(g),
   };
 }
 
@@ -998,6 +1038,61 @@ interface GroupMessagesResponse {
 }
 
 /**
+ * Whether a message page ended the walk WITHOUT reaching a message the
+ * provider still counts: the response served `messages: []` while its own
+ * `count` field was greater than zero.
+ *
+ * WHAT `count` ACTUALLY MEANS — and what this predicate must NOT claim.
+ * `count` is UNDOCUMENTED. GroupMe's API reference
+ * (dev.groupme.com/docs/v3) shows it only inside a sample body for
+ * `GET /groups/:id/messages` and never defines it in prose. All available
+ * evidence says it is the conversation's LIFETIME TOTAL, not the size of
+ * the page just served:
+ *
+ *   - `GET /groups` returns the same key as `messages.count`, sitting beside
+ *     `last_message_id` — self-evidently a group total.
+ *   - A per-page reading would make `count` exactly `messages.length`, i.e.
+ *     carry no information at all.
+ *   - Mature clients treat it as a total (Groupy binds it to
+ *     `message_count` and returns it from `__len__`), and terminate
+ *     pagination on 304 / empty / short pages — never on a `count`
+ *     comparison.
+ *
+ * So an empty page against a non-zero total is NOT the provider
+ * contradicting itself: the two fields answer different questions ("how
+ * many has this group ever held" vs "what can I serve you from here"). A
+ * total that exceeds what `before_id` pagination can reach is a documented
+ * real-world state — GroupMe's own API support forum has a user walking
+ * `before_id` to a 304 and reaching only 62k of a reported 70k messages,
+ * with history stopping in Aug 2013, attributed to server-side retention.
+ * This owner's data shows the SAME Aug-2013 floor (see
+ * connectors/groupme/docs/groupme-message-count-shortfall.md).
+ *
+ * What the predicate therefore means, and all it means: this walk ran out
+ * of servable history while the provider's total still implied more, so
+ * the walk's boundary is UNPROVEN. It could be retention (old messages
+ * counted but no longer stored), messages deleted without decrementing the
+ * total, or a transient refusal — the response carries nothing that tells
+ * them apart, so the connector names none of them.
+ *
+ * NOTE the two `count` values in play are from DIFFERENT endpoints and must
+ * not be conflated: this predicate reads the per-response `count` from
+ * `GET /groups/:id/messages`, while the shortfall arithmetic downstream
+ * uses `providerMessageCount()` from the `/groups` listing.
+ *
+ * `count === 0` with an empty array is coherent and stays an ordinary
+ * natural end. GroupMe's documented end-of-history signal — HTTP 304, "If
+ * no messages are found (e.g. when filtering with `before_id`) we return
+ * code 304" — is normalized to a synthetic `{count: 0, messages: []}` by
+ * `fetchMessagesPage`, so the documented terminal page can never reach this
+ * predicate as a false positive.
+ */
+export function pageEndedShortOfProviderCount(resp: GroupMessagesResponse): boolean {
+  const served = (resp.messages || []).length;
+  return served === 0 && typeof resp.count === "number" && resp.count > 0;
+}
+
+/**
  * Walks one group's message pages. Returns the raw item count enumerated
  * across pages (the "considered" contribution for this group) — never
  * aliased to the emitted count, since a page a caller filtered/suppressed
@@ -1015,6 +1110,20 @@ interface PerConversationWalkResult {
    *  ordering to license one). */
   newestMessageId: string | undefined;
   totalSeen: number;
+  /**
+   * True when this walk RAN OUT OF SERVABLE HISTORY before reaching the
+   * provider's total (see `pageEndedShortOfProviderCount`) — an empty array
+   * served against a non-zero `count`. The walk's boundary is then UNPROVEN:
+   * the remainder may be gone from the provider for good (retention), or it
+   * may be temporarily unserved, and the response carries nothing that tells
+   * them apart.
+   *
+   * Callers must not treat such a walk as proof of completeness. It is
+   * deliberately separate from `failed`: nothing errored, the request
+   * succeeded, and partial results already emitted stay valid — only the
+   * COMPLETENESS claim is withheld.
+   */
+  unprovenBoundary: boolean;
 }
 
 /**
@@ -1278,7 +1387,14 @@ async function collectGroupMessagesForwardFromCursor(
 
     const messages = resp.messages || [];
     if (!messages.length) {
-      return { totalSeen, newestMessageId };
+      // NOT checked against the provider count here, unlike the backward
+      // walk. This is a forward resume from a cursor, so `count` describes
+      // the group's WHOLE history while this page describes only what is
+      // NEW since that cursor. `count > 0` with an empty page is the normal,
+      // coherent shape of an up-to-date incremental walk — applying the
+      // backward walk's predicate here would flag every healthy incremental
+      // run as unproven.
+      return { totalSeen, newestMessageId, unprovenBoundary: false };
     }
     if (!isAscendingByCreatedAt(messages)) {
       // The provider violated its own documented ordering contract for this
@@ -1300,7 +1416,7 @@ async function collectGroupMessagesForwardFromCursor(
     newestMessageId = messages.at(-1)?.id ?? newestMessageId;
 
     if (messages.length < PAGE_SIZE) {
-      return { totalSeen, newestMessageId };
+      return { totalSeen, newestMessageId, unprovenBoundary: false };
     }
 
     const nextAfterId = messages.at(-1)?.id;
@@ -1377,7 +1493,13 @@ async function collectGroupMessagesBackwardToNaturalEnd(
 
     const messages = resp.messages || [];
     if (!messages.length) {
-      return { totalSeen, newestMessageId };
+      // An empty page ends the walk either way — there is no cursor to
+      // continue from. What differs is whether that ending PROVES the group
+      // was fully walked. An empty page served against a non-zero lifetime
+      // total proves nothing (see `pageEndedShortOfProviderCount`), so the
+      // boundary is reported as unproven instead of silently passing for
+      // complete.
+      return { totalSeen, newestMessageId, unprovenBoundary: pageEndedShortOfProviderCount(resp) };
     }
 
     if (newestMessageId === undefined) {
@@ -1411,7 +1533,10 @@ async function collectGroupMessagesBackwardToNaturalEnd(
     await emitInScopeGroupMessages(inScope, group.id, cursor, uploader, emitAttachmentRecord, emitRecord);
 
     if (backwardPageReachedNaturalEnd(messages, inScope, pageFullyOutOfScope, sinceEpochSeconds)) {
-      return { totalSeen, newestMessageId };
+      // A natural end reached on a page that DID serve messages: the
+      // provider gave content right up to the boundary, so the boundary is
+      // proven in the ordinary way.
+      return { totalSeen, newestMessageId, unprovenBoundary: false };
     }
 
     const nextBeforeId = messages.at(-1)?.id;
@@ -1734,7 +1859,16 @@ async function collectDirectChatMessagesForChat(
 
     const messages = resp.direct_messages || [];
     if (!messages.length) {
-      return { totalSeen, newestMessageId: undefined };
+      // Same short-of-total check as the group backward walk. This walk is
+      // always backward-to-natural-end (never a forward cursor resume), so
+      // the response's `count` and its served page describe the same whole
+      // history, and a `count > 0` empty page means this walk stopped before
+      // reaching everything the total implies.
+      return {
+        totalSeen,
+        newestMessageId: undefined,
+        unprovenBoundary: pageEndedShortOfProviderCount({ count: resp.count, messages }),
+      };
     }
 
     // In-scope-only accounting, same as the group_messages backward walk: a
@@ -1759,7 +1893,7 @@ async function collectDirectChatMessagesForChat(
     }
 
     if (messages.length < PAGE_SIZE) {
-      return { totalSeen, newestMessageId: undefined };
+      return { totalSeen, newestMessageId: undefined, unprovenBoundary: false };
     }
 
     const nextBeforeId = messages.at(-1)?.id;
@@ -1825,6 +1959,116 @@ export async function collectDirectChatMessages(
  */
 export interface GroupMessagesCollectionOutcome extends CollectionOutcome {
   nextCursors: GroupMessageCursors;
+  /** Per-group provider-count reconciliation for this run. */
+  shortfalls: GroupMessageShortfall[];
+  /** Groups whose walk could not be anchored because the provider reported no count. */
+  unanchoredGroupIds: string[];
+}
+
+/** One group where the provider reported MORE messages than the walk saw. */
+export interface GroupMessageShortfall {
+  groupId: string;
+  providerCount: number;
+  /**
+   * True when the walk that produced this shortfall ran out of servable
+   * history before reaching the provider's total (see
+   * `pageEndedShortOfProviderCount`) — so the shortfall is UNEXPLAINED: the
+   * connector cannot tell retention (the oldest messages are gone from the
+   * provider) from a transient refusal to serve them.
+   *
+   * Optional so existing constructions (and fixtures) stay valid; absent is
+   * read as `false`.
+   */
+  unprovenBoundary?: boolean;
+  walked: number;
+}
+
+/**
+ * Split a run's shortfalls into the situations they conflate, so each can be
+ * reported with its own reason and recovery hint.
+ *
+ * `unexplained` — the walk RAN OUT OF SERVABLE HISTORY before reaching the
+ * provider's total: GroupMe served `messages: []` while stating `count > 0`
+ * in the same body. Because `count` is a lifetime total (see
+ * `pageEndedShortOfProviderCount`), this is not self-contradiction — but it
+ * is still ambiguous as to CAUSE. Measured live, the response is
+ * byte-identical (headers included, `content-length` aside) whether the
+ * oldest messages are gone for good or the provider is declining to serve
+ * them right now, and GroupMe emits no status code, `Retry-After`, or
+ * rate-limit header to separate them. The connector therefore does NOT
+ * claim to know which it is, and does not claim the group was proven walked.
+ *
+ * On this owner's real data the evidence points overwhelmingly at
+ * retention: all 42 affected groups went dormant before Aug 2013, and no
+ * stored message anywhere predates 2013-08-15 (see
+ * connectors/groupme/docs/groupme-message-count-shortfall.md). But "overwhelmingly" is not
+ * "provably", and one run's response cannot establish it per-group.
+ *
+ * A PRIOR REVISION of this function classified exactly this shape as
+ * definitively `not_retriable`, keyed on `walked === 0`. That was
+ * unsound: `walked === 0` IS the ambiguous signal, so keying the
+ * "unrecoverable" verdict on it means the connector asserts unrecoverability
+ * on the strength of a response that cannot support the claim. Whatever the
+ * true cause on any given group, a connector must not convert an ambiguous
+ * observation into a certain verdict.
+ *
+ * `partial` — the walk returned SOME messages but fewer than claimed, and
+ * ended on a page the provider actually served. The shortfall is real and the
+ * boundary evidence is coherent, so retrying is a meaningful suggestion.
+ *
+ * This is a classification split ONLY. NEITHER bucket is subtracted from the
+ * missing total, and neither is counted as covered: an unserved message is
+ * still an absent message, and saying so honestly is the whole point of the
+ * anchor.
+ */
+export function partitionGroupMessageShortfalls(shortfalls: readonly GroupMessageShortfall[]): {
+  partial: GroupMessageShortfall[];
+  unexplained: GroupMessageShortfall[];
+} {
+  const partial: GroupMessageShortfall[] = [];
+  const unexplained: GroupMessageShortfall[] = [];
+  for (const s of shortfalls) {
+    if (s.unprovenBoundary === true) {
+      unexplained.push(s);
+    } else {
+      partial.push(s);
+    }
+  }
+  return { partial, unexplained };
+}
+
+/**
+ * Compare one group's provider-reported message count against what this
+ * run's walk actually enumerated.
+ *
+ * ONE-DIRECTIONAL ON PURPOSE. Only `providerCount > walked` is reported.
+ * The reverse — we walked more than the provider now claims — is NOT a
+ * defect: PDPP is a preservation product, so messages deleted from GroupMe
+ * after we collected them legitimately make our holdings larger than the
+ * provider's current count. Reporting that as a gap would flag successful
+ * preservation as loss.
+ *
+ * Returns `null` when the provider reported no usable count: unknown is
+ * not zero, and an absent count must never become a denominator.
+ *
+ * CEILING: this is a scalar, so it cannot distinguish "we are missing N
+ * distinct messages" from "we collected N duplicates". GroupMe exposes no
+ * cheap per-group message-id listing to make this a set comparison, so the
+ * anchor detects magnitude only — see the connector README note.
+ */
+export function groupMessageShortfall(
+  group: GroupMeGroup,
+  walked: number,
+  unprovenBoundary = false
+): { kind: "ok" } | { kind: "short"; shortfall: GroupMessageShortfall } | { kind: "unanchored" } {
+  const providerCount = providerMessageCount(group);
+  if (providerCount === null) {
+    return { kind: "unanchored" };
+  }
+  if (providerCount > walked) {
+    return { kind: "short", shortfall: { groupId: group.id, providerCount, unprovenBoundary, walked } };
+  }
+  return { kind: "ok" };
 }
 
 /**
@@ -1881,6 +2125,109 @@ async function collectOneGroupMessages(
   );
 }
 
+/** Cap on ids/entries listed in an anchor diagnostic; counts are always exact. */
+const MAX_ANCHOR_IDS_IN_DIAGNOSTIC = 50;
+
+/**
+ * Emit the provider-count reconciliation for `group_messages`.
+ *
+ * Two distinct findings, deliberately not merged:
+ *
+ *  - `provider_reports_more_messages_than_walked` — a PARTIAL walk. GroupMe
+ *    says a group holds more messages than the full walk enumerated, and the
+ *    walk did return some. Retrying can plausibly close this.
+ *  - `history_ended_before_provider_count` — the walk ran out of servable
+ *    history before reaching the provider's total: an empty page whose own
+ *    `count` was still non-zero. `count` is a lifetime total, so this is NOT
+ *    the provider contradicting itself; it is the ordinary shape of a total
+ *    that exceeds what pagination can reach (most often retention of the
+ *    oldest messages). It stays retryable because the response cannot rule
+ *    out a transient refusal either.
+ *  - `group_message_count_unanchored` — the provider reported no usable
+ *    count for these groups, so their walk has NO external anchor at all.
+ *    Saying so is the honest alternative to silently treating an unanchored
+ *    group as proven.
+ *
+ * The two shortfall buckets are a CLASSIFICATION split, never a subtraction:
+ * an unexplained group's messages stay in its own missing total and are
+ * never counted as covered. Splitting them tells the owner which part of the
+ * gap has coherent evidence behind it, without quietly shrinking the gap.
+ *
+ * Nothing is emitted for a group where holdings EXCEED the provider count:
+ * that is preservation of messages GroupMe has since deleted, not loss.
+ */
+async function emitGroupMessageAnchorEvidence(
+  emit: CollectContext["emit"],
+  outcome: GroupMessagesCollectionOutcome
+): Promise<void> {
+  const { partial, unexplained } = partitionGroupMessageShortfalls(outcome.shortfalls);
+  if (partial.length > 0) {
+    const missingTotal = partial.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
+    const visible = partial.slice(0, MAX_ANCHOR_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "group_messages",
+      reason: "provider_reports_more_messages_than_walked",
+      message:
+        `GroupMe reports more messages than this run walked in ${String(partial.length)} group(s): ` +
+        `${String(missingTotal)} message(s) unaccounted for. Their history may be incomplete.`,
+      diagnostics: {
+        short_group_count: partial.length,
+        missing_message_total: missingTotal,
+        groups: visible.map((s) => ({ group_id: s.groupId, provider_count: s.providerCount, walked: s.walked })),
+        truncated: visible.length < partial.length,
+      },
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
+    });
+  }
+  if (unexplained.length > 0) {
+    const unexplainedTotal = unexplained.reduce((sum, s) => sum + (s.providerCount - s.walked), 0);
+    const visible = unexplained.slice(0, MAX_ANCHOR_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "group_messages",
+      reason: "history_ended_before_provider_count",
+      message:
+        `GroupMe's history ran out before reaching its own message total in ${String(unexplained.length)} group(s): ` +
+        `${String(unexplainedTotal)} message(s) are included in GroupMe's totals but were not served to us. ` +
+        "GroupMe's total counts a group's whole lifetime, while the messages it will hand back can stop earlier — " +
+        "most often because the oldest messages are no longer stored on its side. Everything collected is saved; " +
+        "these group(s) are simply not claimed as fully read.",
+      diagnostics: {
+        unexplained_group_count: unexplained.length,
+        unexplained_message_total: unexplainedTotal,
+        groups: visible.map((s) => ({ group_id: s.groupId, provider_count: s.providerCount, walked: s.walked })),
+        truncated: visible.length < unexplained.length,
+      },
+      // Retryable, and deliberately so. The most likely cause is retention
+      // (the oldest messages are gone from the provider), which retrying
+      // will NOT recover — but a transient refusal produces the identical
+      // response, and the connector cannot tell them apart per-group. The
+      // honest hint is the one that leaves the door open; claiming
+      // `not_retriable` would assert a certainty the evidence does not
+      // support.
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
+    });
+  }
+  if (outcome.unanchoredGroupIds.length > 0) {
+    const visible = outcome.unanchoredGroupIds.slice(0, MAX_ANCHOR_IDS_IN_DIAGNOSTIC);
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "group_messages",
+      reason: "group_message_count_unanchored",
+      message:
+        `GroupMe reported no per-group message count for ${String(outcome.unanchoredGroupIds.length)} group(s), so their ` +
+        "walk has no external completeness anchor. Coverage for these groups is unproven, not proven complete.",
+      diagnostics: {
+        unanchored_group_count: outcome.unanchoredGroupIds.length,
+        unanchored_group_ids: visible,
+        truncated: visible.length < outcome.unanchoredGroupIds.length,
+      },
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
+    });
+  }
+}
+
 export async function collectGroupMessages(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
@@ -1907,6 +2254,8 @@ export async function collectGroupMessages(
   // cursor. The cursor MAP is still rebuilt from what this full walk
   // observes, so the next ordinary run resumes forward-incrementally again.
   const bypassCursor = collectionMode === "full_refresh";
+  const shortfalls: GroupMessageShortfall[] = [];
+  const unanchoredGroupIds: string[] = [];
   const outcome = await runCollectionPass(
     "group_messages",
     "group messages",
@@ -1921,6 +2270,7 @@ export async function collectGroupMessages(
       );
       for (const group of groups) {
         const priorCursor = priorCursors[group.id];
+        const walkedWholeGroup = priorCursor === undefined || bypassCursor;
         const groupResult = await collectOneGroupMessages(
           token,
           group,
@@ -1934,6 +2284,21 @@ export async function collectGroupMessages(
           sinceEpochSeconds
         );
         considered += groupResult.totalSeen;
+        // The provider count describes the group's WHOLE history, so it can
+        // only be compared against a walk that covered the whole history: a
+        // cold start or an explicit full_refresh. An incremental forward
+        // resume deliberately sees only new messages, and comparing a total
+        // against that window would report a false shortfall on every
+        // healthy incremental run. A `since`-scoped walk is excluded for the
+        // same reason.
+        if (walkedWholeGroup && sinceEpochSeconds === null) {
+          const verdict = groupMessageShortfall(group, groupResult.totalSeen, groupResult.unprovenBoundary);
+          if (verdict.kind === "short") {
+            shortfalls.push(verdict.shortfall);
+          } else if (verdict.kind === "unanchored") {
+            unanchoredGroupIds.push(group.id);
+          }
+        }
         if (groupResult.newestMessageId !== undefined) {
           nextCursors[group.id] = groupResult.newestMessageId;
         }
@@ -1942,7 +2307,14 @@ export async function collectGroupMessages(
     },
     reportStreamFailure
   );
-  return { ...outcome, nextCursors: outcome.failed ? {} : nextCursors };
+  return {
+    ...outcome,
+    nextCursors: outcome.failed ? {} : nextCursors,
+    // A failed pass proves nothing about completeness — withhold both
+    // findings exactly as the cursor map is withheld.
+    shortfalls: outcome.failed ? [] : shortfalls,
+    unanchoredGroupIds: outcome.failed ? [] : unanchoredGroupIds,
+  };
 }
 
 /**
@@ -2027,6 +2399,7 @@ export async function collect(
       effectiveCollectionMode,
       reportStreamFailure
     );
+    await emitGroupMessageAnchorEvidence(emit, groupMessagesOutcome);
   }
   let directChatsOutcome: CollectionOutcome | undefined;
   if (requested.has("direct_messages")) {

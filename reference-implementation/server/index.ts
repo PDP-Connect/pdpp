@@ -28,6 +28,7 @@ import {
   type StreamHealthAuthorityResult,
 } from "../../scripts/stream-health-audit/authority.ts";
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../lib/controller-boot.ts";
+import { checkOrphanedRecordsAtBoot } from "../lib/orphaned-record-check.ts";
 import { exec, getOne, referenceQueries, transaction } from "../lib/db.ts";
 import {
   createTraceContext,
@@ -81,6 +82,7 @@ import { projectRunAutomationPolicy } from "../runtime/run-automation-policy.ts"
 import { matchesRecoveryInstance } from "../runtime/scheduler/recovery-instance-scope.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import { isVendoredUndiciParserAssertion } from "../runtime/undici-parser-errors.ts";
 import {
   buildPendingConsentRequestUri,
   configureNativeManifest,
@@ -271,6 +273,7 @@ import {
   getOwnerConnectionDiagnostics,
   getPendingApprovalDetail,
   invalidateConnectorSummariesCache,
+  listConnectorSourcesSummaryPage,
   listConnectorSummaries,
   listConnectorSummaryPage,
   listOwnerVisibleConnectorInstances,
@@ -308,10 +311,13 @@ import { mountAsPolyfillConnectorDetail, mountAsPolyfillConnectorRegister } from
 import { mountClientMetadata } from "./routes/client-metadata.ts";
 import { mountHostedUiCss } from "./routes/hosted-ui-asset.ts";
 import { mountOwnerConnectionCollectionScope } from "./routes/owner-connection-collection-scope.ts";
+import { mountOwnerConnectionConfig } from "./routes/owner-connection-config.ts";
 import { mountOwnerConnectionDelete } from "./routes/owner-connection-delete.ts";
 import { mountOwnerConnectionDiagnostics } from "./routes/owner-connection-diagnostics.ts";
 import { mountOwnerConnectionIntent } from "./routes/owner-connection-intent.ts";
+import { mountOwnerConnectionPause } from "./routes/owner-connection-pause.ts";
 import { mountOwnerConnectionReactivate } from "./routes/owner-connection-reactivate.ts";
+import { applyResume, mountOwnerConnectionResume } from "./routes/owner-connection-resume.ts";
 import { mountOwnerConnectionRevoke } from "./routes/owner-connection-revoke.ts";
 import { mountOwnerConnectionRun } from "./routes/owner-connection-run.ts";
 import { mountOwnerConnectionSchedule } from "./routes/owner-connection-schedule.ts";
@@ -336,6 +342,8 @@ import {
   mountRefBrowserEnrollmentShell,
   promoteBrowserEnrollmentShellBinding,
 } from "./routes/ref-browser-enrollment-shell.ts";
+import { mountRefConnectionPause } from "./routes/ref-connection-pause.ts";
+import { HISTORICAL_ARCHIVE_SOURCE_BINDING_KIND, mountRefConnectionResume } from "./routes/ref-connection-resume.ts";
 import {
   mountRefConnectionDelete,
   mountRefConnectionDetail,
@@ -494,6 +502,7 @@ import {
 } from "./stores/client-event-subscription-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
+import { getDefaultConnectorInstanceConfigStore } from "./stores/connector-instance-config-store.ts";
 import {
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
@@ -504,6 +513,7 @@ import {
   ConnectorInstanceResolutionError,
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
+  isExpectedMissingConnectorInstance,
   makeConnectorInstanceSourceBindingKey,
   resolveOwnerConnectorInstanceNamespace,
 } from "./stores/connector-instance-store.ts";
@@ -2069,11 +2079,29 @@ async function buildStaticSecretCredentialProber() {
 // Decision 5). For a static-secret connector that HAS an active stored
 // credential, it returns the env fragment carrying only that connection's
 // secret; the run then authenticates with that explicit per-connection
-// capability. It returns `null` for non-static-secret connectors and
-// for browser-session source bindings that have no optional stored login
-// credential. A missing/revoked/deleted credential on a true static-secret
-// connection still fails closed: the run seam throws and the run is refused
-// before any child can use an undeclared provider-account secret.
+// capability. It returns `null` for non-static-secret connectors, for
+// browser-session source bindings that have no optional stored login
+// credential, AND for any connector whose manifest declares
+// `credential_capture.required: false` regardless of how this particular
+// connection's `sourceBinding.kind` happens to be set — see
+// `resolveStaticSecretRunEnv`'s doc. A missing/revoked/deleted credential on a
+// true REQUIRED static-secret connection still fails closed: the run seam
+// throws and the run is refused before any child can use an undeclared
+// provider-account secret.
+//
+// `isStaticSecretCaptureOptional` is load-bearing and must be passed. This
+// function is the resolver the LIVE server actually installs (both the
+// controller path for manual runs and the scheduler path for automatic ones);
+// `server/connection-scoped-run-env.ts` holds a second, structurally identical
+// implementation used by `scheduler-manager-factory.ts` and the test suite.
+// The two drifted: the leaf module passed this argument and this copy did not,
+// so on the live path a `captureRequired: false` connector (venmo) whose
+// connection was bound as anything other than a browser session — e.g. an
+// unpromoted `browser_enrollment_shell`, or a `historical_archive` — hit
+// `recoverSecret`'s throw instead of the intended `null`, and the run was
+// refused rather than proceeding to the connector's own manual sign-in
+// fallback. `connection-scoped-run-env-parity.test.ts` now pins the two
+// implementations to the same argument set so this cannot drift again silently.
 function buildControllerStaticSecretRunEnvResolver() {
   return async ({
     connectorId,
@@ -2084,10 +2112,12 @@ function buildControllerStaticSecretRunEnvResolver() {
     connectorInstanceId: string;
     ownerSubjectId: string;
   }) => {
-    const { isStaticSecretConnector, buildConnectionScopedSecretEnv } = (await loadStaticSecretInjectionHelpers()) as {
-      isStaticSecretConnector: (id: string) => boolean;
-      buildConnectionScopedSecretEnv: (...args: unknown[]) => unknown;
-    };
+    const { isStaticSecretCaptureOptional, isStaticSecretConnector, buildConnectionScopedSecretEnv } =
+      (await loadStaticSecretInjectionHelpers()) as {
+        isStaticSecretCaptureOptional: (id: string) => boolean;
+        isStaticSecretConnector: (id: string) => boolean;
+        buildConnectionScopedSecretEnv: (...args: unknown[]) => unknown;
+      };
     if (!isStaticSecretConnector(connectorId)) {
       return null;
     }
@@ -2098,6 +2128,7 @@ function buildControllerStaticSecretRunEnvResolver() {
       connectorId,
       connectorInstanceId,
       credentialStore,
+      isStaticSecretCaptureOptional,
       isStaticSecretConnector,
       ownerSubjectId,
       sourceBinding: connectorInstance?.sourceBinding ?? null,
@@ -3143,13 +3174,21 @@ function buildFreshness(lastUpdated: string | null = null) {
   return deriveReferenceFreshness({ recordLastUpdatedAt: lastUpdated });
 }
 
-async function getLatestConnectorRunSummary(connectorId: string | null, status: string | null = null) {
+async function getLatestConnectorRunSummary(
+  connectorId: string | null,
+  status: string | null = null,
+  connectorInstanceId: string | null | undefined = null
+) {
   if (!connectorId) {
     return null;
   }
-  const filters = status
-    ? { limit: 1, sourceId: connectorId, sourceKind: "connector", status }
-    : { limit: 1, sourceId: connectorId, sourceKind: "connector" };
+  const filters = {
+    limit: 1,
+    sourceId: connectorId,
+    sourceKind: "connector",
+    ...(status ? { status } : {}),
+    ...(connectorInstanceId ? { connectorInstanceId } : {}),
+  };
   const { summaries } = await listSpineCorrelations("run", filters);
   const summary = summaries[0] || null;
   if (!summary) {
@@ -4792,6 +4831,19 @@ export function buildAsApp(opts: ServerOpts = {}) {
     isInternalConnectorId,
     listActiveBindingsForGrant,
     listRegisteredConnectorIds,
+    listStreamsWithRecords: async ({
+      connectorId,
+      connectorInstanceId,
+    }: {
+      connectorId: string;
+      connectorInstanceId: string | null;
+    }): Promise<string[]> => {
+      const rows = await listRetainedSizeStreams({
+        connectorId,
+        ...(connectorInstanceId ? { connectorInstanceId } : {}),
+      });
+      return rows.filter((row) => Number(row.record_count || 0) > 0).map((row) => String(row.stream));
+    },
     projectBindingForWire,
   };
   const explicitAsBaseUrl = opts.asPublicUrl || (opts.ignoreAmbientPublicUrls ? null : process.env.AS_PUBLIC_URL);
@@ -4828,7 +4880,8 @@ export function buildAsApp(opts: ServerOpts = {}) {
         typeof mountAsAuthorize
       >[1]["issueOAuthAuthorizationCodeForPackageDeviceCode"],
     nativeManifest: resolveNativeManifest(opts),
-    oauthError: (res, status, code, message) => oauthError(res as ResLike, status, code, message),
+    oauthError: (res, status, code, message, extras) =>
+      oauthError(res as ResLike, status, code, message, null, extras),
     providerName,
     requireCsrf: ownerAuth.requireCsrf as unknown as Parameters<typeof mountAsAuthorize>[1]["requireCsrf"],
     requireOwnerSession: ownerAuth.requireOwnerSession as unknown as Parameters<
@@ -5687,9 +5740,25 @@ export function buildAsApp(opts: ServerOpts = {}) {
         includeFleetHealth?: boolean;
         limit: number;
         profile?: ConnectorSummaryPageProfile;
+        sourcesVisibility?: boolean;
       }
     ) => {
       const after = (page.cursor as ConnectorIdentityPageBoundary | null) ?? null;
+      // The owner Sources page's exclusive opt-in (`sources_visibility=1`):
+      // excludes a pure recovered historical fragment BEFORE `LIMIT` via a
+      // dedicated identity-page query, so `has_more`/`next_cursor` are
+      // authoritative over the rows this page renders. Every other caller
+      // (Explore, Add Source, manual upload) omits this and reaches the
+      // unfiltered branches below unchanged.
+      if (page.sourcesVisibility) {
+        const { inventory, ...envelope } = await listConnectorSourcesSummaryPage(controller, {
+          after,
+          includeRunSummaries: "singleton-active",
+          limit: page.limit,
+          ownerSubjectId,
+        });
+        return envelope;
+      }
       // The three profile branches return different `data` element types
       // (`ConnectorSummary` / `ConnectorIdentityInventorySummary` /
       // `ConnectorRetainedCountSummary`); this closure's return type is
@@ -5769,6 +5838,50 @@ export function buildAsApp(opts: ServerOpts = {}) {
     resolveOwnerConnectorNamespace,
     resolveRegisteredConnectorManifest,
     resolveSingleConnectorIdQueryValue,
+    // See `MountRefConnectorsContext.resumeHistoricalArchiveConnectionIfPaused`
+    // doc comment. Reuses `applyResume` — the SAME status-flip primitive the
+    // bearer and owner-session resume routes call — so this is not a third
+    // resume implementation. Ownership is enforced by
+    // `resolveOwnerConnectorNamespace` (via `applyResume`'s
+    // `getConnectorInstance` -> a subsequent `updateStatus`, which is itself
+    // owner-scoped in the store) failing the `historical_archive` guard or
+    // an owner mismatch as a thrown error, which this hook swallows to a
+    // `false` no-op: the run-now handler's own `resolveRefConnectionNamespace`
+    // call right after this is what actually enforces ownership + status for
+    // the run itself, so silently no-op'ing an unresumable/foreign target
+    // here does not skip that check — it only means the run resolves the
+    // target's TRUE current state (which may still legitimately fail).
+    resumeHistoricalArchiveConnectionIfPaused: async (input: {
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+    }) => {
+      const store = createRequestConnectorInstanceStore();
+      const instance = (await store.get(input.connectorInstanceId)) as {
+        ownerSubjectId?: string;
+        status?: string;
+      } | null;
+      if (!instance || instance.ownerSubjectId !== input.ownerSubjectId || instance.status !== "paused") {
+        return false;
+      }
+      try {
+        await applyResume(
+          {
+            getConnectorInstance: (connectorInstanceId: string) => store.get(connectorInstanceId),
+            invalidateConnectorSummariesCache,
+            updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+              store.updateStatus(connectorInstanceId, options as Parameters<typeof store.updateStatus>[1]),
+          } as unknown as Parameters<typeof applyResume>[0],
+          input.connectorInstanceId,
+          { requireSourceBindingKind: HISTORICAL_ARCHIVE_SOURCE_BINDING_KIND }
+        );
+        return true;
+      } catch {
+        // Not a historical_archive row (or some other resume guard failed):
+        // no-op. The run-now resolver right after this call enforces the
+        // real status/ownership gate and will surface its own typed error.
+        return false;
+      }
+    },
     runNow: (connectorId: string, options: unknown) =>
       controller?.runNow(connectorId, options as Parameters<NonNullable<typeof controller>["runNow"]>[1]),
     setReferenceTraceId,
@@ -5860,8 +5973,122 @@ export function buildAsApp(opts: ServerOpts = {}) {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     resolveOwnerConnectorNamespace,
     resolveRegisteredConnectorManifest,
+    // Fires ONLY when the capture route detects (before the credential
+    // write) that the target was `paused` + `historical_archive` — the
+    // recovered-archive reconnect journey. Resumes the SAME
+    // connector_instance row via `applyResume` (identical primitive the
+    // owner-agent bearer and owner-session resume routes use — no duplicate
+    // status-flip logic), then triggers the connector's normal
+    // first-sync/incremental run via `controller.runNow`. Never creates a
+    // second connection_instance row and never requests a full-history
+    // replay (no `runAdmission` override, no `force`): this is the exact
+    // "Run this connection" path the capture response's own next_step
+    // already documents, just triggered automatically instead of requiring a
+    // second owner click.
+    resumeHistoricalArchiveConnectionAndRunFirstSync: async (input: {
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+    }) => {
+      const store = createRequestConnectorInstanceStore();
+      await applyResume(
+        {
+          getConnectorInstance: (connectorInstanceId: string) => store.get(connectorInstanceId),
+          invalidateConnectorSummariesCache,
+          updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+            store.updateStatus(connectorInstanceId, options as Parameters<typeof store.updateStatus>[1]),
+        } as unknown as Parameters<typeof applyResume>[0],
+        input.connectorInstanceId,
+        { requireSourceBindingKind: HISTORICAL_ARCHIVE_SOURCE_BINDING_KIND }
+      );
+      // The row is now resumed (the `applyResume` call above already
+      // committed). What follows only decides how HONESTLY that is reported:
+      // absent a real run handle, this must return `failed`, never fabricate
+      // `resumed_and_synced` with a null `runId` — the capture route's 502
+      // path exists precisely so it can't claim a sync started when it did
+      // not, and a caller reading `archive_reconnect.run_id` must be able to
+      // trust that a non-null id means an actual run was launched.
+      if (!controller) {
+        return {
+          code: "archive_reconnect_run_unavailable",
+          kind: "failed",
+          message: "This connection was resumed, but no run controller is available to start its first sync.",
+        };
+      }
+      const started = (await controller.runNow(input.connectorId, {
+        connectorInstanceId: input.connectorInstanceId,
+        ownerSubjectId: input.ownerSubjectId,
+      })) as { run_id?: string } | undefined;
+      if (typeof started?.run_id !== "string" || started.run_id.length === 0) {
+        return {
+          code: "archive_reconnect_run_unavailable",
+          kind: "failed",
+          message: "This connection was resumed, but starting its first sync did not return a run id.",
+        };
+      }
+      return {
+        kind: "resumed_and_synced",
+        runId: started.run_id,
+      };
+    },
     setReferenceTraceId,
   } as unknown as Parameters<typeof mountRefStaticSecretCredentialCapture>[1]);
+
+  // POST /_ref/connections/:connectorInstanceId/resume is the owner-session
+  // (cookie-authed) sibling of the bearer resume routes in `buildRsApp`
+  // (`mountOwnerConnectionResume`), scoped to exactly one connectorInstanceId
+  // (no connector-only auto-select). It shares the SAME
+  // `updateConnectorInstanceStatus` status-flip primitive via `applyResume`
+  // (see owner-connection-resume.ts) — no second resume implementation. The
+  // `getConnectorInstance` seam stays wired because `applyResume` still needs
+  // it for the IMPLICIT auto-resume hooks' `historical_archive` guard; this
+  // route itself resumes any paused row the owner owns.
+  mountRefConnectionResume(app, {
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getConnectorInstance: (connectorInstanceId: string) =>
+      createRequestConnectorInstanceStore().get(connectorInstanceId),
+    getOwnerSubjectId,
+    handleError,
+    invalidateConnectorSummariesCache,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+      createRequestConnectorInstanceStore().updateStatus(
+        connectorInstanceId,
+        options as Parameters<ReturnType<typeof createRequestConnectorInstanceStore>["updateStatus"]>[1]
+      ),
+  } as unknown as Parameters<typeof mountRefConnectionResume>[1]);
+
+  // POST /_ref/connections/:connectorInstanceId/pause is the owner-session
+  // (cookie-authed) sibling of the bearer pause routes in `buildRsApp`
+  // (`mountOwnerConnectionPause`), and the exact inverse of the resume mount
+  // directly above. It shares the SAME `updateConnectorInstanceStatus`
+  // status-flip primitive via `applyPause` (see owner-connection-pause.ts).
+  // No `getConnectorInstance` seam: pause takes no source-binding-kind guard,
+  // because every pause is an explicit owner act.
+  mountRefConnectionPause(app, {
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerSubjectId,
+    handleError,
+    invalidateConnectorSummariesCache,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+      createRequestConnectorInstanceStore().updateStatus(
+        connectorInstanceId,
+        options as Parameters<ReturnType<typeof createRequestConnectorInstanceStore>["updateStatus"]>[1]
+      ),
+  } as unknown as Parameters<typeof mountRefConnectionPause>[1]);
 
   mountRefStaticSecretDraftConnection(app, {
     canonicalConnectorKey,
@@ -6970,6 +7197,24 @@ function buildRsApp(opts: ServerOpts = {}) {
     } as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[1]
   );
 
+  // The owner's read/write surface for a connection's attributed
+  // configuration-revision ledger. `propose` appends an immutable revision;
+  // `confirm` is the ONLY way a collection-shaping revision becomes active,
+  // and it takes the owner subject from the authenticated bearer session
+  // (`getOwnerTokenSubjectId`), never from the request body — a body-supplied
+  // owner subject would make owner confirmation forgeable by any agent
+  // holding the token. The runtime reads the confirmed result at run start
+  // via `server/connector-run-config.ts`.
+  mountOwnerConnectionConfig(app as unknown as Parameters<typeof mountOwnerConnectionConfig>[0], {
+    getOwnerTokenSubjectId,
+    handleError,
+    pdppError,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    store: getDefaultConnectorInstanceConfigStore(),
+  } as unknown as Parameters<typeof mountOwnerConnectionConfig>[1]);
+
   // POST /v1/owner/connections/:connectionId/run and
   // POST /v1/owner/connectors/:connectorId/run are the bearer-authed owner-agent
   // run-now siblings of the cookie-authed `/_ref/connections/:id/run` and
@@ -7092,6 +7337,91 @@ function buildRsApp(opts: ServerOpts = {}) {
         createRequestConnectorInstanceStore() as unknown as Record<string, (...args: unknown[]) => unknown>
       ).updateStatus?.(connectorInstanceId, options),
   } as unknown as Parameters<typeof mountOwnerConnectionReactivate>[1]);
+
+  // POST /v1/owner/connections/:connectionId/resume and
+  // POST /v1/owner/connectors/:connectorId/resume are the bearer-authed
+  // owner-agent connection-RESUME routes: the `paused`-status sibling of
+  // reactivate. Flips a single `paused` connection back to `active` so it
+  // becomes runnable again. Already-collected records, grants, schedule, and
+  // audit spine are untouched — zero cascade. Ownership is enforced by the
+  // namespace resolver with `allowStatuses: ['paused']` BEFORE any mutation
+  // (foreign/unknown id → 404; non-paused id → connector_instance_not_paused
+  // 409). Credential freshness is delegated to the next collection run — the
+  // owner is expected to have already repaired the credential (e.g. via the
+  // static-secret credential-capture route, which admits a `paused` target)
+  // before calling resume.
+  mountOwnerConnectionResume(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    invalidateConnectorSummariesCache,
+    listActiveBindingsForGrant,
+    listPausedConnectionsForConnector: async ({
+      ownerSubjectId,
+      connectorId,
+    }: {
+      ownerSubjectId: string;
+      connectorId: string;
+    }) =>
+      (
+        (await createRequestConnectorInstanceStore().listByOwner(ownerSubjectId)) as unknown as Array<{
+          connectorId: string;
+          status: string;
+        }>
+      ).filter((inst) => inst.connectorId === connectorId && inst.status === "paused"),
+    markConnectorSummaryEvidenceDirty,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      (
+        createRequestConnectorInstanceStore() as unknown as Record<string, (...args: unknown[]) => unknown>
+      ).updateStatus?.(connectorInstanceId, options),
+  } as unknown as Parameters<typeof mountOwnerConnectionResume>[1]);
+
+  // POST /v1/owner/connections/:connectionId/pause and
+  // POST /v1/owner/connectors/:connectorId/pause are the bearer-authed
+  // owner-agent connection-PAUSE routes: the inverse of resume directly above.
+  // Flips a single `active` connection to `paused` so no future scheduled or
+  // manual run lands for it. Already-collected records, grants, schedule, the
+  // stored credential, and the audit spine are untouched — zero cascade, and
+  // the row stays fully resumable. Ownership is enforced by the namespace
+  // resolver with `allowStatuses: ['active']` BEFORE any mutation
+  // (foreign/unknown id → 404; non-active id → connector_instance_not_active
+  // 409). The connector-only variant selects the single ACTIVE connection via
+  // `listActiveBindingsForGrant` (whose SQL pins `status = 'active'`), the
+  // mirror of resume's paused-row filter.
+  mountOwnerConnectionPause(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    invalidateConnectorSummariesCache,
+    listActiveBindingsForGrant,
+    markConnectorSummaryEvidenceDirty,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId: string, options: unknown) =>
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      (
+        createRequestConnectorInstanceStore() as unknown as Record<string, (...args: unknown[]) => unknown>
+      ).updateStatus?.(connectorInstanceId, options),
+  } as unknown as Parameters<typeof mountOwnerConnectionPause>[1]);
 
   // DELETE /v1/owner/connections/:connectionId and
   // DELETE /v1/owner/connectors/:connectorId are the bearer-authed owner-agent
@@ -7448,14 +7778,25 @@ export async function startServer(opts: ServerOpts = {}) {
     );
   }
 
+  // Record-attribution consistency check. Every owner surface enumerates
+  // connections from `connector_instances` and scopes record reads by
+  // `connector_instance_id`, so a live record whose instance row is gone is
+  // reachable from no surface at all. Read-only and non-fatal: it reports a
+  // pre-existing data condition the owner must adjudicate, and refusing to
+  // boot over it would take every VISIBLE record offline too. Runs here, with
+  // the other boot reconciliations and before HTTP routes mount, so a restart
+  // can never leave the system silently inconsistent (P1).
+  await checkOrphanedRecordsAtBoot(logger);
+
   // H5: manual-upload artifacts left stuck at uploaded/validating by a
   // process that died mid-upload/mid-validation (crash, OOM, kill -9, an
   // unclean deploy restart) sit non-terminal forever with nothing else to
   // revisit them; terminalize them once at boot, same shape as the
   // orphaned-run reconciliation above. Not gated behind the polyfill-
   // manifest-reconcile enable/disable switch below -- this sweep only
-  // touches this process's own DB rows by staleness, never overwrites
-  // manifests, so it's safe to always run.
+  // touches rows left behind by a PRIOR incarnation (their owner_epoch is
+  // not the epoch stamped above), never overwrites manifests, so it's safe
+  // to always run.
   const abandonedUploads = await reconcileAbandonedManualUploadArtifactsAtBoot({
     createRequestManualUploadArtifactStore,
   } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0]);
@@ -7764,6 +8105,12 @@ export async function startServer(opts: ServerOpts = {}) {
   const connectorMaintenanceSweep = createResumableConnectorMaintenanceSweep({
     evidenceSweepMaxDurationMs: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS,
     evidenceSweepPageSize: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
+    onNoProgressAlert: ({ consecutiveNoProgressPasses, eligibleBacklog }) => {
+      logger.warn?.(
+        { consecutiveNoProgressPasses, eligibleBacklog },
+        "connector-maintenance sweep: dirty backlog is not shrinking across consecutive rounds"
+      );
+    },
     onPhaseError: (phase, err) => {
       logger.warn?.(
         { err: err instanceof Error ? err.message : String(err), phase },
@@ -8064,6 +8411,24 @@ export async function startServer(opts: ServerOpts = {}) {
     const autoEnrollOptOut = process.env.PDPP_SKIP_AUTO_SCHEDULE_ENROLLMENT === "1";
     const autoEnrollEnabled =
       opts.autoEnrollEligibleSchedules === undefined ? !autoEnrollOptOut : !!opts.autoEnrollEligibleSchedules;
+    const recordAutoEnrollDecision = async (connectorId: string, reason: string | null): Promise<void> => {
+      const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+      const instanceStore = createRequestConnectorInstanceStore();
+      const instances = (await instanceStore.listByOwnerIncludingDrafts(ownerAuthSubjectId)).filter(
+        (instance) => (canonicalConnectorKey(instance.connectorId) ?? instance.connectorId) === canonicalId
+      );
+      for (const instance of instances) {
+        // The reason is merged atomically with the existing source binding,
+        // following the same write-time evidence pattern as revocation_reason.
+        // It is deliberately non-secret and connector-neutral.
+        await Promise.resolve(instanceStore.updateStatus(instance.connectorInstanceId, {
+          revokedAt: instance.revokedAt ?? null,
+          sourceBindingPatch: { auto_enroll_skip_reason: reason },
+          status: instance.status,
+          updatedAt: new Date().toISOString(),
+        }));
+      }
+    };
     const enrollmentSummary = await autoEnrollEligibleSchedules({
       controller,
       enabled: autoEnrollEnabled,
@@ -8097,6 +8462,7 @@ export async function startServer(opts: ServerOpts = {}) {
         return manifests.map(({ connectorId, manifest }) => ({ connector_id: connectorId, manifest }));
       },
       log: (msg) => logger.info(msg),
+      recordSkipReason: recordAutoEnrollDecision,
     });
     if (enrollmentSummary.scanned > 0) {
       logger.info(enrollmentSummary, "auto-enroll eligible schedules summary");
@@ -8291,13 +8657,15 @@ export async function startServer(opts: ServerOpts = {}) {
     abortStartupBackfill: (reason: unknown) => startupBackfillAbortController.abort(reason),
     asPort,
     asServer,
-    // Exposed for the CLI entrypoint's graceful-shutdown path
-    // (`exitOnSignal`). The controller's `drainActiveRuns` awaits all
-    // in-flight `runConnector` promises within a bounded window so
-    // connector children have time to release their Chromium contexts
-    // before the parent exits and closes their stdio pipes. See
-    // `runtime/controller.ts` and `polyfill-connectors/src/profile-lock.ts`
-    // for the layered design.
+    // Exposed for the CLI entrypoint and for callers that need to await
+    // in-flight `runConnector` promises (`drainActiveRuns`, the watchdog,
+    // `awaitRun`).
+    //
+    // The shutdown path deliberately does NOT drain — a drain cannot finish
+    // minutes-long connector work inside Docker's 10s grace, and was measured
+    // burning its whole budget without saving a run. Interrupted runs are
+    // adjudicated by the successor at boot instead. See the SIGTERM handler
+    // in this file and `lib/controller-boot.ts`.
     controller,
     logger,
     rsPort,
@@ -8551,6 +8919,32 @@ export function isManagedNekoSurfaceApproved(
   return normalizedUrlWithoutTrailingSlash(surface.stream_base_url) === baseUrl;
 }
 
+// Reports one skipped schedule row at the level its cause deserves. A schedule
+// row naming a connection that no longer exists is expected and fully handled —
+// the row is skipped and the scheduler keeps running — so it reports at debug
+// WITHOUT a stack. Reporting it at warn with a stack made every boot emit one
+// stack trace per such row (ten on the live deployment), which trains the
+// reader to ignore the message. A genuine fault (owner/connector mismatch,
+// inactive instance, store failure) still reports at warn with its stack.
+function logScheduleRefreshSkip(
+  logger: { debug?: (...args: unknown[]) => void; warn?: (...args: unknown[]) => void } | null | undefined,
+  schedule: { connector_id?: string; connector_instance_id?: string } | null | undefined,
+  err: unknown
+): void {
+  if (isExpectedMissingConnectorInstance(err)) {
+    logger?.debug?.(
+      {
+        connector_id: schedule?.connector_id,
+        connector_instance_id: schedule?.connector_instance_id ?? null,
+        reason: "connector_instance_not_found",
+      },
+      "skipping scheduled connector whose connection no longer exists"
+    );
+    return;
+  }
+  logger?.warn?.({ connector_id: schedule?.connector_id, err }, "skipping scheduled connector during scheduler refresh");
+}
+
 function createReferenceSchedulerManager({
   connectionScopedRunEnvResolver = buildConnectionScopedRunEnvResolver(),
   controller,
@@ -8672,10 +9066,7 @@ function createReferenceSchedulerManager({
           ownerToken: await controller.issueRuntimeOwnerToken(ownerSubjectId),
         });
       } catch (err) {
-        logger?.warn?.(
-          { connector_id: schedule?.connector_id, err },
-          "skipping scheduled connector during scheduler refresh"
-        );
+        logScheduleRefreshSkip(logger, schedule, err);
       }
     }
     return connectors;
@@ -8744,6 +9135,7 @@ function createReferenceSchedulerManager({
       ...(connectorEnvironmentPolicy?.approvedProxyConnectorIds.length
         ? { approvedProxyConnectorIds: connectorEnvironmentPolicy.approvedProxyConnectorIds }
         : {}),
+      logger,
       ...(runtimeContext.rsUrl === null ? {} : { rsUrl: runtimeContext.rsUrl }),
       ...(runtimeContext.referenceBaseUrl === null ? {} : { referenceBaseUrl: runtimeContext.referenceBaseUrl }),
       admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: admittedOwnerSubjectId }) => {
@@ -9222,6 +9614,10 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
   const cliLogger = buildLogger();
   let shuttingDown = false;
   let pipeWarnEmitted = false;
+  // Every containment is logged (not deduplicated like the pipe warning):
+  // a rising count is the operational signal that the upstream trigger is
+  // still firing, so it must stay visible rather than collapse to one line.
+  let undiciParserAssertionsContained = 0;
 
   const exitOnFatal = (reason: string) => (err: unknown) => {
     if (shuttingDown) {
@@ -9250,6 +9646,26 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
           /* warn emission may itself EPIPE; swallow once */
         }
       }
+      return;
+    }
+    // An assertion inside Node's VENDORED undici HTTP parser, raised from a
+    // socket-teardown event, is a liveness bug in a dependency rather than a
+    // signal that this process holds corrupt state. Left fatal it kills the
+    // whole reference process and abandons every unrelated in-flight run
+    // (observed in production: a Slack run and an unrelated GroupMe run
+    // abandoned 145ms apart by one crash). undici destroys the socket
+    // regardless and the owning fetch() promise still rejects, so the run
+    // that owned the request fails honestly through its own error path.
+    // Every other uncaught error — including any ERR_ASSERTION raised by
+    // application code — still takes the fatal path below.
+    // See runtime/undici-parser-errors.ts for the full mechanism and for
+    // why this specific shape is safe to contain.
+    if (isVendoredUndiciParserAssertion(err)) {
+      undiciParserAssertionsContained += 1;
+      cliLogger.error(
+        { contained_total: undiciParserAssertionsContained, err },
+        "vendored undici parser assertion contained; process survives"
+      );
       return;
     }
     exitOnFatal("uncaughtException")(err);
@@ -9362,28 +9778,35 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     server.stopBrowserSurfaceLeaseSweep?.();
     server.stopConnectorMaintenanceSweep?.();
     await server.stopClientEventDeliveryWorker?.();
-    // Drain in-flight connector children IN PARALLEL with the HTTP /
-    // backfill drains. Children received their own SIGTERM from Docker
-    // and are running their Layer A shutdown-hook to release Chromium.
-    // We give them 5s — typical context.close completes in 1-2s; the
-    // 3s buffer absorbs slow Chromium teardown and network latency.
-    // Docker's default grace period is 10s; the parallel `allSettled`
-    // below is bounded by max(2s, 2s, 5s) = 5s, well within that.
-    // Runs that don't drain in time get SIGKILL'd by Docker on grace
-    // expiry; the residue is cleaned up on next boot by
+    // In-flight connector runs are deliberately NOT drained here.
+    //
+    // A drain cannot succeed inside the budget that actually exists.
+    // Production sets no `--stop-timeout`, so Docker's 10s default governs,
+    // and `--stop-timeout` is fixed at container creation — Docker has no
+    // equivalent of systemd's runtime `EXTEND_TIMEOUT_USEC=`. A Gmail run
+    // takes minutes. The gap is two orders of magnitude and is not closable.
+    //
+    // The 5s drain that used to be here was measured in production spending
+    // its entire budget and abandoning the run anyway
+    // (`drained:0, elapsedMs:5000, timedOut:1`). That is a negative win: it
+    // consumed half the SIGKILL budget doing nothing, while making the
+    // failure look handled.
+    //
+    // Correctness does not depend on the dying process reporting. It cannot:
+    // a `kill -9` has no drain at all. The successor adjudicates instead —
+    // `reconcileOrphanedRunsAtBoot` writes `run.abandoned` for any run whose
+    // owner epoch is not the current one. Temporal ships the same layering
+    // (`WorkerStopTimeout` defaults to 0s; the service writes the terminal
+    // state on a timer), as does Kafka (the successor's `InitProducerId`
+    // epoch bump recovers the previous instance's transaction).
+    //
+    // Dropping the drain makes shutdown faster and the failure mode honest.
+    // `drainActiveRuns` itself stays on the controller: it means "await
+    // in-flight runs", which the watchdog, `awaitRun`, and the test suite all
+    // rely on. Sidekiq draws the same line between *quiet* and *drain*.
+    // Chromium residue is still cleaned on next boot by
     // polyfill-connectors/src/profile-lock.ts (Layer C).
-    const CONNECTOR_DRAIN_TIMEOUT_MS = 5000;
-    const drainConnectors = server.controller?.drainActiveRuns
-      ? server.controller.drainActiveRuns(CONNECTOR_DRAIN_TIMEOUT_MS).then(
-          (summary) => {
-            cliLogger.info(summary, "connector run drain complete");
-          },
-          (err) => {
-            cliLogger.warn({ err }, "connector run drain failed");
-          }
-        )
-      : Promise.resolve();
-    await Promise.allSettled([...httpDrains, Promise.race([awaitStartupTasks, backfillDeadline]), drainConnectors]);
+    await Promise.allSettled([...httpDrains, Promise.race([awaitStartupTasks, backfillDeadline])]);
     // See shutdownStorageClose's own doc comment for the drain-gates-close
     // invariant and why exit(1) here does not mean the in-flight job
     // finishes safely -- only that this process is not the one that raced

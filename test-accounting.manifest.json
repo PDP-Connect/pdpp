@@ -14,8 +14,8 @@
           "required": true,
           "skip_reasons": {
             "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-            "PDPP_TEST_POSTGRES_URL unset": 176,
-            "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 8,
+            "PDPP_TEST_POSTGRES_URL unset": 178,
+            "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 16,
             "dedicated disposable URL not selected": 1,
             "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
             "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
@@ -121,7 +121,7 @@
       "execution": "direct",
       "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
       "command": ["bash", "scripts/test-accounting/root-shell-leaf.sh"],
-      "include": ["scripts/**/*.test.sh"]
+      "include": ["deploy/**/*.test.sh", "scripts/**/*.test.sh"]
     },
     {
       "id": "docker-python",

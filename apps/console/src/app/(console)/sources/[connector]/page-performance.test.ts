@@ -15,10 +15,20 @@ const PAGE_FILE = `${HERE}page.tsx`;
 // `/v1/streams`: for high-volume local sources that endpoint re-aggregates
 // current records and blocks first paint for seconds.
 const DERIVES_STREAMS_FROM_SUMMARY = /const streams = streamsFromConnectorSummary\(summary\)/;
+// The destructured list is open-ended: additional independent second-phase
+// reads (e.g. the connection configuration ledger) may join this race, but
+// `loadConnectorDiagnostics` must remain its FIRST element so no read is
+// promoted ahead of it into a serial await.
 const RACES_SECOND_PHASE =
-  /const \[diagnostics, providerOrigin\] = await Promise\.all\(\[\s*loadConnectorDiagnostics\(/;
+  /const \[diagnostics, providerOrigin(?:, \w+)*\] = await Promise\.all\(\[\s*loadConnectorDiagnostics\(/;
+/** The same destructuring, without pinning the first element, for offset math. */
 const CALLS_LIST_STREAMS = /listStreams\(/;
 const AWAITS_DIAGNOSTICS_SERIALLY = /const diagnostics = await loadConnectorDiagnostics\(/;
+// Configuration is an owner-visible panel, not a gate on first paint: its two
+// reads must ride the existing race rather than block the page ahead of it.
+const SECOND_PHASE_START_RE = /const \[diagnostics, providerOrigin(?:, \w+)*\] = await Promise\.all\(\[/;
+const AWAITS_CONFIG_SERIALLY = /const configuration = await getConnectionConfig\(/;
+const AWAITS_CONFIG_REVISIONS_SERIALLY = /const configRevisions = await listConnectionConfigRevisions\(/;
 const DECLARED_STREAMS = /for \(const name of summary\.streams\)/;
 const RETAINED_STREAMS = /for \(const record of summary\.stream_records \?\? \[\]\)/;
 const COLLECTION_FACT_STREAMS = /for \(const entry of summary\.collection_report \?\? \[\]\)/;
@@ -42,6 +52,9 @@ test("connection detail page uses the scoped summary read-model instead of re-fe
   // Do not regress to the expensive `/v1/streams` aggregation path.
   assert.doesNotMatch(src, CALLS_LIST_STREAMS);
   assert.doesNotMatch(body, AWAITS_DIAGNOSTICS_SERIALLY);
+  // A configuration read must never become a serial await ahead of the race.
+  assert.doesNotMatch(body, AWAITS_CONFIG_SERIALLY);
+  assert.doesNotMatch(body, AWAITS_CONFIG_REVISIONS_SERIALLY);
 });
 
 test("the first phase (connection + manifests) still resolves before the second-phase reads that depend on it", async () => {
@@ -51,7 +64,7 @@ test("the first phase (connection + manifests) still resolves before the second-
   // load-bearing first `Promise.all`; it must precede the second-phase race.
   const firstPhase = body.indexOf("await Promise.all([\n    resolveConnectionForRecordsRoute");
   const streamProjection = body.indexOf("const streams = streamsFromConnectorSummary(summary)");
-  const secondPhase = body.indexOf("const [diagnostics, providerOrigin] = await Promise.all([");
+  const secondPhase = body.search(SECOND_PHASE_START_RE);
   assert.ok(firstPhase >= 0, "first phase must resolve the connection and manifests together");
   assert.ok(streamProjection >= 0, "stream rows must derive from the scoped summary before diagnostics render");
   assert.ok(secondPhase >= 0, "second phase must race the remaining dependent reads");

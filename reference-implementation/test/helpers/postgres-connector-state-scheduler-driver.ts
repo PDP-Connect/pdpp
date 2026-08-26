@@ -20,10 +20,10 @@
  *
  *   - Active-run reconciliation is implemented by this driver itself:
  *     `simulateRestart()` drains `controller_active_runs` and records
- *     each drained run id into a private `terminal_failed_runs` table;
- *     `wasRunMarkedFailed(runId)` reads from that table. There is no
+ *     each drained run id into a private `terminal_abandoned_runs` table;
+ *     `wasRunAdjudicatedAbandoned(runId)` reads from that table. There is no
  *     coupling to the SQLite reference's spine schema. The harness
- *     contract only requires that `wasRunMarkedFailed` reports `true`
+ *     contract only requires that `wasRunAdjudicatedAbandoned` reports `true`
  *     for any run that was active at the time of the simulated restart.
  *
  *   - There is no runtime `ConnectorStateStore` / `SchedulerStore`
@@ -350,12 +350,12 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
         )
       `);
 
-      // Terminal-failed-run marker table: this driver's local equivalent
-      // of "spine emitted a run.failed event". The harness only looks
-      // through `wasRunMarkedFailed(runId)`, so the contract here is
+      // Abandonment-verdict marker table: this driver's local equivalent
+      // of "spine emitted a run.abandoned event". The harness only looks
+      // through `wasRunAdjudicatedAbandoned(runId)`, so the contract here is
       // bounded to that lifecycle.
       await exec(`
-        CREATE TABLE terminal_failed_runs (
+        CREATE TABLE terminal_abandoned_runs (
           run_id TEXT PRIMARY KEY,
           connector_id TEXT NOT NULL,
           marked_at TIMESTAMPTZ NOT NULL
@@ -367,7 +367,7 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
       // Drain the active-run registry inside one transaction:
       //   1. snapshot the abandoned rows
       //   2. delete them
-      //   3. mark each previously-active run id as terminal-failed
+      //   3. mark each previously-active run id as terminal-abandoned
       // Steps (2) and (3) together encode the reconciliation
       // obligation the harness asserts.
       await exec("BEGIN");
@@ -376,7 +376,7 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
         for (const row of abandoned.rows) {
           // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
           await exec(
-            `INSERT INTO terminal_failed_runs (run_id, connector_id, marked_at)
+            `INSERT INTO terminal_abandoned_runs (run_id, connector_id, marked_at)
              VALUES ($1, $2, $3)
              ON CONFLICT (run_id) DO NOTHING`,
             [String(row.run_id), String(row.connector_id), nowIso()]
@@ -430,8 +430,8 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
       return rowToSchedule(row);
     },
 
-    async wasRunMarkedFailed(runId: string) {
-      const res = await exec("SELECT 1 FROM terminal_failed_runs WHERE run_id = $1", [runId]);
+    async wasRunAdjudicatedAbandoned(runId: string) {
+      const res = await exec("SELECT 1 FROM terminal_abandoned_runs WHERE run_id = $1", [runId]);
       return res.rowCount > 0;
     },
   };

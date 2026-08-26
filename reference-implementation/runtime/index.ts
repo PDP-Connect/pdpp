@@ -14,6 +14,8 @@ import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { resolveRunConnectorOptions } from "../server/connector-run-config.ts";
+import type { ConnectorInstanceConfigStore } from "../server/stores/connector-instance-config-store.ts";
 import { readStoredCollectionScope } from "../server/local-collection-scope.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
@@ -40,11 +42,14 @@ import {
   boundStringList,
   buildCollectionFacts,
   buildKnownGap,
+  buildRecoveryGapClosureFacts,
   GAP_STRING_MAX,
   isValidRecoveryHintShape,
   normalizeGapScope,
   VIOLATION_LIST_MAX,
 } from "./connector-gap-bounding.ts";
+import { describeCursorBandViolation, evaluateCursorBand } from "./cursor-band-contiguity.ts";
+import { declaredReasonTokensFor } from "./declared-reason-tokens.ts";
 import { createDetailGapPageReader, validateDetailGapsPageRequest } from "./detail-gap-paging.ts";
 import {
   validateDoneError,
@@ -58,6 +63,15 @@ import {
   buildIngestHttpFailure,
   buildInvalidIngestResponseFailure,
 } from "./ingest-failures.ts";
+import {
+  DEFAULT_INGEST_RETRY_POLICY,
+  INGEST_SATURATED_FAILURE_REASON,
+  type IngestRetryPolicy,
+  isRetryableFetchError,
+  isRetryableIngestStatus,
+  nextIngestRetryDelayMs,
+  parseIngestRetryAfterMs,
+} from "./ingest-retry.ts";
 import { isClosedPipeWriteError } from "./pipe-errors.ts";
 import {
   validateProgressAttachmentHydrationFailureOutcome,
@@ -98,6 +112,12 @@ interface ConnectorMessage {
 interface ManifestStream {
   availability?: { state?: string } | null;
   consent_time_field?: string | null;
+  /**
+   * Closed enum selecting an RI-owned cursor-band variant (see
+   * `runtime/cursor-band-contiguity.ts`). Declaring opts this stream INTO a
+   * contiguity check; omitting it is silence, never a healthy verdict.
+   */
+  cursor_shape?: string | null;
   name: string;
   parent_streams?: string[] | null;
   primary_key?: string | string[] | null;
@@ -478,6 +498,13 @@ export interface RuntimeRunConnectorOptions {
   collectionMode?: RuntimeCollectionMode;
   /** Durable structured-attention store override for tests. */
   connectorAttentionStore?: AttentionWriterOptions["store"];
+  /**
+   * Owner-confirmed connector-config store override for tests and integration
+   * seams. Defaults to `getDefaultConnectorInstanceConfigStore()` when
+   * omitted. Only `getActiveRevision` is used: a run reads configuration
+   * exclusively from an ACTIVE revision, never a proposed one.
+   */
+  connectorConfigStore?: Pick<ConnectorInstanceConfigStore, "getActiveRevision">;
   connectorId: string;
   connectorInstanceId?: string | null;
   connectorPath: string;
@@ -487,6 +514,25 @@ export interface RuntimeRunConnectorOptions {
    */
   detailGapStore?: RuntimeDetailGapStoreCapabilities;
   grantId?: string | null;
+  /**
+   * Bounds for retrying a RECORD-batch ingest POST the RS answered with a
+   * retryable status (503 `ingest_batch_storage_error`, typically produced by
+   * the global writer-admission gate). Defaults to
+   * {@link DEFAULT_INGEST_RETRY_POLICY}. Overridden in tests to assert the
+   * bound without waiting on it.
+   */
+  ingestRetryPolicy?: IngestRetryPolicy;
+  /**
+   * Test seam for ingest-retry backoff jitter. Defaults to `Math.random`.
+   */
+  ingestRetryRandom?: () => number;
+  /**
+   * Test seam for the ingest-retry backoff. Defaults to a real timer. Injected
+   * so a test can prove the retry SEQUENCE (attempt counts, delays honored,
+   * bounded exhaustion) deterministically instead of genuinely sleeping
+   * through it.
+   */
+  ingestRetrySleep?: (ms: number) => Promise<void>;
   manifest: ConnectorManifest;
   onInteraction?: ((interaction: ConnectorMessage) => unknown) | null;
   onInteractionTerminal?: ((info: { interactionId: string; status: string }) => unknown) | null;
@@ -893,6 +939,26 @@ function buildConnectorExitFailureMessage({
   return "Connector exited before emitting DONE.";
 }
 
+/**
+ * Single source of truth for the runtime-authored failure_message on a
+ * scheduler-timeout / assistance-timeout close. Previously this exact text
+ * was hand-duplicated ONLY inside `recordRunTimedOutTerminal` (which feeds
+ * the terminal spine event's `failure_message`) — `deriveClosedRunResolution`
+ * (which feeds the RESOLVED `runConnector()` promise's `failure_message`,
+ * i.e. what the scheduler's run_history.failure_reason column actually reads)
+ * had no equivalent and fell through to the generic
+ * `buildConnectorExitFailureMessage` ("Connector exited with code N before
+ * emitting DONE.") — accurate but useless for diagnosing WHY: an owner
+ * reading run_history could not tell an assistance timeout from an ordinary
+ * scheduler wall-clock timeout without a separate spine-event lookup. See
+ * chatgpt-ingest-and-assistance-failure-modes-2026-08-18.
+ */
+function runTimeoutFailureMessage(terminalReason: string): string {
+  return terminalReason === "assistance_timed_out"
+    ? "Run exceeded a connector assistance timeout."
+    : "Run exceeded its scheduler wall-clock budget.";
+}
+
 // Bounds a runtime-thrown Error's own message before it's persisted as
 // `failure_message` on a terminal spine event, mirroring
 // `controller.ts`'s `boundedLaunchFailureMessage` — a pathological error
@@ -921,14 +987,24 @@ function runtimeAuthoredFailureMessage(
   return !hasStructuredFailureDetail && err.message ? boundedRuntimeFailureMessage(err.message) : null;
 }
 
-function buildStderrTailDiagnostic(tail: StderrTail | null | undefined): Record<string, unknown> | null {
+/**
+ * `knownSecrets` is REQUIRED, not optional, so the compiler forces any future
+ * call site to decide what this run's credentials are rather than silently
+ * inheriting shape-only redaction. The one existing caller has them in scope
+ * two lines away; a caller that genuinely holds none passes an empty array and
+ * says so at the call site.
+ */
+function buildStderrTailDiagnostic(
+  tail: StderrTail | null | undefined,
+  knownSecrets: readonly string[]
+): Record<string, unknown> | null {
   if (!tail || typeof tail !== "object") {
     return null;
   }
   if (!tail.text || tail.bytes_captured === 0) {
     return null;
   }
-  const { text: redactedText, redacted } = redactStderrTail(tail.text);
+  const { text: redactedText, redacted } = redactStderrTail(tail.text, { knownSecrets });
   return {
     bytes_captured: tail.bytes_captured,
     bytes_observed: tail.bytes_observed,
@@ -2117,6 +2193,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     // detail gaps then returns before any forward walk / list-phase fetches.
     // Threaded from the scheduler's recoveryOnly decision into the START message.
     recoveryOnly = false,
+    // Bounded ingest-retry policy plus its clock/jitter seams. See
+    // runtime/ingest-retry.ts for why the runtime retries a 503 at all.
+    ingestRetryPolicy = DEFAULT_INGEST_RETRY_POLICY,
+    ingestRetrySleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    ingestRetryRandom = Math.random,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
   const claimedConnectorInstanceId = resolveRuntimeConnectorInstanceId({
@@ -2140,6 +2221,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   const explicitlyRequestedStreams = requestedRuntimeStreams(providedScope);
   const declaredCollectionScope = readStoredCollectionScope(state).scope;
   const startScope = buildStartScope(manifest, providedScope, declaredCollectionScope?.since ?? null);
+  // The connection's owner-CONFIRMED connector configuration, read from the
+  // propose/confirm revision spine. `resolveRunConnectorOptions` returns a
+  // config only for a revision the store reports `active`; a `proposed`
+  // (unconfirmed) collection_scope revision resolves to null and this run
+  // collects against manifest defaults instead. This is the only read path
+  // from that spine into a run — see server/connector-run-config.ts for why it
+  // fails closed and why it does not ride in on `state`.
+  const startConnectorOptions = await resolveRunConnectorOptions({
+    connectorInstanceId: resolvedConnectorInstanceId,
+    onDecision: (decision) => onProgress({ reference_only: true, type: "CONNECTOR_CONFIG_DECISION", ...decision }),
+    ...(opts.connectorConfigStore ? { store: opts.connectorConfigStore } : {}),
+  });
   const startCollectionMode = validateCollectionMode(collectionMode);
   const startState = persistState ? validateStartState(state) : null;
   // §4.3: validate and normalize recoveryOnly — must be a boolean if provided
@@ -2514,6 +2607,10 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     scope: startScope,
     state: startState,
     type: "START",
+    // Owner-confirmed connector configuration. Omitted entirely when no
+    // active revision exists, so a connector's `readOptions` falls through to
+    // its manifest defaults exactly as it did before this field existed.
+    ...(startConnectorOptions ? { connector_options: startConnectorOptions } : {}),
     // §4.3 (SLVP-ideal): forward recovery-only mode so the connector suppresses
     // the forward walk / list-phase fetches while the source-pressure cooldown
     // is active. Only included when true to keep the wire format backward-compat.
@@ -2904,7 +3001,16 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       data.reported_records_emitted = reportedRecordsEmitted;
     }
     if (connectorError?.message) {
-      data.connector_error_message = boundConnectorErrorMessage(connectorError.message);
+      // `manifest` closes over the enclosing run's own resolved manifest.
+      // `declaredReasonTokensFor` returns `undefined` for every connector
+      // that declares no `capabilities.declared_reason_tokens` — those stay
+      // byte-identical to prior behavior; only a connector that declared its
+      // own reason-token vocabulary gets it preserved here. The RI reads the
+      // declaration generically and never learns a connector name.
+      data.connector_error_message = boundConnectorErrorMessage(
+        connectorError.message,
+        declaredReasonTokensFor(manifest)
+      );
     }
     // Unlike `message`, `code` is copied without redaction — it is a typed,
     // non-secret channel by contract, so it MUST be validated (not
@@ -3072,6 +3178,13 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       recoveryOnly: startRecoveryOnly,
       scopeByStream,
     } as unknown as Parameters<typeof buildCollectionFacts>[0]);
+    // Distinct from `collectionFacts`: a recovery-only run's durable
+    // detail-gap-closure count, never an inventory/list-pass claim. See
+    // `buildRecoveryGapClosureFacts`'s doc comment.
+    const recoveryGapClosureFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps,
+      recoveryOnly: startRecoveryOnly,
+    } as unknown as Parameters<typeof buildRecoveryGapClosureFacts>[0]);
     return {
       buffered_records_dropped: countBufferedRecords(),
       checkpoint_commit_status: checkpointCommitStatus(),
@@ -3084,6 +3197,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       state_streams_committed: stateStreamsCommitted,
       state_streams_staged: stateStreamsStaged,
       ...(collectionFacts ? { collection_facts: collectionFacts } : {}),
+      ...(recoveryGapClosureFacts ? { recovery_gap_closure_facts: recoveryGapClosureFacts } : {}),
       // Final adaptive rate controller state: the last `collection_rate` progress
       // payload emitted this run. Persisted on the terminal event so the reference
       // can surface it as `connection_health.collection_rate` after the run ends,
@@ -3368,6 +3482,120 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     onProgress({ reason: "manifest_stream_unresolved", stream, type: "stream_skipped" });
   }
 
+  /**
+   * POST one RECORD batch to the RS, retrying a status the server marked
+   * retryable within the bounds of {@link ingestRetryPolicy}.
+   *
+   * The RS answers a SYSTEMIC ingest failure with 503 (see
+   * `ingest_batch_storage_error` in server/routes/ref-error-status.ts, whose
+   * comment states 503 means "safe to retry the identical batch"). The
+   * dominant producer of that 503 is the GLOBAL writer-admission gate, which
+   * clears in well under a second — so failing the whole run on the first 503,
+   * as this path used to, discarded every buffered record for a condition that
+   * would have resolved on its own. Retrying is safe because the ingest write
+   * is an upsert on `(connector_instance_id, stream, record_key)`; see
+   * runtime/ingest-retry.ts for the full idempotency argument, including why an
+   * accepted-prefix of a partially-committed batch does not duplicate.
+   *
+   * Bounded by construction: at most `maxAttempts` requests and
+   * `maxAttempts - 1` sleeps, each sleep individually capped. It cannot spin.
+   *
+   * A NON-retryable status returns its response unchanged on the first
+   * attempt, so `readIngestResponse` shapes the same terminal error a 4xx
+   * produced before this retry existed. Cancellation is honored between
+   * attempts: a run that was cancelled or timed out mid-backoff stops waiting
+   * and returns the last response rather than continuing to retry work whose
+   * outcome is already terminal.
+   */
+  async function postIngestBatchWithRetry(
+    url: string,
+    ndjson: string,
+    stream: string,
+    batchSize: number
+  ): Promise<Response> {
+    const maxAttempts = Math.max(1, ingestRetryPolicy.maxAttempts);
+    let response: Response | null = null;
+    // Body of the LAST retryable response, kept so the exhaustion error can
+    // still carry the server's own diagnosis (`ingest_batch_storage_error`,
+    // `connector_instance_busy`, `run_terminal`, …). Without it the terminal
+    // message would say only "the endpoint stayed saturated" and an operator
+    // would lose the reason WHY — which is the whole value of the 503 body.
+    // Read here rather than at the throw site because a `Response` body can
+    // only be consumed once, and a retried response is otherwise discarded.
+    let lastRetryableBody = "";
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential retry is the point — each attempt must observe the previous one's status and wait out its backoff before the next.
+      response = await fetchWithNetworkRetry(
+        url,
+        {
+          body: ndjson,
+          headers: {
+            Authorization: `Bearer ${ownerToken}`,
+            "Content-Type": "application/x-ndjson",
+          },
+          method: "POST",
+          signal: cancelSignal ?? null,
+        },
+        stream,
+        "ingest_retry"
+      );
+      if (response.ok || !isRetryableIngestStatus(response.status)) {
+        return response;
+      }
+      lastRetryableBody = await response.text().catch(() => "");
+      if (attempt >= maxAttempts) {
+        break;
+      }
+      // Cancellation/timeout already owns this run's terminal outcome; don't
+      // spend the remaining retry budget on a batch whose result is moot.
+      // Hand back a REPLAY of the response rather than the original: its body
+      // was consumed above, and `readIngestResponse` calls `.text()` on
+      // whatever it receives — returning the drained original would surface a
+      // "body already read" TypeError in place of the real ingest failure.
+      if (terminalStopRequested()) {
+        return new Response(lastRetryableBody, {
+          headers: response.headers,
+          status: response.status,
+        });
+      }
+      const delayMs = nextIngestRetryDelayMs({
+        attempt,
+        policy: ingestRetryPolicy,
+        random: ingestRetryRandom,
+        retryAfterMs: parseIngestRetryAfterMs(response.headers.get("retry-after")),
+      });
+      onProgress({
+        attempt,
+        delay_ms: delayMs,
+        max_attempts: maxAttempts,
+        status: response.status,
+        stream,
+        type: "ingest_retry",
+      });
+      await ingestRetrySleep(delayMs);
+    }
+    // Bound exhausted against a status the server itself called retryable. Fail
+    // with a reason that names the real condition — the ingest endpoint stayed
+    // saturated for the whole budget — rather than reusing `ingest_http_error`,
+    // which would read as "the RS rejected this batch" and send an operator
+    // looking for a data defect that does not exist.
+    // The last response's body is folded in so the server's own diagnosis
+    // (`ingest_batch_storage_error`, `connector_instance_busy`, `run_terminal`)
+    // survives into the terminal message alongside the saturation framing.
+    const exhausted = buildIngestHttpFailure(
+      `Ingest for ${stream} exhausted ${maxAttempts} attempts against a retryable ingest endpoint`,
+      stream,
+      batchSize,
+      // `response` is non-null here: the loop only breaks after an assignment.
+      (response as Response).status,
+      lastRetryableBody,
+      (response as Response).headers.get("content-type")
+    );
+    exhausted.failure_reason = INGEST_SATURATED_FAILURE_REASON;
+    exhausted.pdpp_error_code = INGEST_SATURATED_FAILURE_REASON;
+    throw exhausted;
+  }
+
   async function flushBatch(stream: string): Promise<void> {
     // Cancellation owns the terminal outcome. Do not start another ingest for
     // a RECORD that was already buffered in the parent after the child was
@@ -3395,15 +3623,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
     ingestUrl.searchParams.set("run_id", runId);
     recordsAttempted += batch.length;
-    const resp = await fetch(ingestUrl.toString(), {
-      body: ndjson,
-      headers: {
-        Authorization: `Bearer ${ownerToken}`,
-        "Content-Type": "application/x-ndjson",
-      },
-      method: "POST",
-      signal: cancelSignal ?? null,
-    });
+    const resp = await postIngestBatchWithRetry(ingestUrl.toString(), ndjson, stream, batch.length);
     // Cancellation may have been requested while this fetch was in flight, but
     // the response already arrived: the RS committed its durable receipts
     // (acceptance or permanent rejection) before answering. Discarding that
@@ -3433,12 +3653,26 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       throw err;
     }
     // Defensive protocol-violation net, NOT the primary retry classifier.
-    // The RS contract (rs.records.ingest) now guarantees that any SYSTEMIC
+    // The RS contract (rs.records.ingest) guarantees that any SYSTEMIC
     // per-record failure — a storage/coordination error that never proved a
     // record's own data invalid — makes the whole HTTP response non-2xx
-    // (RecordsIngestSystemicFailureError, mapped to 503), which the `!resp.ok`
-    // branch above already turns into a thrown, retryable failure via
-    // buildIngestHttpFailure. A PERMANENT per-record rejection (malformed
+    // (RecordsIngestSystemicFailureError, mapped to 503). That case is handled
+    // BEFORE this point, and handled by actually retrying:
+    // `postIngestBatchWithRetry` re-POSTs the identical batch on a retryable
+    // status within a bounded budget, so a transient saturation of the global
+    // writer-admission gate resolves instead of killing the run. Only when that
+    // budget is exhausted does it throw — with failure_reason
+    // `ingest_endpoint_saturated`, naming the saturation rather than implying
+    // the RS rejected the data. A non-retryable non-2xx returns straight
+    // through to `readIngestResponse`, whose `!resp.ok` branch throws a
+    // terminal failure via buildIngestHttpFailure exactly as before.
+    //
+    // (This comment previously claimed the `!resp.ok` branch produced "a
+    // thrown, retryable failure." Nothing retried it: the throw killed the run
+    // and dropped every buffered record. The retry the comment described is
+    // what runtime/ingest-retry.ts now implements.)
+    //
+    // A PERMANENT per-record rejection (malformed
     // JSON, a genuine schema/identity defect) legitimately stays inside a
     // 2xx envelope with records_rejected > 0 — that is the intentional
     // per-record isolation contract, whether it covers one record or every
@@ -3474,6 +3708,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         records_accepted: result.records_accepted,
         records_attempted: result.records_attempted,
         records_flushed: result.records_accepted,
+        records_emitted: totalEmitted,
         records_permanently_rejected: result.records_rejected,
         records_rejected: result.records_rejected,
         source: runSource,
@@ -3509,6 +3744,52 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     );
   }
 
+  /**
+   * `fetch()` with a bounded retry against a network-level throw only (no
+   * response ever arrived) — the same failure class {@link postIngestBatchWithRetry}
+   * now retries, applied here because {@link commitState}'s PUT had none:
+   * before this existed, a bare `TypeError: fetch failed` on the STATE commit
+   * was uncaught, killing the run with `terminal_reason: runtime_error` after
+   * every record had already been durably accepted, and leaving the
+   * checkpoint `not_staged` for a run whose connector never got a chance to
+   * retry. An HTTP status the response DID carry is left to the caller, same
+   * division of responsibility as the ingest path.
+   */
+  async function fetchWithNetworkRetry(
+    url: string,
+    init: RequestInit,
+    stream: string,
+    progressType: "ingest_retry" | "state_commit_retry"
+  ): Promise<Response> {
+    const maxAttempts = Math.max(1, ingestRetryPolicy.maxAttempts);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        // biome-ignore lint/performance/noAwaitInLoops: sequential retry is the point — each attempt must observe the previous one's failure before the next.
+        return await fetch(url, init);
+      } catch (error) {
+        if (attempt >= maxAttempts || !isRetryableFetchError(error) || terminalStopRequested()) {
+          throw error;
+        }
+        const delayMs = nextIngestRetryDelayMs({
+          attempt,
+          policy: ingestRetryPolicy,
+          random: ingestRetryRandom,
+          retryAfterMs: null,
+        });
+        onProgress({
+          attempt,
+          delay_ms: delayMs,
+          max_attempts: maxAttempts,
+          status: null,
+          stream,
+          type: progressType,
+        });
+        await ingestRetrySleep(delayMs);
+      }
+    }
+    throw new Error("unreachable: fetchWithNetworkRetry loop exited without returning or throwing");
+  }
+
   // Process a STATE message: persist to RS
   async function commitState(stream: string, cursor: unknown): Promise<void> {
     newState[stream] = cursor;
@@ -3521,19 +3802,80 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
     const url = stateUrl.toString();
     try {
-      const resp = await fetch(url, {
-        body: JSON.stringify({ state: { [stream]: cursor } }),
-        headers: {
-          Authorization: `Bearer ${ownerToken}`,
-          "Content-Type": "application/json",
+      const resp = await fetchWithNetworkRetry(
+        url,
+        {
+          body: JSON.stringify({ state: { [stream]: cursor } }),
+          headers: {
+            Authorization: `Bearer ${ownerToken}`,
+            "Content-Type": "application/json",
+          },
+          method: "PUT",
         },
-        method: "PUT",
-      });
+        stream,
+        "state_commit_retry"
+      );
       if (!resp.ok) {
         const body = await resp.text();
         throw buildHttpFailure(`State persistence failed for ${stream}`, resp.status, body);
       }
+      // Drain the success-path body before moving on. This response is the
+      // only RS response the runtime does not otherwise read (the ingest path
+      // always reads via readIngestResponse), and an unread body leaves
+      // undici's HTTP parser holding buffered response data. If the socket is
+      // then torn down while that parser is paused, Node's vendored undici
+      // hits an unguarded `assert(!this.paused)` in `Parser.finish` and raises
+      // an uncaughtException that no try/catch here can intercept. Reading the
+      // body to completion returns the connection to a clean, resumable state.
+      // The payload is a small JSON ack, so this costs nothing; `catch` keeps
+      // a drain failure from masking an otherwise successful commit, which is
+      // already durable server-side at this point.
+      await resp.text().catch(() => "");
       committedStateStreams.add(stream);
+
+      // Cursor-band contiguity: the cursor that was just durably committed is
+      // the exact artifact that decides what future runs will fetch, so this
+      // is the moment a two-pointer walk can be caught skipping an identifier
+      // band. Evaluated AFTER the successful persist so the reported numbers
+      // are the ones actually stored, never a staged value that failed to
+      // commit. Pure and allocation-light; `not_registered` short-circuits for
+      // every stream that declares no band, which is all but one today.
+      //
+      // The stream's manifest declares WHETHER it walks a band, via a closed
+      // `cursor_shape` enum the RI recognizes; the RI owns what that shape
+      // MEANS (paths, epoch guard, arithmetic). An undeclared or unrecognized
+      // shape selects no variant and stays silent — declaring can only opt a
+      // stream in, never exempt one from a check it would otherwise get.
+      const bandVerdict = evaluateCursorBand({
+        cursor,
+        declaredShape: manifestByStream.get(stream)?.cursor_shape,
+      });
+      if (bandVerdict.violated) {
+        await emitSpineEventTracked({
+          actor_id: connectorId,
+          actor_type: "runtime",
+          data: {
+            band_size: bandVerdict.bandSize,
+            ceiling: bandVerdict.ceiling,
+            grant_id: grantId,
+            message: describeCursorBandViolation({ connectorId, stream, verdict: bandVerdict }),
+            reason: bandVerdict.reason,
+            resume: bandVerdict.resume,
+            source: runSource,
+          },
+          event_type: "run.cursor_band_violated",
+          object_id: runId,
+          object_type: "run",
+          run_id: runId,
+          scenario_id: traceContext.scenario_id,
+          // `failed` is the honest status: unlike a coverage claim, this is a
+          // proven defect in the fetch plan, not an unproven absence. No
+          // upstream fact could make the stored arithmetic hold.
+          status: "failed",
+          stream_id: stream,
+          trace_id: traceContext.trace_id,
+        });
+      }
 
       await emitSpineEventTracked({
         actor_id: connectorId,
@@ -3894,6 +4236,21 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         manifestStateStreamByStream,
         manifestDetailParentStreamsByStream
       );
+      // Flush records before a coverage claim becomes durable.
+      //
+      // Records are buffered and flushed at BATCH_SIZE or at DONE, but a
+      // coverage claim carries an explicit `covered` count the read model
+      // trusts verbatim: `evaluateStreamCoherence` compares `covered` against
+      // `considered` and never consults `collected`, so a claim of 5-of-5 is
+      // "proven" even when zero records reached the database. Without this
+      // flush, a connector that emits DETAIL_COVERAGE and then dies with an
+      // unflushed batch reports a stream fully covered whose records were
+      // lost — the terminal fact block is still written on the failure path.
+      //
+      // Same ordering rule the state and gap-recovery handlers already apply
+      // (`handleStateMessage`, `handleDetailGapRecovered`): the durable claim
+      // must never precede the records it claims.
+      await flushAll();
       // Proven by the validator: state_stream/stream are non-empty
       // in-scope names and the key arrays are string/number arrays.
       const coverageStateStream = msg.state_stream as string;
@@ -4860,10 +5217,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     async function recordRunTimedOutTerminal(code: number | null): Promise<void> {
       const terminalReason = runtimeTimeoutReason || "run_timed_out";
       const assistanceStatus = terminalReason === "assistance_timed_out" ? "timeout" : "cancelled";
-      const failureMessage =
-        terminalReason === "assistance_timed_out"
-          ? "Run exceeded a connector assistance timeout."
-          : "Run exceeded its scheduler wall-clock budget.";
+      const failureMessage = runTimeoutFailureMessage(terminalReason);
       finalStatus = "failed";
       await closeOpenStructuredAssistance(assistanceStatus, { reason: terminalReason });
       await emitRunSpineEvent({
@@ -5213,13 +5567,23 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       }
       const closeTerminalPhase = derivedTerminal.phase;
       const exposeConnectorExitDiagnostic = finalStatus === "failed" && !doneMessage;
-      const resolvedFailureMessage = exposeConnectorExitDiagnostic
-        ? buildConnectorExitFailureMessage({
-            code,
-            phase: closeTerminalPhase,
-            reason: closeTerminalReason,
-          })
-        : null;
+      // A scheduler/assistance timeout gets its OWN specific message (matching
+      // exactly what recordRunTimedOutTerminal already put on the terminal
+      // spine event) rather than falling through to the generic
+      // "Connector exited with code N before emitting DONE." — accurate but
+      // uninformative about WHY, and the whole reason this resolved value
+      // exists is so run_history.failure_reason can name the real cause
+      // without a separate spine lookup.
+      let resolvedFailureMessage: string | null = null;
+      if (runTimedOut) {
+        resolvedFailureMessage = runTimeoutFailureMessage(runtimeTimeoutReason || "run_timed_out");
+      } else if (exposeConnectorExitDiagnostic) {
+        resolvedFailureMessage = buildConnectorExitFailureMessage({
+          code,
+          phase: closeTerminalPhase,
+          reason: closeTerminalReason,
+        });
+      }
       return { failureMessage: resolvedFailureMessage, phase: closeTerminalPhase, reason: closeTerminalReason };
     }
 
@@ -5257,7 +5621,14 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         ...(exposeConnectorExitDiagnostic
           ? {
               failure_message: resolution.failureMessage,
-              failure_origin: "connector",
+              // A runtime-side timeout (scheduler wall-clock or assistance)
+              // is a runtime-authored failure, not a connector-exit failure —
+              // the process is still alive until terminateChild() kills it in
+              // response to the watchdog, not because the connector itself
+              // exited. Mislabeling this "connector" would misdirect an
+              // owner reading run_history toward the connector when the
+              // real cause is the runtime's own timeout policy.
+              failure_origin: runTimedOut ? "runtime" : "connector",
               ...(stderrTailDiagnostic ? { connector_diagnostics: { stderr_tail: stderrTailDiagnostic } } : {}),
             }
           : {}),
@@ -5344,10 +5715,32 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         // before it reaches progress OR the retained diagnostic — progress is
         // not a lower-trust sink than the retained evidence, so it gets the
         // same treatment.
+        //
+        // These are the credential values this run resolved and injected into
+        // the connector child's environment, passed so redaction can match them
+        // by IDENTITY. A connector that prints a password into an unlabelled
+        // stderr line ("Login failed for <password>") matches no shape rule and
+        // otherwise reaches a durable spine event verbatim — proven against the
+        // deployed head, with a real owner credential. See stderr-redact.ts.
+        //
+        // The set is every live secret THIS run handed the child, not just the
+        // connection's own credential: `ownerToken` and the streaming
+        // registration token are bearer credentials in the same environment, so
+        // a child that echoes one into stderr leaks it the same way. Scoping to
+        // what was actually injected keeps this a fact about the run rather than
+        // a guess about the connector.
+        const runKnownSecrets = [
+          ...Object.values(staticSecretLaunchEnv),
+          ownerToken,
+          streamingRegistrationToken,
+        ].filter((value): value is string => typeof value === "string" && value.length > 0);
         if (stderrTailRaw.text) {
-          onProgress({ text: redactStderrTail(stderrTailRaw.text).text, type: "stderr" });
+          onProgress({
+            text: redactStderrTail(stderrTailRaw.text, { knownSecrets: runKnownSecrets }).text,
+            type: "stderr",
+          });
         }
-        const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw);
+        const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw, runKnownSecrets);
 
         try {
           await waitForQueueDrain();
@@ -5471,6 +5864,11 @@ export async function loadSyncState(
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!resp.ok) {
+    // Drain before discarding: an abandoned error body leaves undici's parser
+    // holding buffered data, which is the state that turns a later socket
+    // teardown into the unguarded `assert(!this.paused)` crash in
+    // `Parser.finish`. See runtime/undici-parser-errors.ts.
+    await resp.text().catch(() => "");
     return null;
   }
   const body = (await resp.json()) as { state?: Record<string, unknown> | null };

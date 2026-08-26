@@ -866,7 +866,7 @@ test("slack connector does not emit a missing-partition diagnostic when prior ch
   }
 });
 
-test("slack connector uses per-channel message cursors with legacy global fallback", async () => {
+test("slack connector walks a channel with no cursor in full instead of applying the global floor", async () => {
   const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-channel-cursor-"));
   try {
     const workspace = "channel-cursor-test";
@@ -879,8 +879,10 @@ test("slack connector uses per-channel message cursors with legacy global fallba
       insertChannel(db, "C2", "two");
       insertMessage(db, "C1", "1714031500.000000", "new for C1 but older than global");
       insertMessage(db, "C1", "1714030900.000000", "old for C1");
-      insertMessage(db, "C2", "1714031600.000000", "older than global fallback");
-      insertMessage(db, "C2", "1714032500.000000", "new by global fallback");
+      // C2 has NO cursor row. Both of its messages must be collected,
+      // including this one below the global `last_ts` floor.
+      insertMessage(db, "C2", "1714031600.000000", "below the global floor, in an unwalked channel");
+      insertMessage(db, "C2", "1714032500.000000", "above the global floor");
     } finally {
       db.close();
     }
@@ -920,7 +922,13 @@ test("slack connector uses per-channel message cursors with legacy global fallba
           }
           return a > b ? 1 : 0;
         }),
-      ["C1:1714031500.000000", "C2:1714032500.000000"]
+      // C1 stays incremental against its own cursor (…0900 is below it and
+      // is correctly skipped). C2, having no cursor, is walked in full.
+      // The prior contract expected only C2:…2500 here — the global
+      // `last_ts` floor silently swallowed C2:…1600, and because that row
+      // was never emitted no C2 cursor was ever written, so the same floor
+      // would swallow it again on every subsequent run.
+      ["C1:1714031500.000000", "C2:1714031600.000000", "C2:1714032500.000000"]
     );
 
     const cursor = messagesState(result);

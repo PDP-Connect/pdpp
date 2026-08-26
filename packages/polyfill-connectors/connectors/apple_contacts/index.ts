@@ -50,6 +50,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import {
+  addressbookMultiget,
   addressbookQueryAll,
   CardDavStructuralError,
   listAddressBooks,
@@ -63,6 +64,13 @@ import {
   discoverCardDav,
   nativeFetchAdapter,
 } from "./discovery.ts";
+import {
+  type GroupAnchor,
+  groupAnchorVerdict,
+  groupMemberUids,
+  isGroupVCard,
+  partitionVCards,
+} from "./group-vcards.ts";
 import { validateRecord } from "./schemas.ts";
 import { categoriesOf, type ParsedVCard, parseVCards } from "./vcard.ts";
 
@@ -169,11 +177,11 @@ function contactId(bookUrl: string, href: string): string {
   return `${addressBookId(bookUrl)}::${href}`;
 }
 
-/** vCard field id for CATEGORIES-derived group membership. Deterministic
- *  per (addressbook, group name) so re-emitting the same group is a no-op
- *  under the fingerprint cursor. */
-function groupId(bookUrl: string, groupName: string): string {
-  return `${addressBookId(bookUrl)}::group::${groupName}`;
+/** Stable id for group membership. Apple group vCards carry a provider UID;
+ *  CATEGORIES-derived groups have no independent provider identifier and keep
+ *  the name fallback rather than inventing a mutable hash. */
+function groupId(bookUrl: string, groupName: string, providerUid?: string): string {
+  return `${addressBookId(bookUrl)}::group::${providerUid ? `uid:${providerUid}` : groupName}`;
 }
 
 export function addressBookRecord(book: { url: string; displayName?: string }, supportsSync: boolean): RecordData {
@@ -224,9 +232,9 @@ export function contactTombstone(bookUrl: string, href: string): RecordData {
   return { id: contactId(bookUrl, href), deleted: true };
 }
 
-export function groupRecord(bookUrl: string, name: string, memberUids: string[]): RecordData {
+export function groupRecord(bookUrl: string, name: string, memberUids: string[], providerUid?: string): RecordData {
   return {
-    id: groupId(bookUrl, name),
+    id: groupId(bookUrl, name, providerUid),
     addressbook_url: bookUrl,
     name,
     member_uids: memberUids,
@@ -234,25 +242,60 @@ export function groupRecord(bookUrl: string, name: string, memberUids: string[])
   };
 }
 
-/** Derive group-membership records from every contact's CATEGORIES field.
- *  This is CardDAV/vCard-standard (RFC 6350 §6.7.1), unlike Apple's
- *  proprietary group-vCard mechanism, which is unconfirmed for iCloud. */
+/**
+ * Derive group-membership records from BOTH mechanisms a CardDAV server may
+ * use.
+ *
+ *  1. Apple's group vCards — a resource in the collection carrying
+ *     `X-ADDRESSBOOKSERVER-KIND:group` and `X-ADDRESSBOOKSERVER-MEMBER`
+ *     lines. This is how iCloud actually stores groups.
+ *  2. The vCard-standard `CATEGORIES` property on each contact
+ *     (RFC 6350 §6.7.1).
+ *
+ * Only (2) was previously read. For an iCloud account that meant
+ * `contact_groups` — a manifest-REQUIRED stream — could never emit a record
+ * no matter how many groups the account had, and the resulting zero was
+ * indistinguishable from a genuinely empty address book.
+ *
+ * A group vCard wins over a same-named CATEGORIES group: the server's own
+ * membership list is authoritative over one inferred from contact bodies.
+ */
 export function deriveGroups(bookUrl: string, cards: ReadonlyArray<{ card: ParsedVCard; uid: string }>): RecordData[] {
-  const membersByGroup = new Map<string, string[]>();
-  for (const { card, uid } of cards) {
+  const { contacts, groups } = partitionVCards(cards);
+
+  const membersByGroup = new Map<string, { memberUids: string[]; providerUid?: string }>();
+  for (const { card, uid } of contacts) {
     for (const category of categoriesOf(card)) {
-      const members = membersByGroup.get(category) ?? [];
-      members.push(uid);
-      membersByGroup.set(category, members);
+      const group = membersByGroup.get(category) ?? { memberUids: [] };
+      group.memberUids.push(uid);
+      membersByGroup.set(category, group);
     }
   }
-  return [...membersByGroup.entries()].map(([name, members]) => groupRecord(bookUrl, name, members));
+
+  // Apple group vCards are authoritative; they overwrite a CATEGORIES-derived
+  // entry of the same name rather than merging into it, so a group's
+  // membership is never half server-stated and half inferred.
+  for (const { card, uid } of groups) {
+    const name = card.fn?.trim();
+    if (!name) {
+      continue;
+    }
+    membersByGroup.set(name, { memberUids: groupMemberUids(card), providerUid: card.uid ?? uid });
+  }
+
+  return [...membersByGroup.entries()].map(([name, group]) =>
+    groupRecord(bookUrl, name, group.memberUids, group.providerUid)
+  );
 }
 
 interface AddressBookCollectionCtx {
   authHeader: string;
   book: { url: string; displayName?: string };
   bookCursor: FingerprintCursor;
+  /** See `BaseCollectContext.collectionMode`. `"full_refresh"` makes this book
+   *  ignore its stored `sync_token` for this run. `undefined` means
+   *  `"incremental"`, matching that contract. */
+  collectionMode: "full_refresh" | "incremental" | undefined;
   emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   fetchImpl: DiscoveryFetch;
@@ -319,10 +362,18 @@ async function emitContactGroupsIfRequested(args: {
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   requested: Map<string, unknown>;
   seenCards: Array<{ card: ParsedVCard; uid: string }>;
-}): Promise<number> {
+}): Promise<{ emitted: number; anchor: GroupAnchor }> {
   const { bookUrl, boundaryEstablished, emit, emitRecord, requested, seenCards } = args;
+  const { contacts, groups } = partitionVCards(seenCards);
+  const derivedCategoryGroups = new Set(contacts.flatMap(({ card }) => categoriesOf(card))).size;
+  const anchor: GroupAnchor = {
+    serverGroupVCards: groups.length,
+    derivedCategoryGroups,
+    emitted: 0,
+    boundaryEstablished,
+  };
   if (!(requested.has("contact_groups") && boundaryEstablished)) {
-    return 0;
+    return { emitted: 0, anchor };
   }
 
   let groupsEmitted = 0;
@@ -331,7 +382,50 @@ async function emitContactGroupsIfRequested(args: {
     groupsEmitted += 1;
   }
   await emit({ type: "STATE", stream: "contact_groups", cursor: { fetched_at: nowIso() } });
-  return groupsEmitted;
+  return { emitted: groupsEmitted, anchor: { ...anchor, emitted: groupsEmitted } };
+}
+
+/**
+ * Fetch and emit vCard bodies for members a sync-collection response
+ * enumerated without inlining `address-data` (RFC 6352 §8.7
+ * addressbook-multiget). Returns the count of enumerated members whose body
+ * the server never handed over, so the caller can keep them in the coverage
+ * denominator instead of dropping them.
+ */
+async function hydrateMissingBodies(args: {
+  authHeader: string;
+  bookUrl: string;
+  emitContactRecord: (resource: VCardResource) => Promise<void>;
+  fetchImpl: DiscoveryFetch;
+  hrefs: readonly string[];
+  progress: (message: string, extra?: { count?: number; stream?: string; total?: number }) => Promise<void>;
+  trustedOrigins: string[];
+}): Promise<number> {
+  const { authHeader, bookUrl, emitContactRecord, fetchImpl, hrefs, progress, trustedOrigins } = args;
+  if (hrefs.length === 0) {
+    return 0;
+  }
+  await progress("Fetching contact bodies the sync response did not inline", {
+    stream: "contacts",
+    count: 0,
+    total: hrefs.length,
+  });
+  const fetched = await addressbookMultiget({ bookUrl, authHeader, fetchImpl, trustedOrigins, hrefs }).catch(
+    (err: unknown) => {
+      throw classifyCardDavRequestFailure(err, { retryableByDefault: true });
+    }
+  );
+  const fetchedByHref = new Map(fetched.map((resource) => [resource.href, resource]));
+  let unfetched = 0;
+  for (const href of hrefs) {
+    const resource = fetchedByHref.get(href);
+    if (resource) {
+      await emitContactRecord(resource);
+      continue;
+    }
+    unfetched += 1;
+  }
+  return unfetched;
 }
 
 async function loadFullGroupSnapshot(args: {
@@ -360,16 +454,68 @@ async function loadFullGroupSnapshot(args: {
 }
 
 /**
+ * No token to resume from: `resolveSyncResult` treats `undefined` as "initial
+ * sync". Named so the full_refresh branch below states what it is doing rather
+ * than falling off the end of the function.
+ */
+const WITHHOLD_SYNC_TOKEN = undefined;
+
+/**
+ * Decide which stored sync token (if any) this run may resume from.
+ *
+ * `full_refresh` is the owner/operator bypass BaseCollectContext.collectionMode
+ * defines: a connector with its own incremental bookkeeping MUST ignore that
+ * bookkeeping and walk each stream to its natural end. Withholding the stored
+ * token here (rather than deleting it) sends `resolveSyncResult` down its
+ * initial-sync path, which sets `fullBoundary` and so re-establishes the
+ * contacts enumeration boundary this run — the ONLY way the contacts coverage
+ * claim can be emitted for a book that already has a token. The stored token is
+ * left untouched on disk: the run rewrites it from its own sync-collection
+ * response, and a failed run persists nothing, so an incremental resume stays
+ * available either way.
+ *
+ * Deployed legacy cursors predate the per-book initialization marker. They can
+ * carry a token but no evidence that this connector ever enumerated the whole
+ * book. That token is only a change-feed checkpoint: using it against a quiet
+ * RFC 6578 server returns no members forever. Withhold it once to establish
+ * the missing boundary, then persist the marker below. `undefined`
+ * collectionMode means `"incremental"`, per that same contract.
+ */
+async function resolveResumableSyncToken(
+  collectionMode: "full_refresh" | "incremental" | undefined,
+  storedSyncToken: string | undefined,
+  initialSyncCompleted: boolean,
+  progress: AddressBookCollectionCtx["progress"]
+): Promise<string | undefined> {
+  if (collectionMode !== "full_refresh" && initialSyncCompleted) {
+    return storedSyncToken;
+  }
+  if (storedSyncToken) {
+    await progress(
+      collectionMode === "full_refresh"
+        ? "Full refresh requested: re-enumerating this address book"
+        : "Initializing legacy address book: re-enumerating contacts",
+      { stream: "contacts" }
+    );
+  }
+  // Withhold the stored token so `resolveSyncResult` takes its initial-sync
+  // path and re-establishes the enumeration boundary. The token stays on disk.
+  return WITHHOLD_SYNC_TOKEN;
+}
+
+/**
  * Collect one address book: probe sync capability, fetch (sync-collection or
  * bounded full snapshot), emit the address-book entity record plus contact +
  * group records, and advance this book's contacts-stream cursor. Extracted
  * from collect() to keep the top-level function's branching bounded — this
  * is the whole per-book unit of work in one place.
  */
-async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
+export async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
+  contactsBoundaryEstablished: boolean;
   contactsConsidered: number;
   contactsCovered: number;
   covered: boolean;
+  groupAnchor: GroupAnchor;
   groupsEmitted: number;
   groupsBoundaryEstablished: boolean;
   hadUnparseableResource: boolean;
@@ -378,6 +524,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     book,
     bookCursor,
     authHeader,
+    collectionMode,
     fetchImpl,
     trustedOrigins,
     state,
@@ -389,8 +536,20 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   } = ctx;
   const bookKey = addressBookId(book.url);
   const priorSync = (
-    state.contacts as Record<string, { sync_token?: string; fingerprints?: Record<string, string> }>
+    state.contacts as Record<
+      string,
+      { initial_sync_completed?: boolean; sync_token?: string; fingerprints?: Record<string, string> }
+    >
   )?.[bookKey];
+
+  // See `resolveResumableSyncToken`: a full_refresh run withholds the stored
+  // token so this book re-establishes its enumeration boundary.
+  const priorSyncToken = await resolveResumableSyncToken(
+    collectionMode,
+    priorSync?.sync_token,
+    priorSync?.initial_sync_completed === true,
+    progress
+  );
 
   await progress("Probing sync capability", { stream: "contacts" });
   const syncResult = await resolveSyncResult({
@@ -398,7 +557,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     authHeader,
     fetchImpl,
     trustedOrigins,
-    priorSyncToken: priorSync?.sync_token,
+    priorSyncToken,
   }).catch((err: unknown) => {
     // resolveSyncResult throws either the HTTP-status-shaped
     // carddav_sync_collection_failed (transient — retryable, matching the
@@ -414,7 +573,18 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   // An incremental sync reports only changes, so its empty resource list is
   // not an empty inventory. Only the initial sync (no prior token) or the
   // non-incremental fallback establishes the full contact boundary.
-  let groupsBoundaryEstablished = !supportsSync || fullBoundary;
+  //
+  // This is a CONTACTS boundary fact as much as a groups one: on an
+  // incremental run `resourcesEnumerated` counts changed resources, not the
+  // address book's inventory, so a no-change run measures 0 without having
+  // enumerated anything. Emitting that as `considered: 0` would hand the
+  // coherence contract a fabricated `enumeration_boundary` proof
+  // (`packages/reference-contract/src/evidence/coherence.ts` rule 2 reads a
+  // measured `considered: 0` as "I enumerated the boundary and it held
+  // nothing"). Track the boundary for contacts explicitly and let the caller
+  // withhold the claim rather than overstate it.
+  const contactsBoundaryEstablished = !supportsSync || fullBoundary;
+  let groupsBoundaryEstablished = contactsBoundaryEstablished;
   const bookCovered = await emitAddressBookRecordIfRequested({ book, bookCursor, requested, emitRecord, supportsSync });
 
   const fingerprintState =
@@ -439,10 +609,20 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
       return;
     }
     const record = contactRecord(book.url, resource, card);
-    if (requested.has("contacts") && entityCursor.shouldEmit(record)) {
+    // A group vCard is a real resource in this collection, so the
+    // enumeration returns it alongside people. Emitting it as a contact
+    // creates a phantom whose `display_name` is the group's name and which
+    // counts as a covered contact. It is still SEEN (it belongs in
+    // `seenCards`, where the group derivation and the group anchor both
+    // read it), and it still counts as enumerated — it simply is not a
+    // person, so it must not enter the `contacts` stream.
+    const isGroup = isGroupVCard(card);
+    if (!isGroup && requested.has("contacts") && entityCursor.shouldEmit(record)) {
       await emitRecord("contacts", record);
     }
-    contactCount += 1;
+    if (!isGroup) {
+      contactCount += 1;
+    }
     seenCards.push({ card, uid: String(record.id) });
   };
 
@@ -450,6 +630,26 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     for (const resource of resolvedSyncResult.resources) {
       await emitContactRecord(resource);
     }
+    // A sync-collection response is only obliged to enumerate members; RFC
+    // 6578 §3.2 does not require the server to inline the `address-data` the
+    // request asked for, and iCloud returns `getetag` only. Fetch those
+    // bodies explicitly (RFC 6352 §8.7 addressbook-multiget) — treating an
+    // un-inlined member as absent is what made a populated address book
+    // report zero contacts.
+    const unfetched = await hydrateMissingBodies({
+      authHeader,
+      bookUrl: book.url,
+      emitContactRecord,
+      fetchImpl,
+      hrefs: resolvedSyncResult.hrefsMissingBodies,
+      progress,
+      trustedOrigins,
+    });
+    // A member the server enumerated but whose body it never returned must
+    // stay in the denominator: considered-but-not-covered is an honest
+    // partial, where dropping it would fabricate a complete claim.
+    resourcesEnumerated += unfetched;
+    unparseableResources += unfetched;
     for (const deletedHref of resolvedSyncResult.deletedHrefs) {
       if (requested.has("contacts")) {
         await emitRecord("contacts", contactTombstone(book.url, deletedHref));
@@ -476,7 +676,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     }
     // Full-scan source: prune ids the server no longer returns so a real
     // deletion tombstones instead of silently no-opping forever.
-    entityCursor.pruneStale();
+    entityCursor.dropUnseenIds();
     await progress("Synced address book via bounded full snapshot", {
       stream: "contacts",
       count: contactCount,
@@ -506,7 +706,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   // after the source enumeration and derivation complete successfully;
   // this lets a genuine zero-group result prove coverage without turning a
   // failed or unattempted scan into proof.
-  const groupsEmitted = await emitContactGroupsIfRequested({
+  const { emitted: groupsEmitted, anchor: groupAnchor } = await emitContactGroupsIfRequested({
     bookUrl: book.url,
     boundaryEstablished: groupsBoundaryEstablished,
     emit,
@@ -515,10 +715,24 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     seenCards: groupCards,
   });
 
+  // The `contact_groups` completeness anchor. The verdict is RETURNED rather
+  // than emitted here: this scope's `emit` is deliberately narrowed to STATE
+  // messages, and widening it just to report a finding would erode a
+  // boundary that is doing useful work. The caller owns the full emit.
+  await progress("Group inventory checked against the enumerated collection", {
+    stream: "contact_groups",
+    count: groupsEmitted,
+    total: Math.max(groupAnchor.serverGroupVCards, groupsEmitted),
+  });
+
   const contactsState =
-    (newState.contacts as Record<string, { sync_token?: string; fingerprints?: Record<string, string> }>) ?? {};
+    (newState.contacts as Record<
+      string,
+      { initial_sync_completed?: boolean; sync_token?: string; fingerprints?: Record<string, string> }
+    >) ?? {};
   contactsState[bookKey] = {
     fingerprints: entityCursor.toState(),
+    initial_sync_completed: priorSync?.initial_sync_completed === true || contactsBoundaryEstablished,
     ...(supportsSync && resolvedSyncResult.syncToken ? { sync_token: resolvedSyncResult.syncToken } : {}),
   };
   newState.contacts = contactsState;
@@ -537,13 +751,21 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   // address book still proves considered === covered === 0). When one or
   // more resources failed to parse, considered > covered, so the caller
   // reads a real partial instead of a fabricated complete.
+  //
+  // Group vCards are enumerated resources that are deliberately NOT
+  // contacts, so they must leave the contacts denominator too — otherwise
+  // excluding them from `contactsCovered` alone would manufacture a
+  // permanent considered > covered shortfall out of correct behaviour. They
+  // are accounted for by the `contact_groups` anchor above instead.
   return {
-    contactsConsidered: resourcesEnumerated,
+    contactsBoundaryEstablished,
+    contactsConsidered: resourcesEnumerated - groupAnchor.serverGroupVCards,
     contactsCovered: contactCount,
     hadUnparseableResource: unparseableResources > 0,
     covered: bookCovered,
     groupsEmitted,
     groupsBoundaryEstablished,
+    groupAnchor,
   };
 }
 
@@ -564,7 +786,7 @@ if (isMainModule(import.meta.url)) {
       kind: "env",
       required: [["APPLE_ID", "APPLE_ID_EMAIL"], "APPLE_APP_SPECIFIC_PASSWORD"],
     },
-    async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+    async collect({ state, requested, credentials, emit, emitRecord, progress, collectionMode }) {
       const accountEmail = credentials.APPLE_ID || credentials.APPLE_ID_EMAIL;
       const appPassword = credentials.APPLE_APP_SPECIFIC_PASSWORD;
       if (!(accountEmail && appPassword)) {
@@ -614,14 +836,17 @@ if (isMainModule(import.meta.url)) {
       let groupsBoundaryEstablished = true;
       let contactsConsidered = 0;
       let contactsCovered = 0;
+      let contactsBoundaryEstablished = true;
       let anyUnparseableResource = false;
 
       for (const book of books) {
         considered += 1;
         const {
+          contactsBoundaryEstablished: bookContactsBoundaryEstablished,
           contactsConsidered: bookContactsConsidered,
           contactsCovered: bookContactsCovered,
           covered: bookCovered,
+          groupAnchor,
           groupsEmitted,
           groupsBoundaryEstablished: bookGroupsBoundaryEstablished,
           hadUnparseableResource,
@@ -629,6 +854,7 @@ if (isMainModule(import.meta.url)) {
           book,
           bookCursor,
           authHeader,
+          collectionMode,
           fetchImpl,
           trustedOrigins,
           state,
@@ -641,17 +867,48 @@ if (isMainModule(import.meta.url)) {
         if (bookCovered) {
           covered += 1;
         }
+        // The completeness anchor for this book's groups. `short` is the
+        // case the connector was previously blind to: the server enumerated
+        // group vCards that never became records. It is reported as a
+        // SKIP_RESULT here, where the full `emit` is in scope.
+        const groupVerdict = groupAnchorVerdict(groupAnchor);
+        if (groupVerdict.status === "short") {
+          await emit({
+            type: "SKIP_RESULT",
+            stream: "contact_groups",
+            reason: "group_inventory_short",
+            message: "The address book holds groups this run did not record",
+            diagnostics: {
+              considered: groupVerdict.considered,
+              covered: groupVerdict.covered,
+              missing: groupVerdict.missing,
+            },
+          });
+        }
         // deriveGroups has no drop/filter path: every derived group is
         // unconditionally emitted, so considered === covered === the exact
         // count emitted for this book (including a genuine zero-group book).
+        // The anchor above is what checks that claim against the server's
+        // own enumeration rather than trusting it.
         groupsConsidered += groupsEmitted;
         groupsBoundaryEstablished = groupsBoundaryEstablished && bookGroupsBoundaryEstablished;
+        contactsBoundaryEstablished = contactsBoundaryEstablished && bookContactsBoundaryEstablished;
         contactsConsidered += bookContactsConsidered;
         contactsCovered += bookContactsCovered;
         anyUnparseableResource = anyUnparseableResource || hadUnparseableResource;
       }
 
-      if (requested.has("contacts")) {
+      // Withhold the contacts coverage claim entirely when no book established
+      // a full boundary this run. An incremental sync-collection delta is a
+      // change feed, not an inventory: its `considered` is the number of
+      // CHANGED resources, so a quiet run would otherwise emit
+      // `considered: 0, covered: 0` and be read as a proven-empty address
+      // book. Emitting nothing leaves the stream honestly unproven (the
+      // coherence contract's `checkpoint_only`/`no_proof_strategy` -> axis
+      // `unknown`) instead of falsely complete. A run that DOES establish the
+      // boundary — initial sync, stale-token resync, or the non-incremental
+      // fallback — still proves a genuine zero exactly as before.
+      if (requested.has("contacts") && contactsBoundaryEstablished) {
         // `considered` counts every resource the server enumerated;
         // `covered` counts only the ones this run successfully parsed and
         // accounted for (emitted, or suppressed as unchanged by the
@@ -686,7 +943,7 @@ if (isMainModule(import.meta.url)) {
       }
 
       if (requested.has("address_books")) {
-        bookCursor.pruneStale();
+        bookCursor.dropUnseenIds();
         newState.address_books = { fingerprints: bookCursor.toState(), fetched_at: nowIso() };
         await emit({ type: "STATE", stream: "address_books", cursor: newState.address_books });
         await emitDetailCoverage(

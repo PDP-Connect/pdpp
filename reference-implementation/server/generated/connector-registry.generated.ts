@@ -14,7 +14,7 @@
 // docs/inbox/findings-deployment-env-vars.md (Cluster B).
 
 /** Every first-party manifest's canonical connector_key. */
-export const FIRST_PARTY_CONNECTOR_KEYS: readonly string[] = Object.freeze(["amazon", "anthropic", "apple_contacts", "apple-health", "apple-photos", "chase", "chatgpt", "claude-code", "codex", "doordash", "github", "gmail", "google-calendar", "google-contacts", "google-maps", "google-maps-data-portability", "google-messages", "google-takeout", "groupme", "heb", "ical", "imessage", "jellyfin", "linkedin", "loom", "meta", "netflix-export", "notion", "oura", "pocket", "reddit", "shopify", "slack", "spotify", "steam", "strava", "twitter-archive", "uber", "usaa", "venmo", "whatsapp", "wholefoods", "whoop", "ynab"]);
+export const FIRST_PARTY_CONNECTOR_KEYS: readonly string[] = Object.freeze(["amazon", "anthropic", "apple_contacts", "apple-health", "apple-photos", "chase", "chatgpt", "claude-code", "codex", "doordash", "github", "gmail", "google-calendar", "google-contacts", "google-maps", "google-maps-data-portability", "google-messages", "google-takeout", "groupme", "heb", "ical", "imessage", "jellyfin", "linkedin", "loom", "meta", "netflix-export", "notion", "oura", "pocket", "reddit", "shopify", "signal", "slack", "spotify", "steam", "strava", "twitter-archive", "uber", "usaa", "venmo", "whatsapp", "wholefoods", "whoop", "ynab"]);
 
 /** Native (storage_binding.connector_id) reference-fixture connector keys. */
 export const NATIVE_CONNECTOR_KEYS: readonly string[] = Object.freeze(["northstar_hr_native"]);
@@ -32,10 +32,11 @@ export const LEGACY_LOCAL_ALIASES: Readonly<Record<string, string>> = Object.fre
   "google_messages": "google-messages",
   "google_takeout": "google-takeout",
   "imessage": "imessage",
+  "signal": "signal",
 });
 
 /** Manifests declaring capabilities.proven.local_collector === true. */
-export const LOCAL_COLLECTOR_PROVEN_KEYS: readonly string[] = Object.freeze(["claude-code", "codex", "google-takeout", "imessage", "apple-photos", "google-messages"]);
+export const LOCAL_COLLECTOR_PROVEN_KEYS: readonly string[] = Object.freeze(["claude-code", "codex", "google-takeout", "imessage", "apple-photos", "google-messages", "signal"]);
 
 /** Manifests declaring a runtime_requirements.bindings.browser binding. */
 export const BROWSER_BOUND_KEYS: readonly string[] = Object.freeze(["amazon", "anthropic", "chase", "chatgpt", "doordash", "heb", "linkedin", "loom", "meta", "reddit", "shopify", "uber", "usaa", "venmo", "wholefoods", "whoop"]);

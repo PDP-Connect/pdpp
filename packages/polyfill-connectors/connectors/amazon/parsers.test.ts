@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildOrderItemRecord,
   buildOrderRecord,
+  countOrderCardsWithoutOrderId,
   itemId,
   mergeDetailByKey,
   mergeOrderItems,
@@ -152,6 +153,62 @@ test("parseOrdersListDom: empty page returns []", () => {
   assert.deepEqual(parseOrdersListDom(""), []);
 });
 
+// A card that matches `.order-card`/`.js-order-card` but has no
+// `.yohtmlc-order-id` (e.g. a never-shipped/cancelled Subscribe & Save order
+// rendering under a variant Amazon uses for that order type) is dropped by
+// `parseOrdersListDom` with no signal anywhere else in the connector: it
+// never reaches the shape-check, so it produces no SKIP_RESULT, no
+// coverage-considered id, and no rejection. `countOrderCardsWithoutOrderId`
+// is the one place that gap becomes visible.
+const NORMAL_CARD_HTML = `
+  <div class="order-card js-order-card">
+    <div class="order-header">
+      <ul>
+        <li class="order-header__header-list-item">
+          <span class="a-color-secondary a-text-caps">Order placed</span>
+          <span>October 17, 2023</span>
+        </li>
+        <li class="order-header__header-list-item">
+          <span class="a-color-secondary a-text-caps">Order #</span>
+          <div class="yohtmlc-order-id">
+            <span class="a-color-secondary a-text-caps">Order #</span>
+            <span dir="ltr">114-0000000-0000000</span>
+          </div>
+        </li>
+      </ul>
+    </div>
+  </div>`;
+const CARD_WITHOUT_ORDER_ID_HTML = `
+  <div class="order-card js-order-card">
+    <div class="order-header">
+      <ul>
+        <li class="order-header__header-list-item">
+          <span class="a-color-secondary a-text-caps">Order placed</span>
+          <span>October 17, 2023</span>
+        </li>
+      </ul>
+    </div>
+    <div class="delivery-box">
+      <div class="delivery-box__primary-text yohtmlc-shipment-status-primaryText">Cancelled</div>
+    </div>
+  </div>`;
+
+test("countOrderCardsWithoutOrderId: 0 when every card has a .yohtmlc-order-id", () => {
+  const html = `<!doctype html><html><body><div id="ordersContainer">${NORMAL_CARD_HTML}</div></body></html>`;
+  assert.equal(countOrderCardsWithoutOrderId(html), 0);
+  assert.equal(parseOrdersListDom(html).length, 1);
+});
+
+test("countOrderCardsWithoutOrderId: counts a card with no .yohtmlc-order-id that parseOrdersListDom silently drops", () => {
+  const html = `<!doctype html><html><body><div id="ordersContainer">${NORMAL_CARD_HTML}${CARD_WITHOUT_ORDER_ID_HTML}</div></body></html>`;
+  // The card without an order id vanishes from parseOrdersListDom's output —
+  // this is the pre-existing, unfixed behavior of parseOrderCard/findOrderId.
+  const orders = parseOrdersListDom(html);
+  assert.equal(orders.length, 1, "only the normal card survives parseOrdersListDom");
+  // countOrderCardsWithoutOrderId is what makes that loss visible.
+  assert.equal(countOrderCardsWithoutOrderId(html), 1);
+});
+
 test("parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates", {
   skip: !existsSync(LOCAL_RAW_DIR),
 }, () => {
@@ -166,6 +223,102 @@ test("parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates
     assert.match(o.orderId, /^\d{3}-\d{7}-\d{7}$/);
     assert.ok(o.orderDateRaw, `order ${o.orderId} missing orderDateRaw`);
   }
+});
+
+// A cancelled Subscribe & Save order never ships, so its list card has no
+// `.item-box`/`.yohtmlc-product-title` (no items to show) and no parseable
+// `$N.NN` total (nothing was charged). `.yohtmlc-shipment-status-primaryText`
+// carries the literal text "Cancelled" — confirmed against a real captured
+// list page, where Amazon's own inline per-card script string-matches that
+// exact class + text to decide whether to hide the "Ask Alexa" pill. Order
+// header structure (`.yohtmlc-order-id`, `.order-header__header-list-item`)
+// is unchanged from a normal card.
+const CANCELLED_LIST_CARD_HTML = `<!doctype html>
+<html>
+  <body>
+    <div id="ordersContainer">
+      <div class="order-card js-order-card">
+        <div class="order-header">
+          <ul>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Order placed</span>
+                <span>October 17, 2023</span>
+              </div>
+            </li>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Order #</span>
+              </div>
+              <div class="yohtmlc-order-id">
+                <span class="a-color-secondary a-text-caps">Order #</span>
+                <span class="a-color-secondary" dir="ltr">114-8946969-6494660</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+        <div class="delivery-box">
+          <div class="delivery-box__primary-text yohtmlc-shipment-status-primaryText">
+            Cancelled
+          </div>
+        </div>
+      </div>
+      <div class="order-card js-order-card">
+        <div class="order-header">
+          <ul>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Order placed</span>
+                <span>October 17, 2023</span>
+              </div>
+            </li>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Total</span>
+                <span>$14.99</span>
+              </div>
+            </li>
+            <li class="order-header__header-list-item">
+              <div>
+                <span class="a-color-secondary a-text-caps">Order #</span>
+              </div>
+              <div class="yohtmlc-order-id">
+                <span class="a-color-secondary a-text-caps">Order #</span>
+                <span class="a-color-secondary" dir="ltr">114-0000000-0000000</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+        <div class="delivery-box">
+          <div class="delivery-box__primary-text yohtmlc-shipment-status-primaryText">
+            Delivered October 19
+          </div>
+        </div>
+        <div class="item-box">
+          <div class="a-fixed-left-grid">
+            <a href="/dp/B0REALSH1A?ref=fake">
+              <img src="https://example.com/img.jpg" />
+            </a>
+            <span class="yohtmlc-product-title">Synthetic Widget Model A</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
+
+test("parseOrdersListDom: cancelled order (no items, no total) parses alongside a normal order on the same page", () => {
+  const orders = parseOrdersListDom(CANCELLED_LIST_CARD_HTML);
+  assert.equal(orders.length, 2, "both the cancelled card and the normal card must be extracted");
+  const [cancelled, normal] = orders;
+  assert.ok(cancelled);
+  assert.equal(cancelled.orderId, "114-8946969-6494660");
+  assert.equal(cancelled.orderDateRaw, "October 17, 2023");
+  assert.equal(cancelled.orderTotal, null);
+  assert.equal(cancelled.deliveryStatus, "Cancelled");
+  assert.deepEqual(cancelled.items, []);
+  assert.ok(normal);
+  assert.equal(normal.orderId, "114-0000000-0000000");
 });
 
 // ─── parseOrderDetailDom ─────────────────────────────────────────────────
@@ -523,7 +676,9 @@ test("buildOrderRecord: both list + detail present — detail wins for enrichmen
   assert.equal(rec.delivery_status, "Arriving tomorrow");
   assert.equal(rec.recipient_name, "Fictional Person");
   assert.equal(rec.payment_method_summary, "Visa ending in 1234");
-  // item_count = max(list.items.length, detail.items.length) = max(1, 2) = 2.
+  // Both surfaces saw items, so the larger count wins: max(1, 2) = 2. The
+  // zero case is where the two surfaces stop being interchangeable — see
+  // item-count-honesty.test.ts.
   assert.equal(rec.item_count, 2);
   assert.equal(rec.fetched_at, "2024-01-20T00:00:00Z");
 });

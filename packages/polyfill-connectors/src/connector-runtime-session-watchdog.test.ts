@@ -514,6 +514,117 @@ test("mutation-kill twin: the SAME ensureSession fault WITHOUT calling onCredent
   );
 });
 
+// ─── code-shaped ensureSession throws survive redaction (HEB [REDACTED] fix) ─
+//
+// Root cause reproduced from live evidence: connection cin_c875ca3ec8b6ce2c-
+// 283a4288 ("HEB - <owner account>"), run_1787075769657. H-E-B requested an
+// OTP, the owner didn't answer within the 600s timeout, and
+// packages/polyfill-connectors/src/auto-login/heb.ts's
+// handleVerificationCodeSubmission threw `Error("heb_verification_code_not_provided")`
+// (35 chars). establishSession's catch block previously built the terminal
+// message ONLY from that string — `heb_session_failed: heb_verification_code_not_provided`
+// — with no `code`. reference-implementation/runtime/connector-gap-bounding.ts's
+// boundConnectorErrorMessage then redacted the persisted message via
+// stderr-redact.ts's LONG_OPAQUE_RE (`/\b[A-Za-z0-9_-]{24,}\b/g`), which
+// wholesale-matches any >=24-char alnum/underscore run — including a
+// perfectly innocuous snake_case reason code with no PII in it — collapsing
+// the owner-visible message to the literally-unreadable
+// `connector_error_json.message: "heb_session_failed: [REDACTED]"` that
+// reached run_history with zero other surviving diagnostic content
+// (failure_reason and error were both empty on that row).
+//
+// The fix: session-establish.ts's catch block now also tests the raw thrown
+// message against the SAME unredacted-channel charset connector code already
+// uses (terminal-error.ts's CONNECTOR_ERROR_CODE_RE, exposed here via
+// isConnectorErrorCodeShaped) and, when it qualifies, carries it through as
+// TerminalError.code — which reaches `connector_error_code` UNREDACTED
+// (runtime/index.ts's buildTerminalConnectorFields already exempts `code`
+// from boundConnectorErrorMessage; this only makes ensureSession's throw path
+// populate that pre-existing channel instead of leaving it empty).
+
+test("HEB regression: a code-shaped ensureSession throw (heb_verification_code_not_provided) survives as TerminalError.code, not just the free-form message", async () => {
+  await assert.rejects(
+    establishSession(
+      {
+        ensureSession: () => {
+          throw new Error("heb_verification_code_not_provided");
+        },
+        probeSession: undefined,
+      },
+      makeEstablishArgs("heb")
+    ),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      // The free-form message channel still carries the full, unredacted-at-
+      // this-layer text (redaction happens downstream at persistence) —
+      // unchanged behavior.
+      assert.match(err.message, /heb_session_failed: heb_verification_code_not_provided/);
+      // NEW: the bare snake_case reason is ALSO available on `code`, which
+      // downstream persistence (connector-gap-bounding.ts's
+      // boundConnectorErrorMessage/boundConnectorErrorCode split) never
+      // redacts — so an operator reading connector_error_code sees
+      // "heb_verification_code_not_provided" even after connector_error_message
+      // has been reduced to "[REDACTED]".
+      assert.equal((err as { code?: string }).code, "heb_verification_code_not_provided");
+      return true;
+    }
+  );
+});
+
+test("mutation-kill: a compound (non-code-shaped) ensureSession throw does NOT get a fabricated code", async () => {
+  await assert.rejects(
+    establishSession(
+      {
+        ensureSession: () => {
+          // Realistic compound message (has a colon + spaces) — must fail the
+          // code charset and leave `code` unset, exactly like before this fix.
+          throw new Error("source_unavailable: USAA reported its login system is currently unavailable");
+        },
+        probeSession: undefined,
+      },
+      makeEstablishArgs("usaa")
+    ),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.equal(
+        (err as { code?: string }).code,
+        undefined,
+        "a free-form compound message must not be smuggled through the unredacted code channel"
+      );
+      return true;
+    }
+  );
+});
+
+test("the recovered code round-trips through the actual redaction the connector_error_message column applies (proves the fix, not just the plumbing)", async () => {
+  const { boundConnectorErrorCode, boundConnectorErrorMessage } = await import(
+    "../../../reference-implementation/runtime/connector-gap-bounding.ts"
+  );
+  await assert.rejects(
+    establishSession(
+      {
+        ensureSession: () => {
+          throw new Error("heb_verification_code_not_provided");
+        },
+        probeSession: undefined,
+      },
+      makeEstablishArgs("heb")
+    ),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      const typedErr = err as { code?: string; message: string };
+      // This reproduces the exact defect: the redacted message alone is
+      // useless.
+      assert.equal(boundConnectorErrorMessage(typedErr.message), "heb_session_failed: [REDACTED]");
+      // But the code channel — now populated by the fix — survives
+      // boundConnectorErrorCode's validation untouched and unredacted, giving
+      // the operator an actionable reason even though `message` was nuked.
+      assert.equal(boundConnectorErrorCode(typedErr.code), "heb_verification_code_not_provided");
+      return true;
+    }
+  );
+});
+
 // ─── bounded capture during teardown ────────────────────────────────────────
 
 test("captureBrowserPage returns within its deadline when captureDom hangs (wedged renderer)", async () => {

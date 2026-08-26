@@ -50,7 +50,13 @@ import {
   runScopedConnectorReconciliation,
 } from "./connector-summary-evidence-bounded-reconciliation.ts";
 import { getDb } from "./db.ts";
-import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
+import {
+  isPostgresStorageBackend,
+  PostgresStatementTimeoutError,
+  postgresQuery,
+  postgresQueryBounded,
+  withPostgresTransaction,
+} from "./postgres-storage.ts";
 import {
   normalizeRecordSourceCheckpoint,
   type RecordSourceCheckpoint,
@@ -64,6 +70,58 @@ const DECIMAL_TEXT_RE = /^\d+$/;
 const LEADING_ZEROES_RE = /^0+(?=\d)/;
 const MAX_SOURCE_REVISION = "9223372036854775807";
 const RECONCILE_PAGE_SIZE = 25;
+
+/**
+ * Per-unit Postgres statement-timeout floor (design review P1-2): the
+ * cooperative `deadline` this module threads through `discoverCandidates`/
+ * `repairCandidate` is a PASS ADMISSION deadline, checked only BETWEEN
+ * units — it never bounds a single query's own server-side execution (see
+ * `reconcileConnectorSummaryEvidence`'s doc for the reviewer's two-contract
+ * framing). `remainingStatementBudgetMs` derives a `statement_timeout` for
+ * `postgresQueryBounded` from the caller's remaining admission allowance so
+ * a discovery/repair unit's own queries cannot, on their own, silently
+ * consume more than what was left when the unit started (production,
+ * 2026-08-18: `repair_duration_ms: 5322` against a 2000ms pass budget).
+ *
+ * Revised 2026-08-18 after a real production regression: the ORIGINAL 50ms
+ * floor claimed "every query this floor applies to is index-bounded and
+ * normally fast" — that claim was false for the discovery batch's own
+ * `COUNT(*) GROUP BY` over `records`, which had NO index covering `deleted`
+ * (the exact query this whole mechanism existed to bound). That query was a
+ * redundant supplementary drift check — `source_revision` already catches
+ * the same direct-writer-bypass scenario incrementally — and has since been
+ * REMOVED from this hot path entirely (2026-08-18, see `classifyCandidate`'s
+ * doc); this floor and the per-unit bound machinery below remain as general
+ * protection for every OTHER discovery/repair query, which is why they are
+ * kept even though the query that motivated 500ms specifically is gone.
+ * Because the fold phase runs BEFORE discovery/repair in
+ * `runBoundedObservationPhases`
+ * (connector-summary-read-model.ts), discovery routinely starts with little
+ * or no admission allowance left, so `remainingStatementBudgetMs` collapsed
+ * to the 50ms floor on nearly every pass — cancelling that unindexed count
+ * query (which realistically takes low hundreds of ms, not 50) on almost
+ * every attempt. Within minutes this flipped 25 of 29 `connector_summary_
+ * evidence` rows from `current` to `failed` with zero visible error (see
+ * `PostgresStatementTimeoutError` handling below and in
+ * connector-summary-read-model.ts — cancellation is now loud and non-fatal
+ * to already-healthy rows).
+ *
+ * 500ms is a genuine minimum absolute timeout, not merely a "near-zero
+ * allowance" floor: it is chosen to comfortably exceed the unindexed count
+ * query's realistic healthy duration while still being well under the
+ * round's 2000ms pass budget, so a single per-unit cancellation remains
+ * possible for a genuinely pathological/runaway statement. `deadline ===
+ * null` (every caller except the maintenance sweep) is unaffected — those
+ * callers keep the exact prior unbounded `postgresQuery` behavior.
+ */
+const MIN_STATEMENT_TIMEOUT_MS = 500;
+
+function remainingStatementBudgetMs(deadline: number | null): number | null {
+  if (deadline === null) {
+    return null;
+  }
+  return Math.max(MIN_STATEMENT_TIMEOUT_MS, deadline - Date.now());
+}
 
 function decimalText(value: unknown): string | null {
   if (value === null || value === undefined) {
@@ -182,6 +240,7 @@ export type RepairCandidateReason =
   | "missing"
   | "dirty"
   | "state_stale"
+  | "component_stale"
   | "record_checkpoint_mismatch"
   | "identity_mismatch"
   | "manifest_mismatch"
@@ -252,6 +311,17 @@ const REASON_CODES = {
   RETAINED_BYTES_UNAVAILABLE: "retained_bytes_unavailable",
   SOURCE_REVISION_DEFERRED: "canonical_source_revision_deferred",
   SOURCE_REVISION_EXHAUSTED: "canonical_source_revision_exhausted",
+  /**
+   * A repair unit's own pre-transaction read was cancelled by Postgres
+   * (`PostgresStatementTimeoutError`, SQLSTATE 57014) under the per-unit
+   * `statement_timeout` bound (design review P1-2) — the bound working as
+   * designed under load, NOT a defect in this connection's own canonical
+   * facts. Distinct from `RECORD_SNAPSHOT_FAILED` so an operator (or a
+   * later reconcile pass) can tell "this row's data is suspect" apart from
+   * "this row's read was merely cancelled by scheduling pressure and is
+   * still exactly as trustworthy as it was before this attempt."
+   */
+  STATEMENT_TIMEOUT: "repair_statement_timeout",
   TERMINAL_FOLD_FAILED: "terminal_fold_failed",
 } as const;
 
@@ -330,7 +400,6 @@ function parseManifestDeclaration(raw: unknown): ManifestDeclaration {
 // ---------------------------------------------------------------------------
 
 interface DiscoveryInput {
-  readonly canonicalTotalRecords: number;
   readonly currentCheckpoint: RecordSourceCheckpoint;
   /** Live `MAX(spine_events.event_seq)` for this connection, unfiltered by event_type. `null` when no spine events exist for it. */
   readonly currentLifecycleEventSeq: number | null;
@@ -343,6 +412,34 @@ interface DiscoveryInput {
   readonly manifest: ManifestDeclaration;
   readonly retainedByteRow: Row | null;
 }
+
+/**
+ * Evidence components whose per-component state column must never read
+ * `"stale"`/`"failed"` on a row that needs no repair — components with NO
+ * legitimate steady non-current state while the row itself is genuinely
+ * fresh, so a `"stale"`/`"failed"` reading here can only mean a stale
+ * component the authority comparisons below never re-derive on their own
+ * (this closes exactly that gap). Deliberately excludes:
+ *   - `manifest_declaration_state`: parks at `"unavailable"` forever for a
+ *     genuinely malformed manifest (`parseManifestDeclaration`) — that is a
+ *     stable, correct terminal state, not staleness to repair-loop on.
+ *   - `retained_bytes_state`: its own convergence is fully covered by
+ *     `retainedBytesNeedsRepair`'s source-vs-stored comparison below, which
+ *     already handles a source-legitimately-absent `"stale"` value.
+ *
+ * `"unobserved"` is deliberately NOT treated as needing repair here: it is
+ * this engine's own legitimate baseline before the separate terminal-fold
+ * phase (`rowNeedsFoldParticipation` in connector-summary-read-model.ts, run
+ * by the `rebuildConnectorSummaryEvidence` barrier immediately after this
+ * engine's reconcile) has ever run for a connection — the fold, not this
+ * repair, is what resolves `unobserved`, and it already retries independent
+ * of this engine's own candidate classification. Treating `unobserved` as a
+ * candidate here would make every standalone reconcile pass over a
+ * fold-never-run connection repair-loop forever, which the "retained bytes
+ * convergence is stable" test guards against.
+ */
+const COMPONENT_STATE_COLUMNS = ["terminal_facts_state"] as const;
+const NON_REPAIRABLE_COMPONENT_STATES = new Set(["current", "unobserved"]);
 
 /**
  * Classify one connection against canonical authorities. Returns the exact
@@ -369,6 +466,17 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   if (existingEvidence.state !== "fresh") {
     return "state_stale";
   }
+  // A fresh, clean envelope can still carry an individually stale/failed
+  // component: e.g. a prior repair's `manifestGenerationChanged` branch
+  // (`terminalFactsForRepair`) persists `terminal_facts_state: "stale"` while
+  // leaving `state`/`dirty` clean, and no later authority comparison below
+  // ever re-derives that same reason once the generation itself stops
+  // changing. Without this check such a component can never converge again.
+  for (const column of COMPONENT_STATE_COLUMNS) {
+    if (!NON_REPAIRABLE_COMPONENT_STATES.has(String(existingEvidence[column]))) {
+      return "component_stale";
+    }
+  }
   if (
     existingEvidence.display_name !== instance.display_name ||
     existingEvidence.status !== instance.status ||
@@ -385,14 +493,27 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   if (!(storedCheckpoint && recordSourceCheckpointsEqual(storedCheckpoint, currentCheckpoint))) {
     return "record_checkpoint_mismatch";
   }
-  // Supplementary to the composite checkpoint: a canonical total-record
-  // count drift with no corresponding checkpoint change means a direct
-  // writer mutated `records` without going through the normal version-
-  // allocating ingest/reset paths. Still a real change the stored snapshot
-  // must absorb.
-  if (Number(existingEvidence.total_records || 0) !== input.canonicalTotalRecords) {
-    return "record_checkpoint_mismatch";
-  }
+  // A direct writer that mutates `records` without allocating a version
+  // (bypassing the normal ingest/reset paths that advance `version_counter`
+  // or `record_reset_generation`) used to be caught ONLY by a supplementary
+  // `SELECT COUNT(*) ... GROUP BY connector_instance_id` full-table scan run
+  // here on every discovery pass — see git history for
+  // `readPostgresDiscoveryContext`'s removed `canonicalCountResult` (measured
+  // 3.3-6.1s / ~578k buffers against production's `records` table,
+  // 2026-08-18). That scan is now REDUNDANT, not merely slow: every write to
+  // `records`, on every path including a direct bypass writer, already fires
+  // the unconditional row-level trigger `pdpp_source_revision_records`
+  // (`ensurePostgresConnectorSummarySourceRevisionPrimitive` in
+  // postgres-storage.ts; SQLite has the equivalent in db.ts), which advances
+  // `connector_instances.source_revision` on INSERT, UPDATE, and DELETE
+  // regardless of whether the writer also touched `version_counter`. The
+  // `currentSourceRevision`/`source_revision_mismatch` comparison below
+  // already detects that exact scenario incrementally, from a single-row
+  // read already fetched for this pass, with no dependence on how many
+  // records the connection has. Do not reintroduce a canonical
+  // `records`-count aggregate in this hot path; a fact whose cost grows with
+  // total row count belongs in an incrementally-maintained signal (like
+  // `source_revision`) or a periodic audit, never a per-pass discovery read.
   const storedFingerprint =
     existingEvidence.manifest_fingerprint === null ? null : String(existingEvidence.manifest_fingerprint);
   const currentFingerprint = manifest.ok ? manifest.fingerprint : null;
@@ -539,7 +660,6 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   // rows, never "reconcile everything").
   if (connectorInstanceIds !== null && connectorInstanceIds.length === 0) {
     return {
-      canonicalTotalRecordsByInstance: new Map<string, number>(),
       evidenceByInstance: new Map<string, Row>(),
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
@@ -629,28 +749,13 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
     list.push(row);
     versionCountersByInstance.set(instanceId, list);
   }
-  // Cheap canonical-count supplement to the composite checkpoint: a direct
-  // writer that mutates `records` without allocating a version (bypassing
-  // the normal ingest/reset paths that advance version_counter or
-  // record_reset_generation) still changes the live count, and this catches
-  // it. One fixed aggregate query regardless of N (or of K, when scoped).
-  const canonicalCountRows: Row[] = scoped
-    ? db
-        .prepare(
-          `SELECT connector_instance_id, COUNT(*) AS total_records FROM records
-            WHERE deleted = 0 AND connector_instance_id IN (${placeholders})
-            GROUP BY connector_instance_id`
-        )
-        // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
-        .all(...connectorInstanceIds!)
-    : db
-        .prepare(
-          "SELECT connector_instance_id, COUNT(*) AS total_records FROM records WHERE deleted = 0 GROUP BY connector_instance_id"
-        )
-        .all();
-  const canonicalTotalRecordsByInstance = new Map(
-    canonicalCountRows.map((row) => [String(row.connector_instance_id), Number(row.total_records || 0)])
-  );
+  // A fleet-wide `SELECT COUNT(*) ... GROUP BY connector_instance_id` over
+  // `records` used to run here as a supplementary drift check (see
+  // `classifyCandidate`'s doc for why it was removed: `source_revision`,
+  // driven by a row-level trigger on every write to `records`, already
+  // catches the same direct-writer-bypass scenario incrementally). Removed
+  // 2026-08-18 — do not reintroduce a canonical `records`-count aggregate in
+  // this hot path.
   // Terminal-gate revision (2026-07-29): schedule mutations have NO existing
   // dirty-independent backstop — `connector_schedules.updated_at` is already
   // written atomically with every schedule mutation on both backends (a
@@ -676,27 +781,38 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   // Reuses the spine's own already-durable, atomically-assigned `event_seq`
   // as the repair receipt, scoped per connection (unlike the fleet-wide
   // terminal scalar, since run-lifecycle freshness is a per-connection fact).
+  // Per-key MAX rather than a GROUP BY aggregate, matching the Postgres
+  // branch -- see the long rationale there. SQLite recognizes the same
+  // `MAX(indexed_column)` shape as a backward index walk, so this keeps the
+  // two backends structurally identical instead of leaving SQLite on the
+  // formulation whose cost grows with total event count.
   const maxLifecycleSeqRows: Row[] = scoped
     ? db
         .prepare(
-          `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
-            WHERE connector_instance_id IN (${placeholders})
-            GROUP BY connector_instance_id`
+          `SELECT i.connector_instance_id,
+                  (SELECT MAX(e.event_seq) FROM spine_events e
+                    WHERE e.connector_instance_id = i.connector_instance_id) AS max_seq
+             FROM connector_instances i
+            WHERE i.connector_instance_id IN (${placeholders})`
         )
         // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
         .all(...connectorInstanceIds!)
     : db
         .prepare(
-          `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
-            WHERE connector_instance_id IS NOT NULL
-            GROUP BY connector_instance_id`
+          `SELECT i.connector_instance_id,
+                  (SELECT MAX(e.event_seq) FROM spine_events e
+                    WHERE e.connector_instance_id = i.connector_instance_id) AS max_seq
+             FROM connector_instances i`
         )
         .all();
+  // See the Postgres branch: a connection with no lifecycle events now
+  // yields NULL where the GROUP BY emitted no row, and `Number(null)` is 0.
   const maxLifecycleEventSeqByInstance = new Map(
-    maxLifecycleSeqRows.map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
+    maxLifecycleSeqRows
+      .filter((row) => row.max_seq !== null && row.max_seq !== undefined)
+      .map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
   );
   return {
-    canonicalTotalRecordsByInstance,
     evidenceByInstance,
     instanceRows: instanceRows as Row[],
     manifestByConnector,
@@ -707,7 +823,30 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   };
 }
 
-async function readPostgresDiscoveryContext(connectorInstanceIds: readonly string[] | null) {
+/**
+ * Issues one discovery-context statement bounded by the caller's remaining
+ * cooperative admission allowance (design review P1-2, per-unit hard
+ * bound). `deadline === null` reproduces the exact prior unbounded-
+ * `postgresQuery` behavior for every caller that does not pass one (every
+ * consumer of `discoverCandidates` today except the maintenance sweep —
+ * see `reconcileConnectorSummaryEvidence`'s doc).
+ */
+function postgresDiscoveryQuery<R extends Row = Row>(
+  sql: string,
+  params: unknown[],
+  deadline: number | null
+): Promise<{ rowCount: number | null; rows: R[] }> {
+  if (deadline === null) {
+    return postgresQuery<R>(sql, params);
+  }
+  const budget = remainingStatementBudgetMs(deadline);
+  if (budget === null) {
+    return postgresQuery<R>(sql, params);
+  }
+  return postgresQueryBounded<R>(sql, params, budget);
+}
+
+async function readPostgresDiscoveryContext(connectorInstanceIds: readonly string[] | null, deadline: number | null) {
   // `null` = complete census (unscoped). A non-null, EMPTY array is a
   // genuine "scoped to nothing" request; short-circuit rather than issue
   // `= ANY($1::text[])` with an empty bind array (which IS valid Postgres
@@ -716,7 +855,6 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // identical and avoids six no-op round-trips).
   if (connectorInstanceIds !== null && connectorInstanceIds.length === 0) {
     return {
-      canonicalTotalRecordsByInstance: new Map<string, number>(),
       evidenceByInstance: new Map<string, Row>(),
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
@@ -733,12 +871,15 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // an owner_subject_id filter here would let a distinct subject's
   // genuinely-live connection be pruned as orphaned.
   const instanceResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         "SELECT *, source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = ANY($1::text[])",
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery(
-        "SELECT *, source_revision::text AS source_revision_text FROM connector_instances ORDER BY connector_instance_id ASC"
+    : await postgresDiscoveryQuery(
+        "SELECT *, source_revision::text AS source_revision_text FROM connector_instances ORDER BY connector_instance_id ASC",
+        [],
+        deadline
       );
   // Evidence/retained-bytes/version-counter/canonical-count reads are scoped
   // to the SAME requested id set (one batched `ANY($1::text[])` query each,
@@ -746,11 +887,16 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // matches the SQLite `IN (...)` batching above; a scoped consumer must
   // not pay for, or even read, every other connection's rows.
   const evidenceResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         "SELECT *, source_revision::text AS source_revision_text FROM connector_summary_evidence WHERE connector_instance_id = ANY($1::text[])",
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery("SELECT *, source_revision::text AS source_revision_text FROM connector_summary_evidence");
+    : await postgresDiscoveryQuery(
+        "SELECT *, source_revision::text AS source_revision_text FROM connector_summary_evidence",
+        [],
+        deadline
+      );
   const evidenceByInstance = new Map(
     (evidenceResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row])
   );
@@ -758,20 +904,25 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   const connectorRows = await readPostgresConnectorManifests(connectorIds);
   const manifestByConnector = new Map(connectorRows.map((row) => [String(row.connector_id), String(row.manifest)]));
   const retainedByteResult = scoped
-    ? await postgresQuery("SELECT * FROM retained_size_connection WHERE connector_instance_id = ANY($1::text[])", [
-        connectorInstanceIds,
-      ])
-    : await postgresQuery("SELECT * FROM retained_size_connection");
+    ? await postgresDiscoveryQuery(
+        "SELECT * FROM retained_size_connection WHERE connector_instance_id = ANY($1::text[])",
+        [connectorInstanceIds],
+        deadline
+      )
+    : await postgresDiscoveryQuery("SELECT * FROM retained_size_connection", [], deadline);
   const retainedByteByInstance = new Map(
     (retainedByteResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row])
   );
   const versionCounterResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         "SELECT connector_instance_id, stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = ANY($1::text[])",
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery(
-        "SELECT connector_instance_id, stream, max_version::text AS max_version FROM version_counter"
+    : await postgresDiscoveryQuery(
+        "SELECT connector_instance_id, stream, max_version::text AS max_version FROM version_counter",
+        [],
+        deadline
       );
   const versionCountersByInstance = new Map<string, Row[]>();
   for (const row of versionCounterResult.rows as Row[]) {
@@ -780,38 +931,57 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
     list.push(row);
     versionCountersByInstance.set(instanceId, list);
   }
-  // Cheap canonical-count supplement to the composite checkpoint: a direct
-  // writer that mutates `records` without allocating a version still
-  // changes the live count, and this catches it. One fixed aggregate query
-  // regardless of N (or of K, when scoped).
-  const canonicalCountResult = scoped
-    ? await postgresQuery(
-        `SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records
-          WHERE deleted = FALSE AND connector_instance_id = ANY($1::text[])
-          GROUP BY connector_instance_id`,
-        [connectorInstanceIds]
-      )
-    : await postgresQuery(
-        "SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records WHERE deleted = FALSE GROUP BY connector_instance_id"
-      );
-  const canonicalTotalRecordsByInstance = new Map(
-    (canonicalCountResult.rows as Row[]).map((row) => [
-      String(row.connector_instance_id),
-      Number(row.total_records || 0),
-    ])
-  );
+  // A fleet-wide `SELECT connector_instance_id, COUNT(*) ... GROUP BY
+  // connector_instance_id` over `records WHERE deleted = FALSE` used to run
+  // here as a supplementary drift check for a direct writer that mutates
+  // `records` without allocating a version. Removed 2026-08-18 — it is
+  // strictly redundant, not merely slow.
+  //
+  // Production, 2026-08-18 (two incidents against this same query): first
+  // unbounded, contending with unrelated heavy I/O and alone consuming the
+  // round's entire deadline; then, even bounded by `MIN_STATEMENT_TIMEOUT_MS`,
+  // still measured 3.3-6.1s / ~578k buffers (~4.5 GB) read via `EXPLAIN
+  // (ANALYZE, BUFFERS)` against production's `records` table (5.46M rows,
+  // only 11 ever `deleted = true`, so that predicate has no selectivity to
+  // exploit — the scan is inherent to grouping the live rows, not fixable by
+  // indexing `deleted`). Because it was, at the time, the ONLY discovery
+  // query without its own failure isolation, its cancellation threw past
+  // `discoverCandidates` entirely — aborting classification for EVERY row in
+  // the batch, including rows already unambiguously `dirty`. A durably-dirty
+  // backlog got zero candidates selected, pass after pass: `repaired: 0` AND
+  // `skipped: 0`, because nothing was ever classified, not merely deferred.
+  // That was fixed by isolating this query's own cancellation (kept as a
+  // historical/regression guard, see
+  // connector-summary-evidence-canonical-count-cancel-isolation.test.ts),
+  // but isolation only stopped the SYMPTOM: even successfully isolated, the
+  // query still burned 3+ seconds of database time every ~2-second sweep
+  // pass before being cancelled, and the count-drift comparison it fed
+  // silently never ran.
+  //
+  // The root fix is that this query was never necessary: `source_revision`
+  // (`connector_instances.source_revision`, advanced by the row-level
+  // trigger `pdpp_source_revision_records` on every INSERT/UPDATE/DELETE to
+  // `records`, regardless of whether the writer also allocated a
+  // `version_counter` entry) already detects the exact same "direct writer
+  // bypassed the normal ingest path" scenario, incrementally, from a
+  // single-row read already fetched for this pass — see
+  // `classifyCandidate`'s `source_revision_mismatch` comparison. A fact
+  // whose cost grows with total row count (this query) belongs in an
+  // incrementally-maintained signal (`source_revision`, which already
+  // existed) or a periodic audit, never a per-pass discovery read. Do not
+  // reintroduce a canonical `records`-count aggregate here.
   // Terminal-gate revision (2026-07-29): schedule mutations have NO existing
   // dirty-independent backstop — `connector_schedules.updated_at` is already
   // written atomically with every schedule mutation on both backends (a
   // durable repair receipt), just never compared. One batched read of
-  // exactly the requested (or complete) scope, same shape as the canonical
-  // record-count read above.
+  // exactly the requested (or complete) scope.
   const scheduleResult = scoped
-    ? await postgresQuery(
+    ? await postgresDiscoveryQuery(
         "SELECT connector_instance_id, updated_at FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])",
-        [connectorInstanceIds]
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery("SELECT connector_instance_id, updated_at FROM connector_schedules");
+    : await postgresDiscoveryQuery("SELECT connector_instance_id, updated_at FROM connector_schedules", [], deadline);
   const scheduleUpdatedAtByInstance = new Map(
     (scheduleResult.rows as Row[]).map((row) => [String(row.connector_instance_id), String(row.updated_at)])
   );
@@ -821,23 +991,68 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // which are solely owned by the terminal-fold path.
   // Reuses the spine's own already-durable, atomically-assigned `event_seq`
   // as the repair receipt, scoped per connection.
+  // Per-key MAX, never a GROUP BY aggregate over the matched events.
+  //
+  // `GROUP BY connector_instance_id` forces Postgres to READ EVERY EVENT for
+  // every in-scope connection just to keep the largest `event_seq` of each.
+  // That cost grows with total event count; the answer is 13-76 numbers.
+  // Production, 2026-08-21 (`EXPLAIN (ANALYZE, BUFFERS)`, 1.49M-row / 19 GB
+  // `spine_events`): the scoped GROUP BY form read 220,928 index rows with
+  // 201,795 heap fetches in 5,490ms against a 500ms per-unit allowance --
+  // an 11x overrun that cancelled discovery on EVERY pass, so
+  // `candidates_inspected` was 0 and 13 durably-dirty rows never cleared.
+  // Fleet health read 3 healthy / 24 while every underlying run had
+  // succeeded. The unscoped form measured 1,617ms (parallel seq scan).
+  //
+  // The correlated per-key MAX lets the planner walk
+  // `idx_pg_spine_events_instance_seq (connector_instance_id, event_seq)`
+  // BACKWARD and stop at the first row per key -- one index descent per
+  // connection instead of a full group scan. Measured on the same database:
+  // scoped 5,490ms -> 17.6ms (312x), unscoped 1,617ms -> 19.4ms, heap
+  // fetches 201,795 -> 13. `IS NOT NULL` inside the subquery keeps it an
+  // index-only scan (NULLs sort last on a backward walk).
+  //
+  // Driving the unscoped form off `connector_instances` rather than off the
+  // events themselves is behavior-preserving BECAUSE the resulting map is
+  // only ever read as `.get(instanceId)` while looping `ctx.instanceRows`
+  // (see `discoverCandidates`) -- an entry for an id with no instance row is
+  // unreachable by construction. Verified on production: 48 such orphan ids
+  // exist in `spine_events`, and comparing both formulations across every
+  // real instance row returned zero differing values.
+  //
+  // Do not "simplify" this back into a GROUP BY: this is the same
+  // cost-grows-with-row-count defect already removed from the canonical
+  // `records` count above, in a second place.
   const maxLifecycleSeqResult = scoped
-    ? await postgresQuery(
-        `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
-          WHERE connector_instance_id = ANY($1::text[])
-          GROUP BY connector_instance_id`,
-        [connectorInstanceIds]
+    ? await postgresDiscoveryQuery(
+        `SELECT ids.connector_instance_id,
+                (SELECT MAX(e.event_seq) FROM spine_events e
+                  WHERE e.connector_instance_id = ids.connector_instance_id) AS max_seq
+           FROM unnest($1::text[]) AS ids(connector_instance_id)`,
+        [connectorInstanceIds],
+        deadline
       )
-    : await postgresQuery(
-        `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
-          WHERE connector_instance_id IS NOT NULL
-          GROUP BY connector_instance_id`
+    : await postgresDiscoveryQuery(
+        `SELECT i.connector_instance_id,
+                (SELECT MAX(e.event_seq) FROM spine_events e
+                  WHERE e.connector_instance_id = i.connector_instance_id) AS max_seq
+           FROM connector_instances i`,
+        [],
+        deadline
       );
+  // A connection with no lifecycle events yields `max_seq = NULL` here,
+  // whereas the previous GROUP BY simply emitted no row for it. Both must
+  // become "absent from the map": `classifyCandidate` treats a present
+  // `currentLifecycleEventSeq` as a real receipt to compare against, and
+  // `Number(null)` is 0 -- which would pass its `!== null` guard and, since
+  // any stored seq is `< 0` is false / `null` is true, could latch a
+  // connection dirty on every pass. Drop the NULLs instead of coercing them.
   const maxLifecycleEventSeqByInstance = new Map(
-    (maxLifecycleSeqResult.rows as Row[]).map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
+    (maxLifecycleSeqResult.rows as Row[])
+      .filter((row) => row.max_seq !== null && row.max_seq !== undefined)
+      .map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
   );
   return {
-    canonicalTotalRecordsByInstance,
     evidenceByInstance,
     instanceRows: instanceResult.rows as Row[],
     manifestByConnector,
@@ -853,12 +1068,22 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
  * FIXED number of queries regardless of N connections, and classifies each
  * row. Never acquires a per-connection lock. Discovery-only — no repair, no
  * write.
+ *
+ * `deadline`, when provided (only the maintenance sweep provides one — see
+ * `reconcileConnectorSummaryEvidence`), bounds each Postgres statement in
+ * this batch with a `SET LOCAL statement_timeout` derived from the caller's
+ * remaining allowance (`postgresDiscoveryQuery`/`postgresQueryBounded`,
+ * design review P1-2). SQLite's `better-sqlite3` driver is synchronous and
+ * exposes no interrupt/progress-handler hook on its public API, so
+ * `deadline` has no effect on the SQLite branch — an honest, disclosed gap,
+ * not a silent no-op pretending to be a fix.
  */
 async function discoverCandidates(
-  connectorInstanceIds: readonly string[] | null
+  connectorInstanceIds: readonly string[] | null,
+  deadline: number | null = null
 ): Promise<{ instanceRows: readonly Row[]; candidates: ReadonlyMap<string, RepairCandidateReason> }> {
   const ctx = isPostgresStorageBackend()
-    ? await readPostgresDiscoveryContext(connectorInstanceIds)
+    ? await readPostgresDiscoveryContext(connectorInstanceIds, deadline)
     : readSqliteDiscoveryContext(connectorInstanceIds);
 
   const candidates = new Map<string, RepairCandidateReason>();
@@ -875,7 +1100,6 @@ async function discoverCandidates(
       })),
     });
     const reason = classifyCandidate({
-      canonicalTotalRecords: ctx.canonicalTotalRecordsByInstance.get(instanceId) ?? 0,
       currentCheckpoint,
       currentLifecycleEventSeq: ctx.maxLifecycleEventSeqByInstance.get(instanceId) ?? null,
       currentScheduleCheckpoint: ctx.scheduleUpdatedAtByInstance.get(instanceId) ?? "absent",
@@ -931,14 +1155,24 @@ function missingInstanceRepairResult(connectorInstanceId: string, deleted: boole
  * pre-lock discovery snapshot) and upsert. On lock/read/write failure,
  * returns row-shaped `stale`/`failed` evidence with a closed sanitized
  * reason code — never a fabricated clean row.
+ *
+ * `deadline`, when provided, bounds every Postgres read this unit issues
+ * BEFORE its writer-fenced transaction (design review P1-2: same per-unit
+ * `statement_timeout` contract as `discoverCandidates`). The writer-fenced
+ * transaction itself (`withPostgresTransaction`/`withConnectorInstanceWrite`)
+ * is deliberately left unbounded here: it is already fenced to exactly one
+ * connector instance's rows and is the durable commit point, so timing it
+ * out mid-write would risk leaving `dirty = 1` set without ever clearing
+ * it — trading a bounded pre-read for an unbounded correctness question.
  */
-async function repairCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
+async function repairCandidate(connectorInstanceId: string, deadline: number | null = null): Promise<RepairedEvidence> {
   try {
     if (isPostgresStorageBackend()) {
-      return await repairCandidatePostgres(connectorInstanceId);
+      return await repairCandidatePostgres(connectorInstanceId, deadline);
     }
     return await repairCandidateSqlite(connectorInstanceId);
   } catch (err) {
+    logRepairFailure(connectorInstanceId, REASON_CODES.LOCK_UNAVAILABLE, err);
     const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.LOCK_UNAVAILABLE, err);
     // The lock itself could not be acquired, so nothing about this
     // connection's canonical facts was even re-read this attempt — total
@@ -946,6 +1180,44 @@ async function repairCandidate(connectorInstanceId: string): Promise<RepairedEvi
     const persisted = await persistFailedEvidence(connectorInstanceId, failedRow);
     return { deferred: false, failed: true, persisted, row: failedRow };
   }
+}
+
+/**
+ * The single place a caught repair/discovery error is classified against
+ * `REASON_CODES` — so a genuine Postgres `statement_timeout` cancellation
+ * (the per-unit HARD bound design review P1-2 requires, working as
+ * designed under load) is never confused with a real data/connectivity
+ * defect on that connection's own canonical facts. `defaultReasonCode` is
+ * the caller's existing classification for every OTHER error shape
+ * (`LOCK_UNAVAILABLE` for a lock-acquisition failure, `RECORD_SNAPSHOT_FAILED`
+ * for a genuine repair-read/write failure).
+ */
+function reasonCodeForRepairFailure(err: unknown, defaultReasonCode: string): string {
+  return err instanceof PostgresStatementTimeoutError ? REASON_CODES.STATEMENT_TIMEOUT : defaultReasonCode;
+}
+
+/**
+ * Make a cancelled/failed repair or discovery unit LOUD (production,
+ * 2026-08-18: a `PostgresStatementTimeoutError` cancelling discovery was
+ * silently converted into `summary_discovery_failed` evidence with NO
+ * console output anywhere — 25 rows degraded from `current` to `failed`
+ * with nothing in the container logs to explain why). This module has no
+ * injected structured logger (it is a library called from many contexts,
+ * including tests, without one), so `console.error` with a bracketed module
+ * tag is this codebase's established convention for a library-level module
+ * without one (see e.g. `records.ts`'s `[records] ...` lines) — durable
+ * evidence (`buildFailedRow`'s persisted reason code) and a console line are
+ * complementary, not substitutes for each other.
+ */
+function logRepairFailure(connectorInstanceId: string, reasonCode: string, err: unknown): void {
+  const sanitized = sanitizeProjectionError(err);
+  if (reasonCode === REASON_CODES.STATEMENT_TIMEOUT) {
+    console.error(
+      `[connector-summary-evidence] repair for ${connectorInstanceId} cancelled by Postgres statement_timeout (per-unit bound, design review P1-2) — this row's evidence is left as-is, not marked failed, and will be retried on a later pass: ${sanitized}`
+    );
+    return;
+  }
+  console.error(`[connector-summary-evidence] repair for ${connectorInstanceId} failed (${reasonCode}): ${sanitized}`);
 }
 
 function buildFailedRow(
@@ -1444,6 +1716,12 @@ async function repairCandidateSqlite(connectorInstanceId: string): Promise<Repai
       })
     );
   } catch (err) {
+    // `PostgresStatementTimeoutError` cannot occur on this branch —
+    // `better-sqlite3` has no interrupt/progress-handler hook, so nothing
+    // here can be cancelled — but `reasonCodeForRepairFailure` is still
+    // used (rather than a bare constant) so both backends share one
+    // classification path and cannot silently diverge if that ever changes.
+    logRepairFailure(connectorInstanceId, reasonCodeForRepairFailure(err, REASON_CODES.RECORD_SNAPSHOT_FAILED), err);
     const failedRow = buildFailedRow(
       connectorInstanceId,
       REASON_CODES.RECORD_SNAPSHOT_FAILED,
@@ -1463,12 +1741,41 @@ async function repairCandidateSqlite(connectorInstanceId: string): Promise<Repai
   }
 }
 
-async function repairCandidatePostgres(connectorInstanceId: string): Promise<RepairedEvidence> {
+/**
+ * Repair's own pre-transaction reads are always scoped to exactly ONE
+ * `connector_instance_id` (unlike discovery's optionally-unscoped batch), so
+ * these were never full-table scans — but they still carried no
+ * statement-level bound (design review P1-2): a slow one (e.g. lock
+ * contention on `records`) could still consume the round's remaining
+ * allowance on its own. Bounded the same way as `postgresDiscoveryQuery`;
+ * `deadline === null` (every caller except the maintenance sweep)
+ * reproduces the exact prior behavior.
+ */
+function postgresRepairReadQuery<R extends Row = Row>(
+  sql: string,
+  params: unknown[],
+  deadline: number | null
+): Promise<{ rowCount: number | null; rows: R[] }> {
+  if (deadline === null) {
+    return postgresQuery<R>(sql, params);
+  }
+  const budget = remainingStatementBudgetMs(deadline);
+  if (budget === null) {
+    return postgresQuery<R>(sql, params);
+  }
+  return postgresQueryBounded<R>(sql, params, budget);
+}
+
+async function repairCandidatePostgres(
+  connectorInstanceId: string,
+  deadline: number | null = null
+): Promise<RepairedEvidence> {
   let sourceRevisionAtRead: string | null | undefined;
   try {
-    const instanceResult = await postgresQuery(
+    const instanceResult = await postgresRepairReadQuery(
       "SELECT *, source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = $1",
-      [connectorInstanceId]
+      [connectorInstanceId],
+      deadline
     );
     const instance = instanceResult.rows[0] as Row | undefined;
     if (!instance) {
@@ -1477,9 +1784,10 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
     }
     const sourceRevision = decimalText(instance.source_revision_text);
     sourceRevisionAtRead = sourceRevision;
-    const activeRunResult = await postgresQuery(
+    const activeRunResult = await postgresRepairReadQuery(
       "SELECT 1 AS present FROM controller_active_runs WHERE connector_instance_id = $1 LIMIT 1",
-      [connectorInstanceId]
+      [connectorInstanceId],
+      deadline
     );
     let built: Row;
     const deferred =
@@ -1487,18 +1795,21 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
     if (deferred) {
       built = { connector_instance_id: connectorInstanceId, dirty: 1, state: "stale" };
     } else {
-      const manifestResult = await postgresQuery(
+      const manifestResult = await postgresRepairReadQuery(
         "SELECT manifest::text AS manifest FROM connectors WHERE connector_id = $1",
-        [instance.connector_id]
+        [instance.connector_id],
+        deadline
       );
       const manifest = parseManifestDeclaration((manifestResult.rows[0] as Row | undefined)?.manifest);
-      const generationResult = await postgresQuery(
+      const generationResult = await postgresRepairReadQuery(
         "SELECT record_reset_generation::text AS reset_generation FROM connector_instances WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
-      const streamsResult = await postgresQuery(
+      const streamsResult = await postgresRepairReadQuery(
         "SELECT stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const checkpoint = normalizeRecordSourceCheckpoint({
         resetGeneration: String((generationResult.rows[0] as Row | undefined)?.reset_generation ?? "0"),
@@ -1507,51 +1818,58 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
           stream: String(row.stream),
         })),
       });
-      const canonicalResult = await postgresQuery(
+      const canonicalResult = await postgresRepairReadQuery(
         `SELECT stream, COUNT(*)::int AS record_count, MAX(emitted_at) AS last_updated
            FROM records WHERE connector_instance_id = $1 AND deleted = FALSE
           GROUP BY stream`,
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const canonicalByStream = new Map((canonicalResult.rows as Row[]).map((row) => [String(row.stream), row]));
-      const retainedByteResult = await postgresQuery(
+      const retainedByteResult = await postgresRepairReadQuery(
         "SELECT * FROM retained_size_connection WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const retainedByteRow = retainedByteResult.rows[0] as Row | undefined;
-      const retainedStreamResult = await postgresQuery(
+      const retainedStreamResult = await postgresRepairReadQuery(
         "SELECT stream, record_count FROM retained_size_stream WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const retainedByStream = new Map(
         (retainedStreamResult.rows as Row[]).map((row) => [String(row.stream), Number(row.record_count || 0)])
       );
       const unexpectedResult = manifest.ok
-        ? await postgresQuery(
+        ? await postgresRepairReadQuery(
             "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = $1 AND manifest_generation = $2",
-            [connectorInstanceId, Number(instance.manifest_generation ?? 0)]
+            [connectorInstanceId, Number(instance.manifest_generation ?? 0)],
+            deadline
           )
         : { rows: [] as Row[] };
       const unexpectedStreams = new Set((unexpectedResult.rows as Row[]).map((row) => String(row.stream)));
-      const terminalHighWaterResult = await postgresQuery(
+      const terminalHighWaterResult = await postgresRepairReadQuery(
         `SELECT MAX(event_seq) AS max_seq FROM spine_events
           WHERE connector_instance_id = $1
             AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const terminalHighWater = (terminalHighWaterResult.rows[0] as Row | undefined)?.max_seq;
       // Terminal-gate revision (2026-07-29): repair also refreshes the
       // schedule/lifecycle repair-receipt checkpoints so a repaired row
       // records the current values it was JUST verified against, not the
       // stale ones that triggered the repair.
-      const scheduleResult = await postgresQuery(
+      const scheduleResult = await postgresRepairReadQuery(
         "SELECT updated_at FROM connector_schedules WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const scheduleCheckpoint = (scheduleResult.rows[0] as Row | undefined)?.updated_at;
-      const lifecycleHighWaterResult = await postgresQuery(
+      const lifecycleHighWaterResult = await postgresRepairReadQuery(
         "SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE connector_instance_id = $1",
-        [connectorInstanceId]
+        [connectorInstanceId],
+        deadline
       );
       const lifecycleHighWater = (lifecycleHighWaterResult.rows[0] as Row | undefined)?.max_seq;
 
@@ -1604,6 +1922,25 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
       )
     );
   } catch (err) {
+    logRepairFailure(connectorInstanceId, reasonCodeForRepairFailure(err, REASON_CODES.RECORD_SNAPSHOT_FAILED), err);
+    if (err instanceof PostgresStatementTimeoutError) {
+      // The per-unit HARD bound (design review P1-2) fired as designed —
+      // this unit's own pre-transaction read was cancelled by Postgres
+      // under load, which says NOTHING about whether this connection's
+      // canonical facts have actually changed. Marking the row `failed`
+      // here is exactly the production regression (2026-08-18): a healthy
+      // row was degraded solely because its repair got scheduled late in a
+      // busy pass. Leave the row's durable evidence completely untouched
+      // and defer — the SAME candidate reclassifies and retries on the
+      // next observation pass (design.md "Startup is acceleration, not
+      // authority": nothing here is ever permanently lost, only deferred).
+      return {
+        deferred: true,
+        failed: false,
+        persisted: true,
+        row: { connector_instance_id: connectorInstanceId },
+      };
+    }
     const failedRow = buildFailedRow(
       connectorInstanceId,
       REASON_CODES.RECORD_SNAPSHOT_FAILED,
@@ -1814,7 +2151,7 @@ const POSTGRES_PROJECTION_RELEVANT_EVIDENCE_CHANGED = projectionRelevantEvidence
 function upsertSqliteEvidenceRow(db: Db, row: Row): void {
   const existing = db
     .prepare(
-      "SELECT manifest_generation, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      "SELECT manifest_generation, manifest_fingerprint, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
     )
     .get(row.connector_instance_id) as Row | undefined;
   const manifestGenerationChanged =
@@ -1919,7 +2256,7 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
 
 async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
   const existingResult = await client.query(
-    "SELECT manifest_generation, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
+    "SELECT manifest_generation, manifest_fingerprint, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
     [row.connector_instance_id]
   );
   const existing = existingResult.rows[0] as Row | undefined;
@@ -2016,8 +2353,73 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
   );
 }
 
+/**
+ * Whether a generation advance actually invalidates this row's terminal facts.
+ *
+ * The generation counter is the OUTER, conservative fence: it advances on any
+ * byte of any manifest (`auth.ts` `persistManifestAndAdvanceGenerations`), so
+ * it answers "could this evidence be stale", never "is it". Editing
+ * `capabilities.refresh_policy.recommended_mode` across the fleet advanced 24
+ * generations at once and blanked terminal facts on every one of them, though
+ * the fold reads no such field.
+ *
+ * The declaration fingerprint is the INNER, exact fence. It is the sorted set
+ * of declared stream names (`parseManifestDeclaration`) — precisely the
+ * manifest section the terminal fold depends on. The fold itself reads no
+ * manifest content at all: it folds `collection_facts.streams` off the spine
+ * event, keyed by stream name. The only way a manifest edit can change which
+ * facts are attributable is by changing which streams are declared, which is
+ * exactly what moves this fingerprint. This is the dependency edge Salsa
+ * records by observing a read and Bazel's Skyframe records via `getValue()`;
+ * here the read-set is small and static enough to declare directly.
+ *
+ * So a generation advance is necessary but NOT sufficient: facts are discarded
+ * only when the declaration they were folded under actually changed. This is
+ * the rule the write path already believed it was applying — see the
+ * "A fingerprint transition is the sole exception" note on the upsert's
+ * terminal-facts bindings, which describes this predicate rather than the
+ * generation equality that was actually being tested.
+ *
+ * Fail closed on absence: a NULL stored or incoming fingerprint means the
+ * declaration is unknown for one side of the comparison, so the coarse
+ * generation verdict stands.
+ *
+ * Fail closed on UNOBSERVED generations too, and this is the subtle one. The
+ * fingerprint is a value, not a history, so it cannot distinguish "never
+ * changed" from "changed and changed back". A stream removed and re-added
+ * before any reconcile ran advances the generation twice and returns to a
+ * byte-identical declaration — the classic ABA problem — yet the facts folded
+ * before the removal must not be reattached to the re-added stream. The
+ * monotonic counter is precisely the thing that does not have that blind spot,
+ * so the fingerprint is only trusted to overrule it across a single-step
+ * advance the row actually witnessed. A jump of more than one generation means
+ * at least one declaration state passed unobserved, and an unobserved state is
+ * not evidence of continuity. On the live instance every evidence row tracks
+ * its instance generation exactly, so the ordinary boot-time reconcile path
+ * takes the single-step branch.
+ */
+function manifestDeclarationChanged(existing: Row | undefined, row: Row): boolean {
+  if (existing === undefined) {
+    return false;
+  }
+  const storedGeneration = Number(existing.manifest_generation ?? 0);
+  const incomingGeneration = Number(row.manifest_generation ?? 0);
+  if (!(Number.isFinite(storedGeneration) && Number.isFinite(incomingGeneration))) {
+    return true;
+  }
+  if (incomingGeneration - storedGeneration !== 1) {
+    return true;
+  }
+  const storedFingerprint = existing.manifest_fingerprint;
+  const incomingFingerprint = row.manifest_fingerprint;
+  if (typeof storedFingerprint !== "string" || typeof incomingFingerprint !== "string") {
+    return true;
+  }
+  return storedFingerprint !== incomingFingerprint;
+}
+
 function terminalFactsForRepair(existing: Row | undefined, row: Row, manifestGenerationChanged: boolean) {
-  if (manifestGenerationChanged) {
+  if (manifestGenerationChanged && manifestDeclarationChanged(existing, row)) {
     return {
       eventSeq: row.terminal_facts_generation_boundary,
       latestFactsJson: null,
@@ -2041,6 +2443,16 @@ function terminalFactsForRepair(existing: Row | undefined, row: Row, manifestGen
 // ---------------------------------------------------------------------------
 
 export interface ReconcileResult {
+  /**
+   * Every id `repair()` was actually invoked for this call, in attempt
+   * order — success, failure, and deferred outcomes all count as
+   * "attempted"; an id fetched but never reached because the deadline
+   * expired, or an id that was never classified as a candidate at all
+   * (e.g. it turned out clean), is excluded. See
+   * `runDirtyPriorityAcceleration` (connector-summary-read-model.ts) for
+   * the fairness-rotation cursor this feeds.
+   */
+  readonly attemptedIds: readonly string[];
   /** Safe, finite classification labels and their candidate counts. */
   readonly candidateReasonCounts: Readonly<Record<RepairCandidateReason, number>>;
   /** Number of canonical connection rows inspected during discovery. */
@@ -2122,20 +2534,63 @@ function pruneReconciledEvidence(
  * the deadline. `options.maxDurationMs` remains the standalone relative
  * form for callers that do not already own an absolute deadline.
  *
- * `options.maxDurationMs`, when provided, ALSO bounds the repair loop's
- * total WALL-CLOCK time — checked between candidates (never mid-repair, so
- * a candidate already under its writer fence always finishes cleanly). A
- * small candidate COUNT does not bound total TIME when individual repairs
- * are slow (e.g. a connection with a very large canonical record set), so
- * `maxCandidates` alone is not a genuine work bound; `maxDurationMs`
- * closes that gap (Sol P2.2). The remaining unrepaired candidates are
- * reported in `skipped`, exactly like a count-bound cutoff — genuinely
- * deferred to the next observation, never lost. Discovery and orphan
- * pruning below are NOT time-bounded: discovery is already fixed-cost
- * (batched, not per-candidate — Sol P1.2), and orphan pruning requires the
- * COMPLETE canonical instance set to correctly distinguish "orphaned" from
- * "merely not yet discovered" — a partial discovery pass could not safely
- * prune at all without risking deleting a live connection's evidence.
+ * `options.maxDurationMs`, when provided, is NOT a wall-clock duration
+ * bound on this call's total running time — despite its name, it is a
+ * cooperative PASS ADMISSION DEADLINE, checked only BETWEEN candidates
+ * (never mid-repair, so a candidate already under its writer fence always
+ * finishes cleanly): no NEW repair unit begins once it has passed, but a
+ * unit already admitted always runs to completion (design review P1-2
+ * naming correction, 2026-08-18 — see the reviewer's exact framing: "The
+ * 2-second budget is not a wall-clock bound... It is a soft hint checked
+ * between some operations." Renaming the option was considered and
+ * rejected in favor of documenting it precisely everywhere it is described,
+ * to avoid a disruptive rename across every existing caller for a
+ * still-true admission-deadline contract). A small candidate COUNT does not
+ * bound total TIME when individual repairs are slow (e.g. a connection with
+ * a very large canonical record set), so `maxCandidates` alone is not a
+ * genuine work bound; the admission deadline closes that gap for NEW units
+ * (Sol P2.2). The remaining unrepaired candidates are reported in
+ * `skipped`, exactly like a count-bound cutoff — genuinely deferred to the
+ * next observation, never lost.
+ *
+ * Discovery and orphan pruning below are admission-deadline-CHECKED only
+ * BETWEEN phases, never mid-phase (each is a fixed, small, batched query
+ * count REGARDLESS of N/K, Sol P1.2, but that only bounds query COUNT,
+ * never a single query's own server-side latency — the PASS SOFT DEADLINE
+ * contract above, not a duration bound). A discovery query slow enough
+ * under contention to exceed the caller's ENTIRE admission deadline on its
+ * own (production, 2026-08-18: `repair_duration_ms: 5322` against a 2000ms
+ * pass budget — a canonical-count aggregate contending with unrelated heavy
+ * I/O) could previously consume the whole round before the repair loop ever
+ * ran. Two independent things now close that gap:
+ *
+ *   1. PER-UNIT HARD BOUND (design review P1-2's second, distinct
+ *      contract): on Postgres, every discovery/repair pre-transaction read
+ *      (`discoverCandidates`/`repairCandidate` below) now runs under a
+ *      transaction-local `SET LOCAL statement_timeout`
+ *      (`postgresDiscoveryQuery`/`postgresRepairReadQuery` in this file,
+ *      `postgresQueryBounded` in postgres-storage.ts) derived from the
+ *      caller's own remaining admission allowance, so a single slow query
+ *      can no longer silently consume more than that unit had left when it
+ *      started. SQLite has NO equivalent — `better-sqlite3` is synchronous
+ *      and exposes no interrupt/progress-handler hook on its public API, so
+ *      a slow SQLite discovery/repair query cannot be cancelled once
+ *      started. This is a disclosed, unclosed gap on SQLite, not a silent
+ *      omission: every hot-path SQLite query in this file is index-bounded
+ *      (`WHERE connector_instance_id IN (...)`/`= ?`, or an indexed
+ *      `MAX`/`GROUP BY` aggregate), so it is expected to be fast in
+ *      practice, but nothing here can force-cancel one that isn't.
+ *   2. FORWARD PROGRESS UNDER STARVATION: even when a discovery unit
+ *      legitimately uses its whole per-unit allowance, `repairCandidates`
+ *      (connector-summary-evidence-bounded-reconciliation.ts) always
+ *      attempts its first selected candidate regardless of the admission
+ *      deadline, so a slow-but-not-runaway discovery cannot reduce a round
+ *      to zero repairs.
+ *
+ * Orphan pruning additionally requires the COMPLETE canonical instance set
+ * to correctly distinguish "orphaned" from "merely not yet discovered" — a
+ * partial discovery pass could not safely prune at all without risking
+ * deleting a live connection's evidence.
  */
 export function reconcileConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
@@ -2151,14 +2606,14 @@ export function reconcileConnectorSummaryEvidence(
     return runBoundedConnectorReconciliation<Row, RepairCandidateReason, Row>({
       candidateReasons: options.candidateReasons,
       deadline,
-      discover: discoverCandidates,
+      discover: (ids) => discoverCandidates(ids, deadline),
       maxCandidates:
         typeof options.maxCandidates === "number" && options.maxCandidates >= 0 ? options.maxCandidates : undefined,
       pageSize: RECONCILE_PAGE_SIZE,
       prune: pruneReconciledEvidence,
       pruneComplete: pruneOrphanedEvidenceCompleteByKeyset,
       readPage: readConnectorInstanceIdPage,
-      repair: repairCandidate,
+      repair: (id) => repairCandidate(id, deadline),
     });
   }
 
@@ -2172,11 +2627,11 @@ export function reconcileConnectorSummaryEvidence(
     candidateReasons: options.candidateReasons,
     connectorInstanceIds,
     deadline,
-    discover: discoverCandidates,
+    discover: (ids) => discoverCandidates(ids, deadline),
     maxCandidates:
       typeof options.maxCandidates === "number" && options.maxCandidates >= 0 ? options.maxCandidates : undefined,
     prune: pruneReconciledEvidence,
-    repair: repairCandidate,
+    repair: (id) => repairCandidate(id, deadline),
   });
 }
 

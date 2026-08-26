@@ -131,8 +131,10 @@ test("THE HONESTY GATE: collected records with an unknown considered denominator
   const facts = formatStreamCollectionFacts(
     entry({ collected: 42, considered: "unknown", coverage_condition: "unknown", stream: "items" })
   );
-  // The coverage chip stays unknown, never complete.
-  assert.equal(facts.coverage.value, "unknown");
+  // The coverage chip stays unmeasured, never complete. B2: the owner-facing
+  // word for the `unknown` axis is "not measured"; the honesty claim that it
+  // must never read as complete is unchanged.
+  assert.equal(facts.coverage.value, "not measured");
   assert.notEqual(facts.coverage.value, "complete");
   // The counts line shows the raw count and an EXPLICIT unknown denominator —
   // never a "42 / 42" fraction that would read as complete.
@@ -410,10 +412,17 @@ test("required missing evidence (unknown coverage) stays distinct from accepted 
   // declaration resolves to `unknown` — this must keep reading as missing
   // evidence, never as a settled accepted-absence policy, so the two states
   // remain distinguishable on the stream row after the copy-only fix.
+  //
+  // B2 (2026-08-22): the owner-facing word for the `unknown` axis is now "not
+  // measured" — the SAME word the forward disposition already used — so the
+  // owner does not read two vocabularies for one state. The distinctness the
+  // rest of this test guards is unchanged.
   const unmeasured = formatStreamCollectionFacts(
     entry({ collected: 0, considered: "unknown", coverage_condition: "unknown", forward_disposition: "unmeasured" })
   );
-  assert.equal(unmeasured.coverage.value, "unknown");
+  assert.equal(unmeasured.coverage.value, "not measured");
+  // The coverage chip and the disposition line must now agree word-for-word.
+  assert.equal(unmeasured.disposition?.label, "not measured");
   assert.notEqual(
     unmeasured.coverage.title,
     formatStreamCollectionFacts(entry({ coverage_condition: "deferred" })).coverage.title

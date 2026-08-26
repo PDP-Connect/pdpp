@@ -50,7 +50,7 @@ function lastDone(messages: readonly EmittedMessage[]): Extract<EmittedMessage, 
   return done;
 }
 
-async function runRealNotionConnector(mode: "complete" | "provider_failure") {
+async function runRealNotionConnector(mode: "complete" | "provider_failure" | "contradictory_pagination") {
   const harnessDir = await mkdtemp(join(tmpdir(), "pdpp-notion-protocol-"));
   const wrapperPath = join(harnessDir, "notion-wrapper.mjs");
   const entrypointUrl = pathToFileURL(ENTRYPOINT).href;
@@ -65,6 +65,13 @@ globalThis.fetch = async (_input, init) => {
   const body = JSON.parse(init?.body ?? "{}");
   const object = body.filter?.value;
   const isPage = object === "page";
+  if (mode === "contradictory_pagination" && isPage) {
+    return new Response(JSON.stringify({
+      has_more: true,
+      next_cursor: null,
+      results: []
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }
   return new Response(JSON.stringify({
     has_more: false,
     next_cursor: null,
@@ -117,7 +124,7 @@ await import(${JSON.stringify(entrypointUrl)});
 
   try {
     return await runConnectorProtocolSubprocess({
-      allowFailedDone: mode === "provider_failure",
+      allowFailedDone: mode !== "complete",
       cwd: PACKAGE_ROOT,
       entrypoint: wrapperPath,
       env: { NOTION_API_TOKEN: "bounded-test-token" },
@@ -131,6 +138,14 @@ await import(${JSON.stringify(entrypointUrl)});
     await rm(harnessDir, { force: true, recursive: true });
   }
 }
+
+test("real Notion connector fails closed when has_more is true without a cursor", async () => {
+  const result = await runRealNotionConnector("contradictory_pagination");
+  assert.equal(result.code, 1, "a contradictory pagination response fails the run");
+  assert.equal(protocolMessagesFor(result.messages, "DETAIL_COVERAGE").length, 0);
+  assert.equal(protocolMessagesFor(result.messages, "STATE").length, 0);
+  assert.equal(lastDone(result.messages).status, "failed");
+});
 
 test("real Notion connector protocol emits coverage and STATE after complete pages/databases enumeration", async () => {
   const result = await runRealNotionConnector("complete");

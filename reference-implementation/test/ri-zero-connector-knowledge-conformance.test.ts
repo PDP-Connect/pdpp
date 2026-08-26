@@ -2126,3 +2126,103 @@ test("RI production code still contains zero connector/provider-specific executa
   const violations = scanRepository({ repoRoot });
   assert.deepEqual(violations, [], formatViolationInventory(violations));
 });
+
+// The canary harness used to hold a rule-(1) exemption at
+// `reference-implementation/scripts/canary` so it could hardcode the six
+// OTP-gated connector names. That exemption is GONE: the harness now derives
+// its refusal set from connector manifests (`scripts/canary/otp-posture.ts`),
+// so it needs no connector names in source and gets no special treatment from
+// this guard. These tests pin that the prefix is ordinary -- every rule,
+// including rule (1), applies there exactly as it does anywhere else.
+
+function withSyntheticCanaryFile<T>(fileName: string, contents: string, run: (relPath: string) => T): T {
+  const relPath = `reference-implementation/scripts/canary/${fileName}`;
+  const absPath = join(repoRoot, relPath);
+  if (existsSync(absPath)) {
+    throw new Error(`refusing to overwrite a file that already exists on disk: ${absPath}`);
+  }
+  writeFileSync(absPath, contents);
+  try {
+    return run(relPath);
+  } finally {
+    rmSync(absPath, { force: true });
+  }
+}
+
+test("scripts/canary/ is an ordinary scan root: dispatch-shaped connector knowledge there is caught", () => {
+  withSyntheticCanaryFile(
+    "synthetic-canary-dispatch-violation.ts",
+    [
+      'import { parse } from "../../../packages/polyfill-connectors/connectors/gmail/parsers.ts";',
+      "export function pick(kind: string) {",
+      '  if (kind === "gmail_takeout") {',
+      "    return parse;",
+      "  }",
+      "  return null;",
+      "}",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanFile(join(repoRoot, relPath), relPath, new Set(["gmail"]), repoRoot);
+      assert.ok(
+        violations.some((v) => v.rule === "connector-module-import"),
+        `a connector-module import under scripts/canary/ must be caught, got: ${JSON.stringify(violations)}`
+      );
+    }
+  );
+});
+
+test("scripts/canary/ is an ordinary scan root: a provider endpoint there is caught", () => {
+  withSyntheticCanaryFile(
+    "synthetic-canary-endpoint-violation.ts",
+    ['export const TOKEN_URL = "https://oauth2.googleapis.com/token";', ""].join("\n"),
+    (relPath) => {
+      const violations = scanFile(join(repoRoot, relPath), relPath, new Set(["gmail", "slack"]), repoRoot);
+      assert.ok(
+        violations.some((v) => v.rule === "hardcoded-provider-endpoint-url"),
+        `provider endpoints under scripts/canary/ must still be caught, got: ${JSON.stringify(violations)}`
+      );
+    }
+  );
+});
+
+test("a hardcoded OTP denylist under scripts/canary/ is caught, exactly like the same literals under any other root", () => {
+  const contents = ['export const DENYLIST = ["usaa", "chase", "heb"];', ""].join("\n");
+  withSyntheticProductionFile("synthetic-server-otp-denylist.ts", contents, (relPath) => {
+    const violations = scanFile(join(repoRoot, relPath), relPath, new Set(["usaa", "chase", "heb"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      "connector-identity literals under server/ must be caught"
+    );
+  });
+  // The regression this inverts. These literals WERE exempt here while the
+  // harness hand-listed the six OTP connectors; the list drifted (it missed
+  // wholefoods) and the exemption is gone. Reintroducing a hardcoded denylist
+  // under scripts/canary/ must now go red rather than pass silently.
+  withSyntheticCanaryFile("synthetic-canary-otp-denylist.ts", contents, (relPath) => {
+    const violations = scanFile(join(repoRoot, relPath), relPath, new Set(["usaa", "chase", "heb"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `a hardcoded connector denylist under scripts/canary/ must be caught now that the harness derives it from manifests, got: ${JSON.stringify(violations)}`
+    );
+  });
+});
+
+test("rule (5) runs under scripts/canary/: an unsanctioned sibling data load is flagged", () => {
+  withSyntheticCanaryFile(
+    "synthetic-canary-sibling-policy-load.ts",
+    [
+      'import { readFileSync } from "node:fs";',
+      'const POLICY = JSON.parse(readFileSync(new URL("./canary-policy.json", import.meta.url), "utf8"));',
+      "export const policy = POLICY;",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
+      assert.ok(
+        violations.length > 0,
+        `rule (5) still runs under scripts/canary/: an unsanctioned sibling data load must be flagged, or the harness could move connector policy into a JSON file the exemption hides, got: ${JSON.stringify(violations)}`
+      );
+    }
+  );
+});

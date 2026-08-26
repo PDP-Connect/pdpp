@@ -158,5 +158,32 @@
     "gmcli_per_chat_limit_reached": "Some conversations had more messages than we could fetch in this run",
     "gmcli_query_failed": "We couldn't read your Google Messages data from the helper tool",
     "gmcli_schema_drift": "The Google Messages helper tool returned data in a format we didn't expect"
+  },
+  "options_schema": {
+    "type": "object",
+    "description": "Owner tuning knobs for the Google Messages connector, resolved from the connector_instance_config_revisions spine. declared_option_kind is this connector's CLAIM only; the platform registry in packages/polyfill-connectors/src/connector-config-option-kind-registry.ts decides what actually gates self-activation, and an option the registry does not classify is enforced as collection_scope.",
+    "properties": {
+      "GMCLI_MAX_CHATS": {
+        "type": "integer",
+        "description": "How many conversations to scan per run. Chats are sorted most-recently-active first, so a lower value collects fewer conversations.",
+        "default": 200,
+        "minimum": 1,
+        "declared_option_kind": "collection_scope"
+      },
+      "GMCLI_MESSAGES_PER_CHAT_LIMIT": {
+        "type": "integer",
+        "description": "How many messages to fetch from each conversation per run. A lower value collects less history per chat.",
+        "default": 500,
+        "minimum": 1,
+        "declared_option_kind": "collection_scope"
+      },
+      "GMCLI_TIMEOUT_MS": {
+        "type": "integer",
+        "description": "How long to wait for a single helper-tool invocation before giving up (does not change which chats or messages are collected).",
+        "default": 120000,
+        "minimum": 1000,
+        "declared_option_kind": "transport"
+      }
+    }
   }
 }

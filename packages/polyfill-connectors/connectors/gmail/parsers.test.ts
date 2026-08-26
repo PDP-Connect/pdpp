@@ -12,7 +12,6 @@ import {
   addressListToArray,
   bigintToCursor,
   bigintToNumber,
-  buildDeltaMessageRecord,
   buildMessageBodyRecord,
   buildMessageRecord,
   buildThreadRecord,
@@ -880,28 +879,6 @@ test("buildMessageRecord: empty envelope + zero attachments maps to null/default
   assert.equal(rec.size_bytes, null);
   assert.equal(rec.has_attachments, false);
   assert.equal(rec.snippet, null);
-});
-
-// ─── buildDeltaMessageRecord ────────────────────────────────────────────
-
-test("buildDeltaMessageRecord: minimal shape with flags + labels, received_at fallback", () => {
-  const rec = buildDeltaMessageRecord({
-    flagsArr: ["\\Seen"],
-    gmMsgid: "m1",
-    gmThrid: "t1",
-    labels: ["INBOX"],
-    receivedAtFallback: "2024-02-01T00:00:00.000Z",
-  });
-  assert.equal(rec.id, "m1");
-  assert.equal(rec.thread_id, "t1");
-  assert.equal(rec.subject, null);
-  assert.equal(rec.from_name, null);
-  assert.deepEqual(rec.to, []);
-  assert.equal(rec.received_at, "2024-02-01T00:00:00.000Z");
-  assert.deepEqual(rec.labels, ["INBOX"]);
-  assert.equal(rec.is_seen, true);
-  assert.equal(rec.is_flagged, false);
-  assert.equal(rec.has_attachments, false);
 });
 
 // ─── isInTimeRange ──────────────────────────────────────────────────────

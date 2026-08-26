@@ -117,7 +117,26 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
   );
 }
 
+/**
+ * Development-tier method line, resolved before the `not_available_here`
+ * short-circuit below. `sourceSetupAvailability` reports `not_available_here`
+ * for every Development entry regardless of whether it renders an add
+ * action (see `sourceSetupAction`'s scaffold check), so that check alone
+ * would print "No proven setup path is available" directly above a real
+ * "Add account" button for a self-testable entry -- contradicting the
+ * action right next to it.
+ */
+function developmentMethodLine(entry: ConnectorCatalogEntry): string {
+  if (entry.isKnownScaffold) {
+    return "Not implemented yet: this connector cannot collect data.";
+  }
+  return "Setup path implemented, not yet proven against a live account.";
+}
+
 function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: number): string {
+  if (entry.publicTier === "development") {
+    return developmentMethodLine(entry);
+  }
   if (sourceSetupAvailability(entry) === "not_available_here") {
     return "No proven setup path is available in this dashboard.";
   }
@@ -352,6 +371,41 @@ function ExperimentalSetupSummary({
   );
 }
 
+/**
+ * Development-tier connectors are registered and shipped, but this dashboard
+ * does not offer them in the main list or the Preview disclosure above --
+ * either no live run has proven the setup path yet (real, self-testable), or
+ * the connector is a scaffold with no real collection code yet (never gets
+ * an add action). Collapsed by default, same precedent as Preview, one tier
+ * more cautious: an owner running their own instance can see everything that
+ * exists and tell "not proven yet" apart from "not built yet", instead of a
+ * connector silently vanishing between "shipped" and "visible".
+ */
+function DevelopmentSetupSummary({
+  entries,
+  existingSourcesByConnector,
+}: {
+  entries: readonly ConnectorCatalogEntry[];
+  existingSourcesByConnector?: Readonly<Record<string, readonly ExistingSourceSetupLink[]>>;
+}) {
+  if (entries.length === 0) {
+    return null;
+  }
+  return (
+    <details className="rounded-sm border border-border/80 border-dashed bg-muted/10 p-3" data-testid="development-setup-summary">
+      <summary className="pdpp-caption cursor-pointer text-muted-foreground">Development ({entries.length})</summary>
+      <div className="mt-3 grid gap-3">
+        <p className="pdpp-caption text-muted-foreground">
+          These connectors are registered on this instance but not yet offered above. Some have a real, implemented
+          setup path with no live-account run yet -- test them with non-critical data. Others are scaffolds with no
+          collection code yet and have no add action here.
+        </p>
+        <SourceSetupCardList entries={entries} existingSourcesByConnector={existingSourcesByConnector} />
+      </div>
+    </details>
+  );
+}
+
 function SourceSetupCardList({
   entries,
   existingSourcesByConnector,
@@ -393,7 +447,16 @@ export function SourceSetupCatalog({
   const filtered = filterSourceCatalog(catalog, query);
   const available = filtered.filter((entry) => entry.publicTier === "supported" && isRunnableAddOffer(entry));
   const experimental = filtered.filter((entry) => entry.publicTier === "preview" && isRunnableAddOffer(entry));
+  // Every Development-tier entry belongs here -- real-but-unproven and known
+  // scaffolds alike. Visibility is the point: an owner running this instance
+  // must be able to tell a scaffold apart from a connector nobody has tested
+  // yet, not have either one silently omitted. `SourceSetupCard` itself
+  // already withholds the add action for a scaffold (`sourceSetupAction`
+  // returns null), so listing every Development entry here cannot render a
+  // dead-end "Add" button.
+  const development = filtered.filter((entry) => entry.publicTier === "development");
   const actionable = [...available, ...experimental];
+  const anyMatch = actionable.length > 0 || development.length > 0;
   return (
     <Section description="Add sources this dashboard can set up now." title="Add data">
       <form action={action} className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
@@ -405,7 +468,7 @@ export function SourceSetupCatalog({
           Search
         </IcButton>
       </form>
-      {actionable.length > 0 ? (
+      {anyMatch ? (
         <div className="grid gap-5">
           {available.length > 0 ? (
             <SourceSetupCardList entries={available} existingSourcesByConnector={existingSourcesByConnector} />
@@ -416,6 +479,7 @@ export function SourceSetupCatalog({
           )}
 
           <ExperimentalSetupSummary entries={experimental} existingSourcesByConnector={existingSourcesByConnector} />
+          <DevelopmentSetupSummary entries={development} existingSourcesByConnector={existingSourcesByConnector} />
         </div>
       ) : (
         <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">

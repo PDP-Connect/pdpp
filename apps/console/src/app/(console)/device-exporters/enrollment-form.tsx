@@ -17,9 +17,10 @@ const COLLECTOR_RUN_CONNECTORS = [
   "imessage",
   "apple_photos",
   "google_messages",
+  "signal",
 ] as const;
 const MACOS_ONLY_LOCAL_COLLECTOR_CONNECTORS = ["imessage", "apple_photos"] as const;
-const EXTERNAL_TOOL_LOCAL_COLLECTOR_CONNECTORS = ["google_messages"] as const;
+const EXTERNAL_TOOL_LOCAL_COLLECTOR_CONNECTORS = ["google_messages", "signal"] as const;
 
 function isMacosOnlyLocalCollectorConnector(connectorId: string): boolean {
   return (MACOS_ONLY_LOCAL_COLLECTOR_CONNECTORS as readonly string[]).includes(connectorId);

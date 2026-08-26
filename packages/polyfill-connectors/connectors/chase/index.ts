@@ -27,7 +27,8 @@
  * when affordances drift, so the next repair starts from captured evidence
  * rather than silently failing with zero records.
  *
- * Auth: CHASE_USERNAME + CHASE_PASSWORD in env. 2FA via INTERACTION kind=otp.
+ * Auth: CHASE_USERNAME + CHASE_PASSWORD, declared in this connector's `auth`
+ * block and resolved per-connection by the runtime. 2FA via INTERACTION kind=otp.
  * CHASE_2FA_METHOD=text|voice|email (default text).
  */
 
@@ -90,6 +91,7 @@ import {
   parseDashboardAccountsDom,
   parseDateDelivered,
   parseStatementsListDom,
+  prunePerAccountCursors,
   resolveAccountIdForRow,
   sha256Hex,
   shortHash,
@@ -955,15 +957,13 @@ async function navigateToStatementsPage(page: Page): Promise<void> {
  * Enumerate the statement rows currently visible on the Statements page.
  * Each row maps to one monthly statement PDF. Returns an array of rows in
  * DOM order (newest first, per Chase's default ordering). DOM parsing now
- * runs in Node via linkedom (see parsers.ts#parseStatementsListDom).
+ * runs in Node via linkedom (see parsers.ts#parseStatementsListDom). A page
+ * content or parser failure is propagated to `runStatements`, which emits
+ * `statements_scrape_failed`; it must never be represented as an empty list.
  */
 async function enumerateStatementRows(page: Page): Promise<StatementRow[]> {
-  try {
-    const html = await page.content();
-    return parseStatementsListDom(html);
-  } catch {
-    return [];
-  }
+  const html = await page.content();
+  return parseStatementsListDom(html);
 }
 
 /**
@@ -1313,6 +1313,13 @@ export interface EmitDeps {
    *  durable gap moves to `recovered` instead of being reset to `pending` by
    *  runtime cleanup. Empty on an ordinary run with no served gaps. */
   servedAccountGaps?: ReadonlyMap<string, string> | undefined;
+  /** Pending `statements` PDF gaps the runtime served this run at START,
+   *  keyed by statement `id` → served `gap_id`. When a served statement's
+   *  PDF is hydrated again this run, the connector emits `DETAIL_GAP_RECOVERED`
+   *  with the served `gap_id` so the durable gap moves to `recovered` instead
+   *  of staying `pending` forever. Empty on an ordinary run with no served
+   *  statement gaps. */
+  servedStatementGaps?: ReadonlyMap<string, string> | undefined;
   tmpDir: string;
   /** Per-transaction fingerprint cursor (excludes the run-clock
    *  `fetched_at`). Shared across all accounts for the whole transactions
@@ -1430,7 +1437,7 @@ export async function emitAccountsStream(
   );
   // Accounts enumeration is a full dashboard scan: prune fingerprints for
   // accounts no longer present so a re-added account re-emits.
-  fingerprintCursor.pruneStale();
+  fingerprintCursor.dropUnseenIds();
   const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
   if (fingerprintCursor.size() > 0) {
     cursor.fingerprints = fingerprintCursor.toState();
@@ -1582,7 +1589,7 @@ export async function emitTransactionsForAccount(
     // field move is a fingerprint boundary and still emits.
     //
     // NOTE: transactions is a PARTIAL scan (per-account incremental
-    // windows), so this cursor is never `pruneStale()`d — pruning ids the
+    // windows), so this cursor is never `dropUnseenIds()`d — pruning ids the
     // run did not look at would drop their fingerprints and re-churn them
     // on the next overlapping window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
@@ -1636,7 +1643,7 @@ export async function emitCurrentActivityForAccount(
     // `fetched_at` is suppressed.
     //
     // NOTE: current_activity is a PARTIAL scan (only the dashboard's
-    // recent rows), so this cursor is never `pruneStale()`d — pruning ids
+    // recent rows), so this cursor is never `dropUnseenIds()`d — pruning ids
     // the overview stopped showing would drop their fingerprints and
     // re-churn a row that scrolls back into the recent window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
@@ -1724,12 +1731,12 @@ export type StatementDetailOutcome =
 
 /**
  * Emit the per-run `statements` DETAIL_COVERAGE. `outcomes` is built from
- * every row `runStatements` enumerated this run; the caller wraps
- * navigation + enumeration in a try/catch that emits a `statements_scrape_
- * failed` SKIP_RESULT and returns BEFORE reaching this function on an
- * enumeration failure, so `outcomes.length === 0` here always means
- * "enumeration completed and found zero statement rows," never "enumeration
- * never happened." Always emits when statements are in scope — including
+ * every row `runStatements` enumerated this run. `enumerateStatementRows`
+ * propagates page-content and parser failures, so `runStatements` emits its
+ * `statements_scrape_failed` SKIP_RESULT and returns BEFORE reaching this
+ * function on an enumeration failure. Therefore `outcomes.length === 0`
+ * here means "enumeration completed and found zero statement rows," never
+ * "enumeration failed." Always emits when statements are in scope — including
  * the zero-outcome steady-state case (considered: 0, covered: 0, empty key
  * sets) — so a run that legitimately enumerated its denominator to zero
  * stays measured instead of silently unreported.
@@ -1760,6 +1767,8 @@ export async function emitStatementDetailCoverage(
     }
   }
 
+  await recoverServedStatementGaps(deps, hydratedKeys);
+
   await deps.emit(
     buildDetailCoverageMessage({
       stream: "statements",
@@ -1771,6 +1780,74 @@ export async function emitStatementDetailCoverage(
       covered: hydratedKeys.length,
     })
   );
+}
+
+/**
+ * Build the `statement_id → served gap_id` lookup from the pending detail
+ * gaps the runtime served this run at START (`ctx.detailGaps`). Filtered to
+ * Chase statement-PDF gaps — the exact shape `emitStatementDetailCoverage`
+ * writes via `buildDetailGap`: `stream === "statements"`,
+ * `detail_locator.kind === "chase.statement"`, and a non-empty
+ * `statement_id`. Any other served gap (a different connector's locator, a
+ * non-statements stream, a malformed locator) is ignored so the connector can
+ * only ever recover a gap it actually understands. Sourcing the `gap_id` from
+ * the served gap — never synthesizing one — is what guarantees the connector
+ * cannot mark an unrelated or unserved gap recovered.
+ */
+export function buildServedStatementGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
+): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const gap of detailGaps) {
+    if (gap.stream !== "statements" || gap.status !== "pending") {
+      continue;
+    }
+    const locator = gap.detail_locator;
+    if (locator?.kind !== "chase.statement") {
+      continue;
+    }
+    const statementId = locator.statement_id;
+    if (typeof statementId !== "string" || statementId.length === 0 || typeof gap.gap_id !== "string" || !gap.gap_id) {
+      continue;
+    }
+    // First served gap per statement wins; the runtime serves at most one
+    // pending gap per (instance, stream, record_key) so a duplicate would be
+    // a store anomaly, not an expected state.
+    if (!lookup.has(statementId)) {
+      lookup.set(statementId, gap.gap_id);
+    }
+  }
+  return lookup;
+}
+
+/**
+ * Emit `DETAIL_GAP_RECOVERED` for each served statement gap whose PDF is
+ * hydrated again this run. `hydratedKeys` is the honest input: it is exactly
+ * the set `emitStatementDetailCoverage` already proved hydrated
+ * (`outcome.kind === "hydrated"`, driven by `isHydrated` at the download
+ * site), the same predicate feeding the coverage numerator, so recovery and
+ * coverage cannot drift apart. A statement whose PDF is still missing this
+ * run is left on the `DETAIL_GAP` re-emit path and is never recovered here —
+ * lose-no-data preserved.
+ */
+export async function recoverServedStatementGaps(deps: EmitDeps, hydratedKeys: readonly string[]): Promise<void> {
+  const served = deps.servedStatementGaps;
+  if (!served || served.size === 0) {
+    return;
+  }
+  for (const statementId of hydratedKeys) {
+    const gapId = served.get(statementId);
+    if (!gapId) {
+      continue;
+    }
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gapId,
+      stream: "statements",
+      record_key: statementId,
+    });
+  }
 }
 
 /**
@@ -2508,7 +2585,7 @@ async function processStatementRow(
   }
 }
 
-async function runStatements(
+export async function runStatements(
   deps: EmitDeps,
   page: Page,
   filteredAccounts: readonly ChaseAccount[],
@@ -2566,8 +2643,8 @@ async function runStatements(
     // (and the carried hydration pointers, in lockstep) for statements no
     // longer listed so a re-appearance re-emits and a delisted statement
     // stops being carried forever.
-    fingerprintCursor?.pruneStale();
-    hydrationCursor?.pruneStale();
+    fingerprintCursor?.dropUnseenIds();
+    hydrationCursor?.dropUnseenIds();
     const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
     if (fingerprintCursor && fingerprintCursor.size() > 0) {
       cursor.fingerprints = fingerprintCursor.toState();
@@ -2601,14 +2678,20 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "chase",
     validateRecord,
+    // Declaring the pair is what makes an absent credential SAY so: the
+    // runtime resolves these fields for THIS connection and raises a
+    // `credentials` INTERACTION naming the missing one. Without the block it
+    // resolved `{}` and the run fell through to a page-blaming hand-off.
+    auth: { kind: "env", required: ["CHASE_USERNAME", "CHASE_PASSWORD"] },
     // Chase fingerprints the shared daemon profile and bounces it to
     // /#/logon/logon/error regardless of cookie state. See
     // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
     browser: { profileName: "chase" },
     timeRangeField: chaseTimeRangeField,
-    async ensureSession({ context, onCredentialSubmit, page, sendInteraction }): Promise<void> {
+    async ensureSession({ context, credentials, onCredentialSubmit, page, sendInteraction }): Promise<void> {
       await ensureChaseSession({
         context,
+        credentials,
         onCredentialSubmit,
         page,
         sendInteraction,
@@ -2687,6 +2770,7 @@ if (isMainModule(import.meta.url)) {
         requested,
         resFilters,
         servedAccountGaps: buildServedAccountGapLookup(ctx.detailGaps),
+        servedStatementGaps: buildServedStatementGapLookup(ctx.detailGaps),
         tmpDir,
         txState,
         transactionsFingerprintCursor,
@@ -2702,7 +2786,36 @@ if (isMainModule(import.meta.url)) {
 
         const accounts = await collectChaseAccountInventory({ capture, emit, page });
         if (accounts.length === 0) {
+          // Discovery found nothing. That is how a failed or blocked
+          // dashboard scrape presents, so the per-account cursors are
+          // deliberately left untouched — pruning here would erase every
+          // saved position and force a full re-download of every account.
           return; // runtime emits DONE succeeded
+        }
+
+        // Prune per-account cursors for accounts discovery no longer
+        // returns. An orphaned cursor is indistinguishable from a live one,
+        // so without this an account that vanished from discovery is
+        // skipped silently, forever, with no gap emitted. Safe here because
+        // discovery is known non-empty.
+        const { dropped: droppedAccountCursors } = prunePerAccountCursors(
+          deps.maxSeenByAccount,
+          new Set(accounts.map((a) => a.internal_id))
+        );
+        if (droppedAccountCursors.length > 0) {
+          // Surfaced, not swallowed: this may be a closed account (benign)
+          // or a discovery regression (not benign), and the connector does
+          // not guess which.
+          await emit({
+            type: "SKIP_RESULT",
+            stream: "transactions",
+            reason: "account_no_longer_discovered",
+            message: "An account with a saved position is no longer listed on the dashboard",
+            diagnostics: { dropped_account_count: droppedAccountCursors.length },
+          });
+          for (const accountId of droppedAccountCursors) {
+            delete deps.maxSeenByAccount[accountId];
+          }
         }
 
         // Snapshot the dashboard overview DOM now while the page is still on
@@ -2796,8 +2909,10 @@ if (isMainModule(import.meta.url)) {
       }
 
       // Emit STATE for incremental resumption. The per_account cursor drives
-      // the next run's chooseActivity() — when max_seen_date is present we'll
-      // use "since_last_statement" instead of re-downloading all transactions.
+      // the next run's chooseActivity() — when max_seen_date is present and
+      // still FRESH we'll use "since_last_statement" instead of
+      // re-downloading all transactions; a stale cursor falls back to a
+      // bounded date_range export that actually reaches back to it.
       await emitTransactionsStateIfAny(deps);
     },
   });

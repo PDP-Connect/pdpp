@@ -23,7 +23,8 @@
 import { isMainModule } from "@pdpp/connector-protocol";
 import pRetry, { AbortError } from "p-retry";
 import type { BrowserContext, Page } from "playwright";
-import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
+import { AMAZON_LOGIN_FIELDS, ensureAmazonSession } from "../../src/auto-login/amazon.ts";
+import { resolveLoginCredentials } from "../../src/auto-login/login-credentials.ts";
 import {
   type BrowserCollectContext,
   type DetailGapMessage,
@@ -33,9 +34,11 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor, recordFingerprint } from "../../src/fingerprint-cursor.ts";
+import { walkPagesWithCeiling } from "../../src/page-ceiling.ts";
 import {
   buildOrderItemRecord,
   buildOrderRecord,
+  countOrderCardsWithoutOrderId,
   mergeOrderItems,
   parseOrderDate,
   parseOrderDetailDom,
@@ -44,13 +47,13 @@ import {
 import { listPageOrderShape, validateRecord } from "./schemas.ts";
 import type { ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
 
-interface YearState {
+export interface YearState {
   frozen: boolean;
   last_scraped: string;
   order_count: number;
 }
 
-interface YearsCursor {
+export interface YearsCursor {
   [year: string]: YearState | undefined;
 }
 
@@ -133,6 +136,39 @@ interface EmptyListPageClassification {
   action: EmptyListPageAction;
   reason: string;
 }
+
+/**
+ * What this connection already knows about the order history OF THE YEAR
+ * currently being scraped, threaded explicitly into the otherwise-pure
+ * empty-page classifier.
+ *
+ * `hasPriorOrders` is true when a prior run committed a `years[<year>]`
+ * cursor whose `order_count` is greater than zero — the in-connector proof
+ * that Amazon once listed orders for this account IN THIS YEAR.
+ *
+ * PER-YEAR, not per-account, and that is the whole difference from H-E-B.
+ * H-E-B's list is one globally reverse-chronological feed, so any committed
+ * checkpoint contradicts any empty page. Amazon is year-partitioned: it
+ * renders a genuine, year-scoped "Looks like you didn't place an order in
+ * 2015." for a year the owner simply did not shop, on an account holding
+ * thousands of orders in other years. Account-wide evidence would abort every
+ * such year forever and break the incremental year sweep. Only the SAME
+ * year's own prior `order_count` can contradict that year's empty page.
+ */
+export interface PriorOrdersEvidence {
+  hasPriorOrders: boolean;
+}
+
+/** Owner-facing message for the one classification whose whole point is to be
+ *  read by a person. Says exactly what was observed and what was NOT
+ *  concluded: neither selector drift nor a bot block is established, so
+ *  neither is named. Stored records are untouched — this connector never
+ *  deletes, tombstones, or overwrites on an empty page; it only declines to
+ *  advance the year cursor. */
+export const AMAZON_EMPTY_AFTER_PRIOR_ORDERS_MESSAGE =
+  "Amazon reported no order history for a year in which PDPP previously collected orders. " +
+  "Your stored orders are retained and untouched. This run was stopped instead of recording " +
+  "an empty history, because a page showing no orders cannot prove those orders are gone.";
 
 // Navigation timeouts + pacing knobs
 const NAV_TIMEOUT_MS = 30_000;
@@ -446,12 +482,17 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
 }
 
 // ─── Per-page order extraction ────────────────────────────────────────────
-async function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
+interface PageExtractionResult {
+  droppedCardCount: number;
+  orders: ListPageOrder[];
+}
+
+async function extractOrdersOnPage(page: Page): Promise<PageExtractionResult> {
   try {
     const html = await readPageContentWithin(page);
-    return parseOrdersListDom(html);
+    return { droppedCardCount: countOrderCardsWithoutOrderId(html), orders: parseOrdersListDom(html) };
   } catch {
-    return [];
+    return { droppedCardCount: 0, orders: [] };
   }
 }
 
@@ -649,6 +690,7 @@ function readRecoverableAmazonOrderDetailGap(
  *  the USAA connector's `EmitDeps.reauthenticate` seam. */
 export type AmazonReauthFn = (input: {
   context: BrowserContext;
+  credentials?: Readonly<Record<string, string | undefined>> | undefined;
   page: Page;
   sendInteraction: BrowserCollectContext["sendInteraction"];
 }) => Promise<boolean>;
@@ -656,8 +698,8 @@ export type AmazonReauthFn = (input: {
 /**
  * Attempt exactly one mid-run session repair via `ensureAmazonSession` (or
  * `reauthenticate`, if injected), then retry the exact same order-detail
- * fetch once. Gated to the credentialed (`AMAZON_USERNAME`/
- * `AMAZON_PASSWORD`) automated login path only — `ensureAmazonSession`
+ * fetch once. Gated to the credentialed (this connection's resolved
+ * `AMAZON_USERNAME`/`AMAZON_PASSWORD` pair) automated login path only — `ensureAmazonSession`
  * probes first and no-ops when the session is still live, but its
  * NO-credentials fallback opens an interactive owner hand-off that can
  * block up to 30 minutes and consume an OTP interaction slot; that path
@@ -672,18 +714,23 @@ async function attemptAutomatedSessionRepair(
   sendInteraction: BrowserCollectContext["sendInteraction"],
   flags: RunFlags,
   orderId: string,
-  reauthenticate: AmazonReauthFn = ensureAmazonSession
+  reauthenticate: AmazonReauthFn = ensureAmazonSession,
+  credentials?: Readonly<Record<string, string | undefined>>
 ): Promise<DetailFetchResult | null> {
   if (flags.repairAttempted) {
     return null;
   }
   flags.repairAttempted = true;
-  const email = process.env.AMAZON_USERNAME;
-  const password = process.env.AMAZON_PASSWORD;
-  if (!(email && password)) {
+  // Connection-scoped, never ambient. This is a GATE, not a login site: it only
+  // decides whether the credentialed repair path is eligible, so an absent pair
+  // stays silent here and falls through to `session_repair_required` — the
+  // owner-facing naming belongs to `ensureAmazonSession` at run start, which
+  // must not be triggered speculatively mid-run (it can block 30 minutes).
+  const resolved = resolveLoginCredentials(credentials, AMAZON_LOGIN_FIELDS, "amazon");
+  if (resolved.kind === "absent") {
     return null;
   }
-  const recovered = await reauthenticate({ context, page, sendInteraction }).catch((): boolean => false);
+  const recovered = await reauthenticate({ context, credentials, page, sendInteraction }).catch((): boolean => false);
   if (!recovered) {
     return null;
   }
@@ -696,7 +743,8 @@ async function resolveOrderDetail(
   sendInteraction: BrowserCollectContext["sendInteraction"] | undefined,
   flags: RunFlags,
   orderId: string,
-  reauthenticate?: AmazonReauthFn
+  reauthenticate?: AmazonReauthFn,
+  credentials?: Readonly<Record<string, string | undefined>>
 ): Promise<DetailFetchResult> {
   if (flags.sessionRepairRequired) {
     // The session died earlier this run and the one-shot automated repair
@@ -735,7 +783,8 @@ async function resolveOrderDetail(
     sendInteraction,
     flags,
     orderId,
-    reauthenticate ?? ensureAmazonSession
+    reauthenticate ?? ensureAmazonSession,
+    credentials
   );
   return repaired ?? result;
 }
@@ -781,6 +830,9 @@ export interface AmazonDetailRecoveryDeps {
    *  attempt. Optional so legacy callers/tests that don't exercise the
    *  repair path can omit it — see `EmitDeps.context`. */
   context?: BrowserContext | undefined;
+  /** This connection's resolved sign-in pair, threaded to the mid-run repair
+   *  gate. Optional for the same reason as `context`. */
+  credentials?: Readonly<Record<string, string | undefined>> | undefined;
   detailGaps: readonly BrowserCollectContext["detailGaps"][number][];
   emit: EmitFn;
   emitRecord: EmitRecordFn;
@@ -814,7 +866,8 @@ async function recoverPendingOrderItemDetailGapPage(
       deps.sendInteraction,
       flags,
       locator.orderId,
-      deps.reauthenticate
+      deps.reauthenticate,
+      deps.credentials
     );
     if (result.status === "hydrated") {
       for (const item of result.detail.items) {
@@ -946,6 +999,9 @@ export interface EmitDeps {
    *  terminal `session_repair_required` behavior, unchanged from before
    *  this fix. */
   context?: BrowserContext | undefined;
+  /** This connection's resolved sign-in pair, threaded to the mid-run repair
+   *  gate. Optional for the same reason as `context`. */
+  credentials?: Readonly<Record<string, string | undefined>> | undefined;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
@@ -1021,7 +1077,7 @@ export async function emitOrderAndItems(
     // does not churn on a no-op re-scrape and is left ungated.
     //
     // NOTE: orders is a PARTIAL scan (year-freezing skips historical years),
-    // so this cursor is never `pruneStale()`d — pruning ids in years the run
+    // so this cursor is never `dropUnseenIds()`d — pruning ids in years the run
     // did not scrape would drop their fingerprints and re-churn them when the
     // year is next (re)visited.
     const orderRecord = buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt);
@@ -1038,10 +1094,51 @@ export async function emitOrderAndItems(
     }
   }
   if (deps.wantsItems) {
-    for (const merged of mergeOrderItems(listOrder, detail)) {
-      await deps.emitRecord("order_items", buildOrderItemRecord(listOrder.orderId, orderDate, merged));
+    const merged = mergeOrderItems(listOrder, detail);
+    for (const item of merged) {
+      await deps.emitRecord("order_items", buildOrderItemRecord(listOrder.orderId, orderDate, item));
     }
+    await emitItemCountReconciliation(deps, listOrder, detail, merged.length);
   }
+}
+
+/**
+ * Reconcile the items we emitted against the count the order page asserted, and
+ * report a shortfall rather than letting it pass.
+ *
+ * The denominator is measured at the parse boundary — `detail.items` is what
+ * the order-detail page listed, counted before the merge and independently of
+ * what `mergeOrderItems` decided to emit. Deduplication across the two surfaces
+ * means the merged list should never be SHORTER than the detail page's own
+ * list; if it is, an item the page showed us did not survive into a record.
+ *
+ * Only runs when a detail page was actually fetched. Without it there is no
+ * assertion to reconcile against — `resolveItemCount` reports null for exactly
+ * that case, and inventing a denominator from the list card would fabricate a
+ * shortfall on every 3+ item order (the list card renders no item titles once
+ * Amazon collapses them behind "+N more items").
+ */
+async function emitItemCountReconciliation(
+  deps: EmitDeps,
+  listOrder: ListPageOrder,
+  detail: OrderDetail | null,
+  emittedItemCount: number
+): Promise<void> {
+  const declared = detail?.items?.length;
+  if (declared === undefined || emittedItemCount >= declared) {
+    return;
+  }
+  await deps.emit({
+    type: "SKIP_RESULT",
+    stream: "order_items",
+    reason: "item_count_shortfall",
+    message: `order ${listOrder.orderId} listed ${declared} items on its detail page but only ${emittedItemCount} became records`,
+    diagnostics: {
+      order_id: listOrder.orderId,
+      declared_item_count: declared,
+      emitted_item_count: emittedItemCount,
+    },
+  });
 }
 
 /**
@@ -1050,7 +1147,27 @@ export async function emitOrderAndItems(
  * returned in source order.
  */
 async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<ListPageOrder[]> {
-  const rawOrders = await extractOrdersOnPage(page);
+  const { droppedCardCount, orders: rawOrders } = await extractOrdersOnPage(page);
+  // Only report when the page also proved at least one real order: `.order-card`/
+  // `.js-order-card` is reused by Amazon's "Buy it again" recommendation carousel on
+  // a genuinely empty year (see the `orders-list-empty-year-with-carousel` fixture),
+  // so a page with ZERO real orders and only carousel cards is not evidence of loss —
+  // `reportEmptyPageDiagnostics` already owns that case. Gating on `rawOrders.length
+  // > 0` keeps this diagnostic scoped to "some cards parsed, but not all of them."
+  if (droppedCardCount > 0 && rawOrders.length > 0) {
+    // A card matched `.order-card`/`.js-order-card` but `parseOrderCard`
+    // could not find a `.yohtmlc-order-id` on it, so it never became a raw
+    // order and never reached the shape-check below — with no fix here that
+    // card is lost with zero trace (no SKIP_RESULT, no coverage-considered
+    // id, no rejection). This is the only signal that loss ever happened.
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "list_page_order_id_not_found",
+      message: `${droppedCardCount} order card(s) on this page had no parseable .yohtmlc-order-id and were dropped before the shape-check`,
+      diagnostics: { dropped_card_count: droppedCardCount },
+    });
+  }
   const orders: ListPageOrder[] = [];
   for (const r of rawOrders) {
     const parsed = listPageOrderShape.safeParse(r);
@@ -1077,7 +1194,13 @@ async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<Lis
  * + screenshot when the page clearly has order-like elements but our
  * selectors matched nothing.
  */
-async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: number, emit: EmitFn): Promise<void> {
+async function reportEmptyPageDiagnostics(
+  page: Page,
+  year: number,
+  startIndex: number,
+  emit: EmitFn,
+  priorOrdersEvidence: PriorOrdersEvidence
+): Promise<void> {
   let diag: ListPageDiagnostics;
   try {
     diag = await page.evaluate((noOrdersTextPattern): ListPageDiagnostics => {
@@ -1108,7 +1231,7 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
     });
     throw new Error("amazon_empty_list_page_renderer_diagnostics_failed", { cause: error });
   }
-  const classification = classifyEmptyListPageDiagnostics(diag, startIndex);
+  const classification = classifyEmptyListPageDiagnostics(diag, startIndex, priorOrdersEvidence);
   if (classification.action === "terminal") {
     return;
   }
@@ -1134,8 +1257,13 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       type: "SKIP_RESULT",
       stream: "orders",
       reason: classification.reason,
-      message: `Year ${year} startIndex=${startIndex}: empty Amazon list page is not a proven terminal page; refusing to advance the cursor.`,
-      diagnostics: diag ? redactAmazonListPageDiagnostics(diag) : { missing_diagnostics: true },
+      message:
+        classification.reason === "amazon_empty_history_after_prior_orders"
+          ? AMAZON_EMPTY_AFTER_PRIOR_ORDERS_MESSAGE
+          : `Year ${year} startIndex=${startIndex}: empty Amazon list page is not a proven terminal page; refusing to advance the cursor.`,
+      diagnostics: diag
+        ? { ...redactAmazonListPageDiagnostics(diag), has_prior_orders: priorOrdersEvidence.hasPriorOrders, year }
+        : { missing_diagnostics: true },
     });
   }
   throw new Error(`amazon_empty_list_page_${classification.reason}`);
@@ -1149,7 +1277,8 @@ export function redactAmazonListPageDiagnostics(diag: ListPageDiagnostics): List
 
 export function classifyEmptyListPageDiagnostics(
   diag: ListPageDiagnostics | null,
-  startIndex: number
+  startIndex: number,
+  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
 ): EmptyListPageClassification {
   if (!diag) {
     return { action: "abort", reason: "renderer_diagnostics_failed" };
@@ -1160,6 +1289,35 @@ export function classifyEmptyListPageDiagnostics(
   }
   if ((diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
     return { action: "abort", reason: "selector_drift" };
+  }
+  // A year that has already yielded orders can never prove itself empty.
+  // `hasPriorOrders` is this connection's own prior `years[<year>].order_count`
+  // for the SAME year being scraped — durable evidence that Amazon previously
+  // listed orders there — threaded in explicitly by `scrapeListPage` rather
+  // than read from ambient state, so this branch stays pure and unit-testable.
+  //
+  // Without this check, a year holding hundreds of stored orders could finish
+  // as {action:"terminal", reason:"no_orders_text"}, letting the run advance
+  // the year cursor and report covered:0/considered:0 — replacing a measured
+  // coverage claim with a fabricated proven-zero. The two causes are
+  // indistinguishable from the page alone: Amazon may have purged the history
+  // upstream (making our stored copy the only copy), or the page may render
+  // empty for a degraded session. So the run fails loudly and lets a human
+  // decide, rather than guessing.
+  //
+  // Scoped to `startIndex === 0` because only the FIRST page of a year makes
+  // the claim "this year is empty". A later page coming back empty is ordinary
+  // pagination exhaustion on a year that plainly did yield orders — the rows
+  // preceding it were just collected on this very run — and must keep falling
+  // through to `pagination_exhausted` below.
+  //
+  // Ordering: BELOW the auth/challenge and selector-drift checks (an
+  // established block or a real markup change is the more specific and more
+  // actionable diagnosis, and must not be relabelled), and ABOVE the
+  // `no_orders_text` branch, so Amazon's own empty-state copy cannot
+  // short-circuit past it.
+  if (startIndex === 0 && diag.no_orders_text === "true" && priorOrdersEvidence.hasPriorOrders) {
+    return { action: "abort", reason: "amazon_empty_history_after_prior_orders" };
   }
   if (diag.no_orders_text === "true") {
     return { action: "terminal", reason: "no_orders_text" };
@@ -1180,7 +1338,8 @@ export async function scrapeListPage(
   capture: CaptureDep,
   year: number,
   startIndex: number,
-  emit: EmitFn
+  emit: EmitFn,
+  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
 ): Promise<ListPageOrder[]> {
   const url = `https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=${startIndex}`;
   try {
@@ -1212,7 +1371,7 @@ export async function scrapeListPage(
   }
   const orders = await extractAndShapeCheckOrders(page, emit);
   if (orders.length === 0) {
-    await reportEmptyPageDiagnostics(page, year, startIndex, emit);
+    await reportEmptyPageDiagnostics(page, year, startIndex, emit, priorOrdersEvidence);
   }
   return orders;
 }
@@ -1275,7 +1434,8 @@ async function resolveDetailForListOrder(
     deps.sendInteraction,
     flags,
     listOrder.orderId,
-    deps.reauthenticate
+    deps.reauthenticate,
+    deps.credentials
   );
   if (result.status === "hydrated") {
     resolution.detail = result.detail;
@@ -1374,6 +1534,9 @@ export async function processListOrder(
 
 interface YearRunResult {
   orderCount: number;
+  /** True when the year's walk stopped at `PAGE_LIMIT` with orders still
+   *  arriving, rather than because the year ran out of pages. */
+  truncated: boolean;
   unparseableDateCount: number;
 }
 
@@ -1381,19 +1544,39 @@ interface YearCompletionArgs {
   newYearsState: YearsCursor;
   prior: YearState | undefined;
   progress: BrowserCollectContext["progress"];
+  /** A year cut short by the page ceiling must never be recorded as complete. */
+  truncated: boolean;
   unparseableDateCount: number;
   year: number;
   yearOrderCount: number;
 }
 
-async function applyYearCompletionState({
+export async function applyYearCompletionState({
   newYearsState,
   prior,
   progress,
+  truncated,
   unparseableDateCount,
   year,
   yearOrderCount,
 }: YearCompletionArgs): Promise<void> {
+  // A year whose walk hit PAGE_LIMIT is a PREFIX of that year, not the year.
+  // Recording it would be the permanent-loss case this connector's freeze
+  // policy makes irreversible: `order_count` would hold the capped prefix
+  // count, and because a truncated year reproduces the SAME capped count on
+  // every run, `stableCount` goes true on the very next run and freezes a past
+  // year for good — and `collect()` skips frozen years outright
+  // (`if (prior?.frozen) continue`), so the untraversed tail becomes
+  // unreachable by ANY future run. Leaving the prior state untouched keeps the
+  // year eligible for a later, fuller scan.
+  if (truncated) {
+    await progress(
+      `Not advancing Amazon year ${year} cursor because its scan stopped at the ${PAGE_LIMIT}-page limit ` +
+        `with more orders still listed (${yearOrderCount} seen so far)`,
+      { stream: "orders" }
+    );
+    return;
+  }
   // Year completion state with freeze-once-stable policy. If required
   // list rows were dropped, do not advance `last_scraped`: the next run
   // must be allowed to retry the year after a parser fix instead of
@@ -1455,41 +1638,75 @@ export function shouldEmitTrailingOrdersState(
 }
 
 /**
+ * Derive the prior-orders evidence for ONE year from this connection's stored
+ * `years` cursor. Exported and pure because `collect()` lives inside the
+ * `isMainModule` block and cannot be driven from a test — without this seam
+ * the year-state-to-evidence link would be the one untested link in the
+ * chain, and a mutation that hardcodes `false` here (silently disarming the
+ * guard for every connection) would go unnoticed.
+ *
+ * The evidence is `order_count > 0`, not the mere existence of a year cursor.
+ * A year that was scraped and legitimately held zero orders commits a cursor
+ * with `order_count: 0`; that year must stay free to report empty again on
+ * every later run. Only a year that actually yielded orders can contradict a
+ * later "no orders" page.
+ */
+export function priorOrdersEvidenceForYear(yearsState: YearsCursor, year: number): PriorOrdersEvidence {
+  return { hasPriorOrders: (yearsState[String(year)]?.order_count ?? 0) > 0 };
+}
+
+/**
  * Scrape every list page for one year and emit records. Returns both the total
  * order count seen for the year (used for freeze-once-stable policy) and the
  * count of rows we could not emit because their order date was unparseable.
  */
-async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number): Promise<YearRunResult> {
-  let startIndex = 0;
-  let pageCount = 0;
+async function runYear(
+  page: Page,
+  deps: EmitDeps,
+  flags: RunFlags,
+  year: number,
+  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
+): Promise<YearRunResult> {
   let yearOrderCount = 0;
   let unparseableDateCount = 0;
-  while (pageCount < PAGE_LIMIT) {
-    await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
-    const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit);
-    if (orders.length === 0) {
-      await deps.progress(`Amazon year ${year}: no more orders after ${yearOrderCount} seen`, { stream: "orders" });
-      break;
-    }
-    yearOrderCount += orders.length;
-    await deps.progress(`Amazon year ${year}: page ${pageCount + 1} found ${orders.length} orders`, {
-      stream: "orders",
-    });
-    for (const [index, o] of orders.entries()) {
-      await deps.progress(
-        `Amazon year ${year}: processing order ${index + 1}/${orders.length} on page ${pageCount + 1}`,
-        { stream: "orders" }
+  let pageCount = 0;
+  const walk = await walkPagesWithCeiling({
+    maxPages: PAGE_LIMIT,
+    fetchPage: async () => {
+      await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
+      const orders = await scrapeListPage(
+        page,
+        deps.capture,
+        year,
+        pageCount * START_INDEX_STEP,
+        deps.emit,
+        priorOrdersEvidence
       );
-      const processed = await processListOrder(page, deps, flags, o);
-      if (!processed) {
-        // biome-ignore lint/style/noIncrementDecrement: integration.test.ts asserts this literal `unparseableDateCount++` source text (source-regex oracle); switching to += would fail that pre-existing test for a purely cosmetic change.
-        unparseableDateCount++;
+      if (orders.length === 0) {
+        // EXIT A — honest completion: the year is exhausted.
+        await deps.progress(`Amazon year ${year}: no more orders after ${yearOrderCount} seen`, { stream: "orders" });
+        return false;
       }
-    }
-    pageCount += 1;
-    startIndex += START_INDEX_STEP;
-    await politeDelay(POLITE_DELAY_MS);
-  }
+      yearOrderCount += orders.length;
+      await deps.progress(`Amazon year ${year}: page ${pageCount + 1} found ${orders.length} orders`, {
+        stream: "orders",
+      });
+      for (const [index, o] of orders.entries()) {
+        await deps.progress(
+          `Amazon year ${year}: processing order ${index + 1}/${orders.length} on page ${pageCount + 1}`,
+          { stream: "orders" }
+        );
+        const processed = await processListOrder(page, deps, flags, o);
+        if (!processed) {
+          // biome-ignore lint/style/noIncrementDecrement: integration.test.ts asserts this literal `unparseableDateCount++` source text (source-regex oracle); switching to += would fail that pre-existing test for a purely cosmetic change.
+          unparseableDateCount++;
+        }
+      }
+      pageCount += 1;
+      await politeDelay(POLITE_DELAY_MS);
+      return true;
+    },
+  });
   // Bounded per-year coverage evidence: a year that silently drops order rows
   // with an unparseable order date must not look complete. One count-only
   // SKIP_RESULT per year (no raw order ids) instead of a per-item flood.
@@ -1504,7 +1721,22 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
       diagnostics: { dropped: unparseableDateCount, total_seen: yearOrderCount, year },
     });
   }
-  return { orderCount: yearOrderCount, unparseableDateCount };
+  // A truncated year is reported to the owner as a deferred remainder, never
+  // left to read as a finished year. `..._deferred` is load-bearing: the
+  // reference implementation classifies a skip by its reason string, and only
+  // a deferred-matching reason maps to the `deferred` axis instead of
+  // `terminal_gap` — the remaining orders are postponed by a page budget, not
+  // permanently unreachable.
+  if (walk.truncated) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "older_pages_deferred_page_budget",
+      message: `Amazon year ${year}: stopped at the ${PAGE_LIMIT}-page limit with more orders still listed`,
+      diagnostics: { page_limit: PAGE_LIMIT, total_seen: yearOrderCount, year },
+    });
+  }
+  return { orderCount: yearOrderCount, truncated: walk.truncated, unparseableDateCount };
 }
 
 // ─── Incremental year planning ───────────────────────────────────────────
@@ -1572,14 +1804,28 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "amazon",
     validateRecord,
+    // See the chase declaration: without this the runtime resolves `{}`, never
+    // raises the `credentials` INTERACTION, and Amazon's hand-off says "no
+    // optional sign-in details were provided" without naming the fields the
+    // owner must supply.
+    auth: { kind: "env", required: ["AMAZON_USERNAME", "AMAZON_PASSWORD"] },
     // Persistent profile keeps cookies and session state across runs; browser
     // mode is selected by the deployment, not by this connector.
     browser: { profileName: "amazon" },
-    async ensureSession({ capture, checkpoint, context, onCredentialSubmit, page, sendInteraction }): Promise<void> {
+    async ensureSession({
+      capture,
+      checkpoint,
+      context,
+      credentials,
+      onCredentialSubmit,
+      page,
+      sendInteraction,
+    }): Promise<void> {
       await ensureAmazonSession({
         ...(capture ? { capture } : {}),
         checkpoint,
         context,
+        credentials,
         onCredentialSubmit,
         page,
         sendInteraction,
@@ -1591,7 +1837,19 @@ if (isMainModule(import.meta.url)) {
       }
     },
     async collect(ctx: BrowserCollectContext): Promise<void> {
-      const { scope, state, emitRecord, emit, progress, capture, emittedAt, page, context, sendInteraction } = ctx;
+      const {
+        scope,
+        state,
+        emitRecord,
+        emit,
+        progress,
+        capture,
+        emittedAt,
+        page,
+        context,
+        credentials,
+        sendInteraction,
+      } = ctx;
       const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
       const wantsItems = requested.has("order_items");
       const wantsOrders = requested.has("orders");
@@ -1614,6 +1872,7 @@ if (isMainModule(import.meta.url)) {
         {
           capture,
           context,
+          credentials,
           detailGaps: ctx.detailGaps,
           emit,
           emitRecord,
@@ -1684,6 +1943,7 @@ if (isMainModule(import.meta.url)) {
       const deps: EmitDeps = {
         capture,
         context,
+        credentials,
         emit,
         emitRecord,
         emittedAt,
@@ -1719,12 +1979,22 @@ if (isMainModule(import.meta.url)) {
           continue;
         }
 
-        const { orderCount: yearOrderCount, unparseableDateCount } = await runYear(page, deps, flags, year);
+        // A prior `years[<year>].order_count > 0` is this connection's own
+        // record that Amazon has listed orders for this account in THIS year
+        // before. It is what makes a later "no orders in <year>" page a
+        // contradiction to escalate rather than a result to trust. Read here,
+        // next to the year cursor it derives from, and passed down explicitly.
+        const {
+          orderCount: yearOrderCount,
+          truncated,
+          unparseableDateCount,
+        } = await runYear(page, deps, flags, year, priorOrdersEvidenceForYear(yearsState, year));
 
         await applyYearCompletionState({
           newYearsState,
           prior,
           progress,
+          truncated,
           unparseableDateCount,
           year,
           yearOrderCount,

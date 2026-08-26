@@ -7041,6 +7041,18 @@ process.on('exit', () => clearInterval(keepalive));
       assert.equal(result.status, "failed");
       assert.equal(result.terminal_reason, "assistance_timed_out");
       assert.equal(result.records_emitted, 0);
+      // Diagnosability fix (chatgpt-ingest-and-assistance-failure-modes-2026-08-18):
+      // the RESOLVED runConnector() promise — what the scheduler actually
+      // reads into run_history.failure_reason — previously had NO
+      // failure_message for a timed-out run at all (deriveClosedRunResolution
+      // only populated one for a plain connector-exit-before-DONE case) and
+      // mislabeled failure_origin "connector" when it did apply. The specific,
+      // named cause ("Run exceeded a connector assistance timeout.") existed
+      // ONLY on the terminal spine event (asserted below), invisible to
+      // run_history without a separate spine lookup. Both surfaces must now
+      // agree.
+      assert.equal(result.failure_message, "Run exceeded a connector assistance timeout.");
+      assert.equal(result.failure_origin, "runtime");
 
       const { body: runTimeline } = await fetchJson<TimelineBody>(
         `${asUrl}/_ref/runs/${encodeURIComponent(requireRunId(result))}/timeline`

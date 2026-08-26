@@ -30,7 +30,7 @@
  *
  * `simulateRestart` is implemented as a no-op so the corresponding
  * scenario also fails — the broken driver never reconciles abandoned
- * rows or surfaces a run.failed terminal event. That makes the
+ * rows or adjudicates a run.abandoned terminal event. That makes the
  * restart-reconciliation scenario a falsifiability hit too.
  *
  * This driver SHALL NOT be used as a production adapter or environment
@@ -239,7 +239,7 @@ export function createBrokenInMemoryConnectorStateSchedulerDriver() {
 
     async simulateRestart() {
       // BROKEN: no-op. The broken driver never reconciles abandoned
-      // rows or emits terminal events.
+      // rows or adjudicates terminal events.
     },
 
     // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
@@ -267,7 +267,7 @@ export function createBrokenInMemoryConnectorStateSchedulerDriver() {
     },
 
     // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
-    async wasRunMarkedFailed(runId: string): Promise<boolean> {
+    async wasRunAdjudicatedAbandoned(runId: string): Promise<boolean> {
       return failedRunIds.has(runId);
     },
   };

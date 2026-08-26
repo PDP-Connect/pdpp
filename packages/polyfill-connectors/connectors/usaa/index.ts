@@ -82,6 +82,7 @@ import {
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
 import { computeStatementCoverage, type StatementCoverageRow } from "./statement-coverage.ts";
 import { fileUrlForPath, hydrateStatementPdfs, parsePdfStatement } from "./statement-pdfs.ts";
+import { buildReconciliationDiagnostics } from "./statement-reconciliation.ts";
 import type {
   BillingKv,
   DashboardAccount,
@@ -152,7 +153,25 @@ const EXPORT_DIALOG_MESSAGE_SELECTOR =
 const EXPORT_NO_DATA_RE = /no transactions|nothing to export/iu;
 const USAA_ACCOUNT_DETAIL_ROUTE_RE = /^\/my\/(?:checking|savings|credit-card)(?:\/|$)/u;
 const USAA_INTERSTITIAL_ROUTE_RE =
-  /\/(?:my\/logon|access-management\/oauth2\/member\/authorize|security(?:\/|$)|challenge(?:\/|$))/iu;
+  /\/(?:my\/logon|access-management\/oauth2\/member\/authorize|security(?:\/|$)|challenge(?:\/|$)|my\/banking-offer(?:\/|$))/iu;
+/**
+ * Marketing interstitials USAA injects in FRONT of an account page. Distinct
+ * from the auth/challenge interstitials above: the session is perfectly alive,
+ * the member is simply being shown an offer (e.g. `/my/banking-offer/atm-deposit`,
+ * "Depositing cash just got more convenient!") before the page they asked for.
+ *
+ * Observed live on the owner's mailbox 2026-07-14: BOTH checking accounts
+ * landed here instead of `/my/checking`, so `findExportAffordance` found no
+ * Export button and the run reported `source_structure_changed` — "USAA changed
+ * their UI" — for two accounts that were fine. Credit-card accounts, which are
+ * not offered ATM deposits, exported normally. That is the whole of the
+ * long-standing USAA `transactions` 2-of-4 coverage gap.
+ *
+ * These pages carry the originally-requested URL in their own `goto` query
+ * param, which is the honest way back: it is USAA's own statement of where the
+ * member was headed, not a URL this connector guessed.
+ */
+const USAA_OFFER_INTERSTITIAL_ROUTE_RE = /^\/my\/banking-offer(?:\/|$)/iu;
 const USAA_ACCOUNT_DETAIL_MARKER_SELECTOR = ".ent-as-utility-bar, .as_credit__utility-bar";
 const USAA_TRANSACTION_MARKER_SELECTOR =
   'table[aria-label*="transaction" i], [data-testid*="transaction" i], [id*="transaction" i]';
@@ -214,6 +233,16 @@ export interface EmitDeps {
    * A reached account emits recovery for its supplied gap id; this prevents a
    * successful later export from leaving the durable gap pending forever. */
   servedAccountTransactionGaps?: ReadonlyMap<string, string>;
+  /** Pending USAA credit-card billing/stats gaps served by the runtime this
+   * run, one map per stream (see `buildServedCreditCardGapLookups`). A
+   * successfully-navigated-and-scraped card emits recovery for its supplied
+   * gap id on whichever stream(s) had one — see `recoverServedCreditCardGaps`. */
+  servedCreditCardGaps?: { billing: ReadonlyMap<string, string>; billingStats: ReadonlyMap<string, string> };
+  /** Pending USAA `statements` PDF gaps served by the runtime this run. A
+   * statement whose PDF is present again emits recovery for its supplied gap
+   * id; without this a downloaded statement leaves its gap pending forever
+   * (see `recoverServedStatementGaps`). */
+  servedStatementGaps?: ReadonlyMap<string, string>;
 }
 
 /** Aggregate shape from the PDF hydration pass. Exposed so the emit-
@@ -390,7 +419,7 @@ export async function emitAccountsStream(
   });
   // Accounts enumeration is a full dashboard scan: prune fingerprints for
   // accounts no longer present so a re-added account re-emits.
-  fingerprintCursor.pruneStale();
+  fingerprintCursor.dropUnseenIds();
   const cursor: Record<string, unknown> = { fetched_at: nowIso() };
   if (fingerprintCursor.size() > 0) {
     cursor.fingerprints = fingerprintCursor.toState();
@@ -777,8 +806,8 @@ export async function emitStatementRecords(
   // (and the carried hydration pointers, in lockstep) for statements no
   // longer listed so a re-appearance re-emits and a delisted statement
   // stops being carried forever.
-  fingerprintCursor?.pruneStale();
-  hydrationCursor?.pruneStale();
+  fingerprintCursor?.dropUnseenIds();
+  hydrationCursor?.dropUnseenIds();
   // Honest per-run detail coverage for the statement-PDF detail pass. Emitted
   // only when the run saw at least one statement-document row (a real
   // denominator). Each gap candidate (a statement whose PDF is not present this
@@ -837,7 +866,53 @@ export async function emitStatementCoverage(
   for (const gap of result.gaps) {
     await deps.emit(gap);
   }
+  await recoverServedStatementGaps(deps, result.coverage.hydratedKeys);
   await emitDetailCoverage(deps, result.coverage);
+}
+
+/**
+ * Close the served `statements` gaps whose PDF is present again this run.
+ *
+ * A statement gap is opened whenever a run does not hold that statement's PDF,
+ * and it is genuinely retryable — the next run re-attempts every row. But
+ * nothing ever CLOSED one: a pending detail gap only leaves `pending` on an
+ * explicit `DETAIL_GAP_RECOVERED` (see `connector-detail-gap-store.ts`), and
+ * this connector emitted that message for `transactions` and the credit-card
+ * streams while `statements` was left out.
+ *
+ * The result on the owner's instance: 4 `statements` gaps sat `pending` from a
+ * 2026-08-04 run, three of them never re-attempted (`attempt_count = 0`), while
+ * every one of those four statements had in fact been downloaded — each has a
+ * durable `pdf_sha256` on its record, and the same stream reported
+ * `covered: 10 / considered: 10, checkpoint: committed`. The stream was fully
+ * collected and simultaneously showed a retryable gap, purely as stale
+ * bookkeeping.
+ *
+ * `hydratedKeys` is the honest input: it is exactly the set
+ * `computeStatementCoverage` proved artifact-present this run (`isHydrated` on
+ * the resolved body), the same predicate that put those keys in the coverage
+ * numerator. Only ids the runtime actually served as pending gaps are closed —
+ * the lookup enforces that, so a recovery can never close unrelated work.
+ */
+async function recoverServedStatementGaps(deps: EmitDeps, hydratedKeys: readonly (string | number)[]): Promise<void> {
+  const served = deps.servedStatementGaps;
+  if (!served || served.size === 0) {
+    return;
+  }
+  for (const key of hydratedKeys) {
+    const statementId = String(key);
+    const gapId = served.get(statementId);
+    if (!gapId) {
+      continue;
+    }
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gapId,
+      stream: "statements",
+      record_key: statementId,
+    });
+  }
 }
 
 /**
@@ -1139,6 +1214,84 @@ function capturePageDiagnostics(page: Page): Promise<PageDiagnostics | null> {
     .catch((): PageDiagnostics | null => null);
 }
 
+/**
+ * If `finalUrl` is a USAA marketing interstitial, return the account URL to
+ * retry; otherwise `null` (we are already where we asked to be, or somewhere
+ * this function has no honest opinion about).
+ *
+ * Pure and exported so the escape decision is testable without Playwright.
+ *
+ * The retry target is the interstitial's own `goto` param when it names a USAA
+ * account-detail route, else the `accountUrl` originally requested. Both are
+ * URLs the caller already had or USAA itself supplied; a `goto` pointing
+ * off-host or at some other section is refused rather than followed, so a
+ * redirect chain can never steer the connector somewhere it did not intend to
+ * go. Returns `null` when the escape target matches the URL we just loaded, so
+ * a self-referential offer page cannot produce an infinite retry.
+ */
+export function resolveUsaaOfferInterstitialEscape(finalUrl: string, accountUrl: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(finalUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.hostname !== "www.usaa.com" || !USAA_OFFER_INTERSTITIAL_ROUTE_RE.test(parsed.pathname)) {
+    return null;
+  }
+  let target = accountUrl;
+  const goto = parsed.searchParams.get("goto");
+  if (goto) {
+    try {
+      const gotoUrl = new URL(goto, "https://www.usaa.com");
+      if (gotoUrl.hostname === "www.usaa.com" && USAA_ACCOUNT_DETAIL_ROUTE_RE.test(gotoUrl.pathname)) {
+        target = gotoUrl.toString();
+      }
+    } catch {
+      // Unparseable `goto` — fall back to the requested account URL.
+    }
+  }
+  return target === finalUrl ? null : target;
+}
+
+/**
+ * Ensure the just-loaded page is the account page we asked for, navigating
+ * through a USAA marketing offer if one was served in front of it.
+ *
+ * Returns `false` when this candidate URL should be abandoned (the escape
+ * navigation itself failed); `true` when the caller should look for the export
+ * affordance on the current page.
+ *
+ * Throws {@link SessionDeadRedirectError} if the session died — before OR
+ * after the escape hop, since an offer page can itself redirect to logon.
+ *
+ * Exactly one escape hop is attempted. If the offer re-serves itself, the
+ * caller's ordinary no-affordance path reports it rather than looping.
+ */
+async function settleOnAccountPage(page: Page, accountUrl: string, settleDelayMs: number): Promise<boolean> {
+  const assertSessionAlive = async (): Promise<void> => {
+    if (LOGON_REDIRECT_RE.test(page.url())) {
+      throw new SessionDeadRedirectError(await captureNoExportAffordanceObservation(page));
+    }
+  };
+  await assertSessionAlive();
+  const escapeUrl = resolveUsaaOfferInterstitialEscape(page.url(), accountUrl);
+  if (!escapeUrl) {
+    return true;
+  }
+  try {
+    await page.goto(escapeUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: ACCOUNT_NAV_TIMEOUT_MS,
+    });
+  } catch {
+    return false;
+  }
+  await politeDelay(settleDelayMs);
+  await assertSessionAlive();
+  return true;
+}
+
 async function locateExportPage(
   page: Page,
   accountUrl: string,
@@ -1161,9 +1314,8 @@ async function locateExportPage(
       continue;
     }
     await politeDelay(settleDelayMs);
-    const finalUrl = page.url();
-    if (LOGON_REDIRECT_RE.test(finalUrl)) {
-      throw new SessionDeadRedirectError(await captureNoExportAffordanceObservation(page));
+    if (!(await settleOnAccountPage(page, url, settleDelayMs))) {
+      continue;
     }
     const btn = await findExportAffordance(page);
     if (btn) {
@@ -1219,7 +1371,21 @@ async function emitDialogUnexpectedShapeDiagnostic(
   });
 }
 
-/** Click Export, then confirm the date-range selector rendered. */
+/** Click Export, then confirm the date-range selector rendered.
+ *
+ * The readiness check is a bounded WAIT (`waitFor`), not a fixed sleep
+ * followed by a single immediate `.count()`. A one-shot count taken after a
+ * fixed delay cannot tell "the dialog will never render this select" apart
+ * from "the dialog just hasn't finished rendering yet" — on a page that
+ * renders a moment slower than `EXPORT_DIALOG_DELAY_MS` (network jitter,
+ * client-side render variance), the one-shot check reads a false
+ * `export_dialog_unexpected_shape`, which `tryExportLadder` treats as fatal
+ * and reports as `export_affordance_missing` (a "source changed, needs a
+ * code fix" outcome) instead of the transient rendering delay it actually
+ * was. `waitFor` polls up to the same overall budget and resolves the
+ * instant the select appears, so a slow-but-real render still succeeds;
+ * only a select that never appears within the budget reaches the existing
+ * unexpected-shape/Escape path, unchanged. */
 async function openExportDialog(page: Page, located: LocatedExportPage, options: DriveExportOptions): Promise<boolean> {
   const { onDiagnostics } = options;
   try {
@@ -1228,12 +1394,14 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     await emitExportClickFailedDiagnostic(page, onDiagnostics, err);
     return false;
   }
-  await politeDelay(EXPORT_DIALOG_DELAY_MS);
 
-  const selectCount = await page
-    .locator('[role="dialog"] select[name="selectionType"], select[name="selectionType"]')
-    .count()
-    .catch((): number => 0);
+  const selectLocator = page.locator('[role="dialog"] select[name="selectionType"], select[name="selectionType"]');
+  const rendered = await selectLocator
+    .first()
+    .waitFor({ state: "visible", timeout: EXPORT_DIALOG_DELAY_MS })
+    .then((): boolean => true)
+    .catch((): boolean => false);
+  const selectCount = rendered ? await selectLocator.count().catch((): number => 0) : 0;
   if (!selectCount) {
     if (onDiagnostics) {
       await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
@@ -1954,7 +2122,7 @@ export async function emitCsvTransactions(
     //
     // NOTE: transactions is a PARTIAL scan (per-account overlapping
     // windows + statement-PDF subsets), so this cursor is never
-    // `pruneStale()`d — pruning ids the run did not look at would drop
+    // `dropUnseenIds()`d — pruning ids the run did not look at would drop
     // their fingerprints and re-churn them on the next overlapping window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(t)) {
       await deps.emitRecord("transactions", t);
@@ -2033,6 +2201,52 @@ export function buildAccountTransactionDetailGap(outcome: {
 }
 
 /**
+ * Keep only the pending USAA detail gaps on `stream` whose `detail_locator`
+ * has the expected `kind` and whose `locatorField` matches `record_key` — the
+ * same closed-world shape check every served-gap lookup in this connector
+ * needs. The connector may recover only gaps the runtime actually served this
+ * run: synthesizing an id, or accepting a foreign/malformed locator, could
+ * close unrelated work. Shared by `buildServedAccountTransactionGapLookup`
+ * (transactions, locator field `account_id`) and the credit-card billing
+ * streams (locator field `card_id`) so the same closed-world proof isn't
+ * hand-rolled per stream.
+ */
+function buildServedGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][],
+  stream: string,
+  locatorKind: string,
+  locatorField: string
+): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const gap of detailGaps) {
+    if (gap.stream !== stream || gap.status !== "pending") {
+      continue;
+    }
+    const locator = gap.detail_locator;
+    if (locator?.kind !== locatorKind) {
+      continue;
+    }
+    const key = locator[locatorField];
+    const recordKey = gap.record_key;
+    if (
+      typeof key !== "string" ||
+      key.length === 0 ||
+      typeof recordKey !== "string" ||
+      recordKey.length === 0 ||
+      recordKey !== key ||
+      typeof gap.gap_id !== "string" ||
+      !gap.gap_id
+    ) {
+      continue;
+    }
+    if (!lookup.has(key)) {
+      lookup.set(key, gap.gap_id);
+    }
+  }
+  return lookup;
+}
+
+/**
  * Keep only USAA account-level transaction gaps the runtime actually served
  * this run. The connector may recover only these supplied ids: synthesizing
  * one, or accepting a foreign/malformed locator, could close unrelated work.
@@ -2040,33 +2254,38 @@ export function buildAccountTransactionDetailGap(outcome: {
 export function buildServedAccountTransactionGapLookup(
   detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
 ): Map<string, string> {
-  const lookup = new Map<string, string>();
-  for (const gap of detailGaps) {
-    if (gap.stream !== "transactions" || gap.status !== "pending") {
-      continue;
-    }
-    const locator = gap.detail_locator;
-    if (locator?.kind !== "usaa.account") {
-      continue;
-    }
-    const accountId = locator.account_id;
-    const recordKey = gap.record_key;
-    if (
-      typeof accountId !== "string" ||
-      accountId.length === 0 ||
-      typeof recordKey !== "string" ||
-      recordKey.length === 0 ||
-      recordKey !== accountId ||
-      typeof gap.gap_id !== "string" ||
-      !gap.gap_id
-    ) {
-      continue;
-    }
-    if (!lookup.has(accountId)) {
-      lookup.set(accountId, gap.gap_id);
-    }
-  }
-  return lookup;
+  return buildServedGapLookup(detailGaps, "transactions", "usaa.account", "account_id");
+}
+
+/**
+ * Keep only `statements` PDF gaps the runtime actually served this run. Locator
+ * shape is `buildStatementDetailGap`'s (`usaa.statement` / `statement_id`).
+ */
+export function buildServedStatementGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
+): Map<string, string> {
+  return buildServedGapLookup(detailGaps, "statements", "usaa.statement", "statement_id");
+}
+
+/**
+ * Keep only USAA credit-card billing/stats gaps the runtime actually served
+ * this run, one lookup per stream (a card's `credit_card_billing` gap and its
+ * `credit_card_billing_stats` gap are independent DETAIL_GAP rows, served and
+ * recovered independently — see `emitCreditCardNavFailureGaps`).
+ */
+export function buildServedCreditCardGapLookups(detailGaps: readonly BrowserCollectContext["detailGaps"][number][]): {
+  billing: Map<string, string>;
+  billingStats: Map<string, string>;
+} {
+  return {
+    billing: buildServedGapLookup(detailGaps, "credit_card_billing", "usaa.credit_card_billing", "card_id"),
+    billingStats: buildServedGapLookup(
+      detailGaps,
+      "credit_card_billing_stats",
+      "usaa.credit_card_billing_stats",
+      "card_id"
+    ),
+  };
 }
 
 /**
@@ -2402,7 +2621,11 @@ function scrapeStatementsIndex(page: Page): Promise<DocRow[]> {
   });
 }
 
-async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly IndexRow[]): Promise<HydrationSummary> {
+async function hydratePdfsForIndex(
+  deps: StatementsSubDeps,
+  indexRows: readonly IndexRow[],
+  context?: BrowserContext
+): Promise<HydrationSummary> {
   const results = new Map<number, HydrationResult>();
   let attempts = 0;
   let successes = 0;
@@ -2411,6 +2634,8 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
     const hydrated = await hydrateStatementPdfs({
       page: deps.page,
       statements: indexRows as IndexRow[],
+      capture: deps.capture ?? null,
+      context,
       onProgress: ({ index, total }) => {
         attempts = index + 1;
         // Fire-and-forget: hydrateStatementPdfs signature is sync callback.
@@ -2462,6 +2687,12 @@ interface PdfParseCounters {
   parsedStatements: number;
   pdfTxnCount: number;
   unknownTemplates: number;
+  /** Periods whose transactions failed to sum to USAA's own printed
+   *  beginning/ending balance delta. Counted separately from
+   *  `unknownTemplates` because a template we DID match but could not
+   *  reconcile is a stronger, more specific finding than one we never
+   *  matched at all. */
+  unreconciledStatements: number;
 }
 
 async function processPdfStatementRow(
@@ -2480,12 +2711,29 @@ async function processPdfStatementRow(
   const acct = row.account_id ? accountById.get(row.account_id) : null;
   const accountName = acct?.name ?? row.account_reference ?? null;
   try {
-    const { txns, parseMeta } = await parsePdfStatement({
+    const { txns, parseMeta, reconciliation } = await parsePdfStatement({
       buffer: ok.buffer,
       accountId: row.account_id || row.account_reference || "unknown",
       accountName,
       period,
     });
+    // The completeness anchor: USAA's own printed period totals say what
+    // this period's transactions must sum to. Report a failed reconciliation
+    // BEFORE the empty-parse early return below, because "the balance moved
+    // but we parsed nothing" is exactly the case that must not slip out as a
+    // bare template-unknown notice. `unavailable` is silent by design — a
+    // credit-card statement prints no such summary and has no anchor to
+    // fail.
+    if (reconciliation.status === "mismatched") {
+      counters.unreconciledStatements += 1;
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "transactions",
+        reason: "statement_unreconciled",
+        message: `Statement period at row ${row.rowIndex + 1} does not reconcile against its own printed balances`,
+        diagnostics: buildReconciliationDiagnostics(row.id, reconciliation),
+      });
+    }
     if (!txns.length) {
       counters.unknownTemplates += 1;
       await deps.emit({
@@ -2533,7 +2781,12 @@ async function emitPdfStatementTransactions(
       .filter((a): a is DashboardAccount & { account_id_raw: string } => Boolean(a.account_id_raw))
       .map((a) => [a.account_id_raw, a])
   );
-  const counters: PdfParseCounters = { pdfTxnCount: 0, parsedStatements: 0, unknownTemplates: 0 };
+  const counters: PdfParseCounters = {
+    pdfTxnCount: 0,
+    parsedStatements: 0,
+    unknownTemplates: 0,
+    unreconciledStatements: 0,
+  };
   for (const row of indexRows) {
     const ok = hydrationSuccess(hydrationResults.get(row.rowIndex));
     if (!ok) {
@@ -2544,7 +2797,7 @@ async function emitPdfStatementTransactions(
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `PDF parse complete: ${counters.pdfTxnCount} transaction(s) across ${counters.parsedStatements} statement(s) (${counters.unknownTemplates} unknown templates)`,
+    message: `PDF parse complete: ${counters.pdfTxnCount} transaction(s) across ${counters.parsedStatements} statement(s) (${counters.unknownTemplates} unknown templates, ${counters.unreconciledStatements} unreconciled)`,
   });
 }
 
@@ -2606,7 +2859,7 @@ export async function runStatementsStream(
       stream: "statements",
       message: `Found ${indexRows.length} statement index row(s)`,
     });
-    const summary = await hydratePdfsForIndex(deps, indexRows);
+    const summary = await hydratePdfsForIndex(deps, indexRows, context);
 
     if (requested.has("statements")) {
       await emitStatementRecords(
@@ -2707,6 +2960,12 @@ export async function runInboxStream(
       return false;
     }
     await politeDelay(DOCUMENTS_SETTLE_DELAY_MS);
+    // Diagnostic-only DOM/ARIA/screenshot snapshot of the inbox table before
+    // the fixed-position [c0,c1,c2] scrape below. Every buildInboxMessageRecord
+    // failure (empty date_short) traces back to this scrape's column mapping,
+    // and there was previously no captured artifact showing the real table
+    // shape to confirm or correct it against. No-op unless PDPP_CAPTURE_*.
+    await deps.capture?.captureDom(page, "inbox-listing").catch((): undefined => undefined);
     const msgs = await scrapeInboxRows(page);
     await deps.emit({
       type: "PROGRESS",
@@ -2737,7 +2996,7 @@ export async function runInboxStream(
     }
     // The inbox listing is a full scan of the inbox page: prune fingerprints
     // for messages no longer listed so a re-appearance re-emits.
-    fingerprintCursor.pruneStale();
+    fingerprintCursor.dropUnseenIds();
     const cursor: Record<string, unknown> = { fetched_at: nowIso() };
     if (fingerprintCursor.size() > 0) {
       cursor.fingerprints = fingerprintCursor.toState();
@@ -2762,6 +3021,30 @@ export async function runInboxStream(
       considered: inboxCoverage.considered,
       covered: inboxCoverage.covered,
     });
+    // Every listed row failing to resolve (covered === 0 with a nonzero
+    // considered) is a structural-drift signal, not ordinary per-row noise:
+    // `buildInboxMessageRecord` only drops a row for a missing/unparseable
+    // `date_short`, and it is very unlikely every row on a real inbox page
+    // shares that defect at once — far more likely the table's column
+    // layout shifted (an inserted leading cell, or status/date/preview
+    // reordered) and `date_short` is silently reading the wrong cell for
+    // every row. Statements (pdf_download_timeout) and transactions
+    // (export_affordance_missing) already surface this class of failure as
+    // a diagnostic SKIP_RESULT; inbox previously reported only a bare
+    // partial DETAIL_COVERAGE with no signal telling anyone why. This is
+    // purely diagnostic — retryable, reference-only, no PII (row count only,
+    // no dates/preview text) — never a hard error, and a partial (some but
+    // not all rows unresolved) intentionally stays silent to avoid noise on
+    // the ordinary case.
+    if (inboxCoverage.considered > 0 && inboxCoverage.covered === 0) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "inbox_messages",
+        reason: "inbox_rows_unresolved",
+        message: `Inbox scrape found ${inboxCoverage.considered} row(s) but none resolved into a record (likely a table structure change); retry by runtime`,
+        diagnostics: { considered: inboxCoverage.considered },
+      });
+    }
     return true;
   } catch (err) {
     await deps.emit({
@@ -2863,6 +3146,51 @@ async function emitCreditCardNavFailureGaps(
       recordKey: cardId,
       reason: "temporary_unavailable",
       locator: { kind: "usaa.credit_card_billing_stats", card_id: cardId },
+    });
+  }
+}
+
+/**
+ * Emit `DETAIL_GAP_RECOVERED` for a successfully-navigated-and-scraped card
+ * on whichever of the two credit-card streams the runtime is holding a
+ * served, pending gap for. Mirrors `recoverServedAccountTransactionGaps`:
+ * before this, a card gapped by a crashed/interrupted run (e.g. the
+ * mid-run `runtime_error` that produced this connection's stuck
+ * `credit_card_billing`/`credit_card_billing_stats` gaps) stayed `pending`
+ * forever on every later successful run, because `emitCreditCardNavFailureGaps`
+ * had a DETAIL_GAP emit path but no matching recovery path — the connector
+ * never told the runtime "this card is fine now." Only called for cards that
+ * actually reached `emitCreditCardBillingForCard` (outcome `"ok"`); a
+ * navigation failure keeps the gap pending via `emitCreditCardNavFailureGaps`
+ * instead.
+ */
+async function recoverServedCreditCardGaps(
+  deps: EmitDeps,
+  cardId: string,
+  served: EmitDeps["servedCreditCardGaps"],
+  { emitEntity, emitStats }: Pick<CreditCardBillingEmitOptions, "emitEntity" | "emitStats">
+): Promise<void> {
+  if (!served) {
+    return;
+  }
+  const billingGapId = emitEntity ? served.billing.get(cardId) : undefined;
+  if (billingGapId) {
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: billingGapId,
+      stream: "credit_card_billing",
+      record_key: cardId,
+    });
+  }
+  const statsGapId = emitStats ? served.billingStats.get(cardId) : undefined;
+  if (statsGapId) {
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: statsGapId,
+      stream: "credit_card_billing_stats",
+      record_key: cardId,
     });
   }
 }
@@ -3004,6 +3332,7 @@ export async function runCreditCardBillingStream(
       });
       if (outcome === "ok") {
         await emitCreditCardBillingForCard(deps, page, a, options);
+        await recoverServedCreditCardGaps(deps, cardId, deps.servedCreditCardGaps, { emitEntity, emitStats });
         continue;
       }
       navFailedIds.add(cardId);
@@ -3061,7 +3390,7 @@ export async function runCreditCardBillingStream(
     }
     // Credit-card billing is a full scan of the credit-card accounts: prune
     // fingerprints for cards no longer present so a re-added card re-emits.
-    fingerprintCursor.pruneStale();
+    fingerprintCursor.dropUnseenIds();
     const cursor: Record<string, unknown> = { fetched_at: nowIso() };
     if (fingerprintCursor.size() > 0) {
       cursor.fingerprints = fingerprintCursor.toState();
@@ -3205,6 +3534,8 @@ export async function collectUsaa(ctx: BrowserCollectContext): Promise<void> {
     emit,
     emitRecord,
     servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
+    servedCreditCardGaps: buildServedCreditCardGapLookups(ctx.detailGaps),
+    servedStatementGaps: buildServedStatementGapLookup(ctx.detailGaps),
   };
 
   // Run-scoped state shared across every stream below, constructed

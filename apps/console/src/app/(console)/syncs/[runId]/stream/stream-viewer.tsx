@@ -141,6 +141,7 @@ import {
   readViewerViewport,
   viewportLayoutFromInfo,
 } from "./stream-viewer-geometry.ts";
+import { normalizedPointerButton, readablePointerInput } from "./stream-viewer-pointer-input.ts";
 import { parseAttachedMessage } from "./stream-viewer-protocol.ts";
 import {
   createPdppRemoteSurfaceTransport,
@@ -4180,42 +4181,6 @@ function NekoSurface({
         userActivationActive: navigator.userActivation?.isActive ?? null,
       });
     };
-    const remoteTypeFor = (type: string): "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | null => {
-      switch (type) {
-        case "pointerdown":
-          return "pointerdown";
-        case "pointermove":
-          return "pointermove";
-        case "pointerup":
-          return "pointerup";
-        case "pointercancel":
-          return "pointercancel";
-        default:
-          return null;
-      }
-    };
-    const readablePointerInput = (
-      event: PointerEvent
-    ): {
-      pointerType: "mouse" | "touch" | "pen";
-      type: "pointercancel" | "pointerdown" | "pointermove" | "pointerup";
-    } | null => {
-      const type = remoteTypeFor(event.type);
-      if (!type) {
-        return null;
-      }
-      const pointerType: "mouse" | "touch" | "pen" =
-        event.pointerType === "touch" || event.pointerType === "pen" ? event.pointerType : "mouse";
-      if ((type === "pointerdown" || type === "pointerup") && pointerType === "touch" && event.button !== 0) {
-        return null;
-      }
-      // Hover-move gate (step 2 open question #2): suppress mouse moves
-      // with no button held to prevent hover floods.
-      if (type === "pointermove" && event.pointerType === "mouse" && event.buttons === 0) {
-        return null;
-      }
-      return { pointerType, type };
-    };
     const dispatchPointerIntent = (
       event: PointerEvent,
       type: "pointercancel" | "pointerdown" | "pointermove" | "pointerup",
@@ -4227,7 +4192,11 @@ function NekoSurface({
       }
       const pointerIntent: Extract<RemoteSurfaceInputPayload, { type: "pointer" }> = {
         action: type,
-        button: event.button,
+        // Touch/pen `button` is normalized to primary before it leaves the
+        // client: neko turns this into an X11 button by adding 1, so a raw
+        // `-1` from a touch pointerdown would press X11 button 0 (no button)
+        // and the tap would never click. See `normalizedPointerButton`.
+        button: normalizedPointerButton(event.button, pointerType),
         buttons: event.buttons,
         clickCount: event.detail,
         pointerId: event.pointerId,

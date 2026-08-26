@@ -22,12 +22,17 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import type { EmittedMessage } from "@pdpp/connector-protocol";
 import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  buildOrdersStateCursor,
+  classifyEmptyListPage,
   classifyHebDetailFailure,
   type EmitDeps,
   emitOrderItemsCoverage,
@@ -35,6 +40,7 @@ import {
   fetchOrderDetail,
   HEB_HYDRATION_WAIT_MAX_MS,
   HEB_HYDRATION_WAIT_MIN_MS,
+  MAX_LIST_PAGES as HEB_MAX_LIST_PAGES,
   HEB_REPAIR_RETRY_DELAY_MAX_MS,
   HEB_REPAIR_RETRY_DELAY_MIN_MS,
   hebAllowsInteractiveAuthRepair,
@@ -42,6 +48,7 @@ import {
   newOrdersCoverage,
   type OrderItemsCoverage,
   type OrdersCoverage,
+  priorOrdersEvidenceFromState,
   processListOrder,
   type RepairDeps,
   type RunFlags,
@@ -53,7 +60,9 @@ import {
   runForwardScan,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
-import type { ListPageOrder } from "./types.ts";
+import type { ListPageDiagnostics, ListPageOrder } from "./types.ts";
+
+const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__");
 
 type DetailGap = Extract<EmittedMessage, { type: "DETAIL_GAP" }>;
 type DetailGapRecovered = Extract<EmittedMessage, { type: "DETAIL_GAP_RECOVERED" }>;
@@ -1097,7 +1106,7 @@ test("runForwardScan: a genuine single-page result (maxPage: 1, affirmatively as
     }
   ) as Page;
 
-  const newestOrderDate = await runForwardScan(page, deps, makeRunFlags(), null);
+  const { newestOrderDate } = await runForwardScan(page, deps, makeRunFlags(), null);
 
   assert.equal(gotoCount, 1, "a genuine single-page result must never request page 2");
   assert.equal(newestOrderDate, "2026-07-13", "page 1's order must still be processed normally");
@@ -1203,6 +1212,239 @@ test("runForwardScan: an empty page whose OWN pagination nav still agrees maxPag
     () => runForwardScan(page, deps, makeRunFlags(), null),
     /heb_empty_list_page_empty_page_before_max_page/,
     "an empty page whose own metadata still resolves a maxPage must classify as empty_page_before_max_page, not absent"
+  );
+});
+
+// ─── Source-authored empty state ──────────────────────────────────────────
+
+test("runForwardScan: H-E-B's real 'No past orders' page completes the scan instead of aborting as selector_drift", async () => {
+  // Fail-before/pass-after oracle for the real defect. `orders-list-no-past-
+  // orders.html` is a live capture (2026-08-21, in-container, connector's own
+  // authenticated profile): a 272 KB served page titled "Your orders |
+  // HEB.com" with no Imperva markers, showing H-E-B's own "No past orders"
+  // empty state.
+  //
+  // Without the empty_state branch this page aborts as `selector_drift`,
+  // because the empty-state component's own CSS-module class names supply all
+  // four `class*="order"` matches (`order_cards: 0, any_card: 4`). That
+  // diagnosis blames H-E-B's markup and sends recovery at a selector rewrite
+  // that cannot succeed. Note this page also has no pagination nav, so it
+  // would otherwise fall to `pagination_metadata_absent` — the assertion below
+  // is that it aborts for NEITHER reason.
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ ordersCoverage, wantsItems: false, wantsOrders: true });
+  const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  const { newestOrderDate: newest } = await runForwardScan(page, deps, makeRunFlags(), null);
+
+  assert.equal(newest, null, "an empty history yields no newest order date");
+  // The scan must reach a clean terminal, not throw. Before the fix this call
+  // rejected with heb_empty_list_page_selector_drift.
+  const skips = protocolMessages.filter((m) => m.type === "SKIP_RESULT");
+  assert.deepEqual(
+    skips.map((m) => (m as { reason: string }).reason),
+    [],
+    "a source-reported empty history is proven terminal and must emit no SKIP_RESULT"
+  );
+
+  // Completing the scan is what lets coverage be emitted at all: the throwing
+  // path left the `orders` stream permanently unmeasured. Zero considered /
+  // zero covered is an honest proven-empty claim here, because H-E-B scopes
+  // order history to the ACCOUNT, not the selected store (verified against
+  // stored records: one scrape of a single connection returned orders from
+  // four different H-E-B stores).
+  await emitOrdersCoverage(deps, ordersCoverage);
+  const coverage = findDetailCoverage(protocolMessages);
+  assert.ok(coverage, "the orders stream must still report coverage on an empty run");
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+});
+
+test("runForwardScan: an empty page WITHOUT the empty-state marker still aborts as selector_drift", async () => {
+  // The fail-closed half. Genuine drift — order cards gone but other
+  // `class*="order"` elements still present, and no empty-state component to
+  // vouch for it — must keep aborting exactly as before. This is what stops
+  // the new branch from becoming a blanket "zero orders is fine" escape.
+  const { deps } = makeRecordingDeps({ wantsItems: false });
+  const html = `<html><body><main>
+    <div data-qe-id="orderResults"><div class="OrderCard_wrapper__x1"></div></div>
+  </main></body></html>`;
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  await assert.rejects(
+    () => runForwardScan(page, deps, makeRunFlags(), null),
+    /heb_empty_list_page_selector_drift/,
+    "an empty page with no source-authored empty state is still unproven"
+  );
+});
+
+test("runForwardScan: an Imperva block is never laundered into a proven-empty result", async () => {
+  // Ordering guard. The block check runs before the empty_state check, so a
+  // challenge page can never be reported as a proven-empty history even if a
+  // future block shape were to carry empty-state-looking markup.
+  const { deps } = makeRecordingDeps({ wantsItems: false });
+  const blockWithEmptyStateMarkup = `<html><body>{ "incidentId" : "0-0", "hostName" : "www.heb.com", "errorCode" : "15" }<div data-qe-id="orderResults"><div class="Empty_box__qxVTd"></div></div></body></html>`;
+  const page = makePageStub({
+    content: blockWithEmptyStateMarkup,
+    url: "https://www.heb.com/my-account/your-orders?page=1",
+  });
+
+  await assert.rejects(
+    () => runForwardScan(page, deps, makeRunFlags(), null),
+    /heb_empty_list_page_source_auth_or_challenge/,
+    "bot protection must outrank the empty-state marker"
+  );
+});
+
+// ─── Proven-empty regression guard (prior-orders evidence) ────────────────
+//
+// A connection that has already collected orders must never be able to
+// complete a run as "proven empty". The source-authored empty state is
+// trustworthy for an account that never had orders; for an account we have
+// already measured, the same page is a contradiction, not a result.
+
+const EMPTY_STATE_DIAG: ListPageDiagnostics = {
+  any_card: 4,
+  body_preview: "",
+  empty_state: true,
+  incapsula_block: false,
+  order_cards: 0,
+  password_form: false,
+  title: "",
+  url: "",
+};
+
+const RESOLVED_MAX_PAGE = { kind: "resolved", source: "dom", value: 1 } as const;
+
+test("classifyEmptyListPage: source-reported empty on a connection with NO prior orders stays proven-empty", () => {
+  // Preserves efc601bb7. A first-ever run on a genuinely empty account is the
+  // one case where zero coverage is an honest measurement.
+  assert.deepEqual(classifyEmptyListPage(EMPTY_STATE_DIAG, 1, RESOLVED_MAX_PAGE, { hasPriorOrders: false }), {
+    action: "terminal",
+    reason: "source_reported_empty",
+  });
+});
+
+test("classifyEmptyListPage: the prior-orders argument defaults to absent, so callers cannot silently opt in", () => {
+  assert.deepEqual(classifyEmptyListPage(EMPTY_STATE_DIAG, 1, RESOLVED_MAX_PAGE), {
+    action: "terminal",
+    reason: "source_reported_empty",
+  });
+});
+
+test("classifyEmptyListPage: source-reported empty on a connection WITH prior orders aborts instead of proving zero", () => {
+  // The defect this guard closes: without it, this exact input returned
+  // {action:"terminal", reason:"source_reported_empty"}, letting a connection
+  // holding 41 orders commit covered:0/considered:0 as a measured result.
+  assert.deepEqual(classifyEmptyListPage(EMPTY_STATE_DIAG, 1, RESOLVED_MAX_PAGE, { hasPriorOrders: true }), {
+    action: "abort",
+    reason: "heb_empty_history_after_prior_orders",
+  });
+});
+
+test("classifyEmptyListPage: an auth/challenge page keeps its own reason even when prior orders exist", () => {
+  // Ordering guard, upper half. The block check stays ABOVE the new branch:
+  // when a challenge is actually established, that is the more specific and
+  // more actionable diagnosis, and it must not be relabelled.
+  assert.deepEqual(
+    classifyEmptyListPage({ ...EMPTY_STATE_DIAG, incapsula_block: true }, 1, RESOLVED_MAX_PAGE, {
+      hasPriorOrders: true,
+    }),
+    { action: "abort", reason: "source_auth_or_challenge" }
+  );
+  assert.deepEqual(
+    classifyEmptyListPage({ ...EMPTY_STATE_DIAG, password_form: true }, 1, RESOLVED_MAX_PAGE, {
+      hasPriorOrders: true,
+    }),
+    { action: "abort", reason: "source_auth_or_challenge" }
+  );
+});
+
+test("classifyEmptyListPage: prior orders do not relabel a page that never claimed to be empty", () => {
+  // Ordering guard, lower half. The new branch is gated on `empty_state`, so
+  // real selector drift keeps reporting as drift regardless of prior orders —
+  // the guard adds a failure mode, it does not swallow the existing ones.
+  assert.deepEqual(
+    classifyEmptyListPage({ ...EMPTY_STATE_DIAG, empty_state: false }, 1, RESOLVED_MAX_PAGE, {
+      hasPriorOrders: true,
+    }),
+    { action: "abort", reason: "selector_drift" }
+  );
+});
+
+test("priorOrdersEvidenceFromState: a committed orders checkpoint is what arms the guard", () => {
+  // Pins the checkpoint-to-evidence link that collect() depends on. Without
+  // this test, hardcoding `hasPriorOrders: false` in collect() would disarm
+  // the guard for every connection while every other test still passed.
+  assert.deepEqual(priorOrdersEvidenceFromState({ checkpoint: "2026-08-17" }), { hasPriorOrders: true });
+  // A never-collected connection stores no checkpoint at all. `exactOptional
+  // PropertyTypes` makes an explicitly-undefined checkpoint unrepresentable,
+  // so the absent-property case is the only "no prior orders" shape there is.
+  assert.deepEqual(priorOrdersEvidenceFromState({}), { hasPriorOrders: false });
+});
+
+test("runForwardScan: H-E-B's real 'No past orders' page aborts when this connection already collected orders", async () => {
+  // Integration half, through the same live 2026-08-21 capture the
+  // proven-empty test uses. Same page, same markup, opposite verdict — the
+  // only difference is that this connection has a prior orders checkpoint.
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ ordersCoverage, wantsItems: false, wantsOrders: true });
+  const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  await assert.rejects(
+    () => runForwardScan(page, deps, makeRunFlags(), "2026-08-01", { hasPriorOrders: true }),
+    /heb_empty_list_page_heb_empty_history_after_prior_orders/,
+    "an account with prior orders cannot be proven empty by a page render"
+  );
+
+  // The failure must be legible to the owner, and must not blame anything the
+  // page does not establish.
+  const skip = protocolMessages.find(
+    (m) => m.type === "SKIP_RESULT" && (m as { reason: string }).reason === "heb_empty_history_after_prior_orders"
+  ) as { message: string; diagnostics: Record<string, unknown> } | undefined;
+  assert.ok(skip, "the abort must surface a SKIP_RESULT the owner can read");
+  assert.match(skip.message, /previously collected orders/);
+  assert.match(skip.message, /retained and untouched/);
+  assert.doesNotMatch(skip.message, /selector|drift/i, "selector drift is not established and must not be blamed");
+  assert.doesNotMatch(skip.message, /block|bot|captcha/i, "a bot block is not established and must not be blamed");
+  assert.equal(skip.diagnostics.empty_state, true);
+  assert.equal(skip.diagnostics.has_prior_orders, true);
+
+  // Nothing may be recorded as covered, and no proven-zero coverage may be
+  // claimed: the scan threw before any coverage accounting ran.
+  assert.equal(ordersCoverage.considered.length, 0);
+  assert.equal(ordersCoverage.covered.length, 0);
+  assert.equal(findDetailCoverage(protocolMessages), undefined, "an aborted run must claim no coverage at all");
+});
+
+test("runForwardScan: the empty-history abort emits no records and no STATE cursor", async () => {
+  // Requirement: the guard must not delete, tombstone, or overwrite stored
+  // records, and must not advance or clear the orders cursor. The connector's
+  // only durable writes are protocol messages, so proving it emitted no
+  // RECORD and no STATE proves the stored copy and the prior checkpoint are
+  // both untouched.
+  const { deps, emitted, protocolMessages } = makeRecordingDeps({ wantsItems: false, wantsOrders: true });
+  const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  await assert.rejects(() => runForwardScan(page, deps, makeRunFlags(), "2026-08-01", { hasPriorOrders: true }));
+
+  assert.equal(emitted.length, 0, "no records may be written on a contradicted-empty run");
+  assert.equal(
+    protocolMessages.filter((m) => m.type === "STATE").length,
+    0,
+    "the orders cursor must not be advanced or cleared"
+  );
+  // Deletion needs no assertion: the connector protocol has no delete or
+  // tombstone message, so a connector cannot remove a stored record even in
+  // principle. The only durable writes available here are RECORD and STATE,
+  // and both are asserted absent above.
+  assert.deepEqual(
+    [...new Set(protocolMessages.map((m) => m.type))].sort(),
+    ["SKIP_RESULT"],
+    "the abort's only durable output is the owner-facing SKIP_RESULT"
   );
 });
 
@@ -1423,4 +1665,142 @@ test("recordDetailOutcome: hydrated/gap each land in the right accumulator set",
   assert.deepEqual(coverage.required, ["ord-h", "ord-g"]);
   assert.deepEqual(coverage.hydrated, ["ord-h"]);
   assert.deepEqual(coverage.gap, ["ord-g"]);
+});
+
+// ─── Page-ceiling honesty (MAX_LIST_PAGES) ────────────────────────────────
+//
+// `runForwardScan` has two distinct exits: an honest completion
+// (`pageNum > maxPage` — the walk reached the end H-E-B itself advertised)
+// and a blast-radius ceiling (`pageNum <= MAX_LIST_PAGES` going false). The
+// ceiling is a legitimate bound, but a run that stops there has NOT seen the
+// whole list, and H-E-B's own pagination nav says so. These tests pin that
+// the two exits are distinguishable in the owner-facing coverage evidence:
+// a truncated walk must never report `covered >= considered`, because
+// `covered < considered` is what `evaluateStreamCoherence` turns into
+// `boundary_shortfall` -> `partial` instead of `complete`.
+
+/** Build a list-page stub advertising `maxPage` total pages, each holding one
+ *  order, with dates descending so no boundary stop fires. */
+function makeCeilingPage(advertisedMaxPage: number): { page: Page; pagesFetched: () => number[] } {
+  const nav = `<nav aria-label="Pagination"><a href="?page=1">1</a><a href="?page=${advertisedMaxPage}">${advertisedMaxPage}</a></nav>`;
+  const fetched: number[] = [];
+  let currentPage = 1;
+  const htmlFor = (pageNum: number): string => {
+    // Descending dates: page 1 newest. Day-of-month stays in range for any
+    // page count used here (<= 60 pages -> 2026-06-XX .. 2026-07-XX).
+    const day = 60 - pageNum;
+    const month = day > 30 ? 7 : 6;
+    const dayOfMonth = day > 30 ? day - 30 : day;
+    const id = `HEB${String(2_000_000_000 + pageNum)}`;
+    return `<html><body><main>
+      <a href="/my-account/order-history/${id}">${month === 7 ? "July" : "June"} ${dayOfMonth}, 2026 $10.00, 1 items</a>
+      ${nav}
+    </main></body></html>`;
+  };
+  const page = new Proxy(
+    {},
+    {
+      get(_target, prop): unknown {
+        if (prop === "goto") {
+          return (url: string): Promise<null> => {
+            const m = /page=(\d+)/.exec(url);
+            currentPage = m?.[1] ? Number(m[1]) : 1;
+            fetched.push(currentPage);
+            return Promise.resolve(null);
+          };
+        }
+        if (prop === "waitForSelector") {
+          return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "content") {
+          return (): Promise<string> => Promise.resolve(htmlFor(currentPage));
+        }
+        if (prop === "url") {
+          return (): string => `https://www.heb.com/my-account/your-orders?page=${currentPage}`;
+        }
+        throw new Error(`unexpected page.${String(prop)} in ceiling test stub`);
+      },
+    }
+  ) as Page;
+  return { page, pagesFetched: (): number[] => fetched };
+}
+
+test("runForwardScan: hitting MAX_LIST_PAGES does not report the orders stream complete", async () => {
+  // H-E-B advertises 60 pages; the connector's blast-radius ceiling is 50.
+  // The walk stops 10 pages short of what the provider itself says exists.
+  const ordersCoverage = newOrdersCoverage();
+  const { deps } = makeRecordingDeps({ ordersCoverage, wantsItems: false });
+  const { page, pagesFetched } = makeCeilingPage(60);
+
+  await runForwardScan(page, deps, makeRunFlags(), null);
+
+  assert.equal(pagesFetched().length, HEB_MAX_LIST_PAGES, "the ceiling bounds the walk at MAX_LIST_PAGES pages");
+
+  // The honesty contract: `covered` must fall short of `considered` so the
+  // reference implementation derives `partial`, not `complete`.
+  assert.ok(
+    ordersCoverage.covered.length < ordersCoverage.considered.length,
+    "a truncated walk must report covered < considered so coverage reads partial, not complete; " +
+      `got considered=${ordersCoverage.considered.length} covered=${ordersCoverage.covered.length}`
+  );
+});
+
+test("runForwardScan: an honest completion (maxPage under the ceiling) still reports the orders stream complete", async () => {
+  // The guard against over-correcting: a walk that genuinely reached the end
+  // H-E-B advertised must still read complete (covered >= considered).
+  const ordersCoverage = newOrdersCoverage();
+  const { deps } = makeRecordingDeps({ ordersCoverage, wantsItems: false });
+  const { page, pagesFetched } = makeCeilingPage(3);
+
+  await runForwardScan(page, deps, makeRunFlags(), null);
+
+  assert.equal(pagesFetched().length, 3, "an honest walk fetches exactly the advertised page count");
+  assert.ok(
+    ordersCoverage.covered.length >= ordersCoverage.considered.length && ordersCoverage.considered.length === 3,
+    "an honest completion must still read complete; " +
+      `got considered=${ordersCoverage.considered.length} covered=${ordersCoverage.covered.length}`
+  );
+});
+
+test("runForwardScan: the ceiling exit reports truncated, the honest exit does not", async () => {
+  const overCeiling = makeCeilingPage(60);
+  const truncatedScan = await runForwardScan(
+    overCeiling.page,
+    makeRecordingDeps({ wantsItems: false }).deps,
+    makeRunFlags(),
+    null
+  );
+  assert.equal(truncatedScan.truncated, true, "stopping at the page ceiling must report truncated");
+
+  const underCeiling = makeCeilingPage(3);
+  const honestScan = await runForwardScan(
+    underCeiling.page,
+    makeRecordingDeps({ wantsItems: false }).deps,
+    makeRunFlags(),
+    null
+  );
+  assert.equal(honestScan.truncated, false, "reaching the advertised maxPage must NOT report truncated");
+});
+
+test("buildOrdersStateCursor: a truncated scan must not advance the orders checkpoint past unread pages", () => {
+  // The permanent-loss case. H-E-B's list is reverse-chronological, so
+  // `newestOrderDate` is page 1's date. Committing it after a walk that never
+  // read pages 51..60 would claim coverage back to that date; the next run's
+  // `resumeBoundary` would then stop the walk long before reaching the
+  // untraversed tail, making those orders unreachable by ANY future run.
+  const priorState = { checkpoint: "2026-01-01" };
+
+  const truncated = buildOrdersStateCursor("2026-07-14", priorState, undefined, true);
+  assert.equal(
+    truncated.checkpoint,
+    "2026-01-01",
+    "a truncated scan holds the prior checkpoint so the unread tail stays reachable next run"
+  );
+
+  const honest = buildOrdersStateCursor("2026-07-14", priorState, undefined, false);
+  assert.equal(
+    honest.checkpoint,
+    "2026-07-14",
+    "an honest completion still advances the checkpoint — truncation handling must not freeze normal progress"
+  );
 });

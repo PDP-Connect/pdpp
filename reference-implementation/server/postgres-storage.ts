@@ -27,6 +27,7 @@ import {
   connectorInstanceLockWaitMs,
 } from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import { assertTestDatabase, testDatabaseGuardActive } from "./postgres-test-database-guard.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
@@ -72,8 +73,62 @@ interface StorageOptions {
 
 let activeBackend: StorageBackend = "sqlite";
 let pool: PgPool | null = null;
+let bulkPool: PgPool | null = null;
 let lockPool: PgPool | null = null;
 let lockPoolCapacity = 0;
+
+/**
+ * Connection-lane sizing, 2026-08-21. The RI runs the HTTP server, the run
+ * scheduler and the connector/embedding runtime in ONE Node process sharing
+ * ONE node-postgres Pool that never set `max` — so the library default of 10
+ * connections was the entire budget for interactive request handlers AND the
+ * background ingest/backfill pipeline together. A burst of bulk work could
+ * therefore starve an interactive handler of a connection outright, which is
+ * a QUEUEING failure independent of how long any single statement runs (and
+ * so is not fixed by the keyset index that precedes this change, nor by the
+ * per-statement bound below).
+ *
+ * Splitting the single pool in two is the node-postgres-layer equivalent of
+ * PgBouncer's pool-alias partitioning, without adding PgBouncer to a
+ * single-process deployment. `max_connections` on this instance is 100, so
+ * 8 + 3 + 1 is nowhere near the server ceiling; the point is not to conserve
+ * connections but to make the interactive lane's supply independent of bulk
+ * demand.
+ */
+const POSTGRES_INTERACTIVE_POOL_MAX = 8;
+const POSTGRES_BULK_POOL_MAX = 3;
+
+/**
+ * Hard per-statement ceiling for the bulk lane. Postgres cannot preempt a
+ * transaction once admitted (see the PostgreSQL wiki's own "Priorities"
+ * page: there are no facilities to limit or prioritize resources per
+ * user/query), so a client-side pacer can decline to start the NEXT unit of
+ * work but can never shorten one already running. `statement_timeout` is the
+ * only mechanism that bounds an in-flight statement from outside it.
+ *
+ * Applied as `SET LOCAL` inside each bulk transaction rather than
+ * `ALTER ROLE ... SET`, deliberately: this deployment has exactly ONE role
+ * (`pdpp`) serving both interactive and bulk traffic, so a role-scoped
+ * timeout would apply the bulk bound to the owner's page loads too. `SET
+ * LOCAL` reverts at transaction end and therefore cannot leak onto whichever
+ * pooled client picks the connection up next — the same rule
+ * `postgresQueryBounded` already documents and its test already proves.
+ *
+ * 15s, not the 2-5s the design sketch suggested: measured bulk statements on
+ * this instance (live pg_stat_activity sampling during a real re-ingest) run
+ * ~0.5-1.1s for the semantic and lexical writes once the keyset index lands.
+ * A bound must be a BACKSTOP against pathology, not a routine cliff — set it
+ * near the routine cost and an ordinary slow page turns a recoverable delay
+ * into a failed backfill. 15s is ~14x the observed write cost and still an
+ * order of magnitude under the 44.5s incident.
+ */
+const POSTGRES_BULK_STATEMENT_TIMEOUT_MS = 15_000;
+/**
+ * Bulk work must not sit in a lock queue either. Kept well under the
+ * statement bound so a contended chunk fails fast and is retried on the next
+ * pass rather than occupying a bulk-lane connection while it waits.
+ */
+const POSTGRES_BULK_LOCK_TIMEOUT_MS = 3000;
 
 // Semantic embedding storage mode, detected at bootstrap. 'vector' when the
 // pgvector extension is available and `semantic_search_blob.embedding` carries
@@ -270,6 +325,20 @@ export function getPostgresPool(): PgPool {
     throw new Error("Postgres storage has not been initialized.");
   }
   return pool;
+}
+
+/**
+ * The bulk lane: ingest/backfill/embedding work. Separate from the
+ * interactive pool so a burst of bulk statements cannot exhaust the
+ * connections HTTP handlers need. Callers should reach this through
+ * `postgresBulkQuery` rather than using the pool directly, so the bulk
+ * statement/lock bounds are applied uniformly.
+ */
+export function getPostgresBulkPool(): PgPool {
+  if (!bulkPool) {
+    throw new Error("Postgres storage has not been initialized.");
+  }
+  return bulkPool;
 }
 
 export function getPostgresLockPool(): PgPool {
@@ -615,6 +684,133 @@ async function migratePostgresRecordRejectionBytePayload(client: PoolClient): Pr
   }
 }
 
+// Postgres SQLSTATE raised when a statement is cancelled by `statement_timeout`.
+const POSTGRES_STATEMENT_TIMEOUT_SQLSTATE = "57014";
+
+/**
+ * Thrown by `postgresQueryBounded` when Postgres itself cancelled the
+ * statement because it exceeded the per-unit `SET LOCAL statement_timeout`.
+ * Distinct from an ordinary query error: this is the per-unit HARD bound
+ * (design review P1-2's second contract) actually firing, not a query
+ * defect. Callers in a bounded reconciliation loop should treat it like any
+ * other repair/discovery failure for this unit (fail this candidate/pass
+ * closed; the row stays dirty and is retried on a later round), never let
+ * it propagate as an unhandled rejection.
+ */
+export class PostgresStatementTimeoutError extends Error {
+  constructor(options?: ErrorOptions) {
+    super(
+      "Postgres statement exceeded its per-unit admission allowance and was cancelled by statement_timeout.",
+      options
+    );
+    this.name = "PostgresStatementTimeoutError";
+  }
+}
+
+/**
+ * Runs exactly one statement under a Postgres-ENFORCED, connection-scoped
+ * `SET LOCAL statement_timeout` — the per-unit HARD bound design review
+ * P1-2 requires. `postgresQuery`/`pool.query()` above run bare, with no
+ * explicit transaction: `SET LOCAL` requires an open transaction to scope
+ * to, and a bare (non-`LOCAL`) `SET statement_timeout` on a pooled
+ * connection would leak onto whatever OTHER caller the pool hands that same
+ * physical connection to next once this call returns it. This function
+ * therefore opens its own short-lived `BEGIN`/`COMMIT` around exactly one
+ * statement — same connection-acquisition/release shape as
+ * `withPostgresTransaction` above, so the timeout is provably confined to
+ * this one statement on this one connection and the connection is always
+ * released back to the pool (`finally`) regardless of outcome.
+ *
+ * `timeoutMs` must be derived by the CALLER from its own remaining
+ * cooperative admission allowance (`deadline - Date.now()`), never a fixed
+ * constant — a unit starting with 40ms left on the round's soft deadline
+ * must not get the same server-side ceiling as one starting with 1900ms
+ * left. Passing `timeoutMs <= 0` still issues `SET LOCAL statement_timeout`
+ * with that value, which Postgres treats as invalid/disabled rather than
+ * "expire immediately" — callers must check their own remaining budget
+ * before calling this at all, exactly like every other admission point in
+ * the bounded sweep; this function does not itself decide whether a unit is
+ * still admissible.
+ */
+export async function postgresQueryBounded<Row extends QueryResultRow = QueryResultRow>(
+  sql: string,
+  params: unknown[],
+  timeoutMs: number
+): Promise<{ rowCount: number | null; rows: Row[] }> {
+  const client = await getPostgresPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`);
+    const result = await client.query<Row>(sql, params);
+    await client.query("COMMIT");
+    return { rowCount: result.rowCount, rows: result.rows };
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Rollback failure must not hide the original statement/timeout error.
+    }
+    if ((err as { code?: string } | null)?.code === POSTGRES_STATEMENT_TIMEOUT_SQLSTATE) {
+      // biome-ignore lint/style/useErrorCause: cause is threaded through PostgresStatementTimeoutError's own constructor (matches NekoSurfaceAllocatorServiceError's identical established pattern) — biome cannot trace it through a custom Error subclass.
+      throw new PostgresStatementTimeoutError({ cause: err });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Runs one bulk-lane statement: on the BULK pool (so it cannot consume an
+ * interactive connection) and under a `SET LOCAL` statement/lock timeout (so
+ * it cannot run unbounded once Postgres has admitted it).
+ *
+ * This is the backstop half of the 2026-08-21 contention fix. The bulk
+ * ingest/backfill path was ALREADY chunked before this change — the semantic
+ * rebuild pages `records` 500 rows at a time and issues each page's read and
+ * write as its own autocommit statement, holding no transaction across
+ * pages. What it lacked was a lane of its own and a ceiling: every page
+ * competed for the same 10 shared connections as the owner's page loads, and
+ * nothing bounded a page that went pathological. Both gaps are what this
+ * closes; the dominant COST of those pages was the missing keyset index,
+ * fixed in the preceding commit.
+ *
+ * A `PostgresStatementTimeoutError` here means the bulk bound fired. Bulk
+ * callers should treat it as "this chunk did not land, retry it on the next
+ * pass" — never as data loss, since each chunk commits independently and the
+ * keyset cursor simply does not advance past an uncommitted page.
+ */
+export async function postgresBulkQuery<Row extends QueryResultRow = QueryResultRow>(
+  sql: string,
+  params: unknown[] = []
+): Promise<{ rowCount: number | null; rows: Row[] }> {
+  const client = await getPostgresBulkPool().connect();
+  try {
+    await client.query("BEGIN");
+    // SET LOCAL, never bare SET: it reverts at COMMIT/ROLLBACK and so cannot
+    // leak this bulk ceiling onto whichever caller the pool hands this
+    // physical connection to next.
+    await client.query(`SET LOCAL statement_timeout = ${POSTGRES_BULK_STATEMENT_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${POSTGRES_BULK_LOCK_TIMEOUT_MS}`);
+    const result = await client.query<Row>(sql, params);
+    await client.query("COMMIT");
+    return { rowCount: result.rowCount, rows: result.rows };
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Rollback failure must not hide the original statement/timeout error.
+    }
+    if ((err as { code?: string } | null)?.code === POSTGRES_STATEMENT_TIMEOUT_SQLSTATE) {
+      // biome-ignore lint/style/useErrorCause: cause is threaded through PostgresStatementTimeoutError's own constructor (matches postgresQueryBounded's identical established pattern) — biome cannot trace it through a custom Error subclass.
+      throw new PostgresStatementTimeoutError({ cause: err });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // ─── Physical storage footprint (read-only operator diagnostics) ─────────────
 //
 // Surfaces the database's on-disk size so an operator can reconcile the
@@ -854,7 +1050,8 @@ export async function initExistingPostgresRepairStorage(config: StorageConfig | 
   if (pool) {
     await closePostgresStorage();
   }
-  pool = new Pool({ connectionString: config.databaseUrl });
+  pool = new Pool({ connectionString: config.databaseUrl, max: POSTGRES_INTERACTIVE_POOL_MAX });
+  bulkPool = new Pool({ connectionString: config.databaseUrl, max: POSTGRES_BULK_POOL_MAX });
   lockPoolCapacity = 1;
   lockPool = new Pool({ connectionString: config.databaseUrl, max: lockPoolCapacity });
   activeBackend = "postgres";
@@ -887,11 +1084,27 @@ export async function initPostgresStorage(
     activeBackend = "sqlite";
     return null;
   }
+
+  // Test-lane admission. Every Postgres-backed test path -- whether it goes
+  // through the RI test runner or is invoked directly as `node --test file` --
+  // reaches Postgres through THIS function, so this is the one chokepoint
+  // where a test can be stopped before it writes into a real database. A test
+  // lane must prove its target is a provisioned scratch database; an unmarked
+  // database (production included) is refused loudly. Product/production boots
+  // do not set the test env vars and are untouched.
+  // See server/postgres-test-database-guard.ts for why this is a sentinel
+  // rather than a production-URL blacklist.
+  if (testDatabaseGuardActive()) {
+    await assertTestDatabase(config.databaseUrl);
+  }
+
   if (pool) {
     await closePostgresStorage();
   }
 
-  pool = new Pool({ connectionString: config.databaseUrl });
+  // Two lanes, not one shared pool: see POSTGRES_INTERACTIVE_POOL_MAX.
+  pool = new Pool({ connectionString: config.databaseUrl, max: POSTGRES_INTERACTIVE_POOL_MAX });
+  bulkPool = new Pool({ connectionString: config.databaseUrl, max: POSTGRES_BULK_POOL_MAX });
   lockPoolCapacity = 1;
   lockPool = new Pool({ connectionString: config.databaseUrl, max: lockPoolCapacity });
   activeBackend = "postgres";
@@ -907,8 +1120,10 @@ export async function initPostgresStorage(
 
 export async function closePostgresStorage() {
   const current = pool;
+  const currentBulkPool = bulkPool;
   const currentLockPool = lockPool;
   pool = null;
+  bulkPool = null;
   lockPool = null;
   lockPoolCapacity = 0;
   activeBackend = "sqlite";
@@ -921,6 +1136,9 @@ export async function closePostgresStorage() {
   bumpStorageGeneration();
   if (current) {
     await current.end();
+  }
+  if (currentBulkPool) {
+    await currentBulkPool.end();
   }
   if (currentLockPool) {
     await currentLockPool.end();
@@ -1039,6 +1257,25 @@ export async function bootstrapPostgresSchema({
         UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
       );
 
+      -- Postgres mirror of the SQLite connector_instance_groups table (see
+      -- server/db.ts for the full rationale). Reversible alias/read-model
+      -- grouping only -- never a physical rehome of records or a rewrite of
+      -- a fragment's own connector_instance_id.
+      CREATE TABLE IF NOT EXISTS connector_instance_groups (
+        connector_instance_id TEXT PRIMARY KEY,
+        canonical_connector_instance_id TEXT NOT NULL,
+        owner_subject_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        evidence TEXT NOT NULL DEFAULT '{}',
+        grouped_by TEXT NOT NULL,
+        grouped_at TEXT NOT NULL,
+        CHECK (connector_instance_id <> canonical_connector_instance_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_groups_owner
+        ON connector_instance_groups(owner_subject_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_groups_canonical
+        ON connector_instance_groups(canonical_connector_instance_id);
+
       -- Reset-safe record-source checkpoint: incremented by a supported
       -- stream/connector-wide reset over the distinct stream namespaces it
       -- touched, in the same transaction as the deletes. Combined with the
@@ -1113,6 +1350,44 @@ export async function bootstrapPostgresSchema({
         ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
         ON connector_instance_credentials(owner_subject_id, status);
+
+      -- Durable, provenance-bearing connector configuration: immutable
+      -- per-connection revision ledger + current-pointer. See the matching
+      -- comment above connector_instance_config_revisions in db.ts
+      -- (SQLite) for the full rationale; kept in sync by hand across both
+      -- backends.
+      CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
+        connector_instance_id TEXT NOT NULL
+          REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        revision BIGINT NOT NULL,
+        config_json JSONB NOT NULL,
+        config_contract_id TEXT NOT NULL,
+        config_contract_version BIGINT NOT NULL,
+        option_kind TEXT NOT NULL CHECK (option_kind IN ('collection_scope', 'transport')),
+        origin TEXT NOT NULL CHECK (origin IN ('owner', 'agent', 'migration', 'default')),
+        is_explicit BOOLEAN NOT NULL,
+        status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+        collection_boundary_fingerprint TEXT,
+        source_of_change TEXT NOT NULL,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        confirmed_by TEXT,
+        confirmed_at TEXT,
+        PRIMARY KEY (connector_instance_id, revision)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_config_revisions_instance
+        ON connector_instance_config_revisions(connector_instance_id, revision);
+
+      CREATE TABLE IF NOT EXISTS connector_instance_config_current (
+        connector_instance_id TEXT PRIMARY KEY
+          REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        active_revision BIGINT NOT NULL,
+        storage_epoch BIGINT NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (connector_instance_id, active_revision)
+          REFERENCES connector_instance_config_revisions(connector_instance_id, revision)
+      );
 
       -- Existing Postgres deployments may have the original active/revoked
       -- credential status CHECK. Widen it in place so rejected credentials
@@ -1197,8 +1472,15 @@ export async function bootstrapPostgresSchema({
         validation_json JSONB,
         error_json JSONB,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        owner_epoch TEXT
       );
+      -- The boot epoch of the process that owns this in-flight upload; an
+      -- artifact whose owner_epoch is not the current one is provably
+      -- orphaned. Added via ADD COLUMN IF NOT EXISTS so pre-existing rows
+      -- backfill to NULL, which the sweep also treats as orphaned.
+      ALTER TABLE manual_upload_artifacts
+        ADD COLUMN IF NOT EXISTS owner_epoch TEXT;
       CREATE INDEX IF NOT EXISTS idx_pg_manual_upload_artifacts_connection_created
         ON manual_upload_artifacts(connector_instance_id, created_at DESC);
 
@@ -1828,6 +2110,16 @@ export async function bootstrapPostgresSchema({
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+
+      -- The deployment's durable controller identity; see the matching
+      -- comment in server/db.ts for why it is a table and not an env var.
+      -- Exactly one row (id = 'singleton'), written on the first boot that
+      -- finds it empty and read unchanged by every boot after that.
+      CREATE TABLE IF NOT EXISTS controller_identity (
+        id TEXT PRIMARY KEY,
+        controller_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS controller_active_runs (
@@ -2631,6 +2923,34 @@ export async function bootstrapPostgresSchema({
         ON spine_events(connector_instance_id, event_seq)
         WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
           AND connector_instance_id IS NOT NULL;
+      -- readPostgresDiscoveryContext's per-connection lifecycle-checkpoint
+      -- read (connector-summary-evidence-engine.ts, maxLifecycleSeqResult)
+      -- is MAX(event_seq) ... GROUP BY connector_instance_id over EVERY
+      -- event type, not just the four terminal outcomes the index above
+      -- covers, so that read fell through to a full parallel seq scan on
+      -- every discovery pass. Production, 2026-08-18 (immediately after
+      -- a5505bb59 removed the redundant records count that had been
+      -- masking this): measured 1.5-1.9s / ~117k buffers (~940 MB) via
+      -- EXPLAIN (ANALYZE, BUFFERS) against 1.4M spine_events rows, with
+      -- the scoped = ANY(...) form no faster than the unscoped one (the
+      -- planner cannot prune a scan on an unindexed column). That routinely
+      -- exceeded discovery's remaining per-pass admission allowance
+      -- (MIN_STATEMENT_TIMEOUT_MS), and -- because readPostgresDiscovery
+      -- Context issues its queries with no per-query isolation, unlike
+      -- repairCandidate -- the cancellation propagated out of
+      -- discoverCandidates and aborted the ENTIRE batch before
+      -- classifyCandidate ran for any row (92c9fc83e's existing
+      -- discovery-level catch converts this into a clean candidates_
+      -- inspected: 0, incomplete: true pass rather than a crash, but a
+      -- durably-dirty backlog got zero candidates selected pass after pass
+      -- regardless). A general, unfiltered index on the exact
+      -- (connector_instance_id, event_seq) shape this query groups by lets
+      -- Postgres answer it with a per-group index scan instead of a full
+      -- table scan, the same fix already proven for the terminal-scoped
+      -- case above.
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_instance_seq
+        ON spine_events(connector_instance_id, event_seq)
+        WHERE connector_instance_id IS NOT NULL;
       -- Backfill connector_instance_id for pre-existing TERMINAL rows whose
       -- identity already lives in data_json (Sol fourth-verdict P1.1): the
       -- scoped fold filters exclusively on the new column, so a legacy
@@ -2762,6 +3082,8 @@ export async function bootstrapPostgresSchema({
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
+    await ensurePostgresRecordsCanonicalCountIndex(client, log);
+    await ensurePostgresRecordsInstanceStreamIdIndex(client, log);
     await ensurePostgresConnectorSummarySourceRevisionPrimitive(client);
   } finally {
     try {
@@ -3007,6 +3329,49 @@ function bootstrapLockDelay(attempt: number): number {
   );
 }
 
+/**
+ * Names who is holding the bootstrap lock, for the timeout error only.
+ *
+ * A bare "timed out" tells an operator nothing actionable: the server exits,
+ * the supervisor restarts it, and the next attempt times out on the same
+ * unnamed holder. Observed cost, 2026-08-17: a wedged `DELETE FROM records`
+ * left over from a killed process held a conflicting lock on
+ * `connector_instances`, so every boot queued behind it and the reference
+ * listener never bound. Rolling the image back did not help, because the
+ * blocker lived in Postgres rather than in the container. Diagnosing it by
+ * hand took ~20 minutes of downtime; Postgres could have answered in one
+ * query.
+ *
+ * Best-effort and deliberately non-fatal: this runs on a path that is
+ * already failing, so a diagnostic that throws would replace a useful error
+ * with a worse one. Truncated, and reports only pid/state/wait event and how
+ * long the statement has run -- never query text, which can carry record
+ * values.
+ */
+async function describeBootstrapLockHolders(client: PoolClient): Promise<string> {
+  try {
+    const result = await client.query(
+      `SELECT a.pid, a.state, a.wait_event_type, round(extract(epoch FROM now() - a.query_start)) AS seconds
+       FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+       WHERE l.locktype = 'advisory' AND l.objid = $2 AND l.granted AND a.pid <> pg_backend_pid()
+       LIMIT 5`,
+      POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK
+    );
+    if (result.rows.length === 0) {
+      return " No advisory-lock holder was visible; the contention may be a table-level lock from another session.";
+    }
+    const held = result.rows
+      .map(
+        (row) =>
+          `pid ${row.pid} (${row.state ?? "unknown"}${row.wait_event_type ? `, waiting on ${row.wait_event_type}` : ""}, ${row.seconds ?? "?"}s)`
+      )
+      .join(", ");
+    return ` Held by: ${held}. Terminate the blocking session, or wait for it to finish, before restarting.`;
+  } catch {
+    return "";
+  }
+}
+
 async function acquirePostgresBootstrapLock(client: PoolClient): Promise<void> {
   const tryAcquire = async (attempt: number): Promise<void> => {
     const result = await client.query(
@@ -3021,7 +3386,9 @@ async function acquirePostgresBootstrapLock(client: PoolClient): Promise<void> {
     // CREATE/DROP INDEX CONCURRENTLY in the lock holder.
     await new Promise((resolve) => setTimeout(resolve, bootstrapLockDelay(attempt)));
     if (attempt + 1 >= POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS) {
-      throw new Error("Timed out waiting for PostgreSQL bootstrap serialization lock.");
+      throw new Error(
+        `Timed out waiting for PostgreSQL bootstrap serialization lock.${await describeBootstrapLockHolders(client)}`
+      );
     }
     await tryAcquire(attempt + 1);
   };
@@ -4358,6 +4725,217 @@ async function ensurePostgresLexicalScopedGinIndex(
        USING GIN (connector_instance_id, stream, document)`
   );
   log(`[PDPP] Lexical search migration: scoped GIN index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+}
+
+/**
+ * Production incident, 2026-08-18 (found chasing a5505bb59/this branch's own
+ * discovery-side fix): `repairCandidatePostgres`'s per-connection canonical
+ * read -- `SELECT stream, COUNT(*)::int, MAX(emitted_at) FROM records WHERE
+ * connector_instance_id = $1 AND deleted = FALSE GROUP BY stream`
+ * (connector-summary-evidence-engine.ts, `canonicalResult`) -- was judged
+ * "legitimate, necessary, cheap" earlier in this same investigation without
+ * measuring it against a real multi-million-row connection. It is not cheap:
+ * measured directly against production (READ-ONLY, `EXPLAIN (ANALYZE,
+ * BUFFERS)`) for the fleet's two largest connections (2.42M and 1.30M live
+ * records out of 5.46M total), this query took 3.67-4.07 SECONDS each,
+ * `Parallel Seq Scan`-ing ~584k buffers (~4.5 GB) -- none of `records`'
+ * existing seven indexes cover `(connector_instance_id, deleted)` without a
+ * `stream` predicate this GROUP-BY query cannot supply. Both connections
+ * were repeatedly selected as repair candidates, cancelled by the per-unit
+ * `statement_timeout` floor every pass, and left `dirty` forever: the
+ * existing per-connection catch (`reasonCodeForRepairFailure`/
+ * `logRepairFailure`) correctly avoids marking evidence `failed` on a
+ * cancellation, but "correctly deferred, forever, on the same two rows" is
+ * still an unbounded backlog, not a fix.
+ *
+ * REJECTED alternatives (see connector-summary-evidence-lifecycle-seq-index
+ * test file's sibling investigation and this commit's message for the full
+ * comparison): raising `MIN_STATEMENT_TIMEOUT_MS`, or giving repair a larger
+ * bound than discovery, both re-trap on the NEXT connection to cross
+ * whatever new ceiling is picked -- this query's cost is O(row count) with
+ * no upper bound, so any fixed timeout is a matter of when, not if. A
+ * maintained counter (`retained_size_stream.record_count`, already
+ * incrementally upserted on every write) was close but rejected as the
+ * primary fix: it carries no `last_updated`/`MAX(emitted_at)` column at all
+ * (a schema change of its own), and its row-presence semantics differ from
+ * this sparse `GROUP BY` in a way `buildRepairedRow`'s `known_zero` vs
+ * `unobserved` distinction depends on -- reusing it would change repair's
+ * classification logic, a larger and riskier change than closing an
+ * honestly-measured index gap.
+ *
+ * This index closes the gap the SAME way as this table's other five
+ * `connector_instance_id`-leading indexes above: `(connector_instance_id,
+ * deleted, stream)` matches the query's WHERE + GROUP BY columns exactly,
+ * `INCLUDE (emitted_at)` lets the MAX() aggregate read directly from the
+ * index without a further heap lookup for that column. Verified directly
+ * (production-representative selectivity: one connection at ~4.4% of a
+ * 5.46M-row table, matching the real `cin_2de5ede05c8cc8d45935c414`/total
+ * ratio, seeded and measured in a throwaway scratch database, never
+ * production DDL): the SAME query plans a `Bitmap Heap Scan` off this
+ * index post-VACUUM at 83.7ms, versus the 4.07s unindexed `Parallel Seq
+ * Scan` measured on live production data -- and no change to
+ * `canonicalResult`'s shape or `buildRepairedRow`'s consumption of it.
+ *
+ * SCOPE OF THAT MEASUREMENT, stated honestly: the 83.7ms figure is at ONE
+ * connection holding ~4.4% of the table. This index helps in proportion to
+ * how SELECTIVE the connection is, and a covering index stops being the
+ * cheaper plan once a single connection owns a large fraction of `records`
+ * -- past roughly a third, the planner correctly prefers a sequential scan
+ * and this index will simply be ignored. That is not a defect in the index;
+ * it is the point at which "read this one connection's rows" and "read the
+ * whole table" converge. So this closes the gap for the fleet's normal
+ * shape (many connections, each a small slice) and does NOT by itself
+ * guarantee every future connection stays inside
+ * `MIN_STATEMENT_TIMEOUT_MS`. A connection that grows to dominate the table
+ * needs a bounded/resumable read, not a wider index or a bigger timeout.
+ * Built `CONCURRENTLY` for the same reason as
+ * `idx_pg_lexical_search_scope_document` above: `records` already holds
+ * millions of rows in production, and a plain `CREATE INDEX` would hold a
+ * table-wide write lock for the whole build.
+ */
+const RECORDS_CANONICAL_COUNT_INDEX_LOCK_ID = "8022352479012002";
+
+async function ensurePostgresRecordsCanonicalCountIndex(
+  client: PoolClient,
+  log: StorageLog = NOOP_STORAGE_LOG
+): Promise<void> {
+  await withPostgresAdvisoryLock(client, RECORDS_CANONICAL_COUNT_INDEX_LOCK_ID, async () => {
+    const existing = await client.query(
+      `SELECT ix.indisvalid AS valid
+         FROM pg_class idx
+         JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+         JOIN pg_index ix ON ix.indexrelid = idx.oid
+        WHERE ns.nspname = current_schema()
+          AND idx.relname = 'idx_pg_records_canonical_count'
+        LIMIT 1`
+    );
+    if ((existing.rowCount ?? 0) > 0 && existing.rows[0]?.valid === true) {
+      return;
+    }
+    if ((existing.rowCount ?? 0) > 0) {
+      log("[PDPP] Records migration: dropping invalid canonical-count index before rebuild");
+      await client.query("DROP INDEX CONCURRENTLY IF EXISTS idx_pg_records_canonical_count");
+    }
+
+    // Existing deployments can have millions of records rows. Build
+    // concurrently so startup does not hold a table-wide write lock while
+    // the reference remains otherwise readable — same reasoning as
+    // idx_pg_lexical_search_scope_document above.
+    log("[PDPP] Records migration: building canonical-count index idx_pg_records_canonical_count");
+    const startedAt = Date.now();
+    await client.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_records_canonical_count
+         ON records(connector_instance_id, deleted, stream)
+         INCLUDE (emitted_at)`
+    );
+    log(`[PDPP] Records migration: canonical-count index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  });
+}
+
+/**
+ * Production incident, 2026-08-21: the owner's source-detail page took 44.5s
+ * wall-clock while a Google Maps re-ingest ran concurrently. Two independent
+ * defects compounded; this index closes the larger, and it closes it on BOTH
+ * sides of that incident, which is the part worth stating plainly.
+ *
+ * The keyset-pagination shape `WHERE connector_instance_id = $1 AND stream =
+ * $2 AND deleted = FALSE AND id > $3 ORDER BY id ASC LIMIT $4` had no index
+ * that could serve it. `records`' seven existing indexes all lead with
+ * `connector_instance_id` but none carries `id` as the column immediately
+ * after the equality predicates, so none can satisfy the ORDER BY. The
+ * closest, `idx_pg_records_stream_cursor`, is `(connector_instance_id,
+ * stream, deleted, cursor_value, primary_key_text)` — its fourth column is
+ * `cursor_value`, not `id`. The planner therefore fell back to `records_pkey`
+ * (already `id`-ordered, so the sort is free) and filtered every
+ * non-matching row away one at a time.
+ *
+ * Measured directly against production (READ-ONLY, `EXPLAIN (ANALYZE,
+ * BUFFERS)`) for `cin_12407c1afb78d56848fe0b20`/`messages` — 140,689 live
+ * rows in a 5.61M-row table: 27.4 SECONDS to return 50 rows, `Index Scan
+ * using records_pkey`, `Rows Removed by Filter: 3,031,420`, reading 514,958
+ * buffers from disk (~4 GB against a 512 MB `shared_buffers`). The row count
+ * removed is the whole story: the scan must walk every row with a lower `id`
+ * than the target connection's first row before it can return anything.
+ *
+ * This is NOT only a page-load defect. `postgresSemanticRecordsPage`
+ * (postgres-search.ts) — the coverage-scan SELECT that feeds the semantic
+ * backfill — issues the IDENTICAL query shape with `LIMIT 500`, and live
+ * `pg_stat_activity` sampling during a real re-ingest caught it at 1.2s,
+ * 1.6s, 1.9s, 7.0s, 12.2s, 17.2s, 22.3s and 27.4s on successive pages. So
+ * the "bulk ingest freezes the console" symptom and the "source detail page
+ * is slow" symptom were substantially the same missing index, hit from two
+ * call sites — the bulk pager was not merely competing for resources, it was
+ * itself running multi-second statements for the same reason. Fixing the
+ * index bounds both.
+ *
+ * Verified in a throwaway scratch database (never production DDL), seeded to
+ * production-representative shape — 3,031,420 rows belonging to other
+ * connections occupying the low `id` range, then 140,689 target rows, which
+ * reproduces the exact `Rows Removed by Filter: 3031420` from the live plan:
+ * the `LIMIT 50` page query goes 558ms -> 0.089ms, and the `LIMIT 500` bulk
+ * coverage page goes to 1.4ms, both switching to `Index Scan using
+ * idx_pg_records_instance_stream_id` with all four predicates absorbed into
+ * `Index Cond` and zero rows removed by filter.
+ *
+ * SCOPE, stated honestly: the scratch measurement's absolute numbers are
+ * smaller than production's because the scratch table has narrow rows and a
+ * warm cache; what transfers is the PLAN CHANGE and the elimination of
+ * `Rows Removed by Filter`, not the millisecond figure. The improvement is
+ * proportional to how deep the target connection's rows sit in the `id`
+ * space — a connection whose rows start near `id = 0` was never slow and
+ * gains little. Correspondingly, this index does not help any query that
+ * cannot supply both `connector_instance_id` and `stream` as equalities.
+ *
+ * REDUNDANCY: none. All seven pre-existing `records` indexes show non-zero
+ * `idx_scan` in `pg_stat_user_indexes` on production (lowest:
+ * `idx_pg_records_semantic_time` at 2,208), so nothing is dropped here. This
+ * index is additive — it does not prefix-subsume `idx_pg_records_stream_cursor`
+ * (that one's `cursor_value`/`primary_key_text` tail serves a different
+ * pagination) nor `idx_pg_records_canonical_count` (different column ORDER:
+ * `(instance, deleted, stream)`, plus `INCLUDE (emitted_at)`).
+ *
+ * Built `CONCURRENTLY` for the same reason as
+ * `idx_pg_records_canonical_count` above: `records` holds 5.6M rows / 4.6 GB
+ * on production, and a plain `CREATE INDEX` would hold a table-wide write
+ * lock for the entire build against the owner's live instance.
+ */
+const RECORDS_INSTANCE_STREAM_ID_INDEX_LOCK_ID = "8022352479012003";
+
+async function ensurePostgresRecordsInstanceStreamIdIndex(
+  client: PoolClient,
+  log: StorageLog = NOOP_STORAGE_LOG
+): Promise<void> {
+  await withPostgresAdvisoryLock(client, RECORDS_INSTANCE_STREAM_ID_INDEX_LOCK_ID, async () => {
+    const existing = await client.query(
+      `SELECT ix.indisvalid AS valid
+         FROM pg_class idx
+         JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+         JOIN pg_index ix ON ix.indexrelid = idx.oid
+        WHERE ns.nspname = current_schema()
+          AND idx.relname = 'idx_pg_records_instance_stream_id'
+        LIMIT 1`
+    );
+    if ((existing.rowCount ?? 0) > 0 && existing.rows[0]?.valid === true) {
+      return;
+    }
+    if ((existing.rowCount ?? 0) > 0) {
+      // A previous CONCURRENTLY build was interrupted. Postgres leaves the
+      // index behind marked invalid, and `IF NOT EXISTS` will NOT rebuild it
+      // — so the next boot would silently keep the slow plan forever. Drop
+      // it (also concurrently, so this recovery path takes no write lock
+      // either) and rebuild.
+      log("[PDPP] Records migration: dropping invalid instance/stream/id index before rebuild");
+      await client.query("DROP INDEX CONCURRENTLY IF EXISTS idx_pg_records_instance_stream_id");
+    }
+
+    log("[PDPP] Records migration: building keyset index idx_pg_records_instance_stream_id");
+    const startedAt = Date.now();
+    await client.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_records_instance_stream_id
+         ON records(connector_instance_id, stream, deleted, id)`
+    );
+    log(`[PDPP] Records migration: keyset index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  });
 }
 
 function localDeviceConnectorId(connectorId: string): string {

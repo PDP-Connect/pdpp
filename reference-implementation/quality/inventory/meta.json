@@ -1,0 +1,27 @@
+{
+  "repo_sha": "60612118bfd2171fdccfc0a1dcf29fefd7d88484",
+  "repo_root": "/home/tnunamak/.tmp/hone-quality-0823/reference-implementation",
+  "git_root": "/home/tnunamak/.tmp/hone-quality-0823",
+  "profile_source": "/home/tnunamak/.tmp/hone-quality-0823/reference-implementation/quality/hone.yaml",
+  "owned_dirs": [
+    "server",
+    "runtime",
+    "lib",
+    "operations"
+  ],
+  "cog_threshold": 5,
+  "seam_cc": 12,
+  "churn_window": "6 months ago",
+  "generated_at": "2026-08-23T14:48:49.476Z",
+  "duration_ms": 4397,
+  "counts": {
+    "flagged_fns": 1715,
+    "flagged_files": 255,
+    "total_excess_mass": 8672,
+    "callbacks": 0,
+    "hotspot_files": 385,
+    "test_files": 1028,
+    "static_skips": 268,
+    "zero_by_name_files": 44
+  }
+}

@@ -21,6 +21,7 @@
  * when one exists; this module never fabricates a liveness heuristic.
  */
 
+import type { AcknowledgedLossRecord } from "./acknowledged-loss.ts";
 import {
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
@@ -49,7 +50,23 @@ export interface CollectionReportEntryLike {
   readonly collected: number;
   readonly considered: number | "unknown";
   readonly coverage_condition: CoverageAxis;
+  /**
+   * Whether this stream's whole terminal shortfall carries durable per-item
+   * impossibility proof. Optional so existing callers are unaffected; absent
+   * reads `false`, the shipped behavior.
+   */
+  readonly coverage_unfillable_accounted?: boolean;
   readonly pending_detail_gaps: number;
+  /**
+   * The `SKIP_RESULT` fact for this stream, or `null`/absent. Only
+   * `recovery_action` is read here (e.g. `retry_by_runtime` means an ordinary
+   * future run already retries this without owner involvement) — structurally
+   * typed so this module stays free of the server's `RuntimeCollectionFactSkip`
+   * import while still accepting a real `CollectionReportEntry`. Absent or an
+   * unrecognized value reads as unknown, never as `retry_by_runtime`, so the
+   * gate this feeds fails open toward offering the owner action.
+   */
+  readonly skipped?: { readonly recovery_action?: string | null } | null;
   readonly stream: string;
 }
 
@@ -161,7 +178,12 @@ export function buildStreamRollups(
       coverage: entry.coverage_condition,
       gap_retryable: retryable,
       priority: effectivePriority,
+      recovery_action: entry.skipped?.recovery_action ?? null,
       stream_id: entry.stream,
+      // Carried, never re-derived: the entry already holds the one owner's
+      // verdict, so the verdict's disposition reads the same fact the
+      // connection-health condition set does.
+      unfillable_accounted: entry.coverage_unfillable_accounted === true,
     };
   });
 }
@@ -220,9 +242,16 @@ export function buildProgressEvidence(input: {
   readonly recordsCommittedLastRun: number | null;
   readonly gapsDrainedLastRun: number | null;
   readonly lastRefreshedAt: string | null;
+  /**
+   * Oldest proof time across required streams already proven complete, or
+   * `null` when no such proof exists. Optional so every existing caller keeps
+   * its current behavior (absent reads as "no proof to age").
+   */
+  readonly coverageProvenAt?: string | null;
   readonly observedAt?: string | null;
 }): ProgressEvidence {
   return {
+    coverage_proven_at: input.coverageProvenAt ?? null,
     gaps_drained_last_run: input.gapsDrainedLastRun,
     last_refreshed_at: input.lastRefreshedAt,
     mode: input.mode,
@@ -238,6 +267,12 @@ export function buildProgressEvidence(input: {
  * liveness signal is threaded once one exists.
  */
 export function synthesizeConnectorVerdict(input: {
+  /**
+   * A durable, owner-stamped acknowledgement that some of this connection's
+   * data is permanently gone for an external reason. Passed straight through;
+   * this module never derives one. Omitted/`null` preserves prior behavior.
+   */
+  readonly acknowledgedLoss?: AcknowledgedLossRecord | null;
   readonly attention?: ConnectionAttentionEvidence | null;
   readonly snapshot: ConnectionHealthSnapshot;
   readonly report: readonly CollectionReportEntryLike[];
@@ -256,6 +291,7 @@ export function synthesizeConnectorVerdict(input: {
     input.runtimeOk ?? true,
     input.progress,
     input.scheduleEvidence ?? null,
-    input.attention ?? null
+    input.attention ?? null,
+    input.acknowledgedLoss ?? null
   );
 }

@@ -12,7 +12,7 @@
  * that moved between byte-identical runs was `fetched_at`.
  *
  * These tests drive the exact gate `runInboxStream` wires — a full-scan
- * cursor (`shouldEmit` per message, then `pruneStale`) — over real records
+ * cursor (`shouldEmit` per message, then `dropUnseenIds`) — over real records
  * built by the exported `buildInboxMessageRecord`. They pin:
  *
  *   1. Re-scraping the same inbox (only fetched_at differs) is fully
@@ -62,7 +62,7 @@ function records(fetchedAt: string, rows: readonly InboxRow[]): InboxMessageReco
 }
 
 /** Replicate runInboxStream's full-scan emit loop: gate each message, then
- *  pruneStale (the inbox page is re-scraped in full each run). Returns the
+ *  dropUnseenIds (the inbox page is re-scraped in full each run). Returns the
  *  emitted records. */
 function emitFullScan(cursor: FingerprintCursor, recs: readonly InboxMessageRecord[]): InboxMessageRecord[] {
   const emitted: InboxMessageRecord[] = [];
@@ -71,7 +71,7 @@ function emitFullScan(cursor: FingerprintCursor, recs: readonly InboxMessageReco
       emitted.push(rec);
     }
   }
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   return emitted;
 }
 

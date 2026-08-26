@@ -17,6 +17,7 @@ import {
 } from "../../packages/polyfill-connectors/src/static-secret-credential-capture.ts";
 import { canonicalConnectorKey, isConnectorKey } from "./connector-key.ts";
 import { publicListingTierError } from "./public-listing-tier.ts";
+import { refreshPolicyContradictions } from "./refresh-policy-consistency.ts";
 
 // Inline copy — isNonEmptyString is used 30+ times in auth.js so moving it
 // would create a back-edge import; a verbatim 1-liner copy is the cleanest
@@ -263,7 +264,13 @@ export const REFRESH_POLICY_ALLOWED_KEYS = new Set([
 // production code, but the read-site clamp holds even if it does.
 export const REFRESH_POLICY_MAX_COOLDOWN_CYCLES_RANGE = { max: 24, min: 1 } as const;
 export const REFRESH_POLICY_MAX_RECOVERY_ATTEMPTS_RANGE = { max: 20, min: 1 } as const;
-export const RUNTIME_REQUIREMENT_BINDINGS = new Set(["browser", "filesystem", "interactive", "network"]);
+export const RUNTIME_REQUIREMENT_BINDINGS = new Set([
+  "browser",
+  "desktop_session",
+  "filesystem",
+  "interactive",
+  "network",
+]);
 export const STREAM_AVAILABILITY_STATES = new Set(["supported", "unsupported_in_mode", "experimental", "deprecated"]);
 export const STREAM_AVAILABILITY_ALLOWED_KEYS = new Set(["future_modes", "mode", "reason", "state"]);
 export const STREAM_COVERAGE_POLICIES = new Set([
@@ -718,6 +725,19 @@ function validateRefreshPolicyFields(pol: Record<string, unknown>, code: string)
   validateRefreshPolicyIntervals(pol, code);
   validateRefreshPolicyEnumsAndFlags(pol, code);
   validateRefreshPolicyRecoveryBudgets(pol, code);
+  validateRefreshPolicyInternalConsistency(pol, code);
+}
+
+// Rejects refresh policies whose own fields contradict each other. Every check
+// above this line is per-field and type-only, which is exactly how the shipped
+// corpus drifted into declaring `background_safe: true` alongside
+// `recommended_mode: "manual"`. See server/refresh-policy-consistency.ts for
+// the rule and why each combination is incoherent.
+function validateRefreshPolicyInternalConsistency(pol: Record<string, unknown>, code: string): void {
+  const contradictions = refreshPolicyContradictions(pol);
+  if (contradictions.length > 0) {
+    throw invalidConnectorManifest(`capabilities.refresh_policy is self-contradictory: ${contradictions[0]}`, code);
+  }
 }
 
 export function validateRefreshPolicyCapability(manifest: Record<string, unknown>, code: string): void {
@@ -739,6 +759,75 @@ export function validateRefreshPolicyCapability(manifest: Record<string, unknown
     throw invalidConnectorManifest("capabilities.refresh_policy must be an object when declared", code);
   }
   validateRefreshPolicyFields(policy as Record<string, unknown>, code);
+}
+
+/**
+ * A declared reason token must be >=24 chars AND snake_case.
+ *
+ * Both halves are load-bearing, and this is a SECURITY gate, not a style
+ * preference. A declared token is an instruction to `stderr-redact.ts` to let
+ * a string through `LONG_OPAQUE_RE` — the entropy heuristic that redacts long
+ * unlabelled strings precisely because they look like API keys. So whatever a
+ * connector declares here, it punches a hole through redaction for.
+ *
+ * - The >=24-char floor is the point of the mechanism: shorter tokens are
+ *   never caught by `LONG_OPAQUE_RE` in the first place, so declaring one
+ *   buys nothing and only widens the hole.
+ * - The snake_case shape is what keeps the hole narrow. It admits categorical,
+ *   PII-free fault-class names (`venmo_probe_transport_error`) and excludes
+ *   the high-entropy alphabets real secrets live in — mixed case, digits,
+ *   `-`/`+`/`/`/`=`, and the `sk_live_`-style base62/base64 bodies of API
+ *   keys, JWTs, and bearer tokens. Without it a connector could declare a
+ *   string matching its own live credential and have the runtime faithfully
+ *   print that credential into a durable spine event and the owner's UI.
+ *
+ * Enforced at REGISTRATION time so a manifest that would open that hole is
+ * rejected before it can ever be resolved at run time.
+ */
+const DECLARED_REASON_TOKEN_MIN_LENGTH = 24;
+const DECLARED_REASON_TOKEN_RE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+
+export function validateDeclaredReasonTokensCapability(manifest: Record<string, unknown>, code: string): void {
+  // biome-ignore lint/style/useDestructuring: Explicit property access documents this compatibility boundary.
+  const capabilities = manifest.capabilities;
+  if (capabilities === undefined || capabilities === null) {
+    return;
+  }
+  if (typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    throw invalidConnectorManifest("capabilities must be an object when declared", code);
+  }
+  const tokens = (capabilities as Record<string, unknown>).declared_reason_tokens;
+  if (tokens === undefined) {
+    return;
+  }
+  if (!Array.isArray(tokens)) {
+    throw invalidConnectorManifest(
+      "capabilities.declared_reason_tokens must be an array of strings when declared",
+      code
+    );
+  }
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    if (!isNonEmptyString(token)) {
+      throw invalidConnectorManifest("capabilities.declared_reason_tokens entries must be non-empty strings", code);
+    }
+    if (token.length < DECLARED_REASON_TOKEN_MIN_LENGTH) {
+      throw invalidConnectorManifest(
+        `capabilities.declared_reason_tokens entries must be at least ${DECLARED_REASON_TOKEN_MIN_LENGTH} characters; got ${String(token.length)}`,
+        code
+      );
+    }
+    if (!DECLARED_REASON_TOKEN_RE.test(token)) {
+      throw invalidConnectorManifest(
+        "capabilities.declared_reason_tokens entries must be snake_case (lowercase letters, digits, and single underscores)",
+        code
+      );
+    }
+    if (seen.has(token)) {
+      throw invalidConnectorManifest(`capabilities.declared_reason_tokens contains a duplicate entry: ${token}`, code);
+    }
+    seen.add(token);
+  }
 }
 
 const PROVEN_ALLOWED_KEYS = new Set(["local_collector", "provider_auth_lifecycle", "static_secret_live"]);
@@ -2084,6 +2173,7 @@ export function validateConnectorManifest(
 
   validateRuntimeRequirements(manifest, code);
   validateRefreshPolicyCapability(manifest, code);
+  validateDeclaredReasonTokensCapability(manifest, code);
   validateProvenCapability(manifest, code);
   validateManifestSensitivity(manifest, code);
   validateManifestIcon(manifest, code);

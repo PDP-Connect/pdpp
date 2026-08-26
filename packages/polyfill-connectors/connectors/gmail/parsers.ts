@@ -796,44 +796,6 @@ export function buildMessageRecord(params: {
   };
 }
 
-/**
- * Build the flag/label delta RECORD payload for one message. No envelope
- * re-fetch on the delta path — callers pass received_at as a fallback to
- * satisfy the schema-required field.
- */
-export function buildDeltaMessageRecord(params: {
-  flagsArr: readonly string[];
-  gmMsgid: string;
-  gmThrid: string;
-  labels: readonly string[];
-  receivedAtFallback: string;
-}): Record<string, unknown> {
-  return {
-    id: params.gmMsgid,
-    thread_id: params.gmThrid,
-    subject: null,
-    from_name: null,
-    from_email: null,
-    to: [],
-    cc: [],
-    bcc: [],
-    reply_to: [],
-    date: null,
-    received_at: params.receivedAtFallback,
-    message_id: null,
-    in_reply_to: null,
-    references: [],
-    size_bytes: null,
-    labels: [...params.labels],
-    is_draft: params.flagsArr.includes("\\Draft"),
-    is_flagged: params.flagsArr.includes("\\Flagged"),
-    is_seen: params.flagsArr.includes("\\Seen"),
-    is_answered: params.flagsArr.includes("\\Answered"),
-    has_attachments: false,
-    snippet: null,
-  };
-}
-
 /** Determine whether a received_at timestamp falls inside a since/until window. */
 export function isInTimeRange(
   receivedAt: string,

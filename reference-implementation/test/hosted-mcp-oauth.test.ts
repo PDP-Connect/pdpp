@@ -3111,6 +3111,127 @@ test("POST /oauth/authorize/mcp-package renders picker error when every selected
   }
 });
 
+test("POST /oauth/authorize/mcp-package returns an actionable 4xx (never 500) when a stream has zero eligible instances", async () => {
+  // Production regression (owner-reported 2026-08-23): approving a source
+  // whose declared stream has no installed connector instance detonated the
+  // whole authorize flow with `statusCode: 500` — Fastify's default error
+  // handler, meaning `CoreSourceAuthorizationError` escaped every route-level
+  // catch. Root cause: `resolveCoreEligibleInstanceIds` in
+  // core-source-authorization.ts treats a stream with zero eligible instances
+  // as fatal (`fail()` throws `CoreSourceAuthorizationError`), identically to
+  // the genuinely-ambiguous case, and that throw was not being turned into a
+  // typed 4xx envelope on this path.
+  //
+  // `registerSpotify` (unlike `registerAuthorizedSpotify`) registers the
+  // connector manifest WITHOUT seeding any connector instance — this is the
+  // "zero eligible instance" condition exactly as production hit it.
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString("base64url");
+    const state = "zero-eligible-instances";
+    const challenge = pkceChallenge(verifier);
+
+    const params = buildHostedMcpPickerForm({
+      challenge,
+      client,
+      sourceSelections: [{ connectorId: spotify.connector_id, streamNames: ["saved_tracks"] }],
+      state,
+    });
+
+    const resp = await exchangePackageCode({ asUrl, client, params });
+    const bodyText = await resp.text();
+
+    assert.ok(
+      resp.status >= 400 && resp.status < 500,
+      `zero-eligible-instance approval must return an actionable 4xx, not ${resp.status}: ${bodyText}`
+    );
+
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(bodyText);
+    } catch {
+      assert.fail(`expected a structured JSON error envelope, got: ${bodyText}`);
+    }
+
+    // The stream must be named in STRUCTURED form — a dedicated `streams`
+    // array field, not only prose buried in `error_description` — so a
+    // client can act on it programmatically without parsing a sentence.
+    assert.ok(
+      Array.isArray(body.streams),
+      `error envelope must carry a structured 'streams' array, got: ${JSON.stringify(body)}`
+    );
+    assert.deepEqual(
+      body.streams,
+      ["saved_tracks"],
+      `structured 'streams' field must name exactly the affected stream: ${JSON.stringify(body)}`
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("POST /oauth/authorize/mcp-package still rejects an ambiguous omitted-instance_ids selection (>1 eligible instance)", async () => {
+  // Safety-property regression guard: the fix for the zero-eligible-instance
+  // case above must NOT weaken this genuinely-ambiguous case. When a stream
+  // has MORE THAN ONE eligible instance and the request omits instance_ids,
+  // resolveCoreEligibleInstanceIds must still fail — the owner must
+  // disambiguate. This must keep failing with an actionable 4xx (it already
+  // did before the fix; this only guards against regression).
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    // Seed two active instances for the same connector so eligible.size > 1.
+    const now = new Date().toISOString();
+    const instanceStore = createSqliteConnectorInstanceStore();
+    await Promise.all(
+      ["a", "b"].map((suffix) => {
+        const connectorInstanceId = `cin_hosted_${spotify.connector_id}_${suffix}`;
+        return instanceStore.upsert({
+          connectorId: spotify.connector_id,
+          connectorInstanceId,
+          createdAt: now,
+          displayName: `${spotify.connector_id} test account ${suffix}`,
+          ownerSubjectId: "owner_local",
+          sourceBinding: { fixture: connectorInstanceId },
+          sourceBindingKey: connectorInstanceId,
+          sourceKind: "account",
+          status: "active",
+          updatedAt: now,
+        });
+      })
+    );
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString("base64url");
+    const state = "ambiguous-multi-instance";
+    const challenge = pkceChallenge(verifier);
+
+    const params = buildHostedMcpPickerForm({
+      challenge,
+      client,
+      sourceSelections: [{ connectorId: spotify.connector_id, streamNames: ["saved_tracks"] }],
+      state,
+    });
+
+    const resp = await exchangePackageCode({ asUrl, client, params });
+    const bodyText = await resp.text();
+    assert.ok(
+      resp.status >= 400 && resp.status < 500,
+      `ambiguous multi-instance approval must still be rejected with a 4xx, not ${resp.status}: ${bodyText}`
+    );
+    assert.notEqual(resp.status, 500, "ambiguity guard must not regress to a 500");
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("POST /oauth/authorize/mcp-package renders picker error when streams are submitted without a source", async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;

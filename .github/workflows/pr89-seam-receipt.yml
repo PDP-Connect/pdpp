@@ -68,6 +68,8 @@ jobs:
           PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: pnpm install --frozen-lockfile
+      - name: Provision the test database sentinel
+        run: pnpm --filter pdpp-reference-implementation provision:test-database "$PDPP_TEST_POSTGRES_URL"
       - name: Test receipt derivation and fail-closed checks
         run: pnpm --filter pdpp-reference-implementation test:seam:pr89:receipt
       - name: Validate PR89 OpenSpec target

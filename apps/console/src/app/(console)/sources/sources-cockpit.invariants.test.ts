@@ -33,8 +33,16 @@ const OLD_TOUCHING_PADDING_RE = /\.rr-s-item\s*\{[\s\S]*?padding:\s*10px\s+0\s+1
 const STATE_GEOMETRY_RE =
   /\.rr-s-item(?:\.|[^\n{])*(?:degraded|attention|warning)[^{]*\{[\s\S]*?(?:margin|width|border-radius)\s*:/i;
 const COLLECTION_REPORT_INDEX_RE = /indexCollectionReportByStream\(summary\.collection_report\)/;
-const DUPLICATE_COLLAPSE_RE = /collapseDuplicateFallbackSources\(instances\)/;
+// Collapse runs over the LIVE rows, not every row: an archived source must
+// not be pulled into a duplicate group, whose ordinal relabelling
+// ("account 2") would imply it belongs to a live sibling set it has left.
+const DUPLICATE_COLLAPSE_RE = /collapseDuplicateFallbackSources\(liveInstances\)/;
 const DUPLICATE_GROUP_TESTID_RE = /data-testid="sources-duplicate-group"/;
+const ARCHIVED_GROUP_TESTID_RE = /data-testid="sources-archived-group"/;
+// The group heading must say outright that these are not collecting, so a
+// collapsed group can never be mistaken for healthy live sources.
+const ARCHIVED_GROUP_LABEL_RE = /Archived — not collecting \(\{archivedInstances\.length\}\)/;
+const ARCHIVED_PARTITION_RE = /instances\.filter\(\(i\) => i\.archived\)/;
 const FACTS_UNAVAILABLE_COPY_RE = /Collection facts not available yet/;
 const RECORDS_HEADER_RE = /<TableHeader>records<\/TableHeader>/;
 const STREAM_RECORDS_RE = /summary\.stream_records/;
@@ -88,6 +96,13 @@ test("repeated unnamed same-type sources are collapsed into a review group", asy
   assert.match(view, DUPLICATE_GROUP_TESTID_RE);
 });
 
+test("archived sources render in their own group, labelled as not collecting", async () => {
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.match(view, ARCHIVED_PARTITION_RE);
+  assert.match(view, ARCHIVED_GROUP_TESTID_RE);
+  assert.match(view, ARCHIVED_GROUP_LABEL_RE);
+});
+
 test("source passport suppresses generic sync for non-owner verdict actions", async () => {
   const view = await readFile(VIEW_FILE, "utf8");
   assert.match(view, PRIMARY_VERDICT_ACTION_RE);
@@ -103,4 +118,32 @@ test("source list shows advisory owner-action cues as non-mutating review copy",
   const cueElement = cueBlock.slice(0, cueBlock.indexOf("</span>"));
   assert.doesNotMatch(cueElement, BUTTON_TAG_RE);
   assert.doesNotMatch(cueElement, MUTATING_ACTION_RE);
+});
+
+// The fused status line must actually reach the owner's eyes. Before it landed,
+// the row's only status signal was a colored glyph whose label was `sr-only`,
+// so a sighted owner could not tell fresh from stale, or syncing from stuck,
+// without opening the detail panel. See
+// design-notes/fused-source-status-2026-08-22.md.
+const FUSED_STATUS_TESTID_RE = /data-testid="sources-fused-status"/;
+const FUSED_STATUS_RENDERS_LINE_RE = /\{instance\.fusedStatus\.line\}/;
+const FUSED_STATUS_TONE_RE = /data-tone=\{instance\.fusedStatus\.tone\}/;
+// The old sr-only duplicate: with the status visible, keeping it would make
+// screen readers announce every row's status twice.
+const SR_ONLY_STATUS_DUPLICATE_RE = /<span className="sr-only">\{instance\.status\.label\}<\/span>/;
+
+test("the source row renders the fused status line visibly", async () => {
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.match(view, FUSED_STATUS_TESTID_RE);
+  assert.match(view, FUSED_STATUS_RENDERS_LINE_RE);
+  assert.match(view, FUSED_STATUS_TONE_RE);
+});
+
+test("the visible fused status replaces the sr-only status rather than doubling it", async () => {
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.doesNotMatch(
+    view,
+    SR_ONLY_STATUS_DUPLICATE_RE,
+    "the status is now visible text, so the sr-only copy would be announced twice"
+  );
 });

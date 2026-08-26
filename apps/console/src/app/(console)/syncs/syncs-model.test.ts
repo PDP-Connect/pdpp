@@ -203,7 +203,7 @@ test("source-pressure cooldown produces a WAIT card, never a reconnect prompt", 
           channel: "advisory",
           forward_statement:
             "The source is throttling this connection, so the scheduler is spacing out automatic attempts.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               audience: "none",
@@ -258,7 +258,7 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
           channel: "advisory",
           forward_statement:
             "The source is throttling this connection, so the scheduler is spacing out automatic attempts.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               audience: "none",
@@ -704,6 +704,20 @@ test("describeCadence humanizes the schedule interval", () => {
   assert.equal(describeCadence(null), "on demand");
 });
 
+test("syncs carries a durable auto-enrollment skip reason for an unscheduled source", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        auto_enroll_skip_reason: "public_listing.tier=preview",
+        streams: ["alpha"],
+      }),
+    ],
+    runs: [],
+  });
+
+  assert.equal(model.groups[0]?.scheduleReason, "public_listing.tier=preview");
+});
+
 test("describeDelta reads records, no change, and failure honestly", () => {
   assert.equal(describeDelta({ eventCount: 38, failed: false }), "+38 records");
   assert.equal(describeDelta({ eventCount: 1, failed: false }), "+1 record");
@@ -749,7 +763,7 @@ test("a broken connector does not rewrite a successful last run into sync failed
           required_actions: [
             action({
               audience: "maintainer",
-              cta: "Connector code needs a fix",
+              cta: "Some data from this source can't be collected",
               kind: "code_fix",
               satisfied_when: { kind: "none" },
               terminal: true,
@@ -794,7 +808,7 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
           required_actions: [
             action({
               audience: "maintainer",
-              cta: "Connector code needs a fix",
+              cta: "Some data from this source can't be collected",
               kind: "code_fix",
               satisfied_when: { kind: "none" },
               terminal: true,
@@ -811,7 +825,7 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "This connector needs a code fix before it can collect again.");
   assert.equal(card.summary.cta, "wait");
-  assert.equal(card.summary.actionLabel, "Connector code needs a fix");
+  assert.equal(card.summary.actionLabel, "Some data from this source can't be collected");
   assert.equal(card.summary.ownerActionRequired, false);
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.doesNotMatch(card?.summary.prose, RESUME_FALSE_REASSURANCE_RE);
@@ -834,7 +848,7 @@ test("failure cards bind retryable gaps to the rendered Retry now action", () =>
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Retry now to give the recoverable gap another run.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [action()],
         }),
       }),
@@ -908,7 +922,7 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "Check the collector before this source can make progress.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               cta: "Check the collector",
@@ -949,7 +963,7 @@ test("device-local recovery counts as need-your-hand while navigating to recover
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "The local collector has saved records on its host that did not upload to this server.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               cta: "Run local recovery",
@@ -1028,7 +1042,7 @@ test("failure cards carry shared source-work groups for Runs presentation", () =
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Latest collection completed with known coverage gaps.",
-          pill: { label: "Degraded", tone: "amber" },
+          pill: { label: "Missing data", tone: "amber" },
           required_actions: [
             action({
               audience: "maintainer",
@@ -1062,12 +1076,12 @@ test("syncs ranking only treats attention plus primary owner action as need-your
     source_work: "system_issue",
     rendered_verdict: renderedVerdict({
       channel: "attention",
-      forward_statement: "Connector code needs a fix before this can collect again.",
+      forward_statement: "Some data from this source can't be collected.",
       pill: { label: "Can't collect", tone: "red" },
       required_actions: [
         action({
           audience: "maintainer",
-          cta: "Connector code needs a fix",
+          cta: "Some data from this source can't be collected",
           kind: "code_fix",
           satisfied_when: { kind: "none" },
           terminal: true,
@@ -1139,7 +1153,7 @@ test("syncs overview collapses repeated unnamed fallback sources", () => {
   const amazonAdvisory = renderedVerdict({
     channel: "advisory",
     forward_statement: "Retry now to give the recoverable gap another run.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     required_actions: [action()],
   });
   const model = buildSyncsViewModel({
@@ -1279,7 +1293,7 @@ test("syncs overview shows ALL review cards (no cap) and the band counts the ful
   const advisoryVerdict = renderedVerdict({
     channel: "advisory",
     forward_statement: "Run a refresh to bring this up to date.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     required_actions: [action({ cta: "Refresh now", kind: "retry_gap" })],
   });
   const connectors = Array.from({ length: 8 }, (_, index) =>
@@ -1326,7 +1340,7 @@ test("syncs cross-surface: rendered review-card count equals the failure cards b
   const advisoryVerdict = renderedVerdict({
     channel: "advisory",
     forward_statement: "Run a refresh to bring this up to date.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     required_actions: [action({ cta: "Refresh now", kind: "retry_gap" })],
   });
   const model = buildSyncsViewModel({
@@ -1361,7 +1375,7 @@ test("syncs cross-surface: an inactive queued recovery card is passive progress,
   const deferredRecoveryVerdict = renderedVerdict({
     channel: "calm",
     forward_statement: "The next run is expected to fill the remaining data.",
-    pill: { label: "Degraded", tone: "amber" },
+    pill: { label: "Missing data", tone: "amber" },
     progress: {
       gaps_drained_last_run: null,
       headline: "Collecting in the background.",

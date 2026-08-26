@@ -159,6 +159,50 @@ test("pages through multiple connection pages before advancing the cursor", asyn
   assert.equal(records.filter((r) => r.stream === "people").length, 2);
 });
 
+test("a page cap with a continuation token discloses truncation instead of claiming coverage", async () => {
+  const fakeClient = new FakePeopleClient({
+    connectionPages: [
+      { people: [makePerson({ resourceName: "people/c1" })], nextPageToken: "page2", nextSyncToken: null },
+      { people: [makePerson({ resourceName: "people/c2" })], nextPageToken: null, nextSyncToken: "sync-final" },
+    ],
+  });
+  const { ctx, messages, records } = makeContext({ streams: [{ name: "people" }] });
+
+  // The ceiling is hit while the provider still advertises another page. The
+  // run keeps the prefix it enumerated but must disclose the shortfall rather
+  // than let a truncated walk read as a complete one.
+  await collectGoogleContacts(ctx, {
+    clientFactory: () => fakeClient,
+    env: ENV,
+    maxPages: 1,
+    ...FAKE_TOKEN,
+  });
+
+  assert.equal(records.filter((r) => r.stream === "people").length, 1, "the enumerated prefix may be emitted");
+  const skip = messages.find(
+    (message): message is Extract<typeof message, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "people"
+  );
+  assert.ok(skip, "a truncated walk must disclose itself to the owner");
+  assert.equal(skip.reason, "older_pages_deferred_page_budget");
+  assert.match(skip.message, /1-page limit/, "the disclosed ceiling must be the one actually enforced");
+  // Coverage IS emitted on a truncated walk — suppressing it would leave the
+  // stream with no denominator at all. What must never happen is a COMPLETE
+  // claim: the unread page inflates `considered`, so the shortfall is visible.
+  const coverage = messages.find(
+    (message): message is Extract<typeof message, { type: "DETAIL_COVERAGE" }> =>
+      message.type === "DETAIL_COVERAGE" && message.stream === "people"
+  );
+  assert.ok(coverage, "a truncated walk still needs a denominator");
+  const { considered, covered } = coverage;
+  assert.equal(typeof considered, "number", "a coverage claim without a denominator is not a claim");
+  assert.equal(typeof covered, "number", "a coverage claim without a numerator is not a claim");
+  assert.ok(
+    (considered as number) > (covered as number),
+    `truncation must read as a shortfall, got ${String(covered)}/${String(considered)}`
+  );
+});
+
 test("carries forward the prior syncToken cursor on an incremental run", async () => {
   const fakeClient = new FakePeopleClient({
     connectionPages: [
@@ -380,4 +424,69 @@ test("default getAccessToken path surfaces google_contacts_auth_failed on invali
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// ─── Coverage accounting ─────────────────────────────────────────────────
+//
+// `considered`/`covered` used to both be `peopleCursor.size()`, which made a
+// shortfall unreportable: the two counts were the same expression, so the
+// stream read 100% covered no matter what the run actually did. These pin the
+// two ways that lie showed up.
+
+function peopleCoverage(
+  messages: readonly EmittedMessage[]
+): Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> | undefined {
+  return messages.find(
+    (msg): msg is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      msg.type === "DETAIL_COVERAGE" && msg.stream === "people"
+  );
+}
+
+test("a person the shape check rejects is considered but NOT covered", async () => {
+  // `biography` is `pdppSafeText` — a NUL byte makes the record fail the
+  // runtime's shape check, so it is dropped rather than stored. The run
+  // therefore accounted for only one of the two contacts it enumerated.
+  const poisoned = makePerson({ resourceName: "people/c2", biography: `bio${String.fromCharCode(0)}drift` });
+  const fakeClient = new FakePeopleClient({
+    connectionPages: [
+      {
+        people: [makePerson({ resourceName: "people/c1" }), poisoned],
+        nextPageToken: null,
+        nextSyncToken: "sync-1",
+      },
+    ],
+  });
+  const { ctx, messages } = makeContext({ streams: [{ name: "people" }] });
+
+  await collectGoogleContacts(ctx, { clientFactory: () => fakeClient, env: ENV, now: () => FIXED_NOW, ...FAKE_TOKEN });
+
+  const coverage = peopleCoverage(messages);
+  assert.ok(coverage, "people must emit DETAIL_COVERAGE");
+  assert.equal(coverage?.considered, 2, "both enumerated contacts were weighed");
+  assert.equal(coverage?.covered, 1, "the rejected contact must NOT count as covered — this is the shortfall");
+});
+
+test("an incremental syncToken run counts only what it enumerated, not the carry-forward cursor", async () => {
+  // The delta returns one changed contact; prior STATE holds three. Counting
+  // the cursor made `considered` 3 — contacts this run never looked at — which
+  // is exactly the fabricated denominator the contract forbids.
+  const priorState = {
+    people: {
+      sync_token: "sync-prior",
+      synced_at: new Date(FIXED_NOW).toISOString(),
+      fingerprints: { "people/c1": "aaa", "people/c2": "bbb", "people/c3": "ccc" },
+    },
+  };
+  const fakeClient = new FakePeopleClient({
+    connectionPages: [
+      { people: [makePerson({ resourceName: "people/c2" })], nextPageToken: null, nextSyncToken: "sync-next" },
+    ],
+  });
+  const { ctx, messages } = makeContext({ state: priorState, streams: [{ name: "people" }] });
+
+  await collectGoogleContacts(ctx, { clientFactory: () => fakeClient, env: ENV, now: () => FIXED_NOW, ...FAKE_TOKEN });
+
+  const coverage = peopleCoverage(messages);
+  assert.equal(coverage?.considered, 1, "a delta run enumerated exactly one contact");
+  assert.equal(coverage?.covered, 1, "and accounted for it");
 });

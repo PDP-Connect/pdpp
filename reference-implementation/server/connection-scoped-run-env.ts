@@ -14,6 +14,7 @@
  * from index.js, keeping this module a true leaf (no back-edge).
  */
 
+import { stat } from "node:fs/promises";
 import type {
   CredentialProbeContext,
   CredentialProbeTransport,
@@ -145,6 +146,49 @@ function buildControllerStaticSecretRunEnvResolver({
   };
 }
 
+/**
+ * Asserts the manual-upload artifact directory still exists before a run is
+ * handed an env var pointing at it.
+ *
+ * Why this fails LOUDLY rather than returning null: a manual-upload binding
+ * whose `import_dir` has gone missing (host moved, volume not mounted, a
+ * transplanted binding still carrying another host's absolute path) used to
+ * resolve to an env var pointing at nothing. The connector then saw no input
+ * and the run reported a bare `source_incomplete` — a verdict that reads as
+ * "the owner uploaded an incomplete archive" when the truth is "the archive
+ * this server was told to read is not on this disk". That misattribution is
+ * why real, intact 419k-record archives sat stranded and unnoticed.
+ *
+ * A missing directory is an operator/infrastructure fault, not owner data
+ * loss, so it must name the path it could not find.
+ */
+async function assertImportDirExists(binding: ManualUploadBinding, connectorInstanceId: string): Promise<void> {
+  let entry: Awaited<ReturnType<typeof stat>>;
+  try {
+    entry = await stat(binding.import_dir);
+  } catch (cause) {
+    // The underlying errno (ENOENT vs EACCES vs ENOTDIR) is carried as
+    // `cause` so an operator can tell "not there" from "there but unreadable"
+    // without re-running the stat by hand.
+    const err = new Error(
+      `Manual-upload import directory '${binding.import_dir}' for connection '${connectorInstanceId}' does not exist on this host. ` +
+        `The connection's source binding still points at it via ${binding.import_dir_env_var}. ` +
+        "Re-upload the archive, or repair the binding to the directory that holds it on this host.",
+      { cause }
+    ) as Error & { code: string };
+    err.code = "manual_upload_import_dir_missing";
+    throw err;
+  }
+  if (!entry.isDirectory()) {
+    const err = new Error(
+      `Manual-upload import path '${binding.import_dir}' for connection '${connectorInstanceId}' is not a directory. ` +
+        `The connection's source binding points at it via ${binding.import_dir_env_var}.`
+    ) as Error & { code: string };
+    err.code = "manual_upload_import_dir_missing";
+    throw err;
+  }
+}
+
 function buildControllerManualUploadRunEnvResolver({
   createConnectorInstanceStore,
 }: Pick<ResolverDependencies, "createConnectorInstanceStore">): RunEnvResolver {
@@ -154,6 +198,7 @@ function buildControllerManualUploadRunEnvResolver({
     if (!isManualUploadBinding(binding)) {
       return null;
     }
+    await assertImportDirExists(binding, connectorInstanceId);
     return { [binding.import_dir_env_var]: binding.import_dir };
   };
 }

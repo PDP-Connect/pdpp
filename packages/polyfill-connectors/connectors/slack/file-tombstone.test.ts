@@ -44,6 +44,7 @@ function makeDeps(db: DatabaseSync, recording: RecordingEmit): StreamDeps {
     emit: recording.emit,
     emitRecord: recording.emitRecord,
     emittedAt: "2026-08-11T00:00:00.000Z",
+    failedStreams: new Set(),
     fingerprintCursors: new Map([
       ["files", openFingerprintCursor({ fingerprints: {} }, { excludeFromFingerprint: FINGERPRINT_EXCLUDE.files })],
     ]),

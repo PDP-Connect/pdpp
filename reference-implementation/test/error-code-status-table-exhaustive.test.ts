@@ -36,16 +36,29 @@ const EXPECTED_CODE_TO_STATUS = {
   ambiguous_connector_instance: 400,
   ambiguous_schema_detail: 409,
   approval_conflict: 409,
+  archive_reconnect_resume_failed: 502,
   authentication_error: 401,
   blob_not_found: 404,
   browser_enrollment_shell_required: 400,
+  connection_is_grouping_canonical: 409,
   connection_not_found: 404,
   connection_run_active: 409,
   connection_tombstoned: 409,
   connector_instance_busy: 503,
+  // The three config-revision codes. `stale_write` is a propose() whose
+  // baseRevision/baseEpoch missed the current pointer, and `not_proposed` is a
+  // confirm() against a revision that is not awaiting confirmation -- both are
+  // well-formed requests the world moved underneath, so they join the other
+  // 409s (approval_conflict, static_secret_identity_conflict) rather than
+  // becoming 400s. `revision_not_found` is a plain missing resource.
+  connector_instance_config_not_proposed: 409,
+  connector_instance_config_revision_not_found: 404,
+  connector_instance_config_stale_write: 409,
   connector_instance_connector_mismatch: 400,
   connector_instance_inactive: 400,
+  connector_instance_not_active: 409,
   connector_instance_not_found: 404,
+  connector_instance_not_paused: 409,
   connector_instance_not_revoked: 409,
   connector_instance_not_writable: 409,
   connector_instance_owner_mismatch: 403,

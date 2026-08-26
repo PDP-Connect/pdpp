@@ -384,6 +384,172 @@ test(
 );
 
 test(
+  "7.6 acceptance: a connector whose manifest declares no browser binding ignores retired browser-surface rows from an earlier setup flow",
+  withTempDb(async () => {
+    const store = createSqliteBrowserSurfaceLeaseStore();
+    // Slack-shaped history: a fully torn-down browser phase from a since-
+    // migrated (now static-secret) setup flow — every surface `stopping`,
+    // every lease `released`, nothing active or unhealthy. Without the
+    // manifest gate this still lands on `BROWSER_SURFACE_UNKNOWN_PROJECTION`
+    // (see the "retired browser-surface history" test above), degrading the
+    // headline to "unknown" forever even though the connector's current
+    // design never places a managed remote surface at all.
+    await store.upsertSurface(
+      surfaceFixture({
+        connector_id: "slack",
+        health: "stopping",
+        profile_key: "slack",
+        surface_id: "surface_slack_legacy_browser_phase",
+      })
+    );
+    await store.upsertLease(
+      leaseFixture({
+        connector_id: "slack",
+        lease_id: "lease_slack_legacy_browser_phase",
+        profile_key: "slack",
+        released_at: "2026-05-19T10:06:00.000Z",
+        run_id: "run_slack_legacy#browser-phase",
+        status: "released",
+        surface_id: "surface_slack_legacy_browser_phase",
+      })
+    );
+
+    const withoutGate = await getConnectorBrowserSurfaceProjection("slack", { profileKey: "slack" });
+    assert.equal(
+      withoutGate.evidence?.axis,
+      "unknown",
+      "sanity check: the pre-fix call shape still reproduces the stuck-unknown bug"
+    );
+
+    const projection = await getConnectorBrowserSurfaceProjection("slack", {
+      manifestHasBrowserBinding: false,
+      profileKey: "slack",
+    });
+    assert.equal(projection.unreliable, false);
+    assert.equal(
+      projection.evidence,
+      null,
+      "no browser binding in the manifest means no remote-surface evidence at all"
+    );
+
+    const snapshot = projectConnectorSummaryConnectionHealth({
+      freshness: FRESH,
+      lastRun: succeededRun(),
+      lastSuccessfulRun: succeededRun(),
+      nowIso: NOW_ISO,
+      outbox: { axis: "idle" },
+      remoteSurface: projection.evidence,
+      schedule: { enabled: true, last_successful_at: PRIOR_SUCCESS_ISO },
+    });
+
+    assert.equal(
+      snapshot.state,
+      "healthy",
+      "a clean run must not be reported as unknown/not-measured because of a since-migrated connector's old browser-phase rows"
+    );
+    assert.equal(snapshot.axes.remote_surface, "none");
+    assert.equal(snapshot.remote_surface, null);
+  })
+);
+
+test(
+  "7.6 acceptance: a browser-manifest connector on a deployment that dropped the neko overlay ignores retired neko-era rows",
+  withTempDb(async () => {
+    const store = createSqliteBrowserSurfaceLeaseStore();
+    // Chase-shaped history: this connector's manifest genuinely requires a
+    // browser binding, and it DID lease neko surfaces once -- but every
+    // lease here is terminal (released/deferred/surface_failed) and every
+    // surface is `stopping`. Nothing active, nothing unhealthy. A deployment
+    // that no longer runs docker-compose.neko.yml will never add a new row
+    // here again; today's runs succeed against the in-image managed
+    // Chromium/Xvfb runtime instead, entirely outside this store.
+    await store.upsertSurface(
+      surfaceFixture({
+        connector_id: "chase",
+        health: "stopping",
+        profile_key: "chase",
+        surface_id: "surface_chase_legacy_neko_phase",
+      })
+    );
+    await store.upsertLease(
+      leaseFixture({
+        connector_id: "chase",
+        lease_id: "lease_chase_legacy_neko_phase",
+        profile_key: "chase",
+        released_at: "2026-05-19T10:06:00.000Z",
+        run_id: "run_chase_legacy_neko_phase",
+        status: "released",
+        surface_id: "surface_chase_legacy_neko_phase",
+      })
+    );
+
+    const withoutGate = await getConnectorBrowserSurfaceProjection("chase", {
+      manifestHasBrowserBinding: true,
+      profileKey: "chase",
+    });
+    assert.equal(
+      withoutGate.evidence?.axis,
+      "unknown",
+      "sanity check: a browser-required manifest alone still reproduces the stuck-unknown bug"
+    );
+
+    const projection = await getConnectorBrowserSurfaceProjection("chase", {
+      connectorUsesNekoSurface: false,
+      manifestHasBrowserBinding: true,
+      profileKey: "chase",
+    });
+    assert.equal(projection.unreliable, false);
+    assert.equal(
+      projection.evidence,
+      null,
+      "no neko surface in play on this deployment means no remote-surface evidence at all, despite the browser-required manifest"
+    );
+
+    const snapshot = projectConnectorSummaryConnectionHealth({
+      freshness: FRESH,
+      lastRun: succeededRun(),
+      lastSuccessfulRun: succeededRun(),
+      nowIso: NOW_ISO,
+      outbox: { axis: "idle" },
+      remoteSurface: projection.evidence,
+      schedule: { enabled: true, last_successful_at: PRIOR_SUCCESS_ISO },
+    });
+
+    assert.equal(
+      snapshot.state,
+      "healthy",
+      "a fully-collected run on the in-image browser must not be reported unknown because of a dropped neko overlay's old rows"
+    );
+    assert.equal(snapshot.axes.remote_surface, "none");
+    assert.equal(snapshot.remote_surface, null);
+  })
+);
+
+test(
+  "7.6 acceptance: a connector actively using a neko surface still projects its live evidence even when connectorUsesNekoSurface is true",
+  withTempDb(async () => {
+    const store = createSqliteBrowserSurfaceLeaseStore();
+    await store.upsertSurface(surfaceFixture({ active_lease_id: "lease_chatgpt_neko_active" }));
+    await store.upsertLease(
+      leaseFixture({
+        lease_id: "lease_chatgpt_neko_active",
+        leased_at: "2026-05-19T11:58:30.000Z",
+        run_id: "run_chatgpt_neko_active",
+        surface_id: "surface_default",
+      })
+    );
+
+    const projection = await getConnectorBrowserSurfaceProjection("chatgpt", {
+      connectorUsesNekoSurface: true,
+      manifestHasBrowserBinding: true,
+    });
+    assert.equal(projection.unreliable, false);
+    assert.equal(projection.evidence?.axis, "leased");
+    assert.equal(projection.evidence?.surfaceId, "surface_default");
+  })
+);
+
+test(
   "7.6 acceptance: released browser-surface lease history with no surface rows still projects unknown, not none",
   withTempDb(async () => {
     const store = createSqliteBrowserSurfaceLeaseStore();

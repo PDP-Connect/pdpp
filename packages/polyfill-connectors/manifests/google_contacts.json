@@ -220,5 +220,8 @@
       "coverage_strategy": "full_inventory",
       "freshness_strategy": "scheduled_window"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "older_pages_deferred_page_budget": "We stopped after reading a set number of pages of your contacts, so some contacts haven't been collected yet. Nothing was lost — the next run picks up where this one stopped"
+  }
 }

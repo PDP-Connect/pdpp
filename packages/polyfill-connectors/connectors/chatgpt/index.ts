@@ -85,6 +85,7 @@ import type {
   ChatGptAuth,
   ChatGptFetchResult,
   ChatGptJson,
+  ChatGptNode,
   ConversationListItem,
   RawCustomInstructionsBody,
   RawMemoryEntry,
@@ -97,8 +98,16 @@ import type {
 const validateRecord = validateRecordRaw as ValidateRecord;
 
 const CHATGPT_TERMINAL_DIAGNOSTIC_MAX = 240;
+// The trailing boundary is `(?:$|[^A-Za-z0-9])`, not `\b`. The leading class
+// already treats `_` as a separator, but `\b` does not close inside an
+// identifier — `_` is a word character — so `chatgpt_credentials_missing`
+// entered at the `_` before `credentials` and then failed to terminate before
+// the `_` after it. The ONE error shape this connector actually throws for a
+// missing credential therefore fell through to the generic branch and was
+// labelled `retry_on_connector_upgrade`, telling the owner to await a code
+// release for something only re-entering a credential can fix.
 const CHATGPT_AUTH_FAILURE_RE =
-  /(?:^|[^A-Za-z0-9])(?:401|403|auth_missing|session_required|session_failed|unauthorized|forbidden|credentials|CHATGPT_USERNAME\/PASSWORD not set)\b/iu;
+  /(?:^|[^A-Za-z0-9])(?:401|403|auth_missing|session_required|session_failed|unauthorized|forbidden|credentials|CHATGPT_USERNAME\/PASSWORD not set)(?:$|[^A-Za-z0-9])/iu;
 const CHATGPT_MANUAL_ACTION_RE =
   /(?:^|[^A-Za-z0-9_])(?:chatgpt_login_unexpected_ui|chatgpt_login_no_password_field|chatgpt_login_post_submit_failed|cloudflare|challenge|captcha|manual_action|2fa|verification code)(?:$|[^A-Za-z0-9_])/iu;
 const CHATGPT_SENSITIVE_DIAGNOSTIC_FIELD_RE =
@@ -2026,6 +2035,114 @@ export async function runCustomInstructionsStream(
 }
 
 /**
+ * Reconcile the current branch we walked against the branch the conversation
+ * actually declares, and surface a shortfall as a gap rather than a silent pass.
+ *
+ * The subtlety that shapes this whole check: ChatGPT does NOT hand us an
+ * independent provider total. `message_count_on_current_branch` is computed by
+ * our own `countBranchMessages` from the SAME `mapping` object, in the same
+ * call that emits these messages. Comparing emitted-vs-declared there is a
+ * tautology — both sides read one in-memory graph — so it would prove nothing.
+ *
+ * The real provider assertion is structural: `current_node` plus each node's
+ * `parent` pointer declare a chain, and `flattenTreeCurrentBranch` walks it by
+ * following parents until one is absent from the mapping. That walk STOPS
+ * SILENTLY on a missing parent. A truncated payload therefore yields a short
+ * branch AND a correspondingly short `message_count_on_current_branch` — the
+ * declared count shrinks to match the loss, so the conversation reads complete.
+ * That is the silent-truncation class this check closes.
+ *
+ * So the reconciliation is against the graph's own claims:
+ *   - `current_node` must be present in the mapping. If the tip is absent, the
+ *     branch we walked is not the branch the conversation says it is on.
+ *   - The chain must terminate at a real root (a node with no parent), not at a
+ *     dangling pointer into a node the payload did not include.
+ *
+ * Both are provider-asserted facts measured at the payload boundary, before any
+ * emit decision. Live reconciliation over 5,821 collected conversations:
+ * counting on-branch messages matched the declared count for 5,815 exactly and
+ * NEVER exceeded it, so equality is the right contract and a shortfall is real.
+ *
+ * Emitted as a SKIP_RESULT rather than a DETAIL_GAP for the same reason
+ * `empty_detail` is: the fetch SUCCEEDED and the conversation is genuinely
+ * hydrated. Re-fetching returns the same truncated graph, so a retryable gap
+ * would spin forever. The honest report is "we reached it, and what it gave us
+ * is internally inconsistent".
+ */
+async function emitBranchReconciliation(
+  deps: StreamDeps,
+  conversationId: string,
+  mapping: Record<string, ChatGptNode>,
+  currentNode: string | null | undefined,
+  emittedBranchCount: number
+): Promise<void> {
+  if (!currentNode) {
+    return;
+  }
+  // Measured at the payload boundary, independently of what was emitted: does
+  // the graph contain the tip it claims to be on?
+  if (!mapping[currentNode]) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "branch_tip_missing",
+      message: `conversation ${conversationId} declares a current_node its mapping does not contain; the branch is truncated`,
+      diagnostics: {
+        conversation_id: conversationId,
+        emitted_on_branch: emittedBranchCount,
+        node_count: Object.keys(mapping).length,
+      },
+    });
+    return;
+  }
+  // Walk the declared parent chain to its end. A chain that ends on a node
+  // whose `parent` names an id the mapping lacks was cut short upstream — the
+  // branch continues in the provider's data but not in ours.
+  const danglingParent = findDanglingBranchParent(mapping, currentNode);
+  if (danglingParent !== null) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "branch_truncated",
+      message: `conversation ${conversationId} has a current-branch node whose parent is absent from the mapping; earlier messages on this branch were not delivered`,
+      diagnostics: {
+        conversation_id: conversationId,
+        emitted_on_branch: emittedBranchCount,
+        // A ChatGPT node UUID, not user content — safe to disclose, and the
+        // only handle that makes the gap actionable.
+        missing_parent_id: danglingParent,
+        node_count: Object.keys(mapping).length,
+      },
+    });
+  }
+}
+
+/**
+ * Follow the current branch root-ward and return the first parent id the
+ * mapping does not contain, or null when the chain terminates cleanly. Mirrors
+ * `flattenTreeCurrentBranch`'s traversal — including its cycle guard — so the
+ * two agree on what "the current branch" means.
+ *
+ * A parentless root needs no special case: `id = parent` sets `id` falsy and
+ * the loop condition ends the walk, returning null. An explicit root check was
+ * tried and removed as dead code — it changed the result on none of the 1,029
+ * enumerated parent graphs over three nodes.
+ */
+function findDanglingBranchParent(mapping: Record<string, ChatGptNode>, currentNode: string): string | null {
+  const visited = new Set<string>();
+  let id: string | null | undefined = currentNode;
+  while (id && !visited.has(id) && mapping[id]) {
+    visited.add(id);
+    const parent: string | null | undefined = mapping[id]?.parent;
+    if (parent && !mapping[parent]) {
+      return parent;
+    }
+    id = parent;
+  }
+  return null;
+}
+
+/**
  * Process a single fetched conversation detail payload: emit the merged
  * conversation record first, then emit messages along the current branch
  * (if the messages stream was requested).
@@ -2064,15 +2181,21 @@ export async function processConversationDetail(
   const currentNode = detail.json.current_node || c.current_node;
   const currentBranchIds = new Set(flattenTreeCurrentBranch(mapping, currentNode).map((x) => x.nodeId));
   let emittedMessageCount = 0;
+  let emittedBranchCount = 0;
   for (const [nodeId, node] of Object.entries(mapping)) {
-    const msg = extractMessage(nodeId, node, c.id, currentBranchIds.has(nodeId));
+    const onBranch = currentBranchIds.has(nodeId);
+    const msg = extractMessage(nodeId, node, c.id, onBranch);
     if (!msg?.role) {
       // synthetic root — skip
       continue;
     }
     emittedMessageCount += 1;
+    if (onBranch) {
+      emittedBranchCount += 1;
+    }
     await deps.emitRecord("messages", msg);
   }
+  await emitBranchReconciliation(deps, c.id, mapping, currentNode, emittedBranchCount);
   if (emittedMessageCount === 0) {
     // Completeness guard. A 200-with-mapping detail whose graph contains NO
     // message-bearing node leaves a bare conversation row with zero messages
@@ -2502,7 +2625,7 @@ export async function runSharedConversationsStream(
   if (!sawError) {
     // Only prune after a clean full pass — an aborted/errored scan never saw
     // every id and must not drop carry-forward entries it failed to observe.
-    fingerprintCursor.pruneStale();
+    fingerprintCursor.dropUnseenIds();
     deps.emit({
       type: "STATE",
       stream: "shared_conversations",
@@ -4470,6 +4593,11 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "chatgpt",
     validateRecord,
+    // See the chase declaration: without this the runtime resolves `{}`, never
+    // raises the `credentials` INTERACTION, and the no-credential branch opens
+    // an interactive browser login without ever saying a credential was
+    // expected.
+    auth: { kind: "env", required: ["CHATGPT_USERNAME", "CHATGPT_PASSWORD"] },
     normalizeTerminalError: normalizeChatGptTerminalError,
     // Page-preservation flags come from the shared browser-surface policy so the
     // page-level (child) and process-level (reference lease caller) retention
@@ -4481,6 +4609,7 @@ if (isMainModule(import.meta.url)) {
       checkpoint,
       completeAssistance,
       context,
+      credentials,
       onCredentialSubmit,
       page,
       progress,
@@ -4492,6 +4621,7 @@ if (isMainModule(import.meta.url)) {
         checkpoint,
         completeAssistance,
         context,
+        credentials,
         onCredentialSubmit,
         page,
         progress,

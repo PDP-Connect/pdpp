@@ -20,8 +20,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { dirname } from "node:path";
 import { load as loadSqliteVec } from "sqlite-vec";
 import {
   makeConnectorInstanceId as canonicalConnectorInstanceId,
@@ -608,6 +609,39 @@ CREATE TABLE IF NOT EXISTS connector_instance_tombstones (
   UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
 );
 
+-- Reversible alias/read-model grouping of a recovered-fragment connector
+-- instance under the canonical connector instance for the SAME real
+-- provider account. This table is deliberately the ONLY mechanism for
+-- account unification: no code path physically rewrites a fragment's own
+-- connector_instance_id, moves its records, or deletes it. Every read
+-- surface that must present "one logical account" (Sources, Explore,
+-- lexical/semantic search, source detail, public read identity) resolves
+-- through connector-instance-canonicalization.ts, which reads this table.
+-- Grouping a fragment never affects credentials, schedules, or checkpoint
+-- state -- those stay attached only to the canonical row (enforced by the
+-- migration tool, not by a DB constraint, since credentials/schedules key
+-- off connector_instance_id with no FK to this table).
+-- connector_instance_id is the PRIMARY KEY: a fragment has exactly one
+-- canonical target at a time (no fan-out), and the canonical row itself is
+-- never a fragment (see assertion in the resolver / migration tool, not a DB
+-- CHECK, since a cross-row self-reference isn't expressible as a CHECK).
+-- Deleting a row is the complete rollback: the alias disappears and the
+-- fragment reverts to being its own independently-visible connection.
+CREATE TABLE IF NOT EXISTS connector_instance_groups (
+  connector_instance_id           TEXT PRIMARY KEY,
+  canonical_connector_instance_id TEXT NOT NULL,
+  owner_subject_id                TEXT NOT NULL,
+  reason                          TEXT NOT NULL,
+  evidence                        TEXT NOT NULL DEFAULT '{}',
+  grouped_by                      TEXT NOT NULL,
+  grouped_at                      TEXT NOT NULL,
+  CHECK (connector_instance_id <> canonical_connector_instance_id)
+);
+CREATE INDEX IF NOT EXISTS idx_connector_instance_groups_owner
+  ON connector_instance_groups(owner_subject_id);
+CREATE INDEX IF NOT EXISTS idx_connector_instance_groups_canonical
+  ON connector_instance_groups(canonical_connector_instance_id);
+
 -- Per-connection encrypted static-secret credential store. A peer of the
 -- instance-scoped storage / schedule state: a single connector-declared static
 -- provider secret sealed at rest under the owner/operator key and keyed to
@@ -632,6 +666,120 @@ CREATE TABLE IF NOT EXISTS connector_instance_credentials (
 
 CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
   ON connector_instance_credentials(owner_subject_id, status);
+
+-- Durable, provenance-bearing connector configuration: an IMMUTABLE
+-- per-connection revision ledger, not a mutable current-value table.
+--
+-- Design history: an earlier draft of this table stored one mutable row
+-- per (connector_instance_id, key), overwritten in place on every write.
+-- An adversarial design review (CONFIG-REDTEAM-CODEX.md, 2026-08-22) showed
+-- that shape survives the exact incident it exists to fix: an agent holding
+-- the owner's bearer token can still write a well-typed, fully-attributed
+-- value, and a well-typed agent-authored write is not the same as an
+-- owner-chosen one. The review's required invariant: a run consumes
+-- collection-shaping configuration only from an immutable revision confirmed
+-- by the connection's authenticated owner subject.
+-- revision. Provenance origin is not authorization: every collection-scope
+-- change starts proposed, regardless of whether its author says "owner".
+-- Immutability plus a status column is what makes that gate expressible; a
+-- table that overwrites its own history cannot
+-- distinguish "proposed" from "silently superseded."
+--
+-- One row per (connector_instance_id, revision): revision is a
+-- monotonically increasing integer scoped to the connection (assigned by
+-- the store from the current max, matching the spine_events.event_seq
+-- pattern already used for the same reason -- caller input cannot forge
+-- ordering). The revision payload and provenance fields are immutable once
+-- written. Lifecycle metadata (status, confirmed_by, and confirmed_at)
+-- may be updated when a revision is activated or superseded; the active
+-- pointer moves to the resulting revision. This is what lets exact
+-- historical values remain queryable ("what was active when run R ran")
+-- without a second history mechanism.
+--
+-- config_json holds the full config bundle for this revision (all
+-- collection_scope + transport keys together), not one row per key: CAS
+-- (optimistic concurrency) operates per connection generation, not per key,
+-- so a per-key row would let two concurrent writers each "win" on a
+-- different key of the same logical change -- exactly the merge hazard the
+-- review rejects (finding #7). Coverage-proof invalidation is a separate
+-- concern and is not performed by this table's activation writes.
+--
+-- Every provenance column is NOT NULL; origin is a closed enum with no
+-- 'unknown' member. Platform-derived collection_scope rows always start
+-- proposed; only a confirmation bound to the connection's authenticated
+-- owner subject may move one to active. See
+-- connector_instance_config_current below for "which
+-- revision is in force now" and server/stores/connector-instance-config-store.ts
+-- for the CAS and confirmation logic. Coverage-proof invalidation is outside
+-- this schema transaction.
+CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
+  connector_instance_id TEXT NOT NULL,
+  revision               INTEGER NOT NULL,
+  config_json            TEXT NOT NULL,
+  -- Closed, platform-owned contract identifier + version for the shape of
+  -- config_json. A revision is only ever read by code that proves it
+  -- understands the exact contract version -- never coerced across a
+  -- version bump. See config_contract_version in the store module.
+  config_contract_id      TEXT NOT NULL,
+  config_contract_version INTEGER NOT NULL,
+  -- Whether this revision shapes what the connector collects or only how
+  -- it collects. A revision has one platform-derived classification: mixing
+  -- collection_scope and transport keys in one config_json is allowed, but
+  -- the revision as a
+  -- whole is classified by whether ANY key in it is collection_scope,
+  -- because that is what determines whether it may self-activate.
+  option_kind             TEXT NOT NULL CHECK (option_kind IN ('collection_scope', 'transport')),
+  origin                  TEXT NOT NULL CHECK (origin IN ('owner', 'agent', 'migration', 'default')),
+  is_explicit              INTEGER NOT NULL CHECK (is_explicit IN (0, 1)),
+  -- proposed:   written, but not yet the connection's active configuration
+  --             (mandatory starting state for every collection_scope write
+  --             -- see the store's platform-derived activation rule).
+  -- active:     the revision a run resolves against right now.
+  -- superseded: was active; a later revision replaced it.
+  -- quarantined: server-detected integrity problem (e.g. an untrusted
+  --             direct DB write) -- never runnable, never silently
+  --             attributed to an author.
+  status                   TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+  -- The collection-boundary fingerprint this revision's collection_scope
+  -- keys resolve to, following the same declassification contract already
+  -- proven for START.scope (see local-collection-scope.ts). NULL for a
+  -- pure-transport revision, which cannot change the boundary.
+  collection_boundary_fingerprint TEXT,
+  source_of_change         TEXT NOT NULL,
+  set_by                   TEXT NOT NULL,
+  set_at                   TEXT NOT NULL,
+  confirmed_by             TEXT,
+  confirmed_at             TEXT,
+  PRIMARY KEY (connector_instance_id, revision),
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_connector_instance_config_revisions_instance
+  ON connector_instance_config_revisions(connector_instance_id, revision);
+
+-- "Which revision is active right now" for a connection -- the single
+-- server-authoritative pointer every run resolves against. Separated from
+-- the revision ledger itself (rather than an is_active bool on the ledger
+-- row) so appending or activating a revision and moving the pointer can be
+-- coordinated in one transaction. Coverage-proof invalidation is outside
+-- this schema transaction and must not be inferred from the pointer update.
+-- The schema deliberately does not add a cross-table CHECK or trigger that
+-- requires this pointer's row to be active: that is not portable across the
+-- existing SQLite/Postgres schemas without a trigger/migration protocol. The
+-- store instead fails closed at read time when a legacy or corrupt pointer
+-- addresses a non-active revision.
+CREATE TABLE IF NOT EXISTS connector_instance_config_current (
+  connector_instance_id TEXT PRIMARY KEY,
+  active_revision        INTEGER NOT NULL,
+  -- Storage epoch: bumped on backup restore / re-import so a device
+  -- holding a pre-restore revision number cannot silently win a
+  -- compare-and-swap against post-restore state (review finding #7's
+  -- restore case). A write's base_revision AND base_epoch must both match.
+  storage_epoch           INTEGER NOT NULL DEFAULT 1,
+  updated_at              TEXT NOT NULL,
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+  FOREIGN KEY(connector_instance_id, active_revision) REFERENCES connector_instance_config_revisions(connector_instance_id, revision)
+);
 
 CREATE TABLE IF NOT EXISTS acquisition_batches (
   batch_id              TEXT PRIMARY KEY,
@@ -683,6 +831,12 @@ CREATE TABLE IF NOT EXISTS manual_upload_artifacts (
   error_json            TEXT,
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
+  -- The boot epoch of the process that owns this in-flight upload.
+  -- An artifact stuck at uploaded/validating whose owner_epoch is not the
+  -- current one is provably orphaned: the process that could have finished
+  -- it is gone. NULL means "written before this column existed"; the sweep
+  -- treats those as orphaned too, since no live process claims them.
+  owner_epoch           TEXT,
   FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT,
   FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE SET NULL,
   FOREIGN KEY(acquisition_batch_id) REFERENCES acquisition_batches(batch_id) ON DELETE SET NULL
@@ -1081,6 +1235,30 @@ CREATE TABLE IF NOT EXISTS connector_schedules (
   enabled           INTEGER NOT NULL DEFAULT 1,
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL
+);
+
+-- The deployment's durable controller identity.
+--
+-- Exactly one row (id = 'singleton'). Written once, on the first boot that
+-- finds the table empty, and read unchanged by every boot after that.
+--
+-- Why this table exists: resolveControllerId used to fall back to
+-- os.hostname(), which under Docker is the container ID and is fresh on
+-- every "docker run". The boot reconciler only adjudicates orphans whose
+-- controller_id matches its own, so after any container replacement it
+-- matched nothing and every orphan from a prior container became permanently
+-- non-terminal. Production accumulated 121 such runs between 2026-05 and
+-- 2026-07 under 106 distinct controller ids.
+--
+-- Identity has to outlive the process to be an identity at all. An env var
+-- would also work, but only for as long as an operator remembers to set it on
+-- every container recreation -- and forgetting is silent, which is exactly how
+-- the original defect went unnoticed for three months. Reading it from the
+-- same database that holds the runs makes the correct value the default.
+CREATE TABLE IF NOT EXISTS controller_identity (
+  id            TEXT PRIMARY KEY,
+  controller_id TEXT NOT NULL,
+  created_at    TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS controller_active_runs (
@@ -5669,6 +5847,9 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   // interference defect.
   detachDb();
   const busyTimeoutMs = resolveSqliteBusyTimeoutMs(opts.busyTimeoutMs);
+  if (path !== ":memory:") {
+    mkdirSync(dirname(path), { recursive: true });
+  }
   const raw = new Database(path, { timeout: busyTimeoutMs }) as unknown as SqliteDatabase;
   sqliteStoreCacheGeneration += 1;
   sqliteStoreCacheIdentity = `sqlite:${String(path)}:${sqliteStoreCacheGeneration}`;
@@ -5899,6 +6080,7 @@ DROP INDEX IF EXISTS idx_blob_bindings_record;
 CREATE INDEX IF NOT EXISTS idx_records_lookup ON records(connector_instance_id, stream, record_key);
 CREATE INDEX IF NOT EXISTS idx_records_version ON records(connector_instance_id, stream, version);
 CREATE INDEX IF NOT EXISTS idx_records_semantic_time ON records(connector_instance_id, stream, (COALESCE(NULLIF(semantic_time, ''), emitted_at)) DESC, record_key DESC);
+CREATE INDEX IF NOT EXISTS idx_records_canonical_count ON records(connector_instance_id, deleted, stream, emitted_at);
 CREATE INDEX IF NOT EXISTS idx_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version);
 CREATE INDEX IF NOT EXISTS idx_record_changes_emitted ON record_changes(connector_instance_id, stream, emitted_at);
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key);
@@ -5917,6 +6099,10 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheckAccessTokenApiKey(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
+  // Additive and NULL-tolerant: rows written before this column existed read
+  // as NULL, which the sweep treats as orphaned because no live process
+  // claims them. See the column comment on manual_upload_artifacts.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "manual_upload_artifacts", "owner_epoch", "TEXT"));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)
@@ -5998,6 +6184,19 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
       ON spine_events(connector_instance_id, event_seq)
       WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
         AND connector_instance_id IS NOT NULL`
+  );
+  // Same gap as the Postgres migration's `idx_pg_spine_events_instance_seq`
+  // (postgres-storage.ts): `readSqliteDiscoveryContext`'s lifecycle-checkpoint
+  // read groups by `connector_instance_id` over EVERY event type, not just
+  // the four terminal outcomes the index above covers, so it fell through to
+  // an unindexed scan here too. `better-sqlite3` has no statement-timeout
+  // cancellation, so this backend never produced the loud
+  // `discovery_statement_timeout` symptom Postgres did — just a silent,
+  // ever-slower scan as `spine_events` grows. Add the same general index.
+  raw.exec(
+    `CREATE INDEX IF NOT EXISTS idx_spine_events_instance_seq
+      ON spine_events(connector_instance_id, event_seq)
+      WHERE connector_instance_id IS NOT NULL`
   );
   // Backfill connector_instance_id for pre-existing TERMINAL rows whose
   // identity already lives in data_json (Sol fourth-verdict P1.1): the

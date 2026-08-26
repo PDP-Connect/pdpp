@@ -525,10 +525,10 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
     },
 
     /**
-     * Drain all still-open attention rows on connector exit. Called from
-     * the runtime's `closeOpenStructuredAssistance` so a run that crashes
-     * or is force-cancelled leaves no orphaned `open` rows polluting
-     * `needs_attention` indefinitely.
+     * Attempt to drain all still-open attention rows on connector exit.
+     * Called from the runtime's `closeOpenStructuredAssistance`; a failed
+     * transition is logged and remains tracked for a later retry. Durable
+     * reconciliation must handle rows that remain open after process exit.
      */
     async resolveAllOpen(status: TerminalStatus): Promise<string[]> {
       const lifecycle = lifecycleForTerminalStatus(status);
@@ -536,8 +536,8 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
       for (const [attentionId] of [...open.entries()]) {
         // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         const next = await safeTransition(attentionId, lifecycle);
-        untrack(attentionId);
         if (next) {
+          untrack(attentionId);
           drained.push(attentionId);
         }
       }
@@ -566,7 +566,9 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
       }
       const lifecycle = lifecycleForTerminalStatus(status);
       const next = await safeTransition(attentionId, lifecycle);
-      untrack(attentionId);
+      if (next) {
+        untrack(attentionId);
+      }
       return next !== null;
     },
   };

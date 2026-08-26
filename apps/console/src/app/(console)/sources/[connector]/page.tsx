@@ -28,6 +28,7 @@ import {
   runStatusWithCollectionReportGaps,
   type StreamCollectionFacts,
 } from "../../lib/collection-report.ts";
+import { getConnectionConfig, listConnectionConfigRevisions } from "../../lib/connection-config-client.ts";
 import {
   type AutoPausedBanner,
   deriveAutoPausedBanner,
@@ -72,7 +73,9 @@ import { isUnexpectedStreamDeclaration, streamCountLabel } from "../../lib/strea
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
 import { findManifestForConnectorId } from "../lib/relationships.ts";
 import { formatConnectorHeaderCount } from "../sources-view-model.ts";
-import { resumeConnectorScheduleAction } from "./actions.ts";
+import { pauseConnectionAction, resumeConnectionAction, resumeConnectorScheduleAction } from "./actions.ts";
+import type { ConfigRevisionWire, ConnectionConfigWire } from "./connection-config-view-model.ts";
+import { ConnectionConfiguration } from "./connection-configuration.tsx";
 import { ConnectionDangerZone } from "./connection-danger-zone.tsx";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { RenameConnection } from "./rename-connection.tsx";
@@ -133,6 +136,14 @@ export interface ConnectorPageModel {
    */
   collectionFactsByStream: Map<string, StreamCollectionFacts>;
   collectionOwnerActionByStream: SourceStreamOwnerActionAvailability;
+  /** The attributed revision ledger, for the history timeline. */
+  configRevisions: ConfigRevisionWire[];
+  /**
+   * The connection's live configuration read (active revision, options schema,
+   * and the base a later propose must echo). `null` when the read failed — the
+   * configuration panel then says so instead of the page failing.
+   */
+  configuration: ConnectionConfigWire | null;
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string;
   /**
@@ -425,12 +436,23 @@ async function loadConnectorPageModel(
   // surface, so using the owner-only summary read-model is the SLVP construction
   // boundary: one cheap projection read, no duplicate expensive RS metadata read.
   const streams = streamsFromConnectorSummary(summary);
-  const [diagnostics, providerOrigin] = await Promise.all([
+  // `connectorInstanceIdForConnection` already falls back to `connection_id`,
+  // so this is the concrete instance selector the config routes resolve.
+  const configConnectionId = connectorInstanceId;
+  const [diagnostics, providerOrigin, configuration, configRevisions] = await Promise.all([
     loadConnectorDiagnostics(connectorId, connectorInstanceId),
     // Resolve the public origin to late-bind `<provider-url>` in remediation
     // command templates. Failure → null → the command fails closed (no broken
     // copy-paste command), never throws and breaks the page.
     getReferencePublicOrigin().catch(() => null),
+    // Configuration reads join this existing phase rather than adding a serial
+    // await — `page-performance.test.ts` pins that shape. Both degrade to null
+    // on failure: a connector whose manifest declares a malformed
+    // `options_schema` answers 400, and that must cost the owner the
+    // configuration panel only, never the health and streams they opened this
+    // page for.
+    getConnectionConfig(configConnectionId).catch(() => null),
+    listConnectionConfigRevisions(configConnectionId).catch(() => []),
   ]);
   const { schedule } = diagnostics;
   const overview = toConnectorOverview(summary, streams);
@@ -486,6 +508,8 @@ async function loadConnectorPageModel(
 
   return {
     activeRunId: schedule?.active_run_id ?? null,
+    configRevisions,
+    configuration,
     collectionFactsByStream,
     collectionOwnerActionByStream,
     connectionHealth: summary.connection_health ?? null,
@@ -620,6 +644,8 @@ function ConnectorPageView({
     activeRunId: scheduleActiveRunId,
     collectionFactsByStream,
     collectionOwnerActionByStream,
+    configRevisions,
+    configuration,
     connectionHealth,
     connectionRenderedVerdict,
     connectionId,
@@ -648,6 +674,22 @@ function ConnectorPageView({
     scheduleActiveRunId,
   });
   const revoked = isRevokedConnection(overview);
+  const paused = !revoked && overview.connectionStatus === "paused";
+  // A recovered historical-archive row: paused (never revoked), landed by the
+  // archive-recovery operation rather than an owner revoke. It gets the
+  // credential-repair notice INSTEAD of a plain Resume action — see
+  // `PausedHistoricalArchiveSection`'s doc comment for why resuming such a row
+  // without first repairing its credential would just fail on the next run.
+  const pausedHistoricalArchive = paused && sourceBindingKind === "historical_archive";
+  // Every OTHER paused row — including one the owner paused deliberately — gets
+  // a real Resume action. Without this, a `paused` connection outside the
+  // archive-recovery journey would be visible but unrecoverable from the
+  // console, which is the dead end pause/resume exists to remove.
+  const pausedResumable = paused && !pausedHistoricalArchive;
+  // Pause is offered only on a connection that is actually collecting. A
+  // draft/revoked/already-paused row has nothing to pause, and the route would
+  // answer `connector_instance_not_active` anyway.
+  const pausable = !(revoked || paused) && overview.connectionStatus === "active";
   // Stable rename selector: prefer the explicit instance id, fall back to the
   // connection id. Both address the same connection on the backend route.
   const renameSelector = connectorInstanceId ?? connectionId;
@@ -760,6 +802,10 @@ function ConnectorPageView({
 
       {revoked ? <RevokedConnectionSection connectorId={connectorId} revokedAt={overview.revokedAt ?? null} /> : null}
 
+      {pausedHistoricalArchive ? <PausedHistoricalArchiveSection credentialUpdateHref={credentialUpdateHref} /> : null}
+
+      {pausedResumable ? <PausedConnectionSection connectionId={renameSelector} /> : null}
+
       <AcquisitionCoverageSection
         connectionId={connectorInstanceId ?? connectionId}
         coverage={overview.acquisitionCoverage ?? null}
@@ -768,7 +814,7 @@ function ConnectorPageView({
       <Section
         description={
           collectionFactsByStream.size > 0
-            ? "Record counts show what this source currently retains. Coverage and next-run disposition come from the latest collection report; an unknown denominator reads unknown, never complete."
+            ? 'Record counts show what this source currently retains. Coverage and next-run disposition come from the latest collection report; when the total is unmeasured, coverage reads "not measured", never complete.'
             : undefined
         }
         title={`Streams (${streams.length})`}
@@ -824,6 +870,21 @@ function ConnectorPageView({
 
       <RecentRunsSection autoPausedBanner={autoPausedBanner} connectorId={connectorId} recentRuns={recentRuns} />
 
+      {/* Configuration belongs to the source, not to Deployment: this route
+          already owns the connection's identity, health, coverage, streams and
+          runs, so moving settings elsewhere would make the owner carry that
+          identity across a context switch. It sits above diagnostics because it
+          is owner-decision content, and above the danger zone because it is not
+          destructive. */}
+      {configuration ? (
+        <ConnectionConfiguration
+          config={configuration}
+          connectionId={connectorInstanceId ?? connectionId}
+          connectorId={connectorId}
+          revisions={configRevisions}
+        />
+      ) : null}
+
       {/* Diagnostics is operator-debug detail. It sat first, above the
           streams and runs an owner actually opens this page for, so the
           page led with its least-wanted content. It now follows them. */}
@@ -840,6 +901,8 @@ function ConnectorPageView({
         sourceInstances={sourceInstances}
         sourceInstancesError={sourceInstancesError}
       />
+
+      {pausable ? <PauseConnectionSection connectionId={renameSelector} /> : null}
 
       <ConnectionDangerZone
         connectionId={connectorInstanceId ?? connectionId}
@@ -1490,6 +1553,88 @@ function ConnectionIdentityLine({
         </>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Notice for a recovered historical-archive connection: paused (never
+ * revoked) with `source_binding.kind === 'historical_archive'`. This is the
+ * ONLY owner-facing surface for the archive-reconnect journey — there is no
+ * separate "Resume" button, because a recovered row typically carries no
+ * surviving credential, and resuming without one would just flip the row to
+ * `active` and then fail on the next run. Instead this reuses the SAME
+ * `credentialUpdateHref` the detail page already computes for repair
+ * (static-secret capture or browser-session reconnect, whichever this
+ * connection's binding requires) — the server-side capture/run hooks resume
+ * the row automatically once a working credential lands, so the owner makes
+ * one decision (repair the credential) and the resume follows as its result,
+ * never a second manual step.
+ */
+/**
+ * Notice + Resume action for an ordinarily paused connection — one the owner
+ * paused deliberately, as opposed to a recovered archive row (which gets
+ * {@link PausedHistoricalArchiveSection} and its credential-repair route
+ * instead). Stating what was KEPT is the point of the copy: the owner needs to
+ * see that pausing cost them nothing before they trust the button that undoes
+ * it, and that pause is not the same act as revoke.
+ *
+ * Renders unconditionally for a paused, non-archive row: unlike the archive
+ * notice there is no href that can be missing, so this can never silently
+ * render nothing and strand the connection.
+ */
+function PausedConnectionSection({ connectionId }: { connectionId: string | null }) {
+  return (
+    <Section
+      description="Collection is paused. Your records, schedule, and sign-in are kept — resume to start collecting again."
+      title="This source is paused"
+    >
+      <form action={resumeConnectionAction}>
+        {connectionId ? <input name="connection_id" type="hidden" value={connectionId} /> : null}
+        <IcButton data-testid="detail-action-resume-connection" size="sm" type="submit" variant="default">
+          Resume collecting
+        </IcButton>
+      </form>
+    </Section>
+  );
+}
+
+/**
+ * Pause control for a connection that is actively collecting. Deliberately
+ * NOT in the danger zone with revoke/delete, and deliberately unconfirmed:
+ * pause changes no data and is undone by one click on the same page, so the
+ * confirmation ceremony those destructive actions require would be friction
+ * with nothing to protect. The copy names the reversibility and contrasts
+ * pause with revoke, so the owner can tell the two apart before acting.
+ */
+function PauseConnectionSection({ connectionId }: { connectionId: string | null }) {
+  return (
+    <Section
+      description="Stop collecting from this source for now. Your records, schedule, and sign-in are kept, and you can resume any time. To end this connection instead, revoke it below."
+      title="Pause collecting"
+    >
+      <form action={pauseConnectionAction}>
+        {connectionId ? <input name="connection_id" type="hidden" value={connectionId} /> : null}
+        <IcButton data-testid="detail-action-pause-connection" size="sm" type="submit" variant="ghost">
+          Pause collecting
+        </IcButton>
+      </form>
+    </Section>
+  );
+}
+
+function PausedHistoricalArchiveSection({ credentialUpdateHref }: { credentialUpdateHref: string | null }) {
+  if (!credentialUpdateHref) {
+    return null;
+  }
+  return (
+    <Section
+      description="Reconnect this account to continue collecting. Existing records and this connection are preserved."
+      title="Reconnect to resume this source"
+    >
+      <Link className={buttonVariants({ size: "sm", variant: "default" })} href={credentialUpdateHref}>
+        Reconnect
+      </Link>
+    </Section>
   );
 }
 

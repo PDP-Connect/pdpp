@@ -96,7 +96,10 @@ export const orderSchema = z.object({
   payment_method_summary: paymentMethodSchema,
   gift_order: z.boolean(),
   digital_order: z.boolean(),
-  item_count: z.number().int().min(0),
+  // Nullable because a deferred order-detail fetch leaves the count genuinely
+  // unknown, and a non-nullable count can only express that as `0` — which
+  // reads as a proven-empty order. See `resolveItemCount`.
+  item_count: z.number().int().min(0).nullable(),
   fetched_at: z.string(),
 });
 

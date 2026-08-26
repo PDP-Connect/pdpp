@@ -27,7 +27,7 @@
  * a false zero or green.
  */
 
-import type { StreamManifestEntry } from "@pdpp/display";
+import type { FusedSourceStatus, StreamManifestEntry } from "@pdpp/display";
 import {
   deriveSourceDisplayNameFallback,
   formatConnectorNameForDisplay,
@@ -52,7 +52,9 @@ import type {
 } from "../lib/ref-client.ts";
 import { scheduleEnabled, scheduleIntervalSeconds } from "../lib/schedule-evidence.ts";
 import {
+  isArchivedSource,
   isRevokedConnector,
+  isSetupFailedSource,
   isSetupInProgressConnector,
   projectSourceActionability,
   type SourceOwnerActionCue,
@@ -130,6 +132,14 @@ export interface SourcePassportField {
 export interface SourceInstanceView {
   /** Human account/identity line for the list (display name vs. type). */
   accountLine: string;
+  /**
+   * Preserved records, no collection, never resuming. Derived from the
+   * server's `source_visibility`. An archived source renders in its own
+   * Sources group and must never read as healthy or current: the list row
+   * shows no live status dot and offers no action implying collection could
+   * resume.
+   */
+  archived: boolean;
   /** Stable connection selector for routing + revoke (connection_id). */
   connectionId: string | null;
   /** Connector type id (e.g. "gmail"), used for sync + add-source. */
@@ -140,6 +150,11 @@ export interface SourceInstanceView {
   detailHref: string;
   /** Owner-facing display name (passport + list title). */
   displayName: string;
+  /**
+   * The fused owner-facing status line (state · last updated · syncing now).
+   * Never cheerier than its worst axis; see `lib/fused-source-status.ts`.
+   */
+  fusedStatus: FusedSourceStatus;
   /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
   icon?: SourceManifestLike["icon"];
   /** Stable React key + route id. */
@@ -170,6 +185,26 @@ export interface SourceInstanceView {
    */
   primaryVerdictAction: SourcePrimaryVerdictAction | null;
   revoked: boolean;
+  /**
+   * A revoked retired-setup-shell row that never had a successful run —
+   * repeated failed setup, zero records. Derived from the server's
+   * `source_visibility: "setup_failed"`. Renders in the Sources list's own
+   * "Setup never completed" group and, like `archived`, must never read as
+   * healthy or current, and offers no action implying a connection exists to
+   * resume — the honest next step is a fresh attempt via Add Source.
+   */
+  setupFailed: boolean;
+  /**
+   * The server's own honest sentence for WHY this setup failed — e.g. "This
+   * setup attempt expired while waiting for you to finish signing in" for a
+   * TTL-expired shell, vs. the generic "Setup never finished" for every other
+   * cause. Server-derived (`archiveRenderedVerdict` in `ref-control.ts`) so
+   * every consumer of `rendered_verdict.forward_statement` — this passport
+   * pane, the `sources-report` CLI, anything else — renders the SAME
+   * specific reason, never a console-local guess. `null` only when
+   * `setupFailed` is false or the mirror predates `rendered_verdict`.
+   */
+  setupFailedForwardStatement: string | null;
   /** Status flag (dot + Endorse) derived from rendered verdict, with legacy fallback. */
   status: SourceStatusFlag;
   /** Stream manifest rows for the passport table. */
@@ -198,6 +233,19 @@ export interface DuplicateSourceGroup {
   items: readonly SourceInstanceView[];
   kind: string;
   total: number;
+}
+
+/**
+ * One row per connector standing in for every `setupFailed` attempt against
+ * it. `representative` is the most recent attempt (rows arrive in
+ * `created_at ASC` order from the identity page, so the last item for a
+ * connector is the newest) — its status/label are what renders; the others
+ * exist only to be counted in `attemptCount`.
+ */
+export interface SetupFailedSourceGroup {
+  attemptCount: number;
+  connectorId: string;
+  representative: SourceInstanceView;
 }
 
 export interface SourcesRuntimeAdvisory {
@@ -463,7 +511,17 @@ function formatSourceListFacts(summary: RefConnectorSummary, streamCountOverride
   const streamCountRaw = streamCountOverride ?? summary.stream_count ?? summary.streams.length;
   const streamCount = Number.isFinite(streamCountRaw) ? Math.max(0, Math.floor(streamCountRaw)) : 0;
   const streamNoun = streamCount === 1 ? "stream" : "streams";
-  return `${recordsLabel} · ${streamCount.toLocaleString()} ${streamNoun}`;
+  const facts = `${recordsLabel} · ${streamCount.toLocaleString()} ${streamNoun}`;
+  // A schedule the runtime refuses to run (manifest policy: not
+  // background-safe) stays `enabled` forever and never fires, so the row's
+  // status — driven by run history alone — keeps rendering whatever the last
+  // MANUAL run left behind. Chase and USAA read green on this list while
+  // automatic refresh is structurally dead. The detail page has said "paused
+  // by policy" all along; this is the list saying it too.
+  if (summary.schedule?.ineligibility_reason) {
+    return `${facts} · manual only`;
+  }
+  return facts;
 }
 
 function normalizeLabelForContainment(value: string): string {
@@ -503,6 +561,8 @@ export function toSourceInstanceView(
   // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connectionId ?? connectorInstanceId ?? actionability.routeId;
   const revoked = isRevokedConnector(summary);
+  const archived = isArchivedSource(summary);
+  const setupFailed = isSetupFailedSource(summary);
   // Modality is persisted server authority. A missing heartbeat must not
   // resurrect remote Sync controls for a local-device connection.
   const isLocalDevicePush = summary.source_kind === "local_device";
@@ -552,6 +612,7 @@ export function toSourceInstanceView(
   const nextAction = primaryVerdictAction?.ownerRunnable ? null : actionability.nextAction;
   const { ownerActionCue } = actionability;
   const status = actionability.renderedStatus;
+  const { fusedStatus } = actionability;
 
   const manifest = options.manifests
     ? options.manifests.find((candidate) => manifestMatchesConnectorId(candidate, connectorId))
@@ -630,9 +691,13 @@ export function toSourceInstanceView(
     needsOwnerLabel: hasFallbackLabel,
     nextAction,
     ownerActionCue,
+    archived,
     passportFields,
     primaryVerdictAction,
     revoked,
+    fusedStatus,
+    setupFailed,
+    setupFailedForwardStatement: setupFailed ? (summary.rendered_verdict?.forward_statement ?? null) : null,
     status,
     streams,
     totalRecords: summary.total_records,
@@ -712,13 +777,61 @@ export function collapseDuplicateFallbackSources(instances: readonly SourceInsta
   };
 }
 
-/** Map a list of summaries into the Sources view, preserving input order. */
+/**
+ * Coalesces every `setupFailed` row into ONE row per connector. Unlike
+ * {@link collapseDuplicateFallbackSources} (which only groups active
+ * duplicates past a minimum count), this ALWAYS collapses — even a single
+ * failed attempt renders through this path, so a connector's setup-failure
+ * history reads as one row with an attempt count rather than depending on
+ * how many times the owner happened to retry. Coalescing UI rows only: the
+ * underlying `connector_instances` rows are untouched, and `attemptCount`
+ * is a display aggregate, not a merge.
+ */
+export function collapseSetupFailedSources(instances: readonly SourceInstanceView[]): {
+  setupFailedGroups: readonly SetupFailedSourceGroup[];
+} {
+  const byConnector = new Map<string, SourceInstanceView[]>();
+  for (const instance of instances) {
+    if (!instance.setupFailed) {
+      continue;
+    }
+    const bucket = byConnector.get(instance.connectorId);
+    if (bucket) {
+      bucket.push(instance);
+    } else {
+      byConnector.set(instance.connectorId, [instance]);
+    }
+  }
+
+  const setupFailedGroups: SetupFailedSourceGroup[] = [];
+  for (const [connectorId, items] of byConnector) {
+    const representative = items.at(-1);
+    if (!representative) {
+      continue;
+    }
+    setupFailedGroups.push({ attemptCount: items.length, connectorId, representative });
+  }
+
+  return { setupFailedGroups: setupFailedGroups.sort((a, b) => a.connectorId.localeCompare(b.connectorId)) };
+}
+
+/**
+ * Map a list of summaries into the Sources view, preserving input order.
+ *
+ * Every summary maps to a row, including archived ones. The list previously
+ * dropped pure recovered historical fragments here; that made their records
+ * — 163,966 of them on the owner's instance — visible on no summary surface
+ * at all, violating the standing principle that no data known to the system
+ * may be invisible in the UI. They are now classified (`archived`) and
+ * rendered in their own group rather than filtered away.
+ */
 export function toSourcesView(
   summaries: RefConnectorSummary[],
   options: { manifests?: readonly SourceManifestLike[] } = {}
 ): SourceInstanceView[] {
+  const visibleSummaries = summaries;
   const fallbackCountByConnector = new Map<string, number>();
-  for (const summary of summaries) {
+  for (const summary of visibleSummaries) {
     if (
       isFallbackConnectionLabel({
         connectorId: summary.connector_id,
@@ -730,7 +843,7 @@ export function toSourcesView(
     }
   }
   const fallbackOrdinalByConnector = new Map<string, number>();
-  return summaries.map((summary) => {
+  return visibleSummaries.map((summary) => {
     const isAmbiguousFallback =
       (fallbackCountByConnector.get(summary.connector_id) ?? 0) > 1 &&
       isFallbackConnectionLabel({

@@ -113,7 +113,6 @@ function spawnFixture(dbPath: string, connectorInstanceId: string) {
 
   let stdoutBuffer = "";
   const lines: string[] = [];
-  const lineWaiters: Array<(line: string) => void> = [];
   child.stdout.on("data", (chunk) => {
     stdoutBuffer += chunk.toString("utf8");
     let idx: number;
@@ -124,12 +123,36 @@ function spawnFixture(dbPath: string, connectorInstanceId: string) {
       stdoutBuffer = stdoutBuffer.slice(idx + 1);
       const waiter = lineWaiters.shift();
       if (waiter) {
-        waiter(line);
+        waiter.resolve(line);
       } else {
         lines.push(line);
       }
     }
   });
+
+  // A waiter parked here is settled ONLY by a stdout line. If the child dies
+  // first — a crash, a nonzero exit, a signal — every pending waiter hangs
+  // forever, the test never fails, and the node:test runner kills the whole
+  // FILE after its no-output timeout. That turns one dead fixture into a
+  // suite-wide stall whose symptom names an innocent test, which is exactly
+  // how this cost several hours of misattributed flake-hunting.
+  //
+  // So a waiter must lose to child death: `rejectAllWaiters` runs on exit, and
+  // a waiter registered after the child is already gone rejects immediately
+  // rather than parking. The rejection names the exit status, so the failure
+  // reads as "the fixture died" instead of a timeout with no cause.
+  const lineWaiters: Array<{
+    readonly reject: (err: Error) => void;
+    readonly resolve: (line: string) => void;
+  }> = [];
+  let childGone: Error | null = null;
+
+  function rejectAllWaiters(err: Error): void {
+    childGone = err;
+    while (lineWaiters.length > 0) {
+      lineWaiters.shift()?.reject(err);
+    }
+  }
 
   function nextLine(): Promise<string> {
     if (lines.length > 0) {
@@ -137,11 +160,24 @@ function spawnFixture(dbPath: string, connectorInstanceId: string) {
       assert.ok(line !== undefined, "a line just confirmed present in the buffer must be shiftable");
       return Promise.resolve(line);
     }
-    return new Promise((resolve) => lineWaiters.push(resolve));
+    if (childGone) {
+      return Promise.reject(childGone);
+    }
+    return new Promise((resolve, reject) => lineWaiters.push({ reject, resolve }));
   }
 
   const exitCode = new Promise((resolve) => {
-    child.once("exit", (code) => resolve(code));
+    child.once("exit", (code, signal) => {
+      rejectAllWaiters(
+        new Error(
+          `fixture process exited before emitting the awaited line (code=${String(code)}, signal=${String(signal)})`
+        )
+      );
+      resolve(code);
+    });
+  });
+  child.once("error", (err) => {
+    rejectAllWaiters(new Error(`fixture process failed to run: ${err.message}`));
   });
 
   return { child, exitCode, nextLine };

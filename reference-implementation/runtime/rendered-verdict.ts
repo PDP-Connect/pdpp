@@ -34,6 +34,12 @@
  */
 
 import {
+  type AcknowledgedLossRecord,
+  acknowledgedLossProgressHeadline,
+  acknowledgedLossStatement,
+  acknowledgedLossTone,
+} from "./acknowledged-loss.ts";
+import {
   CONNECTION_CONDITION_REASONS,
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
@@ -66,19 +72,53 @@ export type VerdictTone = "amber" | "green" | "grey" | "red";
  * `amber` tone splits into two labels (`labelForPill`): "Needs refresh" is
  * reserved for a connection that is otherwise working but not current —
  * idle-with-prior-success, stale freshness, or `owner_refresh_due` — where the
- * owner action is a routine nudge, not a fix. "Degraded" is reserved for real
+ * owner action is a routine nudge, not a fix. "Missing data" is reserved for real
  * collection trouble: coverage gaps, attention, or a stalled outbox. Both
  * labels can carry `channel: "advisory"`; the label distinguishes "needs a
  * routine refresh" from "something is actually wrong" without changing whether
  * the owner is interrupted.
+ *
+ * B3 (owner ledger 2026-08-22): this label was "Degraded", which is engineering
+ * jargon — the owner said it "means nothing to a user". "Missing data" is the
+ * plain-English claim that is true across EVERY case this amber rollup covers:
+ * a coverage gap means some data was not collected; open attention means
+ * collection is blocked so data is not arriving; a stalled outbox means
+ * collected data is stuck on the device and has not landed. It is deliberately
+ * NOT cheerier than "Degraded" — it names the actual loss to the owner rather
+ * than describing the system's internal condition.
  */
 export type VerdictLabel =
+  // Terminal and honest: records preserved, collection finished, nothing will
+  // resume. Applied by the summary projection to an archived source, never
+  // derived from a tone (no `TONE_TO_LABEL` entry maps to it) — a source is
+  // archived because of what it IS, not because of how its axes scored.
+  | "Archived"
   | "Can't collect"
   | "Checking"
-  | "Degraded"
   | "Healthy"
+  | "Import complete"
+  | "Missing data"
+  // Owner decision 2026-08-23: a NON-REQUIRED stream the connector intended to
+  // collect (`coverage_policy: collect`, or no policy) has been lost for good.
+  // The source still works and still delivers everything load-bearing, so
+  // "Missing data" would overstate it and "Healthy" would hide a real loss.
+  // Named in the same plain-English register as "Missing data" — it says what
+  // the owner lost and that it was not the essential part.
+  | "Missing optional data"
+  // A local-collector dead-letter backlog that is a strict MINORITY of the
+  // records that host handled. The source is demonstrably still collecting —
+  // the majority uploaded — so "Can't collect" is a false red. The loss is
+  // still permanent and still needs a manual recovery, so it is never green.
+  // The exact proportion always rides along in the action summary ("1 of
+  // 10,001"); this label only sets the tone the owner reads first.
+  | "Some records stuck"
   | "Needs refresh"
   | "Not measured"
+  // Terminal and honest, like "Archived": this source never connected, so
+  // there is no collection to describe, only a setup attempt that did not
+  // finish. Applied by the summary projection to a `setup_failed` source,
+  // never derived from a tone — see `archiveRenderedVerdict` in `ref-control.ts`.
+  | "Setup never completed"
   | "Syncing";
 
 export interface VerdictPill {
@@ -338,7 +378,27 @@ export interface StreamRollup {
   readonly gap_retryable: boolean;
   /** Manifest stream priority. `required` streams weight the worst-wins rollup. */
   readonly priority: "accepted_absence" | "optional" | "required";
+  /**
+   * Recovery action the runtime attached to this stream's outstanding gap, when
+   * known. `"retry_by_runtime"` means an ordinary future run already retries
+   * this stream without owner involvement — the owner-facing retry CTA must
+   * not claim credit for work the runtime does on its own. `null`/absent means
+   * unknown (no skip fact, or a value the runtime hasn't declared): callers
+   * must treat unknown the same as owner-actionable, never the same as
+   * `retry_by_runtime`.
+   */
+  readonly recovery_action?: string | null;
   readonly stream_id: string;
+  /**
+   * Whether this stream's ENTIRE terminal shortfall carries durable per-item
+   * proof of impossibility — the collection report entry's
+   * `coverage_unfillable_accounted`, computed once by
+   * `isStreamFullyUnfillableAccounted`
+   * (`server/connector-gap-classification.ts`) and only carried here. Meaningful
+   * solely alongside `coverage: "terminal_gap"`. Optional; absent/`false`
+   * preserves the shipped behavior exactly.
+   */
+  readonly unfillable_accounted?: boolean;
 }
 
 /**
@@ -346,6 +406,22 @@ export interface StreamRollup {
  * `mode`. All fields are nullable; the synthesizer never fabricates a number.
  */
 export interface ProgressEvidence {
+  /**
+   * When this connection's required-stream coverage was last PROVEN — the
+   * oldest `evidence_as_of` across required streams already proven complete
+   * (`oldestRequiredCompleteEvidenceAsOf`, `server/ref-control.ts`). A
+   * DIFFERENT anchor from {@link last_refreshed_at}: that one is
+   * connection-record recency (the last successful run / device heartbeat),
+   * this one is the age of the coverage proof itself. A run can succeed and
+   * refresh records without re-proving every required stream, so the two
+   * legitimately diverge — and when they do, the owner-facing freshness
+   * sentence must age against THIS one, not the flattering one.
+   *
+   * Optional and nullable: absent/`null`/unparseable means no proof stands
+   * behind a claim about coverage age, and the sentence falls back to the
+   * record-recency wording rather than inventing a date.
+   */
+  readonly coverage_proven_at?: string | null;
   readonly gaps_drained_last_run?: number | null;
   readonly last_refreshed_at?: string | null;
   readonly mode: ProgressMode;
@@ -385,8 +461,49 @@ export interface ScheduleEvidence {
 
 const TONE_RANK: Record<VerdictTone, number> = { amber: 2, green: 0, grey: 1, red: 3 };
 
+/**
+ * Actions whose entire promise is "do this and the missing data arrives". Under
+ * an owner-acknowledged permanent loss that promise is false, so these are
+ * withdrawn rather than left as an action item the owner can never clear.
+ *
+ * `code_fix` is included: for a provider-side purge or a provider API that
+ * contradicts itself, there is no connector change that recovers the data, and
+ * claiming otherwise blames our code for the provider's act. `reauth` and
+ * `add_info` are deliberately NOT included — a broken credential is a real,
+ * separately-fixable defect that an acknowledged loss must not paper over.
+ */
+const RECOVERY_PROMISING_ACTION_KINDS: ReadonlySet<RequiredActionKind> = new Set<RequiredActionKind>([
+  "backfill",
+  "code_fix",
+  "refresh_now",
+  "retry_gap",
+]);
+
+/**
+ * The tone axes an acknowledged loss is allowed to speak for. An
+ * acknowledgement explains why DATA is missing; it says nothing about whether
+ * the credential works or the outbox is draining.
+ *
+ * `state` is deliberately EXCLUDED. The headline state is the worst-wins rollup
+ * of everything, so a red `state` can be driven by a blocked credential that
+ * the acknowledgement does not excuse — and honesty invariant 5
+ * (`toneBelowBaseStateViolation`) independently forbids a tone below the base
+ * state tone. Softening on `state` would trip that invariant, which is exactly
+ * the check catching the mistake.
+ */
+const ACKNOWLEDGED_LOSS_TONE_AXES: ReadonlySet<string> = new Set(["coverage", "disposition"]);
+
+/**
+ * True when every axis voting `red` is one an acknowledged loss can explain.
+ * If any other axis is red, the connection has a second, unacknowledged problem
+ * and must keep its red tone.
+ */
+function redIsOnlyFromCoverage(toneInputs: readonly { readonly axis: string; readonly tone: VerdictTone }[]): boolean {
+  return toneInputs.every((input) => input.tone !== "red" || ACKNOWLEDGED_LOSS_TONE_AXES.has(input.axis));
+}
+
 const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
-  amber: "Degraded",
+  amber: "Missing data",
   green: "Healthy",
   grey: "Not measured",
   red: "Can't collect",
@@ -409,34 +526,212 @@ const DEGRADING_AXES = new Set(["coverage", "attention", "outbox"]);
 const NON_DEGRADING_AMBER_STATES = new Set(["idle", "cooling_off"]);
 
 /**
- * Decide the amber label. "Needs refresh" only when EVERY reason the tone
- * reached amber-or-worse is one of the not-actually-broken shapes: `state:
- * idle` (with a prior success), `state: cooling_off`, `freshness: stale`, or `disposition:
- * owner_refresh_due`. Any other axis reaching amber-or-worse — or `state`
- * being outside those non-degrading states, or `disposition` being anything
- * other than `owner_refresh_due` — means real trouble, so it stays "Degraded".
+ * Whether an optional terminal loss is the ONLY thing that made this verdict
+ * degrade — i.e. the connection is otherwise working. Every non-coverage
+ * degrading signal (state, attention, outbox) must be clean, and the coverage
+ * axis's amber must be attributable solely to optional terminal streams: no
+ * required stream may be contributing an amber-or-worse coverage tone of its
+ * own. If anything else is also wrong, the honest label is the broader
+ * "Missing data" — the narrower claim would under-report real trouble.
+ */
+function optionalLossIsSoleDegradation(
+  streams: readonly StreamRollup[],
+  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+): boolean {
+  const anyOptionalTerminalLoss = streams.some((stream) => isOptionalTerminalLoss(stream));
+  if (!anyOptionalTerminalLoss) {
+    return false;
+  }
+  // Any degrading axis OTHER than coverage means something else is also wrong.
+  // `coverage` is excluded because it is the axis the optional loss ITSELF
+  // drives amber — including it here would make this check always false.
+  const nonCoverageDegrading = toneInputs.some(
+    (input) => DEGRADING_AXES.has(input.axis) && input.axis !== "coverage" && TONE_RANK[input.tone] >= TONE_RANK.amber
+  );
+  if (nonCoverageDegrading) {
+    return false;
+  }
+  // A required stream carrying its own amber-or-worse coverage is real trouble
+  // regardless of what the optional streams are doing.
+  const requiredCoverageDegrading = streams.some(
+    (stream) =>
+      stream.priority === "required" &&
+      !streamCoverageIsFullyAccounted(stream) &&
+      TONE_RANK[coverageTone(stream.coverage)] >= TONE_RANK.amber
+  );
+  return !requiredCoverageDegrading;
+}
+
+/**
+ * Whether a minority dead-letter backlog is the ONLY thing that made this
+ * verdict degrade. "Some records stuck" is a narrow claim — it says the source
+ * works and a subset of records did not upload — so it may only be made when
+ * nothing else is also wrong. Any other degrading axis (coverage, attention)
+ * or a broken headline state means the honest label is the broader "Missing
+ * data"; the narrower one would under-report real trouble.
+ *
+ * `outbox` is excluded from the other-axis scan for the same reason `coverage`
+ * is excluded in `optionalLossIsSoleDegradation`: it is the axis this very
+ * condition drives amber, so including it would make the check always false.
+ *
+ * `state` gets the same treatment, and it is load-bearing rather than
+ * cosmetic. A dead-letter stall DERIVES `state: "degraded"` on its own
+ * (`classifyDegradedEvidence` → `hasIndependentDegradingEvidence`,
+ * `connection-health.ts`: the stall's `LocalExporterAvailable` /
+ * `BacklogClear` conditions are themselves the degrading evidence). Treating
+ * that derived state as independent trouble would double-count ONE signal and
+ * make this branch unreachable for the exact production shape it exists to
+ * fix. So the state is accepted when its degrading conditions are only ever
+ * the stall's own; any OTHER false condition still means real, separate
+ * trouble and forfeits the narrow label.
+ */
+function minorityDeadLetterIsSoleDegradation(
+  snapshot: ConnectionHealthSnapshot,
+  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+): boolean {
+  if (!isMinorityDeadLetterStall(snapshot)) {
+    return false;
+  }
+  const nonOutboxDegrading = toneInputs.some(
+    (input) => DEGRADING_AXES.has(input.axis) && input.axis !== "outbox" && TONE_RANK[input.tone] >= TONE_RANK.amber
+  );
+  if (nonOutboxDegrading) {
+    return false;
+  }
+  if (
+    NON_DEGRADING_AMBER_STATES.has(snapshot.state) ||
+    TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] < TONE_RANK.amber
+  ) {
+    return true;
+  }
+  // `degraded` is the one amber state a dead-letter stall derives by itself.
+  // Accept it only when the stall's own conditions are the ONLY false ones.
+  return snapshot.state === "degraded" && !hasNonOutboxFalseCondition(snapshot);
+}
+
+/**
+ * Whether any CURRENT failing condition comes from somewhere other than the
+ * local-device outbox stall. These are the conditions that would have made the
+ * connection degraded regardless of the backlog, so their presence means the
+ * narrow "Some records stuck" claim is not the whole story.
+ */
+function hasNonOutboxFalseCondition(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.current &&
+      condition.status === "false" &&
+      condition.type !== "LocalExporterAvailable" &&
+      condition.type !== "BacklogClear"
+  );
+}
+
+/**
+ * Whether stale freshness is the ONLY reason the headline state degraded — a
+ * source that is collecting fine but is simply overdue for its next run.
+ *
+ * WHY THIS EXISTS (live defect 2026-08-25). A SCHEDULABLE connector whose data
+ * has aged past its staleness window reaches `state: "degraded"`, because the
+ * `Fresh` condition is `false` at `warning` severity and that is independent
+ * degrading evidence (`isDegradingCondition`, `connection-health.ts`). The two
+ * stale-advisory classifiers that would soften it to `idle`
+ * (`classifyManualStaleAdvisory` / `classifyAssistedStaleAdvisory`) are ordered
+ * AFTER `classifyDegradedEvidence` and only apply to manual-refresh-only or
+ * assisted-refresh connectors, so a plain `background_safe`/`automatic`
+ * connector never reaches them.
+ *
+ * `amberLabel` then read `degraded` as `stateIsBroken` and printed "Missing
+ * data", while `buildForwardStatement` — which reads the DISPOSITION, and the
+ * disposition stayed `complete` because `deriveForwardDisposition`'s Rule 4
+ * likewise fires only for manual/assisted refresh — printed "Current and
+ * collecting normally." Jellyfin, Notion and Steam rendered exactly that pair
+ * in production: an amber "Missing data" pill above a sentence claiming the
+ * source was current.
+ *
+ * The pill was the wrong side. Nothing was missing: coverage was green,
+ * attention clear, outbox clear. Per this module's own label vocabulary,
+ * "Missing data" is reserved for real collection trouble (coverage gaps,
+ * attention, a stalled outbox) and "Needs refresh" is the label for a
+ * connection "that is otherwise working but not current". So a
+ * staleness-only degradation takes "Needs refresh", the same label the
+ * manual-refresh path already produced for the identical owner-facing
+ * situation.
+ *
+ * The check is deliberately EVIDENCE-BASED rather than a new state in
+ * {@link NON_DEGRADING_AMBER_STATES}: `degraded` is a real degradation for
+ * every other cause, and blanket-listing it would relabel genuine coverage
+ * gaps. Requiring `Fresh` to be the sole current false condition keeps every
+ * other degrading cause on "Missing data".
+ */
+/**
+ * Whether the connection's most recent run failed. This is the `degraded` cause
+ * that leaves coverage complete and the disposition `complete` — the earlier
+ * runs still proved coverage, and no run owes more data — so it is invisible to
+ * both of those axes and must be read off the condition directly.
+ */
+function hasFailedCollectionCondition(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) => condition.current && condition.status === "false" && condition.type === "CollectionSucceeded"
+  );
+}
+
+function staleFreshnessIsSoleDegradation(snapshot: ConnectionHealthSnapshot): boolean {
+  if (snapshot.state !== "degraded" || snapshot.axes.freshness !== "stale") {
+    return false;
+  }
+  const falseConditions = snapshot.conditions.filter((condition) => condition.current && condition.status === "false");
+  return falseConditions.length > 0 && falseConditions.every((condition) => condition.type === "Fresh");
+}
+
+/**
+ * Decide the amber label. Four outcomes, in order of specificity:
+ *
+ *   - "Some records stuck" when the sole degradation is a minority dead-letter
+ *     backlog on the local collector's host.
+ *   - "Missing optional data" when the sole degradation is a lost collect-intent
+ *     non-required stream (owner decision 2026-08-23).
+ *   - "Needs refresh" when EVERY reason the tone reached amber-or-worse is one
+ *     of the not-actually-broken shapes: `state: idle` (with a prior success),
+ *     `state: cooling_off`, `freshness: stale`, or `disposition:
+ *     owner_refresh_due`.
+ *   - "Missing data" otherwise — any other axis reaching amber-or-worse, `state`
+ *     outside those non-degrading states, or `disposition` being anything other
+ *     than `owner_refresh_due` means real trouble.
+ *
+ * The optional-loss check runs FIRST because that state would otherwise be
+ * indistinguishable from a required coverage gap: both surface as an amber
+ * `coverage` axis, and only the stream rollups know which kind it is.
  */
 function amberLabel(
   snapshot: ConnectionHealthSnapshot,
   disposition: ForwardDisposition,
-  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+  toneInputs: readonly { axis: string; tone: VerdictTone }[],
+  streams: readonly StreamRollup[]
 ): VerdictLabel {
+  if (minorityDeadLetterIsSoleDegradation(snapshot, toneInputs)) {
+    return "Some records stuck";
+  }
+  if (optionalLossIsSoleDegradation(streams, toneInputs)) {
+    return "Missing optional data";
+  }
+  const stateIsNotActuallyBroken =
+    NON_DEGRADING_AMBER_STATES.has(snapshot.state) || staleFreshnessIsSoleDegradation(snapshot);
   const stateIsBroken =
-    !NON_DEGRADING_AMBER_STATES.has(snapshot.state) &&
+    !stateIsNotActuallyBroken &&
     TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
   const dispositionIsBroken =
     disposition !== "owner_refresh_due" && TONE_RANK[dispositionTone(disposition)] >= TONE_RANK.amber;
   const hasDegradingAxis = toneInputs.some(
     (input) => DEGRADING_AXES.has(input.axis) && TONE_RANK[input.tone] >= TONE_RANK.amber
   );
-  return stateIsBroken || dispositionIsBroken || hasDegradingAxis ? "Degraded" : "Needs refresh";
+  return stateIsBroken || dispositionIsBroken || hasDegradingAxis ? "Missing data" : "Needs refresh";
 }
 
 function labelForPill(
   tone: VerdictTone,
   snapshot: ConnectionHealthSnapshot,
   disposition: ForwardDisposition,
-  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+  toneInputs: readonly { axis: string; tone: VerdictTone }[],
+  streams: readonly StreamRollup[] = []
 ): VerdictLabel {
   if (tone === "grey" && snapshot.badges.syncing) {
     return "Checking";
@@ -444,15 +739,22 @@ function labelForPill(
   if (tone === "green" && snapshot.axes.outbox === "active") {
     return "Syncing";
   }
+  // A one-time import that reached green did so BECAUSE freshness is
+  // not_applicable, not because it proved current. "Healthy" implies an
+  // ongoing collection loop this source will never run again; "Import
+  // complete" names the actual, final state honestly.
+  if (tone === "green" && freshnessNotApplicable(snapshot)) {
+    return "Import complete";
+  }
   if (tone === "amber") {
-    const label = amberLabel(snapshot, disposition, toneInputs);
+    const label = amberLabel(snapshot, disposition, toneInputs, streams);
     // An active run dominates a routine "needs refresh" nudge (Wave 10a
     // active-run visibility): when every reason the tone reached amber is a
     // not-actually-broken shape (idle-with-prior-success, stale, or
     // owner_refresh_due) AND a run is currently advancing, the connection is
     // already doing the thing the nudge would ask for — render `Syncing`
     // like the green/active-outbox case, not `Needs refresh`. Real trouble
-    // (`Degraded`) is never softened this way; active work does not mask a
+    // (`Missing data`) is never softened this way; active work does not mask a
     // genuine defect.
     if (label === "Needs refresh" && snapshot.badges.syncing) {
       return "Syncing";
@@ -502,7 +804,29 @@ function baseStateTone(state: ConnectionHealthSnapshot["state"], lastSuccessAt: 
   }
 }
 
+/**
+ * A completed one-time import (`source_kind = 'manual'`) declares its `Fresh`
+ * condition `not_applicable` — a settled answer, not a pending one (see
+ * `conditionIsSettledSatisfied`, `connection-health.ts`, and
+ * `design-notes/source-state-truth-2026-08-18.md`). `axes.freshness` itself
+ * stays `unknown` (it is derived straight from raw freshness evidence, which
+ * a finished import never produces), so the tone/label/annotation layer must
+ * read the CONDITION, not the axis, to avoid re-encoding the same "we don't
+ * know" doubt the condition model already settled.
+ */
+export function freshnessNotApplicable(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.type === "Fresh" &&
+      condition.status === "not_applicable" &&
+      condition.reason === CONNECTION_CONDITION_REASONS.FRESHNESS_NOT_APPLICABLE_COMPLETE
+  );
+}
+
 function freshnessHealthTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
+  if (freshnessNotApplicable(snapshot)) {
+    return "green";
+  }
   switch (snapshot.axes.freshness) {
     case "fresh":
       return "green";
@@ -597,6 +921,13 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
       if (hasTransientUploadFailure(snapshot)) {
         return "amber";
       }
+      // A dead-letter backlog that is a strict minority of what the host
+      // handled ambers rather than reds: the source demonstrably collected
+      // the rest. The loss stays fully visible — same owner action, same
+      // "N of M" summary, never green. See `deadLetterIsMinorityOfCorpus`.
+      if (isMinorityDeadLetterStall(snapshot)) {
+        return "amber";
+      }
       return "red";
     case "unknown":
       // `unknown` is absence of local-device/outbox evidence for many normal
@@ -612,20 +943,85 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
 }
 
 /**
- * The worst per-stream coverage tone, weighted by manifest priority: an
- * `accepted_absence`/`optional` stream that is merely stale or partial annotates but
- * does NOT downgrade the pill below the required-stream tone (mitigates "worst-wins
- * over-ambers on a trivial optional stream", design Risks). A required stream always
- * contributes its full tone; optional stream coverage remains an advisory fact.
+ * Whether a stream's terminal shortfall is fully backed by durable per-item
+ * impossibility proof, so it owes nothing further. The one place this module
+ * asks that question — tone, the terminal-action gate, and the affected-stream
+ * list all read it, so they cannot drift apart. Meaningful only for
+ * `terminal_gap`; the boolean itself is computed once by
+ * `isStreamFullyUnfillableAccounted` (`server/connector-gap-classification.ts`)
+ * and merely carried here.
+ */
+function streamCoverageIsFullyAccounted(stream: StreamRollup): boolean {
+  return stream.coverage === "terminal_gap" && stream.unfillable_accounted === true;
+}
+
+/**
+ * Whether an `optional` stream's shortfall is TERMINAL — permanently lost, with
+ * no proof that losing it was acceptable.
+ *
+ * This is the discriminator the owner's 2026-08-23 policy turns on. Only
+ * `terminal_gap` qualifies: a `retryable_gap`/`partial`/`gaps` axis is filled by
+ * the next ordinary run, so downgrading the source for it would manufacture
+ * exactly the alert fatigue the priority weighting exists to prevent. A
+ * shortfall that is fully unfillable-accounted also does NOT qualify — durable
+ * per-item proof of impossibility is the same claim an accepted-absence policy
+ * makes, just proven rather than declared, and it already tones green for
+ * required streams.
+ *
+ * `unsupported`/`unavailable` are deliberately excluded here: those axes are
+ * themselves accepted-absence vocabulary, and a stream carrying them is
+ * classified `accepted_absence` upstream by `streamPriority`.
+ */
+function isOptionalTerminalLoss(stream: StreamRollup): boolean {
+  return (
+    stream.priority === "optional" && stream.coverage === "terminal_gap" && !streamCoverageIsFullyAccounted(stream)
+  );
+}
+
+/**
+ * The worst per-stream coverage tone, weighted by manifest priority. THREE
+ * cases, deliberately not two:
+ *
+ *   - `required`         : contributes its full tone (red terminal stays red).
+ *   - `optional`         : a TERMINAL loss contributes amber and no worse; any
+ *                          non-terminal shortfall annotates only.
+ *   - `accepted_absence` : never contributes; annotates only.
+ *
+ * The `optional` case is the owner's 2026-08-23 decision. Previously `optional`
+ * and `accepted_absence` were collapsed by a single `priority === "required"`
+ * test, which overloaded `required: false` to mean both "not load-bearing" and
+ * "we accept its absence". Those are different claims: a stream the connector
+ * INTENDS to collect (`coverage_policy: collect`, or no policy) and has now
+ * lost forever is a real loss to the owner, and a source sitting on one must
+ * not read "Healthy" (iMessage participants/attachments on older macOS is the
+ * live shape). It ambers rather than reds because it is still, genuinely, not
+ * required — the source keeps working, it just cannot deliver everything.
+ *
+ * A `terminal_gap` whose ENTIRE shortfall is proven permanently uncollectable
+ * tones GREEN, for the same reason it no longer derives a `terminal` disposition
+ * (`isUnfillableAccountedTerminalGap`, `connection-health.ts`): the connector
+ * collected everything collectible and can name exactly what it could not and
+ * why, which is the coverage axis's own `SourceCoverageComplete: true /
+ * coverage_complete_unfillable_accounted` verdict. Reading the raw axis here
+ * while the condition set reads the proof would re-introduce the very
+ * disagreement this pairing exists to remove — the pill would stay red under a
+ * fully healthy condition set. Only `terminal_gap` is softened; `unsupported`
+ * and `unavailable` keep their red.
  */
 function worstStreamCoverageTone(streams: readonly StreamRollup[]): VerdictTone {
   let worstTone: VerdictTone = "green";
   for (const stream of streams) {
-    const tone = coverageTone(stream.coverage);
+    const tone = streamCoverageIsFullyAccounted(stream) ? "green" : coverageTone(stream.coverage);
     if (stream.priority === "required") {
       worstTone = worse(worstTone, tone);
+      continue;
     }
-    // optional/accepted-absence non-red coverage annotates only; does not downgrade.
+    if (isOptionalTerminalLoss(stream)) {
+      // Capped at amber: a lost optional stream is a real loss, but it is not
+      // the "this source cannot collect" claim a required loss makes.
+      worstTone = worse(worstTone, "amber");
+    }
+    // accepted-absence, and any non-terminal optional coverage, annotate only.
   }
   return worstTone;
 }
@@ -649,12 +1045,23 @@ function connectionDisposition(
     // disposition (already derived through the oracle by the projection).
     return snapshot.forward_disposition;
   }
-  // Worst-wins over per-stream dispositions, each derived through the oracle —
-  // weighted by manifest priority exactly as the coverage rollup is. A required
-  // stream always contributes its disposition; an optional / accepted-absence
-  // stream contributes only when its disposition is `terminal` (a lost stream is
-  // lost regardless of priority). This keeps disposition and coverage consistent so
-  // a trivially-stale optional stream does not amber the whole connection.
+  // Worst-wins over per-stream dispositions, each derived through the oracle.
+  // ONLY `required` streams contribute, and that is deliberate even under the
+  // 2026-08-23 optional-loss policy.
+  //
+  // The connection-level `forward_disposition` is a single claim about what
+  // happens NEXT for the whole connection, and it is read by surfaces well
+  // beyond the pill (owner state, fleet rollups, required actions, the
+  // "resume" statement invariants). Letting a lost OPTIONAL stream promote it
+  // to `terminal` would assert the whole connection is finished — which is
+  // false, since the source keeps collecting everything load-bearing. The
+  // optional loss is carried by the COVERAGE tone instead, capped at amber
+  // (`worstStreamCoverageTone`), which is precisely the "annotate, do not
+  // dominate" split the priority weighting exists to express.
+  //
+  // So the three-way distinction lives in the coverage rollup; disposition
+  // stays required-only. `optional` and `accepted_absence` are still NOT
+  // equivalent — they differ in tone, label, and stream rows.
   let worstRank = TONE_RANK[dispositionTone(snapshot.forward_disposition)];
   let worst: ForwardDisposition = snapshot.forward_disposition;
   for (const stream of streams) {
@@ -692,6 +1099,7 @@ function streamDisposition(
     gapRetryable: stream.gap_retryable,
     refresh,
     schedule,
+    unfillableAccounted: stream.unfillable_accounted === true,
   });
 }
 
@@ -732,11 +1140,48 @@ function softensTerminalCoverageToDegraded(
   return disposition === "terminal" && snapshot.state === "degraded" && latestCollectionSucceeded(snapshot);
 }
 
+/**
+ * The softened maintainer `code_fix` status text: the latest collection
+ * SUCCEEDED and left a known coverage gap behind.
+ */
+const SOFTENED_COVERAGE_CTA = "Coverage gap needs review";
+
+/**
+ * The hard maintainer `code_fix` status text: data that cannot be collected
+ * at all.
+ */
+const TERMINAL_COVERAGE_CTA = "Missing data needs review";
+
+/**
+ * The status text for a maintainer `code_fix`. This slot is NOT a button: a
+ * maintainer-audience action is not owner-satisfiable (`satisfied_when: {
+ * kind: "none" }`), so the console renders it as inert status text
+ * (`sources-view.tsx`, the `!ownerRunnable` branch). 428898c92 established the
+ * register deliberately — for a defect the owner cannot act on, this slot
+ * states a CONDITION rather than inviting an action he cannot take.
+ *
+ * It must not restate the sentence beside it. The console stacks the two:
+ * `source-actionability.ts` sets the row's `what` from
+ * `verdict.forward_statement` and its `actionLabel` from this `cta`. The hard
+ * branch used to return the forward statement's own sentence verbatim, so
+ * `HEB - gezalsatx@yahoo.com` rendered "Some data from this source can't be
+ * collected." above "Some data from this source can't be collected" — one
+ * fact, printed twice, in the slot reserved for what happens next.
+ *
+ * Both branches now read as the softened one always did: a short condition
+ * label that names the source's state without re-spending the sentence below.
+ *
+ * The wording stays inside 428898c92's constraint. That commit removed
+ * "Connector code needs a fix" because naming whose code is broken is
+ * developer language, unhelpful on a surface where the owner is running the
+ * software himself. "Missing data needs review" names the owner's data and
+ * the disposition of the case — nothing about our code — and mirrors the
+ * softened branch one line up. Severity still separates the two: the softened
+ * case is a coverage GAP in an otherwise-succeeding run, this one is data that
+ * cannot be collected at all, and the sentence beside it says so in full.
+ */
 function terminalCoverageCta(snapshot: ConnectionHealthSnapshot, disposition: ForwardDisposition): string {
-  if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
-    return "Coverage gap needs review";
-  }
-  return "Connector code needs a fix";
+  return softensTerminalCoverageToDegraded(snapshot, disposition) ? SOFTENED_COVERAGE_CTA : TERMINAL_COVERAGE_CTA;
 }
 
 /** Open structured owner attention (the `needs_attention` driver). */
@@ -825,6 +1270,89 @@ function hasTransientUploadFailure(snapshot: ConnectionHealthSnapshot): boolean 
   );
 }
 
+function hasDeadLetterBacklog(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.current &&
+      (condition.reason === CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG ||
+        condition.reason === CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG)
+  );
+}
+
+/**
+ * Whether a dead-letter backlog is a strict MINORITY of the records the
+ * collector host handled — the discriminator between "this source is broken"
+ * and "this source works and dropped some records on the floor".
+ *
+ * This is NOT a tolerance threshold, and deliberately so. There is no
+ * percentage below which a loss is ignored: the count and the denominator are
+ * rendered verbatim in the action summary on EVERY path
+ * (`deadLetterSummary`), the owner action is emitted on every path, and the
+ * verdict never reaches green while a dead letter exists. What the proportion
+ * changes is SEVERITY ONLY — red ("Can't collect", a claim about capability)
+ * versus amber ("Some records stuck", a claim about a subset). Hiding the loss
+ * at any magnitude would be the false-green the owner fears most; calling a
+ * 2.5M-record source that just uploaded 10,000 of 10,001 records "Can't
+ * collect" is the false-red he actually hit.
+ *
+ * `dead_letter * 2 < total` is integer-exact — no float rounding, no
+ * configurable knob to drift. Majority loss (>= half) keeps its red, because
+ * at that point "Can't collect" is a fair description of the host. A total
+ * loss (dead_letter === total) is the extreme of that same case and stays red.
+ *
+ * An ABSENT or non-integer count does not soften anything: unknown magnitude
+ * classifies conservatively as red, exactly as it did before this carve-out
+ * existed. A count the system did not measure may never buy a gentler label —
+ * the same fail-closed rule `deadLetterMagnitude` already applies to the
+ * sentence.
+ */
+function deadLetterIsMinorityOfCorpus(snapshot: ConnectionHealthSnapshot): boolean {
+  const counts = snapshot.local_device_outbox_counts;
+  if (!counts) {
+    return false;
+  }
+  const { dead_letter: deadLetter, total } = counts;
+  if (!(Number.isInteger(deadLetter) && Number.isInteger(total))) {
+    return false;
+  }
+  if (!(typeof deadLetter === "number" && typeof total === "number" && deadLetter > 0 && total > 0)) {
+    return false;
+  }
+  return deadLetter * 2 < total;
+}
+
+/**
+ * Whether the outbox's stall is a minority dead-letter backlog AND nothing
+ * else about the outbox is also wrong. A stall carrying any OTHER cause
+ * (state-read failure, stale pending, stale heartbeat) describes a collector
+ * that cannot run, which the proportion of one backlog says nothing about —
+ * so it keeps its red.
+ */
+function isMinorityDeadLetterStall(snapshot: ConnectionHealthSnapshot): boolean {
+  return (
+    snapshot.axes.outbox === "stalled" &&
+    hasDeadLetterBacklog(snapshot) &&
+    !hasOtherStalledOutboxCause(snapshot) &&
+    deadLetterIsMinorityOfCorpus(snapshot)
+  );
+}
+
+/** Stalled-outbox reasons that describe a collector that cannot run at all. */
+const NON_DEAD_LETTER_STALL_REASONS: ReadonlySet<string> = new Set([
+  CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED,
+  CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED,
+  CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALE_PENDING,
+  CONNECTION_CONDITION_REASONS.OUTBOX_STALE_PENDING,
+  CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALE_HEARTBEAT,
+  CONNECTION_CONDITION_REASONS.OUTBOX_STALE_HEARTBEAT,
+]);
+
+function hasOtherStalledOutboxCause(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) => condition.current && NON_DEAD_LETTER_STALL_REASONS.has(condition.reason)
+  );
+}
+
 function hasEffectiveActiveScheduleEvidence(
   refresh: ConnectionRefreshEvidence | null,
   scheduleEvidence: ScheduleEvidence | null
@@ -858,11 +1386,31 @@ function shouldOfferRefreshNowAction(
   );
 }
 
+/**
+ * Whether the streams behind this gap are ALL declared `retry_by_runtime` —
+ * an ordinary future run already retries every one of them without owner
+ * involvement, so an owner-facing "Retry now" would offer an action that adds
+ * nothing. Fails open (`false`, i.e. keep offering the CTA) whenever a
+ * contributing stream is missing from `streams`, or any contributing stream's
+ * `recovery_action` is absent/unknown/anything other than `retry_by_runtime`
+ * — a genuinely owner-actionable gap, or one this rollup can't yet speak to,
+ * must never lose its action.
+ */
+function allContributingStreamsRetryByRuntime(streams: readonly StreamRollup[], streamIds: readonly string[]): boolean {
+  if (streamIds.length === 0) {
+    return false;
+  }
+  const streamById = new Map(streams.map((s) => [s.stream_id, s]));
+  return streamIds.every((id) => streamById.get(id)?.recovery_action === "retry_by_runtime");
+}
+
 function shouldOfferRetryGapAction(
   snapshot: ConnectionHealthSnapshot,
   refresh: ConnectionRefreshEvidence | null,
   scheduleEvidence: ScheduleEvidence | null,
-  progress: ProgressEvidence | null
+  progress: ProgressEvidence | null,
+  streams: readonly StreamRollup[],
+  retryGapStreamIds: readonly string[]
 ): boolean {
   if (isManualRefreshOnly(refresh) && !hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence)) {
     return true;
@@ -880,7 +1428,10 @@ function shouldOfferRetryGapAction(
     return false;
   }
   if (snapshot.axes.coverage === "retryable_gap") {
-    return true;
+    return !(
+      hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence) &&
+      allContributingStreamsRetryByRuntime(streams, retryGapStreamIds)
+    );
   }
   return snapshot.state === "degraded";
 }
@@ -917,6 +1468,58 @@ function localCollectorDoctorCommand(): ActionRemediationCommand {
     kind: "local_collector_doctor",
     label: "Check local collector health",
   };
+}
+
+/**
+ * The uncounted dead-letter sentence. Says PERMANENT, not merely stalled:
+ * these records will NOT drain on their own. This is the fail-closed fallback
+ * whenever the magnitude is genuinely unavailable — a fabricated zero is as
+ * bad as a fabricated green, so an absent count costs the owner the number,
+ * never the warning.
+ */
+const DEAD_LETTER_SUMMARY_UNCOUNTED =
+  "The local collector has records on its host that failed to upload and will not retry on their own. Recovering them is a manual step.";
+
+/**
+ * Bound the dead-letter backlog the system already counted. Returns `null`
+ * — meaning "render the uncounted sentence" — unless BOTH a positive
+ * dead-letter count and a positive total are present as real integers.
+ *
+ * Every rejected shape matters: a missing count, a zeroed count, a partial
+ * pair, or a non-integer would each otherwise render a magnitude the evidence
+ * does not support ("0 of 0", "undefined of 10,001"). The owner reads a number
+ * as a measurement, so we only print one we actually measured.
+ */
+function deadLetterMagnitude(counts: ConnectionHealthSnapshot["local_device_outbox_counts"]): string | null {
+  if (!counts) {
+    return null;
+  }
+  const { dead_letter: deadLetter, total } = counts;
+  if (!(Number.isInteger(deadLetter) && Number.isInteger(total))) {
+    return null;
+  }
+  if (!(typeof deadLetter === "number" && typeof total === "number" && deadLetter > 0 && total > 0)) {
+    return null;
+  }
+  // Plural agrees with the TOTAL, the noun it actually modifies: "1 of 1
+  // record", "1 of 10,001 records". "1 of 1 records" is exactly the
+  // sloppiness the owner notices.
+  const noun = total === 1 ? "record" : "records";
+  return `${deadLetter.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} ${noun}`;
+}
+
+/**
+ * Owner-facing dead-letter summary. Names the state AND bounds the magnitude
+ * when the count is known, because "1 of 10,001" and "8,432 of 10,001" demand
+ * completely different reactions and the system holds the answer either way.
+ * The permanence wording is identical on both paths — only the magnitude is
+ * conditional.
+ */
+function deadLetterSummary(snapshot: ConnectionHealthSnapshot): string {
+  const magnitude = deadLetterMagnitude(snapshot.local_device_outbox_counts);
+  return magnitude === null
+    ? DEAD_LETTER_SUMMARY_UNCOUNTED
+    : `${magnitude} on the local collector's host failed to upload and will not retry on their own. Recovering them is a manual step.`;
 }
 
 function stalledOutboxCause(snapshot: ConnectionHealthSnapshot): ActionRemediationCause {
@@ -982,8 +1585,24 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         cause,
         commands: [localCollectorRecoverPreviewCommand(), localCollectorRecoverApplyCommand()],
         kind: "local_collector_recovery",
-        label: "Recover local collector uploads",
-        summary: "The local collector has saved records on its host that did not upload to this server.",
+        // Owner-facing, so it must mean something to a non-engineer. "Recover
+        // local collector uploads" failed twice over: "local collector" is
+        // jargon for the program on the owner's own machine, and "recover
+        // uploads" names an internal operation rather than what happened.
+        // This label says the three things the owner needs before clicking:
+        // records are STUCK (not lost, not uploaded), they are on a MACHINE
+        // he owns, and only he can move them. The permanence lives in the
+        // summary sentence, which says the records will not retry on their
+        // own — the label must not contradict it by implying a retry.
+        label: "Upload records stuck on your computer",
+        // Says PERMANENT, not merely stalled. `dead_letter_backlog` means the
+        // outbox exhausted its retries: these records will NOT drain on their
+        // own, unlike `transient_upload_failure`. The prior wording read as a
+        // temporary condition, so an owner could reasonably wait for a recovery
+        // that was never coming. `deadLetterSummary` additionally bounds the
+        // magnitude when the count is known, and falls back to exactly this
+        // permanence wording when it is not.
+        summary: deadLetterSummary(snapshot),
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
       };
     case "transient_upload_failure":
@@ -1025,6 +1644,18 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
       };
   }
+}
+
+/**
+ * CTA for the maintainer `code_fix` action naming resting-unmeasured required
+ * streams. "isn't being measured YET" implies a future run will measure it —
+ * B10 (owner ledger 2026-08-22): a one-time import that will never run again
+ * (`freshnessNotApplicable`) has no future run to make that promise.
+ */
+function unmeasuredRequiredStreamsCta(snapshot: ConnectionHealthSnapshot): string {
+  return freshnessNotApplicable(snapshot)
+    ? "Some data from this source ended before it could be measured, and this one-time import will not run again"
+    : "Some data from this source isn't being measured yet";
 }
 
 /**
@@ -1077,7 +1708,7 @@ function buildRequiredActions(
     actions.push({
       affects: unmeasuredRequiredStreamIds(streams),
       audience: "maintainer",
-      cta: "Coverage for this source's streams is not being measured; a connector update is needed",
+      cta: unmeasuredRequiredStreamsCta(snapshot),
       kind: "code_fix",
       satisfied_when: { kind: "none" },
       surface: { kind: "maintainer" },
@@ -1199,12 +1830,13 @@ function buildRequiredActions(
   // Degraded or manual-refresh retryable gaps: the system can recover on a
   // future run, but the owner can explicitly ask for another attempt. Surface
   // that non-urgent accelerant instead of hiding degraded gaps as a calm wait.
+  const retryGapAffects = resumableStreamIds(streams);
   if (
     disposition === "resumable" &&
     actions.length === 0 &&
-    shouldOfferRetryGapAction(snapshot, refresh, scheduleEvidence, progress)
+    shouldOfferRetryGapAction(snapshot, refresh, scheduleEvidence, progress, streams, retryGapAffects)
   ) {
-    const affects = resumableStreamIds(streams);
+    const affects = retryGapAffects;
     actions.push({
       affects,
       audience: "owner",
@@ -1258,9 +1890,20 @@ function reauthSatisfaction(surface: OwnerActionSurface): SatisfactionContract {
   return { kind: "confirming_run_succeeded" };
 }
 
+/**
+ * The streams a maintainer `code_fix` action actually speaks to. A stream whose
+ * terminal shortfall is fully accounted for is excluded: naming it would tell
+ * the maintainer to fix something already proven impossible and unbroken (a
+ * 29MB attachment against a 25MB cap is not a defect), and would misreport the
+ * blast radius of the streams that ARE stuck.
+ */
 function terminalStreamIds(streams: readonly StreamRollup[]): string[] {
   return streams
-    .filter((s) => s.coverage === "terminal_gap" || s.coverage === "unsupported" || s.coverage === "unavailable")
+    .filter(
+      (s) =>
+        (s.coverage === "terminal_gap" || s.coverage === "unsupported" || s.coverage === "unavailable") &&
+        !streamCoverageIsFullyAccounted(s)
+    )
     .map((s) => s.stream_id);
 }
 
@@ -1367,6 +2010,9 @@ function freshnessAnnotationText(
   if (snapshot.axes.freshness === "fresh") {
     return freshRecencyText(tone, progress);
   }
+  if (freshnessNotApplicable(snapshot)) {
+    return "This is a one-time import. It finished and will not refresh.";
+  }
   if (snapshot.axes.freshness === "unknown") {
     return "Freshness has not been measured yet.";
   }
@@ -1424,13 +2070,45 @@ function freshRecencyText(tone: VerdictTone, progress: ProgressEvidence | null):
   if (unhealthy && age) {
     return `Last successful refresh ${age}.`;
   }
+  // Record recency says "today"/"yesterday", but the COVERAGE PROOF is a
+  // separate anchor and can be materially older. Say so before claiming
+  // freshness on the strength of the record anchor alone.
+  const proofAge = staleCoverageProofAge(progress);
   if (age === "today") {
-    return "Fresh today.";
+    return proofAge ? `Fresh today. Coverage last proven ${proofAge}.` : "Fresh today.";
   }
   if (age === "yesterday") {
-    return "Fresh yesterday.";
+    return proofAge ? `Fresh yesterday. Coverage last proven ${proofAge}.` : "Fresh yesterday.";
   }
   return null;
+}
+
+/**
+ * The coverage proof's age, but ONLY when it is old enough that a reasonable
+ * owner would want to know — otherwise `null` so a healthy row stays clean.
+ *
+ * Threshold: the proof is reported once it is neither today nor yesterday,
+ * reusing {@link relativeDayAge}'s existing recency boundary rather than
+ * introducing a new constant. That boundary is already this module's shipped
+ * definition of "recent enough to state without a date" (it is exactly why
+ * `Fresh today.` / `Fresh yesterday.` carry no date while anything older
+ * renders `N days ago`). Applying the SAME rule to the proof anchor keeps one
+ * notion of recency in the renderer.
+ *
+ * Fails closed: an absent, null, malformed, or future-stamped proof yields
+ * `null`, never a fabricated or negative age — `relativeDayAge` already
+ * rejects unparseable input and any `from > observed`.
+ */
+function staleCoverageProofAge(progress: ProgressEvidence | null): string | null {
+  const provenAt = progress?.coverage_proven_at ?? null;
+  if (!provenAt) {
+    return null;
+  }
+  const proofAge = relativeDayAge(provenAt, progress?.observed_at ?? null);
+  if (proofAge === null || proofAge === "today" || proofAge === "yesterday") {
+    return null;
+  }
+  return proofAge;
 }
 
 function relativeDayAge(fromIso: string | null, observedIso: string | null): string | null {
@@ -1495,19 +2173,41 @@ function terminalForwardStatement(
     if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
       return "Latest collection completed with known coverage gaps.";
     }
-    return "This connector needs a code fix before it can collect again.";
+    return "Some data from this source can't be collected.";
   }
   return "This data can't be recovered by a future run.";
 }
 
 /**
+ * Forward statement for `checking`/`unmeasured` disposition. B10 (owner
+ * ledger 2026-08-22): "not measured YET" implies a future run will resolve
+ * it. A one-time import that will never run again (see
+ * `freshnessNotApplicable`) has no future run to make that promise — the
+ * same honest distinction `buildForwardStatement`'s `default` branch already
+ * draws for the connection-level statement.
+ */
+function unmeasuredCoverageForwardStatement(snapshot: ConnectionHealthSnapshot): string {
+  return freshnessNotApplicable(snapshot)
+    ? "Coverage can't be measured — this one-time import ended before it finished a full pass, and it will not run again."
+    : "Coverage has not been measured yet.";
+}
+
+/**
  * Single sentence DERIVED from disposition + primary action. NEVER claims resumed
  * collection while the disposition is terminal (honesty invariant 3 / spec scenario).
+ *
+ * `streams` is read ONLY by the all-clear branch at the bottom, and only to stop
+ * it claiming everything is normal when a stream has been permanently lost. The
+ * connection-level disposition cannot see that fact on its own: an optional
+ * terminal loss leaves the disposition `complete` (no run owes more data) while
+ * the pill correctly reads "Missing optional data". Without this the two halves
+ * contradicted — see inv 8.
  */
 function buildForwardStatement(
   disposition: ForwardDisposition,
   actions: readonly RequiredAction[],
-  snapshot: ConnectionHealthSnapshot
+  snapshot: ConnectionHealthSnapshot,
+  streams: readonly StreamRollup[] = []
 ): string {
   const primary = actions[0] ?? null;
 
@@ -1544,7 +2244,7 @@ function buildForwardStatement(
   switch (disposition) {
     case "checking":
     case "unmeasured":
-      return "Coverage has not been measured yet.";
+      return unmeasuredCoverageForwardStatement(snapshot);
     case "resumable":
       return "The next run is expected to fill the remaining data.";
     case "owner_refresh_due":
@@ -1554,14 +2254,68 @@ function buildForwardStatement(
     case "awaiting_owner":
       return "Waiting on you before the next run can make progress.";
     default:
-      if (snapshot.axes.outbox === "active") {
-        return "The local collector is uploading saved records.";
-      }
-      if (snapshot.axes.freshness === "unknown") {
-        return "Freshness has not been measured yet.";
-      }
-      return "Current and collecting normally.";
+      return noActionOwedForwardStatement(snapshot, streams);
   }
+}
+
+/**
+ * What to say when the disposition owes no further run and no owner action is
+ * outstanding — the `complete` case, plus any disposition that falls through.
+ *
+ * "No run owes more data" is NOT the same claim as "everything is fine", and
+ * conflating the two is what produced the live 2026-08-25 contradiction. Each
+ * guard below names a fact the `complete` disposition is blind to, in
+ * descending order of how much it should dominate the sentence. Only when all
+ * of them are clear is the unconditional all-clear honest.
+ */
+function noActionOwedForwardStatement(
+  snapshot: ConnectionHealthSnapshot,
+  streams: readonly StreamRollup[]
+): string {
+  if (snapshot.axes.outbox === "active") {
+    return "The local collector is uploading saved records.";
+  }
+  if (freshnessNotApplicable(snapshot)) {
+    return "This one-time import finished. There is nothing left to run.";
+  }
+  if (snapshot.axes.freshness === "unknown") {
+    return "Freshness has not been measured yet.";
+  }
+  // A `complete` disposition does not mean the data is current. A schedulable
+  // connector that has aged past its staleness window keeps `complete` (the
+  // disposition's Rule 4 fires only for manual/assisted refresh) while
+  // `axes.freshness` reads `stale`, so without this guard the branch claimed
+  // "Current" of a source that demonstrably was not — the sentence half of the
+  // Jellyfin/Notion/Steam contradiction. The schedule is expected to catch it
+  // up on its own, so this states the fact without asking the owner for an
+  // action they do not owe.
+  if (snapshot.axes.freshness === "stale") {
+    return snapshot.badges.syncing
+      ? "Refreshing now."
+      : "Not current — the next scheduled run is expected to catch it up.";
+  }
+  // Nor does `complete` mean the last RUN went well. A failed run leaves
+  // coverage complete (earlier runs still proved it) and the disposition
+  // `complete` (no run owes more data), while the headline state is `degraded`
+  // and the pill correctly reads "Missing data". Found by the combination
+  // sweep in `verdict-pill-statement-agreement.test.ts`, not in production.
+  //
+  // Gated on the FAILED-RUN condition rather than on `state === "degraded"`
+  // alone: `degraded` has several causes, and a bare state check would silently
+  // absorb all of them — making this one sentence the catch-all answer for
+  // troubles it does not describe, and hiding any future cause from the very
+  // sweep that is supposed to find it.
+  if (snapshot.state === "degraded" && hasFailedCollectionCondition(snapshot)) {
+    return "The last run did not finish cleanly. The next run will try again.";
+  }
+  // A permanently-lost optional stream leaves the connection-level disposition
+  // `complete` — correctly, since no future run owes that data — while the pill
+  // reads "Missing optional data". Saying "collecting normally" underneath
+  // would deny the loss the pill just named.
+  if (streams.some((stream) => isOptionalTerminalLoss(stream))) {
+    return "Collecting normally, apart from optional data this source can no longer provide.";
+  }
+  return "Current and collecting normally.";
 }
 
 // ─── Progress ───────────────────────────────────────────────────────────────
@@ -1591,10 +2345,15 @@ function terminalProgressHeadline(retained: number | null, actions: readonly Req
     return `${held}; reconnect this account before further collection.`;
   }
   if (actions.some((action) => action.kind === "code_fix")) {
-    if (actions.some((action) => action.kind === "code_fix" && action.cta !== "Connector code needs a fix")) {
+    // Which of the two `terminalCoverageCta` branches produced this action.
+    // 428898c92 flagged this string-equality coupling as pre-existing and
+    // fragile and left it as found; it now compares against that function's
+    // own constant instead of a third copy of the sentence, so the two cannot
+    // silently disagree when the copy changes.
+    if (actions.some((action) => action.kind === "code_fix" && action.cta === SOFTENED_COVERAGE_CTA)) {
       return `${held}; source coverage has known gaps.`;
     }
-    return `${held}; connector code needs a fix before new collection.`;
+    return `${held}; some of this source's data can't be collected.`;
   }
   return `${held}; this source cannot collect more until the terminal issue is fixed.`;
 }
@@ -1691,7 +2450,7 @@ function buildStreamRows(
       considered: stream.considered,
       coverage: stream.coverage,
       disposition,
-      statement: streamStatement(disposition, snapshot.badges.syncing),
+      statement: streamStatement(disposition, snapshot.badges.syncing, freshnessNotApplicable(snapshot)),
       stream_id: stream.stream_id,
     };
   });
@@ -1717,13 +2476,21 @@ function actionRefFor(
   return null;
 }
 
-function streamStatement(disposition: ForwardDisposition, activeRunSyncing = false): string {
+function streamStatement(
+  disposition: ForwardDisposition,
+  activeRunSyncing = false,
+  oneTimeImportFinished = false
+): string {
   switch (disposition) {
     case "complete":
       return "Complete.";
     case "checking":
     case "unmeasured":
-      return "Coverage has not been measured yet.";
+      // B10: mirrors `buildForwardStatement`'s same distinction — a one-time
+      // import that will never run again cannot resolve "yet".
+      return oneTimeImportFinished
+        ? "Can't be measured — this one-time import ended before a full pass finished."
+        : "Coverage has not been measured yet.";
     case "resumable":
       return "The next run is expected to fill the rest.";
     case "owner_refresh_due":
@@ -1892,12 +2659,121 @@ function toneBelowBaseStateViolation(verdict: RenderedVerdict, snapshot: Connect
   return null;
 }
 
-function toneLabelViolation(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string | null {
+function toneLabelViolation(
+  verdict: RenderedVerdict,
+  snapshot: ConnectionHealthSnapshot,
+  streams: readonly StreamRollup[]
+): string | null {
   if (
     verdict.pill.label !==
-    labelForPill(verdict.pill.tone, snapshot, verdict.detail.forward_disposition, verdict.trace.tone_inputs)
+    labelForPill(verdict.pill.tone, snapshot, verdict.detail.forward_disposition, verdict.trace.tone_inputs, streams)
   ) {
     return "pill.label does not match tone plus active-work evidence (inv 6)";
+  }
+  return null;
+}
+
+/**
+ * A forward statement asserting the source is CURRENT and untroubled. This is
+ * the class of sentence that must never appear under a pill claiming trouble.
+ */
+const ALL_CLEAR_STATEMENT_RE = /^Current and collecting normally\.$/;
+
+/**
+ * Labels that assert something is WRONG with collection — as opposed to
+ * "Needs refresh" (working, not current) or the terminal//neutral labels.
+ * These are exactly the labels the module doc reserves for "real collection
+ * trouble".
+ */
+const TROUBLE_LABELS: ReadonlySet<VerdictLabel> = new Set<VerdictLabel>([
+  "Can't collect",
+  "Missing data",
+  "Missing optional data",
+  "Some records stuck",
+]);
+
+/**
+ * (inv 8) The pill and the forward statement are rendered from ONE verdict
+ * object and read together, top to bottom, by the owner. They must not make
+ * opposite claims.
+ *
+ * This gate exists because they are derived from DIFFERENT evidence and can
+ * therefore drift apart silently: the pill comes from `labelForPill` (headline
+ * state + per-axis tones + stream rollups) while the statement comes from
+ * `buildForwardStatement` (forward disposition + primary action). Those two
+ * inputs disagreed in production on 2026-08-25 — Jellyfin, Notion and Steam
+ * each rendered an amber "Missing data" pill directly above "Current and
+ * collecting normally." The individual producers were each self-consistent;
+ * nothing compared them, so nothing caught it.
+ *
+ * `staleFreshnessIsSoleDegradation` and the stale branch of
+ * `buildForwardStatement` fix that specific pair at the derivation. This
+ * invariant is the general guard: any FUTURE pairing of a trouble label with
+ * an all-clear sentence fails here rather than reaching an owner.
+ */
+function pillStatementContradictionViolation(verdict: RenderedVerdict): string | null {
+  if (TROUBLE_LABELS.has(verdict.pill.label) && ALL_CLEAR_STATEMENT_RE.test(verdict.forward_statement)) {
+    return `pill "${verdict.pill.label}" contradicts forward_statement "${verdict.forward_statement}" (inv 8)`;
+  }
+  return null;
+}
+
+const TRAILING_TERMINATOR_RE = /[.!]+$/;
+
+/**
+ * Reduce owner-facing copy to its claim, so two sentences that differ only in
+ * punctuation or casing compare equal. Trailing periods and case are exactly
+ * the difference between the CTA and the statement in the live defect below.
+ */
+function copyClaim(text: string): string {
+  return text.trim().toLowerCase().replace(TRAILING_TERMINATOR_RE, "");
+}
+
+/**
+ * (inv 9) An action's `cta` and the `forward_statement` beside it are rendered
+ * TOGETHER, from one verdict object, in one row: `source-actionability.ts`
+ * builds each source row's `what` from `verdict.forward_statement` and its
+ * `actionLabel` from `required_actions[0].cta`. The `cta` slot is the row's
+ * answer to "so what now?" — whether it renders as a button (owner-satisfiable)
+ * or as inert status text (maintainer). A `cta` that merely repeats the
+ * sentence next to it spends that slot saying nothing.
+ *
+ * THE LIVE DEFECT (2026-08-25). `HEB - gezalsatx@yahoo.com` rendered:
+ *
+ *     pill:              "Can't collect"
+ *     forward_statement: "Some data from this source can't be collected."
+ *     action cta:        "Some data from this source can't be collected"
+ *
+ * `terminalCoverageCta` and `terminalForwardStatement` are two functions that
+ * independently chose the same sentence for the hard terminal branch. Each was
+ * self-consistent; nothing compared them, so the duplication shipped — the
+ * same structural failure as inv 8, one field over.
+ *
+ * This is a duplication gate, NOT a "must offer an owner action" gate. A
+ * maintainer `code_fix` is legitimately not an owner task, and the honest
+ * answer for it is a short condition label rather than an invented button.
+ * What it may not be is the sentence below it, again.
+ */
+function ctaRestatesForwardStatementViolation(verdict: RenderedVerdict): string | null {
+  const statement = copyClaim(verdict.forward_statement);
+  const duplicate = verdict.required_actions.find((action) => copyClaim(action.cta) === statement);
+  if (duplicate) {
+    return `action ${duplicate.kind} cta restates forward_statement "${verdict.forward_statement}" (inv 9)`;
+  }
+  return null;
+}
+
+/**
+ * (inv 8) The converse: a green/healthy pill must not sit above a sentence
+ * that says the source is NOT current. Same object, same reading order, same
+ * failure mode in the other direction.
+ */
+function healthyPillStaleStatementViolation(
+  verdict: RenderedVerdict,
+  snapshot: ConnectionHealthSnapshot
+): string | null {
+  if (verdict.pill.tone === "green" && snapshot.axes.freshness === "stale" && verdict.pill.label === "Healthy") {
+    return 'pill "Healthy" contradicts stale freshness evidence (inv 8)';
   }
   return null;
 }
@@ -1910,7 +2786,11 @@ function terminalStreamResumeStatementViolation(row: VerdictStreamRow): string |
 }
 
 /** Honesty invariants 1–7 over the whole verdict. */
-function honestyViolations(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string[] {
+function honestyViolations(
+  verdict: RenderedVerdict,
+  snapshot: ConnectionHealthSnapshot,
+  streams: readonly StreamRollup[]
+): string[] {
   const dispositionTerminal = verdict.detail.forward_disposition === "terminal";
   return [
     missingFreshnessAnnotationViolation(verdict, snapshot),
@@ -1919,8 +2799,11 @@ function honestyViolations(verdict: RenderedVerdict, snapshot: ConnectionHealthS
     terminalProgressHeadlineResumeViolation(verdict),
     ...verdict.required_actions.map((action) => connectionActionTerminalViolation(action, dispositionTerminal)),
     toneBelowBaseStateViolation(verdict, snapshot),
-    toneLabelViolation(verdict, snapshot),
+    toneLabelViolation(verdict, snapshot, streams),
     ...verdict.streams.map(terminalStreamResumeStatementViolation),
+    pillStatementContradictionViolation(verdict),
+    healthyPillStaleStatementViolation(verdict, snapshot),
+    ctaRestatesForwardStatementViolation(verdict),
   ].filter(isViolation);
 }
 
@@ -1976,11 +2859,16 @@ function silenceViolations(verdict: RenderedVerdict, runtimeOk: boolean): string
 }
 
 /**
- * The eleven invariants (honesty 1–7, silence S1–S4) enforced on the WHOLE verdict —
+ * The twelve invariants (honesty 1–8, silence S1–S4) enforced on the WHOLE verdict —
  * one gate, not N scattered formatter checks.
  */
-function assertInvariants(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot, runtimeOk: boolean): string[] {
-  return [...honestyViolations(verdict, snapshot), ...silenceViolations(verdict, runtimeOk)];
+function assertInvariants(
+  verdict: RenderedVerdict,
+  snapshot: ConnectionHealthSnapshot,
+  runtimeOk: boolean,
+  streams: readonly StreamRollup[]
+): string[] {
+  return [...honestyViolations(verdict, snapshot, streams), ...silenceViolations(verdict, runtimeOk)];
 }
 
 /** A minimal, honest grey verdict used as the prod fallback on an invariant failure. */
@@ -2028,7 +2916,14 @@ export function synthesizeRenderedVerdict(
   runtime_ok: boolean,
   progress: ProgressEvidence | null = null,
   scheduleEvidence: ScheduleEvidence | null = null,
-  attention: ConnectionAttentionEvidence | null = null
+  attention: ConnectionAttentionEvidence | null = null,
+  /**
+   * A durable, owner-stamped acknowledgement that some data is permanently
+   * gone for an external reason. Read verbatim, never inferred: `null` (the
+   * default) preserves byte-identical prior behavior for every caller and
+   * every connection that has no stamped record.
+   */
+  acknowledgedLoss: AcknowledgedLossRecord | null = null
 ): RenderedVerdict {
   // ── tone: worst-wins over base(state) + every axis ──
   const disposition = connectionDisposition(snapshot, streams, refresh, scheduleEvidence);
@@ -2042,11 +2937,45 @@ export function synthesizeRenderedVerdict(
     { axis: "attention", tone: attentionTone(snapshot) },
     { axis: "outbox", tone: outboxTone(snapshot) },
   ];
-  const tone = toneInputs.reduce<VerdictTone>((acc, input) => worse(acc, input.tone), "green");
-  const pill: VerdictPill = { label: labelForPill(tone, snapshot, disposition, toneInputs), tone };
+  // An acknowledged permanent loss softens a red COVERAGE verdict to amber, the
+  // same way `softensTerminalCoverageToDegraded` already softens a terminal gap
+  // under a succeeded run. The reasoning is identical: red means "unexamined
+  // breakage demanding escalation", and an owner-acknowledged external cause is
+  // examined and settled. It stays amber — never green — because the data is
+  // genuinely missing.
+  //
+  // The softening applies ONLY when coverage/disposition is what made it red. A
+  // red arriving from any other axis (a rejected credential, a stalled outbox)
+  // is a separate, still-fixable defect that an acknowledgement must not mask,
+  // so it survives unchanged.
+  const synthesizedTone = toneInputs.reduce<VerdictTone>((acc, input) => worse(acc, input.tone), "green");
+  // Softening can never sink below the base state tone (honesty invariant 5,
+  // `toneBelowBaseStateViolation`): a `blocked`/`broken` headline state outranks
+  // any acknowledgement, so `worse()` re-floors the result.
+  const tone =
+    acknowledgedLoss && synthesizedTone === "red" && redIsOnlyFromCoverage(toneInputs)
+      ? worse(acknowledgedLossTone(), baseStateTone(snapshot.state, snapshot.last_success_at))
+      : synthesizedTone;
+  const pill: VerdictPill = { label: labelForPill(tone, snapshot, disposition, toneInputs, streams), tone };
 
   // ── required actions (terminality derived from the sole oracle) ──
-  const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress, scheduleEvidence, attention);
+  const synthesizedActions = buildRequiredActions(
+    snapshot,
+    streams,
+    refresh,
+    disposition,
+    progress,
+    scheduleEvidence,
+    attention
+  );
+  // The owner has already accepted this cause and no run can undo it, so every
+  // action whose whole promise is "do this and the data comes back" is
+  // withdrawn. Actions that remain meaningful — reconnecting a broken
+  // credential, for instance — are untouched: an acknowledged purge does not
+  // excuse a separate, still-fixable defect.
+  const actions = acknowledgedLoss
+    ? synthesizedActions.filter((action) => !RECOVERY_PROMISING_ACTION_KINDS.has(action.kind))
+    : synthesizedActions;
 
   // ── channel: computed AFTER tone in the same pass; runtime fault caps at calm ──
   let channel = computeChannel(actions);
@@ -2057,9 +2986,21 @@ export function synthesizeRenderedVerdict(
 
   // ── annotations, statement, streams, progress ──
   const annotations = buildAnnotations(snapshot, channel, tone, refresh, scheduleEvidence, progress, actions);
-  const forwardStatement = buildForwardStatement(disposition, actions, snapshot);
+  // The stamped record is the most specific true thing known about this
+  // connection's missing data, so it OUTRANKS every derived sentence. This is
+  // the whole point of stamping it: the writer stated the truth, so the
+  // renderer does not fall back to a generic guess.
+  const forwardStatement = acknowledgedLoss
+    ? acknowledgedLossStatement(acknowledgedLoss)
+    : buildForwardStatement(disposition, actions, snapshot, streams);
   const streamRows = buildStreamRows(streams, snapshot, refresh, scheduleEvidence, actions);
-  const renderedProgress = buildProgress(progress, disposition, actions, snapshot.badges.syncing);
+  const synthesizedProgress = buildProgress(progress, disposition, actions, snapshot.badges.syncing);
+  const renderedProgress = acknowledgedLoss
+    ? {
+        ...synthesizedProgress,
+        headline: acknowledgedLossProgressHeadline(acknowledgedLoss, synthesizedProgress.retained_records),
+      }
+    : synthesizedProgress;
 
   // ── inspection layer: suppressed signals routed to detail, never deleted ──
   const suppressed = buildSuppressed(snapshot, channel, runtime_ok);
@@ -2091,7 +3032,7 @@ export function synthesizeRenderedVerdict(
     trace,
   };
 
-  const violations = assertInvariants(verdict, snapshot, runtime_ok);
+  const violations = assertInvariants(verdict, snapshot, runtime_ok, streams);
   if (violations.length > 0) {
     if (shouldThrowOnViolation()) {
       throw new VerdictInvariantError(violations.join("; "));
@@ -2117,14 +3058,57 @@ function channelCause(channel: RenderedChannel, runtimeCapped: boolean, primary:
 }
 
 /**
- * Project the inspection-layer `detail` and calibration `trace` OFF a verdict for a
- * grant-scoped client. The owner-only diagnostics (`detail`, `trace`) are stripped so a
- * grant-scoped REST/MCP read can never see them. Dispatch C wires this at the wire seam;
- * exported here so the grant-scope regression can pin the contract at the type level.
+ * An owner-audience `RequiredAction`. `audience` is narrowed to the literal `"owner"`
+ * so a `maintainer` or `none` action is not assignable to a grant-scoped verdict — the
+ * audience filter below is what produces this type, and the compiler holds the line.
  */
-export type GrantScopedVerdict = Omit<RenderedVerdict, "detail" | "trace">;
+export type OwnerScopedRequiredAction = RequiredAction & { readonly audience: "owner" };
+
+/**
+ * Project the owner-only material OFF a verdict for a grant-scoped client:
+ *
+ * - the inspection-layer `detail` and calibration `trace` (gap backlog, raw
+ *   disposition, conditions, next-attempt floor, collection rate);
+ * - every non-owner-audience entry of `required_actions`. A `maintainer` action's
+ *   `cta` is implementer-facing copy about a connector defect (`kind: "code_fix"`,
+ *   `surface: { kind: "maintainer" }`), and an `audience: "none"` action is an
+ *   internal wait marker. Neither is owner-facing material, so neither may reach a
+ *   third-party app holding a scoped grant.
+ *
+ * `streams[].action_ref` is a POSITIONAL index into `required_actions[]`, so dropping
+ * entries must renumber the survivors. A stream whose action was dropped gets
+ * `action_ref: null` — it keeps its own `statement`/`coverage`, it just no longer
+ * points at maintainer material.
+ *
+ * Dispatch C wires this at the wire seam; exported here so the grant-scope regression
+ * can pin the contract at the type level.
+ */
+export type GrantScopedVerdict = Omit<RenderedVerdict, "detail" | "required_actions" | "trace"> & {
+  readonly required_actions: readonly OwnerScopedRequiredAction[];
+};
+
+function isOwnerScopedAction(action: RequiredAction): action is OwnerScopedRequiredAction {
+  return action.audience === "owner";
+}
 
 export function toGrantScopedVerdict(verdict: RenderedVerdict): GrantScopedVerdict {
   const { detail: _detail, trace: _trace, ...rest } = verdict;
-  return rest;
+
+  const scopedActions: OwnerScopedRequiredAction[] = [];
+  // Old index -> new index for the surviving owner actions; absent = dropped.
+  const remapped = new Map<number, number>();
+  for (const [index, action] of rest.required_actions.entries()) {
+    if (isOwnerScopedAction(action)) {
+      remapped.set(index, scopedActions.length);
+      scopedActions.push(action);
+    }
+  }
+
+  return {
+    ...rest,
+    required_actions: scopedActions,
+    streams: rest.streams.map((row) =>
+      row.action_ref === null ? row : { ...row, action_ref: remapped.get(row.action_ref) ?? null }
+    ),
+  };
 }

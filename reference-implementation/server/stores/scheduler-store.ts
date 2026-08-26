@@ -21,8 +21,8 @@
 //     than replacing it.
 //
 // Spine reconciliation, in-memory `activeRuns` projections, and the
-// `wasRunMarkedFailed` accessor stay in the controller. The store is
-// the persistence seam only.
+// `wasRunAdjudicatedAbandoned` accessor stay in the controller. The store
+// is the persistence seam only.
 
 import {
   allowUnboundedReadAcknowledged,
@@ -145,7 +145,14 @@ export interface SchedulerRunHistoryRecord {
   readonly runId?: string | null;
   readonly source: Record<string, unknown>;
   readonly startedAt: string;
-  readonly status: "cancelled" | "failed" | "skipped" | "succeeded";
+  /**
+   * Includes `"abandoned"` — the status restart reconciliation writes for a run
+   * whose owning process died before terminalizing it (derived in
+   * `run-history-writer.ts`, inserted by `lib/controller-boot.ts`). These rows
+   * were always readable through this interface (28 in production); the union
+   * simply did not admit the value it was already carrying.
+   */
+  readonly status: "abandoned" | "cancelled" | "failed" | "skipped" | "succeeded";
   readonly terminalReason?: string | null;
   readonly traceId?: string | null;
 }
@@ -469,6 +476,14 @@ function requireRunHistoryConnectorInstanceId(record: SchedulerRunHistoryRecord)
   return record.connectorInstanceId;
 }
 
+function rejectEmptyRunHistoryRunId(record: SchedulerRunHistoryRecord): void {
+  if (typeof record.runId === "string" && record.runId.trim().length === 0) {
+    throw new Error(
+      "SchedulerStore.appendRunHistory: runId must be non-empty when provided; do not persist an empty run_id."
+    );
+  }
+}
+
 function sourceWebhookReceiptMatches(receipt: SourceWebhookRunReceipt, input: SourceWebhookRunAdmissionInput): boolean {
   const { active_run: activeRun, source_event: sourceEvent } = input;
   return (
@@ -569,6 +584,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
   return {
     appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
+      rejectEmptyRunHistoryRunId(record);
       exec(referenceQueries.controllerInsertRunHistory, [
         connectorInstanceId,
         record.connectorId,
@@ -994,6 +1010,7 @@ export function createPostgresSchedulerStore(): SchedulerStore {
   return {
     async appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
+      rejectEmptyRunHistoryRunId(record);
       await postgresQuery(
         `INSERT INTO run_history(
            connector_instance_id,

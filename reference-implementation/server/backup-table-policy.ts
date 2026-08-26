@@ -74,9 +74,24 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Gap evidence records source coverage state.",
   },
+  connector_instance_config_current: {
+    classification: "backup_required",
+    reason:
+      "Names the revision a connection actually collects under. Losing the pointer silently reverts every connection to unconfigured while the revisions survive — configuration present but inert, with nothing saying so.",
+  },
+  connector_instance_config_revisions: {
+    classification: "backup_required",
+    reason:
+      "Owner consent decisions and the scopes they authorize. A collection_scope revision is the owner's answer to what may be collected; it cannot be rebuilt from any other table.",
+  },
   connector_instance_credentials: {
     classification: "backup_required",
     reason: "Stored connector credentials require the credential encryption key to decrypt after restore.",
+  },
+  connector_instance_groups: {
+    classification: "backup_required",
+    reason:
+      "Connection grouping is owner-decided data, never inferred at read time, so it cannot be rebuilt after restore.",
   },
   connector_instance_tombstones: {
     classification: "backup_required",
@@ -113,6 +128,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
   controller_active_runs: {
     classification: "backup_required",
     reason: "Active run rows represent in-flight work and must be reconciled by startup/runtime recovery.",
+  },
+  controller_identity: {
+    classification: "backup_required",
+    reason:
+      "The identity that decides which orphaned runs a boot may adjudicate. It must restore with the runs it adjudicates, because both readings of a missing row are wrong: a restore that reseeds from the host name reproduces the defect this table fixes, and one that adopts an unrelated id adjudicates runs it does not own.",
   },
   dataset_summary_projection: {
     classification: "backup_required",

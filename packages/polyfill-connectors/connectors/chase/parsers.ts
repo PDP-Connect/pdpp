@@ -21,6 +21,7 @@ import type {
   QfxExtracted,
   QfxTransaction,
   StatementRow,
+  TransactionCursor,
   TransactionsStateShape,
 } from "./types.ts";
 
@@ -787,9 +788,53 @@ export interface StreamScopeLike {
 }
 
 /**
+ * How stale a cursor may be before "Since last statement" stops being a safe
+ * incremental choice.
+ *
+ * Chase's "Since last statement" option covers the current statement cycle
+ * only — roughly 30 days. If a cursor is older than that, the option's window
+ * no longer reaches back to where collection left off, and every scheduled
+ * run silently skips the gap between them: the run succeeds, downloads a
+ * QFX, and never sees the missing period. Nothing in the run reports a
+ * problem, because from the connector's point of view it asked for
+ * everything new and got it.
+ *
+ * 25 days is deliberately shorter than the ~30-day cycle so a cursor that is
+ * merely at the edge of the window still falls back to a bounded
+ * `date_range` export rather than gambling on the cycle boundary. Being
+ * early costs one wider export; being late costs a silent hole.
+ */
+const SINCE_LAST_STATEMENT_MAX_CURSOR_AGE_DAYS = 25;
+
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Whole days between two YYYY-MM-DD dates, or null when either is not a
+ * usable date. Returning null (rather than 0 or Infinity) keeps an
+ * unparseable cursor from being read as "fresh" — the caller treats null as
+ * "cannot prove freshness" and takes the safe path.
+ */
+export function cursorAgeInDays(maxSeenDate: string, runDate: string): number | null {
+  const seen = Date.parse(`${maxSeenDate.slice(0, 10)}T00:00:00Z`);
+  const now = Date.parse(`${runDate.slice(0, 10)}T00:00:00Z`);
+  if (!(Number.isFinite(seen) && Number.isFinite(now))) {
+    return null;
+  }
+  return Math.floor((now - seen) / MS_PER_DAY);
+}
+
+/**
  * Pick the QFX download "activity" option for a given account based on
  * (1) an explicit scope time_range, (2) an existing cursor's
- * max_seen_date, or (3) "all" as the bootstrap default.
+ * max_seen_date — but only while that cursor is still fresh enough for
+ * "Since last statement" to actually reach it — or (3) "all" as the
+ * bootstrap default.
+ *
+ * The staleness check is the load-bearing part. Without it, the mere
+ * EXISTENCE of a cursor pinned every future run to "Since last statement",
+ * so once a gap opened no scheduled run could ever reach back across it.
+ * A stale cursor now produces a bounded `date_range` export that starts
+ * where collection actually left off.
  */
 export function chooseActivity(
   requested: Map<string, StreamScopeLike>,
@@ -811,9 +856,58 @@ export function chooseActivity(
   }
   const cursor = state.per_account?.[accountId];
   if (cursor?.max_seen_date) {
-    return { activity: "since_last_statement" };
+    const age = cursorAgeInDays(cursor.max_seen_date, runDate);
+    if (age !== null && age >= 0 && age <= SINCE_LAST_STATEMENT_MAX_CURSOR_AGE_DAYS) {
+      return { activity: "since_last_statement" };
+    }
+    // The cursor is stale (or unparseable, or in the future — a clock skew
+    // that makes freshness unprovable). "Since last statement" would not
+    // reach back to it, so export a bounded date range that starts AT the
+    // cursor instead. Starting at the cursor rather than after it keeps a
+    // one-day overlap, which is harmless: transaction ids are stable, so a
+    // re-seen transaction is suppressed rather than duplicated.
+    return {
+      activity: "date_range",
+      dateRange: { from: cursor.max_seen_date.slice(0, 10), to: runDate.slice(0, 10) },
+    };
   }
   return { activity: "all" };
+}
+
+/**
+ * Drop `per_account` cursors for accounts the current run did not discover,
+ * and report which ones were dropped.
+ *
+ * Why this matters: the cursor map was carried forward wholesale, so an
+ * account that disappeared from `discoverAccounts()` kept its cursor
+ * forever. That is not merely untidy — the stale entry is indistinguishable
+ * from a live one, so the account is skipped silently with no gap emitted
+ * and nothing ever reports that it stopped being collected.
+ *
+ * `dropped` is returned rather than logged here so the caller can surface it
+ * as a real finding. An account vanishing from discovery is exactly the kind
+ * of event that should be visible: it may be a closed account (fine) or a
+ * discovery regression (not fine), and this function deliberately does not
+ * guess which.
+ *
+ * `known` is the set of accounts discovered THIS run. When discovery itself
+ * failed the caller must not call this with an empty set — pruning against a
+ * failed discovery would erase every cursor. See the caller's guard.
+ */
+export function prunePerAccountCursors(
+  perAccount: Record<string, TransactionCursor>,
+  known: ReadonlySet<string>
+): { kept: Record<string, TransactionCursor>; dropped: string[] } {
+  const kept: Record<string, TransactionCursor> = {};
+  const dropped: string[] = [];
+  for (const [accountId, cursor] of Object.entries(perAccount)) {
+    if (known.has(accountId)) {
+      kept[accountId] = cursor;
+    } else {
+      dropped.push(accountId);
+    }
+  }
+  return { kept, dropped };
 }
 
 // ─── Public labels used by the click-path (exported for entry point) ──────

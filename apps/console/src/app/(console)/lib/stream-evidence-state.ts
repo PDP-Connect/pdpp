@@ -18,7 +18,7 @@
  * mirroring the `connection-evidence.ts` idiom.
  */
 
-import type { EvidenceTone } from "./connection-evidence.ts";
+import type { EvidenceTone } from "@pdpp/display";
 import type { RefConnectorStreamRecord } from "./ref-client.ts";
 
 export interface StreamCountLabel {

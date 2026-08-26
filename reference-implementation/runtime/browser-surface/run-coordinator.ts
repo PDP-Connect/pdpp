@@ -1742,32 +1742,43 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     };
   }
 
-  function cancelPendingSurfaceInteraction(runId: string, interaction: RuntimeInteraction): InteractionResponse {
+  function takePendingSurfaceInteraction(
+    runId: string,
+    interaction: RuntimeInteraction
+  ): ((response: InteractionResponse) => void) | null {
     const currentEntry = activeRunInteractions.get(runId);
+    if (currentEntry?.pending?.interaction_id === interaction.request_id) {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+      const pending = currentEntry.pending;
+      currentEntry.pending = null;
+      return pending.resolve;
+    }
+    return null;
+  }
+
+  async function handleBrowserSurfaceLossDuringInteraction(
+    failure: Extract<BrowserSurfaceReadinessProbeResult, { ok: false }>,
+    lease: BrowserSurfaceLease,
+    runId: string,
+    connectorId: string,
+    traceContext: SpineTraceContext,
+    interaction: RuntimeInteraction
+  ): Promise<InteractionResponse> {
+    // Clear the pending interaction entry before the invalidation await so any
+    // in-flight respondToInteraction call gets no_pending_interaction.
+    const resolveCancelled = takePendingSurfaceInteraction(runId, interaction);
+
+    // A mid-wait probe failure makes the leased surface unsafe for any later
+    // run. Evict it from the manager and stop its dynamic allocator resource
+    // before releasing the unchanged lease during run cleanup.
+    await invalidateBrowserSurfaceAfterProbeFailure(lease, failure.code);
+
     const cancelledResponse: InteractionResponse = {
       request_id: interaction.request_id,
       status: "cancelled",
       type: "INTERACTION_RESPONSE",
     };
-    if (currentEntry?.pending?.interaction_id === interaction.request_id) {
-      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-      const pending = currentEntry.pending;
-      currentEntry.pending = null;
-      pending.resolve(cancelledResponse);
-    }
-    return cancelledResponse;
-  }
-
-  function handleBrowserSurfaceLossDuringInteraction(
-    failure: Extract<BrowserSurfaceReadinessProbeResult, { ok: false }>,
-    runId: string,
-    connectorId: string,
-    traceContext: SpineTraceContext,
-    interaction: RuntimeInteraction
-  ): InteractionResponse {
-    // Clear the pending interaction entry BEFORE resolving so any in-flight
-    // respondToInteraction call gets no_pending_interaction.
-    const cancelledResponse = cancelPendingSurfaceInteraction(runId, interaction);
+    resolveCancelled?.(cancelledResponse);
 
     // Best-effort fire-and-forget: emission failure must not resolve the
     // interaction with an error.
@@ -1806,7 +1817,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       detector.cancel();
     });
     const lostResponse = detector.lossPromise.then((failure) =>
-      handleBrowserSurfaceLossDuringInteraction(failure, runId, connectorId, traceContext, interaction)
+      handleBrowserSurfaceLossDuringInteraction(failure, lease, runId, connectorId, traceContext, interaction)
     );
     return Promise.race([responsePromise, lostResponse]);
   }

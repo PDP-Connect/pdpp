@@ -85,6 +85,7 @@ import { SOURCE_ACCESS_NOTE } from "./sources-copy.ts";
 import {
   buildDuplicateSourceReview,
   collapseDuplicateFallbackSources,
+  collapseSetupFailedSources,
   type DuplicateSourceGroup,
   type DuplicateSourceReview,
   reactivateRecordCopy,
@@ -128,15 +129,38 @@ export function SourcesView({
   revokeAction,
   runtimeAdvisory,
 }: SourcesViewProps) {
-  const activeInstances = instances.filter((i) => !i.revoked);
-  const revokedInstances = instances.filter((i) => i.revoked);
-  const duplicateReviews = buildDuplicateSourceReview(instances);
-  const { duplicateGroups, visibleActiveInstances } = collapseDuplicateFallbackSources(instances);
+  // Archived and setup-failed sources are partitioned out FIRST: neither is
+  // active nor an ordinary revoked row, and both must not reach the
+  // duplicate-collapse pass, whose ordinal relabelling ("account 2") implies
+  // a live sibling set they are not part of.
+  const archivedInstances = instances.filter((i) => i.archived);
+  const setupFailedInstances = instances.filter((i) => i.setupFailed);
+  const liveInstances = instances.filter((i) => !(i.archived || i.setupFailed));
+  const activeInstances = liveInstances.filter((i) => !i.revoked);
+  const revokedInstances = liveInstances.filter((i) => i.revoked);
+  const duplicateReviews = buildDuplicateSourceReview(liveInstances);
+  const { duplicateGroups, visibleActiveInstances } = collapseDuplicateFallbackSources(liveInstances);
+  const { setupFailedGroups } = collapseSetupFailedSources(setupFailedInstances);
 
-  // Default selection: first active source, or first revoked if all are revoked.
-  const defaultId = (visibleActiveInstances[0] ?? duplicateGroups[0]?.items[0] ?? revokedInstances[0])?.id ?? null;
+  // Default selection: first active source, then revoked, then archived, then
+  // setup-failed — a setup-failed row is only ever the default when the
+  // owner has nothing else, in which case showing it beats an empty pane.
+  const defaultId =
+    (
+      visibleActiveInstances[0] ??
+      duplicateGroups[0]?.items[0] ??
+      revokedInstances[0] ??
+      archivedInstances[0] ??
+      setupFailedGroups[0]?.representative
+    )?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(defaultId);
-  const selected = instances.find((i) => i.id === selectedId) ?? activeInstances[0] ?? revokedInstances[0] ?? null;
+  const selected =
+    instances.find((i) => i.id === selectedId) ??
+    activeInstances[0] ??
+    revokedInstances[0] ??
+    archivedInstances[0] ??
+    setupFailedGroups[0]?.representative ??
+    null;
 
   if (instances.length === 0) {
     return (
@@ -184,6 +208,53 @@ export function SourcesView({
                   key={instance.id}
                   onSelect={() => setSelectedId(instance.id)}
                   selected={selected?.id === instance.id}
+                />
+              ))}
+            </details>
+          ) : null}
+
+          {/* Archived sources: records preserved, collection finished. Shown
+              because data the system holds must be reachable in the UI, and
+              grouped separately because they are NOT live — the summary states
+              that outright so a collapsed group can never read as healthy. */}
+          {archivedInstances.length > 0 ? (
+            <details className="rr-s-revoked-group" data-testid="sources-archived-group">
+              <summary className="rr-s-revoked-group__summary">
+                Archived — not collecting ({archivedInstances.length})
+              </summary>
+              <p className="rr-s-archived-group__note">
+                These sources are no longer collecting. Their records are kept and stay searchable.
+              </p>
+              {archivedInstances.map((instance) => (
+                <InstanceListItem
+                  instance={instance}
+                  key={instance.id}
+                  onSelect={() => setSelectedId(instance.id)}
+                  selected={selected?.id === instance.id}
+                />
+              ))}
+            </details>
+          ) : null}
+
+          {/* Setup-failed sources: repeated failed setup, zero records — the
+              owner's only evidence a connector was ever attempted. Coalesced to
+              one row per connector (attemptCount) rather than one row per
+              retried shell, and grouped separately so a collapsed group can
+              never be mistaken for a live or ever-successful source. */}
+          {setupFailedGroups.length > 0 ? (
+            <details className="rr-s-revoked-group" data-testid="sources-setup-failed-group">
+              <summary className="rr-s-revoked-group__summary">
+                Setup never completed ({setupFailedGroups.length})
+              </summary>
+              <p className="rr-s-archived-group__note">
+                These connections never finished setup. No records were collected — try again from Add a source.
+              </p>
+              {setupFailedGroups.map((group) => (
+                <InstanceListItem
+                  instance={group.representative}
+                  key={group.connectorId}
+                  onSelect={() => setSelectedId(group.representative.id)}
+                  selected={selected?.id === group.representative.id}
                 />
               ))}
             </details>
@@ -329,6 +400,22 @@ function InstanceListItem({
           panel, while the list shows only the owner label, retained facts, and
           health. */}
       <span className="rr-s-item__line">{instance.accountLine}</span>
+      {/*
+       * The fused status line: what it is, when it last updated, and whether
+       * it is syncing right now — one string, worst honest axis first. Before
+       * this, the row showed only a colored glyph (label sr-only), so an owner
+       * could not tell a fresh source from a stale one, or a syncing source
+       * from a stuck one, without opening the detail panel. See
+       * design-notes/fused-source-status-2026-08-22.md.
+       */}
+      <span
+        className="rr-s-item__status rr-s-status"
+        data-syncing={instance.fusedStatus.syncing ? "true" : undefined}
+        data-testid="sources-fused-status"
+        data-tone={instance.fusedStatus.tone}
+      >
+        {instance.fusedStatus.line}
+      </span>
       {instance.ownerActionCue ? (
         <span
           className="rr-s-item__cue"
@@ -339,13 +426,14 @@ function InstanceListItem({
         </span>
       ) : null}
       <span className="rr-s-item__flag">
-        {/* The dot is a decorative reinforcement of the status; the textual
-            label is announced via the sr-only span so color is never the sole
-            signal and the glyph itself carries no a11y burden. */}
+        {/* The dot is a decorative reinforcement of the status. The textual
+            status now renders visibly in `.rr-s-item__status`, so color is
+            never the sole signal and this glyph carries no a11y burden — a
+            second sr-only copy here would make screen readers announce the
+            status twice per row. */}
         <span aria-hidden="true" className="rr-s-dot" data-tone={instance.status.tone} title={instance.status.label}>
           {instance.status.dot}
         </span>
-        <span className="sr-only">{instance.status.label}</span>
       </span>
     </>
   );
@@ -440,7 +528,22 @@ function InstancePassport({
         {instance.nextAction ? (
           <NextActionCta detailHref={instance.detailHref} formatted={instance.nextAction} />
         ) : null}
-        {instance.revoked ? (
+        {instance.setupFailed ? (
+          <p className="rr-s-revoked-note">
+            {/* Server-owned sentence so a TTL-expired attempt says so plainly
+                ("expired while waiting for you to finish signing in")
+                instead of collapsing into the same generic sentence an
+                owner-abandoned or connector-failed attempt gets — see
+                `archiveRenderedVerdict` in `server/ref-control.ts`. The
+                fallback (pre-existing generic copy, own CTA appended) applies
+                only when the mirror predates `rendered_verdict` — never for a
+                live reference, whose forward_statement always names the next
+                step itself. */}
+            {instance.setupFailedForwardStatement ??
+              "This connection attempt never finished setup. No records were collected — start a new attempt from Add a source."}
+          </p>
+        ) : null}
+        {instance.revoked && !instance.setupFailed ? (
           <p className="rr-s-revoked-note">
             Future collection is stopped. Already-collected records stay visible and searchable; revoke does not erase
             anything.
@@ -607,7 +710,11 @@ function PassportActions({
           </IcButton>
         ) : null}
 
-        {interactive && reactivateAction && instance.connectionId && instance.revoked ? (
+        {/* A setup-failed row has no credential, schedule, or prior collection
+            to reactivate — it is a spent enrollment shell, not a paused live
+            connection. Offering "Reactivate" here would be the same dishonest
+            promise archived sources already refuse to make. */}
+        {interactive && reactivateAction && instance.connectionId && instance.revoked && !instance.setupFailed ? (
           <IcButton
             data-testid="sources-reactivate-btn"
             onClick={() => setConfirmingReactivate((v) => !v)}
@@ -944,9 +1051,9 @@ function StreamManifestRow({
           <span
             className="rr-s-stream-chip"
             data-tone="neutral"
-            title="The reference has not produced a per-stream collection report for this stream yet."
+            title="Nothing has measured this stream yet — the reference has not produced a collection report for it, so we can't say whether it is complete."
           >
-            Unknown
+            Not measured
           </span>
         )}
         {collection?.dispositionLabel ? (

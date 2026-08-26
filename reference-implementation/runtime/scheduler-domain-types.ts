@@ -19,6 +19,7 @@
 
 import type { SchedulerStore } from "../server/stores/scheduler-store.ts";
 import type { ConnectorEnvironmentBinding } from "./connector-child-environment.ts";
+import type { RunBaseLogger } from "./run-logger.ts";
 import type { PendingPressureGap } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
@@ -30,11 +31,31 @@ import type { PendingPressureGap } from "./scheduler-source-pressure-cooldown.ts
  */
 export type TerminalGrantFailureReason = "grant_consumed" | "grant_expired" | "grant_invalid" | "grant_revoked";
 
+/**
+ * `controller_restarted` and `controller_terminated_before_run_finished` are
+ * the two reasons written by restart reconciliation, when a process died
+ * holding an in-flight run. They describe a decision made ABOUT the run (the
+ * server stopped) rather than an outcome OF the run: nothing observed the
+ * connector, the credential, or the upstream fail.
+ *
+ * They were already being written to `run_history` — 45 rows since 2026-08-15
+ * (28 and 17 respectively) — but were missing from this union, so no caller
+ * could name them without a cast. Adding them is a type-honesty fix, not a new
+ * behaviour: `runtime/controller.ts` and `lib/controller-boot.ts` have emitted
+ * both strings for some time.
+ *
+ * Note they are stored with DIFFERENT statuses —
+ * `controller_terminated_before_run_finished` with `status='abandoned'` and
+ * `controller_restarted` with `status='failed'` — so code distinguishing
+ * restart-ended runs must key on the REASON, not the status.
+ */
 export type TerminalNonGrantReason =
   | "authentication_error"
   | "connector_protocol_violation"
   | "connector_reported_cancelled"
   | "connector_reported_failed"
+  | "controller_restarted"
+  | "controller_terminated_before_run_finished"
   | "owner_cancel_forced"
   | "owner_cancelled"
   | "run_timed_out"
@@ -43,7 +64,14 @@ export type TerminalNonGrantReason =
 
 export type TerminalReason = TerminalGrantFailureReason | TerminalNonGrantReason;
 
-export type RunStatus = "cancelled" | "failed" | "skipped" | "succeeded";
+/**
+ * `abandoned` is the status restart reconciliation writes for a run whose
+ * owning process died before it could terminalize (`run-history-writer.ts`
+ * derives it; `lib/controller-boot.ts` inserts it). It was already the stored
+ * value for 28 production rows but was missing from this union, so history
+ * hydrated from the store carried a status the type said was impossible.
+ */
+export type RunStatus = "abandoned" | "cancelled" | "failed" | "skipped" | "succeeded";
 
 export type GrantAccessMode = "continuous" | "single_use";
 
@@ -65,6 +93,19 @@ export interface RunSource {
 export interface RunConnectorResult {
   readonly checkpoint_summary?: Record<string, unknown> | null;
   readonly connector_error?: ConnectorError | null;
+  /**
+   * Concise runtime-authored explanation of why the run failed (e.g. "Run
+   * exceeded a connector assistance timeout."). Present on
+   * `RuntimeRunConnectorResult` (runtime/index.ts) since
+   * persist-connector-failure-diagnostics, but omitted from this narrower
+   * scheduler-facing type until 2026-08-18 — the omission meant every
+   * `run_history.failure_reason` DB column stayed permanently null
+   * (buildSuccessOrFailureRecord hardcoded `failureReason: null`, unable to
+   * read a field its own parameter type didn't declare), even though the
+   * runtime always computed and emitted this text on the terminal spine
+   * event. See chatgpt-ingest-and-assistance-failure-modes-2026-08-18.
+   */
+  readonly failure_message?: string | null;
   readonly known_gaps?: readonly Record<string, unknown>[] | null;
   readonly message?: string;
   readonly records_emitted?: number;
@@ -397,6 +438,16 @@ export interface SchedulerOptions {
    */
   isManagedConnector?: IsManagedConnectorHandler;
   isNeedsHuman?: IsNeedsHumanHandler;
+  /**
+   * Base structured logger (a real Pino instance in production; see
+   * `server/transport.ts` `buildLogger`) to bind run identity onto via
+   * `runtime/run-logger.ts` `createRunLogger`. Optional: defaults to a
+   * silent no-op, so every existing caller/test that does not inject one is
+   * unaffected. This is the seam that lets scheduler/run-executor failures —
+   * previously `console.error`-only with no `run_id` — reach the same
+   * structured JSON log stream the rest of the server already writes to.
+   */
+  logger?: RunBaseLogger;
   markNeedsHuman?: NeedsHumanHandler;
   /**
    * Maximum no-progress budget for a direct scheduler connector attempt.

@@ -6,4 +6,4 @@ SET source_binding_key = ?,
 WHERE connector_instance_id = ?
   AND owner_subject_id = ?
   AND connector_id = ?
-  AND status IN ('active', 'draft');
+  AND status IN ('active', 'draft', 'paused');

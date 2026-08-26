@@ -139,8 +139,19 @@ interface LoadSummary {
   latestSegment: string | undefined;
   pointCount: number;
   pointsEmitted: number;
+  /**
+   * Point elements the artifact held that this run could NOT account for: the
+   * parser produced a record, but it carried no usable `id`/`timestamp`, so it
+   * can be neither emitted nor deduped. These are the artifact's own elements —
+   * they were considered. Counting them here (and NOT in `pointCount`) is what
+   * makes `covered < considered` read a real `partial` instead of the silent
+   * drop that previously reported a fabricated `considered === covered`.
+   */
+  pointsUnaccounted: number;
   segmentCount: number;
   segmentsEmitted: number;
+  /** Segment elements dropped for a missing `id`/`start_time`. See `pointsUnaccounted`. */
+  segmentsUnaccounted: number;
   unrecognizedCount: number;
   unrecognizedKinds: Set<string>;
 }
@@ -214,6 +225,11 @@ async function processPointRecords(load: StreamLoadContext, points: readonly Tim
     const pointId = typeof point.id === "string" ? point.id : null;
     const timestamp = typeof point.timestamp === "string" ? point.timestamp : null;
     if (!(pointId && timestamp)) {
+      // The artifact held this element and the parser produced it, but without a
+      // stable id + timestamp it cannot be emitted or deduped. Count it as
+      // considered-but-not-covered rather than dropping it silently: an element
+      // the run could not account for must not be erased from the denominator.
+      load.summary.pointsUnaccounted += 1;
       continue;
     }
     if (load.seenPointIds.has(pointId)) {
@@ -257,6 +273,10 @@ async function processSegmentRecords(
     const segmentId = typeof segment.id === "string" ? segment.id : null;
     const startTime = typeof segment.start_time === "string" ? segment.start_time : null;
     if (!(segmentId && startTime)) {
+      // See `processPointRecords`: an unaccountable element stays in the
+      // denominator so the artifact reconciliation reads `partial`, not a
+      // silent `complete`.
+      load.summary.segmentsUnaccounted += 1;
       continue;
     }
     if (load.seenSegmentIds.has(segmentId)) {
@@ -290,6 +310,25 @@ async function processStreamEvent(load: StreamLoadContext, event: GoogleMapsStre
     return;
   }
   const parsed = parseGoogleMapsExportElement(event.format, event.value);
+  // THE ARTIFACT BOUNDARY. One `element` event is exactly one element the
+  // uploaded file contained, counted here — before the parser's verdict — so
+  // the denominator is measured at the source, not recomputed from survivors.
+  //
+  // An element the parser yields nothing for (no point AND no segment) is the
+  // silent drop this guards: an unkeyable `locations` entry with no
+  // `timestampMs`, or a `semanticSegments` entry with no start time, both parse
+  // to `{points:[],segments:[]}`. Attributing it to a stream requires the
+  // element's own format, since a legacy `locations` element can only ever have
+  // been a point and a `semanticSegments` element can only ever have been a
+  // segment.
+  if (parsed.points.length === 0 && parsed.segments.length === 0) {
+    if (event.format === "legacy_records") {
+      load.summary.pointsUnaccounted += 1;
+    } else {
+      load.summary.segmentsUnaccounted += 1;
+    }
+    return;
+  }
   await processPointRecords(load, parsed.points);
   await processSegmentRecords(load, parsed.segments);
 }
@@ -341,8 +380,10 @@ async function loadExports(ctx: CollectContext, importDir: string, state: Google
     latestSegment: segmentSince,
     pointCount: 0,
     pointsEmitted: 0,
+    pointsUnaccounted: 0,
     segmentCount: 0,
     segmentsEmitted: 0,
+    segmentsUnaccounted: 0,
     unrecognizedCount: 0,
     unrecognizedKinds: new Set(),
   };
@@ -399,13 +440,34 @@ async function finishPoints(ctx: CollectContext, summary: LoadSummary): Promise<
     stream: "timeline_points",
     cursor: { last_timestamp: summary.latestPoint },
   });
+  // Artifact reconciliation, NOT an account-completeness claim. The denominator
+  // is every point element the parser produced from the uploaded file —
+  // accounted-for plus unaccountable — measured at the parse site. The numerator
+  // is only what this run could actually key and dedupe. When the artifact holds
+  // an element with no id/timestamp, `covered < considered` and the stream reads
+  // `partial`, which is the honest verdict.
+  //
+  // What this CANNOT say: whether the artifact itself is a complete export of
+  // the owner's Google Maps history. Google decides what goes into the file; a
+  // fully-reconciled artifact only proves this run ingested everything the file
+  // contained, never that the file contained everything the provider holds.
+  const pointsConsidered = summary.pointCount + summary.pointsUnaccounted;
+  if (summary.pointsUnaccounted > 0) {
+    await ctx.emit({
+      type: "SKIP_RESULT",
+      stream: "timeline_points",
+      reason: "element_unaccounted",
+      message: `${String(summary.pointsUnaccounted)} of ${String(pointsConsidered)} Google Maps Timeline point element(s) lacked a usable id or timestamp and could not be ingested`,
+      diagnostics: { considered: pointsConsidered, unaccounted: summary.pointsUnaccounted },
+    });
+  }
   await ctx.emit(
     buildDetailCoverageMessage({
       stream: "timeline_points",
       stateStream: "timeline_points",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: summary.pointCount,
+      considered: pointsConsidered,
       covered: summary.pointCount,
     })
   );
@@ -430,6 +492,30 @@ async function finishSegments(ctx: CollectContext, summary: LoadSummary): Promis
     stream: "timeline_segments",
     cursor: { last_start_time: summary.latestSegment },
   });
+  // Same artifact reconciliation as `finishPoints`. `buildFullScanCoverageMessage`
+  // is deliberately NOT used when an element went unaccounted: it forces
+  // `covered === considered`, which would re-hide the very drop this counts.
+  const segmentsConsidered = summary.segmentCount + summary.segmentsUnaccounted;
+  if (summary.segmentsUnaccounted > 0) {
+    await ctx.emit({
+      type: "SKIP_RESULT",
+      stream: "timeline_segments",
+      reason: "element_unaccounted",
+      message: `${String(summary.segmentsUnaccounted)} of ${String(segmentsConsidered)} Google Maps Timeline segment element(s) lacked a usable id or start time and could not be ingested`,
+      diagnostics: { considered: segmentsConsidered, unaccounted: summary.segmentsUnaccounted },
+    });
+    await ctx.emit(
+      buildDetailCoverageMessage({
+        stream: "timeline_segments",
+        stateStream: "timeline_segments",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: segmentsConsidered,
+        covered: summary.segmentCount,
+      })
+    );
+    return;
+  }
   await ctx.emit(buildFullScanCoverageMessage("timeline_segments", summary.segmentCount));
 }
 

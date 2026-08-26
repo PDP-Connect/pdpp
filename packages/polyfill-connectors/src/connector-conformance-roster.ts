@@ -41,9 +41,11 @@ export const PRODUCTION_READY_CONNECTORS: Record<string, { testFile: string }> =
   jellyfin: { testFile: "connectors/jellyfin/protocol-subprocess.test.ts" },
   notion: { testFile: "connectors/notion/schemas.test.ts" },
   reddit: { testFile: "connectors/reddit/integration.test.ts" },
+  signal: { testFile: "connectors/signal/integration.test.ts" },
   slack: { testFile: "connectors/slack/integration.test.ts" },
   steam: { testFile: "connectors/steam/index.test.ts" },
   usaa: { testFile: "connectors/usaa/integration.test.ts" },
+  venmo: { testFile: "connectors/venmo/integration.test.ts" },
   whatsapp: { testFile: "connectors/whatsapp/integration.test.ts" },
   whoop: { testFile: "connectors/whoop/integration.test.ts" },
   ynab: { testFile: "connectors/ynab/integration.test.ts" },
@@ -91,5 +93,4 @@ export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {
   spotify: { testFile: "connectors/spotify/schemas.test.ts" },
   strava: { testFile: "connectors/strava/schemas.test.ts" },
   twitter_archive: { testFile: "connectors/twitter_archive/parsers.test.ts" },
-  venmo: { testFile: "connectors/venmo/integration.test.ts" },
 };

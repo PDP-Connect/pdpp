@@ -59,6 +59,24 @@ export function sourceKindFromManifestBindings(
   if (!bindings || typeof bindings !== "object") {
     return null;
   }
+  // A connector bound to the owner's live desktop session can ONLY run on
+  // their machine, and for a stronger reason than filesystem locality: the
+  // data may be readable while its key is not. Signal Desktop is the worked
+  // example -- its SQLCipher key is stored encrypted in config.json behind
+  // `safeStorageBackend` (kwallet6/gnome-keyring on Linux, Keychain on
+  // macOS, DPAPI on Windows) and unwraps only through a session-bound
+  // keyring daemon.
+  //
+  // Verified against real data on 2026-08-17: mounting the Signal database
+  // into a container fails at four successive layers -- file absent, then
+  // "cannot connect to D-Bus session bus", then EOF on a uid mismatch, then
+  // an AppArmor denial once uids matched. Copying the file is insufficient
+  // BY CONSTRUCTION because the key is not in the file. Declaring the
+  // binding makes the engine refuse server-side placement up front instead
+  // of leaving the next person to rediscover that four D-Bus layers deep.
+  if (Object.hasOwn(bindings, "desktop_session")) {
+    return "local_device";
+  }
   if (Object.hasOwn(bindings, "filesystem")) {
     return "local_device";
   }

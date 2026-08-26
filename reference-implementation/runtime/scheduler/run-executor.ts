@@ -23,7 +23,7 @@
  * guard → preRunGate → launchRun), pre-run gate, or dispatch governor.
  */
 
-import { createTraceContext, type SpineTraceContext } from "../../lib/spine.ts";
+import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../../lib/spine.ts";
 import type { SchedulerRunHistoryRecord } from "../../server/stores/scheduler-store.ts";
 import type { ConnectorEnvironmentBinding } from "../connector-child-environment.ts";
 import { runConnector } from "../index.ts";
@@ -33,6 +33,7 @@ import {
   type RunAutomationMode,
   type RunTriggerKind,
 } from "../run-automation-policy.ts";
+import { createRunLogger, NOOP_RUN_BASE_LOGGER, type RunBaseLogger } from "../run-logger.ts";
 import type {
   ConnectorSchedule,
   GetStateHandler,
@@ -83,6 +84,13 @@ export interface RunExecutorDeps {
   getState: GetStateHandler;
   handleGrantFailureDisable: (reason: string | null | undefined, connectorInstanceId: string) => void;
   isManagedConnector: IsManagedConnectorHandler;
+  /**
+   * Base structured logger to bind run identity onto (see
+   * `runtime/run-logger.ts`). Optional: defaults to `NOOP_RUN_BASE_LOGGER`,
+   * so existing callers/tests that construct `RunExecutorDeps` directly are
+   * unaffected.
+   */
+  logger?: RunBaseLogger;
   markNeedsHuman: NeedsHumanHandler;
   maxRunWallClockMs: number;
   onInteraction: InteractionHandler;
@@ -131,7 +139,17 @@ function describeFailedRunResult(result: RunConnectorResult): RunConnectorError 
   return {
     checkpoint_summary: result.checkpoint_summary || null,
     connector_error: result.connector_error || null,
-    failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
+    // `failure_reason` and `terminal_reason` are two SEPARATE classification
+    // channels, not a value and its fallback. `shouldRetryRunFailure` checks
+    // each against its own set — `NON_RETRYABLE_FAILURE_REASONS` and
+    // `NON_RETRYABLE_TERMINAL_REASONS` (scheduler-retry-classifier.ts:60,71)
+    // — so folding a terminal reason into this field feeds it to a set that
+    // was never meant to see it and silently changes retry classification.
+    // `connector_protocol_violation` is forwarded because it is a member of
+    // BOTH vocabularies; nothing else is.
+    failure_reason:
+      result.failure_message ||
+      (result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null),
     known_gaps: result.known_gaps || null,
     message: result.message || "unknown",
     records_emitted: result.records_emitted ?? 0,
@@ -194,6 +212,17 @@ function narrowState(state: unknown): Record<string, unknown> | null {
     return state as Record<string, unknown>;
   }
   return null;
+}
+
+// `onProgress` is typed `unknown` at this boundary (see RunConnectorCall);
+// only `phase_boundary` is read from it, so narrowing is intentionally this
+// narrow rather than casting the whole payload to a wider connector-message type.
+function extractPhaseBoundary(msg: unknown): { phase_boundary?: string } | undefined {
+  const record = narrowState(msg);
+  if (!record || typeof record.phase_boundary !== "string") {
+    return;
+  }
+  return { phase_boundary: record.phase_boundary };
 }
 
 function displayNameForScheduledConnector(manifest: SchedulerManifest, connectorId: string): string {
@@ -263,7 +292,13 @@ interface RunConnectorCall {
   connectorPath: string;
   manifest: SchedulerManifest;
   onInteraction: InteractionHandler;
-  onProgress: () => void;
+  // `runtime/index.ts` (still JS) always calls this with the connector's raw
+  // PROGRESS payload, typed `unknown` here to match RuntimeRunConnectorOptions
+  // (runtime/index.d.ts). `msg.phase_boundary` (see
+  // connector-protocol-phase-boundary.d.ts) is the only field this layer
+  // reads from it, via the watchdog wrapper in createActiveRunAttemptLease,
+  // which narrows before use.
+  onProgress: (msg?: unknown) => void;
   onStarted?: (run: { run_id?: string | null; scenario_id?: string | null; trace_id?: string | null }) => void;
   ownerSubjectId: string;
   ownerToken: string;
@@ -317,7 +352,19 @@ async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorR
 interface AttemptWatchdog {
   cancel: () => void;
   clear: () => void;
-  markProgress: () => void;
+  /**
+   * Called on every PROGRESS message. `extra` carries the connector's
+   * `phase_boundary` marker (see connector-protocol-phase-boundary.d.ts) when
+   * present — used to detect the local-only-phase transition below. Returns
+   * `true` exactly once, on the call that latches the local-only phase, so
+   * the caller can emit a durable record of the suppression on that single
+   * edge rather than on every subsequent PROGRESS message. A disarmed safety
+   * timer must not be an invisible decision: before this, `phase_boundary`
+   * appeared in ZERO spine events across every run, so an operator seeing a
+   * run exceed its ceiling could not tell "legitimately local-only" from
+   * "the watchdog failed".
+   */
+  markProgress: (extra?: { phase_boundary?: string }) => boolean;
   readonly signal: AbortSignal;
   timedOut: () => boolean;
 }
@@ -329,13 +376,29 @@ function isBoundedWallClock(maxRunWallClockMs: number): boolean {
   return Number.isFinite(maxRunWallClockMs) && maxRunWallClockMs > 0;
 }
 
-function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
+export function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
   const cancellation = new AbortController();
   let timedOut = false;
   let timer: NodeJS.Timeout | null = null;
+  // Local-only work no longer has provider progress to reset the primary
+  // watchdog. Keep the exemption bounded: four primary budgets is long enough
+  // for the existing local materialization path while still guaranteeing that
+  // a connector that stops making progress cannot survive until restart.
+  const localOnlyPhaseMaxRunWallClockMs = maxRunWallClockMs * 4;
+  // Set once a connector reports `phase_boundary: "local_only_phase_started"`
+  // and never cleared for the rest of this attempt. `maxRunWallClockMs` is
+  // sized for provider-rate-limited walks (external API pagination); once a
+  // connector declares it has moved to purely local work (e.g. reading its
+  // own already-downloaded archive into the store), that budget no longer
+  // describes what the run is bound by, and re-arming the timer against it
+  // would truncate durable local work exactly like the provider walk it was
+  // never meant to bound. See run_1787407222861 (a Slack local sqlite→Postgres
+  // ingest killed by this timer after slackdump's own external walk had
+  // already finished).
+  let localOnlyPhase = false;
 
   const arm = () => {
-    if (!isBoundedWallClock(maxRunWallClockMs) || timedOut || cancellation.signal.aborted) {
+    if (!isBoundedWallClock(maxRunWallClockMs) || timedOut || localOnlyPhase || cancellation.signal.aborted) {
       return;
     }
     if (timer) {
@@ -345,6 +408,24 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
       timedOut = true;
       cancellation.abort("run_timed_out");
     }, maxRunWallClockMs);
+    timer.unref?.();
+  };
+
+  const armLocalOnlyPhaseCeiling = () => {
+    if (
+      !isBoundedWallClock(localOnlyPhaseMaxRunWallClockMs) ||
+      timedOut ||
+      cancellation.signal.aborted
+    ) {
+      return;
+    }
+    if (timer) {
+      clearTimeout(timer);
+    }
+    timer = setTimeout(() => {
+      timedOut = true;
+      cancellation.abort("run_timed_out");
+    }, localOnlyPhaseMaxRunWallClockMs);
     timer.unref?.();
   };
 
@@ -364,8 +445,18 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
         timer = null;
       }
     },
-    markProgress() {
+    markProgress(extra) {
+      if (extra?.phase_boundary === "local_only_phase_started" && !localOnlyPhase) {
+        localOnlyPhase = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        armLocalOnlyPhaseCeiling();
+        // TRUE only on the latching call — the caller emits the durable trace.
+        return true;
+      }
       arm();
+      return false;
     },
     signal: cancellation.signal,
     timedOut() {
@@ -377,9 +468,22 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
 function runTimedOutError(result: RunConnectorResult, maxRunWallClockMs: number): RunConnectorError {
   const message = `Scheduler run exceeded the ${maxRunWallClockMs}ms progress watchdog budget.`;
   return {
+    // `result` is the connector's actual terminal RunConnectorResult at the
+    // moment the watchdog killed it — runtime/index.ts's buildClosedRunResult
+    // already computed real records_emitted/known_gaps/checkpoint_summary from
+    // durable ingest accounting before resolving. A prior revision of this
+    // function synthesized a fresh object carrying only classification fields
+    // (failure_reason/terminal_reason/message/run_id/trace_id), which silently
+    // discarded those already-correct counts and reported records_emitted: 0 /
+    // known_gaps: [] / checkpoint_summary: null on every timed-out run
+    // regardless of how much work it durably completed before being killed.
+    checkpoint_summary: result.checkpoint_summary || null,
     connector_error: result.connector_error || { message },
     failure_reason: "run_timed_out",
+    known_gaps: result.known_gaps || null,
     message,
+    records_emitted: result.records_emitted ?? 0,
+    reported_records_emitted: result.reported_records_emitted ?? null,
     run_id: result.run_id ?? null,
     terminal_reason: "run_timed_out",
     trace_id: result.trace_id ?? null,
@@ -408,7 +512,22 @@ function buildSuccessOrFailureRecord({
     connectorError: result.connector_error || null,
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    failureReason: null,
+    // Was hardcoded `null` unconditionally — every scheduled run's
+    // run_history.failure_reason column stayed empty even on failure,
+    // leaving `terminal_reason` (a coarse bucket) as the only classification
+    // on record and `connector_error_json` as the only other evidence. The
+    // runtime always computes a concise, run-specific failure_message (e.g.
+    // "Run exceeded a connector assistance timeout.") and already emits it on
+    // the terminal spine event; this was simply never read here.
+    //
+    // Deliberately does NOT fall back to `terminal_reason`. The two are
+    // independent columns that callers read side by side — a run whose only
+    // classification is its terminal bucket records `failureReason: null` and
+    // `terminalReason: <bucket>`, and collapsing them would make the pair
+    // report the same fact twice while erasing "there was no distinct
+    // message." See `describeFailedRunResult` above for why the same
+    // collapse is additionally unsafe on the retry-classification path.
+    failureReason: result.failure_message || null,
     knownGaps: result.known_gaps || [],
     recordsEmitted: result.records_emitted || 0,
     reportedRecordsEmitted: result.reported_records_emitted ?? null,
@@ -606,6 +725,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
+    logger: baseLogger = NOOP_RUN_BASE_LOGGER,
     markNeedsHuman,
     maxRunWallClockMs,
     onInteraction,
@@ -630,6 +750,11 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     await Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
+      createRunLogger(baseLogger, {
+        connectorId,
+        connectorInstanceId: record.connectorInstanceId,
+        runId: record.runId,
+      }).error(`failed to persist run history: ${message}`, { phase: "run_history_persist" });
     });
   }
 
@@ -786,6 +911,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     ).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] failed to reserve active run for ${connectorId}: ${message}`);
+      createRunLogger(baseLogger, { connectorId, connectorInstanceId, runId }).error(
+        `failed to reserve active run: ${message}`,
+        { phase: "active_run_reserve" }
+      );
       return false;
     });
     return upserted !== false;
@@ -824,6 +953,47 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     };
   }
 
+  // Durable record that a suppressed safety timer happened: nothing else
+  // persists this decision (see run-executor.ts's `localOnlyPhase` comment),
+  // so an operator watching a run exceed `maxRunWallClockMs` has no way to
+  // tell "legitimately in a local-only phase" from "the watchdog failed to
+  // fire" without reading source. Fire-and-forget with log-and-continue on
+  // failure, matching `reserveActiveRunRow`/`activeRunStore.deleteActiveRun`
+  // — a lost spine write must not fail or delay the run itself.
+  function emitLocalOnlyPhaseLatchedEvent(
+    connectorId: string,
+    connectorInstanceId: string,
+    runId: string,
+    traceContext: SpineTraceContext,
+    startedAt: string
+  ): void {
+    emitSpineEvent({
+      actor_id: connectorId,
+      actor_type: "runtime",
+      data: {
+        connector_instance_id: connectorInstanceId,
+        disarmed_timer_ms: maxRunWallClockMs,
+        elapsed_ms: Date.now() - Date.parse(startedAt),
+        phase_boundary: "local_only_phase_started",
+      },
+      event_type: "run.local_only_phase_started",
+      object_id: runId,
+      object_type: "run",
+      run_id: runId,
+      scenario_id: traceContext.scenario_id,
+      source_id: connectorId,
+      source_kind: "connector",
+      trace_id: traceContext.trace_id,
+    }).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] failed to emit local_only_phase_started spine event for ${connectorId}: ${message}`);
+      createRunLogger(baseLogger, { connectorId, connectorInstanceId, runId }).error(
+        `failed to emit local_only_phase_started spine event: ${message}`,
+        { phase: "local_only_phase_started" }
+      );
+    });
+  }
+
   // The durable active-run lease + wall-clock watchdog for one attempt. Wraps the
   // caller's RunConnectorCall so `onStarted` persists an active-run row and
   // `onProgress` feeds the watchdog; `clear()` (run in runSingleAttempt's finally)
@@ -859,9 +1029,22 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     const leasedCall: RunConnectorCall = {
       ...call,
       cancelSignal: watchdog.signal,
-      onProgress: () => {
-        watchdog.markProgress();
-        originalOnProgress();
+      onProgress: (msg) => {
+        const suppressedWallClock = watchdog.markProgress(extractPhaseBoundary(msg));
+        if (suppressedWallClock) {
+          emitLocalOnlyPhaseLatchedEvent(connectorId, connectorInstanceId, runId, traceContext, startedAt);
+        }
+        originalOnProgress(msg);
+        if (suppressedWallClock) {
+          // The run just disarmed its own wall-clock watchdog. Record it through
+          // the SAME progress channel the timeline already persists, so the
+          // decision leaves a trace instead of being reconstructable only by
+          // reading source inside a container.
+          originalOnProgress({
+            message: `runtime.wall_clock_watchdog_suppressed {"reason":"local_only_phase_started","disarmed_budget_ms":${String(maxRunWallClockMs)}}`,
+            stream: null,
+          } as Parameters<typeof originalOnProgress>[0]);
+        }
       },
       onStarted: registerAttemptCancellation(
         call.onStarted,
@@ -883,6 +1066,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         await Promise.resolve(activeRunStore.deleteActiveRun(connectorInstanceId, runId)).catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           console.error(`[scheduler] failed to clear active run ${runId} for ${connectorId}: ${message}`);
+          createRunLogger(baseLogger, { connectorId, connectorInstanceId, runId }).error(
+            `failed to clear active run: ${message}`,
+            { phase: "active_run_clear" }
+          );
         });
       }
     };

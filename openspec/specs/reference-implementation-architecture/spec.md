@@ -5967,7 +5967,7 @@ After a successful apply against a `(connector_instance_id, stream)` scope, the 
 #### Scenario: The Chase transactions forward gate never prunes its partial incremental window
 
 - **WHEN** a Chase run downloads a per-account QFX window that does not include an older transaction the connector emitted on a prior run
-- **THEN** the connector's `transactions` fingerprint cursor SHALL retain that older transaction's fingerprint (it SHALL NOT `pruneStale` it)
+- **THEN** the connector's `transactions` fingerprint cursor SHALL retain that older transaction's fingerprint (it SHALL NOT `dropUnseenIds` it)
 - **AND** when a later, wider window re-downloads that older transaction unchanged, the retained fingerprint SHALL suppress the re-emit rather than appending a new run-clock-only version
 
 #### Scenario: The USAA real-field run-clock policies collapse pure run-clock churn but preserve every real financial state change
@@ -5987,7 +5987,7 @@ After a successful apply against a `(connector_instance_id, stream)` scope, the 
 #### Scenario: The partial-scan forward gates never prune records outside the current run's window
 
 - **WHEN** a USAA, Chase, or Amazon run observes only a subset of a partial-scan stream's records (an overlapping incremental transaction window, the dashboard's recent current-activity rows, or the unfrozen subset of order years)
-- **THEN** the connector's `usaa/transactions`, `chase/current_activity`, and `amazon/orders` fingerprint cursors SHALL retain the fingerprints of records not observed this run (they SHALL NOT `pruneStale` them)
+- **THEN** the connector's `usaa/transactions`, `chase/current_activity`, and `amazon/orders` fingerprint cursors SHALL retain the fingerprints of records not observed this run (they SHALL NOT `dropUnseenIds` them)
 - **AND** when a later run re-surfaces an unchanged record from outside the prior window, the retained fingerprint SHALL suppress the re-emit rather than appending a new run-clock-only version
 - **AND** the full-scan `usaa/inbox_messages` cursor MAY prune a message no longer listed so a re-appearance re-emits exactly once
 

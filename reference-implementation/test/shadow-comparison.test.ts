@@ -189,6 +189,7 @@ const FIXTURES: Fixture[] = [
       ephemeral_browser_runtime: null,
       forward_disposition: "complete",
       last_success_at: "2026-06-15T08:00:00.000Z",
+      local_device_outbox_counts: null,
       next_action: null,
       next_attempt_at: null,
       reason_code: null,
@@ -237,6 +238,7 @@ const FIXTURES: Fixture[] = [
       ephemeral_browser_runtime: null,
       forward_disposition: "owner_refresh_due",
       last_success_at: "2026-05-15T08:00:00.000Z",
+      local_device_outbox_counts: null,
       next_action: null,
       next_attempt_at: null,
       reason_code: "stale_manual_refresh",
@@ -250,13 +252,13 @@ const FIXTURES: Fixture[] = [
   // ── Chase: one pending retryable gap, frozen ~2 months ───────────────────
   //
   // Old headline: "Needs you" (state:degraded → "Needs you")
-  // New headline: "Degraded" (degraded with resumable disposition)
+  // New headline: "Missing data" (degraded with resumable disposition)
   // Classification: fixed_lie — old used owner-urgent wording for an advisory
   // retryable gap. New verdict adds the retry affordance without raising attention.
   {
     assertions: (verdict) => {
       assert.equal(verdict.pill.tone, "amber", "Chase: amber health tone");
-      assert.equal(verdict.pill.label, "Degraded", "Chase: Degraded label");
+      assert.equal(verdict.pill.label, "Missing data", "Chase: Missing data label");
       assert.equal(verdict.channel, "advisory", "Chase: channel advisory (owner can retry manual connector)");
       const retry = verdict.required_actions.find((a) => a.kind === "retry_gap");
       assert.ok(retry, "Chase: retry_gap action present");
@@ -274,7 +276,7 @@ const FIXTURES: Fixture[] = [
     id: "chase_retryable_gap",
     manifestStreams: [{ name: "transactions", required: true }],
     progress: null,
-    reason: "Fixed false urgency: retryable degraded gap is Degraded/advisory with Retry now, not Needs you",
+    reason: "Fixed false urgency: retryable degraded gap is Missing data/advisory with Retry now, not Needs you",
     refresh: { backgroundSafe: false, recommendedMode: "manual" },
     report: [
       {
@@ -311,6 +313,7 @@ const FIXTURES: Fixture[] = [
       ephemeral_browser_runtime: null,
       forward_disposition: "resumable",
       last_success_at: "2026-04-22T08:00:00.000Z",
+      local_device_outbox_counts: null,
       next_action: null,
       next_attempt_at: "2026-06-15T12:00:00.000Z",
       reason_code: "retryable_coverage_gap",
@@ -370,6 +373,7 @@ const FIXTURES: Fixture[] = [
       ephemeral_browser_runtime: null,
       forward_disposition: "terminal",
       last_success_at: "2026-01-01T00:00:00.000Z",
+      local_device_outbox_counts: null,
       next_action: null,
       next_attempt_at: null,
       reason_code: "terminal_coverage_gap",
@@ -438,6 +442,7 @@ const FIXTURES: Fixture[] = [
       ephemeral_browser_runtime: null,
       forward_disposition: "complete",
       last_success_at: null,
+      local_device_outbox_counts: null,
       next_action: null,
       next_attempt_at: null,
       reason_code: "credential_rejected",

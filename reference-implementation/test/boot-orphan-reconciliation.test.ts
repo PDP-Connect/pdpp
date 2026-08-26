@@ -322,3 +322,165 @@ test("cross-boot: reconciler picks up orphans from earlier emission", async () =
     closeDb();
   }
 });
+
+// ─── Interaction-aware terminal reason ───────────────────────────────────────
+//
+// A run that died while the connector was WAITING ON THE OWNER is reported
+// with a distinct reason. The owner has already paid a real-world cost by
+// then: an OTP is single-use and is sent to a real phone, so "we asked you
+// for a code and then crashed" must be distinguishable from "the run was cut
+// short". Observed in production as run_1787330303633 (usaa), which was
+// abandoned 49 seconds after USAA texted the owner a code.
+
+/** Seed an interaction lifecycle event for an existing orphaned run. */
+function seedInteractionEvent(
+  dbPath: string,
+  {
+    event_id,
+    run_id,
+    event_type,
+    interaction_id,
+  }: { event_id: string; event_type: string; interaction_id: string; run_id: string }
+) {
+  const raw = new Database(dbPath);
+  try {
+    const ts = "2026-05-10T12:00:05.000Z";
+    raw
+      .prepare(
+        `
+      INSERT INTO spine_events
+        (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+         actor_type, actor_id, object_type, object_id, status, run_id,
+         interaction_id, data_json, version)
+      VALUES (?, ?, ?, ?, 'default', 'trc_seed', 'runtime', 'conn_a', 'run', ?, 'started', ?, ?, '{}', 'v1')
+      `
+      )
+      .run(event_id, event_type, ts, ts, run_id, run_id, interaction_id);
+  } finally {
+    raw.close();
+  }
+}
+
+function abandonReasonFor(dbPath: string, runId: string): string {
+  const raw = new Database(dbPath);
+  try {
+    const row = raw
+      .prepare("SELECT data_json FROM spine_events WHERE event_type = 'run.abandoned' AND run_id = ?")
+      .get(runId) as { data_json: string } | undefined;
+    assert.ok(row, `expected a run.abandoned event for ${runId}`);
+    return JSON.parse(row.data_json).reason as string;
+  } finally {
+    raw.close();
+  }
+}
+
+test("reconciler reports a distinct reason for a run abandoned while awaiting owner interaction", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    seedOrphan(dbPath, { actor_id: "conn_a", event_id: "evt_otp_orphan", run_id: "run_awaiting_otp" });
+    // The connector asked the owner for a code and never got an answer.
+    seedInteractionEvent(dbPath, {
+      event_id: "evt_int_req",
+      event_type: "run.interaction_required",
+      interaction_id: "int_pending_1",
+      run_id: "run_awaiting_otp",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-otp", controllerId: "host-test" });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      abandonReasonFor(dbPath, "run_awaiting_otp"),
+      "controller_terminated_while_awaiting_owner_interaction",
+      "a run waiting on the owner must say so"
+    );
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("reconciler treats an assistance request with no resolution as awaiting the owner", async () => {
+  // `run.assistance_requested` is the sibling event the runtime emits
+  // alongside `run.interaction_required`; both must count.
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    seedOrphan(dbPath, { actor_id: "conn_a", event_id: "evt_assist_orphan", run_id: "run_awaiting_assist" });
+    seedInteractionEvent(dbPath, {
+      event_id: "evt_assist_req",
+      event_type: "run.assistance_requested",
+      interaction_id: "int_pending_2",
+      run_id: "run_awaiting_assist",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-assist", controllerId: "host-test" });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      abandonReasonFor(dbPath, "run_awaiting_assist"),
+      "controller_terminated_while_awaiting_owner_interaction",
+      "an unresolved assistance request must count as awaiting the owner"
+    );
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("reconciler keeps the generic reason once the interaction was answered", async () => {
+  // The load-bearing negative: a RESOLVED interaction means the owner was no
+  // longer being waited on, so this is an ordinary mid-flight death. Without
+  // this case, the new reason could degenerate into "any run that ever asked
+  // for input", which would over-report burned OTPs.
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    seedOrphan(dbPath, { actor_id: "conn_a", event_id: "evt_done_orphan", run_id: "run_answered_otp" });
+    seedInteractionEvent(dbPath, {
+      event_id: "evt_int_req_2",
+      event_type: "run.interaction_required",
+      interaction_id: "int_answered_1",
+      run_id: "run_answered_otp",
+    });
+    seedInteractionEvent(dbPath, {
+      event_id: "evt_int_done_2",
+      event_type: "run.interaction_completed",
+      interaction_id: "int_answered_1",
+      run_id: "run_answered_otp",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-answered", controllerId: "host-test" });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      abandonReasonFor(dbPath, "run_answered_otp"),
+      "controller_terminated_before_run_finished",
+      "an answered interaction must not be reported as awaiting the owner"
+    );
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("reconciler keeps the generic reason for a run that never asked for input", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    seedOrphan(dbPath, { actor_id: "conn_a", event_id: "evt_plain_orphan", run_id: "run_no_interaction" });
+
+    const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-plain", controllerId: "host-test" });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      abandonReasonFor(dbPath, "run_no_interaction"),
+      "controller_terminated_before_run_finished",
+      "a run that never asked for input keeps the generic reason"
+    );
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});

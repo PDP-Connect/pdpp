@@ -2,9 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
+import {
+  type ConnectorInstanceGroupRow,
+  loadOwnerConnectorInstanceGroupsPostgres,
+  loadOwnerConnectorInstanceGroupsSqlite,
+  resolveCanonicalConnectorInstanceId,
+} from "../connector-instance-canonicalization.ts";
 
 // Type definitions
 interface ConnectorInstance {
+  // Present only on rows returned by `listOwnerVisibleIdentityPage` (Explore's
+  // facet listing), which preloads the owner's `connector_instance_groups` map
+  // and resolves each row through `resolveCanonicalConnectorInstanceId`.
+  // Identity function (equal to `connectorInstanceId`) for an ungrouped row or
+  // any other read path that does not pass a group map into `mapInstance`.
+  canonicalConnectorInstanceId?: string;
   connectorId: string;
   connectorInstanceId: string;
   createdAt?: string;
@@ -321,6 +333,65 @@ WHERE owner_subject_id = ?
   )
 ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
 LIMIT ?`;
+// Sources-page identity page: the owner-visible unfiltered template plus ONE
+// extra exclusion — a grouped fragment (account-unification canonicalization)
+// never renders its own Sources row, only its canonical sibling does.
+//
+// A pure recovered historical fragment is deliberately NOT excluded here. It
+// is classified `source_visibility: "archived"` and rendered in the Sources
+// list's own Archived group, because dropping it made its records visible on
+// no summary surface at all.
+//
+// Derived from the owner-visible template by string substitution rather than
+// copied, so the two can never drift on the shared predicates (stub-connector
+// exclusions, the revoked-draft rule, the cursor tuple, ordering, LIMIT). The
+// exclusion is applied BEFORE `LIMIT`, keeping `hasMore`/the next cursor
+// authoritative over exactly the rows this page renders.
+//
+// The exclusion is CONDITIONAL on the canonical row actually existing.
+// `connector_instance_groups` carries no foreign key to `connector_instances`
+// (see server/db.ts), and neither delete path removes or retargets inbound
+// group rows, so a canonical row can be deleted out from under its fragments
+// and leave the group rows dangling. Hiding a fragment because it "has a
+// canonical" is only honest when that canonical is actually there to render
+// in its place; if it is gone, hiding the fragment hides the fragment's
+// records from every summary surface at once — exactly the silent-data-loss
+// failure this project exists to prevent. So the fragment yields its Sources
+// row only to a canonical that EXISTS; otherwise it renders its own row
+// again, which is the same principle as the recovered-historical-fragment
+// carve-out above. This predicate never deletes or rewrites anything: it only
+// declines to hide a row whose stand-in is missing.
+const GROUPED_FRAGMENT_EXCLUSION_SQLITE = `
+  AND NOT EXISTS (
+    SELECT 1 FROM connector_instance_groups
+    WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
+      AND EXISTS (
+        SELECT 1 FROM connector_instances AS canonical_instances
+        WHERE canonical_instances.connector_instance_id = connector_instance_groups.canonical_connector_instance_id
+      )
+  )`;
+
+// A revoked retired-setup-shell row (`RETIRED_SETUP_SHELL_BINDING_KINDS`) is
+// excluded everywhere by the shared owner-visible predicate above, because a
+// SUCCESSFUL run promotes the connection to its own `active` row elsewhere —
+// the shell is then a spent artifact of setup mechanics, not a connection the
+// owner needs to see. But when every run against that shell failed (or none
+// ran at all past enrollment), no other row exists to represent the attempt:
+// the shell IS the owner's only record of trying, and the shared predicate's
+// blanket exclusion makes a repeatedly-attempted, never-connected source
+// invisible on the one surface — Sources — where the owner would look for it.
+// This ORs a `NOT EXISTS (successful run)` escape onto the shared exclusion,
+// Sources-page-only, replacing the retired-setup-shell predicate's exact
+// text so it cannot drift from `RETIRED_SETUP_SHELL_BINDING_KINDS` above.
+const NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE =
+  "AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft') OR NOT EXISTS (\n    SELECT 1 FROM run_history\n    WHERE run_history.connector_instance_id = connector_instances.connector_instance_id\n      AND run_history.status = 'succeeded'\n  ))";
+
+export const SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL =
+  SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL.replace(
+    "AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))",
+    NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE
+  ).replace("\n  AND (\n    ? IS NULL", `${GROUPED_FRAGMENT_EXCLUSION_SQLITE}\n  AND (\n    ? IS NULL`);
+
 export const SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL = `
 SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
        source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
@@ -395,7 +466,7 @@ const READ_SURFACE_HIDDEN_STATUSES = new Set(["draft"]);
 // duplicated here (SQL + JS) because `resolveOwnerVisibleConnectionForRoute`'s
 // exact-id point lookup (`ref-control.ts`) bypasses the paged query entirely
 // and must apply the SAME visibility rule to what it reads via `store.get`.
-const RETIRED_SETUP_SHELL_BINDING_KINDS = new Set([
+export const RETIRED_SETUP_SHELL_BINDING_KINDS = new Set([
   "browser_enrollment_shell",
   "static_secret_draft",
   "manual_upload_draft",
@@ -443,6 +514,21 @@ export class ConnectorInstanceResolutionError extends Error {
   }
 }
 
+// A scheduler row that names a connection which no longer exists is an
+// EXPECTED, fully handled outcome, not an operational fault: the scheduler
+// skips the row and keeps running. Callers use this to log the skip at debug
+// without a stack, so a real fault (owner mismatch, connector mismatch, an
+// inactive instance, a store failure) stays visible at warn with its stack.
+//
+// Scope note: this deliberately does NOT cover the case where the row IS a
+// default-account hint and `allowDefaultAccount` is true — that path returns
+// FALL_THROUGH_TO_CONNECTOR_ID and never throws. What reaches a caller as a
+// throw here is the `allowDefaultAccount: false` legacy-hint case, which the
+// caller handles by skipping the row.
+export function isExpectedMissingConnectorInstance(err: unknown): boolean {
+  return err instanceof ConnectorInstanceResolutionError && err.code === "connector_instance_not_found";
+}
+
 // Thrown by `deleteConnection` when the cascade is refused for a typed reason
 // (an in-flight run holds the active-run lease, or the connection is a
 // default-account binding whose deterministic id would silently re-materialize
@@ -474,7 +560,13 @@ function assertDeletableConnection(
     connectorInstanceId,
     ownerSubjectId,
     hasActiveRun,
-  }: { connectorInstanceId: string; ownerSubjectId: string; hasActiveRun: boolean }
+    inboundFragmentCount = 0,
+  }: {
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+    hasActiveRun: boolean;
+    inboundFragmentCount?: number;
+  }
 ): ConnectorInstance {
   if (!instance || instance.ownerSubjectId !== ownerSubjectId) {
     // Absent OR foreign — both surface as not-found so existence is not leaked
@@ -490,6 +582,25 @@ function assertDeletableConnection(
       "connection_run_active",
       `Connection '${connectorInstanceId}' has an active collection run; stop or await the run before deleting.`,
       { connectorInstanceId, ownerSubjectId }
+    );
+  }
+  if (inboundFragmentCount > 0) {
+    // This row is the canonical identity for grouped fragments, and
+    // `connector_instance_groups` has no foreign key to `connector_instances`
+    // (server/db.ts), so nothing at the storage layer would stop this delete
+    // from leaving those group rows pointing at an id that no longer exists.
+    // Every fragment would then be a row the Sources page hides in favour of
+    // a canonical that is not there to render — its records reachable from no
+    // summary surface. Refusing here is the guard that makes the grouping
+    // table's "deleting a row is the complete rollback" promise true: ungroup
+    // the fragments first (delete their `connector_instance_groups` rows,
+    // which restores them as independently-visible connections), then delete
+    // this row. Typed like the other delete refusals so the route maps it to
+    // 409 rather than a 500.
+    throw new ConnectorInstanceDeleteError(
+      "connection_is_grouping_canonical",
+      `Connection '${connectorInstanceId}' is the canonical identity for ${inboundFragmentCount} grouped fragment connection(s); deleting it would orphan their records on every summary surface. Ungroup those fragments first, then delete this connection.`,
+      { connectorInstanceId, inboundFragmentCount, ownerSubjectId }
     );
   }
   if (instance.sourceKind === "account" && instance.sourceBindingKey === DEFAULT_ACCOUNT_SOURCE_BINDING_KEY) {
@@ -694,13 +805,36 @@ function normalizeRecord(record: ConnectorInstanceUpsertRecord): NormalizedConne
   };
 }
 
+// Preloaded, request-scoped default: `mapInstance` never issues a per-row DB
+// round trip to resolve canonicalization. Callers with owner context (e.g.
+// `listOwnerVisibleIdentityPage`) pass an owner-preloaded map (see
+// `loadOwnerConnectorInstanceGroups{Sqlite,Postgres}`); every other call site
+// (point lookups, delete flows, other list surfaces) passes nothing and gets
+// this shared empty map, so `canonicalConnectorInstanceId` resolves to the
+// identity function unless a caller opts in.
+const EMPTY_CONNECTOR_INSTANCE_GROUPS: ReadonlyMap<string, ConnectorInstanceGroupRow> = new Map();
+
 function mapInstance(row: ConnectorInstanceRow | null): ConnectorInstance | null;
 function mapInstance(row: ConnectorInstanceRow): ConnectorInstance;
 function mapInstance(row: ConnectorInstanceRow | null): ConnectorInstance | null {
   if (!row) {
     return null;
   }
+  return mapInstanceWithGroups(row, EMPTY_CONNECTOR_INSTANCE_GROUPS);
+}
+
+// `mapInstance` variant that resolves `canonicalConnectorInstanceId` through a
+// preloaded owner group map, rather than the shared empty default. Kept as a
+// distinct name (not an optional second parameter on `mapInstance`) because
+// `mapInstance` is used bare as an `Array.prototype.map` callback throughout
+// this file, and `Array.map` would otherwise pass its numeric index as that
+// second argument.
+function mapInstanceWithGroups(
+  row: ConnectorInstanceRow,
+  groups: ReadonlyMap<string, ConnectorInstanceGroupRow>
+): ConnectorInstance {
   return {
+    canonicalConnectorInstanceId: resolveCanonicalConnectorInstanceId(row.connector_instance_id, groups),
     connectorId: row.connector_id,
     connectorInstanceId: row.connector_instance_id,
     createdAt: row.created_at,
@@ -1231,7 +1365,17 @@ export function createSqliteConnectorInstanceStore() {
       const instanceLookup = this.get(connectorInstanceId);
       const activeRuns = allowUnboundedReadAcknowledged<ActiveRunRow>(referenceQueries.controllerListActiveRuns);
       const hasActiveRun = activeRuns.some((run) => run.connector_instance_id === connectorInstanceId);
-      const instance = assertDeletableConnection(instanceLookup, { connectorInstanceId, hasActiveRun, ownerSubjectId });
+      const inboundFragmentCount = Number(
+        getOne<{ fragment_count: number }>(referenceQueries.connectorInstanceGroupsCountByCanonical, [
+          connectorInstanceId,
+        ])?.fragment_count ?? 0
+      );
+      const instance = assertDeletableConnection(instanceLookup, {
+        connectorInstanceId,
+        hasActiveRun,
+        inboundFragmentCount,
+        ownerSubjectId,
+      });
 
       const storageTarget = { connector_id: instance.connectorId, connector_instance_id: connectorInstanceId };
       const { streams } = await purge.enumerateStreams(storageTarget);
@@ -1519,7 +1663,39 @@ export function createSqliteConnectorInstanceStore() {
       // call site below.
       const rows = Array.from(iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(sql, params));
       const hasMore = rows.length > limit;
-      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+      const groups = loadOwnerConnectorInstanceGroupsSqlite(ownerSubjectId);
+      return { hasMore, rows: rows.slice(0, limit).map((row) => mapInstanceWithGroups(row, groups)) };
+    },
+
+    // Sources-page identity page. A pure recovered historical fragment is NO
+    // LONGER excluded here: it is classified `source_visibility: "archived"`
+    // by `deriveSourceVisibility` and rendered in the Sources list's own
+    // Archived group. Dropping it from the query made its records invisible
+    // on every summary surface, which violates the standing principle that
+    // no data known to the system may be invisible in the UI.
+    //
+    // Reading through the SAME unfiltered template `listOwnerVisibleIdentityPage`
+    // uses keeps `hasMore`/the next cursor authoritative over exactly the rows
+    // this page renders — the pre-LIMIT-filter property the previous dedicated
+    // template existed to guarantee. With no row excluded, the unfiltered
+    // template has that property by construction.
+    listSourcesVisibleIdentityPage(
+      ownerSubjectId: string,
+      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+    ): ConnectorInstanceIdentityPage {
+      assertConnectorIdentityPageLimit(limit);
+      const rows = Array.from(
+        iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(
+          SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL,
+          // Same cast the sibling unfiltered arm applies: the shared params
+          // helper's return type also allows the Postgres `unnest` array form,
+          // which the unfiltered shape never produces.
+          ownerVisibleIdentityPageParams(ownerSubjectId, null, after, limit) as (string | number | null)[]
+        )
+      );
+      const hasMore = rows.length > limit;
+      const groups = loadOwnerConnectorInstanceGroupsSqlite(ownerSubjectId);
+      return { hasMore, rows: rows.slice(0, limit).map((row) => mapInstanceWithGroups(row, groups)) };
     },
 
     // Promotes a temporary setup binding to its durable sibling kind.
@@ -1603,6 +1779,38 @@ export function createSqliteConnectorInstanceStore() {
       });
       return this.get(connectorInstanceId);
     },
+    /**
+     * Stamp a durable fact onto a connection's `source_binding` WITHOUT
+     * changing its status.
+     *
+     * Sibling of `updateStatus`'s `sourceBindingPatch`, for the case that
+     * write cannot serve: an owner acknowledgement that some data is
+     * permanently gone upstream does NOT revoke or pause the connection. The
+     * source keeps the records it holds and keeps collecting whatever is still
+     * reachable; only the explanation is new.
+     *
+     * The patch is MERGED (`json_patch`), never assigned, so stamping one key
+     * cannot clobber a sibling (`revocation_reason`, binding identity fields).
+     * Marks summary evidence dirty in the same transaction so the next
+     * projection re-reads the row — the same coupling `updateStatus` uses.
+     */
+    updateSourceBindingPatch(
+      connectorInstanceId: string,
+      { sourceBindingPatch, updatedAt }: { sourceBindingPatch: Record<string, unknown>; updatedAt: string }
+    ): ConnectorInstance | null {
+      writeTransaction(() => {
+        exec(referenceQueries.connectorInstancesUpdateSourceBindingPatch, [
+          updatedAt,
+          stableJson(sourceBindingPatch),
+          connectorInstanceId,
+        ]);
+        exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+          "connector instance source binding patched",
+          connectorInstanceId,
+        ]);
+      });
+      return this.get(connectorInstanceId);
+    },
 
     // Re-key one owner-session static-secret instance after a synchronous
     // provider probe proves its account identity. The connector instance id
@@ -1658,17 +1866,34 @@ export function createSqliteConnectorInstanceStore() {
         status,
         updatedAt,
         revokedAt = null,
+        sourceBindingPatch = null,
       }: {
         status: string;
         updatedAt: string;
         revokedAt?: string | null;
+        // Merged onto the row's existing `source_binding_json` in the SAME
+        // statement as the status write (`json_patch`), so a caller can
+        // record WHY a status changed (e.g. `{ revocation_reason:
+        // "ttl_expired" }`) at the moment of truth, never as a best-effort
+        // follow-up write. See `retireExpiredBrowserEnrollmentShells`.
+        sourceBindingPatch?: Record<string, unknown> | null;
       }
     ): ConnectorInstance | null {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
       writeTransaction(() => {
-        exec(referenceQueries.connectorInstancesUpdateStatus, [status, updatedAt, revokedAt, connectorInstanceId]);
+        if (sourceBindingPatch) {
+          exec(referenceQueries.connectorInstancesUpdateStatusWithBindingPatch, [
+            status,
+            updatedAt,
+            revokedAt,
+            stableJson(sourceBindingPatch),
+            connectorInstanceId,
+          ]);
+        } else {
+          exec(referenceQueries.connectorInstancesUpdateStatus, [status, updatedAt, revokedAt, connectorInstanceId]);
+        }
         exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
           `connector instance status changed to ${status}`,
           connectorInstanceId,
@@ -1841,6 +2066,33 @@ WHERE owner_subject_id = $1
   )
 ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
 LIMIT $9`;
+// Postgres mirror of `SQLITE_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL` —
+// same single added exclusion (grouped fragments), same derive-by-substitution
+// discipline so it cannot drift from its owner-visible parent.
+const GROUPED_FRAGMENT_EXCLUSION_POSTGRES = `
+  AND NOT EXISTS (
+    SELECT 1 FROM connector_instance_groups
+    WHERE connector_instance_groups.connector_instance_id = connector_instances.connector_instance_id
+      AND EXISTS (
+        SELECT 1 FROM connector_instances AS canonical_instances
+        WHERE canonical_instances.connector_instance_id = connector_instance_groups.canonical_connector_instance_id
+      )
+  )`;
+
+// Postgres mirror of `NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_SQLITE` — same
+// never-succeeded escape, Sources-page-only, for the same reason: a revoked
+// setup shell with no successful run is the owner's only record of the
+// attempt, and must not be as invisible on Sources as a promoted shell
+// correctly is everywhere else.
+const NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_POSTGRES =
+  "AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft') OR NOT EXISTS (\n    SELECT 1 FROM run_history\n    WHERE run_history.connector_instance_id = connector_instances.connector_instance_id\n      AND run_history.status = 'succeeded'\n  ))";
+
+export const POSTGRES_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL =
+  POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL.replace(
+    "AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))",
+    NEVER_SUCCEEDED_SETUP_SHELL_ESCAPE_POSTGRES
+  ).replace("\n  AND (\n    $2::text IS NULL", `${GROUPED_FRAGMENT_EXCLUSION_POSTGRES}\n  AND (\n    $2::text IS NULL`);
+
 export const POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL = `
 SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
        source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
@@ -1976,7 +2228,17 @@ export function createPostgresConnectorInstanceStore() {
         [connectorInstanceId]
       );
       const hasActiveRun = activeRuns.rows.length > 0;
-      const instance = assertDeletableConnection(instanceLookup, { connectorInstanceId, hasActiveRun, ownerSubjectId });
+      const inboundFragments = await postgresQuery<{ fragment_count: string }>(
+        "SELECT COUNT(*) AS fragment_count FROM connector_instance_groups WHERE canonical_connector_instance_id = $1",
+        [connectorInstanceId]
+      );
+      const inboundFragmentCount = Number(inboundFragments.rows[0]?.fragment_count ?? 0);
+      const instance = assertDeletableConnection(instanceLookup, {
+        connectorInstanceId,
+        hasActiveRun,
+        inboundFragmentCount,
+        ownerSubjectId,
+      });
 
       const storageTarget = { connector_id: instance.connectorId, connector_instance_id: connectorInstanceId };
       const { streams } = await purge.enumerateStreams(storageTarget);
@@ -2274,7 +2536,33 @@ export function createPostgresConnectorInstanceStore() {
       const result = await postgresQuery(sql, params);
       const rows = result.rows as ConnectorInstanceRow[];
       const hasMore = rows.length > limit;
-      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+      const groups = await loadOwnerConnectorInstanceGroupsPostgres(ownerSubjectId);
+      return { hasMore, rows: rows.slice(0, limit).map((row) => mapInstanceWithGroups(row, groups)) };
+    },
+
+    // Postgres mirror of the SQLite `listSourcesVisibleIdentityPage` arm
+    // above: a pure recovered historical fragment is classified
+    // `source_visibility: "archived"` and rendered in the Sources list's
+    // Archived group, not excluded from the query.
+    //
+    // Delegating also fixes a latent divergence: the dedicated template this
+    // replaces mapped rows with `mapInstance`, skipping the
+    // `mapInstanceWithGroups` grouping its own sibling applies, so a grouped
+    // connection could project differently on the Sources page than on every
+    // other surface.
+    async listSourcesVisibleIdentityPage(
+      ownerSubjectId: string,
+      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+    ): Promise<ConnectorInstanceIdentityPage> {
+      assertConnectorIdentityPageLimit(limit);
+      const result = await postgresQuery(
+        POSTGRES_SOURCES_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL,
+        ownerVisibleIdentityPageParams(ownerSubjectId, null, after, limit)
+      );
+      const rows = result.rows as ConnectorInstanceRow[];
+      const hasMore = rows.length > limit;
+      const groups = await loadOwnerConnectorInstanceGroupsPostgres(ownerSubjectId);
+      return { hasMore, rows: rows.slice(0, limit).map((row) => mapInstanceWithGroups(row, groups)) };
     },
 
     // Postgres mirror of the SQLite arm above — same `status = 'draft' AND
@@ -2365,6 +2653,26 @@ export function createPostgresConnectorInstanceStore() {
       );
       return await this.get(connectorInstanceId);
     },
+    /** Postgres mirror of the SQLite `updateSourceBindingPatch`; see its doc comment. */
+    async updateSourceBindingPatch(
+      connectorInstanceId: string,
+      { sourceBindingPatch, updatedAt }: { sourceBindingPatch: Record<string, unknown>; updatedAt: string }
+    ): Promise<ConnectorInstance | null> {
+      await withPostgresTransaction(
+        async (client: PostgresTransactionClient) => {
+          await client.query(
+            "UPDATE connector_instances SET updated_at = $1, source_binding_json = COALESCE(source_binding_json, '{}'::jsonb) || $2::jsonb WHERE connector_instance_id = $3",
+            [updatedAt, stableJson(sourceBindingPatch), connectorInstanceId]
+          );
+          await client.query(
+            `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+            ["connector instance source binding patched", connectorInstanceId]
+          );
+        },
+        { lockConnectorInstanceId: connectorInstanceId }
+      );
+      return await this.get(connectorInstanceId);
+    },
 
     // Postgres mirror of the SQLite static-secret identity claim. The binding
     // unique constraint is enforced by the database, not by a process-local
@@ -2395,7 +2703,7 @@ export function createPostgresConnectorInstanceStore() {
              WHERE connector_instance_id = $4
                AND owner_subject_id = $5
                AND connector_id = $6
-               AND status IN ('active', 'draft')`,
+               AND status IN ('active', 'draft', 'paused')`,
             [sourceBindingKey, stableJson(sourceBinding), updatedAt, connectorInstanceId, ownerSubjectId, connectorId]
           );
           if (result.rowCount) {
@@ -2416,10 +2724,16 @@ export function createPostgresConnectorInstanceStore() {
         status,
         updatedAt,
         revokedAt = null,
+        sourceBindingPatch = null,
       }: {
         status: string;
         updatedAt: string;
         revokedAt?: string | null;
+        // See the SQLite implementation's doc comment above for why this
+        // exists: merges onto `source_binding_json` in the same statement as
+        // the status write, so the caller can record WHY at the moment of
+        // truth.
+        sourceBindingPatch?: Record<string, unknown> | null;
       }
     ): Promise<ConnectorInstance | null> {
       if (!VALID_STATUSES.has(status)) {
@@ -2427,10 +2741,17 @@ export function createPostgresConnectorInstanceStore() {
       }
       await withPostgresTransaction(
         async (client: PostgresTransactionClient) => {
-          await client.query(
-            "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4",
-            [status, updatedAt, revokedAt, connectorInstanceId]
-          );
+          if (sourceBindingPatch) {
+            await client.query(
+              "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3, source_binding_json = COALESCE(source_binding_json, '{}'::jsonb) || $4::jsonb WHERE connector_instance_id = $5",
+              [status, updatedAt, revokedAt, stableJson(sourceBindingPatch), connectorInstanceId]
+            );
+          } else {
+            await client.query(
+              "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4",
+              [status, updatedAt, revokedAt, connectorInstanceId]
+            );
+          }
           await client.query(
             `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
             [`connector instance status changed to ${status}`, connectorInstanceId]

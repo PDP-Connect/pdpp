@@ -26,6 +26,7 @@
  * Skills/commands live under ~/.claude (overridable via CLAUDE_CODE_HOME).
  */
 
+import { createHash } from "node:crypto";
 import { createReadStream, type Dirent, type Stats, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -45,6 +46,7 @@ import {
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import {
   isLocalJsonlPhysicalCursorV1,
+  LocalJsonlMalformedLineError,
   type LocalJsonlScanResult,
   scanLocalJsonl,
 } from "../../src/local-jsonl-cursor.ts";
@@ -519,10 +521,11 @@ async function readFilesRecursively(
 ): Promise<Array<{ fullPath: string; relPath: string }>> {
   const out: Array<{ fullPath: string; relPath: string }> = [];
   const walk = async (dir: string, prefix: string): Promise<void> => {
-    let items: Dirent[];
-    try {
-      items = await readdir(dir, { withFileTypes: true });
-    } catch {
+    // Fail closed on an unreadable directory — see `readLocalDirOrFailClosed`.
+    // A missing directory (ENOENT) is honestly empty; an unreadable one is a
+    // source-boundary failure and must never be reported as "no files".
+    const items = await readLocalDirOrFailClosed(dir);
+    if (items === null) {
       return;
     }
     for (const ent of items.sort((a, b) => a.name.localeCompare(b.name))) {
@@ -622,14 +625,77 @@ interface EmitSkillsArgs {
   requested: Map<string, StreamScope>;
 }
 
-function markFileMtimeAndShouldSkip(
+/**
+ * Read a local directory, distinguishing legitimate absence from failure.
+ *
+ * `null` means the directory genuinely does not exist (ENOENT) — an owner who
+ * has no `~/.claude/skills` truly has no skills, and an empty enumeration is
+ * the honest answer.
+ *
+ * Any OTHER error (EACCES, EPERM, ENOTDIR, EIO) means the enumeration did not
+ * happen. The filesystem is this connector's entire source of truth, so an
+ * unreadable directory is a source-boundary failure, not evidence of emptiness.
+ * It THROWS rather than returning empty.
+ *
+ * WHY: reproduced before this guard — a `chmod 000` on a skills directory
+ * holding a real skill produced 0 records, ZERO skips, no error, and a STATE
+ * checkpoint carrying an empty cursor. The run silently recorded "this owner
+ * has no skills" as fact. Never treat an unreadable directory as "zero files,
+ * complete". This mirrors codex's `listIfExists`, which already fails closed.
+ */
+async function readLocalDirOrFailClosed(dir: string): Promise<Dirent[] | null> {
+  try {
+    return await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Content-hash gate for the markdown streams (skills, slash_commands,
+ * memory_notes).
+ *
+ * These files are small and already read in full to build their record, so
+ * hashing the bytes we just read costs nothing extra and is strictly stronger
+ * than the mtime equality this replaces.
+ *
+ * WHY mtime alone was wrong: mtime is owner-controlled metadata, not a content
+ * fact. `git checkout` and `rsync --times` both restore a previous mtime onto
+ * genuinely different bytes, and the old gate then skipped the file forever —
+ * reproduced directly: a SKILL.md whose body changed completely, with its mtime
+ * restored, emitted zero records on the next run. Silent data loss.
+ *
+ * The stored value stays a `number` so the existing `file_mtimes` cursor shape
+ * is untouched: a 52-bit prefix of the SHA-256 is an exact integer in a double
+ * and never collides in practice at these file counts. A cursor written by the
+ * old mtime-based build simply mismatches the new hash once and the file is
+ * re-emitted — a one-time re-read, never a miss.
+ */
+function contentGateValue(text: string): number {
+  const digest = createHash("sha256").update(text, "utf8").digest();
+  // Take 52 bits — the largest integer width a JS double holds exactly — by
+  // dividing rather than shifting (Biome bans bitwise operators here).
+  // `2n ** 12n` drops the low 12 bits of the leading 64.
+  return Number(digest.readBigUInt64BE(0) / 4096n);
+}
+
+/**
+ * Record this file's content gate and report whether it is unchanged since the
+ * cursor. Callers MUST have the file's text already — the gate is a fact about
+ * bytes, never about metadata.
+ */
+function markFileContentAndShouldSkip(
   fileMtimes: Record<string, number>,
   newMtimes: Record<string, number>,
   path: string,
-  mtime: number
+  text: string
 ): boolean {
-  newMtimes[path] = mtime;
-  return fileMtimes[path] === mtime;
+  const gate = contentGateValue(text);
+  newMtimes[path] = gate;
+  return fileMtimes[path] === gate;
 }
 
 async function readBoundedUtf8(path: string): Promise<string | null> {
@@ -642,10 +708,8 @@ async function emitSkills({ claudeHome, requested, emitRecord, fileMtimes, newMt
     return;
   }
   const skillsDir = join(claudeHome, "skills");
-  let entries: Dirent[];
-  try {
-    entries = await readdir(skillsDir, { withFileTypes: true });
-  } catch {
+  const entries = await readLocalDirOrFailClosed(skillsDir);
+  if (entries === null) {
     return;
   }
   for (const ent of entries) {
@@ -663,15 +727,18 @@ async function emitSkills({ claudeHome, requested, emitRecord, fileMtimes, newMt
     } catch {
       continue;
     }
-    if (markFileMtimeAndShouldSkip(fileMtimes, newMtimes, skillPath, st.mtimeMs)) {
-      continue;
-    }
+    // Read BEFORE gating: the gate is a fact about content, so the bytes must
+    // be in hand to compute it. These files are small and were already read to
+    // build the record, so this reorder costs no extra I/O.
     try {
       raw = await readBoundedUtf8(skillPath);
     } catch {
       continue;
     }
     if (raw === null) {
+      continue;
+    }
+    if (markFileContentAndShouldSkip(fileMtimes, newMtimes, skillPath, raw)) {
       continue;
     }
     const { frontmatter, body } = parseFrontmatter(raw);
@@ -702,15 +769,16 @@ async function processSlashCommandFile(args: ProcessSlashCommandArgs): Promise<v
   } catch {
     return;
   }
-  if (markFileMtimeAndShouldSkip(args.fileMtimes, args.newMtimes, args.full, st.mtimeMs)) {
-    return;
-  }
+  // Content gate, not mtime — see `markFileContentAndShouldSkip`. Read first.
   try {
     raw = await readBoundedUtf8(args.full);
   } catch {
     return;
   }
   if (raw === null) {
+    return;
+  }
+  if (markFileContentAndShouldSkip(args.fileMtimes, args.newMtimes, args.full, raw)) {
     return;
   }
   const { frontmatter, body } = parseFrontmatter(raw);
@@ -734,10 +802,11 @@ async function emitSlashCommands({
   }
   const commandsDir = join(claudeHome, "commands");
   const walk = async (dir: string, prefix: string): Promise<void> => {
-    let items: Dirent[];
-    try {
-      items = await readdir(dir, { withFileTypes: true });
-    } catch {
+    // Fail closed on an unreadable directory — see `readLocalDirOrFailClosed`.
+    // A missing directory (ENOENT) is honestly empty; an unreadable one is a
+    // source-boundary failure and must never be reported as "no files".
+    const items = await readLocalDirOrFailClosed(dir);
+    if (items === null) {
       return;
     }
     for (const ent of items) {
@@ -793,15 +862,16 @@ async function emitProjectMemoryNotes({
     } catch {
       continue;
     }
-    if (markFileMtimeAndShouldSkip(fileMtimes, newMtimes, fullPath, st.mtimeMs)) {
-      continue;
-    }
+    // Content gate, not mtime — see `markFileContentAndShouldSkip`. Read first.
     try {
       raw = await readBoundedUtf8(fullPath);
     } catch {
       continue;
     }
     if (raw === null) {
+      continue;
+    }
+    if (markFileContentAndShouldSkip(fileMtimes, newMtimes, fullPath, raw)) {
       continue;
     }
     const { frontmatter, body } = parseFrontmatter(raw);
@@ -1148,15 +1218,39 @@ function cloneObservations(observation: JsonlObservations, forcedSessionId: stri
   return { ...observation, sessionId: forcedSessionId ?? observation.sessionId };
 }
 
-function parseJsonlLine(line: Buffer): JsonlObject | null {
+function parseJsonlLine(line: Buffer, committedOffsetBytes: number): JsonlObject | null {
   const text = line.toString("utf8");
   if (!text.trim()) {
     return null;
   }
   try {
     return JSON.parse(text) as JsonlObject;
-  } catch {
-    return null;
+  } catch (error) {
+    // A complete malformed line is a source gap. Throwing prevents the
+    // physical cursor from being returned past this line; the collect caller
+    // reports the unresolved stream gap instead of silently consuming it.
+    throw new LocalJsonlMalformedLineError(committedOffsetBytes, { cause: error });
+  }
+}
+
+async function reportMalformedJsonlGap(input: {
+  error: unknown;
+  reportStreamFailure:
+    | ((stream: string, message: string, options?: { retryable?: boolean }) => Promise<void>)
+    | undefined;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  if (!(input.error instanceof LocalJsonlMalformedLineError && input.reportStreamFailure)) {
+    return;
+  }
+  for (const stream of ["sessions", "messages", "attachments"] as const) {
+    if (input.requested.has(stream)) {
+      await input.reportStreamFailure(
+        stream,
+        "Claude Code contains a malformed complete JSONL line; the source cursor was not advanced past it",
+        { retryable: false }
+      );
+    }
   }
 }
 
@@ -1327,8 +1421,8 @@ async function scanSessionSource(input: {
   const result = await scanLocalJsonl({
     path: input.source.path,
     prior: input.cursor,
-    onLine: async (line) => {
-      const obj = parseJsonlLine(line);
+    onLine: async (line, committedOffsetBytes) => {
+      const obj = parseJsonlLine(line, committedOffsetBytes);
       if (!obj) {
         return;
       }
@@ -1380,8 +1474,8 @@ async function scanChildSource(input: {
   const result = await scanLocalJsonl({
     path: input.source.path,
     prior: input.cursor,
-    onLine: async (line) => {
-      const obj = parseJsonlLine(line);
+    onLine: async (line, committedOffsetBytes) => {
+      const obj = parseJsonlLine(line, committedOffsetBytes);
       if (!obj) {
         return;
       }
@@ -1601,7 +1695,7 @@ async function emitGatedInventoryStream(input: {
       await input.emitRecord(input.stream, record);
     }
   }
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   const inventoryCursor: Record<string, unknown> = { fetched_at: nowIso() };
   if (cursor.size() > 0) {
     inventoryCursor.fingerprints = cursor.toState();
@@ -1665,6 +1759,12 @@ async function runSkillsAndCommands(
     newSlashCommandMtimes: Record<string, number>;
   }
 ): Promise<void> {
+  // A scan that FAILED must not checkpoint. The cursor is a claim about what
+  // the source contained; writing one after a failed enumeration persists
+  // "this owner has no skills" as fact and suppresses the files forever on
+  // subsequent runs. Track each scan's outcome and gate its STATE on success.
+  let skillsScanned = true;
+  let slashCommandsScanned = true;
   try {
     await emitSkills({
       claudeHome,
@@ -1674,6 +1774,7 @@ async function runSkillsAndCommands(
       newMtimes: state.newSkillsMtimes,
     });
   } catch {
+    skillsScanned = false;
     await emit({ type: "PROGRESS", message: "Claude Code phase=index pass=index stream=skills scan_skipped=true" });
   }
   try {
@@ -1685,24 +1786,43 @@ async function runSkillsAndCommands(
       newMtimes: state.newSlashCommandMtimes,
     });
   } catch {
+    slashCommandsScanned = false;
     await emit({
       type: "PROGRESS",
       message: "Claude Code phase=index pass=index stream=slash_commands scan_skipped=true",
     });
   }
   if (requested.has("skills")) {
-    await emit({
-      type: "STATE",
-      stream: "skills",
-      cursor: { file_mtimes: state.newSkillsMtimes, fetched_at: nowIso() },
-    });
+    if (skillsScanned) {
+      await emit({
+        type: "STATE",
+        stream: "skills",
+        cursor: { file_mtimes: state.newSkillsMtimes, fetched_at: nowIso() },
+      });
+    } else {
+      await emit({
+        type: "SKIP_RESULT",
+        stream: "skills",
+        reason: "source_unreadable",
+        message: "The Claude Code skills directory could not be enumerated, so its contents are unknown for this run",
+      });
+    }
   }
   if (requested.has("slash_commands")) {
-    await emit({
-      type: "STATE",
-      stream: "slash_commands",
-      cursor: { file_mtimes: state.newSlashCommandMtimes, fetched_at: nowIso() },
-    });
+    if (slashCommandsScanned) {
+      await emit({
+        type: "STATE",
+        stream: "slash_commands",
+        cursor: { file_mtimes: state.newSlashCommandMtimes, fetched_at: nowIso() },
+      });
+    } else {
+      await emit({
+        type: "SKIP_RESULT",
+        stream: "slash_commands",
+        reason: "source_unreadable",
+        message: "The Claude Code commands directory could not be enumerated, so its contents are unknown for this run",
+      });
+    }
   }
 }
 
@@ -1747,7 +1867,7 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "claude_code",
     validateRecord,
-    async collect({ state, requested, emit, emitRecord }) {
+    async collect({ state, requested, emit, emitRecord, reportStreamFailure }) {
       const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
       const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
       // Build the source inventory and flush durable coverage diagnostics
@@ -1914,13 +2034,19 @@ if (isMainModule(import.meta.url)) {
           );
           const changedLegacySessionIds = new Set<string>();
           for (const source of sources) {
-            const scanned = await scanSessionSource({
-              cursor: rebuildAll ? undefined : priorSessionCursors[source.path],
-              projectDir: source.projectDir,
-              sessionAccumulators,
-              source,
-              telemetry,
-            });
+            let scanned: Awaited<ReturnType<typeof scanSessionSource>>;
+            try {
+              scanned = await scanSessionSource({
+                cursor: rebuildAll ? undefined : priorSessionCursors[source.path],
+                projectDir: source.projectDir,
+                sessionAccumulators,
+                source,
+                telemetry,
+              });
+            } catch (error) {
+              await reportMalformedJsonlGap({ error, reportStreamFailure, requested });
+              throw error;
+            }
             nextSessionCursors[source.path] = scanned.cursor;
             newSessionFileMtimes[source.path] = scanned.cursor.observed_mtime_ms;
             rebuildAll ||= scanned.rebuilt;
@@ -2023,14 +2149,20 @@ if (isMainModule(import.meta.url)) {
         if (requested.has("messages") || requested.has("attachments")) {
           for (const source of sources) {
             const candidateLegacyBaseline = messageUsesLegacyJsonlMtimes && messageLegacyJsonlMtimes.has(source.path);
-            let scanned = await scanChildSource({
-              cursor: priorChildCursors[source.path],
-              emitRecord: countingEmitRecord,
-              emitRecords: !candidateLegacyBaseline,
-              requested,
-              source,
-              telemetry,
-            });
+            let scanned: Awaited<ReturnType<typeof scanChildSource>>;
+            try {
+              scanned = await scanChildSource({
+                cursor: priorChildCursors[source.path],
+                emitRecord: countingEmitRecord,
+                emitRecords: !candidateLegacyBaseline,
+                requested,
+                source,
+                telemetry,
+              });
+            } catch (error) {
+              await reportMalformedJsonlGap({ error, reportStreamFailure, requested });
+              throw error;
+            }
             // The scan, not a pre-scan stat, decides whether the old mtime
             // actually describes the bytes that were cursorized. A change in
             // the small interval before the open snapshot is replayed from
@@ -2039,14 +2171,19 @@ if (isMainModule(import.meta.url)) {
               candidateLegacyBaseline &&
               !matchesLegacyJsonlMtime(messageLegacyJsonlMtimes, source.path, scanned.cursor.observed_mtime_ms)
             ) {
-              scanned = await scanChildSource({
-                cursor: undefined,
-                emitRecord: countingEmitRecord,
-                emitRecords: true,
-                requested,
-                source,
-                telemetry,
-              });
+              try {
+                scanned = await scanChildSource({
+                  cursor: undefined,
+                  emitRecord: countingEmitRecord,
+                  emitRecords: true,
+                  requested,
+                  source,
+                  telemetry,
+                });
+              } catch (error) {
+                await reportMalformedJsonlGap({ error, reportStreamFailure, requested });
+                throw error;
+              }
             }
             if (requested.has("messages")) {
               derivedCounts.messages.examined += scanned.messagesExamined;

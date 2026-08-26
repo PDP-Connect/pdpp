@@ -197,22 +197,85 @@ export function voteRecord(c: RedditChild, fetchedAt: string): VoteRecord {
 
 // ─── Pagination helpers ─────────────────────────────────────────────────
 
-/** Append children newer than the cursor into `out`. Reddit listings are
- *  newest-first, so once we hit a child at or before the cursor we're
- *  done with the stream — return true to signal "stop paging". */
+/**
+ * How a listing endpoint orders its children. This is a per-stream property
+ * of Reddit, not a global one, and getting it wrong silently truncates
+ * history — see `appendNewChildren`.
+ *
+ *   "created"  — ordered by the item's own `created_utc`, newest first.
+ *                True for `submitted` and `comments`: the listing is the
+ *                user's authorship timeline, so creation order IS listing
+ *                order and an early stop at the cursor is sound.
+ *
+ *   "action"   — ordered by when the OWNER acted on the item (upvoted,
+ *                saved, downvoted, hid), newest action first. True for
+ *                `upvoted`/`saved`/`downvoted`/`hidden`. The item's
+ *                `created_utc` is unrelated to its position: upvoting a
+ *                2015 post today puts a 2015 `created_utc` at rank 1.
+ */
+export type RedditListingOrder = "action" | "created";
+
+/**
+ * Append children newer than the cursor into `out`, returning true to signal
+ * "stop paging".
+ *
+ * The stop rule depends on {@link RedditListingOrder}:
+ *
+ * For `created`-ordered listings the first child at or below the cursor
+ * proves every later child is older too (the listing is sorted by the very
+ * field being compared), so stopping there is correct and keeps incremental
+ * runs cheap.
+ *
+ * For `action`-ordered listings that inference is invalid, and acting on it
+ * loses data. `created_utc` is NOT the sort key, so a single old item near
+ * the top says nothing about what follows it. The pre-fix code stopped on the
+ * first such item, which for `upvoted` meant halting on item one as soon as
+ * the owner upvoted anything older than the stored high-water mark — the
+ * observed defect. These streams therefore always walk the full listing and
+ * rely on the caller deduping by fullname (`t3_`/`t1_` ids are stable), which
+ * is cheap because the walk is bounded by Reddit's own end-of-listing.
+ */
 export function appendNewChildren(
   children: readonly RedditChild[],
   sinceEpochUtc: number | null,
-  out: RedditChild[]
+  out: RedditChild[],
+  order: RedditListingOrder = "created"
 ): boolean {
   for (const c of children) {
     const created = Number(c?.data?.created_utc ?? 0);
-    if (sinceEpochUtc && created <= sinceEpochUtc) {
+    if (order === "created" && sinceEpochUtc && created <= sinceEpochUtc) {
       return true;
     }
     out.push(c);
   }
   return false;
+}
+
+/**
+ * Drop children already present by Reddit fullname (`t3_…`/`t1_…`), keeping
+ * first-seen order. Fullnames are stable per item, so this is a safe identity
+ * for the full-walk `action`-ordered streams, where the same item can appear
+ * across runs and must not be double-counted. Children without a usable
+ * fullname are kept rather than collapsed — dropping them would silently lose
+ * data on a shape Reddit has not been observed to emit, and downstream
+ * validation is the right place to judge them.
+ */
+export function dedupeByFullname(children: readonly RedditChild[]): RedditChild[] {
+  const seen = new Set<string>();
+  const out: RedditChild[] = [];
+  for (const c of children) {
+    const name = typeof c?.data?.name === "string" ? c.data.name : "";
+    if (!name) {
+      out.push(c);
+      continue;
+    }
+    if (seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    out.push(c);
+  }
+  return out;
 }
 
 /** Build the `?after=…&limit=100` path segment given an endpoint and

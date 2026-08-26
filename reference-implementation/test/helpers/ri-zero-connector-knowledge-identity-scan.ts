@@ -304,7 +304,21 @@ interface LiteralPosition {
  * or a value written into a proven dispatch table, all of which are
  * assertions and remain flagged unconditionally. Reviewed per entry: no RI
  * production file uses the name to mean the colliding connector. */
-const GENERIC_KEY_NAME_VOCABULARY_COLLISIONS = new Set(["meta"]);
+const GENERIC_KEY_NAME_VOCABULARY_COLLISIONS = new Set([
+  "meta",
+  // `signal` collides with the Signal connector, but every RI production use
+  // is the web-standard `AbortSignal` cancellation parameter -- destructured
+  // as `{ signal }: { signal?: AbortSignal }` or defaulted as `signal = null`
+  // in an options object. That is a slot NAME for a cancellation token, never
+  // an assertion about a connector's identity, and it long predates the
+  // Signal connector's manifest. Verified by reading every flagged site:
+  // server/index.ts, server/search.ts, server/search-semantic.ts,
+  // server/retrieval-startup-backfill.ts, server/dataset-summary-read-model.ts
+  // -- all AbortSignal plumbing. A real `"signal"` identity assertion (a
+  // comparison, a membership check, or a value in a proven dispatch table) is
+  // still flagged unconditionally; this carve-out only covers key declarations.
+  "signal",
+]);
 
 /** `ObjectExpression`/`ObjectPattern` property KEY as a literal position, or
  * null if computed (a runtime expression, unresolvable by design) or absent.

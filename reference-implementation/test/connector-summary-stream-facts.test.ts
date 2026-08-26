@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-
+import { buildRecoveryGapClosureFacts } from "../runtime/connector-gap-bounding.ts";
 import {
   foldConnectorSummaryStreamFacts,
   getConnectorSummaryEvidence,
@@ -31,6 +31,7 @@ interface StoredStreamFactEntry {
     collected: number;
     checkpoint: string;
     considered?: number;
+    covered?: number;
     skipped?: { reason: string };
   };
   run_id: string | null;
@@ -82,6 +83,7 @@ interface TerminalEventStreamFact {
   checkpoint: string;
   collected: number;
   considered?: number;
+  covered?: number;
   skipped?: { reason: string };
   stream: string;
 }
@@ -90,6 +92,7 @@ interface SeedTerminalEventOptions {
   connectorInstanceId?: string | null;
   eventType?: string;
   occurredAt: string;
+  recoveryGapClosure?: { recovered_count: number; stream: string }[];
   recoveryOnly?: boolean;
   runId: string;
   streams?: TerminalEventStreamFact[];
@@ -100,12 +103,16 @@ interface SeedTerminalEventOptions {
  * collection_facts block at all — the shape a real recovery-only run's
  * terminal event actually has (buildCollectionFacts returns null
  * unconditionally for a recovery-only run; see connector-gap-bounding.ts).
+ * `recoveryGapClosure`, when given, seeds the DISTINCT
+ * `recovery_gap_closure_facts` block a recovery-only run's terminal event
+ * carries instead (see buildRecoveryGapClosureFacts).
  */
 function seedTerminalEvent({
   runId,
   occurredAt,
   connectorInstanceId = null,
   streams,
+  recoveryGapClosure,
   eventType = "run.completed",
   recoveryOnly = false,
 }: SeedTerminalEventOptions) {
@@ -114,6 +121,11 @@ function seedTerminalEvent({
     ...(connectorInstanceId ? { connection_id: connectorInstanceId, connector_instance_id: connectorInstanceId } : {}),
     ...(recoveryOnly ? { recovery_only: true } : {}),
     ...(streams === undefined ? {} : { collection_facts: { reference_only: true, schema_version: 1, streams } }),
+    ...(recoveryGapClosure === undefined
+      ? {}
+      : {
+          recovery_gap_closure_facts: { reference_only: true, schema_version: 1, streams: recoveryGapClosure },
+        }),
   };
   getDb()
     .prepare(
@@ -932,5 +944,690 @@ test("terminal CAS: a pass with a stale baseline cannot regress an already-curre
       seq2,
       "the checkpoint converges back to seq2, never getting stuck at the rewound seq1"
     );
+  });
+});
+
+// Regression guard for the permanent-exclusion bug fixed alongside
+// `rowNeedsFoldParticipation`'s zero-checkpoint historical carve-out
+// (5bd5b665c): that carve-out excludes a `terminal_facts_historical` row with
+// a zero checkpoint from fold participation entirely, on the theory that it
+// "re-enters only when ... its checkpoint advances past zero." But nothing
+// besides the fold's OWN write ever advances `stream_facts_event_seq`, and
+// that write floored the checkpoint at its stale prior value (0) instead of
+// the round's own high-water for exactly this refused branch — so a row that
+// reaches checkpoint 0 + historical can never re-participate, never gets its
+// checkpoint written again, and is excluded forever, even once a genuinely
+// NEW, correctly-attributed terminal event lands for it. Fixed by always
+// advancing the write to `participantWriteSeq` (this round's own converged
+// high-water), mirroring how `manifest_generation_changed` rows are already
+// stamped with `terminal_facts_generation_boundary` at the moment of refusal
+// (`connector-summary-evidence-engine.ts`'s `terminalFactsForRepair`).
+test("fold: a zero-checkpoint historical row recovers when a genuinely new correctly-attributed terminal event lands, and does not re-participate on silent repeat passes", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovers", "imessage");
+    // The connection's manifest generation has already advanced to 1 (a
+    // manifest re-registration bumped it — auth.ts
+    // persistManifestAndAdvanceGenerations) BEFORE any terminal event is
+    // observed. `rebuildConnectorSummaryEvidence` syncs the evidence row's
+    // own `manifest_generation` column (what `seedFoldState` reads into
+    // `generationByInstance`) to match.
+    getDb()
+      .prepare("UPDATE connector_instances SET manifest_generation = 1 WHERE connector_instance_id = ?")
+      .run("cin_recovers");
+    await rebuildConnectorSummaryEvidence();
+    const evidenceGeneration = getDb()
+      .prepare("SELECT manifest_generation FROM connector_summary_evidence WHERE connector_instance_id = ?")
+      .get<{ manifest_generation: number }>("cin_recovers");
+    assert.equal(evidenceGeneration?.manifest_generation, 1, "premise: evidence generation tracks the instance");
+
+    // A legacy/out-of-band terminal event lands explicitly stamped at the
+    // OLD generation (0) — the exact shape a legacy or unattributed
+    // terminal event has per design.md "Health boundary": "Legacy or
+    // unattributed terminal events are historical, never current proof."
+    // The shared `seedTerminalEvent` helper leaves `manifest_generation`
+    // NULL so the `stamp_terminal_manifest_generation` trigger auto-stamps
+    // the connection's CURRENT generation; this event instead supplies an
+    // explicit stale value to model one that predates the transition.
+    seededEventSeq += 1;
+    getDb()
+      .prepare(
+        `INSERT INTO spine_events(
+           event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+           connector_instance_id, manifest_generation
+         )
+         VALUES(?, ?, 'run.completed', ?, ?, 'test', ?, 'runtime', 'test-connector', 'run', ?, 'succeeded', ?, ?, '1', ?, 0)`
+      )
+      .run(
+        `evt_${seededEventSeq}`,
+        seededEventSeq,
+        "2026-06-17T10:00:00.000Z",
+        "2026-06-17T10:00:00.000Z",
+        `trace_${seededEventSeq}`,
+        "run_stale_generation",
+        "run_stale_generation",
+        JSON.stringify({
+          collection_facts: {
+            reference_only: true,
+            schema_version: 1,
+            streams: [{ checkpoint: "committed", collected: 3, stream: "messages" }],
+          },
+          connection_id: "cin_recovers",
+          connector_instance_id: "cin_recovers",
+        }),
+        "cin_recovers"
+      );
+
+    const firstPass = await foldConnectorSummaryStreamFacts(["cin_recovers"]);
+    assert.equal(firstPass.participants, 1, "the row participates on its first pass after the generation bump");
+    assert.equal(firstPass.refused, 1, "the generation-mismatched event is refused, not folded as proof");
+
+    const refused = getDb()
+      .prepare(
+        "SELECT terminal_facts_state, terminal_facts_reason_code, stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      )
+      .get<{
+        stream_facts_event_seq: number | null;
+        terminal_facts_reason_code: string | null;
+        terminal_facts_state: string;
+      }>("cin_recovers");
+    assert.ok(refused, "evidence row exists after the refused pass");
+    assert.equal(refused.terminal_facts_state, "stale");
+    assert.equal(refused.terminal_facts_reason_code, "terminal_facts_historical");
+
+    // Property (b): a repeat pass with NOTHING new must not re-participate
+    // (the starvation guard `rowNeedsFoldParticipation` exists for).
+    const repeatPass = await foldConnectorSummaryStreamFacts(["cin_recovers"]);
+    assert.equal(
+      repeatPass.participants,
+      0,
+      "a historical row must not rejoin every pass when nothing new has arrived (starvation guard)"
+    );
+
+    // Property (a): a genuinely NEW terminal event, correctly attributed to
+    // the connection's now-current generation (1), must make the row
+    // recover.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovers",
+      occurredAt: "2026-06-17T11:00:00.000Z",
+      runId: "run_current_generation",
+      streams: [{ checkpoint: "committed", collected: 7, stream: "messages" }],
+    });
+    const recoveryPass = await foldConnectorSummaryStreamFacts(["cin_recovers"]);
+    assert.equal(
+      recoveryPass.participants,
+      1,
+      "the row re-enters the fold once a genuinely new terminal event lands for it"
+    );
+    assert.equal(recoveryPass.folded, 1, "the new correctly-attributed event is folded as proof");
+
+    const recovered = getDb()
+      .prepare(
+        "SELECT terminal_facts_state, terminal_facts_reason_code, stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      )
+      .get<{
+        stream_facts_event_seq: number | null;
+        terminal_facts_reason_code: string | null;
+        terminal_facts_state: string;
+      }>("cin_recovers");
+    assert.ok(recovered, "evidence row exists after recovery");
+    assert.equal(recovered.terminal_facts_state, "current", "the row recovers to current, not stuck historical");
+    assert.equal(recovered.terminal_facts_reason_code, null);
+    const recoveredFacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovers")), "messages");
+    assert.equal(recoveredFacts.run_id, "run_current_generation", "the new event's fact is what folded in");
+    assert.equal(recoveredFacts.fact.collected, 7);
+  });
+});
+
+// Production-shaped regression (2026-08-18): the sibling test above only
+// covers a row that reaches checkpoint 0 THROUGH a live refusal under the
+// CURRENT write path — but the current write path (078b72e3a) always stamps
+// a refused row's checkpoint to that round's own high-water, so a row
+// refused today never actually stays at 0. It only proves the recovery
+// signal (a genuinely new, correctly-attributed event) reaches a row whose
+// checkpoint is already off zero.
+//
+// A row that reached checkpoint 0 BEFORE 078b72e3a shipped (the old write
+// path froze the checkpoint at its stale prior value on refusal instead of
+// advancing it) has no such live path back to a nonzero checkpoint: it is
+// seeded here directly in that durable shape, matching production rows
+// observed 2026-08-17 (cin_316b0e196d55bc14a70804fa, cin_a6aa0550ed70c8ce6bd73170,
+// cin_50f5bf4b7ecbc7acd6f4c254), all sitting at `stream_facts_event_seq = 0`
+// with `terminal_facts_reason_code = 'terminal_facts_historical'` roughly
+// 1.46M events behind the fleet high-water.
+//
+// Confirmed live on production: setting `dirty = 1` directly on those three
+// rows did NOT recover them -- the dirty flag was consumed (cleared) by the
+// unrelated repair/reconcile sweep within ~75s, but `terminal_fold_participants`
+// stayed 0 on every fold pass and `stream_facts_event_seq` never left 0. This
+// test reproduces that exact shape and proves `dirty` now genuinely reopens
+// the carve-out (`rowNeedsFoldParticipation`, connector-summary-read-model.ts),
+// and that the reopened row converges and then goes durably quiet again --
+// not a return to the old "participate every pass forever" starvation this
+// carve-out exists to prevent.
+test("fold: an ALREADY-STRANDED checkpoint-0 historical row (production shape) recovers once dirtied, then goes quiet again", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_stranded_active", "imessage");
+    // A large, unrelated fleet-wide event log has moved far ahead of this
+    // row -- modeled with a sibling connection's own terminal history, the
+    // same shared page-wide `maxSeq` the real sweep computes across the
+    // whole fleet.
+    seedInstance("cin_unrelated_busy", "gmail");
+    await rebuildConnectorSummaryEvidence();
+    for (let i = 0; i < 25; i += 1) {
+      seedTerminalEvent({
+        connectorInstanceId: "cin_unrelated_busy",
+        occurredAt: `2026-06-17T09:${String(i).padStart(2, "0")}:00.000Z`,
+        runId: `run_unrelated_${i}`,
+        streams: [{ checkpoint: "committed", collected: i, stream: "messages" }],
+      });
+    }
+    await foldConnectorSummaryStreamFacts(["cin_unrelated_busy"]);
+    const unrelatedHighWater = getDb()
+      .prepare("SELECT MAX(event_seq) AS max_seq FROM spine_events")
+      .get<{ max_seq: number }>();
+    assert.ok(unrelatedHighWater && unrelatedHighWater.max_seq >= 25, "premise: a large fleet-wide log exists ahead");
+
+    // A `terminal_facts_historical` row always has AT LEAST ONE terminal
+    // event genuinely attributed to it -- the very event that was refused
+    // as generation-mismatched. `readMaxTerminalEventSeq`/
+    // `readMaxTerminalEventSeqByInstance` are scoped strictly to this one
+    // connection's own `connector_instance_id`, so a row with literally
+    // ZERO attributable events of its own (unlike production) would make
+    // this per-instance `maxSeq` resolve to NULL and never converge --
+    // that would be a test-fixture artifact, not the real stranded shape.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_stranded_active",
+      occurredAt: "2026-06-17T08:00:00.000Z",
+      runId: "run_stranded_original_refusal",
+      streams: [{ checkpoint: "committed", collected: 1, stream: "messages" }],
+    });
+
+    // Seed the STRANDED shape directly -- checkpoint 0, historical, dirty
+    // cleared -- the durable state a row reaches after that refused
+    // generation-mismatched event under the OLD (pre-078b72e3a) write path,
+    // or any row that reached this state before that fix deployed.
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET terminal_facts_state = 'stale',
+                terminal_facts_reason_code = 'terminal_facts_historical',
+                stream_facts_event_seq = 0,
+                stream_latest_facts_json = NULL,
+                dirty = 0
+          WHERE connector_instance_id = ?`
+      )
+      .run("cin_stranded_active");
+
+    // Confirm the stranded row is genuinely excluded while clean -- the
+    // documented starvation guard must still hold before any recovery
+    // signal arrives.
+    const beforeDirty = await foldConnectorSummaryStreamFacts(["cin_stranded_active"]);
+    assert.equal(beforeDirty.participants, 0, "a clean stranded row must not participate (starvation guard)");
+    const stillStranded = getDb()
+      .prepare("SELECT stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?")
+      .get<{ stream_facts_event_seq: number | null }>("cin_stranded_active");
+    assert.equal(stillStranded?.stream_facts_event_seq, 0, "premise: still stranded at checkpoint 0 while clean");
+
+    // The exact recovery action from the live incident: mark the row dirty
+    // (an operator/maintenance dirty-mark, or any changed record write for
+    // this connection -- the same signal `markConnectorSummaryEvidenceDirty`
+    // raises).
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET dirty = 1 WHERE connector_instance_id = ?")
+      .run("cin_stranded_active");
+
+    const recoveryPass = await foldConnectorSummaryStreamFacts(["cin_stranded_active"]);
+    assert.equal(recoveryPass.participants, 1, "a DIRTY stranded row must re-enter the fold exactly once");
+
+    const afterRecovery = getDb()
+      .prepare(
+        "SELECT stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      )
+      .get<{
+        stream_facts_event_seq: number | null;
+        terminal_facts_reason_code: string | null;
+        terminal_facts_state: string;
+      }>("cin_stranded_active");
+    assert.ok(afterRecovery, "evidence row exists after the recovery pass");
+    assert.ok(
+      afterRecovery.stream_facts_event_seq !== null && afterRecovery.stream_facts_event_seq > 0,
+      "the checkpoint is stamped to the real high-water, not left at 0"
+    );
+
+    // Now the ordinary lag predicate governs -- with nothing new since the
+    // stamp, the row must go quiet again, exactly like any other converged
+    // row. This is the property that distinguishes the fix from the old
+    // unconditional-participation starvation bug: recovery costs ONE pass,
+    // not every pass forever.
+    const quietPass = await foldConnectorSummaryStreamFacts(["cin_stranded_active"]);
+    assert.equal(
+      quietPass.participants,
+      0,
+      "the recovered row must go quiet again on the next pass with nothing new (starvation guard still holds)"
+    );
+
+    // Being dirtied AGAIN with still nothing new must not re-strand or
+    // re-trigger participation, because the checkpoint is no longer zero --
+    // the exact clause that gated re-entry cannot match a second time.
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET dirty = 1 WHERE connector_instance_id = ?")
+      .run("cin_stranded_active");
+    const secondDirtyPass = await foldConnectorSummaryStreamFacts(["cin_stranded_active"]);
+    assert.equal(
+      secondDirtyPass.participants,
+      0,
+      "a later dirty-mark with a nonzero checkpoint follows the ordinary lag predicate, not the stranded-recovery carve-out"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The shared read-cursor floor: a checkpoint-less participant must not rewind
+// the whole pass to the start of the log.
+//
+// `sinceSeq` is the MINIMUM checkpoint across participants, so ONE participant
+// holding "no position" drags every other participant's read back to the
+// beginning. Both spellings of "no position" have to be guarded: NULL, and a
+// literal 0 (what `stampZeroCheckpointForBootstrap` writes for a row with no
+// terminal history yet -- event_seq is 1-based, so 0 is never a real position).
+//
+// This regressed in production TWICE. 6cd8368ad guarded only NULL; 7bba0be69
+// then observed the floor sitting back at 0 live, with the sweep replaying a
+// 1.44M-event log inside a 2s budget, reading zero qualifying events and
+// writing nothing. `checkpointIsResumablePosition` is now the single named
+// definition of that rule, and this test pins the OBSERVABLE it protects
+// (`minimumCheckpointBefore`) rather than the predicate's spelling -- nothing
+// else in the suite asserts the floor directly.
+test("fold: a checkpoint-0 participant does not drag the shared read floor back to the start of the log", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_advanced", "gmail");
+    seedInstance("cin_no_position", "imessage");
+    await rebuildConnectorSummaryEvidence();
+
+    // Give the advanced row a real, far-along position in the log.
+    for (let i = 0; i < 12; i += 1) {
+      seedTerminalEvent({
+        connectorInstanceId: "cin_advanced",
+        occurredAt: `2026-06-18T09:${String(i).padStart(2, "0")}:00.000Z`,
+        runId: `run_advanced_${i}`,
+        streams: [{ checkpoint: "committed", collected: i, stream: "messages" }],
+      });
+    }
+    await foldConnectorSummaryStreamFacts(["cin_advanced"]);
+    const advanced = getDb()
+      .prepare("SELECT stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?")
+      .get<{ stream_facts_event_seq: number | null }>("cin_advanced");
+    const advancedCheckpoint = advanced?.stream_facts_event_seq ?? 0;
+    assert.ok(advancedCheckpoint > 0, "premise: the advanced row holds a real, non-zero position");
+
+    // The other row has ANY attributable terminal history (so it is a genuine
+    // participant, not a zero-history fixture artifact) but is parked at
+    // checkpoint 0 -- the bootstrap-stamped "no position" shape.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_no_position",
+      occurredAt: "2026-06-18T10:00:00.000Z",
+      runId: "run_no_position",
+      streams: [{ checkpoint: "committed", collected: 1, stream: "messages" }],
+    });
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET stream_facts_event_seq = 0,
+                stream_latest_facts_json = NULL,
+                dirty = 1
+          WHERE connector_instance_id = ?`
+      )
+      .run("cin_no_position");
+
+    // A new event for the advanced row so it genuinely lags and rejoins the
+    // same pass -- the floor is only observable when BOTH rows participate.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_advanced",
+      occurredAt: "2026-06-18T11:00:00.000Z",
+      runId: "run_advanced_new",
+      streams: [{ checkpoint: "committed", collected: 99, stream: "messages" }],
+    });
+
+    const pass = await foldConnectorSummaryStreamFacts(["cin_advanced", "cin_no_position"]);
+    assert.equal(pass.participants, 2, "premise: both rows participate in the same pass");
+    assert.equal(
+      pass.minimumCheckpointBefore,
+      advancedCheckpoint,
+      "the shared floor is the advanced row's real position -- a checkpoint-0 participant holds no position and must not set it"
+    );
+    assert.notEqual(pass.minimumCheckpointBefore, 0, "the floor must never rewind to the start of the log");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Measured-boundary guard (apple_contacts cin_d344ba53d6d95c7dd343393d,
+// run_1787343668906 proved `contacts covered 1 / considered 1`; the next
+// incremental run erased it).
+//
+// The checkpoint floor above cannot catch this class: an incremental
+// `sync-collection` pass genuinely COMMITS its checkpoint (it really did make
+// durable cursor progress), so its fact clears `factCheckpointProvesDurableCoverage`
+// and replaced a measured proof with one carrying no coverage keys at all.
+// A change feed's `considered` counts only CHANGED resources, so the
+// connector deliberately WITHHOLDS the coverage keys rather than emit a
+// fabricated `0/0` (RFC 6578; pinned by
+// `connectors/_conformance/change-feed-is-not-inventory.test.ts`). The fold
+// must therefore treat a measured enumeration boundary as its own floor,
+// independent of the checkpoint.
+//
+// The distinction is PRESENCE of the measurement, never its magnitude: a
+// genuine measured zero (`considered: 0`) is a positive statement ("I
+// enumerated the boundary and it held nothing") and MUST still be able to
+// replace a larger prior proof, or upstream deletions would be frozen out
+// of the read model forever.
+// ---------------------------------------------------------------------------
+
+test("measured-boundary guard: an incremental committed run carrying no coverage keys must not erase a measured proof", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+    // A genuine full_refresh run: a real enumeration boundary, 1 contact.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T20:21:10.660Z",
+      runId: "run_full_refresh",
+      streams: [{ checkpoint: "committed", collected: 0, considered: 1, covered: 1, stream: "contacts" }],
+    });
+    // The incremental sync-collection pass: checkpoint genuinely committed,
+    // but coverage keys deliberately withheld (a quiet change feed).
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T22:08:21.673Z",
+      runId: "run_incremental",
+      streams: [{ checkpoint: "committed", collected: 0, stream: "contacts" }],
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const contacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac")), "contacts");
+    // Assert the REASON the proof survived, not merely that some fact exists:
+    // the surviving fact must be the measured one, from the run that measured
+    // it, carrying both coverage keys intact.
+    assert.equal(contacts.fact.considered, 1, "the measured denominator must survive the non-measuring run");
+    assert.equal(contacts.fact.covered, 1, "the measured numerator must survive the non-measuring run");
+    assert.equal(contacts.run_id, "run_full_refresh", "provenance stays with the run that actually measured");
+    assert.equal(
+      contacts.evidence_as_of,
+      "2026-08-21T20:21:10.660Z",
+      "evidence_as_of stays with the measuring run, not the erasing one"
+    );
+  });
+});
+
+test("measured-boundary guard: a genuine measured zero still replaces a larger prior proof (a truthful zero stays expressible)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-20T00:00:00.000Z",
+      runId: "run_had_five",
+      streams: [{ checkpoint: "committed", collected: 5, considered: 5, covered: 5, stream: "contacts" }],
+    });
+    // Upstream deletion: a later FULL enumeration honestly measures zero.
+    // This is a measurement, not a silence, so it MUST win — retaining the
+    // stale 5/5 here would be the mirror-image defect.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T00:00:00.000Z",
+      runId: "run_now_empty",
+      streams: [{ checkpoint: "committed", collected: 0, considered: 0, covered: 0, stream: "contacts" }],
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const contacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac")), "contacts");
+    assert.equal(contacts.fact.considered, 0, "a measured zero denominator must replace the stale larger one");
+    assert.equal(contacts.fact.covered, 0, "a measured zero numerator must replace the stale larger one");
+    assert.equal(contacts.run_id, "run_now_empty", "the newest MEASURING run owns the fact, regardless of magnitude");
+  });
+});
+
+test("measured-boundary guard: a later smaller measurement replaces a larger one (newest measurement wins, not the maximum)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-20T00:00:00.000Z",
+      runId: "run_ten",
+      streams: [{ checkpoint: "committed", collected: 10, considered: 10, covered: 10, stream: "contacts" }],
+    });
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T00:00:00.000Z",
+      runId: "run_three",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 3, covered: 3, stream: "contacts" }],
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const contacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac")), "contacts");
+    assert.equal(contacts.fact.considered, 3, "the fold keeps the NEWEST measurement, never the largest");
+    assert.equal(contacts.run_id, "run_three");
+  });
+});
+
+test("measured-boundary guard: a stream never measured still tracks its newest attempt (absence of proof is never masked)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+    // No run here ever measured a boundary; the guard must not freeze the
+    // first non-measuring fact in place and hide later attempts.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-20T00:00:00.000Z",
+      runId: "run_a",
+      streams: [{ checkpoint: "committed", collected: 1, stream: "contacts" }],
+    });
+    seedTerminalEvent({
+      connectorInstanceId: "cin_ac",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T00:00:00.000Z",
+      runId: "run_b",
+      streams: [{ checkpoint: "committed", collected: 2, stream: "contacts" }],
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const contacts = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac")), "contacts");
+    assert.equal(contacts.fact.collected, 2, "a never-measured stream still advances to its newest attempt");
+    assert.equal(contacts.run_id, "run_b");
+    assert.equal(contacts.fact.considered, undefined, "and it is still honestly unmeasured, not synthesized");
+  });
+});
+
+test("existing-row self-heal: a row already folded under v5 with its proof ERASED recovers the measured proof from retained history", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_ac_stale", "apple_contacts");
+    await rebuildConnectorSummaryEvidence();
+
+    // The real production history: a full enumeration that measured 1/1,
+    // then an incremental change-feed pass that committed its checkpoint
+    // while carrying no coverage keys.
+    const measuringSeq = seedTerminalEvent({
+      connectorInstanceId: "cin_ac_stale",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T20:21:10.660Z",
+      runId: "run_1787343668906",
+      streams: [{ checkpoint: "committed", collected: 0, considered: 1, covered: 1, stream: "contacts" }],
+    });
+    const erasingSeq = seedTerminalEvent({
+      connectorInstanceId: "cin_ac_stale",
+      eventType: "run.completed",
+      occurredAt: "2026-08-21T22:08:21.673Z",
+      runId: "run_1787350099989",
+      streams: [{ checkpoint: "committed", collected: 0, stream: "contacts" }],
+    });
+    assert.ok(erasingSeq > measuringSeq);
+
+    // Park the row in the EXACT shape the shipped v5 fold leaves behind: the
+    // proof already erased, the checkpoint durably parked AT the erasing
+    // event, and the row clean/current. Without a fold-version bump, this
+    // row is frozen — `readTerminalFactEvents` never re-reads at or below
+    // that checkpoint, so the destroyed proof would stay destroyed forever
+    // even with the merge fix in place. `stream_facts_fold_version = 5` is
+    // what makes this test discriminate the version bump specifically
+    // (a NULL version would heal under the pre-existing NULL carve-out).
+    const erasedFacts = {
+      contacts: {
+        event_seq: erasingSeq,
+        evidence_as_of: "2026-08-21T22:08:21.673Z",
+        fact: { checkpoint: "committed", collected: 0, stream: "contacts" },
+        run_id: "run_1787350099989",
+      },
+    };
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET stream_latest_facts_json = ?,
+                stream_facts_event_seq = ?,
+                stream_facts_fold_version = 5,
+                terminal_facts_state = 'current',
+                terminal_facts_reason_code = NULL,
+                dirty = 0,
+                state = 'fresh'
+          WHERE connector_instance_id = ?`
+      )
+      .run(JSON.stringify(erasedFacts), erasingSeq, "cin_ac_stale");
+
+    const preFix = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac_stale")), "contacts");
+    assert.equal(preFix.fact.considered, undefined, "precondition: the stored row really is in the erased shape");
+
+    // An ordinary reconcile — no connector-specific mutation, no manual repair.
+    await reconcileDirtyConnectorSummaryEvidence();
+
+    const healed = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_ac_stale")), "contacts");
+    assert.equal(healed.fact.considered, 1, "the measured denominator is recovered from retained event history");
+    assert.equal(healed.fact.covered, 1, "the measured numerator is recovered too");
+    assert.equal(healed.run_id, "run_1787343668906", "provenance points back at the run that actually measured");
+  });
+});
+
+test("recovery run closing 2 of 2 gaps moves owner-visible coverage 3/5 -> 5/5", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovery_2_of_2", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_2_of_2",
+      occurredAt: "2026-08-22T00:00:00.000Z",
+      runId: "run_prior_3_of_5",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 5, covered: 3, stream: "transactions" }],
+    });
+    const recoveryFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps: [
+        { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" },
+        { gap_id: "gap-2", kind: "detail_gap", status: "recovered", stream: "transactions" },
+      ],
+      recoveryOnly: true,
+    });
+    assert.ok(recoveryFacts);
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_2_of_2",
+      occurredAt: "2026-08-23T00:00:00.000Z",
+      recoveryGapClosure: recoveryFacts.streams as { recovered_count: number; stream: string }[],
+      recoveryOnly: true,
+      runId: "run_recovery_2_of_2",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const fact = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovery_2_of_2")), "transactions");
+    assert.equal(fact.fact.covered, 5);
+    assert.equal(fact.fact.considered, 5);
+    assert.equal(fact.run_id, "run_recovery_2_of_2");
+  });
+});
+
+test("recovery run closing NOTHING does not advance coverage", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovery_nothing", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_nothing",
+      occurredAt: "2026-08-22T00:00:00.000Z",
+      runId: "run_prior_3_of_5",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 5, covered: 3, stream: "transactions" }],
+    });
+    const recoveryFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps: [{ gap_id: "gap-pending", kind: "detail_gap", status: "pending", stream: "transactions" }],
+      recoveryOnly: true,
+    });
+    assert.equal(recoveryFacts, null);
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_nothing",
+      occurredAt: "2026-08-23T00:00:00.000Z",
+      recoveryOnly: true,
+      runId: "run_recovery_nothing",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const fact = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovery_nothing")), "transactions");
+    assert.equal(fact.fact.covered, 3);
+    assert.equal(fact.fact.considered, 5);
+    assert.equal(fact.run_id, "run_prior_3_of_5");
+  });
+});
+
+test("partial recovery advances coverage by exactly the number of gaps closed", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovery_partial", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_partial",
+      occurredAt: "2026-08-22T00:00:00.000Z",
+      runId: "run_prior_3_of_5",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 5, covered: 3, stream: "transactions" }],
+    });
+    const recoveryFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps: [{ gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" }],
+      recoveryOnly: true,
+    });
+    assert.ok(recoveryFacts);
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_partial",
+      occurredAt: "2026-08-23T00:00:00.000Z",
+      recoveryGapClosure: recoveryFacts.streams as { recovered_count: number; stream: string }[],
+      recoveryOnly: true,
+      runId: "run_recovery_partial",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const fact = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovery_partial")), "transactions");
+    assert.equal(fact.fact.covered, 4);
+    assert.equal(fact.fact.considered, 5);
+  });
+});
+
+test("same gap counted twice does not double-advance coverage", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_recovery_dedupe", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_dedupe",
+      occurredAt: "2026-08-22T00:00:00.000Z",
+      runId: "run_prior_3_of_5",
+      streams: [{ checkpoint: "committed", collected: 3, considered: 5, covered: 3, stream: "transactions" }],
+    });
+    const recoveryFacts = buildRecoveryGapClosureFacts({
+      durableDetailGaps: [
+        { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" },
+        { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" },
+      ],
+      recoveryOnly: true,
+    });
+    assert.ok(recoveryFacts);
+    seedTerminalEvent({
+      connectorInstanceId: "cin_recovery_dedupe",
+      occurredAt: "2026-08-23T00:00:00.000Z",
+      recoveryGapClosure: recoveryFacts.streams as { recovered_count: number; stream: string }[],
+      recoveryOnly: true,
+      runId: "run_recovery_dedupe",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const fact = requireStreamFact(factsFor(await getConnectorSummaryEvidence("cin_recovery_dedupe")), "transactions");
+    assert.equal(fact.fact.covered, 4);
+    assert.equal(fact.fact.considered, 5);
   });
 });

@@ -28,10 +28,10 @@ import {
   TableHeader,
   TableHeaderRow,
 } from "@pdpp/brand-react";
-import { humanizeFieldLabel } from "@pdpp/display";
+import { formatCoverageAxis, humanizeFieldLabel } from "@pdpp/display";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
-import { formatCoverageAxis } from "../lib/connection-evidence.ts";
+
 import { SOURCE_WORK_GROUP_COPY } from "../lib/source-actionability.ts";
 import {
   type DuplicateSyncGroup,
@@ -533,8 +533,10 @@ function formatCollectedThisRun(row: SyncRow): string | null {
 }
 
 /**
- * The coverage condition is shown only when it adds information: "complete" is
- * the expected baseline and "unknown" is noise, so both are suppressed.
+ * The coverage condition is shown only when it adds information: `complete` is
+ * the expected baseline and `unknown` (rendered "not measured") is noise, so
+ * both are suppressed. The comparison is against the raw AXIS KEY, not the
+ * owner-facing label, so renaming the label leaves this correct.
  * Otherwise this renders the SAME owner-facing wording as the source detail
  * page and connection diagnostics (`formatCoverageAxis`'s humanized `value`,
  * e.g. "won't backfill" / "retryable gap") — never the raw internal axis key
@@ -615,11 +617,22 @@ function SyncGroupLastRun({
  * (every stream shares the same schedule), so it renders once here instead of
  * repeating on every stream row below.
  */
-function SyncGroupSchedule({ cadence, next, nextAt }: { cadence: string; next: string; nextAt: string | null }) {
+function SyncGroupSchedule({
+  cadence,
+  next,
+  nextAt,
+  scheduleReason,
+}: {
+  cadence: string;
+  next: string;
+  nextAt: string | null;
+  scheduleReason: string | null;
+}) {
   return (
     <div className="rr-sync-group__schedule">
       <span className="rr-sync-group__cadence">{cadence}</span>
       <span className="rr-sync-group__next">next {nextAt ? <IcTimestamp mode="relative" value={nextAt} /> : next}</span>
+      {scheduleReason ? <span className="rr-sync-group__next">not scheduled: {scheduleReason}</span> : null}
     </div>
   );
 }
@@ -649,7 +662,12 @@ function SyncGroupBlock({ group }: { group: SyncGroup }) {
           lastRunAt={group.lastRunAt}
           rhythm={group.lastRunRhythm}
         />
-        <SyncGroupSchedule cadence={group.cadence} next={group.next} nextAt={group.nextAt} />
+        <SyncGroupSchedule
+          cadence={group.cadence}
+          next={group.next}
+          nextAt={group.nextAt}
+          scheduleReason={group.scheduleReason}
+        />
         {activeRunHref ? (
           <Link className="rr-link rr-sync-group__active" href={activeRunHref} prefetch={false}>
             Active sync →

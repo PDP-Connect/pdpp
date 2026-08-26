@@ -594,6 +594,7 @@
     }
   ],
   "reason_display_messages": {
+    "account_no_longer_discovered": "An account we tracked before is no longer listed on your dashboard",
     "ambiguous_multi_account_overview": "We couldn't tell which account view to use",
     "qfx_download_failed": "We couldn't download the transactions file",
     "qfx_parse_failed": "We couldn't read the transactions file",

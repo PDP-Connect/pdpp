@@ -678,6 +678,8 @@ export interface RefConnectorSummary {
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   revoked_at?: string | null;
   schedule: RefSchedule | null;
+  /** Reason recorded by boot auto-enrollment when this source has no schedule. */
+  auto_enroll_skip_reason?: string | null;
   source_binding_kind?: string | null;
   /**
    * The connection's source kind and non-secret source-binding kind. Owner
@@ -688,6 +690,29 @@ export interface RefConnectorSummary {
    * field omits it and the console falls back to connector-level modality.
    */
   source_kind?: string;
+  /**
+   * Provider-neutral Sources-list visibility (mirrors server `ConnectorSummary
+   * .source_visibility`). `"archived"` marks a PURE recovered historical
+   * fragment — preserved records, no collection, never resuming — and never a
+   * UAT-transferred/manual-import row or an active promoted connection, both
+   * of which read `"active"`.
+   *
+   * `"hidden_from_sources"` is the retired spelling of `"archived"`, accepted
+   * so a console deployed ahead of its reference keeps classifying those rows
+   * as archived instead of silently rendering them as live sources.
+   *
+   * `"setup_failed"` marks a revoked retired-setup-shell binding
+   * (`browser_enrollment_shell`/etc.) that never had a successful run —
+   * repeated failed setup, zero records, the owner's only evidence a
+   * connector was ever attempted. A shell whose run DID succeed is not
+   * classified this way at all; it is excluded from the Sources page
+   * entirely, because a promoted `"active"` row already represents it.
+   *
+   * Optional: a reference predating this field omits it, in which case the
+   * row is treated as `"active"` (fails open to visible, the pre-existing
+   * behavior) rather than hiding rows an older reference never classified.
+   */
+  source_visibility?: "active" | "archived" | "hidden_from_sources" | "setup_failed" | null;
   /**
    * Server-owned work classification derived from `owner_state.resolver`.
    * Optional only for references predating this field; the console fails closed
@@ -867,7 +892,19 @@ export type RefVerdictTone = "amber" | "green" | "grey" | "red";
 export type RefRenderedChannel = "advisory" | "attention" | "calm";
 
 export interface RefVerdictPill {
-  label: "Can't collect" | "Checking" | "Degraded" | "Healthy" | "Needs refresh" | "Not measured" | "Syncing";
+  label:
+    | "Archived"
+    | "Can't collect"
+    | "Checking"
+    | "Healthy"
+    | "Import complete"
+    | "Missing data"
+    | "Missing optional data"
+    | "Some records stuck"
+    | "Needs refresh"
+    | "Not measured"
+    | "Setup never completed"
+    | "Syncing";
   tone: RefVerdictTone;
 }
 
@@ -892,9 +929,11 @@ export type RefActionUrgency = "now" | "overdue" | "soon" | "verifying";
 
 export type RefActionRemediationCause =
   | "dead_letter_backlog"
+  | "stale_heartbeat"
   | "stale_pending"
   | "state_read_failed"
-  | "stalled_unknown";
+  | "stalled_unknown"
+  | "transient_upload_failure";
 
 export type RefActionRemediationCommandKind =
   | "local_collector_doctor"
@@ -1723,6 +1762,7 @@ export function listConnectorSummaries(options?: {
   includeFleetHealth?: boolean;
   limit?: number;
   profile?: undefined;
+  sourcesVisibility?: boolean;
 }): Promise<RefConnectorSummariesResponse>;
 export async function listConnectorSummaries(
   options: {
@@ -1738,6 +1778,15 @@ export async function listConnectorSummaries(
     includeFleetHealth?: boolean;
     limit?: number;
     profile?: ConnectorSummaryProfile;
+    /**
+     * Owner Sources page's exclusive opt-in (`sources_visibility=1`):
+     * excludes a pure recovered historical fragment from this identity page
+     * BEFORE the reference's `LIMIT`, so `has_more`/the next cursor stay
+     * authoritative over the rows the Sources list actually renders. Every
+     * other caller (Explore, Add Source, manual upload) omits this. Mutually
+     * exclusive with `connectorId`/`profile` server-side.
+     */
+    sourcesVisibility?: boolean;
   } = {}
 ): Promise<
   RefConnectorSummariesResponse | RefConnectorIdentitySummariesResponse | RefConnectorRetainedCountSummariesResponse
@@ -1761,6 +1810,7 @@ export async function listConnectorSummaries(
     include_fleet_health: options.includeFleetHealth ? 1 : undefined,
     limit: options.limit ?? CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT,
     profile: options.profile,
+    sources_visibility: options.sourcesVisibility ? 1 : undefined,
   })) as RefConnectorSummariesResponse;
 }
 

@@ -14,8 +14,10 @@
  *   Doc: https://cloud.ouraring.com/docs/error-handling
  */
 
-import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
-import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { isMainModule } from "@pdpp/connector-protocol";
+import { type ConnectorHttpGovernor, createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
+import { type CollectContext, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { walkPagesWithCeiling } from "../../src/page-ceiling.ts";
 import { ouraPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
@@ -38,6 +40,12 @@ const httpGovernor = createConnectorHttpGovernor({
   maxAttempts: 1,
   profile: ouraPacingProfile(),
 });
+
+/** Governor the walk actually sends through. Production always uses the paced
+ *  module-level one; a test may substitute an unpaced governor so a two-page
+ *  fixture does not have to wait out the real rate ceiling. The ceiling itself
+ *  stays covered by `ouraPacingProfile()`'s own tests. */
+type OuraHttpGovernor = Pick<ConnectorHttpGovernor, "request">;
 
 interface OuraSleepSession {
   average_heart_rate?: number | null;
@@ -96,7 +104,12 @@ interface OuraRawResponse {
   status: number;
 }
 
-async function oura<T>(endpoint: string, token: string, params: OuraParams): Promise<OuraListResponse<T>> {
+async function oura<T>(
+  governor: OuraHttpGovernor,
+  endpoint: string,
+  token: string,
+  params: OuraParams
+): Promise<OuraListResponse<T>> {
   const url = new URL(`${API}/${endpoint}`);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined) {
@@ -107,7 +120,7 @@ async function oura<T>(endpoint: string, token: string, params: OuraParams): Pro
   // pre-flight send governor; terminal 429 exhaustion throws `oura_rate_limited`
   // (the runtime `retryablePattern` cross-run contract). The body is read once
   // per attempt (each attempt is a fresh fetch / fresh Response stream).
-  const result = await httpGovernor.request<OuraRawResponse, OuraRawResponse>(
+  const result = await governor.request<OuraRawResponse, OuraRawResponse>(
     async (): Promise<OuraRawResponse> => {
       const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       const retryAfter = res.headers.get("retry-after");
@@ -133,29 +146,40 @@ async function oura<T>(endpoint: string, token: string, params: OuraParams): Pro
   return JSON.parse(raw.body) as OuraListResponse<T>;
 }
 
-async function fetchAll<T>(endpoint: string, token: string, startDate: string | null): Promise<T[]> {
+/**
+ * Page one Oura collection. Exhausting the page ceiling and receiving no
+ * `next_token` used to produce a byte-identical return value, so a capped walk
+ * read as a finished one. `truncated` is the distinction the caller needs to
+ * withhold its cursor and disclose the deferred tail.
+ */
+async function fetchAll<T>(
+  governor: OuraHttpGovernor,
+  endpoint: string,
+  token: string,
+  startDate: string | null,
+  maxPages: number
+): Promise<{ rows: T[]; truncated: boolean }> {
   const all: T[] = [];
   let nextToken: string | undefined;
-  let guard = MAX_PAGES;
-  while (guard > 0) {
-    guard -= 1;
-    const params: OuraParams = {};
-    if (startDate) {
-      params.start_date = startDate;
-    }
-    if (nextToken) {
-      params.next_token = nextToken;
-    }
-    const json = await oura<T>(endpoint, token, params);
-    if (Array.isArray(json.data)) {
-      all.push(...json.data);
-    }
-    nextToken = json.next_token || undefined;
-    if (!nextToken) {
-      break;
-    }
-  }
-  return all;
+  const walk = await walkPagesWithCeiling({
+    maxPages,
+    fetchPage: async () => {
+      const params: OuraParams = {};
+      if (startDate) {
+        params.start_date = startDate;
+      }
+      if (nextToken) {
+        params.next_token = nextToken;
+      }
+      const json = await oura<T>(governor, endpoint, token, params);
+      if (Array.isArray(json.data)) {
+        all.push(...json.data);
+      }
+      nextToken = json.next_token || undefined;
+      return Boolean(nextToken);
+    },
+  });
+  return { rows: all, truncated: walk.truncated };
 }
 
 function sleepRecord(s: OuraSleepSession): RecordData {
@@ -210,8 +234,12 @@ interface StreamConfig<T extends OuraRow> {
 
 interface RunStreamArgs<T extends OuraRow> {
   config: StreamConfig<T>;
-  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
+  emit: CollectContext["emit"];
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  governor: OuraHttpGovernor;
+  /** Page ceiling actually enforced by this walk. Injectable so a test can
+   *  reach the capped exit with a two-page fixture instead of 100 real pages. */
+  maxPages: number;
   progress: (message: string, extra?: { stream?: string }) => Promise<void>;
   requested: Map<string, { time_range?: { since?: string } }>;
   state: Record<string, unknown>;
@@ -231,83 +259,122 @@ function sinceFor(
 }
 
 async function runStream<T extends OuraRow>(args: RunStreamArgs<T>): Promise<void> {
-  const { config, token, state, requested, emit, emitRecord, progress } = args;
+  const { config, token, state, requested, emit, emitRecord, progress, maxPages, governor } = args;
   const { streamName, endpoint, toRecord } = config;
   await progress(`Fetching ${streamName}`, { stream: streamName });
   const startDate = sinceFor(state, requested, streamName);
-  const rows = await fetchAll<T>(endpoint, token, startDate);
+  const { rows, truncated } = await fetchAll<T>(governor, endpoint, token, startDate, maxPages);
   const streamState = state[streamName] as { last_day?: string } | undefined;
-  let lastDay: string | null = streamState?.last_day || null;
+  const priorDay: string | null = streamState?.last_day || null;
+  let lastDay: string | null = priorDay;
   for (const row of rows) {
     await emitRecord(streamName, toRecord(row));
     if (row.day && (!lastDay || row.day > lastDay)) {
       lastDay = row.day;
     }
   }
+
+  if (truncated) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: streamName,
+      reason: "older_pages_deferred_page_budget",
+      // The ceiling reported here is the one actually enforced, not the module
+      // default — otherwise a lowered cap would disclose a limit the walk
+      // never applied.
+      message: `Oura ${streamName} stopped at the ${String(maxPages)}-page limit with more days still listed`,
+      diagnostics: { page_limit: maxPages, total_seen: rows.length, unread_pages: 1 },
+    });
+  }
+
   await emit({
     type: "STATE",
     stream: streamName,
-    cursor: { last_day: lastDay },
+    // `last_day` is the next run's `start_date`. Advancing it after a capped
+    // walk would skip past days this run never read, so a truncated walk holds
+    // the day it started from and re-reads the same prefix next time.
+    cursor: { last_day: truncated ? priorDay : lastDay },
   });
 }
 
-runConnector({
-  name: "oura",
-  validateRecord,
-  retryablePattern: /rate_limited|ECONN|fetch failed/i,
-  auth: { kind: "env", required: ["OURA_PERSONAL_ACCESS_TOKEN"] },
-  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
-    const token = credentials.OURA_PERSONAL_ACCESS_TOKEN;
-    if (!token) {
-      throw new Error("oura_auth_failed");
-    }
+export interface OuraCollectOptions {
+  /** @see OuraHttpGovernor */
+  readonly httpGovernor?: OuraHttpGovernor;
+  /** Page ceiling actually enforced by each stream's walk. Injectable so a
+   *  test can reach the capped exit with a two-page fixture. */
+  readonly maxPages?: number;
+}
 
-    if (requested.has("sleep")) {
-      await runStream<OuraSleepSession>({
-        config: {
-          streamName: "sleep",
-          endpoint: "sleep",
-          toRecord: sleepRecord,
-        },
-        token,
-        state,
-        requested,
-        emit,
-        emitRecord,
-        progress,
-      });
-    }
+export async function collectOura(ctx: CollectContext, options: OuraCollectOptions = {}): Promise<void> {
+  const { state, requested, credentials, emit, emitRecord, progress } = ctx;
+  const maxPages = options.maxPages ?? MAX_PAGES;
+  const governor = options.httpGovernor ?? httpGovernor;
+  const token = credentials.OURA_PERSONAL_ACCESS_TOKEN;
+  if (!token) {
+    throw new Error("oura_auth_failed");
+  }
 
-    if (requested.has("readiness")) {
-      await runStream<OuraReadiness>({
-        config: {
-          streamName: "readiness",
-          endpoint: "daily_readiness",
-          toRecord: readinessRecord,
-        },
-        token,
-        state,
-        requested,
-        emit,
-        emitRecord,
-        progress,
-      });
-    }
+  if (requested.has("sleep")) {
+    await runStream<OuraSleepSession>({
+      config: {
+        streamName: "sleep",
+        endpoint: "sleep",
+        toRecord: sleepRecord,
+      },
+      token,
+      state,
+      requested,
+      emit,
+      emitRecord,
+      progress,
+      maxPages,
+      governor,
+    });
+  }
 
-    if (requested.has("activity")) {
-      await runStream<OuraActivity>({
-        config: {
-          streamName: "activity",
-          endpoint: "daily_activity",
-          toRecord: activityRecord,
-        },
-        token,
-        state,
-        requested,
-        emit,
-        emitRecord,
-        progress,
-      });
-    }
-  },
-});
+  if (requested.has("readiness")) {
+    await runStream<OuraReadiness>({
+      config: {
+        streamName: "readiness",
+        endpoint: "daily_readiness",
+        toRecord: readinessRecord,
+      },
+      token,
+      state,
+      requested,
+      emit,
+      emitRecord,
+      progress,
+      maxPages,
+      governor,
+    });
+  }
+
+  if (requested.has("activity")) {
+    await runStream<OuraActivity>({
+      config: {
+        streamName: "activity",
+        endpoint: "daily_activity",
+        toRecord: activityRecord,
+      },
+      token,
+      state,
+      requested,
+      emit,
+      emitRecord,
+      progress,
+      maxPages,
+      governor,
+    });
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "oura",
+    validateRecord,
+    retryablePattern: /rate_limited|ECONN|fetch failed/i,
+    auth: { kind: "env", required: ["OURA_PERSONAL_ACCESS_TOKEN"] },
+    collect: (ctx) => collectOura(ctx),
+  });
+}

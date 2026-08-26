@@ -173,7 +173,7 @@ test("iterJsonlLinesFromOffset: an unterminated trailing line is not yielded and
   });
 });
 
-test("iterJsonlLinesFromOffset: a malformed (unparseable) line is skipped but its bytes still advance the offset", async () => {
+test("iterJsonlLinesFromOffset: a malformed complete line fails closed before cursor commit", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "rollout.jsonl");
     const good1 = JSON.stringify({ n: 1 });
@@ -182,20 +182,10 @@ test("iterJsonlLinesFromOffset: a malformed (unparseable) line is skipped but it
     const body = `${good1}\n${bad}\n${good2}\n`;
     await writeFile(path, body);
 
-    const yielded = await collect(path, 0);
-    assert.equal(yielded.length, 2, "the malformed line is dropped, the two valid lines survive");
-    assert.deepEqual(
-      yielded.map((y) => (y.obj as { n: number }).n),
-      [1, 2],
-      "only the parseable objects are yielded"
-    );
-    // Critically: the final commit still equals the full file size, so the
-    // malformed line is consumed (not re-read forever) on the next run.
-    assert.equal(
-      yielded.at(-1)?.committedOffset,
-      byteLen(body),
-      "the malformed line's bytes are counted toward the committed offset (skip, do not stall)"
-    );
+    // A complete malformed line is a source gap, not an ignorable comment.
+    // Throwing is deliberate: the connector must not return a cursor that
+    // claims to have consumed bytes beyond a record it never delivered.
+    await assert.rejects(() => collect(path, 0), /malformed complete JSONL line/);
   });
 });
 

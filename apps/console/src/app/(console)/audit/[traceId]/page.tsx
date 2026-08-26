@@ -43,6 +43,7 @@ import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getTraceTimeline, type SpineEvent, type TimelineEnvelope } from "../../lib/ref-client.ts";
+import { eventEndorseStatus, traceOverall } from "../trace-timeline-status.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -57,37 +58,11 @@ function traceTimelineHref(traceId: string, cursor: string): string {
 }
 
 // ─── Event status → Endorse variant ──────────────────────────────────────────
-
-type EndorseStatus = "active" | "continuous" | "expiring" | "revoked" | "denied";
-
-function eventStatusEndorse(status: string | null): EndorseStatus {
-  if (!status) {
-    return "continuous";
-  }
-  if (status === "failed" || status === "rejected") {
-    return "denied";
-  }
-  if (status === "completed" || status === "succeeded") {
-    return "active";
-  }
-  if (status === "cancelled" || status === "revoked") {
-    return "revoked";
-  }
-  if (status === "pending" || status === "started") {
-    return "expiring";
-  }
-  return "continuous";
-}
-
-function traceOverall(events: readonly SpineEvent[]): { label: string; status: EndorseStatus } {
-  if (events.some((e) => e.status === "failed" || e.status === "rejected")) {
-    return { label: "has failures", status: "denied" };
-  }
-  if (events.length > 0) {
-    return { label: "complete", status: "active" };
-  }
-  return { label: "empty", status: "continuous" };
-}
+//
+// Both projections live in `../trace-timeline-status.ts`, which builds on the
+// shared `traceEndorseStatus` mapper. This page used to carry its own copy
+// whose local `EndorseStatus` type omitted `unknown`, so an unreadable status
+// had nowhere honest to land and fell through to a definite tone.
 
 // ─── Secret redaction (mirrors TimelineView) ─────────────────────────────────
 
@@ -192,7 +167,7 @@ function padIndex(n: number): string {
 }
 
 function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
-  const endorseStatus = eventStatusEndorse(event.status);
+  const endorseStatus = eventEndorseStatus(event.status);
   return (
     <TableRow>
       <TableCell>

@@ -133,12 +133,12 @@ test("changed record re-emits; unchanged records are still suppressed", () => {
 
 // ─── Scenario 4: Deleted record pruned from STATE cursor ──────────────────
 
-test("pruneStale: chat absent from this run is dropped from next STATE", () => {
+test("dropUnseenIds: chat absent from this run is dropped from next STATE", () => {
   // Run 1: seed two chats.
   const chatsCursor1 = openFingerprintCursor(undefined);
   chatsCursor1.shouldEmit(CHAT_A);
   chatsCursor1.shouldEmit(CHAT_B);
-  chatsCursor1.pruneStale();
+  chatsCursor1.dropUnseenIds();
   const chatsState1 = { fingerprints: chatsCursor1.toState() };
   assert.equal(Object.keys(chatsState1.fingerprints).length, 2, "two fingerprints after run 1");
 
@@ -147,7 +147,7 @@ test("pruneStale: chat absent from this run is dropped from next STATE", () => {
   // CHAT_A processed (unchanged — suppressed, but seen).
   chatsCursor2.shouldEmit(CHAT_A);
   // CHAT_B not processed (file gone).
-  chatsCursor2.pruneStale();
+  chatsCursor2.dropUnseenIds();
 
   const chatsState2 = { fingerprints: chatsCursor2.toState() };
   assert.ok(chatsState2.fingerprints[CHAT_A.id], "CHAT_A fingerprint retained");

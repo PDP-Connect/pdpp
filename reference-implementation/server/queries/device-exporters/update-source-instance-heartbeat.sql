@@ -1,7 +1,11 @@
 -- @terminator: exec
 UPDATE device_source_instances
 SET updated_at = ?,
-    last_error_json = ?,
+    last_error_json = CASE
+      WHEN ? IS NOT NULL THEN ?
+      WHEN json_extract(?, '$.dead_letter') > 0 THEN last_error_json
+      ELSE NULL
+    END,
     last_heartbeat_at = ?,
     last_heartbeat_status = ?,
     records_pending = ?,

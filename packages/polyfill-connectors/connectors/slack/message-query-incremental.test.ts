@@ -70,11 +70,18 @@ function referenceQuery(thresholds: Thresholds): { params: string[]; sql: string
       : "";
   const join = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
   let where = "";
-  if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
-    where = "WHERE m.TS > COALESCE(t.last_ts, ?)";
-    params.push(thresholds.legacyLastTs);
-  } else if (channelThresholds.length > 0) {
-    where = "WHERE t.last_ts IS NULL OR m.TS > t.last_ts";
+  if (channelThresholds.length > 0) {
+    // A channel with no cursor row starts from zero. It must NOT inherit
+    // `legacyLastTs`, which is a floor derived from OTHER channels' walks:
+    // the old `COALESCE(t.last_ts, ?)` made every message below that floor
+    // permanently unreachable in an unwalked channel (no row returned → no
+    // cursor written → same floor next run).
+    //
+    // This reference exists to pin the dedup-CTE rewrite as emit-identical
+    // to the pre-rewrite QUERY SHAPE, independently of the code under test.
+    // It is not a second opinion on cursor POLICY, so it tracks the policy
+    // rather than freezing the defect.
+    where = "WHERE (t.last_ts IS NULL OR m.TS > t.last_ts)";
   } else if (thresholds.legacyLastTs) {
     where = "WHERE m.TS > ?";
     params.push(thresholds.legacyLastTs);
@@ -129,7 +136,7 @@ const SHAPES: Array<{ name: string; thresholds: Thresholds }> = [
     thresholds: { channelLastTs: { C1: "100.000001", C2: "250.000001" }, legacyLastTs: null, sinceTs: null },
   },
   {
-    name: "per-channel + legacy fallback",
+    name: "per-channel cursors alongside a legacy global cursor",
     thresholds: { channelLastTs: { C1: "100.000001" }, legacyLastTs: "180.000000", sinceTs: null },
   },
 ];
@@ -143,6 +150,28 @@ for (const shape of SHAPES) {
     db.close();
   });
 }
+
+test("a channel with no cursor row is walked in full, not floored by the legacy cursor", () => {
+  // Asserted against literal expected rows rather than the reference, so
+  // this policy cannot silently follow the reference if that is edited.
+  // C2 has no cursor row; both of its timestamps sit BELOW legacyLastTs.
+  const db = makeArchive(FIXTURE);
+  const rows = runRows(
+    db,
+    buildMessageRowsQuery({ channelLastTs: { C1: "100.000001" }, legacyLastTs: "180.000000", sinceTs: null })
+  );
+  assert.deepEqual(
+    rows,
+    [
+      "C1|200.000001|c1-200-v2-latest",
+      "C1|300.000001|c1-300-only",
+      "C2|150.000001|c2-150-only",
+      "C2|250.000001|c2-250-v2-latest",
+    ],
+    "C2:150 is below the legacy floor and would be unreachable forever if the floor applied to it"
+  );
+  db.close();
+});
 
 test("no cursor emits every unique (channel, ts) with the latest chunk's DATA", () => {
   const db = makeArchive(FIXTURE);

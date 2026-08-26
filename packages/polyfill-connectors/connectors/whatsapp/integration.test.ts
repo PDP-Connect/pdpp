@@ -248,6 +248,40 @@ test("WhatsApp connector declares chat and message coverage from the parsed expo
   }
 });
 
+test("WhatsApp rejected exports stay in the chat denominator but out of coverage", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-rejected-chat-coverage-"));
+  try {
+    await writeFile(join(importRoot, "a-valid.txt"), VALID_EXPORT);
+    await writeFile(join(importRoot, "b-rejected.txt"), "not a WhatsApp export");
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: WHATSAPP_ENTRYPOINT,
+      env: {
+        PDPP_OWNER_TOKEN: "",
+        PDPP_RS_URL: "",
+        RS_URL: "",
+        TZ: "America/Chicago",
+        WHATSAPP_EXPORT_DIR: importRoot,
+      },
+      start: {
+        scope: { streams: [{ name: "chats" }] },
+        type: "START",
+      },
+    });
+
+    const coverage = detailCoverage(result.messages).find((message) => message.stream === "chats");
+    assert.ok(coverage, "expected chats DETAIL_COVERAGE");
+    assert.equal(coverage.considered, 2, "both enumerated exports belong in the denominator");
+    assert.equal(coverage.covered, 1, "the rejected export must not count as covered");
+    assert.ok(
+      result.messages.some((message) => message.type === "SKIP_RESULT"),
+      "the rejected export must remain visible as a gap"
+    );
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
 test("WhatsApp connector declares attachment coverage from parsed media inventory", async () => {
   const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-coverage-"));
   try {

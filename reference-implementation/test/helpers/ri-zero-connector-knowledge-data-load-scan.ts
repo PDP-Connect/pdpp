@@ -178,6 +178,13 @@ const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
   "reference-implementation/scripts/check-direct-prepare-conformance.ts:102",
   // run-tests.ts reads an optional operator-supplied --accounting-authority path; test-accounting shape, not connector identity.
   "reference-implementation/scripts/run-tests.ts:90",
+  // deploy-canary.ts main() reads resolve(args.manifest) -- the operator's own
+  // --manifest CLI argument, same class as cli/lib/common.ts:35. The file it
+  // names is a canary metric manifest (checks, thresholds, artifact
+  // assertions); parseManifest validates its shape and rejects anything else,
+  // so it can carry no connector policy the harness would act on.
+  // Line-pinned by design: re-derive if an edit above the call site moves it.
+  "reference-implementation/scripts/canary/deploy-canary.ts:606",
   // apply-browser-surface-replacement-correction.ts reads an operator-supplied --artifact repair-script path.
   "reference-implementation/scripts/repair/apply-browser-surface-replacement-correction.ts:112",
   // quality-ratchet tooling reads its own mass-baseline.json/package.json config, no connector identity.
@@ -214,6 +221,14 @@ const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
   // inspection: `path` here is never derived from a connector_id/stream, only
   // from an env var with a fixed /var/lib/pdpp-relative default.
   "reference-implementation/server/version-disposition.ts:238",
+  // loadMappings(path) in connector-instance-groups-migrate.ts: readFileSync(path, "utf8")
+  // where `path` is the operator's own CLI positional argument (the grouping
+  // mappings JSON file), the same class of call this allowlist already
+  // covers (cache.ts:125, common.ts:35 above) -- an explicit CLI-supplied
+  // file path, never a connector-identity path. The mapping file's CONTENT is
+  // owner/operator-authored evidence about connector_instance_id groupings
+  // (opaque ids), not connector/provider policy data.
+  "reference-implementation/scripts/connector-instance-groups-migrate.ts:89",
 ]);
 
 /** Directory segments, relative to a production scan root (e.g. `server/`),

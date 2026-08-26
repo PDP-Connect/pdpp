@@ -481,8 +481,23 @@ export function parseCoverageDiagnosticsStateSnapshot(
     .filter((entry) => !seenStores.has(entry.store))
     .map((entry) => entry.store)
     .sort();
-  const hasCommittedSnapshot =
-    !malformed && duplicateStores.length === 0 && unexpectedStores.length === 0 && missingStores.length === 0;
+  // An UNEXPECTED store is deliberately not fatal, while a MISSING one still is.
+  // The asymmetry is the point: a collector reporting a store this build no
+  // longer declares scanned MORE than was asked of it, which cannot weaken the
+  // coverage claim — and unexpected entries are already excluded from `rows`
+  // above, so they can never corrupt the proof either. A missing store is the
+  // opposite: the collector did not account for something the server requires,
+  // so the snapshot genuinely is not committed.
+  //
+  // Treating both as fatal made a single stale store name discard an otherwise
+  // complete proof. Observed in production: a collector one build behind still
+  // reported a legacy `logs` store alongside every declared store, which set
+  // `reliable=false` and rendered a source with 1,293,596 collected records,
+  // a current heartbeat and a drained outbox as "Not measured".
+  //
+  // `unexpectedStores` stays in the result so the drift remains observable; it
+  // is now informational rather than disqualifying.
+  const hasCommittedSnapshot = !malformed && duplicateStores.length === 0 && missingStores.length === 0;
   return {
     duplicateStores: duplicateStores.sort((a, b) => {
       if (a < b) {
@@ -705,7 +720,7 @@ export const INVENTORY_FINGERPRINT_EXCLUDE_KEYS = ["mtime_epoch", "size_bytes"] 
  *  STATE cursor. Excludes the incidental `mtime_epoch`/`size_bytes` file-stat
  *  fields so an unchanged store does not re-version on every run. Inventory
  *  enumeration is a full scan of the known stores under the source home, so
- *  callers SHOULD `pruneStale()` before serializing STATE: a store that
+ *  callers SHOULD `dropUnseenIds()` before serializing STATE: a store that
  *  disappears must drop out of the cursor so its re-appearance re-emits. */
 export function openInventoryFingerprintCursor(priorState: unknown): FingerprintCursor {
   return openFingerprintCursor(priorState, {

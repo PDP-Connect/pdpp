@@ -437,5 +437,10 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "scheduled_window"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "group_message_count_unanchored": "GroupMe didn't report a message count for some groups, so we can't confirm their history is complete",
+    "provider_reports_more_messages_than_walked": "GroupMe reports more messages than we collected, so some group history may be missing",
+    "history_ended_before_provider_count": "Some older group conversations stop partway: GroupMe's total for the group is higher than the history it will actually hand back, which usually means the oldest messages are no longer stored on GroupMe's side. Everything we did collect is saved. There is nothing for you to do, and we retry in case the rest becomes available."
+  }
 }

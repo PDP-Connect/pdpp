@@ -47,6 +47,12 @@
   },
   "capabilities": {
     "human_interaction": ["manual_action", "otp"],
+    "declared_reason_tokens": [
+      "venmo_probe_transport_error",
+      "venmo_post_submit_probe_transport_error",
+      "venmo_origin_navigation_failed",
+      "venmo_password_screen_timeout"
+    ],
     "refresh_policy": {
       "recommended_mode": "manual",
       "recommended_interval_seconds": 21600,
@@ -56,11 +62,11 @@
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",
       "background_safe": false,
-      "assisted_after_owner_auth": true,
-      "rationale": "Manual only while this connector stays unproven and unlisted. Once proven, the session persists in the profile after first login, so background scheduling can be revisited then."
+      "rationale": "Venmo requires an interactive login that may serve a one-time code, and this connector has not proven that the profile session survives across runs, so refresh stays owner-present. Maturity is tracked by public_listing.tier:preview; if a live run proves session reuse, declare background_safe:true and the recommended mode follows."
     },
     "public_listing": {
-      "tier": "development"
+      "tier": "preview",
+      "rationale": "Real collection logic (browser-session auth against api.venmo.com's own JSON endpoints via the page's own cookie jar, matching the reddit/amazon pattern), verified by 70 unit/integration tests covering parsers, schemas, cursor behavior, redaction, and the credential-submit retry boundary (B4). Listed as Preview rather than Supported because no live run against a real Venmo account has been recorded yet. The owner opted this into listing to perform that first real run."
     }
   },
   "streams": [
@@ -339,5 +345,9 @@
       "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "friends_deferred_page_budget": "We stopped after reading a set number of pages of your Venmo friends, so some friends haven't been collected yet. Nothing was lost \u2014 the next run picks up where this one stopped",
+    "transactions_deferred_page_budget": "We stopped after reading a set number of pages of your Venmo transactions, so older transactions haven't been collected yet. Nothing was lost \u2014 the next run picks up where this one stopped"
+  }
 }

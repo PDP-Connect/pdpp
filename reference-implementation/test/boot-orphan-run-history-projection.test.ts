@@ -19,7 +19,7 @@ import test from "node:test";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome resolver lacks this runtime-supported dependency export shape.
 import Database from "better-sqlite3";
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../lib/controller-boot.ts";
-import { clearCurrentBootEpoch } from "../lib/spine.ts";
+import { clearCurrentBootEpoch, emitSpineEvent } from "../lib/spine.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
@@ -80,9 +80,17 @@ function readRunHistory(dbPath: string, runId: string) {
   const raw = new Database(dbPath);
   try {
     return raw
-      .prepare("SELECT status, terminal_reason, completed_at, records_emitted FROM run_history WHERE run_id = ?")
+      .prepare(
+        "SELECT status, terminal_reason, completed_at, records_emitted, facts_json FROM run_history WHERE run_id = ?"
+      )
       .get(runId) as
-      | { completed_at: string | null; records_emitted: number; status: string; terminal_reason: string | null }
+      | {
+          completed_at: string | null;
+          facts_json: string | null;
+          records_emitted: number;
+          status: string;
+          terminal_reason: string | null;
+        }
       | undefined;
   } finally {
     raw.close();
@@ -113,6 +121,45 @@ test("boot reconciliation terminalises an orphaned run_history row with a typed 
   }
 });
 
+// Investigation 2026-08-22 (run_1787406305278): the terminal reason alone
+// is an unverifiable claim from run_history — confirming a real controller
+// restart happened required correlating raw spine events against container
+// logs across a deploy. The boot-abandon event already carries the epoch
+// transition as evidence (original_boot_epoch !== reconciled_by_boot_epoch);
+// this asserts it survives the projection into facts_json so a reader can
+// confirm the claim from the row alone.
+test("boot reconciliation projects boot-epoch provenance into facts_json", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    seedRunningRun(dbPath, { event_id: "evt_orphan_provenance_1", run_id: "run_orphan_provenance_1" });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-epoch-provenance-new",
+      controllerId: "host-test",
+    });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    const row = readRunHistory(dbPath, "run_orphan_provenance_1");
+    assert.ok(row, "seeded run_history row should still exist");
+    assert.ok(row.facts_json, "an abandoned run must carry facts_json with its provenance");
+    const facts = JSON.parse(row.facts_json ?? "{}");
+    // seedRunningRun's run.started carries no boot_epoch (legacy shape), so
+    // the orphan's original epoch is honestly null — the reconciling boot's
+    // epoch is what proves a real transition happened.
+    assert.equal(facts.original_boot_epoch, null);
+    assert.equal(
+      facts.reconciled_by_boot_epoch,
+      "boot-epoch-provenance-new",
+      "must record which boot adjudicated this orphan, so the claim is verifiable from the row alone"
+    );
+    assert.equal(facts.source, "recovery_worker");
+  } finally {
+    closeDb();
+    clearCurrentBootEpoch();
+  }
+});
+
 test("boot reconciliation retains records already committed by the orphaned run", async () => {
   const dbPath = tempDbPath();
   initDb(dbPath);
@@ -132,6 +179,58 @@ test("boot reconciliation retains records already committed by the orphaned run"
     // terminalising the run must not revise its yield down to the
     // reconciler's own zero.
     assert.equal(row.records_emitted, 42, "records already committed by the run must survive reconciliation");
+  } finally {
+    closeDb();
+    clearCurrentBootEpoch();
+  }
+});
+
+test("boot reconciliation retains durable batches recorded before a SIGKILL", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    const runId = "run_orphan_durable_batch_1";
+    seedRunningRun(dbPath, { event_id: "evt_orphan_batch_1", run_id: runId });
+
+    // This is the production ordering: the resource server has durably
+    // accepted a batch and the runtime has recorded its cumulative emitted
+    // count, but SIGKILL arrives before the connector can emit a terminal
+    // event. The boot reconciler is the next writer to touch the run.
+    await emitSpineEvent({
+      actor_id: CONNECTOR_ID,
+      actor_type: "runtime",
+      data: {
+        batch_size: 3,
+        connector_instance_id: INSTANCE_ID,
+        records_accepted: 3,
+        records_emitted: 3,
+        records_flushed: 3,
+        source: { id: CONNECTOR_ID, kind: "connector" },
+        total_records_flushed: 3,
+      },
+      event_type: "run.batch_ingested",
+      object_id: runId,
+      object_type: "run",
+      run_id: runId,
+      status: "succeeded",
+      stream_id: "items",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-epoch-orphan-batch-1",
+      controllerId: "host-test",
+    });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    const row = readRunHistory(dbPath, runId);
+    assert.ok(row, "seeded run_history row should still exist");
+    assert.equal(row.status, "abandoned");
+    assert.equal(
+      row.records_emitted,
+      3,
+      "a durable batch written before SIGKILL must not be replaced by the schema default"
+    );
+    assert.equal(JSON.parse(row.facts_json ?? "{}").records_emitted, 3);
   } finally {
     closeDb();
     clearCurrentBootEpoch();
@@ -361,3 +460,53 @@ function readRunHistoryRows(dbPath: string, runId: string) {
 function tempDbPath() {
   return makeTemporaryDbPath("pdpp-boot-recon-proj-");
 }
+
+// The durable projection must tell the same story as the spine event for a
+// run that died while the owner was still being asked for input. Without
+// this, the console would read `controller_terminated_before_run_finished`
+// for a run whose owner had already been sent a real, now-useless OTP.
+test("boot reconciliation projects the awaiting-owner-interaction reason into run_history", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    seedRunningRun(dbPath, { event_id: "evt_proj_otp", records_emitted: 3, run_id: "run_proj_awaiting_otp" });
+    // The connector asked the owner for a code; no terminal interaction event
+    // ever followed, so the owner was still being waited on.
+    const raw = new Database(dbPath);
+    try {
+      const ts = "2026-05-10T12:00:05.000Z";
+      raw
+        .prepare(
+          `
+        INSERT INTO spine_events
+          (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, object_type, object_id, status, run_id,
+           interaction_id, data_json, version)
+        VALUES (?, 'run.interaction_required', ?, ?, 'default', 'trc_seed', 'runtime', ?, 'run', ?, 'started', ?, ?, '{}', 'v1')
+        `
+        )
+        .run("evt_proj_int_req", ts, ts, CONNECTOR_ID, "run_proj_awaiting_otp", "run_proj_awaiting_otp", "int_proj_1");
+    } finally {
+      raw.close();
+    }
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-proj-otp",
+      controllerId: "host-test",
+    });
+    await reconcileOrphanedRunsAtBoot(epoch);
+
+    const row = readRunHistory(dbPath, "run_proj_awaiting_otp");
+    assert.ok(row, "run_history row must survive reconciliation");
+    assert.equal(row.status, "abandoned");
+    assert.equal(
+      row.terminal_reason,
+      "controller_terminated_while_awaiting_owner_interaction",
+      "run_history must carry the same reason as the spine event"
+    );
+    assert.equal(row.records_emitted, 3, "reconciliation must not discard collected work");
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});

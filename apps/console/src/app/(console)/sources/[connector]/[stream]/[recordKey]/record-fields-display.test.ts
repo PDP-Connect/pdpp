@@ -58,11 +58,11 @@ test("an object with no string-valued field falls back to compact JSON", () => {
 
 test("an array of {name, email} objects renders readable names, not raw JSON — the live Gmail `cc` bug", () => {
   const cc = [
-    { email: "mmarco@law.harvard.edu", name: "Meg Marco" },
-    { email: "anna@opendatalabs.xyz", name: "Anna Kazlauskas" },
+    { email: "rowan.diaz@example.edu", name: "Rowan Diaz" },
+    { email: "sasha.lindqvist@example.org", name: "Sasha Lindqvist" },
   ];
   const rendered = renderValue(cc, undefined);
-  assert.equal(rendered.text, "Meg Marco, Anna Kazlauskas");
+  assert.equal(rendered.text, "Rowan Diaz, Sasha Lindqvist");
   assert.doesNotMatch(rendered.text, JSON_SYNTAX_RE, "must never contain JSON syntax characters");
   assert.equal(rendered.empty, false);
 });

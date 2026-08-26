@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  addressbookMultiget,
   addressbookQueryAll,
   CardDavStructuralError,
   listAddressBooks,
@@ -471,6 +472,86 @@ test("syncCollectionReport: a genuinely transient HTTP-status failure is a plain
         err instanceof Error &&
         err.message.startsWith("carddav_sync_collection_failed")
     );
+  } finally {
+    await server.close();
+  }
+});
+
+test("syncCollectionReport: reports enumerated members that carry no inlined address-data", async () => {
+  // Verbatim shape of iCloud's sync-collection multistatus (probe against
+  // p196-contacts.icloud.com, 2026-08-19): getetag only, no address-data, and
+  // the collection's own href (no trailing slash) listed beside its members.
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+<response>
+  <href>/18913754167/carddavhome/card</href>
+  <propstat><prop><getetag>mfhpss66</getetag></prop><status>HTTP/1.1 200 OK</status></propstat>
+</response>
+<response>
+  <href>/18913754167/carddavhome/card/3FF77740-4879-41BB-8267-0429C3EB15A8.vcf</href>
+  <propstat><prop><getetag>"msndeisq"</getetag></prop><status>HTTP/1.1 200 OK</status></propstat>
+</response>
+<sync-token>HwoQEgwAABJ++QlJcAACAAEYAhgAIhYI</sync-token>
+</multistatus>`;
+
+  const result = await syncCollectionReport({
+    bookUrl: "https://p196-contacts.icloud.com/18913754167/carddavhome/card/",
+    authHeader: AUTH_HEADER,
+    fetchImpl: async () => syntheticResponse(207, {}, body),
+    trustedOrigins: ["https://p196-contacts.icloud.com"],
+    priorSyncToken: "",
+  });
+
+  assert.equal(result.supportsSyncCollection, true);
+  // The member must be surfaced for a multiget follow-up, not silently dropped.
+  assert.deepEqual(result.hrefsMissingBodies, [
+    "https://p196-contacts.icloud.com/18913754167/carddavhome/card/3FF77740-4879-41BB-8267-0429C3EB15A8.vcf",
+  ]);
+  // The collection's own href is not a member resource.
+  assert.equal(result.resources.length, 0);
+  assert.equal(result.deletedHrefs.length, 0);
+});
+
+test("addressbookMultiget: fetches vCard bodies for explicitly requested hrefs", async () => {
+  const server = await startFakeCardDavServer({
+    username: USERNAME,
+    password: PASSWORD,
+    syncCollectionOmitsAddressData: true,
+  });
+  try {
+    server.contacts.set("gina", {
+      uid: "gina",
+      href: "/addressbooks/owner/card/gina.vcf",
+      vcard: buildVCard({ uid: "gina", fn: "Gina Example" }),
+    });
+    const discovery = await discover(server.origin);
+    const books = await listAddressBooks({
+      homeUrl: discovery.addressBookHomeUrl,
+      authHeader: AUTH_HEADER,
+      fetchImpl,
+      trustedOrigins: discovery.visitedOrigins,
+    });
+    const bookUrl = books[0]?.url ?? "";
+
+    const sync = await syncCollectionReport({
+      bookUrl,
+      authHeader: AUTH_HEADER,
+      fetchImpl,
+      trustedOrigins: discovery.visitedOrigins,
+      priorSyncToken: "",
+    });
+    assert.equal(sync.resources.length, 0, "server inlines nothing");
+    assert.equal(sync.hrefsMissingBodies.length, 1);
+
+    const fetched = await addressbookMultiget({
+      bookUrl,
+      authHeader: AUTH_HEADER,
+      fetchImpl,
+      trustedOrigins: discovery.visitedOrigins,
+      hrefs: sync.hrefsMissingBodies,
+    });
+    assert.equal(fetched.length, 1);
+    assert.equal(parseVCards(fetched[0]?.vcardText ?? "")[0]?.fn, "Gina Example");
   } finally {
     await server.close();
   }

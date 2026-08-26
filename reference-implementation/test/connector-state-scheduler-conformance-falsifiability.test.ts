@@ -40,7 +40,7 @@ const STATE_FAILURE = /grant-scoped state is isolated|owner-scoped state for con
 const SCHEDULE_FAILURE =
   /schedule upsert updates existing row in place|schedule list surfaces all configured connectors|schedule delete removes the row/;
 const ACTIVE_RUN_FAILURE =
-  /active-run registry holds at most one row|active-run run_id is unique across connectors|simulated restart reconciles abandoned runs/;
+  /active-run registry holds at most one row|active-run run_id is unique across connectors|simulated restart clears abandoned runs/;
 type ScenarioOutcome = { name: string; ok: true } | { err: string; name: string; ok: false };
 
 test("harness detects at least one invariant violation in each broken-driver area", async () => {

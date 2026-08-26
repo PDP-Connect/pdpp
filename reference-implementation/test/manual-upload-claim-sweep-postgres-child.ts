@@ -12,7 +12,7 @@
  * `reconcileAbandonedManualUploadArtifactsAtBoot` uses to decide sweep
  * ownership. Mirrors manual-upload-claim-sweep-child.ts's SQLite shape.
  *
- * Args (argv[2..]): databaseUrl artifactId cutoffIso nowIso
+ * Args (argv[2..]): databaseUrl artifactId currentEpoch nowIso
  * Output: a single JSON line on stdout: {"claimed": boolean}
  */
 
@@ -20,15 +20,15 @@ import { initPostgresStorage } from "../server/postgres-storage.ts";
 import { createPostgresManualUploadArtifactStore } from "../server/stores/manual-upload-artifact-store.ts";
 
 async function main(): Promise<void> {
-  const [databaseUrl, artifactId, cutoffIso, nowIso] = process.argv.slice(2);
-  if (!(databaseUrl && artifactId && cutoffIso && nowIso)) {
+  const [databaseUrl, artifactId, currentEpoch, nowIso] = process.argv.slice(2);
+  if (!(databaseUrl && artifactId && currentEpoch && nowIso)) {
     throw new Error(
-      "usage: manual-upload-claim-sweep-postgres-child.ts <databaseUrl> <artifactId> <cutoffIso> <nowIso>"
+      "usage: manual-upload-claim-sweep-postgres-child.ts <databaseUrl> <artifactId> <currentEpoch> <nowIso>"
     );
   }
   await initPostgresStorage({ backend: "postgres", databaseUrl });
   const store = createPostgresManualUploadArtifactStore();
-  const claimed = await store.claimForSweep(artifactId, cutoffIso, nowIso);
+  const claimed = await store.claimForSweep(artifactId, currentEpoch, nowIso);
   process.stdout.write(`${JSON.stringify({ claimed })}\n`);
 }
 

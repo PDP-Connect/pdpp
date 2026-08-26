@@ -1,8 +1,27 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * The source status derivation itself lives in `@pdpp/display` so this page and
+ * the `sources-report` CLI read one producer rather than two hand-synced
+ * copies. See `packages/display/src/source/source-status.ts` for why: the CLI's
+ * partial copy never learned the `setup_failed` branch and printed "Revoked"
+ * where this page printed "Setup never completed".
+ *
+ * This module keeps what is genuinely console-only: work grouping, CTA copy,
+ * and route ids.
+ */
+import type { FusedSourceStatus, SourceStatusFlag } from "@pdpp/display";
+import {
+  isArchivedSource,
+  isPausedSource,
+  isRevokedSource,
+  isSetupFailedSource,
+  isSetupInProgressSource,
+  projectSourceVerdict,
+  TERMINAL_SETUP_DISPOSITION_COPY,
+} from "@pdpp/display";
 import { deriveFailureSummary, type FailureSummary } from "./connection-evidence.ts";
-import { isActiveConnectorRunSummaryStatus } from "./connector-run-summary-status.ts";
 import type { FormattedNextAction } from "./next-action.ts";
 import type {
   RefActionRemediation,
@@ -11,22 +30,24 @@ import type {
   RefRequiredAction,
   RefSourceWorkGroup,
   RefTerminalSetupDisposition,
-  RefVerdictTone,
 } from "./ref-client.ts";
 
+export type {
+  FusedSourceStatus,
+  SourceStatusFlag,
+  SourceStatusKind,
+  SourceStatusTone,
+  TerminalSetupDispositionCopy,
+} from "@pdpp/display";
+// biome-ignore lint/performance/noBarrelFile: these are the extracted derivation's console-facing names; re-exporting keeps existing call sites pointed at one producer.
+export {
+  deriveRenderedSourceStatus,
+  deriveSourceVerdictStatus,
+  fuseSourceStatus,
+  TERMINAL_SETUP_DISPOSITION_COPY,
+} from "@pdpp/display";
+
 export type SourceWorkGroupId = "needsOwner" | "notMeasured" | "review" | "systemIssue" | "unavailable" | "working";
-
-export type SourceStatusKind = "blocked" | "degraded" | "healthy" | "pending" | "revoked" | "unknown";
-
-export type SourceStatusTone = "destructive" | "muted" | "success" | "warning";
-
-export interface SourceStatusFlag {
-  dot: string;
-  freshnessNote: string | null;
-  kind: SourceStatusKind;
-  label: string;
-  tone: SourceStatusTone;
-}
 
 export interface SourcePrimaryVerdictAction {
   audience: RefRequiredAction["audience"];
@@ -67,10 +88,17 @@ export interface SourceWorkGroups {
 
 export interface SourceActionabilityProjection {
   failureSummary: FailureSummary | null;
+  /**
+   * The single owner-facing status line: state, freshness, and activity fused
+   * under the worst-honest-axis rule. See `fused-source-status.ts`.
+   */
+  fusedStatus: FusedSourceStatus;
   label: string;
   nextAction: FormattedNextAction | null;
   ownerActionByStream: SourceStreamOwnerActionAvailability;
   ownerActionCue: SourceOwnerActionCue | null;
+  /** Collection is stopped but fully reversible. Never true when `revoked`. */
+  paused: boolean;
   primaryAction: RefRequiredAction | null;
   primaryVerdictAction: SourcePrimaryVerdictAction | null;
   renderedStatus: SourceStatusFlag;
@@ -124,31 +152,6 @@ export const SOURCE_WORK_GROUP_COPY: Record<SourceWorkGroupId, { label: string; 
   },
 };
 
-export interface TerminalSetupDispositionCopy {
-  actionLabel: string;
-  statusLabel: string;
-  what: string;
-}
-
-/** Shared owner copy for the server-owned terminal setup dispositions. */
-export const TERMINAL_SETUP_DISPOSITION_COPY: Record<RefTerminalSetupDisposition, TerminalSetupDispositionCopy> = {
-  unverified_missing_counts: {
-    actionLabel: "Review setup",
-    statusLabel: "needs review",
-    what: "The first sync completed without durable count evidence. Review the connection before retrying.",
-  },
-  unverified_zero: {
-    actionLabel: "Retry first sync",
-    statusLabel: "needs review",
-    what: "The first sync returned zero records without proving the account was empty. Review the connection and retry.",
-  },
-  verified_empty: {
-    actionLabel: "Review empty result",
-    statusLabel: "verified empty",
-    what: "The first sync verified that this source has no records. Review the setup result before trying again.",
-  },
-};
-
 /** The one owner-facing meaning of the headline "needs you" attention number. */
 export interface SourceAttentionHeadline {
   /** Count of sources genuinely blocked on the owner's action (the needs-you group). */
@@ -193,13 +196,6 @@ const SERVER_GROUP_STATUS_LABEL: Readonly<Record<Exclude<RefSourceWorkGroup, "no
   working: "is working",
 };
 
-const VERDICT_TONE_STATUS: Record<RefVerdictTone, Pick<SourceStatusFlag, "dot" | "kind" | "tone">> = {
-  amber: { dot: "◐", kind: "degraded", tone: "warning" },
-  green: { dot: "●", kind: "healthy", tone: "success" },
-  grey: { dot: "○", kind: "unknown", tone: "muted" },
-  red: { dot: "⊘", kind: "blocked", tone: "destructive" },
-};
-
 function readableConnectorId(connectorId: string): string {
   return connectorId.replace(UNDERSCORE_RE, " ").trim() || connectorId;
 }
@@ -216,22 +212,22 @@ function connectorLabel(connector: RefConnectorSummary): string {
   );
 }
 
+/**
+ * The lifecycle predicates below keep their console-facing `*Connector` names
+ * (dozens of call sites read them) but delegate to `@pdpp/display`, so the
+ * console and the `sources-report` CLI branch on the SAME definition of
+ * revoked/paused/draft/archived/setup-failed.
+ */
 export function isRevokedConnector(connector: RefConnectorSummary): boolean {
-  return connector.status === "revoked" || Boolean(connector.revoked_at);
+  return isRevokedSource(connector);
 }
 
-/**
- * A `draft` connection has completed neither its credential capture nor its
- * first ingest — `rendered_verdict`/`connection_health` carry no lifecycle
- * concept (they are built from health/coverage/schedule evidence that a
- * draft simply does not have yet), so this is a lifecycle check independent
- * of the verdict, exactly like {@link isRevokedConnector}. Prefers the
- * server-derived `owner_state.resolver` (the closed, exhaustively-tested
- * source of truth — `runtime/owner-state.ts`). A missing server state is not
- * reconstructed from the raw lifecycle field.
- */
+export function isPausedConnector(connector: RefConnectorSummary): boolean {
+  return isPausedSource(connector);
+}
+
 export function isSetupInProgressConnector(connector: RefConnectorSummary): boolean {
-  return connector.owner_state?.resolver === "setup_in_progress";
+  return isSetupInProgressSource(connector);
 }
 
 export function isOwnerSatisfiableAction(action: RefRequiredAction | null | undefined): action is RefRequiredAction {
@@ -266,61 +262,6 @@ export function hasPrimaryOwnerLocalDeviceRemediation(verdict: RefRenderedVerdic
 
 export function verdictRequiresOwnerNow(verdict: RefRenderedVerdict | null | undefined): boolean {
   return verdict?.channel === "attention" && primaryOwnerSatisfiableAction(verdict) !== null;
-}
-
-function freshnessNoteFromVerdict(verdict: RefRenderedVerdict): string | null {
-  return verdict.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? null;
-}
-
-function labelWithFreshness(base: string, note: string | null): string {
-  return note ? `${base} · ${note}` : base;
-}
-
-export function deriveRenderedSourceStatus(
-  verdict: RefRenderedVerdict | null | undefined,
-  revoked: boolean,
-  pending = false,
-  terminalSetupDisposition: RefTerminalSetupDisposition | null = null,
-  running = false
-): SourceStatusFlag {
-  if (revoked) {
-    return { dot: "⊘", freshnessNote: null, kind: "revoked", label: "Revoked", tone: "muted" };
-  }
-  if (running) {
-    return { dot: "◌", freshnessNote: null, kind: "pending", label: "Syncing", tone: "muted" };
-  }
-  if (terminalSetupDisposition) {
-    return {
-      dot: "◐",
-      freshnessNote: null,
-      kind: "degraded",
-      label: TERMINAL_SETUP_DISPOSITION_COPY[terminalSetupDisposition].statusLabel,
-      tone: "warning",
-    };
-  }
-  // Setup-in-progress overrides any verdict shape, same priority as revoked:
-  // a draft has no meaningful health/coverage evidence yet (see
-  // `isSetupInProgressConnector`), so its verdict tone (if any) must never be
-  // shown as the status.
-  if (pending) {
-    return { dot: "◌", freshnessNote: null, kind: "pending", label: "Setup in progress", tone: "muted" };
-  }
-  if (!verdict) {
-    return {
-      dot: "○",
-      freshnessNote: null,
-      kind: "unknown",
-      label: "Verdict unavailable",
-      tone: "muted",
-    };
-  }
-  const status = VERDICT_TONE_STATUS[verdict.pill.tone];
-  const freshnessNote = freshnessNoteFromVerdict(verdict);
-  return {
-    ...status,
-    freshnessNote,
-    label: labelWithFreshness(verdict.pill.label, freshnessNote),
-  };
 }
 
 /** The one owner-facing CTA label for a draft, not-yet-ingested connection. */
@@ -480,9 +421,68 @@ function itemFromConnector(
   };
 }
 
+/**
+ * An ARCHIVED source: preserved records, no collection, never resuming.
+ * Server-derived in `deriveSourceVisibility` (`ref-control.ts`) as
+ * `source_visibility: "archived"`.
+ *
+ * `"hidden_from_sources"` is the retired spelling, still accepted so a
+ * console deployed ahead of its reference keeps treating those rows as
+ * archived rather than as live sources — failing toward the safe reading,
+ * since the dangerous error is showing a dead source as collecting.
+ *
+ * Such a source must never generate owner-facing work. Its ONLY durable
+ * content is records from past runs; it has no schedule, no stored
+ * credential, and the owner has already acted on it (by deleting the
+ * connection it came from). A "Reconnect this account and collection
+ * resumes" prompt built from its `CredentialsValid: false` condition is
+ * technically correct (no credential exists) but not actionable in the way
+ * the copy implies — reconnecting does not "resume" anything, because
+ * nothing here was ever a live collection the owner intends to continue.
+ *
+ * The Sources list now RENDERS these rows (in a distinct Archived group)
+ * rather than dropping them, but the no-work rule is unchanged and applies
+ * to every owner-facing work surface (`/syncs`, the dashboard "Needs you"
+ * section) that reads `sourceWorkFromConnectors`.
+ *
+ * A SETUP-FAILED source is the sibling case: a revoked retired-setup-shell
+ * binding that never had a successful run. It holds zero records by
+ * construction and must never generate owner-facing work either — an archived
+ * source once collected and is now terminal; a setup-failed source never
+ * collected at all.
+ *
+ * Both predicates are `@pdpp/display`'s, re-exported here so the console and
+ * the `sources-report` CLI classify these rows identically.
+ */
+export { isArchivedSource, isSetupFailedSource } from "@pdpp/display";
+
+/** The one owner-facing CTA label for resuming a paused connection. */
+export const RESUME_PAUSED_CTA_LABEL = "Resume";
+
 export function sourceWorkItemFromConnector(connector: RefConnectorSummary): SourceWorkItem | null {
-  if (isRevokedConnector(connector)) {
+  if (isRevokedConnector(connector) || isArchivedSource(connector) || isSetupFailedSource(connector)) {
     return null;
+  }
+
+  // A paused source is surfaced in `review` ("Available actions"), never in
+  // `needsOwner`. Nothing is broken and nothing is waiting on the owner — the
+  // owner already decided to stop collecting — so counting it as "needs you"
+  // would inflate the one number that is supposed to mean "you are blocking
+  // something" (see `sourceAttentionHeadline`). But it must not vanish either:
+  // a paused row that produced no work item at all (the `revoked` treatment)
+  // would leave collection silently stopped with no path back on any list
+  // surface. `review` is exactly the group for an optional action the owner
+  // may take, so the source stays visible and carries its own way out.
+  //
+  // Checked before the verdict for the same reason `deriveRenderedSourceStatus`
+  // ranks paused early: a paused row's verdict describes collection that has
+  // stopped.
+  if (isPausedConnector(connector)) {
+    return itemFromConnector(connector, "review", {
+      actionLabel: RESUME_PAUSED_CTA_LABEL,
+      statusLabel: "is paused",
+      what: "Collection is paused. Your existing records, schedule, and sign-in are kept — resume to start collecting again.",
+    });
   }
 
   const terminalSetupDisposition = connector.terminal_setup_disposition ?? null;
@@ -535,36 +535,47 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
 export function projectSourceActionability(connector: RefConnectorSummary): SourceActionabilityProjection {
   const routeId = connectionRouteId(connector);
   const label = connectorLabel(connector);
-  const revoked = isRevokedConnector(connector);
-  const terminalSetupDisposition = connector.terminal_setup_disposition ?? null;
-  const pending = !revoked && isSetupInProgressConnector(connector) && terminalSetupDisposition === null;
-  const running = connector.last_run !== null && isActiveConnectorRunSummaryStatus(connector.last_run.status);
-  const primaryAction = pending ? null : primaryRequiredAction(connector.rendered_verdict);
-  const primaryVerdictAction = formatPrimaryVerdictAction(
-    connector.rendered_verdict,
-    pending,
-    terminalSetupDisposition
-  );
+  // ONE producer for the status the owner reads. `projectSourceVerdict`
+  // (@pdpp/display) derives the lifecycle facts, the single-slot
+  // `renderedStatus`, and the fused line together, so this page and the
+  // `sources-report` CLI cannot rank the same connection differently.
+  const verdict = projectSourceVerdict(connector);
+  const { archived, paused, pending, revoked, setupFailed, terminalSetupDisposition } = verdict.facts;
+  // An archived or setup-failed source offers NO action ON THIS ROW. An
+  // archived source's stored verdict still carries the required actions from
+  // when it was live — typically "Reconnect this account and collection
+  // resumes", which leads nowhere: reconnecting mints a new connection and
+  // resumes nothing here. A setup-failed source never had a credential or
+  // schedule to begin with, so its detail page has nothing actionable either
+  // — `NextActionCta` (`sources-view.tsx`) always links to THIS row's detail
+  // page, and that would be a dead end. The honest next step for both is a
+  // fresh attempt, which the page's own "add a source" link already offers.
+  // Suppressing at the projection root keeps every surface (list cue,
+  // passport foot, /syncs) consistent, the same intent `dfbbb8843`
+  // established for archived rows.
+  const noVerdictAction = archived || setupFailed;
+  const primaryAction = pending || noVerdictAction ? null : primaryRequiredAction(connector.rendered_verdict);
+  const primaryVerdictAction = noVerdictAction
+    ? null
+    : formatPrimaryVerdictAction(connector.rendered_verdict, pending, terminalSetupDisposition);
   return {
     // A failure summary is display formatting for a server verdict. Never use
     // the raw health snapshot as a classifier when the verdict is absent.
     failureSummary:
-      pending || !connector.rendered_verdict
+      pending || noVerdictAction || !connector.rendered_verdict
         ? null
         : deriveFailureSummary(connector.connection_health, connector.rendered_verdict),
     label,
-    nextAction: formatRenderedRequiredAction(connector.rendered_verdict, pending, terminalSetupDisposition),
+    nextAction: noVerdictAction
+      ? null
+      : formatRenderedRequiredAction(connector.rendered_verdict, pending, terminalSetupDisposition),
     ownerActionByStream: pending ? {} : ownerActionAvailabilityByStream(connector.rendered_verdict ?? null),
     ownerActionCue: ownerActionCueFromVerdictAction(primaryVerdictAction),
+    paused,
     primaryAction,
     primaryVerdictAction,
-    renderedStatus: deriveRenderedSourceStatus(
-      connector.rendered_verdict,
-      revoked,
-      pending,
-      terminalSetupDisposition,
-      running
-    ),
+    fusedStatus: verdict.fusedStatus,
+    renderedStatus: verdict.renderedStatus,
     revoked,
     routeId,
     work: sourceWorkItemFromConnector(connector),

@@ -68,6 +68,7 @@ import {
 } from "../../src/collection-scope-enumeration.ts";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
+import { LocalJsonlMalformedLineError } from "../../src/local-jsonl-cursor.ts";
 import {
   buildCoverageDiagnosticsStateSnapshot,
   buildDerivedCoverageRecord,
@@ -271,6 +272,8 @@ export interface RolloutLineYield {
  * Byte offsets are tracked over the raw bytes (Buffer length), not decoded
  * characters, so a multi-byte UTF-8 sequence advances the offset by its true
  * byte length and the resume offset always lands on a real byte boundary.
+ * A malformed complete line throws instead of being consumed, so callers
+ * cannot checkpoint past an unresolved source gap.
  */
 export async function* iterJsonlLinesFromOffset(path: string, startOffset: number): AsyncGenerator<RolloutLineYield> {
   const stream = createReadStream(path, { start: startOffset });
@@ -290,8 +293,11 @@ export async function* iterJsonlLinesFromOffset(path: string, startOffset: numbe
         let parsed: RolloutObject | null = null;
         try {
           parsed = JSON.parse(line) as RolloutObject;
-        } catch {
-          parsed = null; // skip malformed, but still advance the offset
+        } catch (error) {
+          // A complete malformed line is a source gap. Throw before yielding
+          // the next record so parseRolloutFile cannot return a cursor beyond
+          // this line and the connector can disclose the unresolved stream.
+          throw new LocalJsonlMalformedLineError(committed, { cause: error });
         }
         if (parsed) {
           yield { obj: parsed, committedOffset: committed };
@@ -568,11 +574,22 @@ async function emitSkillsStream(
 ): Promise<void> {
   // Each skill is a subdirectory with SKILL.md at its root. Follows symlinks
   // (skills are often symlinked from dotfiles). Skips hidden dirs (.system).
+  //
+  // Fail closed on an unreadable directory, matching `emitRulesStream` and
+  // `emitPromptsStream`, which already route through `listIfExists`. This
+  // function previously swallowed EVERY error, so a permission failure on the
+  // skills directory was indistinguishable from "this owner has no skills" —
+  // the filesystem is the whole source of truth here, so an unreadable
+  // directory is a source-boundary failure, not evidence of emptiness. ENOENT
+  // (genuinely absent) remains a legitimate empty enumeration.
   let entries: Dirent[];
   try {
     entries = await readdir(skillsDir, { withFileTypes: true });
-  } catch {
-    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return;
+    }
+    throw error;
   }
   for (const ent of entries) {
     if (shouldSkipSkillEntry(ent)) {
@@ -1408,7 +1425,10 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
           messagesExamined += counts.messages;
           functionCallsExamined += counts.functionCalls;
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof LocalJsonlMalformedLineError) {
+          await reportMalformedRolloutGap(args.requested);
+        }
         // Any error during parsing (without code or other) makes scan incomplete
         scanOutcome = "parse_error";
         break;
@@ -1433,6 +1453,23 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
     functionCallsExamined,
     scanOutcome,
   };
+}
+
+async function reportMalformedRolloutGap(requested: Map<string, StreamScope>): Promise<void> {
+  // The malformed line was complete, so it is a real unresolved source item
+  // rather than an in-flight tail. Do not checkpoint this file; disclose the
+  // gap on every requested rollout-derived stream.
+  for (const stream of ["messages", "function_calls"] as const) {
+    if (requested.has(stream)) {
+      emit({
+        type: "SKIP_RESULT",
+        stream,
+        reason: "malformed_jsonl_line",
+        message: "Codex contains a malformed complete JSONL line; the source cursor was not advanced past it",
+      });
+    }
+  }
+  await waitForEmitDrain();
 }
 
 // ─── Session emission ───────────────────────────────────────────────────
@@ -1878,7 +1915,7 @@ async function emitGatedInventoryStream(input: {
       await waitForEmitDrain();
     }
   }
-  cursor.pruneStale();
+  cursor.dropUnseenIds();
   const inventoryCursor: Record<string, unknown> = { fetched_at: input.nowIso() };
   if (cursor.size() > 0) {
     inventoryCursor.fingerprints = cursor.toState();
