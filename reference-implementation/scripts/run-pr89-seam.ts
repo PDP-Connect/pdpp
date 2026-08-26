@@ -113,7 +113,21 @@ function runtimeCommand(caseId: CaseId): string[] {
 
 function runChild(caseId: CaseId, postgresUrl: string, caseOutputPath: string): Promise<ChildResult> {
   const definition = CASE_DEFINITIONS[caseId];
-  const env: NodeJS.ProcessEnv = { ...process.env, PDPP_TEST_POSTGRES_URL: postgresUrl };
+  // Boot-time schedule auto-enrollment stays OFF for seam cases, for the same
+  // reason it is off under the main test runner: a case that seeds a connection
+  // and calls `startServer` gets a live schedule it never asked for, and the
+  // scheduler's interval timer holds the event loop open after the case has
+  // finished every assertion. `pr89-case-2` closes both servers in a `finally`
+  // but never stops the scheduler, so the child process hangs and the job is
+  // cancelled at its timeout with the cases already green.
+  //
+  // This seam runs through `run-command.ts`, NOT `scripts/run-tests.ts`, so it
+  // does not inherit that runner's default and has to set the same opt-out here.
+  const env: NodeJS.ProcessEnv = {
+    PDPP_SKIP_AUTO_SCHEDULE_ENROLLMENT: "1",
+    ...process.env,
+    PDPP_TEST_POSTGRES_URL: postgresUrl,
+  };
   if (definition.outputRequired) {
     env.PDPP_PR89_CASE_OUTPUT_PATH = caseOutputPath;
   } else {
