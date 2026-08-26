@@ -138,7 +138,7 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   // surface stayed crawlable and ranked, reachable from search even though
   // nothing in the rail pointed at them.
   const isInternalNotesPage = page.path === "README.md";
-  const isMaintainerDoc = MAINTAINER_DOC_SLUGS.some((slug) => page.path === `${slug}.md`);
+  const isMaintainerDoc = MAINTAINER_DOC_SLUGS.some((maintainerSlug) => page.path === `${maintainerSlug}.md`);
   const canonicalUrl = isRootSlug ? "/specification" : page.url;
 
   return {
