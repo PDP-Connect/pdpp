@@ -76,6 +76,22 @@ export const VENMO_ORIGIN_NAVIGATION_FAILED = "venmo_origin_navigation_failed";
 export const VENMO_PASSWORD_SCREEN_TIMEOUT = "venmo_password_screen_timeout";
 
 /**
+ * Venmo refused the sign-in on an INVISIBLE bot score, not on the credential.
+ *
+ * reCAPTCHA Enterprise v3 renders no widget and no checkbox — it scores the
+ * session and returns a verdict the page acts on silently. So the visible-frame
+ * detector ({@link CAPTCHA_FRAME_SELECTOR}) correctly finds nothing, no error
+ * copy is rendered, and the submit control simply stays in its loading state.
+ * That signature is identical to a slow provider unless it is named.
+ *
+ * Deliberately NOT the ordinary `captcha` handoff vocabulary: that path asks
+ * the owner to solve something. There is nothing to solve here — v3 scores the
+ * browser, so an owner staring at the same automated session changes nothing.
+ * Conflating the two would send them to a challenge that does not exist.
+ */
+export const VENMO_SCORING_CHALLENGE = "venmo_invisible_scoring_challenge";
+
+/**
  * This connector's classifying fault-class names — single source of truth,
  * built from the same constants every throw site below uses, so it cannot
  * drift from the vocabulary it names. Every one of these is >=24 chars and
@@ -98,6 +114,7 @@ export const VENMO_DECLARED_REASON_TOKENS: ReadonlySet<string> = new Set([
   VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR,
   VENMO_ORIGIN_NAVIGATION_FAILED,
   VENMO_PASSWORD_SCREEN_TIMEOUT,
+  VENMO_SCORING_CHALLENGE,
 ]);
 
 const HOME_URL = "https://venmo.com/";
@@ -805,6 +822,28 @@ async function hasVenmoCaptcha(page: Page): Promise<boolean> {
 }
 
 /**
+ * Did this page load reCAPTCHA Enterprise **v3** — the invisible, scoring kind?
+ *
+ * Keys on the SCRIPT, never on visibility, because that is the whole point: v3
+ * renders nothing. Presence alone is not proof the score blocked anything —
+ * Venmo loads this on healthy sign-ins too — so callers must only ask once the
+ * login has ALREADY failed to complete. It answers "here is the mechanism that
+ * best explains this failure", not "a challenge is being shown".
+ *
+ * Matches the enterprise v3 asset paths observed live (`grcenterprise_v3.html`,
+ * `recaptchav3.js`) rather than the bare word "recaptcha", which also matches
+ * the v2 visible widget the sibling {@link hasVenmoCaptcha} already handles.
+ */
+async function pageLoadedInvisibleScoringChallenge(page: Page): Promise<boolean> {
+  return await page
+    .locator('script[src*="recaptchav3"], iframe[src*="grcenterprise_v3"], script[src*="grcenterprise_v3"]')
+    .first()
+    .count()
+    .then((n: number): boolean => n > 0)
+    .catch((): boolean => false);
+}
+
+/**
  * Wait for the password screen to actually render, bounded.
  *
  * `waitFor` resolves the instant the field is visible and rejects at the
@@ -1264,6 +1303,19 @@ async function loginWithSavedCredentials({
     // not evidence that the owner's password is wrong, and reporting it as a
     // rejection is how a working credential gets blamed for a slow provider.
     await captureLoginState(capture, page, "venmo-login-did-not-settle");
+    // An INVISIBLE scoring challenge is the one cause we can name here, and
+    // naming it changes what the owner does about it. reCAPTCHA Enterprise v3
+    // renders no widget and no checkbox — it scores the session silently — so
+    // the visible-frame check above cannot see it and no error copy appears on
+    // the page. Left unnamed, its signature is indistinguishable from a slow
+    // provider, which sends the owner looking for a network problem that is
+    // not there. Proven live on run_1787785348388: `_GRECAPTCHA` was written
+    // one second before the password submit and the request never completed.
+    if (await pageLoadedInvisibleScoringChallenge(page)) {
+      throw new Error(
+        `${VENMO_SCORING_CHALLENGE}: Venmo scored this sign-in with an invisible reCAPTCHA Enterprise v3 check and never completed it within ${postSubmitSettleTimeoutMs}ms. There is no challenge to solve — v3 scores the browser itself, so retrying unattended will not clear it.`
+      );
+    }
     throw new Error(`venmo_login_did_not_complete: no sign-in outcome within ${postSubmitSettleTimeoutMs}ms`);
   }
   const finalProbe = settleOutcome.probe;

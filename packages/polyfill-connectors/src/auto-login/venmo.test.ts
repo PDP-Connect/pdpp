@@ -770,6 +770,7 @@ test("ensureVenmoSession: a code input that vanishes after classification fails 
  */
 function makeTwoStepVenmoPage({
   captchaVisible = false,
+  scoringChallengeLoaded = false,
   deadProbesAfterSubmit = 0,
   identifierSelectorMatches = true,
   passwordAppearsAfterNext = true,
@@ -788,6 +789,13 @@ function makeTwoStepVenmoPage({
    */
   deadProbesAfterSubmit?: number;
   identifierSelectorMatches?: boolean;
+  /**
+   * `true` loads reCAPTCHA Enterprise v3's script WITHOUT rendering anything —
+   * the invisible scoring kind. It is deliberately independent of
+   * `captchaVisible`: the whole defect is that a v3 score blocks the login
+   * while every visibility check on the page correctly reports nothing.
+   */
+  scoringChallengeLoaded?: boolean;
   passwordAppearsAfterNext?: boolean;
   /**
    * How long Venmo's second screen takes to render after the identifier is
@@ -939,6 +947,10 @@ function makeTwoStepVenmoPage({
       if (selector === 'button[type="submit"]') {
         // The generic fallback both screens carry.
         return makeClickRecordingLocator(() => advance("generic-submit"));
+      }
+      if (selector.includes("recaptchav3") || selector.includes("grcenterprise_v3")) {
+        // Present but never visible — v3 renders no widget at all.
+        return makeLocator({ count: scoringChallengeLoaded ? 1 : 0, visible: false });
       }
       if (selector.includes("recaptcha") || selector.includes("paypalobjects")) {
         return makeLocator({ count: captchaVisible ? 1 : 0, visible: captchaVisible });
@@ -1111,6 +1123,48 @@ test("ensureVenmoSession: a login that never settles fails as incomplete, never 
       }
     );
     assert.deepEqual(requests, [], "an unsettled login is not a challenge — there is nothing for the owner to do");
+  });
+});
+
+// (2d) The real 2026-08-26 production failure. Venmo scored the automated
+// browser with reCAPTCHA Enterprise v3 — invisible, no widget, no checkbox, no
+// error copy — and simply never completed the login. Reported as a generic
+// timeout it is indistinguishable from a slow provider, which sends the owner
+// hunting a network fault that does not exist. It must name the mechanism, and
+// it must NOT route to the ordinary captcha handoff: there is nothing to solve.
+test("ensureVenmoSession: an invisible v3 scoring challenge is named, not reported as a generic timeout", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makeTwoStepVenmoPage({
+      deadProbesAfterSubmit: Number.MAX_SAFE_INTEGER,
+      scoringChallengeLoaded: true,
+    });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        postSubmitSettleTimeoutMs: 2000,
+        sendInteraction,
+      }),
+      (error: Error) => {
+        assert.match(
+          error.message,
+          /^venmo_invisible_scoring_challenge:/,
+          "a v3 score-block must name itself; a bare timeout blames the network for a bot verdict"
+        );
+        assert.match(
+          error.message,
+          /retrying unattended will not clear it/,
+          "the message must say the retry is futile — otherwise the scheduler and the owner both keep trying"
+        );
+        return true;
+      }
+    );
+    assert.deepEqual(
+      requests,
+      [],
+      "v3 renders no challenge, so an owner handoff would send them to a puzzle that does not exist"
+    );
   });
 });
 
