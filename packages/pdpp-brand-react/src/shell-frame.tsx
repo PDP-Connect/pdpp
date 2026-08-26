@@ -198,7 +198,13 @@ function NavList({ pathname, onNavigate }: { onNavigate?: () => void; pathname: 
                 className={["rr-nav-item", active ? "is-active" : undefined].filter(Boolean).join(" ")}
                 href={item.href}
                 key={item.href}
-                onClick={onNavigate}
+                // next/link's own LinkProps.onClick is `MouseEventHandler | undefined`
+                // WITHOUT the explicit `| undefined` in its declared type, so passing
+                // `onNavigate` (`(() => void) | undefined`) directly fails under
+                // exactOptionalPropertyTypes -- the third-party type genuinely means
+                // "key absent or a real handler", not "key present holding undefined".
+                // Omit the key entirely when there's no handler.
+                {...(onNavigate ? { onClick: onNavigate } : {})}
               >
                 <span>{item.label}</span>
               </Link>

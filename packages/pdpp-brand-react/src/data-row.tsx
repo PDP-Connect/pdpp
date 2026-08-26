@@ -79,7 +79,12 @@ export function DataRowMeta({ children, className }: DataRowMetaProps) {
 // ─── Monogram ─────────────────────────────────────────────────────
 
 interface MonogramProps {
-  className?: string;
+  /**
+   * Read only via the `[..., className].filter(Boolean).join(" ")` pattern
+   * below — "present but `undefined`" and "absent" both drop out of the
+   * filter, so the type says what the read already treats as true.
+   */
+  className?: string | undefined;
   /**
    * Client name — the first two characters (uppercased) are used.
    * Alternatively pass a 1-2 char string directly.
