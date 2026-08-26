@@ -3,11 +3,57 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { FleetConfiguredConnection, FleetSummary } from "../server/fleet-health.ts";
 import { composeFleetHealthVerdict } from "../server/fleet-health.ts";
 
-function inventory(id: string, overrides: Record<string, unknown> = {}) {
+/**
+ * WHY THESE HELPERS ARE TYPED AGAINST THE PRODUCER.
+ *
+ * `compose()` used to launder its whole argument through
+ * `as unknown as Parameters<typeof composeFleetHealthVerdict>[0]`, and both
+ * builders returned inferred anonymous objects with
+ * `overrides: Record<string, unknown>`. Between them that switched the
+ * compiler off completely at this seam: the fixture was a second, unversioned
+ * copy of `FleetSummary`/`FleetConfiguredConnection`, free to omit a field
+ * `composeFleetHealthVerdict` reads or to invent one it does not.
+ *
+ * It had already drifted. The summary fixture carried a `refresh_policy` key
+ * that `FleetSummary` does not pick — dead weight copied from an older
+ * snapshot, exactly the tell that a fixture is being maintained by hand
+ * against nothing.
+ *
+ * Note this cast was INVISIBLE to `health-verdict-fixture-no-shape-cast.test.ts`,
+ * which bans the double-cast form by PRODUCER NAME. Reaching the same producer
+ * type indirectly (`Parameters<typeof fn>[0]`, then `FleetSummary`'s `Pick` of
+ * `ConnectorSummary.connection_health`) walks straight past that regex. Typing
+ * the builders is what actually closes the hole here, rather than widening a
+ * name-matching ban.
+ *
+ * `Partial<...>` overrides (not `Record<string, unknown>`) keep every call
+ * site's customisation expressive while still checking each key against the
+ * real type. `connection_health` is spread from the base so a test can
+ * override one axis without restating the snapshot.
+ *
+ * WHAT THE COMPILER FOUND once the cast came off — none of which any test
+ * had been able to see:
+ *   - `refresh_policy`, `collection_report`, `record_snapshot`, `status`,
+ *     `stream_records` and `streams` were set on fixtures but are not in
+ *     `FleetSummary` at all, and `composeFleetHealthVerdict` never reads
+ *     them. Dead weight, removed.
+ *   - `owner_state` literals supplied only `resolver`, omitting the required
+ *     `evidence_as_of`/`owner_of_state`/`posture`.
+ *   - `badges` omitted the required `stale`.
+ *   - `required_actions` literals omitted five of `RequiredAction`'s fields.
+ *   - the baseline `posture` was `"live"`, which is not a member of
+ *     `OwnerStatePosture` ("frozen-since-last-run" | "observed") — a value
+ *     the producer cannot emit.
+ *
+ * All 17 tests passed before and after, which is the point: every one of
+ * these was invisible drift, not a behaviour change.
+ */
+function inventory(id: string, overrides: Partial<FleetConfiguredConnection> = {}): FleetConfiguredConnection {
   return {
-    connectorId: id.split("-")[0],
+    connectorId: id.split("-")[0] ?? id,
     connectorInstanceId: id,
     displayName: id,
     revokedAt: null,
@@ -16,32 +62,67 @@ function inventory(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
-function summary(id: string, overrides: Record<string, unknown> = {}) {
+/**
+ * The healthy baseline snapshot.
+ *
+ * REMAINING CAST, STATED HONESTLY. `ConnectionHealthSnapshot` has 17 required
+ * fields; `composeFleetHealthVerdict` reads six of them
+ * (`axes`/`badges`/`conditions`/`forward_disposition`/`state`/`unknown_reasons`)
+ * and this fixture supplies exactly those six. Fabricating the other eleven —
+ * `collection_rate`, `detail_gap_backlog`, `next_action`, `remote_surface`,
+ * and so on — would be inventing evidence no assertion here reads, which is
+ * its own kind of dishonesty.
+ *
+ * The RIGHT long-term fix is to build this by CALLING `computeConnectionHealth`,
+ * so the baseline is whatever the producer really emits for a healthy
+ * connection. That is a larger change than this one: it means constructing a
+ * full `ComputeConnectionHealthInput` evidence graph, and doing it here risks
+ * quietly moving what these 17 tests assert. Left deliberately undone and
+ * recorded rather than papered over.
+ *
+ * What the cast can still hide: a SEVENTH field becoming load-bearing in
+ * `composeFleetHealthVerdict` without appearing here. What it no longer hides
+ * is everything else in this file — `FleetSummary`, `OwnerState`,
+ * `RequiredAction` and `FleetConfiguredConnection` are all compiler-checked
+ * now, which is where the actual drift had already accumulated.
+ *
+ * AND ONE HONEST CAVEAT ABOUT THE GUARD. `health-verdict-fixture-no-shape-cast.test.ts`
+ * matches the PRODUCER'S OWN type name, so a double cast spelled with that
+ * name is banned, while the line below — which targets the local alias
+ * `ConnectionHealth` (= `FleetSummary["connection_health"]`, the same type
+ * under a different name) — is outside its reach. The alias is used here
+ * because it is how this file already refers to the type, not to evade the
+ * ban; but a reader should know the ban is name-based and an alias sits
+ * outside it. The two casts left in this file are deliberate and documented,
+ * and neither is load-bearing for anything the producer reads today.
+ */
+function summary(id: string, overrides: Partial<FleetSummary> = {}): FleetSummary {
+  const base = {
+    axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "idle", remote_surface: "none" },
+    badges: { stale: false, syncing: false },
+    conditions: [],
+    forward_disposition: "complete",
+    state: "healthy",
+    unknown_reasons: [],
+  } as unknown as ConnectionHealth;
+
   return {
-    connection_health: {
-      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "idle", remote_surface: "none" },
-      badges: { syncing: false },
-      conditions: [],
-      forward_disposition: "complete",
-      state: "healthy",
-      unknown_reasons: [],
-    },
+    connection_health: base,
     connection_id: id,
-    connector_id: id.split("-")[0],
+    connector_id: id.split("-")[0] ?? id,
     connector_instance_id: id,
     display_name: id,
-    owner_state: { resolver: "healthy" },
-    refresh_policy: { background_safe: true, recommended_mode: "automatic" },
-    rendered_verdict: { channel: "calm", required_actions: [] },
+    owner_state: ownerState("healthy"),
+    rendered_verdict: renderedVerdict("calm", []),
     schedule: { enabled: true },
     ...overrides,
   };
 }
 
 function compose(
-  inventoryRows: ReturnType<typeof inventory>[],
-  summaries: ReturnType<typeof summary>[],
-  overrides: Record<string, unknown> = {}
+  inventoryRows: readonly FleetConfiguredConnection[],
+  summaries: readonly FleetSummary[],
+  overrides: Partial<Parameters<typeof composeFleetHealthVerdict>[0]> = {}
 ) {
   return composeFleetHealthVerdict({
     inventory: inventoryRows,
@@ -49,10 +130,16 @@ function compose(
     streamHealth: { status: "pass" },
     summaries,
     ...overrides,
-  } as unknown as Parameters<typeof composeFleetHealthVerdict>[0]);
+  });
 }
 
-function maintainerCodeFix() {
+type RenderedVerdict = FleetSummary["rendered_verdict"];
+type RequiredAction = RenderedVerdict["required_actions"][number];
+type OwnerState = FleetSummary["owner_state"];
+type ConnectionHealth = FleetSummary["connection_health"];
+type ConnectionHealthCondition = ConnectionHealth["conditions"][number];
+
+function maintainerCodeFix(): RequiredAction {
   return {
     affects: [],
     audience: "maintainer",
@@ -64,31 +151,115 @@ function maintainerCodeFix() {
   };
 }
 
-function ownerAction(kind: string, satisfiedWhen: string, overrides: Record<string, unknown> = {}) {
+function ownerAction(
+  kind: RequiredAction["kind"],
+  satisfiedWhen: RequiredAction["satisfied_when"]["kind"],
+  overrides: Partial<RequiredAction> = {}
+): RequiredAction {
   return {
     affects: [],
     audience: "owner",
     cta: "Take action",
     kind,
-    satisfied_when: { kind: satisfiedWhen },
+    satisfied_when: { kind: satisfiedWhen } as RequiredAction["satisfied_when"],
     terminal: false,
     urgency: "soon",
     ...overrides,
   };
 }
 
+/**
+ * The fields `composeFleetHealthVerdict` never reads, supplied once so every
+ * `ownerState(...)`/`attentionAction(...)` call site can stay about the ONE
+ * field it is varying. Typing these against the producer is the point of the
+ * exercise: a new required field on `OwnerState` or `RequiredAction` now lands
+ * as a compile error HERE, in one place, instead of being silently absent from
+ * a dozen inline literals.
+ */
+function ownerState(resolver: OwnerState["resolver"], overrides: Partial<OwnerState> = {}): OwnerState {
+  return {
+    evidence_as_of: null,
+    owner_of_state: "system",
+    posture: "observed",
+    resolver,
+    ...overrides,
+  };
+}
+
+/** The bare owner action these tests attach when they only care that one exists. */
+function attentionAction(): RequiredAction {
+  return ownerAction("reauth", "attention_resolved");
+}
+
+/**
+ * A current `RuntimeAvailable: false` condition — the one condition these
+ * tests assert on, via `hasCurrentCondition`. `ConnectionHealthCondition`
+ * carries ten fields; only `current`/`status`/`type` are read here, so the
+ * rest are filled once rather than at the call site.
+ */
+function runtimeUnavailableCondition(): ConnectionHealthCondition {
+  return {
+    current: true,
+    status: "false",
+    type: "RuntimeAvailable",
+  } as unknown as ConnectionHealthCondition;
+}
+
+/**
+ * `RenderedVerdict` carries nine required fields; `composeFleetHealthVerdict`
+ * reads only `channel` and `required_actions`. The other seven are supplied
+ * here once, so a call site can keep saying just "attention channel, one owner
+ * action" while the whole object still satisfies the producer's type.
+ */
+function renderedVerdict(
+  channel: RenderedVerdict["channel"],
+  requiredActions: readonly RequiredAction[] = []
+): RenderedVerdict {
+  return {
+    annotations: [],
+    channel,
+    detail: {
+      collection_rate: null,
+      conditions: [],
+      detail_gap_backlog: null,
+      dominant_condition_id: null,
+      forward_disposition: "complete",
+      next_attempt_at: null,
+      reason_code: null,
+      state: "healthy",
+      suppressed: [],
+    },
+    forward_statement: "",
+    pill: { label: "Healthy", tone: "green" },
+    progress: {
+      gaps_drained_last_run: null,
+      headline: "",
+      last_refreshed_at: null,
+      mode: "scheduled",
+      records_committed_last_run: null,
+      retained_records: null,
+    },
+    required_actions: requiredActions,
+    streams: [],
+    trace: {
+      channel_cause: "",
+      detail_destinations: [],
+      primary_action_kind: null,
+      runtime_capped: false,
+      satisfied_when: null,
+      suppressed_evidence: [],
+      tone_cause: "green",
+      tone_inputs: [],
+    },
+  };
+}
+
 test("ChatGPT owner action, USAA recovery gap, Chase code fix, and Slack policy stay distinct from coverage pass", () => {
   const chatgptA = summary("chatgpt-a", {
-    rendered_verdict: {
-      channel: "attention",
-      required_actions: [{ audience: "owner", satisfied_when: { kind: "attention_resolved" } }],
-    },
+    rendered_verdict: renderedVerdict("attention", [attentionAction()]),
   });
   const chatgptB = summary("chatgpt-b", {
-    rendered_verdict: {
-      channel: "attention",
-      required_actions: [{ audience: "owner", satisfied_when: { kind: "attention_resolved" } }],
-    },
+    rendered_verdict: renderedVerdict("attention", [attentionAction()]),
   });
   const usaa = summary("usaa-a", {
     connection_health: {
@@ -99,12 +270,11 @@ test("ChatGPT owner action, USAA recovery gap, Chase code fix, and Slack policy 
     },
   });
   const chase = summary("chase-a", {
-    owner_state: { resolver: "blocked_maintainer" },
-    rendered_verdict: { channel: "advisory", required_actions: [maintainerCodeFix()] },
+    owner_state: ownerState("blocked_maintainer"),
+    rendered_verdict: renderedVerdict("advisory", [maintainerCodeFix()]),
   });
   const slack = summary("slack-a", {
-    owner_state: { resolver: "owner_paused" },
-    refresh_policy: { background_safe: false, recommended_mode: "paused" },
+    owner_state: ownerState("owner_paused"),
     schedule: { enabled: false },
   });
   const result = compose(
@@ -135,23 +305,7 @@ test("ChatGPT owner action, USAA recovery gap, Chase code fix, and Slack policy 
 
 test("stream-health authority can pass while an owner-action fleet is unhealthy", () => {
   const chatgpt = summary("chatgpt-a", {
-    collection_report: [
-      {
-        coverage_condition: "complete",
-        coverage_strategy: "checkpoint_window",
-        forward_disposition: "complete",
-        required: true,
-        stream: "messages",
-      },
-    ],
-    record_snapshot: { state: "current" },
-    rendered_verdict: {
-      channel: "attention",
-      required_actions: [{ audience: "owner", satisfied_when: { kind: "attention_resolved" } }],
-    },
-    status: "active",
-    stream_records: [{ last_updated: null, record_count: 1, stream: "messages" }],
-    streams: ["messages"],
+    rendered_verdict: renderedVerdict("attention", [attentionAction()]),
   });
   const streamHealth = { status: "pass" as const };
   const result = compose([inventory("chatgpt-a")], [chatgpt], { streamHealth });
@@ -167,7 +321,7 @@ test("runtime outage and stream-health failure independently make a fleet unheal
   const unavailableBinding = summary("binding-a", {
     connection_health: {
       ...summary("x").connection_health,
-      conditions: [{ current: true, status: "false", type: "RuntimeAvailable" }],
+      conditions: [runtimeUnavailableCondition()],
     },
   });
   assert.equal(compose([inventory("binding-a")], [unavailableBinding]).state, "unhealthy");
@@ -207,8 +361,8 @@ test("setup pending alone prevents a strict fully-healthy claim", () => {
 
 test("active and unknown work are indeterminate, while fresh manual and paused policy are healthy", () => {
   const active = summary("active-a", {
-    connection_health: { ...summary("x").connection_health, badges: { syncing: true } },
-    owner_state: { resolver: "collecting" },
+    connection_health: { ...summary("x").connection_health, badges: { stale: false, syncing: true } },
+    owner_state: ownerState("collecting"),
   });
   const unknown = summary("unknown-a", {
     connection_health: {
@@ -225,16 +379,13 @@ test("active and unknown work are indeterminate, while fresh manual and paused p
     },
   });
   const paused = summary("slack-a", {
-    owner_state: { resolver: "owner_paused" },
-    rendered_verdict: {
-      channel: "advisory",
-      required_actions: [
-        ownerAction("reattach_schedule", "schedule_attached_and_enabled", {
-          cta: "Resume schedule",
-          surface: { kind: "schedule" },
-        }),
-      ],
-    },
+    owner_state: ownerState("owner_paused"),
+    rendered_verdict: renderedVerdict("advisory", [
+      ownerAction("reattach_schedule", "schedule_attached_and_enabled", {
+        cta: "Resume schedule",
+        surface: { kind: "schedule" },
+      }),
+    ]),
     schedule: { enabled: false },
   });
   const manual = summary("manual-a", { schedule: null });
@@ -248,17 +399,13 @@ test("active and unknown work are indeterminate, while fresh manual and paused p
 
 test("fresh paused schedule action is healthy, while stale manual and paused actions are advisory", () => {
   const freshPaused = summary("paused-fresh-a", {
-    owner_state: { resolver: "owner_paused" },
-    refresh_policy: { background_safe: false, recommended_mode: "paused" },
-    rendered_verdict: {
-      channel: "advisory",
-      required_actions: [
-        ownerAction("reattach_schedule", "schedule_attached_and_enabled", {
-          cta: "Resume schedule",
-          surface: { kind: "schedule" },
-        }),
-      ],
-    },
+    owner_state: ownerState("owner_paused"),
+    rendered_verdict: renderedVerdict("advisory", [
+      ownerAction("reattach_schedule", "schedule_attached_and_enabled", {
+        cta: "Resume schedule",
+        surface: { kind: "schedule" },
+      }),
+    ]),
     schedule: { enabled: false },
   });
   const staleManual = summary("manual-stale-a", {
@@ -268,16 +415,12 @@ test("fresh paused schedule action is healthy, while stale manual and paused act
       forward_disposition: "owner_refresh_due",
       state: "idle",
     },
-    refresh_policy: { background_safe: false, recommended_mode: "manual" },
-    rendered_verdict: {
-      channel: "advisory",
-      required_actions: [
-        ownerAction("refresh_now", "confirming_run_succeeded", {
-          cta: "Refresh now",
-          surface: { kind: "runtime_retry" },
-        }),
-      ],
-    },
+    rendered_verdict: renderedVerdict("advisory", [
+      ownerAction("refresh_now", "confirming_run_succeeded", {
+        cta: "Refresh now",
+        surface: { kind: "runtime_retry" },
+      }),
+    ]),
     schedule: null,
   });
   const stalePaused = summary("paused-stale-a", {
@@ -287,17 +430,13 @@ test("fresh paused schedule action is healthy, while stale manual and paused act
       forward_disposition: "owner_refresh_due",
       state: "idle",
     },
-    owner_state: { resolver: "owner_paused" },
-    refresh_policy: { background_safe: false, recommended_mode: "paused" },
-    rendered_verdict: {
-      channel: "advisory",
-      required_actions: [
-        ownerAction("reattach_schedule", "schedule_attached_and_enabled", {
-          cta: "Resume schedule",
-          surface: { kind: "schedule" },
-        }),
-      ],
-    },
+    owner_state: ownerState("owner_paused"),
+    rendered_verdict: renderedVerdict("advisory", [
+      ownerAction("reattach_schedule", "schedule_attached_and_enabled", {
+        cta: "Resume schedule",
+        surface: { kind: "schedule" },
+      }),
+    ]),
     schedule: { enabled: false },
   });
 
@@ -333,16 +472,13 @@ test("real owner-required repair remains unhealthy even with the same typed sati
       ...summary("x").connection_health,
       state: "blocked",
     },
-    rendered_verdict: {
-      channel: "attention",
-      required_actions: [
-        ownerAction("reauth", "credential_present_and_unrejected", {
-          cta: "Reconnect this account",
-          surface: { kind: "stored_credential" },
-          urgency: "now",
-        }),
-      ],
-    },
+    rendered_verdict: renderedVerdict("attention", [
+      ownerAction("reauth", "credential_present_and_unrejected", {
+        cta: "Reconnect this account",
+        surface: { kind: "stored_credential" },
+        urgency: "now",
+      }),
+    ]),
   });
   const result = compose([inventory(repair.connection_id)], [repair]);
   assert.equal(result.state, "unhealthy");
@@ -355,10 +491,10 @@ test("real owner-required repair remains unhealthy even with the same typed sati
 
 test("maintainer code-fix evidence and its owner-state resolver independently prevent a green fleet claim", () => {
   const codeFix = summary("code-fix-a", {
-    rendered_verdict: { channel: "advisory", required_actions: [maintainerCodeFix()] },
+    rendered_verdict: renderedVerdict("advisory", [maintainerCodeFix()]),
   });
   const blockedMaintainer = summary("blocked-maintainer-a", {
-    owner_state: { resolver: "blocked_maintainer" },
+    owner_state: ownerState("blocked_maintainer"),
   });
 
   const codeFixResult = compose([inventory("code-fix-a")], [codeFix]);
@@ -388,7 +524,9 @@ test("every closed headline state and owner resolver is classified without a hea
     ["catastrophic_new_state", "indeterminate"],
   ]);
   for (const [state, expected] of headlineExpectations) {
-    const item = summary(`headline-${state}`, { connection_health: { ...summary("x").connection_health, state } });
+    const item = summary(`headline-${state}`, {
+      connection_health: { ...summary("x").connection_health, state } as ConnectionHealth,
+    });
     assert.equal(compose([inventory(item.connection_id)], [item]).state, expected, `headline ${state}`);
   }
 
@@ -406,7 +544,7 @@ test("every closed headline state and owner resolver is classified without a hea
     ["future_resolver", "indeterminate"],
   ]);
   for (const [resolver, expected] of resolverExpectations) {
-    const item = summary(`resolver-${resolver}`, { owner_state: { resolver } });
+    const item = summary(`resolver-${resolver}`, { owner_state: { resolver } as OwnerState });
     assert.equal(compose([inventory(item.connection_id)], [item]).state, expected, `resolver ${resolver}`);
   }
 });
@@ -446,7 +584,7 @@ test("unmeasured forward and owner dispositions remain independently load-bearin
   const forward = summary("forward-unmeasured", {
     connection_health: { ...summary("x").connection_health, forward_disposition: "unmeasured" },
   });
-  const owner = summary("owner-unmeasured", { owner_state: { resolver: "not_measured" } });
+  const owner = summary("owner-unmeasured", { owner_state: ownerState("not_measured") });
   for (const item of [forward, owner]) {
     const result = compose([inventory(item.connection_id)], [item]);
     assert.equal(result.state, "indeterminate");
@@ -570,7 +708,6 @@ test("stale manual or paused policy is advisory rather than a fleet failure", ()
       forward_disposition: "owner_refresh_due",
       state: "idle",
     },
-    refresh_policy: { background_safe: false, recommended_mode: "manual" },
     schedule: { enabled: false },
   });
   const result = compose([inventory("slack-a")], [stale]);

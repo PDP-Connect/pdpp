@@ -12,6 +12,7 @@ import type {
 } from "../../src/connector-runtime.ts";
 import type { ConnectionsPage, ContactGroup, Person } from "./api.ts";
 import { PeopleSyncTokenExpiredError } from "./api.ts";
+import type { GoogleContactsState } from "./index.ts";
 import { collectGoogleContacts } from "./index.ts";
 
 class FakePeopleClient {
@@ -69,7 +70,7 @@ function makeContext({
   state = {},
   streams = [{ name: "people" }, { name: "contact_groups" }],
 }: {
-  readonly state?: Record<string, unknown>;
+  readonly state?: GoogleContactsState;
   readonly streams?: readonly StreamScope[];
 } = {}): {
   readonly ctx: CollectContext;
@@ -78,7 +79,10 @@ function makeContext({
 } {
   const messages: EmittedMessage[] = [];
   const records: Array<{ data: RecordData; stream: string }> = [];
-  const start: StartMessage = { type: "START", scope: { streams }, state };
+  // `StartMessage.state` is the runtime's connector-agnostic open bag; the
+  // fixture stays typed as `GoogleContactsState` and widens only here.
+  const startState: Record<string, unknown> = { ...state };
+  const start: StartMessage = { type: "START", scope: { streams }, state: startState };
   return {
     messages,
     records,
@@ -107,7 +111,7 @@ function makeContext({
           status: "cancelled" as const,
           type: "INTERACTION_RESPONSE" as const,
         }),
-      state,
+      state: startState,
     },
   };
 }

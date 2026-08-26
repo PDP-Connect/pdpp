@@ -1924,7 +1924,7 @@ function renderedVerdict(overrides: Partial<RefRenderedVerdict> = {}): RefRender
     streams: [],
     trace: null,
     ...overrides,
-  } as RefRenderedVerdict;
+  };
 }
 
 test("deriveFailureSummary never classifies a raw health snapshot without a server verdict", () => {

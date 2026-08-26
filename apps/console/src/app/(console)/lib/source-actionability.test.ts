@@ -94,7 +94,7 @@ function connector(overrides: Partial<RefConnectorSummary> = {}): RefConnectorSu
     streams: ["messages"],
     total_records: 0,
     ...overrides,
-  } as RefConnectorSummary;
+  };
 }
 
 /** A draft connection: `owner_state.resolver === "setup_in_progress"`, no verdict evidence yet. */

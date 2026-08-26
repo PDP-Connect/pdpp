@@ -77,13 +77,27 @@ function isSyncTokenExpired(error: unknown): boolean {
   );
 }
 
-interface PeopleState {
+/**
+ * The persisted per-stream cursor this connector writes at the end of a run
+ * and reads at the start of the next one.
+ *
+ * EXPORTED SO TESTS CANNOT DRIFT FROM IT. A hand-built state fixture that is
+ * not checked against this type is a second, unversioned copy of the cursor
+ * contract: nothing type-checks a JSON blob, so a new gating field would be
+ * silently absent from the fixture and the test would quietly start
+ * exercising — and asserting against — the wrong branch. That is exactly how
+ * apple_contacts' `initial_sync_completed` gate slipped past its own tests.
+ * `syncTokenIsStale` below already gates on the PAIR
+ * `sync_token`+`synced_at`; keep fixtures typed as `GoogleContactsState` so
+ * any future gate lands as a compile error in the tests, not as silence.
+ */
+export interface PeopleState {
   readonly fingerprints?: Record<string, string>;
   readonly sync_token?: string;
   readonly synced_at?: string;
 }
 
-interface GoogleContactsState {
+export interface GoogleContactsState {
   readonly contact_groups?: { fingerprints?: Record<string, string> };
   readonly people?: PeopleState;
 }
