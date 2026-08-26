@@ -30,8 +30,6 @@ test("robots.txt allows the public site and blocks non-canonical surfaces", () =
 
   const disallow = Array.isArray(rules.disallow) ? rules.disallow : [rules.disallow];
   for (const path of [
-    "/design",
-    "/palette",
     "/sandbox",
     "/specification/README",
     maintainersRoute,

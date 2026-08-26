@@ -1,10 +1,4 @@
-<!-- biome-ignore lint/a11y/noSvgWithoutTitle: decorative app icon; the accessible name lives on the link that renders it. -->
-<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
-  <rect fill="#1d4f8f" height="512" rx="110.52" width="512" />
-  <g transform="translate(152.02 9.06) scale(2.5994)">
-    <path
-      d="M60 30C65.3043 30 70.3919 32.1067 74.1426 35.8574C77.8933 39.6081 80 44.6957 80 50V110C80 115.304 77.8933 120.392 74.1426 124.143C70.3919 127.893 65.3043 130 60 130H20V160H0V30H60ZM20 50V110H60V50H20Z"
-      fill="#ffffff"
-    />
-  </g>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect width="512" height="512" fill="#253D52"/>
+<path d="M315.077 64H137.846L137.846 448H196.923V359.385H315.077C330.745 359.385 345.772 353.16 356.851 342.081C367.93 331.002 374.154 315.976 374.154 300.308V123.077C374.154 107.409 367.93 92.3823 356.851 81.3032C345.772 70.2242 330.745 64 315.077 64ZM196.923 300.308V123.077H315.077V300.308H196.923Z" fill="white"/>
 </svg>
