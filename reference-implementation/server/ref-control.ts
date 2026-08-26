@@ -5041,6 +5041,19 @@ function buildRenderedVerdictForSummary(input: {
   readonly freshness: Freshness;
   readonly hasRecoveredDetailGaps: boolean;
   readonly localDeviceBacked: boolean;
+  /**
+   * Durable last-successful-ingest evidence for a local-device connection
+   * (`LocalDeviceProgress.last_ingest_at`), independent of the current
+   * heartbeat/outbox status. Only ever used as a fallback when
+   * `freshness.captured_at` is null — e.g. a stalled outbox blanks the
+   * heartbeat-derived freshness anchor (honesty invariant: a stall must
+   * never read as `fresh`), but the connection may still have collected
+   * real data before the stall began. Without this fallback the freshness
+   * annotation falsely implies data was NEVER collected. `null` for
+   * scheduler-managed connections and local-device connections with no
+   * trusted ingest evidence yet.
+   */
+  readonly localDeviceLastIngestAt: string | null;
   readonly manifestStreams: readonly VerdictManifestStreamLike[];
   readonly observedAt: string;
   readonly refreshPolicy: unknown;
@@ -5061,7 +5074,7 @@ function buildRenderedVerdictForSummary(input: {
     // per-run delta. Keep the exact count in owner-only detail; do not relabel it
     // as "last run" progress.
     gapsDrainedLastRun: null,
-    lastRefreshedAt: input.freshness.captured_at ?? null,
+    lastRefreshedAt: input.freshness.captured_at ?? input.localDeviceLastIngestAt ?? null,
     mode,
     observedAt: input.observedAt,
     recordsCommittedLastRun: null,
@@ -5325,6 +5338,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     freshness,
     hasRecoveredDetailGaps: recoveredCount !== null && recoveredCount > 0,
     localDeviceBacked,
+    localDeviceLastIngestAt: localDeviceProgress?.last_ingest_at ?? null,
     manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
     observedAt: nowIso,
     refreshPolicy,

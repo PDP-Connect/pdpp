@@ -916,6 +916,71 @@ test("channel: stalled outbox state-read block asks for re-run, not dead-letter 
   assert.doesNotMatch(JSON.stringify(action), /dead[- ]letter/i);
 });
 
+test("freshness: stalled local-device outbox with prior ingest evidence names the last known collection, not a false never-measured claim", () => {
+  // A local-device connection (Signal-shape: peregrine/cin_992b0c94cebeb3066ba42a6e)
+  // whose outbox is stalled loses its heartbeat-derived freshness anchor by
+  // design (a stall must never read `fresh`), so `axes.freshness` reads
+  // `unknown` even though the device ingested real data days before the
+  // stall began. The generic "Freshness has not been measured yet." copy is
+  // then FALSE — it implies zero collection history when durable
+  // `last_ingest_at` evidence proves otherwise. `mode: "local_device"` +
+  // `last_refreshed_at` is the caller-supplied last-ingest fallback
+  // (`ref-control.ts` threads `local_device_progress.last_ingest_at` here
+  // when `freshness.captured_at` is null).
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "complete", freshness: "unknown", outbox: "stalled" },
+      conditions: [
+        localExporterStalledCondition(
+          CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED,
+          "Local exporter is blocked reading prior state. There are zero dead-letter rows to retry."
+        ),
+        backlogStalledCondition(
+          CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED,
+          "Local-device outbox is blocked on a failed state read, not a backlog."
+        ),
+      ],
+      forward_disposition: "complete",
+      reason_code: "local_exporter_state_read_failed",
+      state: "degraded",
+    }),
+    [stream({ coverage: "complete" })],
+    null,
+    true,
+    { last_refreshed_at: "2026-08-22T01:00:17.599Z", mode: "local_device", observed_at: "2026-08-26T20:44:55.204Z" }
+  );
+  assert.equal(v.pill.tone, "red");
+  assert.equal(v.pill.label, "Can't collect");
+  const freshness = v.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? "";
+  assert.equal(freshness, "Last known collection 4 days ago.");
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.doesNotMatch(freshness, /not been measured/i);
+});
+
+test("freshness: local-device outbox with no prior ingest evidence keeps the honest never-measured copy", () => {
+  // Same stalled shape, but the device has genuinely never ingested anything
+  // (`last_refreshed_at: null`) — the generic copy stays correct here; this
+  // pins the fallback does not fabricate a date when there is none.
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "complete", freshness: "unknown", outbox: "stalled" },
+      conditions: [
+        localExporterStalledCondition(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED),
+        backlogStalledCondition(CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED),
+      ],
+      forward_disposition: "complete",
+      reason_code: "local_exporter_state_read_failed",
+      state: "degraded",
+    }),
+    [stream({ coverage: "complete" })],
+    null,
+    true,
+    { last_refreshed_at: null, mode: "local_device", observed_at: "2026-08-26T20:44:55.204Z" }
+  );
+  const freshness = v.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? "";
+  assert.equal(freshness, "Freshness has not been measured yet.");
+});
+
 test("channel: dead-letter stalled outbox includes recover preview before apply", () => {
   const v = synthesizeRenderedVerdict(
     snapshot({
