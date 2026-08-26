@@ -34,11 +34,6 @@ html:has(.rr-app) {
   overflow: hidden;
 }
 .rr-app {
-  /* The sidebar brand block and the main header both draw a bottom rule, and
-     they meet at the sidebar's right border. They only read as ONE line when
-     they are the same height, so both derive from this single token rather
-     than from independently-tuned padding. */
-  --rr-masthead-height: 52px;
   display: grid;
   grid-template-columns: var(--spacing-sidebar) 1fr;
   height: 100vh;
@@ -52,8 +47,13 @@ html:has(.rr-app) {
 /* The sidebar brand block and the main header both draw a bottom rule, and
    they meet at the sidebar's right border. They only read as ONE line when
    they are the same height, so both derive from this single token rather
-   than from independently-tuned padding. The drawer is portaled to body, so
-   it must share this shell-owned value explicitly. */
+   than from independently-tuned padding.
+   THE ONLY definition of this token (`shell-masthead-seam.test.ts` pins that
+   count at exactly one — two can drift apart silently, which is the defect
+   the owner reported twice). It carries BOTH selectors because the mobile
+   drawer is portaled to `body` (#107) and so sits outside `.rr-app`'s
+   subtree; it cannot inherit the value and must be named explicitly. Adding
+   a second definition inside `.rr-app` would be redundant, not scoping. */
 .rr-app,
 .pdpp-dialog.rr-drawer {
   --rr-masthead-height: 52px;
