@@ -59,18 +59,23 @@ export interface GenericField {
  * the card layout can be chosen without re-deriving it.
  */
 export interface RecordPreview {
-  /** Formatted amount for money rows, e.g. "-$12.45". */
-  amount?: string;
+  /**
+   * Formatted amount for money rows, e.g. "-$12.45". Builders assign this
+   * directly from an optional extraction (`amt?.text`); "present but
+   * `undefined`" and "absent" are the same honest "no amount" to every
+   * consumer (all read it via `?.`/truthiness), so the type says so.
+   */
+  amount?: string | undefined;
   /** True when the amount is a credit / positive value (tints the card). */
-  amountPositive?: boolean;
+  amountPositive?: boolean | undefined;
   /** Sender / author / role for message rows. */
-  author?: string;
+  author?: string | undefined;
   /** Secondary body text: message content, memo, location, description. */
-  body?: string;
+  body?: string | undefined;
   /** Formatted coordinate pair for location rows, e.g. "37.7749, -122.4194". */
   coordinates?: string;
   /** Pre-formatted time-of-day or range for event rows, e.g. "2:00 PM". */
-  eventTime?: string;
+  eventTime?: string | undefined;
   /**
    * The honest generic key/value table (design.md §5.4): humanized declared
    * fields, present ONLY on the `generic` kind. It is NOT a guessed card — it
@@ -78,7 +83,7 @@ export interface RecordPreview {
    * message/money/photo shape from field or stream names. Other kinds leave
    * this absent (they carry their typed slots instead).
    */
-  fields?: readonly GenericField[];
+  fields?: readonly GenericField[] | undefined;
   kind: PreviewKind;
   /**
    * Labelled stat chips for activity rows, e.g. `[{value:"5.2 km",label:"distance"}]`.
@@ -86,7 +91,7 @@ export interface RecordPreview {
    */
   stats?: readonly { label: string; value: string }[];
   /** Primary line: subject, title, payee, event name, …. */
-  title?: string;
+  title?: string | undefined;
 }
 
 type RecordData = Record<string, unknown>;
