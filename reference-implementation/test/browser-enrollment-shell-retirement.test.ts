@@ -266,3 +266,72 @@ test("retireExpiredBrowserEnrollmentShells reads claims AFTER shells, so a run s
   assert.deepEqual(retired, [], "a run admitted after the shell read must still be observed by the claim read");
   assert.equal(updateStatusCalls.length, 0);
 });
+
+// ─── Credentialed shells are not abandoned setups ───────────────────────────
+//
+// Production, 2026-08-26: a venmo shell was created 12:08:53 with the owner's
+// genuine password captured, its run FAILED at 12:39:07 (so it was no longer
+// in flight), the TTL expired at 14:08:53, and the sweep revoked it 39 seconds
+// later. Seven venmo shells died that way, stranding his real credential on
+// revoked rows behind seven "Setup never completed" cards.
+//
+// The TTL asks "has the owner abandoned this?". A captured credential answers
+// no, exactly as an in-flight run does.
+
+test("a shell holding a captured credential is NOT retired on wall-clock alone", () => {
+  assert.deepEqual(
+    expiredEnrollmentShellIds([shell("venmo-1")], NOW, new Set(), new Set(["venmo-1"])),
+    [],
+    "the owner typed his password into this shell; the clock must not throw that away"
+  );
+});
+
+test("an UNcredentialed shell still ages out normally — this is not immortality", () => {
+  assert.deepEqual(
+    expiredEnrollmentShellIds([shell("abandoned-1")], NOW, new Set(), new Set(["someone-else"])),
+    ["abandoned-1"],
+    "a shell that never captured a credential is a genuinely abandoned setup"
+  );
+});
+
+test("credential and run guards are independent — either one alone spares the shell", () => {
+  // Only a run in flight.
+  assert.deepEqual(expiredEnrollmentShellIds([shell("a")], NOW, new Set(["a"]), new Set()), []);
+  // Only a credential.
+  assert.deepEqual(expiredEnrollmentShellIds([shell("a")], NOW, new Set(), new Set(["a"])), []);
+  // Neither.
+  assert.deepEqual(expiredEnrollmentShellIds([shell("a")], NOW, new Set(), new Set()), ["a"]);
+});
+
+test("the sweep spares a credentialed shell end to end and records nothing for it", async () => {
+  const revoked: string[] = [];
+  const retired = await retireExpiredBrowserEnrollmentShells(
+    {
+      listCredentialedInstanceIds: () => Promise.resolve(["keeps-credential"]),
+      listDraftBrowserEnrollmentShells: () => Promise.resolve([shell("keeps-credential"), shell("no-credential")]),
+      listRunInFlightInstanceIds: () => Promise.resolve([]),
+      updateStatus: (connectorInstanceId: string) => {
+        revoked.push(connectorInstanceId);
+        return Promise.resolve(undefined);
+      },
+    },
+    { now: NOW }
+  );
+
+  assert.deepEqual(retired, ["no-credential"], "only the uncredentialed shell is retired");
+  assert.deepEqual(revoked, ["no-credential"], "no status write may touch the credentialed shell");
+});
+
+test("a store that cannot report credentials degrades to the historical behavior", async () => {
+  // `listCredentialedInstanceIds` is optional so existing callers and fakes
+  // keep compiling. Absent means "none known", which is the pre-fix behavior —
+  // never a crash, and never a silent skip of every retirement.
+  const retired = await retireExpiredBrowserEnrollmentShells(
+    {
+      listDraftBrowserEnrollmentShells: () => Promise.resolve([shell("a")]),
+      updateStatus: () => Promise.resolve(undefined),
+    },
+    { now: NOW }
+  );
+  assert.deepEqual(retired, ["a"]);
+});
