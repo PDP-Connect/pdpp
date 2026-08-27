@@ -1246,7 +1246,17 @@ function softensTerminalCoverageToDegraded(
   disposition: ForwardDisposition,
   progress: ProgressEvidence | null
 ): boolean {
-  return disposition === "terminal" && collectionSucceededToday(snapshot, progress);
+  // Same-day success only softens a terminal disposition when the
+  // CONNECTION's own coverage axis independently shows the gap. A required
+  // stream's rollup can drive `disposition` to `terminal` on its own even
+  // when the connection-level axis reads `complete` — that is a real,
+  // irreversible loss on a load-bearing stream, and same-day success
+  // elsewhere on the connection does not undo it.
+  return (
+    disposition === "terminal" &&
+    snapshot.axes.coverage === "terminal_gap" &&
+    collectionSucceededToday(snapshot, progress)
+  );
 }
 
 /**

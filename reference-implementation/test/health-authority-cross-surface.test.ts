@@ -311,6 +311,34 @@ test("optional terminal stream downgrades the pill to Missing optional data with
   );
 });
 
+// A required stream's terminal gap must dominate to red even when the
+// connection-level coverage axis is otherwise `complete` and there was a
+// same-day success — same-day success only softens a terminal disposition
+// when the connection's OWN coverage axis independently shows the gap
+// (`softensTerminalCoverageToDegraded`, rendered-verdict.ts); a per-stream
+// rollup carrying an independent required-stream loss is not that.
+test("required terminal stream stays Can't collect across every surface, even with a same-day success", () => {
+  const projected = project(
+    input({ coverage: { axis: "complete" }, refresh: MANUAL_REFRESH, schedule: null }),
+    [stream({ coverage: "terminal_gap", priority: "required", stream_id: "required_stream" })],
+    MANUAL_REFRESH,
+    null
+  );
+
+  assert.equal(projected.snapshot.state, "healthy");
+  assert.equal(projected.snapshot.axes.coverage, "complete");
+  assert.equal(projected.verdict.pill.label, "Can't collect");
+  assert.equal(projected.verdict.pill.tone, "red");
+  assert.equal(projected.ownerState.resolver, "blocked_maintainer");
+
+  const fleet = fleetFor("required-stream", projected);
+  assert.equal(fleet.state, "unhealthy");
+  assert.deepEqual(
+    fleet.dimensions.system.degraded_or_broken.map((entry) => entry.connection_id),
+    ["required-stream"]
+  );
+});
+
 // The other half of the owner's decision: an EXPLICIT accepted-absence policy
 // still earns green under exactly the same terminal gap. This is the test that
 // proves the three-way distinction survived — `optional` and `accepted_absence`
