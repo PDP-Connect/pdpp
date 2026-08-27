@@ -10,7 +10,7 @@
 -- browser-enrollment-shell-retirement.ts / ref-browser-enrollment-shell.ts.
 UPDATE connector_instances
 SET status = ?,
-    updated_at = ?,
-    revoked_at = ?,
+    updated_at = CASE WHEN ? = 'revoked' AND status = 'revoked' THEN updated_at ELSE ? END,
+    revoked_at = CASE WHEN ? = 'revoked' THEN COALESCE(revoked_at, ?) ELSE ? END,
     source_binding_json = json_patch(source_binding_json, json(?))
 WHERE connector_instance_id = ?;
