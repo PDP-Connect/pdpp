@@ -2131,6 +2131,49 @@ function reportRuntimeStart(
   }
 }
 
+/**
+ * Delivers complete JSONL lines without losing a fast connector's first output.
+ *
+ * `runConnector` must write START before it can construct the message handler,
+ * and some connectors can respond while the runtime awaits its run.started
+ * spine event. Buffering only complete lines keeps that startup ordering from
+ * silently changing the protocol transcript.
+ */
+export function createJsonlLineDispatcher(): {
+  dispatch: (rawLine: string) => void;
+  onLine: (listener: (line: string) => void) => void;
+} {
+  const listeners: Array<(line: string) => void> = [];
+  const pendingLines: string[] = [];
+
+  const deliver = (line: string): void => {
+    for (const listener of listeners) {
+      listener(line);
+    }
+  };
+
+  return {
+    dispatch(rawLine: string): void {
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      if (listeners.length === 0) {
+        pendingLines.push(line);
+        return;
+      }
+      deliver(line);
+    },
+    onLine(listener: (line: string) => void): void {
+      listeners.push(listener);
+      if (listeners.length !== 1) {
+        return;
+      }
+      for (const line of pendingLines) {
+        listener(line);
+      }
+      pendingLines.length = 0;
+    },
+  };
+}
+
 export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<RuntimeRunConnectorResult> {
   const defaultOnProgress =
     process.env.PDPP_RUNTIME_QUIET === "1"
@@ -2500,22 +2543,16 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   let _lineBuffer = "";
   // Fake readline-compatible shim so the rest of this file can still call
   // `rl.on('line', ...)` — which we do below, without touching readline APIs.
-  const lineListeners: Array<(line: string) => void> = [];
+  const lineDispatcher = createJsonlLineDispatcher();
   const rl = {
     close() {
       /* noop — stdout closes when the child exits */
     },
     on(event: string, handler: (line: string) => void) {
       if (event === "line") {
-        lineListeners.push(handler);
+        lineDispatcher.onLine(handler);
       }
     },
-  };
-  const emitLine = (rawLine: string) => {
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-    for (const h of lineListeners) {
-      h(line);
-    }
   };
   proc.stdout.on("data", (chunk: string) => {
     _lineBuffer += chunk;
@@ -2524,13 +2561,13 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     while (nlIdx !== -1) {
       const line = _lineBuffer.slice(0, nlIdx);
       _lineBuffer = _lineBuffer.slice(nlIdx + 1);
-      emitLine(line);
+      lineDispatcher.dispatch(line);
       nlIdx = _lineBuffer.indexOf("\n");
     }
   });
   proc.stdout.on("end", () => {
     if (_lineBuffer.length > 0) {
-      emitLine(_lineBuffer);
+      lineDispatcher.dispatch(_lineBuffer);
       _lineBuffer = "";
     }
   });
