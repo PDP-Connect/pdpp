@@ -473,7 +473,32 @@ interface StreamSummary {
  * reason and the recovery action the runtime already redacts onto the known-gap
  * — never free-text diagnostics.
  */
+/**
+ * A connector's STRUCTURED claim about why a stream stopped short, in a closed
+ * vocabulary the RI can act on without reading prose.
+ *
+ * `provider_history_boundary` means: "the provider will not serve anything
+ * older than this point, ever." It is the ONLY value the coverage-horizon
+ * denominator rule will consider, and it is still never sufficient alone — an
+ * independently recorded, current `ConnectionCoverageHorizon` must agree (see
+ * `isProvenPreHorizonGap`).
+ *
+ * This field exists because the alternative is the RI pattern-matching
+ * connector `reason` strings, which is provider knowledge in the RI wearing a
+ * regex as a disguise: it false-positives on arbitrary prose that happens to
+ * contain a keyword, and false-negatives every new connector that words its
+ * reason differently. A connector maps its own provider result onto this
+ * generic field in connector code; the RI only validates the closed shape.
+ */
+export type RuntimeSkipBoundaryClaim = "provider_history_boundary";
+
 export interface RuntimeCollectionFactSkip {
+  /**
+   * Optional structured boundary claim. Absent on every existing skip, which
+   * is the correct default: no claim means no horizon accounting, exactly as
+   * before this field existed.
+   */
+  readonly boundary_claim?: RuntimeSkipBoundaryClaim;
   readonly continuation?: RuntimeContinuationFact;
   readonly reason: string;
   readonly recovery_action?: string;

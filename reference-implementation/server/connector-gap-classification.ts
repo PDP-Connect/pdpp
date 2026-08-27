@@ -437,21 +437,31 @@ export function isStreamFullyUnfillableAccounted(terminalGaps: readonly Terminal
  * A skip reason a connector might plausibly use to report a permanent
  * provider retention/history boundary. Deliberately narrow and pattern-based
  * (mirrors `isSourceUnavailableKnownGap`'s `SOURCE_UNAVAILABLE_GAP_RE`
- * style) rather than an exact-string allowlist, so any connector's own wording
- * for "the provider does not go back further than this" is recognized without
- * RI branching on a connector/provider identity. This is a HINT the gap MIGHT
- * be horizon-accountable — never proof by itself; see
- * {@link isProvenPreHorizonGap}.
+ * style) — the connector's STRUCTURED claim, never its prose.
+ *
+ * An earlier revision matched a regex against the connector's `reason` string.
+ * That was provider knowledge in the RI wearing a regex as a disguise: it
+ * false-positives on any prose that happens to contain a keyword (a connector
+ * whose reason mentions a "retention_policy" it is merely describing) and
+ * false-negatives every new connector that words the same fact differently.
+ * The RI must not infer provider semantics from an open vocabulary. It
+ * validates a closed shape a connector opted into, and nothing else.
  */
-const PROVIDER_RETENTION_BOUNDARY_SKIP_REASON_RE =
-  /(history_ended|before_provider|provider_retention|retention_boundary|retention_policy|provider_history_limit)/;
+const BOUNDARY_CLAIM_PROVIDER_HISTORY = "provider_history_boundary";
 
-/** A gap's raw `reason`/`skipped.reason` string, whatever shape the caller holds it in. */
-function gapSkipReasonText(gap: { reason?: unknown } | null | undefined): string {
+/**
+ * True when the gap carries the connector's explicit, typed boundary claim.
+ * The `reason` string is NEVER consulted: a connector that wants horizon
+ * accounting says so in a field, in connector code, where the provider
+ * knowledge belongs.
+ */
+function hasProviderHistoryBoundaryClaim(
+  gap: { readonly boundary_claim?: unknown; readonly reason?: unknown } | null | undefined
+): boolean {
   if (!gap || typeof gap !== "object") {
-    return "";
+    return false;
   }
-  return typeof gap.reason === "string" ? gap.reason.toLowerCase() : "";
+  return gap.boundary_claim === BOUNDARY_CLAIM_PROVIDER_HISTORY;
 }
 
 /**
@@ -482,12 +492,11 @@ function currentHorizonForStream(
  * after) is NOT proof — the gap stays exactly as retryable as before.
  */
 export function isProvenPreHorizonGap(
-  gap: { reason?: unknown } | null | undefined,
+  gap: { readonly boundary_claim?: unknown; readonly reason?: unknown } | null | undefined,
   horizons: readonly ConnectionCoverageHorizon[],
   streamName: string
 ): boolean {
-  const reasonText = gapSkipReasonText(gap);
-  if (!reasonText || !PROVIDER_RETENTION_BOUNDARY_SKIP_REASON_RE.test(reasonText)) {
+  if (!hasProviderHistoryBoundaryClaim(gap)) {
     return false;
   }
   return currentHorizonForStream(horizons, streamName) !== null;

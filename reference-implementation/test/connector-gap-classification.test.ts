@@ -213,12 +213,12 @@ test("readClaimedSizeProof: extracts both numbers, and isProvenUnfillableGap sti
 // `ConnectionCoverageHorizon` for the same stream turns it into proof.
 
 test("GROUPME: a skip reason naming the provider boundary WITH a current matching horizon is a proven pre-horizon gap", () => {
-  const gap = { reason: "history_ended_before_provider_count" };
+  const gap = { boundary_claim: "provider_history_boundary", reason: "history_ended_before_provider_count" };
   assert.equal(isProvenPreHorizonGap(gap, [testHorizon()], "group_messages"), true);
 });
 
 test("a connection-wide horizon (stream: '*') covers any stream name", () => {
-  const gap = { reason: "history_ended_before_provider_count" };
+  const gap = { boundary_claim: "provider_history_boundary", reason: "history_ended_before_provider_count" };
   assert.equal(isProvenPreHorizonGap(gap, [testHorizon({ stream: "*" })], "group_messages"), true);
   assert.equal(isProvenPreHorizonGap(gap, [testHorizon({ stream: "*" })], "any_other_stream"), true);
 });
@@ -248,12 +248,12 @@ test("NEGATIVE: a horizon confirmed for a DIFFERENT stream does not cover this o
 });
 
 test("a horizon with earliestAvailable: null (boundary exists, exact edge unknown) still counts as proof", () => {
-  const gap = { reason: "history_ended_before_provider_count" };
+  const gap = { boundary_claim: "provider_history_boundary", reason: "history_ended_before_provider_count" };
   assert.equal(isProvenPreHorizonGap(gap, [testHorizon({ earliestAvailable: null })], "group_messages"), true);
 });
 
 test("isStreamFullyHorizonAccounted requires EVERY retryable gap to be proven — one unproven gap fails the whole stream", () => {
-  const provenGap = { reason: "history_ended_before_provider_count" };
+  const provenGap = { boundary_claim: "provider_history_boundary", reason: "history_ended_before_provider_count" };
   const unprovenGap = { reason: "upstream_rate_limited" };
   assert.equal(isStreamFullyHorizonAccounted([provenGap], [testHorizon()], "group_messages"), true);
   assert.equal(
@@ -265,4 +265,36 @@ test("isStreamFullyHorizonAccounted requires EVERY retryable gap to be proven �
 
 test("isStreamFullyHorizonAccounted returns false for an empty gap list — nothing to account for is not the same claim as accounted", () => {
   assert.equal(isStreamFullyHorizonAccounted([], [testHorizon()], "group_messages"), false);
+});
+
+test("NEGATIVE: boundary-LOOKING reason text alone never qualifies, even with a current matching horizon", () => {
+  // The RI must not infer provider semantics from an open vocabulary. Before
+  // the typed `boundary_claim`, a regex over `reason` decided this — which
+  // false-positives on any connector whose prose merely MENTIONS retention
+  // (here, a genuine auth failure that names the policy it hit) and
+  // false-negatives every connector that words the same fact differently.
+  const horizons = [testHorizon({ stream: "group_messages" })];
+  for (const reason of [
+    "history_ended_before_provider_count",
+    "provider_retention_policy_blocked_auth",
+    "retention_boundary",
+    "provider_history_limit_unknown",
+  ]) {
+    assert.equal(
+      isProvenPreHorizonGap({ reason }, horizons, "group_messages"),
+      false,
+      `"${reason}" is prose, not a claim: only the connector's typed boundary_claim qualifies`
+    );
+  }
+});
+
+test("NEGATIVE: an unrecognized boundary_claim value is refused, not coerced", () => {
+  const horizons = [testHorizon({ stream: "group_messages" })];
+  for (const claim of ["provider_history_boundary_v2", "PROVIDER_HISTORY_BOUNDARY", "true", ""]) {
+    assert.equal(
+      isProvenPreHorizonGap({ boundary_claim: claim, reason: "x" }, horizons, "group_messages"),
+      false,
+      `"${claim}" is outside the closed vocabulary and must fail closed`
+    );
+  }
 });

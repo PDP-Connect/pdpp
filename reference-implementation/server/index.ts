@@ -343,6 +343,8 @@ import {
   promoteBrowserEnrollmentShellBinding,
 } from "./routes/ref-browser-enrollment-shell.ts";
 import { mountRefConnectionAcknowledgeLoss } from "./routes/ref-connection-acknowledge-loss.ts";
+import { mountRefConnectionConfirmCoverageHorizon } from "./routes/ref-connection-confirm-coverage-horizon.ts";
+import { getDefaultConnectorCoverageHorizonStore } from "./stores/connector-coverage-horizon-store.ts";
 import { mountRefConnectionPause } from "./routes/ref-connection-pause.ts";
 import { HISTORICAL_ARCHIVE_SOURCE_BINDING_KIND, mountRefConnectionResume } from "./routes/ref-connection-resume.ts";
 import {
@@ -6112,6 +6114,23 @@ export function buildAsApp(opts: ServerOpts = {}) {
         options as Parameters<ReturnType<typeof createRequestConnectorInstanceStore>["updateSourceBindingPatch"]>[1]
       ),
   } as unknown as Parameters<typeof mountRefConnectionAcknowledgeLoss>[1]);
+
+  mountRefConnectionConfirmCoverageHorizon(app, {
+    canonicalConnectorKey,
+    confirmCoverageHorizon: (input: unknown) =>
+      getDefaultConnectorCoverageHorizonStore().confirmCoverageHorizon(
+        input as Parameters<ReturnType<typeof getDefaultConnectorCoverageHorizonStore>["confirmCoverageHorizon"]>[0]
+      ),
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerSubjectId,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+  } as unknown as Parameters<typeof mountRefConnectionConfirmCoverageHorizon>[1]);
 
   mountRefStaticSecretDraftConnection(app, {
     canonicalConnectorKey,

@@ -46,6 +46,9 @@ function groupMeShapedRun(overrides: Partial<ConnectorRunSummary> = {}): Connect
     first_at: RUN_AT,
     known_gaps: [
       {
+        // The connector's typed claim, exactly as groupme/index.ts now emits
+        // it. The RI reads THIS, never the reason prose.
+        boundary_claim: "provider_history_boundary",
         kind: "skip_result",
         reason: "history_ended_before_provider_count",
         recovery_action: "retry_by_runtime",
