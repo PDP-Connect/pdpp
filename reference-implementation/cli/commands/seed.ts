@@ -3,7 +3,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { SUPPORTED_SEED_CONNECTOR_KEYS } from "../../connectors/seed/index.ts";
 import { canonicalConnectorKey } from "../../server/connector-key.ts";
 import { initDb } from "../../server/db.ts";
@@ -264,7 +264,9 @@ export async function runSeed(argv: string[]): Promise<void> {
   await ensureReachable(asUrl);
   await connectSeedStorageBackend();
 
-  const runtimeModule = (await import(join(REF_ROOT, "runtime", "index.ts"))) as { runConnector: RunConnectorFn };
+  const runtimeModule = (await import(pathToFileURL(join(REF_ROOT, "runtime", "index.ts")).href)) as {
+    runConnector: RunConnectorFn;
+  };
   const { runConnector } = runtimeModule;
 
   process.stdout.write(`Seeding ${connectors.length} connector(s) against ${asUrl}\n`);

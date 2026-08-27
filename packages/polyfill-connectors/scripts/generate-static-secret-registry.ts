@@ -80,7 +80,7 @@
  */
 
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   isBundledStaticSecretCredentialKind,
@@ -104,7 +104,9 @@ interface ManifestLike {
   } | null;
 }
 
-const { readPolyfillManifests } = (await import(resolve(packageDir, "src/manifest-registry.ts"))) as {
+const { readPolyfillManifests } = (await import(
+  pathToFileURL(resolve(packageDir, "src/manifest-registry.ts")).href
+)) as {
   readPolyfillManifests: () => { file: string; manifest: ManifestLike }[];
 };
 

@@ -13,7 +13,7 @@
  */
 
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { type InboxItemNotice, notifyInboxItem, notifyOvernightSummary } from "./ntfy.ts";
 import { getConnectorPaths, issueOwnerToken, readManifest, registerManifest } from "./orchestrator.ts";
 
@@ -196,14 +196,16 @@ export function scheduleNightlySummary(
 
 export async function loadDefaultSchedulerPersistenceStore(): Promise<SchedulerPersistenceStore> {
   const { initPostgresStorage, resolveStorageBackend } = (await import(
-    join(REFERENCE_IMPL_DIR, "server/postgres-storage.js")
+    pathToFileURL(join(REFERENCE_IMPL_DIR, "server/postgres-storage.js")).href
   )) as {
     initPostgresStorage: (config: unknown) => Promise<unknown>;
     resolveStorageBackend: () => unknown;
   };
   await initPostgresStorage(resolveStorageBackend());
 
-  const { getDefaultSchedulerStore } = (await import(join(REFERENCE_IMPL_DIR, "server/stores/scheduler-store.js"))) as {
+  const { getDefaultSchedulerStore } = (await import(
+    pathToFileURL(join(REFERENCE_IMPL_DIR, "server/stores/scheduler-store.js")).href
+  )) as {
     getDefaultSchedulerStore: () => SchedulerPersistenceStore;
   };
   return getDefaultSchedulerStore();
@@ -231,10 +233,10 @@ export async function startPolyfillScheduler({
   nightlySummary,
   schedulerStore: schedulerStoreOption,
 }: StartPolyfillSchedulerOptions): Promise<PolyfillSchedulerHandle> {
-  const { createScheduler } = (await import(join(REFERENCE_IMPL_DIR, "runtime/scheduler.js"))) as {
+  const { createScheduler } = (await import(pathToFileURL(join(REFERENCE_IMPL_DIR, "runtime/scheduler.js")).href)) as {
     createScheduler: (args: CreateSchedulerArgs) => Scheduler;
   };
-  const { loadSyncState } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.ts"))) as {
+  const { loadSyncState } = (await import(pathToFileURL(join(REFERENCE_IMPL_DIR, "runtime/index.ts")).href)) as {
     loadSyncState: (args: {
       connectorId: string;
       ownerToken: string;
