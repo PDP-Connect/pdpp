@@ -65,6 +65,11 @@ export interface ConnectorMaintenanceSweepOptions {
     phase: "attention" | "evidence" | "run_history_backfill" | "search_index_dirty" | "shells",
     err: unknown
   ) => void;
+  /** Emits non-secret evidence after the TTL phase actually revoked shells. */
+  readonly onShellsRetired?: (info: {
+    readonly cause: "ttl_expired";
+    readonly connectionIds: readonly string[];
+  }) => void;
   readonly runEvidenceSweep: (args: {
     readonly afterId?: string | null;
     readonly firstTranche?: "walk" | "acceleration";
@@ -428,9 +433,15 @@ export async function runConnectorMaintenanceSweep(options: ConnectorMaintenance
   const { onPhaseError, nowIso = () => new Date().toISOString() } = options;
 
   await Promise.all([
-    retireExpiredBrowserEnrollmentShellsForMaintenance(nowIso(), null).catch((err) => {
-      onPhaseError?.("shells", err);
-    }),
+    retireExpiredBrowserEnrollmentShellsForMaintenance(nowIso(), null)
+      .then((connectionIds) => {
+        if (connectionIds.length > 0) {
+          options.onShellsRetired?.({ cause: "ttl_expired", connectionIds });
+        }
+      })
+      .catch((err) => {
+        onPhaseError?.("shells", err);
+      }),
     Promise.resolve(getDefaultConnectorAttentionStore().expireAllDueAttention({ now: nowIso() })).catch((err) => {
       onPhaseError?.("attention", err);
     }),

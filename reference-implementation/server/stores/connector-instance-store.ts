@@ -178,7 +178,11 @@ import {
 } from "../connector-instance-write-coordinator.ts";
 import type { PostgresTransactionClient } from "../postgres-storage.ts";
 import { postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
-import { revokePostgresConnectorInstanceCredentialsWithClient } from "./connector-instance-credential-store.ts";
+import {
+  type CredentialStateChange,
+  revokePostgresConnectorInstanceCredentialsWithClient,
+  serializeCredentialStateChange,
+} from "./connector-instance-credential-store.ts";
 
 const ACTIVE_RESOLUTION_LIMIT = 2;
 const ACTIVE_FANIN_LIMIT = 64;
@@ -1868,6 +1872,7 @@ export function createSqliteConnectorInstanceStore() {
         updatedAt,
         revokedAt = null,
         sourceBindingPatch = null,
+        credentialStateChange = { cause: "connection_revoked" },
       }: {
         status: string;
         updatedAt: string;
@@ -1878,14 +1883,17 @@ export function createSqliteConnectorInstanceStore() {
         // "ttl_expired" }`) at the moment of truth, never as a best-effort
         // follow-up write. See `retireExpiredBrowserEnrollmentShells`.
         sourceBindingPatch?: Record<string, unknown> | null;
+        credentialStateChange?: CredentialStateChange;
       }
     ): ConnectorInstance | null {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
       const effectiveRevokedAt = status === "revoked" ? (revokedAt ?? updatedAt) : revokedAt;
+      const effectiveSourceBindingPatch =
+        status === "revoked" ? (sourceBindingPatch ?? { revocation_reason: "connection_revoked" }) : sourceBindingPatch;
       writeTransaction(() => {
-        if (sourceBindingPatch) {
+        if (effectiveSourceBindingPatch) {
           exec(referenceQueries.connectorInstancesUpdateStatusWithBindingPatch, [
             status,
             status,
@@ -1893,7 +1901,7 @@ export function createSqliteConnectorInstanceStore() {
             status,
             effectiveRevokedAt,
             effectiveRevokedAt,
-            stableJson(sourceBindingPatch),
+            stableJson(effectiveSourceBindingPatch),
             connectorInstanceId,
           ]);
         } else {
@@ -1910,6 +1918,7 @@ export function createSqliteConnectorInstanceStore() {
         if (status === "revoked" && effectiveRevokedAt !== null) {
           exec(referenceQueries.connectorInstanceCredentialsRevokeByInstance, [
             effectiveRevokedAt,
+            serializeCredentialStateChange(credentialStateChange),
             connectorInstanceId,
           ]);
         }
@@ -2744,6 +2753,7 @@ export function createPostgresConnectorInstanceStore() {
         updatedAt,
         revokedAt = null,
         sourceBindingPatch = null,
+        credentialStateChange = { cause: "connection_revoked" },
       }: {
         status: string;
         updatedAt: string;
@@ -2753,15 +2763,18 @@ export function createPostgresConnectorInstanceStore() {
         // the status write, so the caller can record WHY at the moment of
         // truth.
         sourceBindingPatch?: Record<string, unknown> | null;
+        credentialStateChange?: CredentialStateChange;
       }
     ): Promise<ConnectorInstance | null> {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
       const effectiveRevokedAt = status === "revoked" ? (revokedAt ?? updatedAt) : revokedAt;
+      const effectiveSourceBindingPatch =
+        status === "revoked" ? (sourceBindingPatch ?? { revocation_reason: "connection_revoked" }) : sourceBindingPatch;
       await withPostgresTransaction(
         async (client: PostgresTransactionClient) => {
-          if (sourceBindingPatch) {
+          if (effectiveSourceBindingPatch) {
             await client.query(
               "UPDATE connector_instances SET status = $1, updated_at = CASE WHEN $2 = 'revoked' AND status = 'revoked' THEN updated_at ELSE $3 END, revoked_at = CASE WHEN $4 = 'revoked' THEN COALESCE(revoked_at, $5) ELSE $6 END, source_binding_json = COALESCE(source_binding_json, '{}'::jsonb) || $7::jsonb WHERE connector_instance_id = $8",
               [
@@ -2771,7 +2784,7 @@ export function createPostgresConnectorInstanceStore() {
                 status,
                 effectiveRevokedAt,
                 effectiveRevokedAt,
-                stableJson(sourceBindingPatch),
+                stableJson(effectiveSourceBindingPatch),
                 connectorInstanceId,
               ]
             );
@@ -2785,6 +2798,7 @@ export function createPostgresConnectorInstanceStore() {
             await revokePostgresConnectorInstanceCredentialsWithClient(client, {
               connectorInstanceId,
               revokedAt: effectiveRevokedAt,
+              stateChange: credentialStateChange,
             });
           }
           await client.query(

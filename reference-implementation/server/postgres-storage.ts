@@ -1342,12 +1342,15 @@ export async function bootstrapPostgresSchema({
         rotated_at TEXT,
         revoked_at TEXT,
         rejected_at TEXT,
-        rejection_reason TEXT
+        rejection_reason TEXT,
+        state_change_json JSONB
       );
       ALTER TABLE connector_instance_credentials
         ADD COLUMN IF NOT EXISTS rejected_at TEXT;
       ALTER TABLE connector_instance_credentials
         ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+      ALTER TABLE connector_instance_credentials
+        ADD COLUMN IF NOT EXISTS state_change_json JSONB;
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
         ON connector_instance_credentials(owner_subject_id, status);
 

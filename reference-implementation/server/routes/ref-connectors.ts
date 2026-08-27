@@ -46,6 +46,7 @@ import {
 } from "../../operations/ref-connectors-list/pagination.ts";
 import type { RunAdmission } from "../../runtime/controller.ts";
 import type { FleetHealthVerdict } from "../fleet-health.ts";
+import type { CredentialStateChange } from "../stores/connector-instance-credential-store.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { assertRemoteControlSupported } from "./_route-contract.ts";
 
@@ -251,14 +252,20 @@ export interface MountRefConnectorsContext {
     options: { connectorInstanceId?: string | null }
   ) => Promise<unknown>;
   // Connection-scoped soft-flip primitive — the SAME store `updateStatus`
-  // method the owner-agent bearer revoke and reactivate routes use. Flips
-  // exactly one connector instance to the target status, zero cascade; the
-  // namespace is owner-verified before this is called. Reactivate passes
+  // method the owner-agent bearer revoke and reactivate routes use. A revoke
+  // also revokes that instance's stored credential; other transitions leave it
+  // unchanged. The namespace is owner-verified before this is called. Reactivate passes
   // `{ status: 'active', revokedAt: null }` to clear the revoke stamp.
   updateConnectorInstanceStatus: (
     connectorInstanceId: string,
     options:
-      | { status: "revoked"; updatedAt: string; revokedAt: string }
+      | {
+          status: "revoked";
+          updatedAt: string;
+          revokedAt: string;
+          sourceBindingPatch: { revocation_reason: "owner_revoked" };
+          credentialStateChange: CredentialStateChange;
+        }
       | { status: "active"; updatedAt: string; revokedAt: null }
   ) => Promise<RevokedInstance> | RevokedInstance;
   upsertSchedule: (
@@ -1305,9 +1312,10 @@ async function emitConnectionControlAudit(
     outcome: "succeeded" | "failed";
     ownerSubjectId?: string | null;
     runId?: string | null;
+    trace?: TraceContext;
   }
 ): Promise<void> {
-  const trace = buildConnectionControlAuditTrace(ctx, res);
+  const trace = args.trace ?? buildConnectionControlAuditTrace(ctx, res);
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
     actor_id: args.ownerSubjectId ?? "owner_session",
@@ -1372,9 +1380,18 @@ export function mountRefConnectionRevoke(app: AppLike, ctx: MountRefConnectorsCo
         connectionId = namespace.connectorInstanceId;
         connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
         const stamp = ctx.now ? ctx.now() : new Date().toISOString();
+        const trace = buildConnectionControlAuditTrace(ctx, res);
         const revoked = await Promise.resolve(
           ctx.updateConnectorInstanceStatus(namespace.connectorInstanceId, {
+            credentialStateChange: {
+              actorId: ownerSubjectId,
+              actorType: "owner_session",
+              cause: "owner_revoked",
+              requestId: trace.request_id,
+              traceId: trace.trace_id,
+            },
             revokedAt: stamp,
+            sourceBindingPatch: { revocation_reason: "owner_revoked" },
             status: "revoked",
             updatedAt: stamp,
           })
@@ -1391,6 +1408,7 @@ export function mountRefConnectionRevoke(app: AppLike, ctx: MountRefConnectorsCo
           operation: "revoke",
           outcome: "succeeded",
           ownerSubjectId,
+          trace,
         });
         res.status(200).json({
           connection_id: connectionId,

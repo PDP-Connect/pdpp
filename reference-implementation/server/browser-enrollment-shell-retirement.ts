@@ -16,6 +16,7 @@
 // unit-testable without a database. The imperative variant wraps the scan.
 
 import type { BrowserEnrollmentShellSourceBinding } from "./routes/ref-browser-enrollment-shell.ts";
+import type { CredentialStateChange } from "./stores/connector-instance-credential-store.ts";
 
 export interface EnrollmentShellLike {
   readonly connectorInstanceId: string;
@@ -120,6 +121,7 @@ export interface ShellRetirementStore {
       updatedAt: string;
       revokedAt?: string | null;
       sourceBindingPatch?: Record<string, unknown> | null;
+      credentialStateChange?: CredentialStateChange;
     }
   ) => Promise<unknown>;
 }
@@ -141,6 +143,11 @@ export async function retireExpiredBrowserEnrollmentShells(
   for (const id of ids) {
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     await store.updateStatus(id, {
+      credentialStateChange: {
+        actorId: "browser_enrollment_shell_retirement",
+        actorType: "system",
+        cause: TTL_EXPIRED_REVOCATION_REASON,
+      },
       revokedAt: now,
       sourceBindingPatch: { revocation_reason: TTL_EXPIRED_REVOCATION_REASON },
       status: "revoked",
