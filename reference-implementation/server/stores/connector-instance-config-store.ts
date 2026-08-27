@@ -38,8 +38,8 @@
  * from this transaction.
  */
 
-import { getMany, getOne, referenceQueries, writeTransaction } from "../../lib/db.ts";
 import { resolveEnforcedOptionKind } from "../../../packages/polyfill-connectors/src/connector-config-option-kind-registry.ts";
+import { getMany, getOne, referenceQueries, writeTransaction } from "../../lib/db.ts";
 import { getDb } from "../db.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
@@ -49,7 +49,22 @@ export type ConfigOptionKind = "collection_scope" | "transport";
 /** Closed provenance vocabulary. Origin describes attribution, never authorization. */
 export type ConfigOrigin = "agent" | "default" | "migration" | "owner";
 
-export type ConfigRevisionStatus = "active" | "proposed" | "quarantined" | "superseded";
+/**
+ * `rejected` is the owner's REFUSAL, and it is a first-class outcome.
+ *
+ * Without it an owner could only accept a proposal or ignore it forever, so a
+ * change he did not want sat pending in his UI indefinitely with no way to say
+ * no (production, 2026-08-26: an agent-proposed 239-channel Slack allowlist he
+ * explicitly did not want, unrefusable). Ignoring is not deciding — an owner
+ * who can only accept or ignore has no agency over his own configuration.
+ *
+ * It is deliberately DISTINCT from `superseded`: superseded means a newer
+ * revision won, which says nothing about what the owner wanted. `rejected`
+ * records that he was asked and said no, with his subject id and the time.
+ * Terminal — a rejected revision is never resurrected; a later proposal is a
+ * new revision.
+ */
+export type ConfigRevisionStatus = "active" | "proposed" | "quarantined" | "rejected" | "superseded";
 
 /** The current, closed contract this module writes. Bump on any breaking config_json shape change; never coerce an old contract into a new one. */
 export const CONNECTOR_CONFIG_CONTRACT_ID = "pdpp.connector_config.v1";
@@ -173,28 +188,28 @@ interface ConnectorInstanceAuthorityRow {
 
 function mapRevisionRow(row: RevisionRow): ConfigRevision {
   return {
-    connectorInstanceId: row.connector_instance_id,
-    revision: Number(row.revision),
+    collectionBoundaryFingerprint: row.collection_boundary_fingerprint,
     config: JSON.parse(row.config_json) as Record<string, unknown>,
     configContractId: row.config_contract_id,
     configContractVersion: Number(row.config_contract_version),
+    confirmedAt: row.confirmed_at,
+    confirmedBy: row.confirmed_by,
+    connectorInstanceId: row.connector_instance_id,
+    isExplicit: row.is_explicit === true || row.is_explicit === 1,
     optionKind: row.option_kind as ConfigOptionKind,
     origin: row.origin as ConfigOrigin,
-    isExplicit: row.is_explicit === true || row.is_explicit === 1,
-    status: row.status as ConfigRevisionStatus,
-    collectionBoundaryFingerprint: row.collection_boundary_fingerprint,
-    sourceOfChange: row.source_of_change,
-    setBy: row.set_by,
+    revision: Number(row.revision),
     setAt: row.set_at,
-    confirmedBy: row.confirmed_by,
-    confirmedAt: row.confirmed_at,
+    setBy: row.set_by,
+    sourceOfChange: row.source_of_change,
+    status: row.status as ConfigRevisionStatus,
   };
 }
 
 function mapPointerRow(row: PointerRow): CurrentPointer {
   return {
-    connectorInstanceId: row.connector_instance_id,
     activeRevision: Number(row.active_revision),
+    connectorInstanceId: row.connector_instance_id,
     storageEpoch: Number(row.storage_epoch),
     updatedAt: row.updated_at,
   };
@@ -217,6 +232,14 @@ export interface ConfirmArgs {
   readonly revision: number;
 }
 
+export interface RejectArgs {
+  /** Established by the caller's authentication boundary; this store verifies it owns the connection. */
+  readonly authenticatedOwnerSubjectId: string;
+  readonly connectorInstanceId: string;
+  readonly rejectedAt: string;
+  readonly revision: number;
+}
+
 export interface ConnectorInstanceConfigStore {
   /** Move a `proposed` revision to `active` after the authenticated owner subject matches the connection owner. */
   confirm: (args: ConfirmArgs) => Promise<ConfigRevision>;
@@ -232,11 +255,23 @@ export interface ConnectorInstanceConfigStore {
    * resolves against it.
    */
   propose: (args: ProposeArgs) => Promise<ConfigRevision>;
+  /**
+   * Move a `proposed` revision to `rejected` — the owner was asked and said no.
+   *
+   * Same ownership and state rules as {@link confirm}: only the authenticated
+   * owner of this connection, only from `proposed`. It touches NO pointer and
+   * activates nothing, so refusing a proposal can never change what a run
+   * collects; it only closes the decision. Terminal by design — a rejected
+   * revision is never reopened, and a later change is a new proposal.
+   */
+  reject: (args: RejectArgs) => Promise<ConfigRevision>;
 }
 
 function nextRevisionSqlite(db: ReturnType<typeof getDb>, connectorInstanceId: string): number {
   const row = db
-    .prepare("SELECT COALESCE(MAX(revision), 0) + 1 AS next FROM connector_instance_config_revisions WHERE connector_instance_id = ?")
+    .prepare(
+      "SELECT COALESCE(MAX(revision), 0) + 1 AS next FROM connector_instance_config_revisions WHERE connector_instance_id = ?"
+    )
     .get(connectorInstanceId) as { next: number };
   return row.next;
 }
@@ -259,7 +294,9 @@ function requireConnectorInstanceAuthoritySqlite(
   return row;
 }
 
-function assertAuthenticatedOwnerSubject(authenticatedOwnerSubjectId: unknown): asserts authenticatedOwnerSubjectId is string {
+function assertAuthenticatedOwnerSubject(
+  authenticatedOwnerSubjectId: unknown
+): asserts authenticatedOwnerSubjectId is string {
   if (typeof authenticatedOwnerSubjectId !== "string" || authenticatedOwnerSubjectId.trim().length === 0) {
     throw new Error("connector_instance_config: authenticated owner subject must not be empty");
   }
@@ -277,6 +314,80 @@ function assertOwnerSubjectMatches(
 
 export function createSqliteConnectorInstanceConfigStore(): ConnectorInstanceConfigStore {
   return {
+    async confirm({ connectorInstanceId, revision, authenticatedOwnerSubjectId, confirmedAt }) {
+      assertAuthenticatedOwnerSubject(authenticatedOwnerSubjectId);
+      return writeTransaction(() => {
+        const db = getDb();
+        const authority = requireConnectorInstanceAuthoritySqlite(db, connectorInstanceId);
+        // The HTTP/owner-agent boundary authenticates this subject. The store
+        // only verifies that authenticated identity owns this exact connection.
+        assertOwnerSubjectMatches(connectorInstanceId, authenticatedOwnerSubjectId, authority.owner_subject_id);
+        const target = getOne<RevisionRow>(referenceQueries.connectorInstanceConfigGetRevision, [
+          connectorInstanceId,
+          revision,
+        ]);
+        if (!target) {
+          throw new Error(`connector_instance_config: no revision ${revision} for ${connectorInstanceId}`);
+        }
+        if (target.status !== "proposed") {
+          throw new Error(
+            `connector_instance_config: revision ${revision} is '${target.status}', not 'proposed' -- only a proposed revision can be confirmed`
+          );
+        }
+        const pointer = readPointerSqlite(connectorInstanceId);
+        db.prepare(
+          "UPDATE connector_instance_config_revisions SET status = 'active', confirmed_by = ?, confirmed_at = ? WHERE connector_instance_id = ? AND revision = ?"
+        ).run(authenticatedOwnerSubjectId, confirmedAt, connectorInstanceId, revision);
+        if (pointer) {
+          db.prepare(
+            "UPDATE connector_instance_config_revisions SET status = 'superseded' WHERE connector_instance_id = ? AND revision = ?"
+          ).run(connectorInstanceId, pointer.activeRevision);
+        }
+        db.prepare(
+          `INSERT INTO connector_instance_config_current(connector_instance_id, active_revision, storage_epoch, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(connector_instance_id) DO UPDATE SET
+             active_revision = excluded.active_revision,
+             updated_at = excluded.updated_at`
+        ).run(connectorInstanceId, revision, pointer?.storageEpoch ?? 1, confirmedAt);
+
+        const confirmed = getOne<RevisionRow>(referenceQueries.connectorInstanceConfigGetRevision, [
+          connectorInstanceId,
+          revision,
+        ]);
+        if (!confirmed) {
+          throw new Error(
+            `connector_instance_config: revision vanished mid-confirm for ${connectorInstanceId}/${revision}`
+          );
+        }
+        return mapRevisionRow(confirmed);
+      });
+    },
+
+    async getActiveRevision(connectorInstanceId) {
+      const pointer = readPointerSqlite(connectorInstanceId);
+      if (!pointer) {
+        return null;
+      }
+      const row = getOne<RevisionRow>(referenceQueries.connectorInstanceConfigGetRevision, [
+        connectorInstanceId,
+        pointer.activeRevision,
+      ]);
+      return row?.status === "active" ? mapRevisionRow(row) : null;
+    },
+
+    async getCurrentPointer(connectorInstanceId) {
+      return readPointerSqlite(connectorInstanceId);
+    },
+
+    async listRevisions(connectorInstanceId) {
+      const { rows } = getMany<RevisionRow & Record<string, unknown>>(
+        referenceQueries.connectorInstanceConfigListRevisionsByInstance,
+        [connectorInstanceId],
+        { limit: MAX_REVISIONS_PER_INSTANCE }
+      );
+      return rows.map((row) => mapRevisionRow(row));
+    },
     async propose({ connectorInstanceId, config, provenance, baseRevision, baseEpoch, boundaryFingerprint }) {
       assertProvenanceOrThrow(provenance);
       return writeTransaction(() => {
@@ -340,13 +451,11 @@ export function createSqliteConnectorInstanceConfigStore(): ConnectorInstanceCon
       });
     },
 
-    async confirm({ connectorInstanceId, revision, authenticatedOwnerSubjectId, confirmedAt }) {
+    async reject({ connectorInstanceId, revision, authenticatedOwnerSubjectId, rejectedAt }) {
       assertAuthenticatedOwnerSubject(authenticatedOwnerSubjectId);
       return writeTransaction(() => {
         const db = getDb();
         const authority = requireConnectorInstanceAuthoritySqlite(db, connectorInstanceId);
-        // The HTTP/owner-agent boundary authenticates this subject. The store
-        // only verifies that authenticated identity owns this exact connection.
         assertOwnerSubjectMatches(connectorInstanceId, authenticatedOwnerSubjectId, authority.owner_subject_id);
         const target = getOne<RevisionRow>(referenceQueries.connectorInstanceConfigGetRevision, [
           connectorInstanceId,
@@ -357,60 +466,29 @@ export function createSqliteConnectorInstanceConfigStore(): ConnectorInstanceCon
         }
         if (target.status !== "proposed") {
           throw new Error(
-            `connector_instance_config: revision ${revision} is '${target.status}', not 'proposed' -- only a proposed revision can be confirmed`
+            `connector_instance_config: revision ${revision} is '${target.status}', not 'proposed' -- only a proposed revision can be rejected`
           );
         }
-        const pointer = readPointerSqlite(connectorInstanceId);
+        // NO pointer read and NO pointer write, deliberately: refusing a
+        // proposal must never change what a run collects. `confirmed_by`/
+        // `confirmed_at` carry the DECISION identity and time for both
+        // outcomes — the `status` says which way it went, so a refusal is as
+        // attributable as an acceptance.
         db.prepare(
-          "UPDATE connector_instance_config_revisions SET status = 'active', confirmed_by = ?, confirmed_at = ? WHERE connector_instance_id = ? AND revision = ?"
-        ).run(authenticatedOwnerSubjectId, confirmedAt, connectorInstanceId, revision);
-        if (pointer) {
-          db.prepare(
-            "UPDATE connector_instance_config_revisions SET status = 'superseded' WHERE connector_instance_id = ? AND revision = ?"
-          ).run(connectorInstanceId, pointer.activeRevision);
-        }
-        db.prepare(
-          `INSERT INTO connector_instance_config_current(connector_instance_id, active_revision, storage_epoch, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(connector_instance_id) DO UPDATE SET
-             active_revision = excluded.active_revision,
-             updated_at = excluded.updated_at`
-        ).run(connectorInstanceId, revision, pointer?.storageEpoch ?? 1, confirmedAt);
+          "UPDATE connector_instance_config_revisions SET status = 'rejected', confirmed_by = ?, confirmed_at = ? WHERE connector_instance_id = ? AND revision = ?"
+        ).run(authenticatedOwnerSubjectId, rejectedAt, connectorInstanceId, revision);
 
-        const confirmed = getOne<RevisionRow>(referenceQueries.connectorInstanceConfigGetRevision, [
+        const rejected = getOne<RevisionRow>(referenceQueries.connectorInstanceConfigGetRevision, [
           connectorInstanceId,
           revision,
         ]);
-        if (!confirmed) {
-          throw new Error(`connector_instance_config: revision vanished mid-confirm for ${connectorInstanceId}/${revision}`);
+        if (!rejected) {
+          throw new Error(
+            `connector_instance_config: revision vanished mid-reject for ${connectorInstanceId}/${revision}`
+          );
         }
-        return mapRevisionRow(confirmed);
+        return mapRevisionRow(rejected);
       });
-    },
-
-    async getCurrentPointer(connectorInstanceId) {
-      return readPointerSqlite(connectorInstanceId);
-    },
-
-    async getActiveRevision(connectorInstanceId) {
-      const pointer = readPointerSqlite(connectorInstanceId);
-      if (!pointer) {
-        return null;
-      }
-      const row = getOne<RevisionRow>(referenceQueries.connectorInstanceConfigGetRevision, [
-        connectorInstanceId,
-        pointer.activeRevision,
-      ]);
-      return row?.status === "active" ? mapRevisionRow(row) : null;
-    },
-
-    async listRevisions(connectorInstanceId) {
-      const { rows } = getMany<RevisionRow & Record<string, unknown>>(
-        referenceQueries.connectorInstanceConfigListRevisionsByInstance,
-        [connectorInstanceId],
-        { limit: MAX_REVISIONS_PER_INSTANCE }
-      );
-      return rows.map((row) => mapRevisionRow(row));
     },
   };
 }
@@ -452,6 +530,77 @@ async function requireConnectorInstanceAuthorityPostgres(
 
 export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceConfigStore {
   return {
+    async confirm({ connectorInstanceId, revision, authenticatedOwnerSubjectId, confirmedAt }) {
+      assertAuthenticatedOwnerSubject(authenticatedOwnerSubjectId);
+      const authority = await requireConnectorInstanceAuthorityPostgres(connectorInstanceId);
+      // The caller/auth boundary establishes authentication; this store binds
+      // that authenticated subject to the persisted connection owner.
+      assertOwnerSubjectMatches(connectorInstanceId, authenticatedOwnerSubjectId, authority.owner_subject_id);
+      const target = await readRevisionPostgres(connectorInstanceId, revision);
+      if (!target) {
+        throw new Error(`connector_instance_config: no revision ${revision} for ${connectorInstanceId}`);
+      }
+      if (target.status !== "proposed") {
+        throw new Error(
+          `connector_instance_config: revision ${revision} is '${target.status}', not 'proposed' -- only a proposed revision can be confirmed`
+        );
+      }
+      const pointer = await readPointerPostgres(connectorInstanceId);
+      await postgresQuery(
+        `UPDATE connector_instance_config_revisions SET status = 'active', confirmed_by = $1, confirmed_at = $2
+         WHERE connector_instance_id = $3 AND revision = $4`,
+        [authenticatedOwnerSubjectId, confirmedAt, connectorInstanceId, revision]
+      );
+      if (pointer) {
+        await postgresQuery(
+          `UPDATE connector_instance_config_revisions SET status = 'superseded'
+           WHERE connector_instance_id = $1 AND revision = $2`,
+          [connectorInstanceId, pointer.activeRevision]
+        );
+      }
+      await postgresQuery(
+        `INSERT INTO connector_instance_config_current(connector_instance_id, active_revision, storage_epoch, updated_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (connector_instance_id) DO UPDATE SET
+           active_revision = excluded.active_revision,
+           updated_at = excluded.updated_at`,
+        [connectorInstanceId, revision, pointer?.storageEpoch ?? 1, confirmedAt]
+      );
+      const confirmed = await readRevisionPostgres(connectorInstanceId, revision);
+      if (!confirmed) {
+        throw new Error(
+          `connector_instance_config: revision vanished mid-confirm for ${connectorInstanceId}/${revision}`
+        );
+      }
+      return mapRevisionRow(confirmed);
+    },
+
+    async getActiveRevision(connectorInstanceId) {
+      const pointer = await readPointerPostgres(connectorInstanceId);
+      if (!pointer) {
+        return null;
+      }
+      const row = await readRevisionPostgres(connectorInstanceId, pointer.activeRevision);
+      return row?.status === "active" ? mapRevisionRow(row) : null;
+    },
+
+    async getCurrentPointer(connectorInstanceId) {
+      return readPointerPostgres(connectorInstanceId);
+    },
+
+    async listRevisions(connectorInstanceId) {
+      const result = await postgresQuery<RevisionRow>(
+        `SELECT connector_instance_id, revision, config_json::text AS config_json, config_contract_id,
+                config_contract_version, option_kind, origin, is_explicit, status,
+                collection_boundary_fingerprint, source_of_change, set_by, set_at, confirmed_by, confirmed_at
+         FROM connector_instance_config_revisions
+         WHERE connector_instance_id = $1
+         ORDER BY revision DESC
+         LIMIT $2`,
+        [connectorInstanceId, MAX_REVISIONS_PER_INSTANCE]
+      );
+      return result.rows.map((row) => mapRevisionRow(row));
+    },
     async propose({ connectorInstanceId, config, provenance, baseRevision, baseEpoch, boundaryFingerprint }) {
       assertProvenanceOrThrow(provenance);
       const authority = await requireConnectorInstanceAuthorityPostgres(connectorInstanceId);
@@ -469,7 +618,7 @@ export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceC
       }
 
       const nextRevisionResult = await postgresQuery<{ next: string }>(
-        `SELECT COALESCE(MAX(revision), 0) + 1 AS next FROM connector_instance_config_revisions WHERE connector_instance_id = $1`,
+        "SELECT COALESCE(MAX(revision), 0) + 1 AS next FROM connector_instance_config_revisions WHERE connector_instance_id = $1",
         [connectorInstanceId]
       );
       const revision = Number(nextRevisionResult.rows[0]?.next ?? 1);
@@ -524,11 +673,9 @@ export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceC
       return mapRevisionRow(written);
     },
 
-    async confirm({ connectorInstanceId, revision, authenticatedOwnerSubjectId, confirmedAt }) {
+    async reject({ connectorInstanceId, revision, authenticatedOwnerSubjectId, rejectedAt }) {
       assertAuthenticatedOwnerSubject(authenticatedOwnerSubjectId);
       const authority = await requireConnectorInstanceAuthorityPostgres(connectorInstanceId);
-      // The caller/auth boundary establishes authentication; this store binds
-      // that authenticated subject to the persisted connection owner.
       assertOwnerSubjectMatches(connectorInstanceId, authenticatedOwnerSubjectId, authority.owner_subject_id);
       const target = await readRevisionPostgres(connectorInstanceId, revision);
       if (!target) {
@@ -536,62 +683,23 @@ export function createPostgresConnectorInstanceConfigStore(): ConnectorInstanceC
       }
       if (target.status !== "proposed") {
         throw new Error(
-          `connector_instance_config: revision ${revision} is '${target.status}', not 'proposed' -- only a proposed revision can be confirmed`
+          `connector_instance_config: revision ${revision} is '${target.status}', not 'proposed' -- only a proposed revision can be rejected`
         );
       }
-      const pointer = await readPointerPostgres(connectorInstanceId);
+      // Mirrors the SQLite branch exactly: no pointer read, no pointer write.
+      // A refusal closes a decision; it never changes what a run collects.
       await postgresQuery(
-        `UPDATE connector_instance_config_revisions SET status = 'active', confirmed_by = $1, confirmed_at = $2
+        `UPDATE connector_instance_config_revisions SET status = 'rejected', confirmed_by = $1, confirmed_at = $2
          WHERE connector_instance_id = $3 AND revision = $4`,
-        [authenticatedOwnerSubjectId, confirmedAt, connectorInstanceId, revision]
+        [authenticatedOwnerSubjectId, rejectedAt, connectorInstanceId, revision]
       );
-      if (pointer) {
-        await postgresQuery(
-          `UPDATE connector_instance_config_revisions SET status = 'superseded'
-           WHERE connector_instance_id = $1 AND revision = $2`,
-          [connectorInstanceId, pointer.activeRevision]
+      const rejected = await readRevisionPostgres(connectorInstanceId, revision);
+      if (!rejected) {
+        throw new Error(
+          `connector_instance_config: revision vanished mid-reject for ${connectorInstanceId}/${revision}`
         );
       }
-      await postgresQuery(
-        `INSERT INTO connector_instance_config_current(connector_instance_id, active_revision, storage_epoch, updated_at)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (connector_instance_id) DO UPDATE SET
-           active_revision = excluded.active_revision,
-           updated_at = excluded.updated_at`,
-        [connectorInstanceId, revision, pointer?.storageEpoch ?? 1, confirmedAt]
-      );
-      const confirmed = await readRevisionPostgres(connectorInstanceId, revision);
-      if (!confirmed) {
-        throw new Error(`connector_instance_config: revision vanished mid-confirm for ${connectorInstanceId}/${revision}`);
-      }
-      return mapRevisionRow(confirmed);
-    },
-
-    async getCurrentPointer(connectorInstanceId) {
-      return readPointerPostgres(connectorInstanceId);
-    },
-
-    async getActiveRevision(connectorInstanceId) {
-      const pointer = await readPointerPostgres(connectorInstanceId);
-      if (!pointer) {
-        return null;
-      }
-      const row = await readRevisionPostgres(connectorInstanceId, pointer.activeRevision);
-      return row?.status === "active" ? mapRevisionRow(row) : null;
-    },
-
-    async listRevisions(connectorInstanceId) {
-      const result = await postgresQuery<RevisionRow>(
-        `SELECT connector_instance_id, revision, config_json::text AS config_json, config_contract_id,
-                config_contract_version, option_kind, origin, is_explicit, status,
-                collection_boundary_fingerprint, source_of_change, set_by, set_at, confirmed_by, confirmed_at
-         FROM connector_instance_config_revisions
-         WHERE connector_instance_id = $1
-         ORDER BY revision DESC
-         LIMIT $2`,
-        [connectorInstanceId, MAX_REVISIONS_PER_INSTANCE]
-      );
-      return result.rows.map((row) => mapRevisionRow(row));
+      return mapRevisionRow(rejected);
     },
   };
 }

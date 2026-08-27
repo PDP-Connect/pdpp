@@ -786,6 +786,8 @@ export interface ConnectorSummary {
    * coverage provenance without changing grant-scoped read surfaces.
    */
   readonly acquisition_coverage: AcquisitionCoverageSummary | null;
+  /** Reason recorded by the boot auto-enrollment pass when no schedule exists. */
+  readonly auto_enroll_skip_reason?: string | null;
   /**
    * Per-stream Collection Report derived on read from the latest run's runtime
    * `collection_facts` block plus this connection's freshness / refresh-policy /
@@ -888,8 +890,6 @@ export interface ConnectorSummary {
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   readonly revoked_at: string | null;
   readonly schedule: unknown;
-  /** Reason recorded by the boot auto-enrollment pass when no schedule exists. */
-  readonly auto_enroll_skip_reason?: string | null;
   readonly source_binding_kind: string | null;
   /**
    * The connection's source kind and non-secret source-binding kind. Owner
@@ -2229,6 +2229,29 @@ export function retireExpiredBrowserEnrollmentShellsForMaintenance(
   };
   return retireExpiredBrowserEnrollmentShells(
     {
+      // The shells that hold a captured credential. A credential is finished
+      // owner work sitting in the row — he typed his password — so wall-clock
+      // alone must not throw it away (production 2026-08-26: seven venmo
+      // shells retired at their 2h TTL, stranding his real password on revoked
+      // rows). Failure to read this must never CAUSE a revocation, so an error
+      // degrades to "no shell is credentialed", matching the surrounding
+      // `.catch(() => null)` discipline on this path.
+      async listCredentialedInstanceIds() {
+        const shells = await store.listDraftBrowserEnrollmentShells(ownerSubjectId);
+        const ids = shells
+          .map((shell: { connectorInstanceId?: string }) => shell.connectorInstanceId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        if (ids.length === 0) {
+          return [];
+        }
+        const metadata = await getConnectorCredentialStore()
+          .getMetadataByInstanceIds(ids)
+          .catch(() => null);
+        if (!metadata) {
+          return [];
+        }
+        return [...metadata.keys()];
+      },
       // biome-ignore lint/suspicious/noShadow: The local name follows the external payload vocabulary at this boundary.
       async listDraftBrowserEnrollmentShells(ownerSubjectId) {
         return [...(await store.listDraftBrowserEnrollmentShells(ownerSubjectId))];
@@ -6724,6 +6747,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   }
   return {
     acquisition_coverage: acquisitionCoverage,
+    auto_enroll_skip_reason: recordedAutoEnrollSkipReason(instance),
     collection_report: collectionReport,
     connection_health: connectionHealth,
     connection_id: connectorInstanceId,
@@ -6770,7 +6794,6 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       : { as_of: null, reason_code: "summary_evidence_unavailable", state: "unobserved" },
     revoked_at: instance.revokedAt ?? null,
     schedule: localDeviceBacked ? null : schedule,
-    auto_enroll_skip_reason: recordedAutoEnrollSkipReason(instance),
     source_binding_kind: connectionBindingKind(instance),
     source_kind: instance.sourceKind,
     source_visibility: sourceVisibility,
@@ -7710,10 +7733,7 @@ async function loadConnectorSummaryProjectionDeps(
     ...(latestSettledRunHistoryRows ?? []),
   ]) {
     if (row.runId && row.connectorInstanceId) {
-      latestRunFactsJsonByRunIdentity.set(
-        runFactsCacheKey(row.runId, row.connectorInstanceId),
-        row.factsJson ?? null
-      );
+      latestRunFactsJsonByRunIdentity.set(runFactsCacheKey(row.runId, row.connectorInstanceId), row.factsJson ?? null);
     }
   }
   const evidenceReadFailed = summaryEvidenceRead.failed;

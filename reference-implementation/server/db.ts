@@ -739,7 +739,12 @@ CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
   -- quarantined: server-detected integrity problem (e.g. an untrusted
   --             direct DB write) -- never runnable, never silently
   --             attributed to an author.
-  status                   TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+  -- rejected:   the OWNER was asked and said no. Distinct from superseded
+  --             (a newer revision won, which says nothing about what he
+  --             wanted) and from quarantined (a server integrity finding,
+  --             not a decision). Terminal: never resurrected, never
+  --             activated; a later change is a NEW revision.
+  status                   TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined', 'rejected')),
   -- The collection-boundary fingerprint this revision's collection_scope
   -- keys resolve to, following the same declassification contract already
   -- proven for START.scope (see local-collection-scope.ts). NULL for a
