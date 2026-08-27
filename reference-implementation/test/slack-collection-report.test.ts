@@ -158,20 +158,22 @@ test("slack unsupported-in-mode streams: manifest accepted-absence prevents rest
   }
 });
 
-test("slack co-emitted detail streams: checkpoint_window + committed parent checkpoint -> complete", () => {
-  // reactions / message_attachments ride the `messages` cursor and are committed
-  // by the parent `messages` STATE. Under the ruling that a committed checkpoint
-  // alone never proves coverage, they need a measured `considered` boundary too;
-  // the committed checkpoint then closes the `checkpoint_window` so a
-  // changed-record-only `collected` below the boundary still reads `complete`.
+test("slack derived detail streams: parent-detail accounting with child-owned counts -> complete", () => {
+  // reactions / message_attachments share the messages checkpoint, but their
+  // denominator and numerator are records from their own streams. A parent
+  // message count cannot stand in for either.
   const manifestStreams: ManifestStreamFixture[] = [
-    { coverage_strategy: "checkpoint_window", name: "reactions", state_stream: "messages" },
-    { coverage_strategy: "checkpoint_window", name: "message_attachments", state_stream: "messages" },
+    { coverage_strategy: "parent_detail_accounting", name: "reactions", parent_streams: ["messages"] },
+    {
+      coverage_strategy: "parent_detail_accounting",
+      name: "message_attachments",
+      parent_streams: ["messages"],
+    },
   ];
   const entries = report(
     [
-      fact({ checkpoint: "committed", collected: 42, considered: 50, stream: "reactions" }),
-      fact({ checkpoint: "committed", collected: 7, considered: 9, stream: "message_attachments" }),
+      fact({ checkpoint: "committed", collected: 42, considered: 42, covered: 42, stream: "reactions" }),
+      fact({ checkpoint: "committed", collected: 7, considered: 7, covered: 7, stream: "message_attachments" }),
     ],
     { manifestStreams }
   );
@@ -182,36 +184,32 @@ test("slack co-emitted detail streams: checkpoint_window + committed parent chec
   }
 });
 
-test("slack co-emitted detail streams: historical child not_staged inherits committed parent checkpoint", () => {
-  // Live repair: historical terminal fact blocks may have stamped a co-emitted
-  // child stream as `not_staged` even though the parent `messages` cursor
-  // committed. The manifest state_stream declaration is the durable read-side
-  // evidence that lets old reports project the same way current runtime facts do.
+test("slack derived detail streams: missing child numerator remains partial", () => {
   const manifestStreams: ManifestStreamFixture[] = [
-    { coverage_strategy: "checkpoint_window", name: "reactions", state_stream: "messages" },
+    { coverage_strategy: "parent_detail_accounting", name: "reactions", parent_streams: ["messages"] },
   ];
   const entries = report(
-    [
-      fact({ checkpoint: "committed", collected: 1903, considered: 1903, stream: "messages" }),
-      fact({ checkpoint: "not_staged", collected: 42, considered: 50, stream: "reactions" }),
-    ],
+    [fact({ checkpoint: "committed", collected: 42, considered: 42, covered: 41, stream: "reactions" })],
     { manifestStreams }
   );
   const entry = entryFor(entries, "reactions");
-  assert.equal(entry.checkpoint, "committed", "child stream inherits the parent committed checkpoint");
-  assert.equal(entry.coverage_condition, "complete", "parent checkpoint proves child checkpoint_window coverage");
-  assert.equal(entry.forward_disposition, "complete");
+  assert.equal(
+    entry.coverage_condition,
+    "partial",
+    "a missing child record must never be hidden by the parent checkpoint"
+  );
+  assert.equal(entry.forward_disposition, "resumable");
 });
 
-test("slack co-emitted detail streams: child not_staged without parent proof stays unknown", () => {
+test("slack derived detail streams: no child measurement stays unknown", () => {
   const manifestStreams: ManifestStreamFixture[] = [
-    { coverage_strategy: "checkpoint_window", name: "reactions", state_stream: "messages" },
+    { coverage_strategy: "parent_detail_accounting", name: "reactions", parent_streams: ["messages"] },
   ];
   const entries = report([fact({ checkpoint: "not_staged", collected: 42, considered: null, stream: "reactions" })], {
     manifestStreams,
   });
   const entry = entryFor(entries, "reactions");
-  assert.equal(entry.coverage_condition, "unknown", "not_staged alone does not prove checkpoint_window coverage");
+  assert.equal(entry.coverage_condition, "unknown", "a parent checkpoint cannot substitute for child accounting");
   assert.equal(entry.forward_disposition, "unmeasured");
 });
 
