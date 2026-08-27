@@ -5,15 +5,11 @@
  * Characterization oracle for the owner-facing connection-revoke surface.
  *
  * The route delegates to `ConnectorInstanceStore.updateStatus(... revoked)`.
- * This real-Postgres test records the current, intentionally undecided
- * semantics at that storage boundary: revoking the connection does not change
- * the separately stored credential, yet active-only run admission prevents a
- * normal run from reaching credential resolution. A unit mock cannot prove
- * this persistence boundary or distinguish an active credential from a
- * revoked one, so the disposable Postgres database is required.
- *
- * OWNER DECISION: a future choice to cascade revocation must deliberately
- * change this test and the documented owner-facing contract.
+ * This real-Postgres test pins the ruled lifecycle contract at that storage
+ * boundary: revoking a connection also revokes its separately stored
+ * credential. A unit mock cannot prove this persistence boundary or
+ * distinguish an active credential from a revoked one, so the disposable
+ * Postgres database is required.
  */
 
 import assert from "node:assert/strict";
@@ -41,7 +37,7 @@ function databaseName(): string {
   return `pdpp_test_revoke_credential_${process.pid}_${Date.now()}_${databaseCounter}`;
 }
 
-test("revoking a connection currently leaves its credential active - see OWNER DECISION", {
+test("revoking a connection also revokes its stored credential", {
   skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL);
@@ -94,18 +90,20 @@ test("revoking a connection currently leaves its credential active - see OWNER D
         });
 
         const credential = await credentialStore.getMetadata(CONNECTION_ID);
-        assert.ok(credential, "the credential row currently survives connection revoke");
-        assert.equal(credential.status, "active");
-        assert.equal(credential.revokedAt, null);
-        assert.equal(await credentialStore.hasActiveCredential(CONNECTION_ID), true);
-        await assert.doesNotReject(
+        assert.ok(credential, "the credential row survives connection revoke as revoked metadata");
+        assert.equal(credential.status, "revoked");
+        assert.equal(credential.revokedAt, REVOKED_AT);
+        assert.equal(await credentialStore.hasActiveCredential(CONNECTION_ID), false);
+        await assert.rejects(
           () => credentialStore.recoverSecret({ connectorInstanceId: CONNECTION_ID, ownerSubjectId: OWNER_SUBJECT_ID }),
-          "the credential store currently considers the surviving active row recoverable"
+          (error: unknown) => {
+            assert.equal((error as { code?: unknown }).code, "credential_revoked");
+            return true;
+          }
         );
 
-        // Normal run creation admits the connection before resolving its
-        // credential, so this retained active row is not reachable through a
-        // standard owner or scheduler run.
+        // Normal run creation continues to refuse the revoked connection
+        // before credential resolution.
         await assert.rejects(
           () =>
             admitOwnerRunConnection({

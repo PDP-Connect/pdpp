@@ -3,7 +3,7 @@
 
 import { exec, getOne, type MutationQuery, type RegisteredQuery, referenceQueries } from "../../lib/db.ts";
 import { getDb } from "../db.ts";
-import { postgresQuery } from "../postgres-storage.ts";
+import { type PostgresTransactionClient, postgresQuery } from "../postgres-storage.ts";
 import {
   CredentialEncryptionError as CredentialEncryptionErrorClass,
   createCredentialCipherFromEnv,
@@ -76,6 +76,32 @@ interface CredentialStoreRun {
   markRejected: (args: { connectorInstanceId: string; rejectedAt: string; reason: string | null }) => Promise<void>;
   revoke: (args: { connectorInstanceId: string; revokedAt: string }) => Promise<void>;
   upsert: (record: CredentialWriteRecord) => Promise<void>;
+}
+
+/**
+ * Revoke the credential bound to one connection using the caller's Postgres
+ * transaction. Connection lifecycle writes use this to make a connection
+ * revoke and its credential revoke one durable state transition.
+ *
+ * The status predicate deliberately preserves the first revocation timestamp:
+ * a retry must not make an older revoke look newer.
+ */
+export async function revokePostgresConnectorInstanceCredentialsWithClient(
+  client: PostgresTransactionClient,
+  {
+    connectorInstanceId,
+    revokedAt,
+  }: {
+    connectorInstanceId: string;
+    revokedAt: string;
+  }
+): Promise<void> {
+  await client.query(
+    `UPDATE connector_instance_credentials
+     SET status = 'revoked', revoked_at = $1, rejected_at = NULL, rejection_reason = NULL
+     WHERE connector_instance_id = $2 AND status <> 'revoked'`,
+    [revokedAt, connectorInstanceId]
+  );
 }
 
 export interface ConnectorInstanceCredentialStore {
