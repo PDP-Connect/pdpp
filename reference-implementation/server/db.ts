@@ -2291,7 +2291,11 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence_repair_chunk (
   -- computed against would silently under- or over-count.
   source_revision               TEXT NOT NULL,
   started_at                   TEXT NOT NULL,
-  updated_at                   TEXT NOT NULL
+  updated_at                   TEXT NOT NULL,
+  -- The next page limit to try after a statement_timeout. This is scheduling
+  -- state for a resumable scan, not evidence; NULL on a legacy row means the
+  -- scan starts with the default limit and learns on its first cancellation.
+  page_size                    INTEGER
 );
 
 -- Explicit provenance for a rejected write against this exact manifest
@@ -6069,6 +6073,12 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorSummaryEvidenceColumns(raw));
+  // Adaptive whale-repair pages: pre-existing databases have the durable
+  // chunk table but not the next page limit. Add it without rewriting the
+  // retained records or changing any evidence authority.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "connector_summary_evidence_repair_chunk", "page_size", "INTEGER")
+  );
   runWithSqliteBusyRetrySync(() => ensureRetainedSizeRejectionColumns(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorMaintenanceCursorColumns(raw));
   runWithSqliteBusyRetrySync(() => migrateManifestWriteViolations(raw));

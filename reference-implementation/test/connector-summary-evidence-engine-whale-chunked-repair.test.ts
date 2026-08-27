@@ -135,10 +135,10 @@ function evidenceRow(connectorInstanceId: string) {
 function chunkRow(connectorInstanceId: string) {
   return getDb()
     .prepare(
-      "SELECT resume_after_id, accumulator_json, source_revision FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = ?"
+      "SELECT resume_after_id, accumulator_json, source_revision, page_size FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = ?"
     )
     .get(connectorInstanceId) as
-    | { accumulator_json: string; resume_after_id: number | null; source_revision: string }
+    | { accumulator_json: string; page_size: number; resume_after_id: number | null; source_revision: string }
     | undefined;
 }
 
@@ -208,6 +208,11 @@ test("a whale connection's repair makes bounded, monotonic progress across multi
         assert.ok(
           Number(chunk.resume_after_id) > lastResumeAfterId,
           `resume_after_id must strictly advance each admission (was ${lastResumeAfterId}, now ${chunk.resume_after_id})`
+        );
+        assert.equal(
+          chunk.page_size,
+          TEST_PAGE_SIZE,
+          "the durable chunk records the page limit used for this admission"
         );
         lastResumeAfterId = Number(chunk.resume_after_id);
         assert.ok(admissions <= Math.ceil(WHALE_RECORD_COUNT / TEST_PAGE_SIZE) + 1, "must not loop forever");

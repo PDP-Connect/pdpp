@@ -47,6 +47,7 @@ const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL
 const NOW = "2026-08-26T00:00:00.000Z";
 const CONNECTOR_ID = "https://test.pdpp.dev/connectors/repair-backoff";
 const INSTANCE_ID = "cin_repair_backoff_pg";
+const STATEMENT_TIMEOUT_RESET_RE = /0|500ms/;
 
 async function seed(): Promise<void> {
   await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [CONNECTOR_ID]);
@@ -174,5 +175,148 @@ test("a repair cancelled by statement_timeout arms the back-off on the REAL code
     second.timeoutLines,
     0,
     `a unit inside its back-off window must not be re-attempted at all; saw ${second.timeoutLines} cancellation(s) on the second pass — the back-off was disarmed by the success-path clear`
+  );
+});
+
+const ADAPTIVE_CONNECTOR_ID = "https://test.pdpp.dev/connectors/adaptive-repair";
+const ADAPTIVE_INSTANCE_ID = "cin_adaptive_repair_pg";
+const ADAPTIVE_STREAM_COUNT = 7;
+const ADAPTIVE_RECORDS_PER_STREAM = 100;
+
+async function seedAdaptiveLargeConnection(): Promise<void> {
+  const streams = Array.from({ length: ADAPTIVE_STREAM_COUNT }, (_, index) => ({
+    coverage_strategy: "full_inventory",
+    name: `stream_${index + 1}`,
+    primary_key: ["id"],
+    schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+  }));
+  await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [ADAPTIVE_CONNECTOR_ID]);
+  await postgresQuery("INSERT INTO connectors(connector_id, manifest, created_at) VALUES($1, $2::jsonb, $3)", [
+    ADAPTIVE_CONNECTOR_ID,
+    JSON.stringify({
+      capabilities: { public_listing: { tier: "supported" } },
+      connector_id: ADAPTIVE_CONNECTOR_ID,
+      display_name: "adaptive-repair",
+      protocol_version: "0.1.0",
+      streams,
+      version: "1.0.0",
+    }),
+    NOW,
+  ]);
+  await postgresQuery(
+    `INSERT INTO connector_instances(
+       connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+     ) VALUES($1, 'owner_local', $2, 'adaptive-repair', 'active', 'account', $1, '{}'::jsonb, $3, $3, NULL)`,
+    [ADAPTIVE_INSTANCE_ID, ADAPTIVE_CONNECTOR_ID, NOW]
+  );
+  await postgresQuery(
+    `INSERT INTO records(
+       connector_id, connector_instance_id, stream, record_key, record_json,
+       emitted_at, semantic_time, version, deleted, primary_key_text
+     )
+     SELECT $1, $2, format('stream_%s', stream_no), format('record_%s', record_no),
+            '{}'::jsonb, $3, $3, 1, FALSE, format('record_%s', record_no)
+       FROM generate_series(1, $4) AS streams(stream_no)
+       CROSS JOIN generate_series(1, $5) AS records(record_no)`,
+    [ADAPTIVE_CONNECTOR_ID, ADAPTIVE_INSTANCE_ID, NOW, ADAPTIVE_STREAM_COUNT, ADAPTIVE_RECORDS_PER_STREAM]
+  );
+}
+
+async function cleanupAdaptiveLargeConnection(): Promise<void> {
+  await postgresQuery("DELETE FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1", [
+    ADAPTIVE_INSTANCE_ID,
+  ]);
+  await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
+    ADAPTIVE_INSTANCE_ID,
+  ]);
+  await postgresQuery("DELETE FROM records WHERE connector_instance_id = $1", [ADAPTIVE_INSTANCE_ID]);
+  await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [ADAPTIVE_INSTANCE_ID]);
+  await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [ADAPTIVE_CONNECTOR_ID]);
+}
+
+test("FAIL-BEFORE/PASS-AFTER: an oversized canonical page learns a bounded limit and a seven-stream connection converges", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL not set",
+}, async (t) => {
+  const previousCanonicalSeconds = process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS;
+  const previousCanonicalLimit = process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_MIN_LIMIT;
+  const previousBackoffBase = process.env.PDPP_TEST_REPAIR_TIMEOUT_BACKOFF_BASE_MS;
+  process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS = "2";
+  process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_MIN_LIMIT = "20000";
+  // Keep the real back-off path, but make this gated test complete quickly.
+  // The statement timeout remains the production 500 ms floor.
+  process.env.PDPP_TEST_REPAIR_TIMEOUT_BACKOFF_BASE_MS = "1";
+
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL as string });
+  await cleanupAdaptiveLargeConnection();
+  await seedAdaptiveLargeConnection();
+  t.after(async () => {
+    if (previousCanonicalSeconds === undefined) {
+      delete process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS;
+    } else {
+      process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS = previousCanonicalSeconds;
+    }
+    if (previousCanonicalLimit === undefined) {
+      delete process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_MIN_LIMIT;
+    } else {
+      process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_MIN_LIMIT = previousCanonicalLimit;
+    }
+    if (previousBackoffBase === undefined) {
+      delete process.env.PDPP_TEST_REPAIR_TIMEOUT_BACKOFF_BASE_MS;
+    } else {
+      process.env.PDPP_TEST_REPAIR_TIMEOUT_BACKOFF_BASE_MS = previousBackoffBase;
+    }
+    await cleanupAdaptiveLargeConnection();
+    await closePostgresStorage();
+  });
+
+  const first = await reconcileConnectorSummaryEvidence([ADAPTIVE_INSTANCE_ID], { deadline: Date.now() + 1500 });
+  assert.equal(first.repaired, 0, "the deliberately oversized first page must defer, not publish partial evidence");
+  assert.equal(first.failed, 0, "a statement timeout is a deferred repair, not a failed projection");
+  const afterTimeout = await postgresQuery<{ resume_after_id: string; page_size: number }>(
+    `SELECT resume_after_id, page_size
+       FROM connector_summary_evidence_repair_chunk
+      WHERE connector_instance_id = $1`,
+    [ADAPTIVE_INSTANCE_ID]
+  );
+  assert.equal(afterTimeout.rowCount, 1, "the timeout must leave a durable resumable receipt");
+  assert.equal(Number(afterTimeout.rows[0]?.resume_after_id), 0, "no rows were folded before the first page timed out");
+  assert.equal(afterTimeout.rows[0]?.page_size, 10_000, "the next attempt must halve the timed-out page limit");
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const second = await reconcileConnectorSummaryEvidence([ADAPTIVE_INSTANCE_ID], { deadline: Date.now() + 1500 });
+  assert.equal(second.repaired, 1, "the learned smaller page must allow the full repair to publish");
+  const evidence = await postgresQuery<{
+    dirty: number;
+    stream_count: number;
+    total_records: number;
+  }>(
+    `SELECT dirty, stream_count, total_records
+       FROM connector_summary_evidence
+      WHERE connector_instance_id = $1`,
+    [ADAPTIVE_INSTANCE_ID]
+  );
+  const [evidenceRow] = evidence.rows;
+  assert.deepEqual(
+    {
+      dirty: Number(evidenceRow?.dirty),
+      stream_count: Number(evidenceRow?.stream_count),
+      total_records: Number(evidenceRow?.total_records),
+    },
+    {
+      dirty: 0,
+      stream_count: ADAPTIVE_STREAM_COUNT,
+      total_records: ADAPTIVE_STREAM_COUNT * ADAPTIVE_RECORDS_PER_STREAM,
+    }
+  );
+  const remainingChunk = await postgresQuery(
+    "SELECT 1 FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1",
+    [ADAPTIVE_INSTANCE_ID]
+  );
+  assert.equal(remainingChunk.rowCount, 0, "successful convergence must consume the temporary chunk receipt");
+  assert.match(
+    (await postgresQuery<{ statement_timeout: string }>("SHOW statement_timeout", [])).rows[0]?.statement_timeout ?? "",
+    STATEMENT_TIMEOUT_RESET_RE,
+    "the pool session must not retain a statement timeout from the bounded repair transaction"
   );
 });

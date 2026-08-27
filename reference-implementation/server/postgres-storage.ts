@@ -472,6 +472,17 @@ async function migratePostgresBrowserSurfaceLeasePriority(client: PoolClient): P
   }
 }
 
+// Add the durable next-page limit used by the resumable connector-summary
+// repair scan. This is additive scheduling state: existing chunk receipts
+// remain valid and use the default page size until their first timeout teaches
+// the scan a smaller limit for this database.
+async function migratePostgresConnectorSummaryEvidenceRepairChunkPageSize(client: PoolClient): Promise<void> {
+  await client.query(`
+    ALTER TABLE connector_summary_evidence_repair_chunk
+      ADD COLUMN IF NOT EXISTS page_size INTEGER
+  `);
+}
+
 async function migratePostgresBrowserSurfaceLeaseLifecycleChecks(client: PoolClient): Promise<void> {
   const constraints = await client.query<ConstraintRow>(`
     SELECT conname, pg_get_constraintdef(oid) AS definition
@@ -2842,7 +2853,10 @@ export async function bootstrapPostgresSchema({
         -- over-count.
         source_revision TEXT NOT NULL,
         started_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Next page limit after a statement_timeout. Scheduling state only;
+        -- NULL on a legacy row means the scan uses the default first.
+        page_size INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS manifest_write_violations (
@@ -3180,6 +3194,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresLocalDeviceConnectorInstances(client);
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
+    await migratePostgresConnectorSummaryEvidenceRepairChunkPageSize(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
     await ensurePostgresRecordsCanonicalCountIndex(client, log);

@@ -78,18 +78,28 @@ const RECONCILE_PAGE_SIZE = 25;
  * whale connection's own `records`, so it is a different resource at a
  * different scale.
  *
- * Chosen so one page — an `id`-ordered index range scan on
- * `idx_pg_records_instance_stream_id (connector_instance_id, stream,
- * deleted, id)` — comfortably finishes inside `MIN_STATEMENT_TIMEOUT_MS`
- * (500ms) even on a cold cache: 20,000 sequential index+heap fetches is a
- * few hundred thousand rows/sec on ordinary Postgres hardware, an order of
- * magnitude of margin under 500ms. A whale connection with 2.5M live
- * records (the case this exists for) then takes on the order of 125 pages
- * to scan completely, spread across as many admissions as the round's
- * remaining budget allows per pass — never fewer than one page per
- * admission, so the backlog always shrinks.
+ * This is the initial limit, not a promise that every database can serve
+ * that many rows inside the bound. The connection-wide query uses the
+ * `idx_pg_records_instance_deleted_id (connector_instance_id, deleted, id)`
+ * index, but heap visibility, cache state, and retained-row width vary by
+ * deployment. A timeout halves the next limit in the durable chunk receipt,
+ * so a whale adapts to the largest page its database can serve without
+ * raising the per-unit timeout or retrying the same doomed query forever.
  */
 const CHUNK_SCAN_PAGE_SIZE = 20_000;
+const MIN_CHUNK_SCAN_PAGE_SIZE = 1;
+
+function normalizedChunkScanPageSize(value: unknown, fallback = CHUNK_SCAN_PAGE_SIZE): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.min(CHUNK_SCAN_PAGE_SIZE, Math.max(MIN_CHUNK_SCAN_PAGE_SIZE, parsed));
+}
+
+function reducedChunkScanPageSize(pageSize: number): number {
+  return Math.max(MIN_CHUNK_SCAN_PAGE_SIZE, Math.floor(pageSize / 2));
+}
 
 /**
  * Per-unit Postgres statement-timeout floor (design review P1-2): the
@@ -195,10 +205,18 @@ const MAX_REPAIR_TIMEOUT_BACKOFF_MS = 30 * 60_000;
 const repairTimeoutBackoffUntil = new Map<string, number>();
 const repairTimeoutStrikes = new Map<string, number>();
 
+// Test-only timing seam for the real timeout/retry test. Production keeps the
+// fixed one-minute base unless this explicitly test-named variable is set.
+function repairTimeoutBackoffBaseMs(): number {
+  const raw = process.env.PDPP_TEST_REPAIR_TIMEOUT_BACKOFF_BASE_MS;
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : REPAIR_TIMEOUT_BACKOFF_BASE_MS;
+}
+
 function noteRepairTimeout(connectorInstanceId: string): void {
   const strikes = (repairTimeoutStrikes.get(connectorInstanceId) ?? 0) + 1;
   repairTimeoutStrikes.set(connectorInstanceId, strikes);
-  const delayMs = Math.min(MAX_REPAIR_TIMEOUT_BACKOFF_MS, REPAIR_TIMEOUT_BACKOFF_BASE_MS * 2 ** (strikes - 1));
+  const delayMs = Math.min(MAX_REPAIR_TIMEOUT_BACKOFF_MS, repairTimeoutBackoffBaseMs() * 2 ** (strikes - 1));
   repairTimeoutBackoffUntil.set(connectorInstanceId, Date.now() + delayMs);
   console.error(
     `[connector-summary-evidence] repair for ${connectorInstanceId} has now been cancelled by statement_timeout ${strikes} time(s); backing off ${Math.round(delayMs / 1000)}s so other dirty rows are not starved behind it`
@@ -1715,13 +1733,14 @@ async function persistFailedEvidencePostgres(
 // af114c250 stops the resulting doomed re-admission from starving every
 // other dirty row, but does not make the whale's own row ever converge.
 //
-// The fix scans the same rows via `idx_pg_records_instance_stream_id
-// (connector_instance_id, stream, deleted, id)` as a keyset-paginated `id`
+// The fix scans the same rows via `idx_pg_records_instance_deleted_id
+// (connector_instance_id, deleted, id)` as a keyset-paginated `id`
 // range instead of one unbounded aggregate, folding each page into a durable
 // per-stream accumulator (`connector_summary_evidence_repair_chunk`) that
 // resumes across as many admissions as it takes. This is strictly additive
-// bounded progress, never a bigger budget: `CHUNK_SCAN_PAGE_SIZE` is sized to
-// fit inside the EXISTING, unraised `MIN_STATEMENT_TIMEOUT_MS`/2000ms bound.
+// bounded progress, never a bigger budget: every page uses the EXISTING,
+// unraised `MIN_STATEMENT_TIMEOUT_MS`/2000ms bound, and a timed-out page
+// teaches the next admission a smaller limit.
 // ---------------------------------------------------------------------------
 
 interface StreamAccumulatorEntry {
@@ -1776,7 +1795,7 @@ function canonicalByStreamFromAccumulator(accumulator: StreamAccumulator): Map<s
 function readSqliteRepairChunk(db: Db, connectorInstanceId: string): Row | undefined {
   return db
     .prepare(
-      "SELECT resume_after_id, accumulator_json, source_revision FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = ?"
+      "SELECT resume_after_id, accumulator_json, source_revision, page_size, started_at FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = ?"
     )
     .get(connectorInstanceId) as Row | undefined;
 }
@@ -1792,19 +1811,29 @@ function persistSqliteRepairChunk(
   resumeAfterId: number,
   accumulator: StreamAccumulator,
   sourceRevision: string,
-  startedAt: string
+  startedAt: string,
+  pageSize: number
 ): void {
   const now = nowIso();
   execDynamicSqlAcknowledged(
     `INSERT INTO connector_summary_evidence_repair_chunk(
-       connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at
-     ) VALUES(?, ?, ?, ?, ?, ?)
+       connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at, page_size
+     ) VALUES(?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(connector_instance_id) DO UPDATE SET
        resume_after_id = excluded.resume_after_id,
        accumulator_json = excluded.accumulator_json,
        source_revision = excluded.source_revision,
+       page_size = excluded.page_size,
        updated_at = excluded.updated_at`,
-    [connectorInstanceId, resumeAfterId, JSON.stringify(accumulator), sourceRevision, startedAt, now] as BindValue[]
+    [
+      connectorInstanceId,
+      resumeAfterId,
+      JSON.stringify(accumulator),
+      sourceRevision,
+      startedAt,
+      now,
+      pageSize,
+    ] as BindValue[]
   );
 }
 
@@ -1883,7 +1912,7 @@ function scanSqliteCanonicalStreams(
       break;
     }
     if (onePagePerCall) {
-      persistSqliteRepairChunk(connectorInstanceId, resumeAfterId, accumulator, sourceRevision, startedAt);
+      persistSqliteRepairChunk(connectorInstanceId, resumeAfterId, accumulator, sourceRevision, startedAt, pageSize);
       return { canonicalByStream: canonicalByStreamFromAccumulator(accumulator), complete: false };
     }
   }
@@ -2114,6 +2143,27 @@ function postgresRepairReadQuery<R extends Row = Row>(
 const LEADING_SELECT_PATTERN = /^\s*select\b/i;
 
 function testOnlySlowRepairRead(sql: string): string {
+  const canonicalSecondsRaw = process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS;
+  const canonicalSeconds = canonicalSecondsRaw ? Number.parseFloat(canonicalSecondsRaw) : 0;
+  const canonicalLimitRaw = process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_MIN_LIMIT;
+  const canonicalLimit = canonicalLimitRaw ? Number.parseInt(canonicalLimitRaw, 10) : 0;
+  if (
+    Number.isFinite(canonicalSeconds) &&
+    canonicalSeconds > 0 &&
+    Number.isSafeInteger(canonicalLimit) &&
+    canonicalLimit > 0 &&
+    LEADING_SELECT_PATTERN.test(sql) &&
+    sql.includes("FROM records") &&
+    sql.includes("ORDER BY id ASC LIMIT $3")
+  ) {
+    return `WITH pdpp_test_slow_read AS MATERIALIZED (
+               SELECT pg_sleep(${canonicalSeconds}) AS slept
+                WHERE $3 >= ${canonicalLimit}
+             ),
+             pdpp_test_original AS (${sql})
+        SELECT pdpp_test_original.* FROM pdpp_test_original
+         WHERE (SELECT count(*) FROM pdpp_test_slow_read) >= 0`;
+  }
   const raw = process.env.PDPP_TEST_SLOW_REPAIR_READ_SECONDS;
   const seconds = raw ? Number.parseFloat(raw) : 0;
   if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -2135,7 +2185,7 @@ function testOnlySlowRepairRead(sql: string): string {
 
 async function readPostgresRepairChunk(connectorInstanceId: string): Promise<Row | undefined> {
   const result = await postgresQuery<Row>(
-    "SELECT resume_after_id, accumulator_json, source_revision FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1",
+    "SELECT resume_after_id, accumulator_json, source_revision, page_size, started_at FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1",
     [connectorInstanceId]
   );
   return result.rows[0] as Row | undefined;
@@ -2153,21 +2203,31 @@ async function persistPostgresRepairChunk(
   resumeAfterId: number,
   accumulator: StreamAccumulator,
   sourceRevision: string,
-  startedAt: string
+  startedAt: string,
+  pageSize: number
 ): Promise<void> {
   await withConnectorInstanceWrite(connectorInstanceId, async () =>
     withPostgresTransaction(
       async (client: Db) => {
         await client.query(
           `INSERT INTO connector_summary_evidence_repair_chunk(
-             connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at
-           ) VALUES($1, $2, $3::jsonb, $4, $5, $6)
+             connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at, page_size
+           ) VALUES($1, $2, $3::jsonb, $4, $5, $6, $7)
            ON CONFLICT (connector_instance_id) DO UPDATE SET
              resume_after_id = EXCLUDED.resume_after_id,
              accumulator_json = EXCLUDED.accumulator_json,
              source_revision = EXCLUDED.source_revision,
+             page_size = EXCLUDED.page_size,
              updated_at = EXCLUDED.updated_at`,
-          [connectorInstanceId, resumeAfterId, JSON.stringify(accumulator), sourceRevision, startedAt, nowIso()]
+          [
+            connectorInstanceId,
+            resumeAfterId,
+            JSON.stringify(accumulator),
+            sourceRevision,
+            startedAt,
+            nowIso(),
+            pageSize,
+          ]
         );
       },
       { lockConnectorInstanceId: connectorInstanceId }
@@ -2185,9 +2245,9 @@ async function deletePostgresRepairChunk(connectorInstanceId: string, client?: D
 }
 
 /**
- * Scan `records` for one connection in `CHUNK_SCAN_PAGE_SIZE`-row pages via
- * `idx_pg_records_instance_stream_id (connector_instance_id, stream,
- * deleted, id)`, resuming from a durable chunk row when a prior admission
+ * Scan `records` for one connection in an adaptive page size via
+ * `idx_pg_records_instance_deleted_id (connector_instance_id, deleted, id)`,
+ * resuming from a durable chunk row when a prior admission
  * left one in progress for the SAME `sourceRevision`. Each page is bounded
  * by the caller's existing `postgresRepairReadQuery`/`remainingStatementBudgetMs`
  * admission allowance — no new bounding mechanism, the identical contract
@@ -2215,6 +2275,7 @@ async function scanPostgresCanonicalStreamsChunked(
 ): Promise<Map<string, Row>> {
   const existingChunk = await readPostgresRepairChunk(connectorInstanceId);
   const resumable = existingChunk && sourceRevisionsEqual(existingChunk.source_revision, sourceRevision);
+  let pageSize = resumable ? normalizedChunkScanPageSize(existingChunk?.page_size) : CHUNK_SCAN_PAGE_SIZE;
   let resumeAfterId = resumable ? Number(existingChunk?.resume_after_id ?? 0) : 0;
   let accumulator: StreamAccumulator = resumable
     ? parseJsonColumn<StreamAccumulator>(existingChunk?.accumulator_json, {})
@@ -2229,7 +2290,7 @@ async function scanPostgresCanonicalStreamsChunked(
         `SELECT id, stream, emitted_at FROM records
           WHERE connector_instance_id = $1 AND deleted = FALSE AND id > $2
           ORDER BY id ASC LIMIT $3`,
-        [connectorInstanceId, resumeAfterId, CHUNK_SCAN_PAGE_SIZE],
+        [connectorInstanceId, resumeAfterId, pageSize],
         deadline
       );
       page = (result.rows as Row[]).map((row) => ({
@@ -2239,7 +2300,15 @@ async function scanPostgresCanonicalStreamsChunked(
       }));
     } catch (err) {
       if (err instanceof PostgresStatementTimeoutError) {
-        await persistPostgresRepairChunk(connectorInstanceId, resumeAfterId, accumulator, sourceRevision, startedAt);
+        pageSize = reducedChunkScanPageSize(pageSize);
+        await persistPostgresRepairChunk(
+          connectorInstanceId,
+          resumeAfterId,
+          accumulator,
+          sourceRevision,
+          startedAt,
+          pageSize
+        );
       }
       throw err;
     }
@@ -2248,7 +2317,7 @@ async function scanPostgresCanonicalStreamsChunked(
     }
     accumulator = foldCanonicalScanPage(accumulator, page);
     resumeAfterId = page.at(-1)?.id ?? resumeAfterId;
-    if (page.length < CHUNK_SCAN_PAGE_SIZE) {
+    if (page.length < pageSize) {
       break;
     }
   }
