@@ -431,11 +431,29 @@ COPY --from=sigtop-builder /build/SOURCE_URL /usr/local/share/sigtop/SOURCE_URL
 # entirely, so the row rendered health for a collector that could never run.
 # Fail the build here rather than discover it from a dead source.
 #
-# `test -x` rather than a version flag: sigtop's CLI is subcommand-based and
-# every subcommand touches a real Signal Desktop directory, which does not
-# exist at build time. Presence and the executable bit are what this stage can
-# honestly assert.
-RUN chmod +x /usr/local/bin/sigtop && test -x /usr/local/bin/sigtop
+# libsecret is a RUNTIME dependency too, not only a build one. sigtop links
+# against it dynamically to read Signal Desktop's encrypted database key from
+# the OS keyring, so the shared library must exist in the final image — the
+# `-dev` package in the builder stage supplies headers for the cgo compile and
+# nothing at all here.
+#
+# This was caught by running the binary in the built image, NOT by the build:
+# `test -x` passed on an executable that could not load
+# (`libsecret-1.so.0: cannot open shared object file`). A presence check is not
+# a liveness check, and the whole reason this stage exists is that Signal
+# shipped for weeks against a binary that was not there.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libsecret-1-0 \
+  && rm -rf /var/lib/apt/lists/*
+
+# `ldd` proves every shared object RESOLVES, then a bare invocation proves the
+# binary actually loads and reaches its own usage text. Presence alone is not
+# liveness — `test -x` passed on a binary that could not load at all. No real
+# subcommand is run: each needs a Signal Desktop directory absent at build time.
+RUN chmod +x /usr/local/bin/sigtop \
+  && test -x /usr/local/bin/sigtop \
+  && ! ldd /usr/local/bin/sigtop | grep -q "not found" \
+  && /usr/local/bin/sigtop 2>&1 | grep -qiE "usage|command"
 
 EXPOSE 3000
 
