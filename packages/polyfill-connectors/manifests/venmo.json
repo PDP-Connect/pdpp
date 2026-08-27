@@ -19,10 +19,10 @@
     "modality": "static_secret",
     "credential_capture": {
       "kind": "username_password",
-      "label": "Venmo sign-in details (optional)",
-      "description": "Optionally save Venmo sign-in details to assist automated re-login for this source's browser-backed collection. Venmo's internal API rejects synthetic client credentials, so this connector authenticates through a real, owner-driven browser session instead — leave these blank to sign in by hand in the secure browser every time a session needs to be (re)established.",
+      "label": "Venmo sign-in details",
+      "description": "Save your Venmo sign-in details so this source can re-establish its browser session without you. Venmo's internal API rejects synthetic client credentials, so this connector still authenticates through a real browser session — that mechanism is unchanged and remains the reason this connector is browser-backed at all. What changed (2026-08-26) is only WHO TYPES into that browser: it now uses these saved details itself instead of waiting for a hand at the keyboard. The earlier \"leave these blank and sign in by hand\" option was unreachable in practice — collection runs on a server-side browser with no person attached, so seven setup attempts died waiting at an empty login form while a valid saved credential sat one field away.",
       "submit_label": "Save Venmo credential and start first sync",
-      "required": false,
+      "required": true,
       "fields": [
         {
           "name": "username",
