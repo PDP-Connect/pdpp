@@ -1254,11 +1254,11 @@ export function drainConnectorInstanceIndexWorkForTests(timeoutMs?: number): Pro
  * `maintainRecordIndexes` inline, decoupled from this lane, could publish a
  * STALE snapshot after a same-instance direct writer's own (correctly
  * lane-ordered) publication already ran, corrupting the derived index
- * relative to the winning durable record — this closes that gap. The caller
- * AWAITS the returned promise (unlike the HTTP batch path's fire-and-forget
- * use of the same lane) to preserve the device-exporter contract that its
- * 201 response implies lexical/semantic state already reflects the accepted
- * write. See harden-connector-instance-write-fence-transaction-native.
+ * relative to the winning durable record — this closes that gap. Callers may
+ * await the returned promise when derived state must be ready before their
+ * response, or fire-and-forget it when durable acknowledgement is the
+ * contract; the latter leaves the write-time dirty scope for reconcile. See
+ * harden-connector-instance-write-fence-transaction-native.
  */
 export function enqueueDeviceIndexMaintenance(
   connectorInstanceId: string,

@@ -71,6 +71,7 @@ interface AppLike {
 }
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
+const SAFE_ERROR_CODE = /^[a-z0-9_]+$/;
 const DEFAULT_FINAL_INDEX_PLAN_CONCURRENCY = 4;
 const DEFAULT_BATCH_ATTEMPT_DEADLINE_MS = 60_000;
 
@@ -2818,47 +2819,52 @@ async function processDeviceIngestBatch(
         ...entry,
         version: typeof entry.version === "number" ? entry.version : durableVersionByInputIndex.get(entry.inputIndex),
       }));
-      // Index maintenance stays SYNCHRONOUS (awaited before the HTTP
-      // response), preserving the device-exporter contract that 201 implies
-      // lexical/semantic state is already searchable — unlike `ingestRecords`,
-      // which defers this work fire-and-forget. It does NOT run inside any
-      // connector-instance FENCE: `maintainRecordIndexes` uses its own
-      // unrelated admission semaphore (`withIndexWork`), never the write
-      // coordinator, so running it here (after every record's fence has
-      // already released) cannot make an unrelated same-instance writer
-      // queue behind it. It runs on the shared per-instance ordered index
-      // LANE (`enqueueDeviceIndexMaintenance`) every other writer uses for
-      // THROUGHPUT/scheduling reasons only — keeping this batch's slow
-      // embedding work off an unrelated same-instance writer's critical
-      // path. Correctness against a same-instance direct writer racing this
-      // batch's publish does NOT come from the lane's ordering: each
-      // `maintainRecordIndexes` call below is gated on `records.version`
-      // still matching the `version` captured above at the moment its own
-      // short publish transaction commits (see
-      // `maintainRecordIndexesWithinPermit`'s header) — a stale publish
-      // silently no-ops regardless of enqueue/completion order. See
-      // harden-connector-instance-write-fence-transaction-native.
-      await ctx.enqueueDeviceIndexMaintenance(connectorInstanceId, async () => {
-        await mapWithConcurrency(
-          authoritativeFinalPlan,
-          finalIndexPlanConcurrency(),
-          async ({ record, inputIndex, version }) => {
-            assertBatchAttemptBefore(settleDeadline);
-            if (typeof version !== "number") {
-              // No durable version could be resolved for this key (e.g. it was
-              // never actually written this attempt and has no repair reread
-              // either) — nothing to gate a publish against, so there is
-              // nothing safe to publish. Left dirty for the reconcile sweep.
-              return;
+      // Derived indexing is acknowledged independently of durable acceptance,
+      // matching ordinary HTTP ingest. The write-time dirty scope is the
+      // crash-safe backstop if this process dies before the shared ordered
+      // lane runs, or if index capacity is unavailable. This does NOT run
+      // inside any connector-instance FENCE: `maintainRecordIndexes` uses its
+      // own unrelated admission semaphore (`withIndexWork`), never the write
+      // coordinator, so slow embedding cannot make an unrelated same-instance
+      // writer queue behind it. It runs on the shared per-instance ordered
+      // index LANE (`enqueueDeviceIndexMaintenance`) every other writer uses
+      // for throughput/scheduling. Correctness against a same-instance direct
+      // writer racing this batch's publish comes from the single
+      // `records.version` CAS in `maintainRecordIndexes`, not queue ordering.
+      ctx
+        .enqueueDeviceIndexMaintenance(connectorInstanceId, async () => {
+          await mapWithConcurrency(
+            authoritativeFinalPlan,
+            finalIndexPlanConcurrency(),
+            async ({ record, inputIndex, version }) => {
+              if (typeof version !== "number") {
+                // No durable version could be resolved for this key (e.g. it was
+                // never actually written this attempt and has no repair reread
+                // either) — nothing to gate a publish against, so there is
+                // nothing safe to publish. Left dirty for the reconcile sweep.
+                return;
+              }
+              await ctx.maintainRecordIndexes(storageTarget, record, version, {
+                attemptContext,
+                deviceFinalInputIndex: inputIndex,
+              });
             }
-            await ctx.maintainRecordIndexes(storageTarget, record, version, {
-              attemptContext,
-              deviceFinalInputIndex: inputIndex,
-            });
-            assertBatchAttemptBefore(settleDeadline);
-          }
-        );
-      });
+          );
+        })
+        .catch((err) => {
+          const code =
+            err &&
+            typeof err === "object" &&
+            "code" in err &&
+            typeof err.code === "string" &&
+            SAFE_ERROR_CODE.test(err.code)
+              ? err.code
+              : "index_maintenance_failed";
+          console.warn(
+            `[device-ingest] deferred index maintenance failed for ${connectorInstanceId}/${batchId}; ` +
+              `the dirty scope remains for reconcile (code=${code})`
+          );
+        });
       // Deliberately NO deadline check between the last publish and
       // `completeProcessingBatch`: once the publish loop is done the only
       // remaining step is the status transition, and throwing there would

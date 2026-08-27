@@ -116,8 +116,11 @@ input, including duplicate-key `A -> B` and upsert-to-delete sequences.
 
 After durability, the route SHALL collapse by `(connector_instance_id, stream,
 encoded_key)`, retain the final input occurrence including a no-op, reread final
-authoritative state where needed, sort by final input index, and complete every
-required index operation before acceptance. Retrying a processing batch SHALL
+authoritative state where needed, sort by final input index, and schedule every
+required index operation on the existing ordered derived-work lane without
+awaiting index capacity before durable acceptance. The write-time dirty scope
+is the crash-safe backstop; the bounded reconcile mechanism SHALL retain it
+until the whole scope is proven converged. Retrying a processing batch SHALL
 repair all collapsed final keys without prefix versions, changes, or
 notifications growing.
 

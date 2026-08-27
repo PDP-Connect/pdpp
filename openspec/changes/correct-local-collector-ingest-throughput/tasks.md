@@ -29,7 +29,8 @@
 
 - [x] Validate canonical hashes before reservation, replay exact stored accepted
       results, preserve sticky processing, complete immutable preflight, and
-      repair final collapsed logical keys before generation-fenced acceptance.
+      schedule final collapsed logical-key repair on the shared derived-work
+      lane while preserving generation-fenced acceptance.
 - [x] Share the full-envelope hash/wire projection request builder across every
       shipped sender and exercise that builder against the server route.
 
