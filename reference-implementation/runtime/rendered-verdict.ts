@@ -2215,11 +2215,31 @@ function terminalForwardStatement(
  * `freshnessNotApplicable`) has no future run to make that promise — the
  * same honest distinction `buildForwardStatement`'s `default` branch already
  * draws for the connection-level statement.
+ *
+ * A local-device connection whose collector build predates the
+ * `coverage_diagnostics` evidence the server now requires (`SourceCoverageComplete`
+ * condition, reason `coverage_unknown_stale_collector` —
+ * `sourceCoverageCondition`, `connection-health.ts`) is a DIFFERENT claim from
+ * "not measured yet": the generic copy implies the next scheduled run will
+ * resolve it, but a stale collector binary will re-run and land in the exact
+ * same unmeasured state forever. `design-notes/source-state-truth-2026-08-18.md`
+ * named this exact gap — the specific, owner-actionable message the condition
+ * already carries ("Update the local collector") was computed and then
+ * discarded behind this generic sentence.
  */
 function unmeasuredCoverageForwardStatement(snapshot: ConnectionHealthSnapshot): string {
-  return freshnessNotApplicable(snapshot)
-    ? "Coverage can't be measured — this one-time import ended before it finished a full pass, and it will not run again."
-    : "Coverage has not been measured yet.";
+  if (freshnessNotApplicable(snapshot)) {
+    return "Coverage can't be measured — this one-time import ended before it finished a full pass, and it will not run again.";
+  }
+  const staleCollector = snapshot.conditions.find(
+    (item) =>
+      item.type === "SourceCoverageComplete" &&
+      item.reason === CONNECTION_CONDITION_REASONS.COVERAGE_UNKNOWN_STALE_COLLECTOR
+  );
+  if (staleCollector) {
+    return "This local collector build predates coverage evidence the server now requires. Update the collector.";
+  }
+  return "Coverage has not been measured yet.";
 }
 
 /**

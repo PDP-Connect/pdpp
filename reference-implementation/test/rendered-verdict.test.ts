@@ -670,6 +670,34 @@ test("tone: unknown coverage on an ordinary (still-refreshing) source keeps the 
   assert.equal(v.streams[0]?.statement, "Coverage has not been measured yet.");
 });
 
+test("tone: unknown coverage from a stale local collector build names the fix, not the generic YET copy", () => {
+  // Production shape (design-notes/source-state-truth-2026-08-18.md,
+  // peregrine Claude Code): a local-device collector build that predates the
+  // `coverage_diagnostics` stream the server now requires re-runs forever and
+  // lands in the exact same unmeasured state every time. The generic "not
+  // measured YET" copy implies the next scheduled run resolves it, which is
+  // false here — only an updated collector build does.
+  const staleCollectorCoverage = condition({
+    id: "SourceCoverageComplete:coverage_unknown_stale_collector",
+    message: "This local collector build predates coverage evidence the server now requires. Update the collector.",
+    reason: CONNECTION_CONDITION_REASONS.COVERAGE_UNKNOWN_STALE_COLLECTOR,
+    status: "unknown",
+    type: "SourceCoverageComplete",
+  });
+  const snap = snapshot({
+    axes: { coverage: "unknown", freshness: "fresh" },
+    conditions: [staleCollectorCoverage],
+    forward_disposition: "unmeasured",
+    state: "idle",
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream({ coverage: "unknown" })], null, true);
+  assert.notEqual(v.forward_statement, "Coverage has not been measured yet.");
+  assert.equal(
+    v.forward_statement,
+    "This local collector build predates coverage evidence the server now requires. Update the collector."
+  );
+});
+
 test("tone: active unknown coverage renders Checking because work is active", () => {
   const snap = snapshot({
     axes: { coverage: "unknown", freshness: "fresh" },
