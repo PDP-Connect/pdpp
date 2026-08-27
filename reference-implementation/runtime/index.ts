@@ -9,6 +9,7 @@
  */
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
+import { isIP } from "node:net";
 import { validateRuntimeContinuationFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
@@ -205,6 +206,7 @@ interface RuntimeRunError extends Error {
   reported_records_emitted?: number | null;
   response_status?: number;
   run_id?: string;
+  runtime_retryable?: boolean | null;
   terminal_reason?: string;
   trace_id?: string;
 }
@@ -634,6 +636,7 @@ export interface RuntimeRunConnectorResult {
   records_unresolved_retryable?: number;
   reported_records_emitted?: number | null;
   run_id?: string | null;
+  runtime_retryable?: boolean | null;
   state?: unknown;
   status: "cancelled" | "failed" | "skipped" | "succeeded";
   /**
@@ -966,7 +969,167 @@ function runTimeoutFailureMessage(terminalReason: string): string {
 const RUNTIME_FAILURE_MESSAGE_MAX = 500;
 
 function boundedRuntimeFailureMessage(message: string): string {
-  return message.length > RUNTIME_FAILURE_MESSAGE_MAX ? `${message.slice(0, RUNTIME_FAILURE_MESSAGE_MAX)}…` : message;
+  // A runtime Error may have been created from an upstream URL. Preserve the
+  // useful failure class, but never persist a query string: those commonly
+  // carry bearer tokens, signed request material, or other credentials.
+  const withoutUrlQuery = message.replace(/https?:\/\/[^\s?#]+(?:\/[^\s?#]*)?\?[^\s#]*/gi, (url) => {
+    const queryStart = url.indexOf("?");
+    return `${url.slice(0, queryStart)}?[REDACTED]`;
+  });
+  const redacted = boundConnectorErrorMessage(withoutUrlQuery) || "Runtime failure";
+  return redacted.length > RUNTIME_FAILURE_MESSAGE_MAX
+    ? `${redacted.slice(0, RUNTIME_FAILURE_MESSAGE_MAX)}…`
+    : redacted;
+}
+
+interface RuntimeFailureCause {
+  address?: string;
+  code?: string;
+  port?: number;
+  syscall?: string;
+}
+
+interface RuntimeFailureDiagnostic {
+  cause_chain: RuntimeFailureCause[];
+  code: string | null;
+  retryable: boolean | null;
+}
+
+const RUNTIME_FAILURE_CAUSE_CHAIN_MAX = 4;
+// This is deliberately a vocabulary, not a character-class validation.
+// `error.cause` can be any arbitrary object, so accepting "safe-shaped" text
+// here would turn the unredacted code field into a secret-smuggling channel.
+const KNOWN_RUNTIME_NETWORK_CODES = new Set([
+  "EADDRNOTAVAIL",
+  "EAFNOSUPPORT",
+  "EAI_AGAIN",
+  "EAI_FAIL",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ENOTCONN",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_ABORTED",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+const RETRYABLE_RUNTIME_NETWORK_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+const NON_RETRYABLE_RUNTIME_CERTIFICATE_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+const KNOWN_RUNTIME_ERROR_CODES = new Set([...KNOWN_RUNTIME_NETWORK_CODES, ...NON_RETRYABLE_RUNTIME_CERTIFICATE_CODES]);
+const KNOWN_RUNTIME_SYSCALLS = new Set([
+  "accept",
+  "bind",
+  "connect",
+  "getaddrinfo",
+  "getpeername",
+  "getsockname",
+  "getsockopt",
+  "listen",
+  "read",
+  "setsockopt",
+  "shutdown",
+  "write",
+]);
+
+function readRuntimeFailureField(value: object, key: string): unknown {
+  try {
+    return (value as Record<string, unknown>)[key];
+  } catch {
+    // Errors from libraries can expose getters. Diagnostics must not replace
+    // the original failure with a second failure while reading one.
+    return undefined;
+  }
+}
+
+function safeRuntimeFailureCode(value: unknown): string | null {
+  return typeof value === "string" && KNOWN_RUNTIME_ERROR_CODES.has(value) ? value : null;
+}
+
+function runtimeFailureCauseFrom(value: object): RuntimeFailureCause | null {
+  const code = safeRuntimeFailureCode(readRuntimeFailureField(value, "code"));
+  const syscallValue = readRuntimeFailureField(value, "syscall");
+  const syscall = typeof syscallValue === "string" && KNOWN_RUNTIME_SYSCALLS.has(syscallValue) ? syscallValue : null;
+  const addressValue = readRuntimeFailureField(value, "address");
+  const address = typeof addressValue === "string" && isIP(addressValue) !== 0 ? addressValue : null;
+  const portValue = readRuntimeFailureField(value, "port");
+  const port =
+    typeof portValue === "number" && Number.isInteger(portValue) && portValue > 0 && portValue <= 65_535
+      ? portValue
+      : null;
+  const cause: RuntimeFailureCause = {
+    ...(address ? { address } : {}),
+    ...(code ? { code } : {}),
+    ...(port ? { port } : {}),
+    ...(syscall ? { syscall } : {}),
+  };
+  return Object.keys(cause).length ? cause : null;
+}
+
+// Node's fetch deliberately exposes only `TypeError: fetch failed` at the
+// top level. The actionable network fact lives in Error.cause, and libraries
+// may wrap it again. Persist a short, allowlisted chain rather than a raw
+// error object/message so diagnostics remain useful without becoming a secret
+// or URL transport.
+function runtimeFailureDiagnostic(error: unknown): RuntimeFailureDiagnostic | null {
+  const causeChain: RuntimeFailureCause[] = [];
+  const seen = new Set<object>();
+  let current = error;
+  let depth = 0;
+  while (current && typeof current === "object" && depth < RUNTIME_FAILURE_CAUSE_CHAIN_MAX) {
+    depth += 1;
+    if (seen.has(current)) {
+      break;
+    }
+    seen.add(current);
+    const cause = runtimeFailureCauseFrom(current);
+    if (cause) {
+      causeChain.push(cause);
+    }
+    current = readRuntimeFailureField(current, "cause");
+  }
+  if (!causeChain.length) {
+    return null;
+  }
+  const codes = causeChain.flatMap((cause) => (cause.code ? [cause.code] : []));
+  let retryable: boolean | null = null;
+  if (codes.some((code) => NON_RETRYABLE_RUNTIME_CERTIFICATE_CODES.has(code))) {
+    retryable = false;
+  } else if (codes.some((code) => RETRYABLE_RUNTIME_NETWORK_CODES.has(code))) {
+    retryable = true;
+  }
+  return { cause_chain: causeChain, code: codes[0] || null, retryable };
+}
+
+function runtimeRetryability(
+  runtimeFailure: RuntimeFailureDiagnostic | null,
+  connectorError: ConnectorDoneError | null | undefined
+): boolean | null {
+  // The connector owns the retry contract when it supplied a terminal error.
+  return connectorError ? null : (runtimeFailure?.retryable ?? null);
 }
 
 // A runtime-side throw (mid-stream message processing, or the post-close
@@ -3040,6 +3203,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     failureOrigin,
     ingestFailure,
     reportedRecordsEmitted,
+    runtimeFailure,
     violation,
   }: {
     connectorDiagnostics: Record<string, unknown> | null;
@@ -3049,6 +3213,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     failureOrigin: RuntimeFailureOrigin | null;
     ingestFailure: IngestFailureDetail | null;
     reportedRecordsEmitted: unknown;
+    runtimeFailure: RuntimeFailureDiagnostic | null;
     violation: unknown;
   }): Record<string, unknown> {
     const data: Record<string, unknown> = buildTerminalConnectorFields(
@@ -3062,6 +3227,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
     if (failureMessage) {
       data.failure_message = failureMessage;
+    }
+    if (runtimeFailure) {
+      data.runtime_failure = runtimeFailure;
     }
     if (connectorDiagnostics && Object.keys(connectorDiagnostics).length > 0) {
       data.connector_diagnostics = connectorDiagnostics;
@@ -3081,6 +3249,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     ingestFailure,
     reason,
     reportedRecordsEmitted,
+    runtimeFailure,
     stdinClosedAtPhase,
     violation,
   }: {
@@ -3092,6 +3261,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     ingestFailure: IngestFailureDetail | null;
     reason: string | null;
     reportedRecordsEmitted: unknown;
+    runtimeFailure: RuntimeFailureDiagnostic | null;
     stdinClosedAtPhase: string | null;
     violation: unknown;
   }): Record<string, unknown> {
@@ -3105,6 +3275,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         failureOrigin,
         ingestFailure,
         reportedRecordsEmitted,
+        runtimeFailure,
         violation,
       }),
     };
@@ -3140,6 +3311,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     stdinClosedAtPhase = null,
     failureOrigin = null,
     failureMessage = null,
+    runtimeFailure = null,
     connectorDiagnostics = null,
   }: {
     connectorDiagnostics?: Record<string, unknown> | null;
@@ -3151,6 +3323,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     recordsEmitted?: unknown;
     reason?: string | null;
     reportedRecordsEmitted?: unknown;
+    runtimeFailure?: RuntimeFailureDiagnostic | null;
     stdinClosedAtPhase?: string | null;
     violation?: unknown;
   } = {}): Record<string, unknown> {
@@ -3220,6 +3393,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         ingestFailure,
         reason,
         reportedRecordsEmitted,
+        runtimeFailure,
         stdinClosedAtPhase,
         violation,
       }),
@@ -4154,6 +4328,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       err.connector_error = null;
       err.known_gaps = buildKnownGapsForTerminal(failureReason, null);
       const runtimeFailureMessage = runtimeAuthoredFailureMessage(err, null);
+      const runtimeFailure = runtimeFailureDiagnostic(err);
+      err.runtime_retryable = runtimeFailure?.retryable ?? null;
 
       if (!terminalEventRecorded) {
         try {
@@ -4168,6 +4344,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
               ingestFailure: err.ingest_failure || null,
               reason: failureReason,
               recordsEmitted: totalEmitted,
+              runtimeFailure,
               violation: err instanceof ProtocolViolation ? err : null,
             }),
             event_type: "run.failed",
@@ -5661,6 +5838,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         err.reported_records_emitted = doneMessage.records_emitted;
       }
       const runtimeFailureMessage = runtimeAuthoredFailureMessage(err, doneMessage?.error);
+      const runtimeFailure = runtimeFailureDiagnostic(err);
+      err.runtime_retryable = runtimeRetryability(runtimeFailure, doneMessage?.error);
 
       if (!terminalEventRecorded) {
         try {
@@ -5676,6 +5855,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
               ingestFailure: err.ingest_failure || null,
               reason: failureReason,
               recordsEmitted: doneMessage ? doneMessage.records_emitted : totalEmitted,
+              runtimeFailure,
             }),
             event_type: "run.failed",
             object_id: runId,
