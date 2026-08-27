@@ -3,8 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import type { Dirent } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +26,7 @@ import {
 import { collectChildProcessOutput } from "./child-process-output.ts";
 import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-name.ts";
 import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
+import { discoverSelectedTestFiles } from "./run-tests-discovery.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
 import { storageProfileEnvironment } from "./test-profile-env.ts";
@@ -429,39 +429,7 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
   });
 }
 
-const entries = await readdir(testDir, { withFileTypes: true });
-const NODE_TEST_EXTENSIONS = [".test.js", ".test.mjs", ".test.ts"];
-const isNodeTest = (name: string) => NODE_TEST_EXTENSIONS.some((extension) => name.endsWith(extension));
-const topLevelTests = entries
-  .filter((entry) => entry.isFile() && isNodeTest(entry.name))
-  .map((entry) => join("test", entry.name));
-
-// Co-located unit tests for focused server modules and operator scripts. The
-// discovery is intentionally narrow by directory, but extension-complete for the
-// Node loader used by the supported RI CI lines, including erasable TypeScript.
-const COLOCATED_TEST_DIRS = [
-  { dir: "runtime", extensions: NODE_TEST_EXTENSIONS },
-  { dir: join("server", "streaming"), extensions: NODE_TEST_EXTENSIONS },
-  { dir: "scripts", extensions: NODE_TEST_EXTENSIONS },
-];
-const colocatedTests: string[] = [];
-for (const { dir: relDir, extensions } of COLOCATED_TEST_DIRS) {
-  const absDir = join(repoRoot, relDir);
-  let dirEntries: Dirent[];
-  try {
-    // biome-ignore lint/performance/noAwaitInLoops: COLOCATED_TEST_DIRS is a fixed 2-entry static list read once at startup; sequential try/catch-per-dir scopes a missing directory's error to that entry alone.
-    dirEntries = await readdir(absDir, { withFileTypes: true });
-  } catch {
-    continue;
-  }
-  for (const entry of dirEntries) {
-    if (entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension))) {
-      colocatedTests.push(join(relDir, entry.name));
-    }
-  }
-}
-
-const testFiles = [...topLevelTests, ...colocatedTests].sort();
+const testFiles = await discoverSelectedTestFiles(repoRoot, testDir, accountingAuthority?.files);
 const defaultConcurrency = Math.max(1, Math.min(2, availableParallelism?.() ?? 1, testFiles.length || 1));
 const fileConcurrency =
   Number.isInteger(requestedConcurrency) && requestedConcurrency > 0 ? requestedConcurrency : defaultConcurrency;
