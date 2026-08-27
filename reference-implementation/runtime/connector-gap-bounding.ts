@@ -952,7 +952,22 @@ function classifyKnownGapSeverity({
 
 // ── KNOWN GAP BUILDER ─────────────────────────────────────────────────────────
 
+/**
+ * The closed vocabulary of connector boundary claims the runtime will persist.
+ * Validated HERE, at the trust boundary, rather than downstream: `known_gaps`
+ * is durable evidence, and an unrecognized claim must never be stored as
+ * though it were a recognized one. A connector emitting anything else has its
+ * claim dropped, exactly as if it had emitted none.
+ */
+const PERSISTED_BOUNDARY_CLAIMS: ReadonlySet<string> = new Set(["provider_history_boundary"]);
+
 interface BuildKnownGapInput {
+  /**
+   * A connector's structured claim about a permanent provider boundary. Kept
+   * out of the free-form `diagnostics` blob deliberately: the coverage-horizon
+   * denominator rule reads this field, so it is contract, not telemetry.
+   */
+  boundaryClaim?: unknown;
   continuation?: RuntimeContinuationFact | null;
   diagnostics?: unknown;
   explicitSelection?: boolean;
@@ -968,6 +983,7 @@ interface BuildKnownGapInput {
 }
 
 export function buildKnownGap({
+  boundaryClaim = null,
   kind,
   stream = null,
   reason = null,
@@ -992,11 +1008,14 @@ export function buildKnownGap({
     unsupportedInDefaultScope,
   });
   const boundedDiagnostics = normalizeConsideredInDiagnostics(boundGapDiagnostics(diagnostics));
+  const persistedBoundaryClaim =
+    typeof boundaryClaim === "string" && PERSISTED_BOUNDARY_CLAIMS.has(boundaryClaim) ? boundaryClaim : null;
   return {
     kind,
     reason: safeReason,
     severity: normalizedSeverity,
     stream: boundGapString(stream),
+    ...(persistedBoundaryClaim ? { boundary_claim: persistedBoundaryClaim } : {}),
     ...(safeMessage ? { message: safeMessage } : {}),
     ...(scope ? { scope } : {}),
     recovery_hint: normalizeRecoveryHint(recoveryHint, {

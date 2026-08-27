@@ -5025,6 +5025,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         validateRuntimeContinuationFact(continuation);
       }
       const gap = buildKnownGap({
+        boundaryClaim: msg.boundary_claim ?? null,
         continuation,
         diagnostics: msg.diagnostics ?? null,
         explicitSelection: Boolean(skipStream && explicitlyRequestedStreams?.has(skipStream)),

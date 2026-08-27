@@ -465,9 +465,33 @@ function hasProviderHistoryBoundaryClaim(
 }
 
 /**
- * A stream's CURRENT (non-superseded) coverage horizon, if any — connection-
- * wide (`stream: "*"`) or scoped to this exact stream name. Superseded rows
- * are never consulted: only the live confirmation is evidence.
+ * The bases that are AFFIRMATIVE evidence of a provider boundary: the provider
+ * said so, either in its own published statement (`provider_stated`) or in a
+ * confirmation obtained from it (`provider_confirmed`).
+ *
+ * `inferred_from_stable_boundary` is deliberately EXCLUDED. The research
+ * (`upstream-retention-loss-health-ux-prior-art.md`, PDPP recommendation (c))
+ * calls it "weaker/provisional (subject to re-check if new evidence appears)"
+ * against `provider_confirmed`'s "settled", and BANNER-ZERO-PLAN.md requires a
+ * horizon to rest on positive evidence and "fail closed to unknown when
+ * evidence is weak". An inference from a stable boundary is exactly the shape
+ * a broken connector produces: a walk that consistently stops early because of
+ * a bug looks identical to one stopping at a real retention cliff. Letting
+ * that green a retryable gap would turn "our reader keeps failing at the same
+ * place" into "the provider has no more data" — the false green this whole
+ * axis exists to prevent.
+ *
+ * A weak horizon is still RECORDED and still DISCLOSED on the snapshot; it
+ * simply cannot narrow the servable denominator on its own. Re-confirming the
+ * same boundary with a provider-backed basis promotes it.
+ */
+const QUALIFYING_HORIZON_BASES: ReadonlySet<string> = new Set(["provider_confirmed", "provider_stated"]);
+
+/**
+ * A stream's CURRENT (non-superseded), AFFIRMATIVELY-BASED coverage horizon,
+ * if any — connection-wide (`stream: "*"`) or scoped to this exact stream
+ * name. Superseded rows are never consulted: only the live confirmation is
+ * evidence. A weak-basis horizon is not evidence for this purpose at all.
  */
 function currentHorizonForStream(
   horizons: readonly ConnectionCoverageHorizon[],
@@ -475,7 +499,10 @@ function currentHorizonForStream(
 ): ConnectionCoverageHorizon | null {
   return (
     horizons.find(
-      (horizon) => horizon.supersededAt === null && (horizon.stream === "*" || horizon.stream === streamName)
+      (horizon) =>
+        horizon.supersededAt === null &&
+        QUALIFYING_HORIZON_BASES.has(horizon.basis) &&
+        (horizon.stream === "*" || horizon.stream === streamName)
     ) ?? null
   );
 }

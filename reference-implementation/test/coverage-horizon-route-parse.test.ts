@@ -85,7 +85,11 @@ test("basis and reason are closed vocabularies, refused when unrecognized", () =
 test("a weak basis is accepted but recorded AS weak, never upgraded", () => {
   // The research treats `inferred_from_stable_boundary` as provisional. The
   // route's job is to record it faithfully, not to refuse it or launder it
-  // into a settled one — downstream decides what a weak basis may support.
+  // into a settled one. What a weak basis may SUPPORT is decided by
+  // `QUALIFYING_HORIZON_BASES` in connector-gap-classification.ts — it is
+  // disclosed but cannot narrow the denominator; see
+  // coverage-horizon-weak-basis.test.ts for that boundary proven through the
+  // real projection.
   const parsed = parseCoverageHorizonBody(body({ basis: "inferred_from_stable_boundary" }), NOW, OWNER);
   assert.equal(parsed.ok, true);
   assert.equal(parsed.ok && parsed.record.basis, "inferred_from_stable_boundary");
