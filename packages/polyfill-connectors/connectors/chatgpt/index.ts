@@ -4598,6 +4598,20 @@ if (isMainModule(import.meta.url)) {
     // an interactive browser login without ever saying a credential was
     // expected.
     auth: { kind: "env", required: ["CHATGPT_USERNAME", "CHATGPT_PASSWORD"] },
+    // ChatGPT authenticates primarily through this connection's own browser
+    // profile; the stored username/password is a SECONDARY repair aid. A
+    // scheduled run has nobody to answer the `credentials` prompt the `env`
+    // strategy raises for an unstored credential, and before this flag a
+    // declined prompt threw `chatgpt_credentials_missing` out of
+    // `resolveCredentials` — which runs BEFORE `ensureSession`. A connection
+    // with a live, valid session was therefore failed in ~0.5s without ever
+    // opening a browser (owner's second ChatGPT account, prod, 2026-08-27).
+    // With this set, an unanswered prompt yields no credentials and
+    // `ensureChatGptSession` reuses the existing session — exactly what this
+    // connector's manifest promises: "scheduled runs reuse current session
+    // evidence and do not prompt for credentials". A STORED credential is
+    // unaffected: it arrives via the child env and never prompts at all.
+    authOptional: true,
     normalizeTerminalError: normalizeChatGptTerminalError,
     // Page-preservation flags come from the shared browser-surface policy so the
     // page-level (child) and process-level (reference lease caller) retention
