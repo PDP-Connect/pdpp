@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
+import { CODEX_DEFAULT_STREAMS } from "./collector-definition.ts";
 
 /**
  * Truthful evidence contract for derived streams (messages, function_calls),
@@ -59,6 +60,33 @@ test("codex coverage truth: populated rollouts show collected status", async () 
   const messagesRecord = coverageRecs.find((r) => r.data.store === "derived_messages" && r.data.stream === "messages");
   assert(messagesRecord, "must have coverage record for messages");
   assert.equal(messagesRecord.data.status, "collected", "messages with emitted records must show collected");
+});
+
+test("codex: a bounded pass across every default stream reaches an accepted terminal DONE (bounded complete-pass proof)", async () => {
+  // Workstream-C acceptance evidence, mirroring the equivalent Signal/Claude
+  // Code tests: a real local-collector run requests CODEX_DEFAULT_STREAMS
+  // (`collector-definition.ts`, the same list `bin/collector-runner.ts`'s
+  // `KNOWN_CONNECTOR_DEFAULTS` now derives from). No `allowFailedDone` —
+  // asserts `done.status === "succeeded"` directly.
+  const result = await runConnectorProtocolSubprocess({
+    cwd: join(import.meta.dirname, "../.."),
+    entrypoint: "connectors/codex/index.ts",
+    env: { CODEX_HOME: DEVICE_A_HOME },
+    start: {
+      scope: { streams: CODEX_DEFAULT_STREAMS.map((name) => ({ name })) },
+      type: "START",
+    },
+  });
+
+  const done = result.messages.findLast((m): m is Extract<EmittedMessage, { type: "DONE" }> => m.type === "DONE");
+  assert.equal(done?.status, "succeeded");
+
+  const recs = records(result.messages);
+  const coverageRecs = recs.filter((r) => r.stream === "coverage_diagnostics");
+  const messagesCoverage = coverageRecs.find(
+    (r) => r.data.store === "derived_messages" && r.data.stream === "messages"
+  );
+  assert.equal(messagesCoverage?.data.status, "collected", "bounded complete pass must show messages collected");
 });
 
 test("codex coverage truth: empty rollouts (ENOENT) show collected (complete scan, zero examined)", async () => {

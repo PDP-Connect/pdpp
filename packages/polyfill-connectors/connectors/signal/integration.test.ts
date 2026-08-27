@@ -20,6 +20,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
+import { SIGNAL_DEFAULT_STREAMS } from "./collector-definition.ts";
 import { buildSignalExportFixture, setupMockSigtop } from "./fixtures.ts";
 
 const PACKAGE_ROOT = join(import.meta.dirname, "..", "..");
@@ -418,6 +419,52 @@ test("signal SKIP_RESULTs the attachments stream when sigtop exports nothing", a
     const skip = skips(result.messages).find((s) => s.stream === "attachments");
     assert.ok(skip, "expected an attachments SKIP_RESULT");
     assert.equal(skip?.reason, "no_attachments_exported");
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("signal: a bounded pass across every default stream reaches an accepted terminal DONE (bounded complete-pass proof)", async () => {
+  // Workstream-C acceptance evidence: a real local-collector run requests
+  // `LOCAL_COLLECTOR_DEFINITIONS`' declared default streams
+  // (`bin/collector-runner.ts`'s `KNOWN_CONNECTOR_DEFAULTS`, now derived
+  // from `collector-definition.ts` instead of a hand-maintained CLI table —
+  // see that file's fix). This proves the connector itself reaches a
+  // succeeded terminal DONE across ALL of those streams in one pass, not
+  // just the individual streams exercised elsewhere in this file.
+  // `runConnectorProtocolSubprocess` REJECTS the promise if DONE is not
+  // `status: "succeeded"` (no `allowFailedDone` here), so a bare await
+  // completing at all is itself the terminal-success proof; the assertions
+  // below additionally confirm every stream produced honest output (a
+  // record or an explicit SKIP_RESULT, never silent absence).
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-signal-"));
+  try {
+    const t0 = Date.parse("2024-06-05T13:00:00.000Z");
+    const messageId = "22222222-2222-2222-2222-222222222222";
+    const scriptPath = setupMockSigtop(
+      dir,
+      {
+        conversations: [{ id: CONV_A, name: "Alice", type: "private" }],
+        messages: [{ body: "hey", conversationId: CONV_A, id: messageId, sentAt: t0, type: "outgoing" }],
+      },
+      { attachments: [] }
+    );
+
+    const result = await runSignal(scriptPath, [...SIGNAL_DEFAULT_STREAMS]);
+    const done = result.messages.findLast((m): m is Extract<EmittedMessage, { type: "DONE" }> => m.type === "DONE");
+    assert.equal(done?.status, "succeeded");
+
+    for (const stream of SIGNAL_DEFAULT_STREAMS) {
+      const streamRecords = records(result.messages, stream);
+      const streamSkip = skips(result.messages).find((s) => s.stream === stream);
+      const streamState = states(result.messages).find((s) => s.stream === stream);
+      assert.ok(
+        streamRecords.length > 0 || streamSkip || streamState,
+        `stream "${stream}" produced no record, SKIP_RESULT, or STATE checkpoint — silently unaccounted for`
+      );
+    }
+    assert.equal(records(result.messages, "messages").length, 1);
+    assert.equal(records(result.messages, "conversations").length, 1);
   } finally {
     await rm(dir, { force: true, recursive: true });
   }

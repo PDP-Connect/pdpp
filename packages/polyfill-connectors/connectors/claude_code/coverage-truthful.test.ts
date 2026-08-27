@@ -192,6 +192,56 @@ test("claude_code coverage truth: genuinely empty projects dir (no messages/atta
   assert.equal(messagesCoverage?.data.status, "collected", "an empty-but-complete scan is collected, not missing");
 });
 
+test("claude_code: a bounded pass across every default stream reaches an accepted terminal DONE (bounded complete-pass proof)", async () => {
+  // Workstream-C acceptance evidence, mirroring the equivalent Signal test:
+  // a real local-collector run requests CLAUDE_CODE_DEFAULT_STREAMS
+  // (`collector-definition.ts`, the same list `bin/collector-runner.ts`'s
+  // `KNOWN_CONNECTOR_DEFAULTS` now derives from). Unlike the other tests in
+  // this file, this one does NOT pass `allowFailedDone` and asserts
+  // `done.status === "succeeded"` directly — a bounded pass across every
+  // declared stream, not just the derived coverage-diagnostics subset.
+  const claudeHome = await makePopulatedHome();
+  // skills/slash_commands are fatal-if-requested-and-missing
+  // (assertRequestedClaudeSources) — create the directories so the full
+  // default stream set can be requested without a synthetic failure.
+  await mkdir(join(claudeHome, "skills"), { recursive: true });
+  await mkdir(join(claudeHome, "commands"), { recursive: true });
+
+  const result = await runConnectorProtocolSubprocess({
+    cwd: join(import.meta.dirname, "../.."),
+    entrypoint: "connectors/claude_code/index.ts",
+    env: { CLAUDE_CODE_HOME: claudeHome, CLAUDE_CODE_PROJECTS_DIR: join(claudeHome, "projects") },
+    start: {
+      scope: {
+        streams: [
+          "sessions",
+          "messages",
+          "attachments",
+          "memory_notes",
+          "skills",
+          "slash_commands",
+          "file_history",
+          "cache_inventory",
+          "coverage_diagnostics",
+          "backup_inventory",
+          "config_inventory",
+        ].map((name) => ({ name })),
+      },
+      type: "START",
+    },
+  });
+
+  const done = result.messages.findLast((m): m is Extract<EmittedMessage, { type: "DONE" }> => m.type === "DONE");
+  assert.equal(done?.status, "succeeded");
+
+  const recs = records(result.messages);
+  const coverageRecs = recs.filter((r) => r.stream === "coverage_diagnostics");
+  const coveredStreams = new Set(coverageRecs.map((r) => r.data.stream));
+  for (const stream of ["messages", "attachments", "memory_notes"]) {
+    assert(coveredStreams.has(stream), `coverage_diagnostics must cover '${stream}' in a bounded complete pass`);
+  }
+});
+
 // ─── per-stream examined counts must not cross-contaminate ───────────────
 //
 // scanChildSource used to return one scan-wide `linesExamined` count that got
