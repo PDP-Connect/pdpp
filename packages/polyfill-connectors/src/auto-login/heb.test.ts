@@ -2093,6 +2093,26 @@ const EMAIL_FIRST_LOGIN_HTML = readFileSync(
 );
 /** The live email-first login route observed in run_1787344095924. */
 const EMAIL_FIRST_LOGIN_URL = "https://accounts.heb.com/interaction/synthetic-interaction-id/login";
+const OTP_ONLY_LOGIN_HTML = readFileSync(
+  new URL("../../connectors/heb/__fixtures__/otp-only-login-page.html", import.meta.url),
+  "utf8"
+);
+/**
+ * The live OTP-only login route observed in run_1787364399455. Same `/login`
+ * interaction route as the email-first form; the difference is entirely in the
+ * body, where no password input is rendered at all.
+ */
+const OTP_ONLY_LOGIN_URL = "https://accounts.heb.com/interaction/synthetic-otp-only-id/login";
+const REGISTER_HTML = readFileSync(
+  new URL("../../connectors/heb/__fixtures__/register-page.html", import.meta.url),
+  "utf8"
+);
+/** A sibling interaction route under the same `/interaction/<id>/` prefix. */
+const REGISTER_URL = "https://accounts.heb.com/interaction/synthetic-otp-only-id/register";
+const OTP_ENTRY_ON_LOGIN_ROUTE_HTML = readFileSync(
+  new URL("../../connectors/heb/__fixtures__/otp-entry-on-login-route-page.html", import.meta.url),
+  "utf8"
+);
 
 interface DomPageState {
   clicks: string[];
@@ -2110,7 +2130,7 @@ interface DomPageState {
  * Modeling that faithfully is the whole point — a boolean flag would let the
  * email-first fixture pass while the real page still failed.
  */
-function makeDomPage(init: { html: string; title?: string; url: string }): {
+function makeDomPage(init: { html: string; redirectsTo?: string; title?: string; url: string }): {
   page: Page;
   state: DomPageState;
 } {
@@ -2198,7 +2218,13 @@ function makeDomPage(init: { html: string; title?: string; url: string }): {
   const page: Partial<Page> = {
     content: (): Promise<string> => Promise.resolve(domState.html),
     goto: (url: string): Promise<null> => {
-      domState.url = url;
+      // A signed-out session does not stay on the page it asked for: H-E-B
+      // redirects it to the sign-in route and serves the sign-in body. When the
+      // fixture IS that redirect target, modeling the navigation as landing on
+      // the requested URL would hand the classifier a URL the browser never
+      // actually showed — and the URL is exactly what tells `/login` apart from
+      // `/forgot-pw` and `/register`.
+      domState.url = init.redirectsTo ?? url;
       doc = parseHTML(domState.html).document;
       return Promise.resolve(null);
     },
@@ -2263,6 +2289,109 @@ test("the email-first login form classifies as login_form, not as an unknown sur
   assert.match(message, /did not finish signing in automatically/);
   assert.doesNotMatch(message, /did not render the expected login form/);
   assert.doesNotMatch(message, /could not identify/);
+});
+
+test("an OTP-only login form (no password input at all) classifies as login_form, not as an unknown surface", async () => {
+  const { page } = makeDomPage({
+    html: OTP_ONLY_LOGIN_HTML,
+    // The signed-out orders probe lands back here, exactly as the live run did:
+    // `run_1787364399455` reported this `/login` interaction route as the page
+    // it could not classify.
+    redirectsTo: OTP_ONLY_LOGIN_URL,
+    title: "My H-E-B Account",
+    url: OTP_ONLY_LOGIN_URL,
+  });
+  const harness = makeInteractionHarness();
+  const checkpoints: string[] = [];
+
+  // As with the email-first fixture, the handoff cannot recover against a
+  // static page, so rejecting is the correct honest outcome. What this test
+  // pins is WHICH surface the classifier decided this page was on the way
+  // there — the production defect was that it decided "unknown".
+  await assert.rejects(
+    ensureHebSession({
+      checkpoint: (name: string): Promise<void> => {
+        checkpoints.push(name);
+        return Promise.resolve();
+      },
+      page,
+      sendInteraction: harness.sendInteraction,
+    }),
+    /heb_login_unexpected_ui/
+  );
+
+  assert.equal(harness.requests.length, 1);
+  const message = String((harness.requests[0] as { message?: string }).message ?? "");
+  // The exact copy the owner of cin_8997c...b36a8 was shown for 30 minutes,
+  // twice, on a page that is plainly H-E-B's login form.
+  assert.doesNotMatch(message, /could not identify/);
+  assert.ok(
+    !checkpoints.includes("heb-unclassified-surface"),
+    "an ordinary login form must never be recorded as an unclassified surface"
+  );
+  assert.match(message, /did not finish signing in automatically/);
+  // Never an OTP prompt: the radio is an OFFER to send a code, and no code
+  // input exists on this page. Fabricating one is the defect class this repo
+  // has been burned by before.
+  assert.ok(
+    harness.requests.every((request) => request.kind !== "otp"),
+    "a login form must not be turned into a verification-code prompt"
+  );
+});
+
+test("a passwordless page on a sibling interaction route is not treated as a login form", async () => {
+  // Body-identical to the OTP-only login form: one visible email input, one
+  // visible submit, no password input anywhere. Only the route differs, so this
+  // is what makes the route check load-bearing rather than decorative.
+  const { page } = makeDomPage({
+    html: REGISTER_HTML,
+    redirectsTo: REGISTER_URL,
+    title: "My H-E-B Account",
+    url: REGISTER_URL,
+  });
+  const harness = makeInteractionHarness();
+
+  await assert.rejects(
+    ensureHebSession({
+      page,
+      sendInteraction: harness.sendInteraction,
+    }),
+    /heb_login_unexpected_ui/
+  );
+
+  assert.equal(harness.requests.length, 1);
+  const message = String((harness.requests[0] as { message?: string }).message ?? "");
+  // Signing in on the account-creation page is not a thing PDPP may attempt, so
+  // this must NOT claim an incomplete sign-in the way a login form does.
+  assert.doesNotMatch(message, /did not finish signing in automatically/);
+  assert.match(message, /could not identify/);
+});
+
+test("a code-entry page served on the login route stays a verification-code surface, not a login form", async () => {
+  // Same route as the sign-in form and no password input either, so the code
+  // input is the only thing that can tell them apart.
+  const { page } = makeDomPage({
+    html: OTP_ENTRY_ON_LOGIN_ROUTE_HTML,
+    redirectsTo: OTP_ONLY_LOGIN_URL,
+    title: "My H-E-B Account",
+    url: OTP_ONLY_LOGIN_URL,
+  });
+  const harness = makeInteractionHarness();
+
+  await assert.rejects(
+    ensureHebSession({
+      page,
+      sendInteraction: harness.sendInteraction,
+    })
+  );
+
+  // The owner is asked for the code H-E-B already sent — never handed a browser
+  // and told sign-in "did not finish", which is what classifying this page as a
+  // login form would produce.
+  assert.equal(harness.requests.length, 1);
+  const [request] = harness.requests;
+  assert.equal(request?.kind, "otp");
+  assert.match(String((request as { message?: string }).message ?? ""), VERIFICATION_MSG_RE);
 });
 
 test("a genuinely unrecognized surface reports what was observed instead of asserting a cause", async () => {

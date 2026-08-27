@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<!--
+  H-E-B's account-creation page, reduced to the elements that drive surface
+  classification.
+
+  This fixture exists to pin the ROUTE clause of `countsMatchLoginForm`. It is
+  deliberately shaped like the OTP-only login form in every way the BODY can be
+  seen: one visible email input, one visible submit control, and no password
+  input anywhere in the DOM. The only thing that separates it from a login form
+  is the interaction route it is served on — `/register` rather than `/login`.
+
+  Drop the route check and this page classifies as a login form, and PDPP would
+  try to sign in on a page that creates a NEW account. That is why the route is
+  load-bearing and not belt-and-braces.
+-->
+<html>
+<body>
+  <main>
+    <img alt="H-E-B logo" src="/logo.svg" />
+    <form novalidate class="relative flex flex-col align-items-start mt-2">
+      <input type="hidden" data-testid="requestId" name="requestId" value="UNSET" />
+      <input type="hidden" name="step" value="1" />
+      <div>
+        <h1 class="text-2xl font-extrabold text-center">Create your account</h1>
+        <h2 class="text-center mt-4"></h2>
+      </div>
+      <div class="flex flex-col">
+        <div class="form-control-group">
+          <input
+            autocomplete="username"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
+            aria-hidden="false"
+            autofocus
+            enterkeyhint="go"
+            class="form-control bg-transparent rounded-none"
+            type="email"
+            id="email-input"
+            placeholder="Email"
+            aria-label="Email"
+            name="email"
+          />
+        </div>
+        <label class="ml-1 text-xs form-label order-1" for="email-input">Email</label>
+      </div>
+      <div>
+        <button
+          class="w-full rounded-3xl font-extrabold px-2 py-2.5 text-white bg-dark-gray mb-4"
+          type="submit"
+          aria-disabled="false"
+        >
+          Continue
+        </button>
+      </div>
+    </form>
+  </main>
+  <p>Copyright &copy; 2026 H&#8209;E&#8209;B, LP</p>
+</body>
+</html>
