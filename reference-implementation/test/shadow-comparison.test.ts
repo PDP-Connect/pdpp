@@ -175,6 +175,7 @@ const FIXTURES: Fixture[] = [
       badges: { stale: false, syncing: false },
       collection_rate: null,
       conditions: [],
+      coverage_horizons: [],
       detail_gap_backlog: {
         max_attempt_count: 3,
         next_attempt_at: null,
@@ -233,6 +234,7 @@ const FIXTURES: Fixture[] = [
       badges: { stale: true, syncing: false },
       collection_rate: null,
       conditions: [],
+      coverage_horizons: [],
       detail_gap_backlog: null,
       dominant_condition_id: null,
       ephemeral_browser_runtime: null,
@@ -299,6 +301,7 @@ const FIXTURES: Fixture[] = [
       badges: { stale: true, syncing: false },
       collection_rate: null,
       conditions: [],
+      coverage_horizons: [],
       detail_gap_backlog: {
         max_attempt_count: 3,
         next_attempt_at: "2026-06-15T12:00:00.000Z",
@@ -359,6 +362,7 @@ const FIXTURES: Fixture[] = [
       badges: { stale: true, syncing: false },
       collection_rate: null,
       conditions: [],
+      coverage_horizons: [],
       detail_gap_backlog: {
         max_attempt_count: 5,
         next_attempt_at: null,
@@ -437,6 +441,7 @@ const FIXTURES: Fixture[] = [
           type: "CredentialsValid",
         },
       ],
+      coverage_horizons: [],
       detail_gap_backlog: null,
       dominant_condition_id: "CredentialsValid:credential_rejected",
       ephemeral_browser_runtime: null,

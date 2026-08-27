@@ -71,6 +71,7 @@ function verdictWithActions(actions: readonly RequiredAction[]): RenderedVerdict
     detail: {
       collection_rate: null,
       conditions: [],
+      coverage_horizons: [],
       detail_gap_backlog: null,
       dominant_condition_id: null,
       forward_disposition: "complete",

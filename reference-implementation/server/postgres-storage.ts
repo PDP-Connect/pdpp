@@ -2122,6 +2122,34 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_connector_detail_gaps_pending
         ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
 
+      -- Provider coverage-horizon/provenance disclosure — see the matching
+      -- SQLite DDL comment in server/db.ts (connector_coverage_horizons) for
+      -- the full rationale. Append-only, reversible-by-supersession; a
+      -- horizon never rewrites/deletes retained records and never by itself
+      -- marks a connection unhealthy.
+      CREATE TABLE IF NOT EXISTS connector_coverage_horizons (
+        horizon_id TEXT PRIMARY KEY,
+        connector_instance_id TEXT NOT NULL REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        stream TEXT NOT NULL DEFAULT '*',
+        earliest_available TEXT,
+        confirmed_at TEXT NOT NULL,
+        basis TEXT NOT NULL CHECK (basis IN ('provider_stated', 'provider_confirmed', 'inferred_from_stable_boundary')),
+        reason TEXT NOT NULL CHECK (reason IN ('provider_retention_policy', 'provider_deleted_history', 'provider_never_had_data', 'consent_window')),
+        confirmed_by TEXT NOT NULL,
+        note TEXT,
+        superseded_at TEXT,
+        superseded_by_horizon_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (now()::text)
+      );
+
+      -- At most one CURRENT (non-superseded) horizon per (connection, stream).
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_connector_coverage_horizons_current
+        ON connector_coverage_horizons(connector_instance_id, stream)
+        WHERE superseded_at IS NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_coverage_horizons_instance
+        ON connector_coverage_horizons(connector_instance_id);
+
       CREATE TABLE IF NOT EXISTS connector_attention_records (
         attention_id TEXT PRIMARY KEY,
         dedupe_key TEXT NOT NULL,

@@ -53,6 +53,7 @@ import {
   OUTBOX_BLOCKED_BACKLOG_TOLERANCE,
   OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS,
 } from "./connection-health-policy.ts";
+import type { ConnectionCoverageHorizon } from "./coverage-horizon.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -846,6 +847,20 @@ export interface ConnectionHealthSnapshot {
   readonly collection_rate: CollectionRateSnapshot | null;
   readonly conditions: readonly ConnectionHealthCondition[];
   /**
+   * Additive, nullable-empty provider coverage-horizon/provenance
+   * disclosures ({@link ConnectionCoverageHorizon}) for this connection. Pure
+   * pass-through annotation, carried straight from
+   * {@link ComputeConnectionHealthInput.coverageHorizons} with no
+   * transformation: NO classification step reads it, so it can never move
+   * the headline `state`, any axis, any condition, or `forward_disposition`.
+   * It is owner-facing disclosure content only, read by the inspection-layer
+   * `detail` (`rendered-verdict.ts`'s `VerdictDetail.coverage_horizons`),
+   * never the tone-bearing `pill`/`channel`. Empty when the caller supplied
+   * none — that means "not read," never "confirmed no horizon exists." See
+   * `runtime/coverage-horizon.ts`.
+   */
+  readonly coverage_horizons: readonly ConnectionCoverageHorizon[];
+  /**
    * Additive, nullable source-pressure detail-gap backlog rollup
    * ({@link DetailGapBacklog}). `null` when no backlog evidence was supplied
    * or the durable gap store was unreadable; a readable-but-drained backlog is
@@ -1333,6 +1348,15 @@ export interface ComputeConnectionHealthInput {
   readonly collectionRate?: CollectionRateSnapshot | null;
   readonly coverage: ConnectionCoverageEvidence | null;
   /**
+   * Provider coverage-horizon/provenance disclosures. Passed through
+   * verbatim to the snapshot's {@link ConnectionHealthSnapshot.coverage_horizons}
+   * with no transformation and no classification-step access — see that
+   * field's doc comment. `undefined`/omitted yields an empty array on the
+   * snapshot, preserving byte-identical prior behavior for every caller not
+   * explicitly wired to `ConnectorCoverageHorizonStore`.
+   */
+  readonly coverageHorizons?: readonly ConnectionCoverageHorizon[];
+  /**
    * Durable stored-credential presence evidence. When provided, it lets the
    * credential-readiness condition distinguish "no usable stored credential"
    * from "stored credential rejected" and keeps the credential axis from healing
@@ -1430,6 +1454,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const conditionSet = indexConditions(conditions);
   const forwardDisposition = deriveConnectionForwardDisposition(input, conditionSet);
   const collectionRate = input.collectionRate ?? null;
+  const coverageHorizons = input.coverageHorizons ?? [];
   const detailGapBacklog = deriveSourcePressureBacklog(input.detailGapBacklog ?? null);
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const ephemeralBrowserRuntime = input.ephemeralBrowserRuntime;
@@ -1457,6 +1482,11 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       ...args,
       collectionRate,
       conditions,
+      // Attached at the single funnel every classification step returns
+      // through, exactly like `localDeviceOutboxCounts` below, so the
+      // annotation rides along without any step being able to classify on
+      // it.
+      coverageHorizons,
       detailGapBacklog,
       dominantConditionId,
       ephemeralBrowserRuntime,
@@ -3857,6 +3887,7 @@ interface SnapshotArgs {
   readonly badges: ConnectionBadges;
   readonly collectionRate?: CollectionRateSnapshot | null;
   readonly conditions: readonly ConnectionHealthCondition[];
+  readonly coverageHorizons?: readonly ConnectionCoverageHorizon[];
   readonly detailGapBacklog?: DetailGapBacklog | null;
   readonly dominantConditionId: string | null;
   readonly ephemeralBrowserRuntime?: EphemeralBrowserRuntimeProjection | null | undefined;
@@ -3878,6 +3909,7 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     badges: args.badges,
     collection_rate: args.collectionRate ?? null,
     conditions: args.conditions,
+    coverage_horizons: args.coverageHorizons ?? [],
     detail_gap_backlog: args.detailGapBacklog ?? null,
     dominant_condition_id: args.dominantConditionId,
     ephemeral_browser_runtime: runtimeAnnotationForSnapshot(args.ephemeralBrowserRuntime),

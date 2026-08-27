@@ -306,6 +306,16 @@ export interface RenderedProgress {
 export interface VerdictDetail {
   readonly collection_rate: ConnectionHealthSnapshot["collection_rate"];
   readonly conditions: ConnectionHealthSnapshot["conditions"];
+  /**
+   * Provider coverage-horizon/provenance disclosures, carried verbatim from
+   * {@link ConnectionHealthSnapshot.coverage_horizons}. PURE PASS-THROUGH:
+   * no tone/channel/label computation above reads this field — it exists
+   * solely so the owner-facing inspection layer can render
+   * `coverageHorizonDisclosure` (`runtime/coverage-horizon.ts`) text. Never
+   * present on `pill`/`channel`/`annotations`. Empty when the caller did not
+   * supply horizon evidence.
+   */
+  readonly coverage_horizons: ConnectionHealthSnapshot["coverage_horizons"];
   readonly detail_gap_backlog: ConnectionHealthSnapshot["detail_gap_backlog"];
   readonly dominant_condition_id: string | null;
   readonly forward_disposition: ForwardDisposition;
@@ -2653,6 +2663,7 @@ function buildDetail(
   return {
     collection_rate: snapshot.collection_rate,
     conditions: snapshot.conditions,
+    coverage_horizons: snapshot.coverage_horizons,
     detail_gap_backlog: snapshot.detail_gap_backlog,
     dominant_condition_id: snapshot.dominant_condition_id,
     // The synthesizer's oracle-derived connection disposition (worst-wins over the

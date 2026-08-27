@@ -1818,6 +1818,46 @@ CREATE TABLE IF NOT EXISTS connector_detail_gaps (
 CREATE INDEX IF NOT EXISTS idx_connector_detail_gaps_pending
   ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
 
+-- Provider coverage-horizon/provenance disclosure. A durable, append-only,
+-- reversible record of the boundary of what a source can EVER provide —
+-- orthogonal to connection health (see runtime/coverage-horizon.ts): a
+-- horizon never rewrites/deletes retained records and never by itself marks
+-- a connection unhealthy. Each confirmation is a new row; a later
+-- contradiction supersedes the prior row (superseded_at set) rather than
+-- overwriting it, so provenance is never silently lost. The "current" row
+-- for a connection is the one with superseded_at IS NULL, enforced by the
+-- partial unique index below rather than a second table.
+--
+-- Scoped by (connector_instance_id, stream) so a connector can disclose a
+-- horizon for one stream (e.g. GroupMe's "group-message" history boundary)
+-- without claiming it for every stream the connection carries; a
+-- connection-wide horizon uses stream = '*'.
+CREATE TABLE IF NOT EXISTS connector_coverage_horizons (
+  horizon_id             TEXT PRIMARY KEY,
+  connector_instance_id  TEXT NOT NULL,
+  stream                 TEXT NOT NULL DEFAULT '*',
+  earliest_available     TEXT,
+  confirmed_at           TEXT NOT NULL,
+  basis                  TEXT NOT NULL CHECK (basis IN ('provider_stated', 'provider_confirmed', 'inferred_from_stable_boundary')),
+  reason                 TEXT NOT NULL CHECK (reason IN ('provider_retention_policy', 'provider_deleted_history', 'provider_never_had_data', 'consent_window')),
+  confirmed_by           TEXT NOT NULL,
+  note                   TEXT,
+  superseded_at          TEXT,
+  superseded_by_horizon_id TEXT,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+);
+
+-- At most one CURRENT (non-superseded) horizon per (connection, stream). A
+-- new confirmation must supersede the old row in the same transaction before
+-- inserting the new one, never leave two current rows to disagree over.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_coverage_horizons_current
+  ON connector_coverage_horizons(connector_instance_id, stream)
+  WHERE superseded_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_connector_coverage_horizons_instance
+  ON connector_coverage_horizons(connector_instance_id);
+
 CREATE TABLE IF NOT EXISTS version_counter (
   connector_id  TEXT NOT NULL,
   connector_instance_id TEXT NOT NULL,

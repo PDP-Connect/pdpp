@@ -70,6 +70,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Owner-visible connector attention state must survive restore.",
   },
+  connector_coverage_horizons: {
+    classification: "backup_required",
+    reason:
+      "Provider coverage-horizon confirmations are owner/operator-recorded provenance (basis, reason, confirmed_by); losing them silently reverts a confirmed provider boundary back to unconfirmed.",
+  },
   connector_detail_gaps: {
     classification: "backup_required",
     reason: "Gap evidence records source coverage state.",

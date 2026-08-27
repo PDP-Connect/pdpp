@@ -65,6 +65,7 @@ import {
   type OutboxDiagnosticCounts,
   type OutboxStalledCause,
 } from "../runtime/connection-health.ts";
+import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 import { boundConnectorErrorCode, boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
 import {
   buildProgressEvidence,
@@ -823,6 +824,17 @@ export interface ConnectorSummary {
   readonly connector_display_name: string;
   readonly connector_id: string;
   readonly connector_instance_id: string;
+  /**
+   * Provider coverage-horizon/provenance disclosures for this connection —
+   * see `runtime/coverage-horizon.ts`. PURE PASS-THROUGH: this field is
+   * NEVER read by `connection_health`, `rendered_verdict.pill/channel`, or
+   * any classification step. It is owner-facing detail disclosure only.
+   * Empty when the caller did not read horizon evidence (the default for
+   * every call site not explicitly wired to
+   * `ConnectorCoverageHorizonStore.getCurrentCoverageHorizons`) — absence
+   * here means "not read," never "confirmed absent."
+   */
+  readonly coverage_horizons: readonly ConnectionCoverageHorizon[];
   readonly display_name: string;
   readonly freshness: Freshness;
   readonly last_run: ConnectorRunSummary | null;
@@ -5797,6 +5809,15 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * controller state has been observed for this connection.
    */
   readonly collectionRate?: CollectionRateSnapshot | null;
+  /**
+   * Provider coverage-horizon/provenance disclosures for this connection,
+   * typically read via `ConnectorCoverageHorizonStore.getCurrentCoverageHorizons`.
+   * Passed straight through to `computeConnectionHealth` as a pure
+   * pass-through annotation — no classification step reads it. `undefined`
+   * (the default) preserves byte-identical prior behavior (empty array on
+   * the snapshot) for every caller not explicitly wired to the store.
+   */
+  readonly coverageHorizons?: readonly ConnectionCoverageHorizon[];
   readonly coverageOverride?: {
     readonly axis: CoverageAxis;
     readonly requiredButAccepted?: boolean;
@@ -5897,6 +5918,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     browserSurfaceRepair: input.browserSurfaceRepair ?? null,
     collectionRate: authoritativeCollectionRate ?? null,
     coverage,
+    coverageHorizons: input.coverageHorizons ?? [],
     credential: input.credential ?? null,
     detailGapBacklog,
     ephemeralBrowserRuntime: authoritativeEphemeralBrowserRuntime,
@@ -6981,6 +7003,12 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     connector_display_name: connectorDisplayName,
     connector_id: connectorId,
     connector_instance_id: connectorInstanceId,
+    // Empty by default: `synthesizeConnectorSummary` is not wired to
+    // `ConnectorCoverageHorizonStore` (a separate, deliberately optional
+    // read a caller opts into — see `ConnectorSummary.coverage_horizons`'s
+    // doc comment). A future caller that wants horizons on this summary
+    // reads the store and overrides this field, never the other way.
+    coverage_horizons: [],
     // B8: a source's label must identify WHICH source it is — the device for a
     // device-backed source, the account for an account-backed one. Derived,
     // never stored.
