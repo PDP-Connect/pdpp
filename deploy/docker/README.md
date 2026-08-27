@@ -13,6 +13,44 @@ Authorization Server and Resource Server on loopback inside the container.
 The public `core` image also bundles Patchright/Chromium, enables semantic
 search downloads, and persists its model cache under `/var/lib/pdpp`.
 
+## Building from `main` (or any commit) with a real identity
+
+A candidate image built from a specific commit MUST carry that commit's exact
+git SHA as its ONE immutable identity, in both the OCI revision label
+(`org.opencontainers.image.revision`) and the runtime env var
+(`PDPP_REFERENCE_REVISION`) the acceptance receipt reads. Build with:
+
+```sh
+docker build --target core \
+  --build-arg PDPP_REFERENCE_REVISION="$(git rev-parse HEAD)" \
+  -t pdpp:candidate .
+```
+
+Passing only `PDPP_REFERENCE_REVISION` is correct and sufficient: the
+Dockerfile's `PDPP_BUILD_REVISION` build-arg (which sets the OCI label)
+defaults to `PDPP_REFERENCE_REVISION`, so one build-arg identifies the image
+in both places by construction. Do not pass `PDPP_BUILD_REVISION` separately
+unless you intend it to diverge — the build fails closed if it does not
+exactly match `PDPP_REFERENCE_REVISION`.
+
+An ordinary local `docker build --target core .` with no `PDPP_REFERENCE_REVISION`
+is still valid: both the label and the runtime revision default to the
+honest value `unknown` rather than a fabricated SHA. That build is for local
+development only and must never be treated as attributable to a commit.
+
+Before trusting any candidate image (built locally or pulled from a
+registry) as attributable to a specific commit, verify its identity:
+
+```sh
+deploy/docker/check-image-identity.sh --require-known pdpp:candidate
+```
+
+This is the same command CI runs on every `core` build (`.github/workflows/docker-images.yml`)
+and on every release candidate before promotion (`.github/workflows/semantic-release.yml`).
+It fails before acceptance on a missing, duplicate/mismatched, or `unknown`
+revision in either the OCI label or the runtime env. Pass `--allow-unknown`
+only when you are deliberately checking an ordinary local dev build.
+
 ## Quickstart
 
 ```sh

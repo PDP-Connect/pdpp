@@ -88,8 +88,16 @@ FROM base AS reference
 # `.git` is excluded from the Docker build context (.dockerignore), so the
 # runtime cannot derive a real git revision at startup and falls back to
 # `+unknown`. Pass the real revision in at build time so production images
-# advertise the running commit:
-#   docker build --build-arg PDPP_REFERENCE_REVISION=$(git rev-parse --short=12 HEAD) ...
+# advertise the running commit. Use the FULL SHA, not an abbreviated form:
+# the core-browser stage's build-time identity check (and
+# deploy/docker/check-image-identity.sh, the pre-acceptance gate) both
+# require a full 40-character (SHA-1) or 64-character (SHA-256) hex value —
+# an abbreviated SHA is ambiguous and is rejected as not shaped like a real
+# git object id. This `reference` stage carries no OCI revision label and is
+# not gated the same way, but using the full SHA here keeps every
+# PDPP_REFERENCE_REVISION build invocation in this repo consistent with the
+# one that IS gated (`--target core`/`core-browser`):
+#   docker build --build-arg PDPP_REFERENCE_REVISION=$(git rev-parse HEAD) ...
 ARG PDPP_REFERENCE_REVISION=unknown
 
 ENV NODE_ENV=production \
@@ -306,14 +314,58 @@ ARG PDPP_REFERENCE_REVISION=unknown
 # unchanged between two commits matches BOTH, so a sample that happens to miss
 # the changed files "confirms" the wrong commit. Labels remove the guesswork.
 #
+# PDPP_BUILD_REVISION defaults to PDPP_REFERENCE_REVISION rather than its own
+# independent "unknown" default. Every build caller (CI, reference-stack.sh,
+# ad-hoc `docker build`) already sets PDPP_REFERENCE_REVISION to identify the
+# runtime; before this default existed, a caller had to remember to ALSO pass
+# PDPP_BUILD_REVISION identically or the org.opencontainers.image.revision
+# label silently stayed "unknown" even on a real release build (exactly what
+# happened to the retained production Core image). One build-arg is now the
+# single source of truth for both the label and the runtime env; a caller
+# only needs to override PDPP_BUILD_REVISION explicitly to intentionally
+# diverge it from the runtime revision, which the RUN check below then
+# refuses to allow silently.
+#
 # PDPP_BUILD_DIRTY must be set from `git status --porcelain` at build time. A
 # silently-dirty build tree is how bad images shipped before, so an unclean
 # tree is recorded in the artifact rather than left to memory.
-ARG PDPP_BUILD_REVISION=unknown
+ARG PDPP_BUILD_REVISION=${PDPP_REFERENCE_REVISION}
 ARG PDPP_BUILD_SOURCE=unknown
 ARG PDPP_BUILD_CREATED=unknown
 ARG PDPP_BUILD_DIRTY=unknown
 ARG PDPP_BUILD_COMPOSITION=unknown
+
+# Fail the build itself, not just a post-hoc audit, when the two identity
+# values a caller can independently set actually diverge. Both "unknown" is
+# allowed (an ordinary local dev build with no revision supplied at all —
+# see the Dockerfile-wide default above); anything else must match exactly
+# AND be shaped like a real, full-length git object id (40 lowercase hex
+# chars for SHA-1, or 64 for a future SHA-256 repository) — not merely
+# equal. Equality alone is not sufficient: a build invoked with
+# PDPP_REFERENCE_REVISION=main would make both values equal, non-"unknown",
+# and still name a MUTABLE branch, not an immutable commit. Abbreviated
+# SHAs are also rejected: a short SHA is ambiguous and this is a build-time
+# identity contract, not a display convenience. This RUN is the earliest
+# point a duplicate/mismatched/non-SHA revision can be caught, before the
+# image is ever pushed or deployed; deploy/docker/check-image-identity.sh
+# re-proves the same two properties (match + SHA-shape) against any already
+# -built or pulled image afterward, since not every image this repo builds
+# necessarily passes through this exact Dockerfile invocation at rest (a
+# re-tagged image, a manifest copy via `docker buildx imagetools create`).
+RUN if [ "${PDPP_BUILD_REVISION}" != "${PDPP_REFERENCE_REVISION}" ]; then \
+      echo "image identity mismatch: PDPP_BUILD_REVISION='${PDPP_BUILD_REVISION}' != PDPP_REFERENCE_REVISION='${PDPP_REFERENCE_REVISION}'" >&2; \
+      echo "the OCI revision label and the runtime revision must be the exact same immutable git SHA (or both 'unknown' for a plain local dev build)" >&2; \
+      exit 1; \
+    fi; \
+    if [ "${PDPP_BUILD_REVISION}" != "unknown" ]; then \
+      hex_len=$(printf '%s' "${PDPP_BUILD_REVISION}" | tr -d '0-9a-f' | wc -c); \
+      full_len=$(printf '%s' "${PDPP_BUILD_REVISION}" | wc -c); \
+      if [ "$hex_len" -ne 0 ] || { [ "$full_len" -ne 40 ] && [ "$full_len" -ne 64 ]; }; then \
+        echo "image identity is not a real git object id: PDPP_REFERENCE_REVISION='${PDPP_REFERENCE_REVISION}' is not 40 or 64 lowercase hex characters" >&2; \
+        echo "a mutable ref name (branch/tag) or an abbreviated SHA is not an immutable commit identity" >&2; \
+        exit 1; \
+      fi; \
+    fi
 
 LABEL org.opencontainers.image.revision="${PDPP_BUILD_REVISION}" \
       org.opencontainers.image.source="${PDPP_BUILD_SOURCE}" \

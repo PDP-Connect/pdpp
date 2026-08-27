@@ -364,6 +364,28 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           target: ${{ matrix.target }}
 
+      # Fails before the candidate digest is ever recorded (and therefore
+      # before promote-release-images can promote it to `latest`) if the
+      # pushed image's OCI revision label and its runtime PDPP_REFERENCE_REVISION
+      # disagree, are missing, or are "unknown". This is the exact defect
+      # that let the retained production Core image report
+      # org.opencontainers.image.revision=unknown with no way to attribute a
+      # live result to a commit — this release pipeline is the last point
+      # that can catch it before the image reaches an operator. Pulled by
+      # the recorded digest, not a tag, so this checks the exact bytes just
+      # pushed rather than whatever a mutable tag happens to resolve to right
+      # now. Core-derived targets only: reference/reference-browser/web do
+      # not carry the org.opencontainers.image.revision label at all.
+      - name: Prove the pushed core image carries one non-unknown revision in both the OCI label and the runtime env
+        if: matrix.image == 'core'
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "${PDPP_IMAGE}@${DIGEST}"
+          bash deploy/docker/check-image-identity.sh --require-known "${PDPP_IMAGE}@${DIGEST}"
+
       # Durable per-image record of the exact manifest this job pushed.
       # promote-release-images consumes this artifact rather than re-resolving
       # a tag, so promotion is bound to these bytes even if a tag is later
