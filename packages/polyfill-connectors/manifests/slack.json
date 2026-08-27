@@ -794,6 +794,7 @@
     },
     {
       "name": "message_attachments",
+      "required": false,
       "description": "Link-preview unfurls and bot-generated rich attachments inlined on messages. One row per (message, attachment index).",
       "display": {
         "label": "Link previews and message attachments",
@@ -889,6 +890,7 @@
     },
     {
       "name": "reactions",
+      "required": false,
       "description": "Reactions as (message, emoji, user) triples.",
       "display": {
         "label": "Slack reactions",
