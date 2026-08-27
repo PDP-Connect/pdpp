@@ -51,7 +51,8 @@
       "venmo_probe_transport_error",
       "venmo_post_submit_probe_transport_error",
       "venmo_origin_navigation_failed",
-      "venmo_password_screen_timeout"
+      "venmo_password_screen_timeout",
+      "venmo_invisible_scoring_challenge"
     ],
     "refresh_policy": {
       "recommended_mode": "manual",
