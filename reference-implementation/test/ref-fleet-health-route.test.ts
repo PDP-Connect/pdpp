@@ -69,6 +69,7 @@ const INTERNAL_CONNECTION_ID = "custom-owner-internal";
 const VISIBLE_CONNECTOR_ID = "fleet-health-visible-connector";
 
 const HEALTHY_VERDICT: FleetHealthVerdict = {
+  banner_warranted: false,
   dimensions: {
     active_work: [],
     attention: { needs_owner: [] },

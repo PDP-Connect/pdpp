@@ -718,3 +718,106 @@ test("stale manual or paused policy is advisory rather than a fleet failure", ()
     ["slack-a"]
   );
 });
+
+// ─── `banner_warranted`: the plan's actionability-only gate ───────────────
+//
+// `state` stays a rich diagnostic signal (`indeterminate`/
+// `healthy_with_advisories` remain real, useful classifications), but the
+// owner-facing GLOBAL BANNER must fire only for a proven `needs_owner` or a
+// materially `blocked` connection — never for ordinary lateness, background
+// retry, in-progress work, or unassessed/unknown scope. These are the plan's
+// "Required negative tests."
+
+test("banner_warranted: an ordinary late (stale-advisory) source cannot fire the global banner", () => {
+  const stale = summary("slack-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle", remote_surface: "none" },
+      forward_disposition: "owner_refresh_due",
+      state: "idle",
+    },
+    schedule: { enabled: false },
+  });
+  const result = compose([inventory("slack-a")], [stale]);
+  assert.equal(result.state, "healthy_with_advisories");
+  assert.equal(result.banner_warranted, false);
+});
+
+test("banner_warranted: a retryable (background-retry) coverage gap cannot fire the global banner", () => {
+  const retryable = summary("retry-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: {
+        attention: "none",
+        coverage: "retryable_gap",
+        freshness: "fresh",
+        outbox: "idle",
+        remote_surface: "none",
+      },
+      forward_disposition: "resumable",
+      state: "degraded",
+    },
+  });
+  const result = compose([inventory("retry-a")], [retryable]);
+  assert.equal(result.state, "unhealthy", "state remains a rich diagnostic signal");
+  assert.equal(result.banner_warranted, false, "background retry is not owner-actionable now");
+});
+
+test("banner_warranted: in-progress work and unassessed/unknown scope (indeterminate) cannot fire the global banner", () => {
+  const activeWork = summary("active-a", {
+    connection_health: { ...summary("x").connection_health, badges: { stale: false, syncing: true } },
+  });
+  const activeResult = compose([inventory("active-a")], [activeWork]);
+  assert.equal(activeResult.state, "indeterminate");
+  assert.equal(activeResult.banner_warranted, false);
+
+  const unassessedResult = compose([inventory("configured-only")], []);
+  assert.equal(unassessedResult.state, "indeterminate");
+  assert.equal(unassessedResult.banner_warranted, false);
+});
+
+test("banner_warranted: an actual credential/attention failure still fires needs_owner and the banner", () => {
+  const chatgpt = summary("chatgpt-a", {
+    rendered_verdict: renderedVerdict("attention", [attentionAction()]),
+  });
+  const result = compose([inventory("chatgpt-a")], [chatgpt]);
+  assert.equal(result.state, "unhealthy");
+  assert.deepEqual(
+    result.dimensions.attention.needs_owner.map((item) => item.connection_id),
+    ["chatgpt-a"]
+  );
+  assert.equal(result.banner_warranted, true, "a proven owner action must still fire the banner");
+});
+
+test("banner_warranted: a non-retryable terminal coverage gap still fires the banner as materially blocked", () => {
+  const usaa = summary("usaa-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "none", coverage: "terminal_gap", freshness: "fresh", outbox: "idle", remote_surface: "none" },
+      forward_disposition: "terminal",
+      state: "degraded",
+    },
+  });
+  const result = compose([inventory("usaa-a")], [usaa]);
+  assert.equal(result.state, "unhealthy");
+  assert.equal(result.banner_warranted, true, "a materially blocked (terminal, non-retryable) gap must fire the banner");
+});
+
+test("banner_warranted: a real runtime outage or stream-health failure still fires the banner", () => {
+  const one = summary("one-a");
+  assert.equal(compose([inventory("one-a")], [one], { runtime: { ok: false } }).banner_warranted, true);
+  assert.equal(
+    compose([inventory("one-a")], [one], { streamHealth: { status: "fail" } }).banner_warranted,
+    true
+  );
+});
+
+test("banner_warranted: a maintainer code-fix (blocked_maintainer) still fires the banner", () => {
+  const chase = summary("chase-a", {
+    owner_state: ownerState("blocked_maintainer"),
+    rendered_verdict: renderedVerdict("advisory", [maintainerCodeFix()]),
+  });
+  const result = compose([inventory("chase-a")], [chase]);
+  assert.equal(result.state, "unhealthy");
+  assert.equal(result.banner_warranted, true);
+});

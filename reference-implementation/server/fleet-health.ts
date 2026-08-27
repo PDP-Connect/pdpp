@@ -54,6 +54,30 @@ export interface FleetConnectionReference {
 }
 
 export interface FleetHealthVerdict {
+  /**
+   * Whether the owner-facing GLOBAL banner should fire. This is
+   * DELIBERATELY NARROWER than `state !== "healthy"`: `state` is a rich
+   * diagnostic signal (it also reports `indeterminate` for in-progress work
+   * or reconciliation gaps, and `healthy_with_advisories` for any freshness
+   * advisory) that remains useful for operator tooling and the strict
+   * stream audit, but is NOT itself an actionability claim.
+   *
+   * The banner is a scarce, alarm-toned owner surface — per
+   * `openspec/specs/reference-connection-health/spec.md`'s verdict-channel
+   * requirement ("`attention` requires an owner-satisfiable required
+   * action") applied at fleet scope: it fires ONLY when at least one
+   * assessed connection is in a PROVEN `needs_owner` state (a real,
+   * owner-satisfiable required action) or a materially `blocked` state (a
+   * real unhealthy/degraded headline, a maintainer code-fix, or a
+   * non-retryable terminal coverage gap — never a `retryable_gap`, which is
+   * background retry with no owner action). It does NOT fire for: ordinary
+   * cadence-relative lateness (`freshness_advisories`), in-progress/active
+   * work, unassessed/setup-pending scope, unknown evidence, or a
+   * provider-confirmed coverage-horizon disclosure (which never reaches
+   * this composer at all — see `coverage-horizon.ts`). Every dimension
+   * below is preserved unchanged; only banner-firing changed.
+   */
+  readonly banner_warranted: boolean;
   readonly dimensions: {
     readonly active_work: readonly FleetConnectionReference[];
     readonly attention: { readonly needs_owner: readonly FleetConnectionReference[] };
@@ -181,6 +205,19 @@ interface MutableFleetEvidence {
   readonly activeWork: FleetConnectionReference[];
   readonly degradedOrBroken: FleetConnectionReference[];
   readonly freshnessAdvisories: FleetConnectionReference[];
+  /**
+   * The subset of `degradedOrBroken` that is materially blocked for a
+   * BANNER-WARRANTING reason — i.e. NOT solely because the connection's
+   * headline state is `degraded` on account of an auto-retried
+   * `retryable_gap` coverage axis. `degradedOrBroken` intentionally stays
+   * broad (any `unhealthy`-mapped headline/coverage/remote-surface/outbox
+   * evidence, matching the shipped `state`/`fully_healthy` semantics); this
+   * bucket exists ONLY to feed `banner_warranted`, so a background-retried
+   * gap that happens to also carry the generic `degraded` headline state
+   * does not, by itself, light the global banner. See `banner_warranted`'s
+   * doc comment on `FleetHealthVerdict`.
+   */
+  readonly materiallyBlocked: FleetConnectionReference[];
   readonly manual: FleetConnectionReference[];
   readonly needsOwner: FleetConnectionReference[];
   readonly paused: FleetConnectionReference[];
@@ -365,6 +402,27 @@ function collectSummaryEvidence(summary: FleetSummary, evidence: MutableFleetEvi
     ].some(Boolean),
     ref
   );
+  // Same set as `degradedOrBroken` MINUS the case where a `degraded`/
+  // `unhealthy` headline is explained ENTIRELY by a `retryable_gap` coverage
+  // axis with no other unhealthy evidence — that is background retry, not a
+  // material block. Every other reason `degradedOrBroken` fires (owner
+  // state, remote-surface failure, outbox failure, a maintainer code-fix, a
+  // real runtime/binding condition failure) is unaffected and still material.
+  pushIf(
+    evidence.materiallyBlocked,
+    [
+      coolingOffWithoutPassiveEvidence,
+      ownerStateEvidence === "unhealthy",
+      coverageEvidence === "unhealthy",
+      remoteSurfaceEvidence === "unhealthy",
+      outboxEvidence === "unhealthy",
+      hasMaintainerCodeFix(verdict),
+      hasCurrentCondition(health, "RemoteSurfaceAvailable"),
+      hasCurrentCondition(health, "RuntimeAvailable"),
+      headlineEvidence === "unhealthy" && coverageEvidence !== "retryable",
+    ].some(Boolean),
+    ref
+  );
   pushIf(evidence.retryable, coverageEvidence === "retryable" || forwardDispositionEvidence === "retryable", ref);
   pushIf(evidence.terminal, coverageEvidence === "terminal" || forwardDispositionEvidence === "terminal", ref);
   pushIf(evidence.stalledWork, outboxEvidence === "unhealthy", ref);
@@ -388,6 +446,7 @@ function collectFleetEvidence(summaries: readonly FleetSummary[]): MutableFleetE
     degradedOrBroken: [],
     freshnessAdvisories: [],
     manual: [],
+    materiallyBlocked: [],
     needsOwner: [],
     paused: [],
     retryable: [],
@@ -444,8 +503,24 @@ export function composeFleetHealthVerdict(input: {
     evidence.activeWork.length > 0 ||
     evidence.unknownEvidence.length > 0;
   const state = fleetState({ freshnessAdvisories: evidence.freshnessAdvisories, indeterminate, unhealthy });
+  // Actionability-only gate for the global banner: a proven owner action, or
+  // a materially blocked connection (real unhealthy headline/coverage/
+  // remote-surface/outbox, a maintainer code-fix, or a non-retryable
+  // terminal coverage gap). Deliberately excludes `evidence.retryable`
+  // (background retry, no owner action) and everything that only drives
+  // `indeterminate`/`healthy_with_advisories` (active work, unassessed
+  // scope, unknown evidence, freshness advisories, runtime/stream-health
+  // "unknown"/"inconclusive"). See `banner_warranted`'s doc comment above.
+  const bannerWarranted =
+    runtime === "unhealthy" ||
+    input.streamHealth.status === "fail" ||
+    evidence.needsOwner.length > 0 ||
+    evidence.materiallyBlocked.length > 0 ||
+    evidence.terminal.length > 0 ||
+    evidence.stalledWork.length > 0;
 
   return {
+    banner_warranted: bannerWarranted,
     dimensions: {
       active_work: evidence.activeWork,
       attention: { needs_owner: evidence.needsOwner },

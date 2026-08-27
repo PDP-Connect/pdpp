@@ -825,6 +825,12 @@ export interface RefFleetConnectionReference {
 }
 
 export interface RefFleetHealthVerdict {
+  /**
+   * Server-computed actionability gate for the global banner — narrower than
+   * `state !== "healthy"`. See `FleetHealthVerdict.banner_warranted` in
+   * `reference-implementation/server/fleet-health.ts` for the full rule.
+   */
+  banner_warranted: boolean;
   dimensions: {
     active_work: readonly RefFleetConnectionReference[];
     attention: { needs_owner: readonly RefFleetConnectionReference[] };
