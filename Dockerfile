@@ -109,6 +109,34 @@ EXPOSE 7662 7663
 
 CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.ts"]
 
+# Isolated sigtop (v0.24.0, ISC) builder stage.
+# sigtop publishes only a Windows binary on its releases, so Linux is built
+# from the pinned source tag in a throwaway Go stage. Only the resulting
+# binary and its license are copied into the final image -- Go itself is not.
+# Go 1.25+: sigtop v0.24.0's go.mod requires it, and GOTOOLCHAIN=local in the
+# official image means an older base fails the build outright rather than
+# silently fetching a newer toolchain.
+FROM golang:1.25-bookworm AS sigtop-builder
+
+ARG SIGTOP_VERSION=v0.24.0
+
+WORKDIR /build
+
+# libsecret-1-dev is a build dependency, not an optional extra: sigtop builds
+# with CGO_ENABLED=1 and links against libsecret to read Signal Desktop's
+# encrypted database key from the OS keyring. Without the headers the cgo step
+# fails at pkg-config.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates libsecret-1-dev pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${SIGTOP_VERSION}" https://github.com/tbvdm/sigtop.git src && \
+    cd src && \
+    git rev-parse HEAD > /build/SOURCE_COMMIT && \
+    CGO_ENABLED=1 go build -o /build/sigtop . && \
+    test -x /build/sigtop && \
+    cp LICENSE.md /build/LICENSE && \
+    printf 'https://github.com/tbvdm/sigtop/tree/%s\n' "$(cat /build/SOURCE_COMMIT)" > /build/SOURCE_URL
+
 # Isolated slackdump (v4.4.2, AGPL-3.0) builder stage.
 # Downloads pre-built tarball, verifies SHA256, extracts binary and license.
 # Only the binary (not build deps or Go) is copied to final image.
@@ -339,6 +367,23 @@ COPY --from=slackdump-builder /build/SOURCE_URL /usr/local/share/slackdump/SOURC
 
 # Verify slackdump is executable and functional
 RUN chmod +x /usr/local/bin/slackdump && /usr/local/bin/slackdump version
+
+# Copy sigtop binary (ISC, v0.24.0) from builder stage.
+# Binary required by the Signal connector; upstream: https://github.com/tbvdm/sigtop
+COPY --from=sigtop-builder /build/sigtop /usr/local/bin/sigtop
+COPY --from=sigtop-builder /build/LICENSE /usr/local/share/sigtop/LICENSE.isc.txt
+COPY --from=sigtop-builder /build/SOURCE_URL /usr/local/share/sigtop/SOURCE_URL
+
+# Verify sigtop is present and executable. The Signal connector shipped
+# registered and rostered while this binary was absent from the image
+# entirely, so the row rendered health for a collector that could never run.
+# Fail the build here rather than discover it from a dead source.
+#
+# `test -x` rather than a version flag: sigtop's CLI is subcommand-based and
+# every subcommand touches a real Signal Desktop directory, which does not
+# exist at build time. Presence and the executable bit are what this stage can
+# honestly assert.
+RUN chmod +x /usr/local/bin/sigtop && test -x /usr/local/bin/sigtop
 
 EXPOSE 3000
 
