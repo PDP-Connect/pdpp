@@ -173,7 +173,7 @@ export interface TerminalCollectionFact {
   stream: string;
 }
 
-/** Durable terminal checkpoint and evidence envelope (local outbox schema v3). */
+/** Durable terminal checkpoint and evidence envelope (local outbox schema v3+). */
 export interface TerminalRunCommitRequest {
   collection_boundary: string;
   commit_id: string;

@@ -6,7 +6,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hashCanonicalJson } from "./local-device-envelope.ts";
 
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 type OutboxMigrationV3FaultPoint = "after_copy";
 let outboxMigrationV3FaultHook: ((point: OutboxMigrationV3FaultPoint) => void) | null = null;
 
@@ -169,6 +169,14 @@ export interface LocalDeviceOutboxRequeueDeadLettersInput {
 export interface LocalDeviceOutboxRequeueDeadLettersResult {
   matched: number;
   requeued: number;
+}
+
+export interface LocalDeviceOutboxTerminalCommitSupersessionInput {
+  collectionBoundary: string;
+  connectorId: string;
+  connectorInstanceId: string;
+  replacementId: string;
+  sourceInstanceId: string;
 }
 
 /**
@@ -568,6 +576,77 @@ export class LocalDeviceOutbox {
     return Number(result.changes) === 1;
   }
 
+  /**
+   * Record that an accepted replacement terminal commit supersedes older
+   * rejected terminal evidence. The old row is intentionally retained; the
+   * ledger is the only retirement marker used by active-work queries.
+   */
+  retireDeadLetteredTerminalCommits(input: LocalDeviceOutboxTerminalCommitSupersessionInput): number {
+    const replacement = this.get(input.replacementId);
+    if (
+      replacement?.kind !== "terminal_run_commit" ||
+      replacement?.status !== "succeeded" ||
+      replacement?.source_instance_id !== input.sourceInstanceId
+    ) {
+      throw new Error(`terminal commit replacement is not acknowledged: ${input.replacementId}`);
+    }
+
+    const now = this.#now();
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.#db
+        .prepare(
+          `INSERT OR IGNORE INTO local_device_terminal_commit_supersessions (
+             retired_terminal_commit_id,
+             replacement_terminal_commit_id,
+             superseded_at
+           )
+           SELECT old.id, ?, ?
+             FROM local_device_outbox AS old
+            WHERE old.source_instance_id = ?
+              AND old.kind = 'terminal_run_commit'
+              AND old.status = 'dead_letter'
+              AND old.id != ?
+              AND old.rowid < ?
+              AND json_extract(old.payload_json, '$.connector_id') = ?
+              AND json_extract(old.payload_json, '$.connector_instance_id') = ?
+              AND json_extract(old.payload_json, '$.collection_boundary') = ?
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM local_device_terminal_commit_supersessions AS retired
+                 WHERE retired.retired_terminal_commit_id = old.id
+              )`
+        )
+        .run(
+          input.replacementId,
+          now,
+          input.sourceInstanceId,
+          input.replacementId,
+          replacement.insert_order,
+          input.connectorId,
+          input.connectorInstanceId,
+          input.collectionBoundary
+        );
+      this.#db.exec("COMMIT");
+      return Number(result.changes);
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  isTerminalCommitSuperseded(id: string): boolean {
+    return Boolean(
+      this.#db
+        .prepare(
+          `SELECT 1 AS found
+             FROM local_device_terminal_commit_supersessions
+            WHERE retired_terminal_commit_id = ?`
+        )
+        .get(id)
+    );
+  }
+
   backupTo(path: string): void {
     this.#db.exec(`VACUUM INTO ${sqlStringLiteral(path)}`);
   }
@@ -781,7 +860,13 @@ export class LocalDeviceOutbox {
    * drained lane rather than racing a live drain.
    */
   countNonSucceeded(): number {
-    const row = this.#db.prepare("SELECT COUNT(*) AS total FROM local_device_outbox WHERE status != 'succeeded'").get();
+    const row = this.#db
+      .prepare(
+        "SELECT COUNT(*) AS total FROM local_device_outbox " +
+          "WHERE status != 'succeeded' AND " +
+          activeOutboxRowPredicate()
+      )
+      .get();
     return isRecord(row) ? numberFrom(row.total) : 0;
   }
 
@@ -851,9 +936,10 @@ export class LocalDeviceOutbox {
   hasNonSucceededWork(input: {
     excludeKinds?: readonly LocalDeviceOutboxKind[];
     kinds?: readonly LocalDeviceOutboxKind[];
+    statuses?: readonly LocalDeviceOutboxStatus[];
     sourceInstanceId: string;
   }): boolean {
-    const clauses = ["source_instance_id = ?", "status != 'succeeded'"];
+    const clauses = [activeOutboxRowPredicate(), "source_instance_id = ?", "status != 'succeeded'"];
     const params: string[] = [input.sourceInstanceId];
     if (input.kinds && input.kinds.length > 0) {
       clauses.push(`kind IN (${input.kinds.map(() => "?").join(", ")})`);
@@ -862,6 +948,10 @@ export class LocalDeviceOutbox {
     if (input.excludeKinds && input.excludeKinds.length > 0) {
       clauses.push(`kind NOT IN (${input.excludeKinds.map(() => "?").join(", ")})`);
       params.push(...input.excludeKinds);
+    }
+    if (input.statuses && input.statuses.length > 0) {
+      clauses.push(`status IN (${input.statuses.map(() => "?").join(", ")})`);
+      params.push(...input.statuses);
     }
     const row = this.#db
       .prepare(`SELECT 1 AS found FROM local_device_outbox WHERE ${clauses.join(" AND ")} LIMIT 1`)
@@ -983,7 +1073,7 @@ export class LocalDeviceOutbox {
         MIN(CASE WHEN status = 'ready' THEN created_at ELSE NULL END) AS oldest_ready,
         MIN(CASE WHEN status = 'ready' AND attempt_count > 0 THEN created_at ELSE NULL END) AS oldest_retrying
       FROM local_device_outbox
-      ${input.sourceInstanceId ? "WHERE source_instance_id = ?" : ""}
+      ${input.sourceInstanceId ? `WHERE source_instance_id = ? AND ${activeOutboxRowPredicate()}` : `WHERE ${activeOutboxRowPredicate()}`}
       GROUP BY status`;
     const statement = this.#db.prepare(aggregateSql);
     const rows = input.sourceInstanceId ? statement.all(now, now, input.sourceInstanceId) : statement.all(now, now);
@@ -1209,7 +1299,9 @@ export class LocalDeviceOutbox {
           .prepare(
             `SELECT last_error AS last_error, COUNT(*) AS total
                FROM local_device_outbox
-              WHERE status = 'dead_letter' AND source_instance_id = ?
+              WHERE status = 'dead_letter'
+                AND ${activeOutboxRowPredicate()}
+                AND source_instance_id = ?
               GROUP BY last_error`
           )
           .all(input.sourceInstanceId)
@@ -1218,6 +1310,7 @@ export class LocalDeviceOutbox {
             `SELECT last_error AS last_error, COUNT(*) AS total
                FROM local_device_outbox
               WHERE status = 'dead_letter'
+                AND ${activeOutboxRowPredicate()}
               GROUP BY last_error`
           )
           .all();
@@ -1277,6 +1370,7 @@ export class LocalDeviceOutbox {
     if (version < 3) {
       this.#applySchemaV3();
     }
+    this.#applySchemaV4();
     if (version < CURRENT_SCHEMA_VERSION) {
       this.#db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
     }
@@ -1342,7 +1436,8 @@ export class LocalDeviceOutbox {
    * the outbox table inside one immediate transaction and copies every column.
    * Pending v1/v2 rows keep their row order, lease state, retry counters, body
    * hashes, and payload bytes. A v2 collector opening the resulting file sees
-   * `user_version = 3` and refuses it before reading work it cannot deliver.
+   * `user_version = 3` and refuses it before reading work it cannot deliver;
+   * schema v4 adds only the append-only terminal supersession ledger.
    */
   #applySchemaV3(): void {
     this.#db.exec("BEGIN IMMEDIATE");
@@ -1397,6 +1492,19 @@ export class LocalDeviceOutbox {
       }
       throw error;
     }
+  }
+
+  /** Schema v4 — append-only retirement links for rebuilt terminal commits. */
+  #applySchemaV4(): void {
+    this.#db.exec(`
+      CREATE TABLE IF NOT EXISTS local_device_terminal_commit_supersessions (
+        retired_terminal_commit_id TEXT PRIMARY KEY,
+        replacement_terminal_commit_id TEXT NOT NULL,
+        superseded_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS local_device_terminal_commit_supersessions_replacement_idx
+        ON local_device_terminal_commit_supersessions (replacement_terminal_commit_id);
+    `);
   }
 
   #selectReady(
@@ -1513,7 +1621,9 @@ function assertOneChange(changes: number, message: string): void {
 }
 
 function deadLetterWhere(input: LocalDeviceOutboxRequeueDeadLettersInput): { clauses: string[]; params: string[] } {
-  const clauses = ["status = 'dead_letter'"];
+  // Terminal commits are rebuild-required evidence. They must only leave the
+  // queue through the accept-before-retire path, never through blind retry.
+  const clauses = ["status = 'dead_letter'", "kind != 'terminal_run_commit'"];
   const params: string[] = [];
   if (input.sourceInstanceId) {
     clauses.push("source_instance_id = ?");
@@ -1524,6 +1634,18 @@ function deadLetterWhere(input: LocalDeviceOutboxRequeueDeadLettersInput): { cla
     params.push(input.kind);
   }
   return { clauses, params };
+}
+
+function activeOutboxRowPredicate(table = "local_device_outbox"): string {
+  return `NOT (
+      ${table}.kind = 'terminal_run_commit'
+      AND ${table}.status = 'dead_letter'
+      AND EXISTS (
+        SELECT 1
+          FROM local_device_terminal_commit_supersessions AS retired_terminal
+           WHERE retired_terminal.retired_terminal_commit_id = ${table}.id
+        )
+    )`;
 }
 
 function normalizeLimit(value: number | undefined): number | null {

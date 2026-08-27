@@ -427,19 +427,20 @@ Advanced / low-level:
           --code <code>             device id + device token; prints raw JSON.
           [--device-label <label>]  Scriptable primitive setup is built on — use
                                      setup for the guided path.
-  retry-dead-letters              Requeue local dead-letter outbox rows.
+  retry-dead-letters              Requeue retryable non-terminal dead-letter rows.
           [--queue <path>]
           [--connection-id <id>]
           [--source-instance-id <id>]
           [--kind record_batch|checkpoint|gap|blob_upload]
           [--limit <n>]
           [--apply]                Dry-run by default; --apply mutates after a DB backup.
-  recover                         Resolve the enrolled local profile, recover stalled outbox work,
+  recover                         Resolve the enrolled local profile, rebuild rejected terminal commits,
+                                  recover stalled outbox work,
                                    and drain queued work until clear or bounded.
           --source-instance-id <id>
           [--profile <name>]        Optional profile name under the collector profile dir.
           [--max-drain-passes <n>]  Apply mode runs up to N drain passes (default: ${RECOVER_DEFAULT_MAX_DRAIN_PASSES}).
-          [--apply]                Dry-run by default; --apply requeues and runs.
+          [--apply]                Dry-run by default; --apply requeues retryable rows and runs.
   prune-sent                      Delete sent (succeeded) outbox rows to reclaim disk space.
           [--queue <path>]
           [--connection-id <id>]
@@ -2084,10 +2085,11 @@ export function readLocalOutboxDeadLetterErrorSummary(
 }
 
 const RETRY_DEAD_LETTERS_NO_MATCH_NOTE =
-  "No dead-letter rows matched. If the dashboard shows this connection as " +
-  "blocked/stalled, that is a state-read block, not a dead-letter backlog — " +
-  "there is nothing to requeue. Use `pdpp-local-collector recover --source-instance-id <id> --apply` " +
-  "to run the collector through the enrolled local profile and clear the block.";
+  "No retryable non-terminal dead-letter rows matched. Terminal-run-commit rows are " +
+  "rebuild-only: recover runs a completed pass and retains the old evidence until " +
+  "the replacement is accepted. If the dashboard shows this connection as " +
+  "blocked/stalled, use `pdpp-local-collector recover --source-instance-id <id> --apply` " +
+  "through the enrolled local profile.";
 
 function retryDeadLettersMatchNote(matched: number, dryRun: boolean): string {
   if (matched === 0) {
@@ -2564,10 +2566,17 @@ function hasDeadLetters(status: LocalOutboxStatusOutput): boolean {
   return status.outbox.counts.dead_letter > 0;
 }
 
-function recoverDryRunNote(status: LocalOutboxStatusOutput): string {
+function recoverDryRunNote(status: LocalOutboxStatusOutput, retry: RetryDeadLettersOutput | null): string {
   if (hasDeadLetters(status)) {
+    const retryable = retry?.matched ?? 0;
+    const terminal = Math.max(0, status.outbox.counts.dead_letter - retryable);
+    const retryableNote = retryable > 0 ? `${retryable} failed upload row(s) would be prepared for retry, ` : "";
+    const terminalNote =
+      terminal > 0
+        ? `${terminal} terminal commit row(s) would be rebuilt from a completed pass; their old evidence would be retained until acceptance, `
+        : "";
     return (
-      `${status.outbox.counts.dead_letter} failed upload row(s) would be prepared for retry, then the collector would drain queued work. ` +
+      `${retryableNote}${terminalNote}then the collector would drain queued work. ` +
       "Dry run only; re-run with --apply to mutate the local outbox and upload."
     );
   }
@@ -2592,15 +2601,20 @@ function recoverAppliedNote(input: {
 }): string {
   const { attempts, maxPasses, retry, statusAfter, statusBefore, stoppedReason } = input;
   const retried = retry ? `${retry.requeued} failed upload row(s) were prepared for retry. ` : "";
+  const terminalDeadLetters = retry ? Math.max(0, statusBefore.outbox.counts.dead_letter - retry.matched) : 0;
+  const rebuilt =
+    terminalDeadLetters > 0
+      ? `${terminalDeadLetters} terminal commit row(s) were held for completed-pass rebuild; accepted replacements retire their active block while retaining the old evidence. `
+      : "";
   const remaining = outboxOpenWork(statusAfter);
   if (stoppedReason === "drained") {
-    return `${retried}The collector drained queued work in ${attempts} pass(es).`;
+    return `${retried}${rebuilt}The collector drained queued work in ${attempts} pass(es).`;
   }
   if (hasDeadLetters(statusBefore)) {
     if (stoppedReason === "max_passes") {
-      return `${retried}The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. Re-run this command to continue; it stopped at the ${maxPasses}-pass safety bound.`;
+      return `${retried}${rebuilt}The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. Re-run this command to continue; it stopped at the ${maxPasses}-pass safety bound.`;
     }
-    return `${retried}The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. It stopped because another pass did not reduce the backlog.`;
+    return `${retried}${rebuilt}The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. It stopped because another pass did not reduce the backlog.`;
   }
   if (stoppedReason === "max_passes") {
     return `The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. Re-run this command to continue; it stopped at the ${maxPasses}-pass safety bound.`;
@@ -2633,7 +2647,7 @@ export async function recoverLocalCollector(
         ? { exists: statusBefore.db.exists, path: statusBefore.db.path }
         : { exists: false, path: "" },
       dry_run: true,
-      note: recoverDryRunNote(statusBefore),
+      note: recoverDryRunNote(statusBefore, retryPreview),
       object: "local_collector_recovery",
       profile: { name: resolved.profileName, source: resolved.profileSource },
       retry_dead_letters: retryPreview,

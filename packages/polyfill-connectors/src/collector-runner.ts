@@ -1881,6 +1881,18 @@ async function maybeCommitCheckpoint(input: {
   });
   const checkpointAfter = input.outbox.get(checkpointId);
   if (checkpointAfter?.status === "succeeded") {
+    if (kind === "terminal_run_commit") {
+      // Retirement is deliberately downstream of the acknowledged replacement:
+      // a failed or unacknowledged rebuild leaves the old terminal evidence
+      // active and inspectable.
+      input.outbox.retireDeadLetteredTerminalCommits({
+        collectionBoundary: input.terminalRunBoundary,
+        connectorId: input.config.connector.connector_id,
+        connectorInstanceId: input.terminalRunConnectorInstanceId,
+        replacementId: checkpointId,
+        sourceInstanceId: input.config.sourceInstanceId,
+      });
+    }
     return { flushedState: Object.freeze({ ...input.bufferedState }), statePutFailed: false };
   }
   if (checkpointAfter && hasCheckpointPredecessorBlockingWork(input.outbox, checkpointAfter)) {
@@ -2832,7 +2844,15 @@ function hasScanBlockingOutboxWork(
   sourceInstanceId: string,
   policy: Pick<CollectorOutboxPolicy, "maxEnqueuedBatchesPerRun">
 ): boolean {
-  if (outbox.hasNonSucceededWork({ excludeKinds: ["gap"], sourceInstanceId })) {
+  if (
+    outbox.hasNonSucceededWork({
+      excludeKinds: ["gap", "terminal_run_commit"],
+      sourceInstanceId,
+    })
+  ) {
+    return true;
+  }
+  if (outbox.hasNonSucceededWork({ kinds: ["terminal_run_commit"], sourceInstanceId, statuses: ["ready", "leased"] })) {
     return true;
   }
   return outbox.listByKind({ kind: "gap", sourceInstanceId }).some((item) => isUnresolvedScanBudgetGap(item, policy));

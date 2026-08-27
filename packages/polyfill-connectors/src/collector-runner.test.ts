@@ -29,7 +29,9 @@ import {
   LocalDeviceHttpError,
   type PutSourceInstanceStateRequest,
   type SourceInstanceStateResponse,
+  type TerminalRunCommitRequest,
 } from "./local-device-client.ts";
+import { canonicalTerminalRunCommitEnvelope, hashCanonicalJson } from "./local-device-envelope.ts";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";
@@ -1006,6 +1008,45 @@ function seedDeadLetteredRecordBatch(input: {
   return rowId;
 }
 
+function seedDeadLetteredTerminalCommit(input: {
+  connectorId: string;
+  queuePath: string;
+  sourceInstanceId: string;
+}): string {
+  const rowId = `${input.sourceInstanceId}:old-terminal`;
+  const outbox = new LocalDeviceOutbox({ path: input.queuePath });
+  try {
+    outbox.enqueue({
+      id: rowId,
+      kind: "terminal_run_commit",
+      payload: {
+        collection_boundary: "unscoped",
+        commit_id: "old-terminal-commit",
+        connector_id: input.connectorId,
+        connector_instance_id: "cin_fake",
+        device_id: "device-1",
+        run_id: "old-run",
+        source_instance_id: input.sourceInstanceId,
+        state_delta: {},
+        terminal_facts: [],
+        version: 1,
+      },
+      sourceInstanceId: input.sourceInstanceId,
+    });
+    const [claim] = outbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId: input.sourceInstanceId });
+    assert.ok(claim);
+    outbox.deadLetter({
+      error: "local device request failed: 400 invalid_request",
+      holder: "seed",
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+    });
+  } finally {
+    outbox.close();
+  }
+  return rowId;
+}
+
 test("runCollectorConnector replays prior STATE into the connector's START.state and flushes emitted STATE after records drain", async () => {
   const harness = await startCollectorHarness({
     priorState: { messages: { cursor: "m-prior" } },
@@ -1951,6 +1992,7 @@ interface CollectorHarness {
   heartbeats: Array<{ status: string; [k: string]: unknown }>;
   ingestedBatches: Array<{ records?: Array<{ data?: Record<string, unknown> }>; [k: string]: unknown }>;
   stateOps: Array<{ body: unknown; method: string }>;
+  terminalCommits: Record<string, unknown>[];
   url: string;
 }
 
@@ -1958,6 +2000,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
   const stateOps: CollectorHarness["stateOps"] = [];
   const heartbeats: CollectorHarness["heartbeats"] = [];
   const ingestedBatches: CollectorHarness["ingestedBatches"] = [];
+  const terminalCommits: CollectorHarness["terminalCommits"] = [];
   const gapAcks: CollectorHarness["gapAcks"] = [];
   const gapRecoveries: CollectorHarness["gapRecoveries"] = [];
   let persistedState: Record<string, unknown> = options.priorState ? { ...options.priorState } : {};
@@ -1978,6 +2021,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
           return;
         }
         sendJson(res, 200, {
+          connector_instance_id: "cin_fake",
           object: "device_source_instance_state",
           device_id: "device-1",
           source_instance_id: "src-1",
@@ -1997,6 +2041,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
         persistedState = { ...persistedState, ...next };
       }
       sendJson(res, 200, {
+        connector_instance_id: "cin_fake",
         object: "device_source_instance_state",
         device_id: "device-1",
         source_instance_id: "src-1",
@@ -2038,6 +2083,19 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
         first_seen_run_id: null,
         last_run_id: recovery.recovered_run_id ?? null,
         updated_at: new Date().toISOString(),
+      });
+      return;
+    }
+    if (url.includes("/terminal-run-commits")) {
+      const commit = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+      terminalCommits.push(commit);
+      const request = commit as unknown as TerminalRunCommitRequest;
+      sendJson(res, 200, {
+        commit_id: request.commit_id,
+        envelope_hash: hashCanonicalJson(canonicalTerminalRunCommitEnvelope(request)),
+        object: "device_terminal_run_commit",
+        run_id: request.run_id,
+        terminal_event_id: `evt-${terminalCommits.length}`,
       });
       return;
     }
@@ -2106,6 +2164,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
     heartbeats,
     ingestedBatches,
     stateOps,
+    terminalCommits,
     url: `http://127.0.0.1:${address.port}`,
   };
 }
@@ -3317,6 +3376,75 @@ test("runCollectorConnector preserves terminal local-device dead letters", async
   }
 });
 
+test("runCollectorConnector rebuilds a rejected terminal commit after a completed pass", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const oldId = seedDeadLetteredTerminalCommit({
+      connectorId: "fixture-terminal-rebuild",
+      queuePath,
+      sourceInstanceId: "src-terminal-rebuild",
+    });
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => {
+          let buf = "";
+          process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); });
+        });
+        process.stdout.write(JSON.stringify({
+          type: "RECORD", stream: "coverage_diagnostics", key: "coverage:messages",
+          data: { id: "coverage:messages", store: "messages", stream: "messages", status: "collected" },
+          emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: new Date().toISOString() },
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-terminal-rebuild",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages", "coverage_diagnostics"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      runId: "replacement-run",
+      sourceInstanceId: "src-terminal-rebuild",
+    });
+
+    assert.equal(result.skippedScanForBacklog, false);
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.outboxSummary.deadLetter, 0);
+    assert.equal(harness.terminalCommits.length, 1, "the old terminal bytes must not be retried");
+    assert.equal(harness.terminalCommits[0]?.run_id, "replacement-run");
+    assert.notEqual(harness.terminalCommits[0]?.commit_id, "old-terminal-commit");
+    assert.equal(harness.ingestedBatches.length, 1, "the completed pass must retain and upload its record batch");
+
+    const after = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const old = after.get(oldId);
+      assert.equal(old?.status, "dead_letter", "old evidence remains retained, not deleted or rewritten");
+      assert.equal(after.isTerminalCommitSuperseded(oldId), true);
+      assert.equal(after.summary({ sourceInstanceId: "src-terminal-rebuild" }).deadLetter, 0);
+      assert.equal(
+        after.list({ sourceInstanceId: "src-terminal-rebuild" }).filter((item) => item.kind === "record_batch").length,
+        1
+      );
+    } finally {
+      after.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector drains a prior pass's enqueued backlog before scanning again", async () => {
   // Models crash-after-enqueue-before-upload-acknowledgement across two
   // runner invocations using one harness whose ingest can be toggled.
@@ -3722,6 +3850,7 @@ async function startTogglableHarness(options: {
   const stateOps: CollectorHarness["stateOps"] = [];
   const heartbeats: CollectorHarness["heartbeats"] = [];
   const ingestedBatches: CollectorHarness["ingestedBatches"] = [];
+  const terminalCommits: CollectorHarness["terminalCommits"] = [];
   const gapAcks: CollectorHarness["gapAcks"] = [];
   const gapRecoveries: CollectorHarness["gapRecoveries"] = [];
   let persistedState: Record<string, unknown> = options.priorState ? { ...options.priorState } : {};
@@ -3737,6 +3866,7 @@ async function startTogglableHarness(options: {
       stateOps.push({ body: parsed, method });
       if (method === "GET") {
         sendJson(res, 200, {
+          connector_instance_id: "cin_fake",
           object: "device_source_instance_state",
           device_id: "device-1",
           source_instance_id: "src-1",
@@ -3750,6 +3880,7 @@ async function startTogglableHarness(options: {
         persistedState = { ...persistedState, ...next };
       }
       sendJson(res, 200, {
+        connector_instance_id: "cin_fake",
         object: "device_source_instance_state",
         device_id: "device-1",
         source_instance_id: "src-1",
@@ -3785,6 +3916,19 @@ async function startTogglableHarness(options: {
         first_seen_run_id: null,
         last_run_id: recovery.recovered_run_id ?? null,
         updated_at: new Date().toISOString(),
+      });
+      return;
+    }
+    if (url.includes("/terminal-run-commits")) {
+      const commit = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+      terminalCommits.push(commit);
+      const request = commit as unknown as TerminalRunCommitRequest;
+      sendJson(res, 200, {
+        commit_id: request.commit_id,
+        envelope_hash: hashCanonicalJson(canonicalTerminalRunCommitEnvelope(request)),
+        object: "device_terminal_run_commit",
+        run_id: request.run_id,
+        terminal_event_id: `evt-${terminalCommits.length}`,
       });
       return;
     }
@@ -3845,6 +3989,7 @@ async function startTogglableHarness(options: {
     gapRecoveries,
     heartbeats,
     ingestedBatches,
+    terminalCommits,
     stateOps,
     url: `http://127.0.0.1:${address.port}`,
   };

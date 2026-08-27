@@ -88,6 +88,7 @@ const HELP_RECENT_FLAG_PATTERN = /--recent <days>/;
 const HELP_ALL_FLAG_PATTERN = /--all\b/;
 const HELP_SINCE_FLAG_PATTERN = /--since <iso>/;
 const HELP_SOURCE_ROOTS_FLAG_PATTERN = /--source-roots a,b/;
+const TERMINAL_REBUILD_NOTE_PATTERN = /rebuild-only/;
 const HELP_REQUEST_NOT_GUARANTEE_PATTERN = /REQUEST, not a guarantee/;
 const HELP_NARROWS_ONLY_PATTERN = /narrows-only/;
 const USAGE_ERROR_CONNECT_PATTERN = /\bconnect\b/;
@@ -836,7 +837,7 @@ test("local collector retry-dead-letters is dry-run by default and backs up befo
   assert.doesNotMatch(rendered, /dead-letter-payload|dead-letter-id/);
 });
 
-test("local collector retry-dead-letters explains a state-read block when nothing matches", async () => {
+test("local collector retry-dead-letters directs unmatched work to profile recovery", async () => {
   const path = await tempOutboxPath();
   const outbox = new LocalDeviceOutbox({ path });
   try {
@@ -851,12 +852,60 @@ test("local collector retry-dead-letters explains a state-read block when nothin
   assert.equal(result.matched, 0);
   assert.equal(result.requeued, 0);
   assert.equal(result.dead_letter_error_summary, undefined);
-  // The note distinguishes a state-read block (nothing to requeue) from a
-  // dead-letter backlog and points at source-profile recovery.
-  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
-  assert.match(result.note, /state-read block/);
+  // Nothing retryable matched, so the command points at source-profile
+  // recovery rather than claiming it requeued the outstanding work.
+  assert.match(result.note, /No retryable non-terminal dead-letter rows matched/);
   // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(result.note, /recover --source-instance-id <id> --apply/);
+});
+
+test("local collector retry-dead-letters does not retry terminal commit bytes", async () => {
+  const path = await tempOutboxPath();
+  const payload = {
+    collection_boundary: "unscoped",
+    commit_id: "old-terminal-commit",
+    connector_id: "claude_code",
+    connector_instance_id: "cin-1",
+    device_id: "device-1",
+    run_id: "old-run",
+    source_instance_id: "src-terminal",
+    state_delta: {},
+    terminal_facts: [],
+    version: 1 as const,
+  };
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({ id: "old-terminal", kind: "terminal_run_commit", payload, sourceInstanceId: "src-terminal" });
+    const [claim] = outbox.claimReady({ holder: "worker", leaseMs: 60_000, sourceInstanceId: "src-terminal" });
+    assert.ok(claim);
+    outbox.deadLetter({
+      error: "local device request failed: 400 invalid_request",
+      holder: "worker",
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+    });
+  } finally {
+    outbox.close();
+  }
+
+  const result = retryLocalOutboxDeadLetters(
+    parseArgs(["retry-dead-letters", "--queue", path, "--connection-id", "src-terminal"])
+  );
+  assert.equal(result.matched, 0);
+  assert.equal(result.requeued, 0);
+  assert.equal(result.status_before.dead_letter, 1);
+  assert.equal(result.status_after.dead_letter, 1);
+  assert.match(result.note, TERMINAL_REBUILD_NOTE_PATTERN);
+
+  const after = new LocalDeviceOutbox({ path });
+  try {
+    const retained = after.get("old-terminal");
+    assert.equal(retained?.status, "dead_letter");
+    assert.equal(retained?.attempt_count, 1);
+    assert.deepEqual(retained?.payload, payload);
+  } finally {
+    after.close();
+  }
 });
 
 test("local collector profile parser reads source identity and durable queue settings", () => {

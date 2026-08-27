@@ -118,7 +118,8 @@ npx -y @pdpp/local-collector logout --connector claude_code
 # enrolled local profile for the source instance and changes nothing.
 npx -y @pdpp/local-collector recover --source-instance-id <source_instance_id>
 
-# Apply recovery: requeue failed uploads when present, then run the collector once.
+# Apply recovery: requeue retryable uploads, rebuild rejected terminal commits from
+# a completed pass, and retain old terminal evidence until the replacement is accepted.
 npx -y @pdpp/local-collector recover --source-instance-id <source_instance_id> --apply
 ```
 

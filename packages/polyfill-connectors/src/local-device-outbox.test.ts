@@ -79,7 +79,7 @@ test("LocalDeviceOutbox supports deterministic ids and idempotent enqueue", asyn
   }
 });
 
-test("schema v3 migration preserves pending v2 work and accepts terminal run commits", async () => {
+test("schema v3/v4 migration preserves pending v2 work and accepts terminal run commits", async () => {
   const path = await tempOutboxPath();
   const db = new DatabaseSync(path);
   try {
@@ -154,7 +154,7 @@ test("schema v3 migration preserves pending v2 work and accepts terminal run com
   const migrated = new DatabaseSync(path, { readOnly: true });
   try {
     const version = migrated.prepare("PRAGMA user_version").get() as { user_version: number };
-    assert.equal(version.user_version, 3);
+    assert.equal(version.user_version, 4);
   } finally {
     migrated.close();
   }
@@ -180,12 +180,12 @@ test("an old v2 binary uses the production version fence to refuse a v3 outbox",
   }
 });
 
-test("current binary refuses a future v4 outbox before applying schema", async () => {
+test("current binary refuses a future v5 outbox before applying schema", async () => {
   const path = await tempOutboxPath();
   const db = new DatabaseSync(path);
-  db.exec("PRAGMA user_version = 4");
+  db.exec("PRAGMA user_version = 5");
   db.close();
-  assert.throws(() => new LocalDeviceOutbox({ path }), /newer than supported version 3/);
+  assert.throws(() => new LocalDeviceOutbox({ path }), /newer than supported version 4/);
 });
 
 test("schema v3 migration failure rolls back, closes, and reopens with v2 bytes and metadata intact", async () => {
@@ -471,6 +471,106 @@ test("LocalDeviceOutbox requeues dead letters by source, kind, and limit", async
     assert.equal(requeued?.last_error, null);
 
     assert.equal(outbox.summary({ sourceInstanceId: "src-2" }).deadLetter, 1);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("LocalDeviceOutbox only retires rejected terminal evidence after an accepted replacement", async () => {
+  let now = new Date("2026-05-19T12:00:00.000Z");
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ clock: () => now, path });
+  const oldId = "src-terminal:old-terminal";
+  const replacementId = "src-terminal:new-terminal";
+  const terminalIdentity = {
+    collection_boundary: "scope-1",
+    connector_id: "claude_code",
+    connector_instance_id: "cin-1",
+    device_id: "device-1",
+    run_id: "run-old",
+    source_instance_id: "src-terminal",
+  };
+  try {
+    outbox.enqueue({
+      id: oldId,
+      kind: "terminal_run_commit",
+      payload: { ...terminalIdentity, commit_id: "old-commit", terminal_facts: [], state_delta: {}, version: 1 },
+      sourceInstanceId: "src-terminal",
+    });
+    const [oldClaim] = outbox.claimReady({ holder: "worker", leaseMs: 60_000, sourceInstanceId: "src-terminal" });
+    assert.ok(oldClaim);
+    outbox.deadLetter({
+      error: "local device request failed: 400 invalid_request",
+      holder: "worker",
+      id: oldClaim.id,
+      leaseEpoch: oldClaim.lease_epoch,
+    });
+
+    assert.deepEqual(
+      outbox.requeueDeadLetters({ kind: "terminal_run_commit", sourceInstanceId: "src-terminal" }),
+      { matched: 0, requeued: 0 },
+      "blind retry must not resend the invalid terminal bytes"
+    );
+    assert.equal(outbox.get(oldId)?.status, "dead_letter");
+
+    now = new Date("2026-05-19T12:01:00.000Z");
+    outbox.enqueue({
+      id: replacementId,
+      kind: "terminal_run_commit",
+      payload: {
+        ...terminalIdentity,
+        commit_id: "new-commit",
+        run_id: "run-new",
+        terminal_facts: [],
+        state_delta: {},
+        version: 1,
+      },
+      sourceInstanceId: "src-terminal",
+    });
+    assert.throws(
+      () =>
+        outbox.retireDeadLetteredTerminalCommits({
+          collectionBoundary: "scope-1",
+          connectorId: "claude_code",
+          connectorInstanceId: "cin-1",
+          replacementId,
+          sourceInstanceId: "src-terminal",
+        }),
+      /not acknowledged/
+    );
+    assert.equal(outbox.isTerminalCommitSuperseded(oldId), false);
+    assert.equal(outbox.summary({ sourceInstanceId: "src-terminal" }).deadLetter, 1);
+
+    const [replacementClaim] = outbox.claimReady({
+      holder: "worker",
+      leaseMs: 60_000,
+      sourceInstanceId: "src-terminal",
+    });
+    assert.ok(replacementClaim);
+    outbox.acknowledge({ holder: "worker", id: replacementClaim.id, leaseEpoch: replacementClaim.lease_epoch });
+    assert.equal(
+      outbox.retireDeadLetteredTerminalCommits({
+        collectionBoundary: "scope-1",
+        connectorId: "claude_code",
+        connectorInstanceId: "cin-1",
+        replacementId,
+        sourceInstanceId: "src-terminal",
+      }),
+      1
+    );
+
+    const retained = outbox.get(oldId);
+    assert.equal(retained?.status, "dead_letter");
+    assert.deepEqual(retained?.payload, {
+      ...terminalIdentity,
+      commit_id: "old-commit",
+      terminal_facts: [],
+      state_delta: {},
+      version: 1,
+    });
+    assert.equal(outbox.isTerminalCommitSuperseded(oldId), true);
+    assert.equal(outbox.summary({ sourceInstanceId: "src-terminal" }).deadLetter, 0);
+    assert.equal(outbox.deadLetterErrorSummary({ sourceInstanceId: "src-terminal" }).dead_letter_count, 0);
   } finally {
     outbox.close();
   }

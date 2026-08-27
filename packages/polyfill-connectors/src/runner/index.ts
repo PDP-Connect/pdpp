@@ -130,6 +130,7 @@ export {
   type LocalDeviceOutboxRequeueDeadLettersResult,
   type LocalDeviceOutboxStatus,
   type LocalDeviceOutboxSummary,
+  type LocalDeviceOutboxTerminalCommitSupersessionInput,
 } from "../local-device-outbox.ts";
 export {
   LocalDeviceQueue,

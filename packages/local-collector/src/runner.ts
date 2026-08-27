@@ -94,6 +94,7 @@ export {
   type LocalDeviceOutboxRequeueDeadLettersResult,
   type LocalDeviceOutboxStatus,
   type LocalDeviceOutboxSummary,
+  type LocalDeviceOutboxTerminalCommitSupersessionInput,
   LocalDeviceQueue,
   type LocalDeviceRecordEnvelope,
   LocalDeviceRequestTimeoutError,
