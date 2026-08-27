@@ -10,9 +10,9 @@ prepack build.
 `200b26098cb353d7d2fbdc52cc451712a92f6c85` ("fix(local-collector): rebuild rejected terminal
 commits") in a local checkout at `~/.tmp/data-connect-terminal-recovery-clean-0827`, one
 commit ahead of `data-connect`'s `origin/main` tip (`9766c77e2eab8909974ba7777fe4bafe0eac29e6`)
-on the local-only branch `fix/terminal-commit-recovery-0827-clean`. That commit is not
-pushed to `origin/data-connect` and has no public/shared reference — this is recorded
-explicitly rather than citing a branch or PR that does not exist. It carries the port of
+on branch `fix/terminal-commit-recovery-0827-clean`, publicly reviewable at
+PDP-Connect/data-connect PR #34 (https://github.com/PDP-Connect/data-connect/pull/34,
+exact head `200b26098`) but not yet merged. It carries the port of
 PDPP's `fef2464` (repair-terminal-commit-recovery) onto collector-runtime/local-collector:
 retaining rejected `terminal_run_commit` evidence until a newly completed pass produces an
 accepted replacement, recording an append-only supersession link (schema v4) instead of
