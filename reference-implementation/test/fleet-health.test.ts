@@ -883,3 +883,143 @@ test("banner_warranted: a maintainer code-fix (blocked_maintainer) still fires t
   assert.equal(result.state, "unhealthy");
   assert.equal(result.banner_warranted, true);
 });
+
+// ─── DISCRIMINATING CONTROL ───────────────────────────────────────────────────
+//
+// The banner's whole value is that it DISCRIMINATES. A predicate that fires on
+// everything and one that fires on nothing are equally useless, and both pass a
+// suite that only ever checks one direction.
+//
+// These four cases hold the fleet shape constant and vary ONLY the cause, so
+// the assertions are about the predicate's discrimination rather than about
+// fixture plumbing. Two must stay silent, two must fire.
+
+test("DISCRIMINATION: ordinary lateness and a provider limit stay silent; a credential failure and a runtime block fire", () => {
+  // (1) SILENT — ordinary cadence-relative lateness. The source is simply due;
+  // nothing is broken and no owner action exists.
+  const merelyLate = summary("late-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle", remote_surface: "none" },
+      forward_disposition: "owner_refresh_due",
+      state: "idle",
+    },
+    schedule: { enabled: false },
+  });
+
+  // (2) SILENT — a provider retention boundary. Permanently unavailable history
+  // is SCOPE, not health: the current connection is working perfectly.
+  const providerLimited = summary("horizon-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "idle", remote_surface: "none" },
+      forward_disposition: "complete",
+      state: "healthy",
+    },
+  });
+
+  // (3) FIRES — a real credential failure. Owner-actionable, names a concrete
+  // action, and is exactly Plaid's ITEM_LOGIN_REQUIRED case.
+  const credentialFailure = summary("creds-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "open", coverage: "complete", freshness: "stale", outbox: "idle", remote_surface: "none" },
+      forward_disposition: "awaiting_owner",
+      state: "needs_attention",
+    },
+  });
+
+  // (4) FIRES — a real runtime/connector block. Not owner-actionable, but
+  // materially broken: the system cannot collect and will not fix itself, so
+  // it needs a maintainer. Expressed the way the system really expresses it —
+  // an owner_state resolver plus a terminal maintainer action — not raw axes.
+  const runtimeBlocked = summary("runtime-a", {
+    owner_state: ownerState("blocked_maintainer"),
+    rendered_verdict: renderedVerdict("advisory", [maintainerCodeFix()]),
+  });
+
+  // A SCHEDULED source past its window: the shape that actually exercises the
+  // `staleFreshnessIsSoleDegradation` exclusion. The paused variant above
+  // takes a different path, so without this case a mutant that re-admits
+  // ordinary lateness to the materially-blocked gate survives here.
+  const scheduledLate = summary("sched-late-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle", remote_surface: "none" },
+      // The Fresh:false CONDITION, not just the stale axis:
+      // `staleFreshnessIsSoleDegradation` reads current conditions to decide
+      // whether staleness ALONE explains the degradation. Without it the
+      // degraded headline is unattributed and correctly escalates — which is
+      // the mechanism working, not a bug.
+      conditions: [{ current: true, status: "false", type: "Fresh" } as unknown as ConnectionHealthCondition],
+      // `complete`, NOT `owner_refresh_due`: this source is merely late, with
+      // no pending owner action. `owner_refresh_due` means the system is
+      // waiting on the owner, which is a legitimately different — and
+      // banner-worthy — state, so using it here would have tested the wrong
+      // thing while looking like a lateness case.
+      forward_disposition: "complete",
+      state: "degraded",
+    },
+    schedule: { enabled: true },
+  });
+
+  const silentCases: Array<[string, ReturnType<typeof summary>]> = [
+    ["ordinary lateness (paused)", merelyLate],
+    ["ordinary lateness (scheduled, past its window)", scheduledLate],
+    ["provider retention limit", providerLimited],
+  ];
+  for (const [label, row] of silentCases) {
+    const result = compose([inventory(row.connection_id)], [row]);
+    assert.equal(
+      result.banner_warranted,
+      false,
+      `${label} must NOT fire the global banner — the row still discloses it, the banner does not`
+    );
+  }
+
+  const firingCases: Array<[string, ReturnType<typeof summary>]> = [
+    ["credential failure", credentialFailure],
+    ["runtime block", runtimeBlocked],
+  ];
+  for (const [label, row] of firingCases) {
+    const result = compose([inventory(row.connection_id)], [row]);
+    assert.equal(
+      result.banner_warranted,
+      true,
+      `${label} MUST fire — suppressing a genuinely broken source is the failure that matters most`
+    );
+  }
+});
+
+test("DISCRIMINATION: a real failure beside quiet rows still fires — it is not diluted by healthy neighbours", () => {
+  // The roll-up must be existential, not proportional. One broken source in a
+  // large healthy fleet is still one broken source.
+  const quiet = [
+    summary("ok-a"),
+    summary("ok-b"),
+    summary("late-b", {
+      connection_health: {
+        ...summary("x").connection_health,
+        axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle", remote_surface: "none" },
+        forward_disposition: "owner_refresh_due",
+        state: "idle",
+      },
+      schedule: { enabled: false },
+    }),
+  ];
+  const broken = summary("creds-b", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "open", coverage: "complete", freshness: "stale", outbox: "idle", remote_surface: "none" },
+      forward_disposition: "awaiting_owner",
+      state: "needs_attention",
+    },
+  });
+
+  const withoutBroken = compose(quiet.map((s) => inventory(s.connection_id)), quiet);
+  assert.equal(withoutBroken.banner_warranted, false, "three quiet rows, including a late one, stay quiet");
+
+  const all = [...quiet, broken];
+  const withBroken = compose(all.map((s) => inventory(s.connection_id)), all);
+  assert.equal(withBroken.banner_warranted, true, "adding ONE genuinely blocked source must flip the banner");
+});
