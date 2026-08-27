@@ -19,8 +19,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { computeConnectionHealth } from "../../runtime/connection-health.ts";
-import { healthyConnectionInput } from "./connection-health-baseline.ts";
+import { computeConnectionHealth } from "../runtime/connection-health.ts";
+import { healthyConnectionInput } from "./fixtures/connection-health-baseline.ts";
 
 test("INVARIANT: the shared baseline computes healthy", () => {
   assert.equal(
