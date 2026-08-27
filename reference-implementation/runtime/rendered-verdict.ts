@@ -2025,7 +2025,7 @@ function freshnessAnnotationText(
   if (snapshot.badges.syncing) {
     return "Refreshing now.";
   }
-  return staleRefreshPolicyText(refresh, scheduleEvidence, progress);
+  return staleRefreshPolicyText(snapshot, refresh, scheduleEvidence, progress);
 }
 
 /** Named per retry_gap action, e.g. "Messages stuck since Jul 3." */
@@ -2044,10 +2044,18 @@ function retryGapStuckSinceText(snapshot: ConnectionHealthSnapshot, actions: rea
  * keyed to the connection's refresh policy (manual / scheduled / assisted).
  */
 function staleRefreshPolicyText(
+  snapshot: ConnectionHealthSnapshot,
   refresh: ConnectionRefreshEvidence | null,
   scheduleEvidence: ScheduleEvidence | null,
   progress: ProgressEvidence | null
 ): string {
+  // An enabled schedule is not an executable schedule while unresolved owner
+  // attention suppresses automatic dispatch. Bind this copy to that cause,
+  // rather than to the row's enabled bit: telling the owner to wait for the
+  // schedule here would name a remedy the controller will not perform.
+  if (snapshot.axes.attention !== "none") {
+    return "Waiting on you before the next run can make progress.";
+  }
   const refreshedAge = relativeDayAge(progress?.last_refreshed_at ?? null, progress?.observed_at ?? null);
   if (
     progress?.mode === "manual" ||
