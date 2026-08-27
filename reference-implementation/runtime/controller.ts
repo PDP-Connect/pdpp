@@ -4131,6 +4131,29 @@ export function createController(opts: ControllerOptions = {}): Controller {
           runId,
           traceContext,
         });
+        // A run that SUCCEEDED answered whatever the human was needed for.
+        // Clear the gate on proven success, whatever triggered the run.
+        //
+        // Previously this cleared only for `triggerKind === "manual"`, so a
+        // scheduled run could succeed indefinitely while the connection kept
+        // rendering `AttentionClear=false reason=needs_human_attention` and a
+        // "Missing data" pill. Observed live on ChatGPT
+        // (`cin_484604984db7c091bd08b259`): runs at 19:39 and 20:40 BOTH
+        // succeeded with every stream complete, zero open rows in
+        // `connector_attention_records`, and the row still read needs_attention.
+        //
+        // The flag is process-local (`needsHumanAttention`, a Set in this
+        // module) with no durable backing — `connector_schedules` has no
+        // `human_attention_needed` column — so nothing else could ever correct
+        // it. Only a restart or a manual run cleared it, which is why the
+        // contradiction survived two successful automatic runs.
+        //
+        // Success is the evidence, not the trigger. A failed or skipped run
+        // leaves the gate exactly as it was: if the owner is still needed, the
+        // next run re-marks it through the normal path.
+        if (runResult?.status === "succeeded") {
+          needsHumanAttention.delete(key);
+        }
         const continuationInput: {
           connectorId: string;
           connectorInstanceId: string;
