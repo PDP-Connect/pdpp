@@ -2176,7 +2176,17 @@ test("SQLite updateStatus merges sourceBindingPatch into source_binding_json, pr
   }
 });
 
-test("SQLite updateStatus without sourceBindingPatch leaves source_binding_json completely untouched", async () => {
+// Attribute-state-transitions fix (openspec/changes/
+// attribute-credential-state-transitions, 2026-08-27): the design requires
+// "a closed revocation-reason token on every reference connection-revoke
+// writer." A caller that revokes without an explicit `sourceBindingPatch`
+// (e.g. `owner-connection-revoke.ts`, which never builds one) still must not
+// leave the row's `revocation_reason` unknown, so `updateStatus` now defaults
+// the patch to `{ revocation_reason: "connection_revoked" }` for exactly the
+// `status === "revoked"` transition. Every other pre-existing key on
+// `source_binding_json` is still preserved (`json_patch` merges, it does not
+// replace).
+test("SQLite updateStatus without sourceBindingPatch stamps the default connection_revoked reason, preserving existing keys", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-update-status-no-patch-"));
   const dbPath = join(dir, "pdpp.sqlite");
   try {
@@ -2212,8 +2222,63 @@ test("SQLite updateStatus without sourceBindingPatch leaves source_binding_json 
     assert.equal(revoked?.status, "revoked");
     assert.deepEqual(
       revoked?.sourceBinding,
+      {
+        connector_id: "venmo",
+        enrollment_expires_at: "2026-08-21T15:42:00.000Z",
+        kind: "browser_enrollment_shell",
+        revocation_reason: "connection_revoked",
+      },
+      "revoking with no explicit sourceBindingPatch must still stamp the default connection_revoked reason, merged onto the pre-existing binding"
+    );
+  } finally {
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+// Discriminates the default patch above from a blanket "updateStatus always
+// touches source_binding_json" implementation: the default revocation-reason
+// stamp is scoped to the `status === "revoked"` transition only. A non-revoke
+// transition (e.g. draft -> active on first ingest) with no explicit
+// sourceBindingPatch must leave source_binding_json completely untouched --
+// there is no revocation to attribute a reason for.
+test("SQLite updateStatus without sourceBindingPatch leaves source_binding_json untouched for a non-revoke transition", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-update-status-non-revoke-no-patch-"));
+  const dbPath = join(dir, "pdpp.sqlite");
+  try {
+    initDb(dbPath);
+    await seedSqliteConnector("venmo");
+    const store = createSqliteConnectorInstanceStore();
+    const shell = store.upsert({
+      connectorId: "venmo",
+      createdAt: NOW,
+      displayName: "Venmo",
+      ownerSubjectId: "owner_activate_test",
+      sourceBinding: {
+        connector_id: "venmo",
+        enrollment_expires_at: "2026-08-21T15:42:00.000Z",
+        kind: "browser_enrollment_shell",
+      },
+      sourceBindingKey: makeConnectorInstanceSourceBindingKey({
+        kind: "browser_enrollment_shell",
+        local_binding_name: "venmo-attempt-3",
+      }),
+      sourceKind: "browser_collector",
+      status: "draft",
+      updatedAt: NOW,
+    });
+    assert.ok(shell);
+
+    const activated = store.updateStatus(shell.connectorInstanceId, {
+      status: "active",
+      updatedAt: LATER,
+    });
+
+    assert.equal(activated?.status, "active");
+    assert.deepEqual(
+      activated?.sourceBinding,
       { connector_id: "venmo", enrollment_expires_at: "2026-08-21T15:42:00.000Z", kind: "browser_enrollment_shell" },
-      "a caller that passes no sourceBindingPatch must not alter source_binding_json at all"
+      "a non-revoke status transition with no explicit sourceBindingPatch must not alter source_binding_json at all"
     );
   } finally {
     closeDb();
