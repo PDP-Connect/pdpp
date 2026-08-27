@@ -2597,7 +2597,12 @@ async function rebuildSemanticIndexForStream({
             connectorId,
             connectorInstanceId,
             recordKeys: rows.map((row) => String(row.record_key)),
-            stream,
+            // EXACT scope keys, never a prefix. The primary key is
+            // (connector_instance_id, scope_key, record_key); a LIKE on the
+            // MIDDLE column cannot be an index condition, so Postgres falls
+            // back to scanning every row for the instance. Measured on the
+            // live 1.82M-row table: prefix LIKE 5924ms, exact keys 0.069ms.
+            scopeKeys: declaredFields.map((field) => encodeScopeKey(stream, field)),
           })
         : existingKeys;
     const entries = await buildSemanticIndexEntries(

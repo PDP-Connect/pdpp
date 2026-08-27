@@ -74,7 +74,7 @@ test("postgresListExistingSemanticKeysForRecords: returns only the requested pag
         connectorId: CONNECTOR_ID,
         connectorInstanceId: CONNECTOR_INSTANCE_ID,
         recordKeys: requested,
-        stream: STREAM,
+        scopeKeys: [scopeKeyFor("content")],
       });
 
       assert.equal(
@@ -111,7 +111,7 @@ test("postgresListExistingSemanticKeysForRecords: an empty page asks Postgres no
         connectorId: CONNECTOR_ID,
         connectorInstanceId: CONNECTOR_INSTANCE_ID,
         recordKeys: [],
-        stream: STREAM,
+        scopeKeys: [scopeKeyFor("content")],
       });
       assert.equal(keys.size, 0, "an empty page has no already-indexed keys");
     }
@@ -146,9 +146,51 @@ test("postgresListExistingSemanticKeysForRecords: does not leak keys from anothe
         connectorId: CONNECTOR_ID,
         connectorInstanceId: CONNECTOR_INSTANCE_ID,
         recordKeys: ["rec_00000"],
-        stream: STREAM,
+        scopeKeys: [scopeKeyFor("content")],
       });
       assert.equal(keys.size, 0, "a key indexed under a different stream is not an indexed key for this stream");
+    }
+  );
+});
+
+// The bounded-Set property is not enough. The 2026-08-27 production incident was
+// a QUERY PLAN defect: the correct answer, computed by scanning 1.5M rows.
+// `semantic_search_blob`'s primary key is (connector_instance_id, scope_key,
+// record_key); a `LIKE 'prefix%'` on the MIDDLE column cannot be an index
+// condition, so Postgres demotes it to a filter and index-scans the whole
+// instance. Measured live: 5924ms vs 0.069ms for the same single-key lookup.
+// This test reads the plan itself, because a correctness assertion passes
+// either way and cannot see the difference.
+test("postgresListExistingSemanticKeysForRecords: scope_key is an INDEX CONDITION, never a filter", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL is not set",
+}, async () => {
+  const databaseName = `pdpp_bounded_keys_plan_${Date.now().toString(36)}`;
+  await withTemporaryPostgresDatabase(
+    { closeConnections: closePostgresStorage, connectionString: POSTGRES_URL as string, databaseName },
+    async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      await bootstrapPostgresSchema();
+
+      const pool = new pg.Pool({ connectionString: url });
+      try {
+        const plan = await pool.query(
+          `EXPLAIN SELECT scope_key, record_key
+               FROM semantic_search_blob
+              WHERE connector_id = $1
+                AND connector_instance_id = $2
+                AND scope_key = ANY($3)
+                AND record_key = ANY($4)`,
+          [CONNECTOR_ID, CONNECTOR_INSTANCE_ID, [scopeKeyFor("content")], ["rec_00000"]]
+        );
+        const text = plan.rows.map((r: Record<string, string>) => r["QUERY PLAN"]).join("\n");
+        const indexCond = text.split("\n").find((l) => l.includes("Index Cond")) ?? "";
+        assert.ok(
+          indexCond.includes("scope_key"),
+          `scope_key must be part of the Index Cond, or Postgres scans every row for the instance. Plan was:\n${text}`
+        );
+      } finally {
+        await pool.end();
+      }
     }
   );
 });

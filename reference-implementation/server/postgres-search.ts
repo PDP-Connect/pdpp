@@ -585,20 +585,33 @@ export async function postgresListExistingSemanticKeysForRecords({
   connectorId,
   connectorInstanceId,
   recordKeys,
-  stream,
-}: Required<ConnectorStreamScope> & { recordKeys: readonly string[] }) {
-  if (recordKeys.length === 0) {
+  scopeKeys,
+}: Omit<Required<ConnectorStreamScope>, "stream"> & {
+  recordKeys: readonly string[];
+  scopeKeys: readonly string[];
+}) {
+  if (recordKeys.length === 0 || scopeKeys.length === 0) {
     return new Set<string>();
   }
-  const scopePrefix = `[${JSON.stringify(stream)},`;
+  // EXACT scope keys, never a prefix match. The primary key is
+  // (connector_instance_id, scope_key, record_key), so a `LIKE 'prefix%'` on
+  // the MIDDLE column cannot serve as an index condition — Postgres drops it
+  // to a filter and index-scans every row belonging to the instance.
+  //
+  // Measured against the live 1,820,100-row table, single-record lookup:
+  //   scope_key LIKE '["messages",%'   -> 5924.509 ms
+  //   scope_key = ANY(exact keys)      ->    0.069 ms
+  // The backfill issues this once per page at boot for every connector, so the
+  // prefix form saturated Postgres and starved concurrent ingest, which
+  // surfaced to connectors as `fetch failed`.
   const result = await postgresQuery(
     `SELECT scope_key, record_key
      FROM semantic_search_blob
      WHERE connector_id = $1
        AND connector_instance_id = $2
-       AND scope_key LIKE $3
+       AND scope_key = ANY($3)
        AND record_key = ANY($4)`,
-    [connectorId, connectorInstanceId, `${scopePrefix}%`, [...recordKeys]]
+    [connectorId, connectorInstanceId, [...scopeKeys], [...recordKeys]]
   );
   return new Set(
     result.rows.map((row) => JSON.stringify([row.scope_key, `${connectorInstanceId}\u0000${row.record_key}`]))
