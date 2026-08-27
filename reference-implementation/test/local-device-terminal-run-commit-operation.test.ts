@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { canonicalTerminalRunCommitJson } from "@pdpp/reference-contract/common";
 import { handleLocalDeviceTerminalRunCommit } from "../operations/local-device-terminal-collection.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import {
   commitTerminalRun as commitTerminalRunToStore,
@@ -103,6 +104,110 @@ test("terminal run commit resolves authorization before receipt lookup and passe
       .update(canonicalTerminalRunCommitJson({ ...validBody(), version: 1 }))
       .digest("hex")
   );
+});
+
+/**
+ * Production defect, peregrine 2026-08-22: a terminal run commit dead-lettered
+ * with `400 invalid_request` and blocked the Claude Code outbox for five days
+ * (1 dead_letter behind 10,000 succeeded uploads).
+ *
+ * The device is configured `PDPP_COLLECTOR_CONNECTOR=claude_code` and sends
+ * that spelling verbatim. The server canonicalized only ITS OWN side to
+ * `claude-code` and then required the device to have sent that exact string.
+ * The record-batch leg compares with `sameConnectorType`, which canonicalizes
+ * BOTH sides — which is why 10,000 batches from the same device on the same
+ * run succeeded while this one guard rejected the commit.
+ *
+ * The pre-existing cases here all use `codex`, which canonicalizes to itself,
+ * and stub `canonicalConnectorKey: () => "codex"` — a constant that cannot
+ * express a mismatch. This case uses the REAL canonicalizer so the alias is
+ * actually exercised.
+ */
+test("a device sending the legacy connector alias still commits: both sides are canonicalized", async () => {
+  const capture = responseCapture();
+  let committed: ResolvedTerminalRunCommit | null = null;
+  await handleLocalDeviceTerminalRunCommit({
+    ctx: {
+      canonicalConnectorKey,
+      commitTerminalRun: (commitInput) => {
+        committed = commitInput;
+        return Promise.resolve({
+          replayed: false,
+          response: {
+            commit_id: commitInput.commitId,
+            envelope_hash: commitInput.envelopeHash,
+            object: "device_terminal_run_commit",
+            run_id: commitInput.runId,
+            terminal_event_id: "evt-alias",
+          },
+        });
+      },
+      emitSpineEvent: () => Promise.resolve(),
+      handleError: (_res, error) => {
+        throw error;
+      },
+      pdppError: (_res, status, code, message) => {
+        throw new Error(`unexpected ${status}:${code} ${message}`);
+      },
+    },
+    req: {
+      // The exact spelling the peregrine collector emits.
+      body: validBody({ connector_id: "claude_code" }),
+      deviceExporter: { deviceId: "dev-1" },
+      params: { deviceId: "dev-1", sourceInstanceId: "src-1" },
+    },
+    res: capture.response,
+    resolveAuthorizedSource: () =>
+      Promise.resolve({
+        connectorInstance: { connectorInstanceId: "cin-1" },
+        sourceInstance: { connectorId: "claude-code" },
+      }),
+  });
+  assert.equal(capture.snapshot().status, 201, "the legacy alias must not be rejected as an invalid binding");
+  assert.ok(committed);
+  assert.equal(
+    (committed as ResolvedTerminalRunCommit).connectorId,
+    "claude-code",
+    "the committed binding is stored canonically regardless of which spelling the device sent"
+  );
+});
+
+test("an unrelated connector id is still rejected — canonicalizing both sides does not make the guard permissive", async () => {
+  const capture = responseCapture();
+  let status = 0;
+  let errorCode = "";
+  await handleLocalDeviceTerminalRunCommit({
+    ctx: {
+      canonicalConnectorKey,
+      commitTerminalRun: () => {
+        throw new Error("a mismatched connector must never reach the receipt store");
+      },
+      emitSpineEvent: () => Promise.resolve(),
+      handleError: (_res, error) => {
+        throw error;
+      },
+      pdppError: (_res, code, errCode) => {
+        status = code;
+        errorCode = errCode;
+      },
+    },
+    req: {
+      // `codex` is a real key that canonicalizes to itself — and is NOT this
+      // source's connector. Without this control, mapping every unknown value
+      // through the alias table could silently accept a foreign binding.
+      body: validBody({ connector_id: "codex" }),
+      deviceExporter: { deviceId: "dev-1" },
+      params: { deviceId: "dev-1", sourceInstanceId: "src-1" },
+    },
+    res: capture.response,
+    resolveAuthorizedSource: () =>
+      Promise.resolve({
+        connectorInstance: { connectorInstanceId: "cin-1" },
+        sourceInstance: { connectorId: "claude-code" },
+      }),
+  });
+  assert.equal(status, 400, "a connector that is not this source's must still fail closed");
+  assert.equal(errorCode, "invalid_request");
 });
 
 test("wrong device cannot resolve a source or inspect a receipt", async () => {
