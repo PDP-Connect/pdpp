@@ -731,6 +731,47 @@ test("owner cancellation keeps the prior successful runtime proof authoritative"
   assert.equal(streamResult(cancelled).class, "green");
 });
 
+test("carried-forward coverage evidence proves green only when strictly older than the latest terminal success", () => {
+  const OLDER_EVIDENCE_AT = "2026-08-10T12:00:00.000Z";
+  const FUTURE_EVIDENCE_AT = "2999-01-01T00:00:00.000Z";
+
+  function carriedForward(overrides: Json = {}): Json {
+    const connection = healthyConnection({
+      last_run: {
+        finished_at: "2026-08-11T12:05:00.000Z",
+        run_id: "run-owner-cancelled",
+        status: "cancelled",
+        terminal_reason: "owner_cancelled",
+      },
+    });
+    const [report] = connection.collection_report as Json[];
+    assert.ok(report);
+    Object.assign(report, overrides);
+    return connection;
+  }
+
+  const olderEvidence = evaluate(carriedForward({ evidence_as_of: OLDER_EVIDENCE_AT }));
+  assert.equal(streamResult(olderEvidence).class, "green");
+
+  // Same instant as the latest terminal success, expressed differently, so it
+  // is not the exact-string current-proof match: equal is not strictly
+  // older, so it fails closed rather than being treated as carried-forward.
+  const equalEvidence = evaluate(carriedForward({ evidence_as_of: "2026-08-11T12:00:00+00:00" }));
+  assert.equal(streamResult(equalEvidence).class, "unobserved");
+
+  const futureEvidence = evaluate(carriedForward({ evidence_as_of: FUTURE_EVIDENCE_AT }));
+  assert.equal(streamResult(futureEvidence).class, "unobserved");
+
+  const unparseableEvidence = evaluate(carriedForward({ evidence_as_of: "not-a-timestamp" }));
+  assert.equal(streamResult(unparseableEvidence).class, "unobserved");
+
+  const missingEvidence = evaluate(carriedForward({ evidence_as_of: undefined }));
+  assert.equal(streamResult(missingEvidence).class, "unobserved");
+
+  const pastButNewerThanLatestSuccess = evaluate(carriedForward({ evidence_as_of: "2026-08-11T18:00:00.000Z" }));
+  assert.equal(streamResult(pastButNewerThanLatestSuccess).class, "unobserved");
+});
+
 test("stale projection is distinct from unobserved and cannot be laundered by a green pill", () => {
   const connection = healthyConnection();
   (connection.record_snapshot as Json).state = "stale";

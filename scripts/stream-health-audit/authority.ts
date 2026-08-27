@@ -1362,6 +1362,15 @@ function isOwnerStateUnobserved(connection: JsonObject): boolean {
   );
 }
 
+/** Epoch ms for a non-empty, parseable ISO-ish timestamp string, else null. */
+function parseTimeMs(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): boolean {
   const lastSuccess = asObject(connection.last_successful_run);
   const lastRun = asObject(connection.last_run);
@@ -1384,12 +1393,34 @@ function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): 
   if (!evidenceAsOf) {
     return false;
   }
-  const successfulTimes = [
+  // The current run's own proof: an exact match to a timestamp the latest
+  // successful run itself stamped. This is not carried-forward evidence, so
+  // it is accepted without an ordering check.
+  const currentTimes = [
     asNonEmptyString(lastSuccess.finished_at),
     asNonEmptyString(lastSuccess.last_at),
     ...(latestIsSuccess ? [asNonEmptyString(lastRun.finished_at), asNonEmptyString(lastRun.last_at)] : []),
   ].filter((value): value is string => value !== null);
-  return successfulTimes.includes(evidenceAsOf);
+  if (currentTimes.includes(evidenceAsOf)) {
+    return true;
+  }
+  // Carried-forward proof: a stream's fact can predate the connection's
+  // latest terminal success (e.g. an owner-cancelled run leaves an earlier
+  // stream fact untouched). That is only trustworthy when the carried
+  // timestamp parses, is not in the future, and is strictly older than the
+  // latest terminal success it is riding on — never equal to it (an exact
+  // match belongs to the current-proof branch above and reaching here means
+  // it did not match, so treat it as unproven rather than accepted) and never
+  // newer.
+  const evidenceAtMs = parseTimeMs(evidenceAsOf);
+  if (evidenceAtMs === null || evidenceAtMs > Date.now()) {
+    return false;
+  }
+  const latestSuccessAtMs = [asNonEmptyString(lastSuccess.finished_at), asNonEmptyString(lastSuccess.last_at)]
+    .map(parseTimeMs)
+    .filter((value): value is number => value !== null)
+    .reduce((oldest, candidate) => (oldest === null || candidate < oldest ? candidate : oldest), null as number | null);
+  return latestSuccessAtMs !== null && evidenceAtMs < latestSuccessAtMs;
 }
 
 function successfulLocalDeviceEvidence(connection: JsonObject, report: JsonObject): boolean {
