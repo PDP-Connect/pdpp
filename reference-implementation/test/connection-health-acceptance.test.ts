@@ -1792,13 +1792,37 @@ test("an exact continuation match cannot hide an unproven stream report", () => 
   assert.equal(refined.state, "degraded");
 });
 
-test("proof-age anchor: an old omitted-stream proof anchors freshness to stale even under a brand-new scoped run", () => {
-  const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
-  assert.equal(initialConnectionHealth.state, "healthy", "premise: the run-only projection is healthy/fresh");
-
+// REVISED 2026-08-26 (cry-wolf freshness fix). This test previously ran the
+// old proof against `baselineHealthyRefineInputs(NOW)` — a connection whose
+// last run SUCCEEDED at `NOW`, i.e. inside its own staleness window — and
+// asserted it staled anyway. That fixture is the live defect, not the policy:
+// `apple_contacts` succeeded four times on 2026-08-26 and still rendered
+// "Needs refresh", because an incremental no-change pass legitimately carries
+// no coverage measurement, the fold deliberately preserves the older proof,
+// and the frozen provenance was then re-read as a freshness clock
+// (`proofAgeFreshnessOverride`, `server/ref-control.ts`).
+//
+// The POLICY is unchanged and still pinned here: an old required-stream proof
+// anchors freshness and blocks Healthy. What changed is the premise — the
+// connection must not also have a recent SUCCESS contradicting the claim. The
+// last successful run is now three hours old, outside the 1-hour window, so
+// nothing affirms the source is still collecting and the proof anchor rules.
+test("proof-age anchor: an old omitted-stream proof anchors freshness to stale when no recent run succeeded", () => {
   // messages' only proof is 3 hours old (older than the 1-hour staleness
-  // window); the classifying run itself is brand new (NOW).
+  // window), and so is the newest successful run — nothing contradicts it.
   const oldProofAt = "2026-05-19T09:00:00.000Z";
+  const staleRun = succeededRun({ finished_at: oldProofAt, last_at: oldProofAt, started_at: oldProofAt });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: { captured_at: oldProofAt, last_attempted_at: oldProofAt, status: "current" },
+    lastRun: staleRun,
+    lastSuccessfulRun: staleRun,
+    nowIso: NOW,
+    outbox: { axis: "idle" },
+    refreshPolicy: STALENESS_REFRESH_POLICY,
+    schedule: { enabled: true },
+  };
+  const initialConnectionHealth = projectConnectorSummaryConnectionHealth(healthInput);
+
   const report = [
     collectionReportEntry({ evidence_as_of: oldProofAt, required: true, stream: "messages" }),
     collectionReportEntry({ evidence_as_of: NOW, required: true, stream: "files" }),

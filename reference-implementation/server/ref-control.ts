@@ -3093,6 +3093,32 @@ function capIsoAnchor(anchor: string | null, cap: string | null): string | null 
 }
 
 /**
+ * Whether a run SUCCEEDED recently enough to satisfy the connection's own
+ * staleness window — the affirmative "this source is collecting" fact.
+ *
+ * Deliberately reads the last SUCCESSFUL run, not the last attempt: a failed
+ * attempt proves nothing collected, and `deriveReferenceFreshness` already
+ * stales a connection whose newest attempt failed after its newest success.
+ * `null`/unparseable anchors and an absent window all answer `false`, so this
+ * predicate can only ever WITHHOLD an override, never manufacture one.
+ */
+function hasSucceededWithinStalenessWindow(
+  lastSuccessfulRunAt: string | null,
+  nowIso: string | null,
+  maximumStalenessSeconds: number
+): boolean {
+  if (lastSuccessfulRunAt === null) {
+    return false;
+  }
+  const successTime = Date.parse(lastSuccessfulRunAt);
+  const nowTime = nowIso === null ? Date.now() : Date.parse(nowIso);
+  if (!(Number.isFinite(successTime) && Number.isFinite(nowTime))) {
+    return false;
+  }
+  return nowTime - successTime <= maximumStalenessSeconds * 1000;
+}
+
+/**
  * Proof-age freshness override: the Healthy gate is anchored to the OLDEST
  * required-stream proof, not the newest run. When stored latest-attempt
  * evidence carried an older proof than the classifying run, freshness is
@@ -3101,6 +3127,39 @@ function capIsoAnchor(anchor: string | null, cap: string | null): string | null 
  * injected `nowIso`), never a post-hoc status comparison. Connections with
  * no staleness window (`maximum_staleness_seconds` absent) have no window to
  * age the proof against and keep their computed freshness unchanged.
+ *
+ * THE CRY-WOLF GUARD (live defect 2026-08-26). `apple_contacts`
+ * (`cin_d344ba53d6d95c7dd343393d`) ran SUCCEEDED four times on 2026-08-26 and
+ * rendered "Needs refresh · Last refreshed yesterday. Refreshes on schedule."
+ * Nothing was wrong with it and the owner had nothing to do.
+ *
+ * The cause is one signal counted twice. `apple_contacts` collects contacts by
+ * incremental CardDAV sync, so a no-change run legitimately commits its
+ * checkpoint while carrying no `covered`/`considered` keys. The stream-fact
+ * fold's measured-boundary guard (`mergeEventStreamFacts`,
+ * `connector-summary-read-model.ts`) then — correctly — KEEPS the older, fully
+ * enumerated `contacts` fact rather than letting an unmeasured pass destroy a
+ * genuine proof. That preserved fact keeps its original provenance, so its
+ * `evidence_as_of` is deliberately frozen at the last full enumeration. Feeding
+ * that intentionally-frozen timestamp back in as a FRESHNESS clock re-reads
+ * "we chose not to overwrite this proof" as "this source has not collected",
+ * flipping `freshness` to `stale`. From there the cascade is mechanical: the
+ * `Fresh` condition goes false at `warning` severity -> `state: degraded` ->
+ * amber tone -> `staleFreshnessIsSoleDegradation` -> the "Needs refresh" pill.
+ *
+ * So: when a run SUCCEEDED inside the connection's own staleness window, this
+ * override is withheld. Proof age is still reported — through
+ * `coverage_proven_at`, which renders "Coverage last proven N days ago." beside
+ * a green pill (80872b1fc). That annotation is the honest channel for this
+ * fact: it states the proof's real age without claiming an owner action that
+ * does not exist. "Needs refresh" must mean the owner has something to do; the
+ * clock advancing past a proof the system deliberately preserved is not that.
+ *
+ * The guard is narrow by construction. It requires an affirmative recent
+ * SUCCESS, so a connection that has genuinely stopped collecting — no
+ * successful run inside its window — still ages against the proof anchor and
+ * still stales exactly as before. Silencing a real staleness would be a worse
+ * defect than the false alarm this removes.
  */
 function proofAgeFreshnessOverride(
   healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0],
@@ -3112,6 +3171,15 @@ function proofAgeFreshnessOverride(
   }
   const maximumStalenessSeconds = getMaximumStalenessSeconds(healthInput.refreshPolicy);
   if (maximumStalenessSeconds === null) {
+    return null;
+  }
+  if (
+    hasSucceededWithinStalenessWindow(
+      healthInput.lastSuccessfulRun?.last_at ?? null,
+      healthInput.nowIso ?? null,
+      maximumStalenessSeconds
+    )
+  ) {
     return null;
   }
   const current = healthInput.freshness;
