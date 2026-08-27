@@ -500,6 +500,57 @@ test("accepts canonical RI producer reasons but rejects unknown reasons", () => 
   assert.match(streamResult(unknown).reason, FUTURE_PROVIDER_REASON_PATTERN);
 });
 
+test("keeps a settled healthy stream green when later bookkeeping is skipped", () => {
+  const base = healthyConnection();
+  const result = evaluate({
+    ...base,
+    connection_health: {
+      ...(base.connection_health as Json),
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
+      conditions: [
+        {
+          current: false,
+          expires_at: null,
+          id: "attention-clear",
+          message: "Owner attention is required",
+          observed_at: EVIDENCE_AT,
+          origin: "connector",
+          reason: "needs_human_attention",
+          reason_code: null,
+          remediation: null,
+          sensitivity: "public",
+          severity: "warning",
+          status: "false",
+          type: "AttentionClear",
+        },
+        ...((base.connection_health as Json).conditions as Json[]),
+      ],
+    },
+    last_run: { finished_at: EVIDENCE_AT, status: "skipped", run_id: "run-skipped" },
+  });
+
+  assert.equal(result.gates.vocabulary, "known");
+  assert.equal(streamResult(result).class, "green");
+  assert.equal(streamResult(result).green, true);
+  assert.equal(result.status, "pass");
+});
+
+test("keeps a skipped stream non-green when it has no settled collection evidence", () => {
+  const result = evaluate(
+    healthyConnection({
+      collection_report: [],
+      last_run: { finished_at: EVIDENCE_AT, status: "skipped", run_id: "run-skipped" },
+      last_successful_run: null,
+      stream_records: [],
+    })
+  );
+
+  assert.equal(result.gates.vocabulary, "known");
+  assert.equal(streamResult(result).class, "unobserved");
+  assert.equal(streamResult(result).green, false);
+  assert.equal(result.status, "fail");
+});
+
 test("accepts every closed-vocabulary rendered pill label RI actually serves, but rejects an unlisted label", () => {
   const baseVerdict = healthyConnection().rendered_verdict as Json;
   for (const label of [

@@ -106,6 +106,7 @@ const KNOWN_RUN_STATUSES = new Set([
   "started",
   "starting_surface",
   "surface_failed",
+  "skipped",
   "succeeded",
   "succeeded_with_gaps",
   "success",
@@ -218,6 +219,7 @@ const KNOWN_CONDITION_REASONS = new Set([
   "credentials_not_probed",
   "external_tool_unavailable",
   "interaction_timeout",
+  "needs_human_attention",
   "connector_reported_failed",
   "credentials_required",
   "fresh",
@@ -1385,8 +1387,8 @@ function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): 
   const lastSuccessId = asNonEmptyString(lastSuccess.run_id);
   const lastRunId = asNonEmptyString(lastRun.run_id);
   const latestIsSuccess = SUCCESSFUL_RUN_STATUSES.has(lastRun.status);
-  const latestIsNeutralCancellation = isOwnerCancelledRun(lastRun);
-  if (!(lastSuccessId && ((latestIsSuccess && lastRunId === lastSuccessId) || latestIsNeutralCancellation))) {
+  const latestIsNeutralTerminal = isOwnerCancelledRun(lastRun) || lastRun.status === "skipped";
+  if (!(lastSuccessId && ((latestIsSuccess && lastRunId === lastSuccessId) || latestIsNeutralTerminal))) {
     return false;
   }
   const evidenceAsOf = asNonEmptyString(report.evidence_as_of) ?? asNonEmptyString(report.as_of);
