@@ -1984,7 +1984,7 @@ packages:
     engines: {node: '>=24'}
 
   '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.1.tgz':
-    resolution: {integrity: sha512-r8wGrqsjE2fpwVLswAn6GyX2CO1uTBWA9iueICfUrAmpnUopTWBWB9XS2MSwVfPRPbDVvKVEC2tPWltS3LU9Iw==, tarball: file:vendor/pdpp-collector-runtime-0.0.1.tgz}
+    resolution: {integrity: sha512-L4CT6KqUc05EjPjDTJ7wYNPCAQvStcNyPGv7OyYq5mTKgLFJevWlISUgg+nTOuptrqG4DwA+cL1XInHXpkzaPQ==, tarball: file:vendor/pdpp-collector-runtime-0.0.1.tgz}
     version: 0.0.1
     engines: {node: '>=22.14.0'}
 
