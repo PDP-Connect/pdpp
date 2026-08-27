@@ -221,6 +221,7 @@ function renderedVerdict(
     detail: {
       collection_rate: null,
       conditions: [],
+      coverage_horizons: [],
       detail_gap_backlog: null,
       dominant_condition_id: null,
       forward_disposition: "complete",
@@ -743,6 +744,66 @@ test("banner_warranted: an ordinary late (stale-advisory) source cannot fire the
   assert.equal(result.banner_warranted, false);
 });
 
+test("banner_warranted: a schedulable (automatic) connector past its cadence-relative staleness window cannot fire the global banner", () => {
+  // `classifyManualStaleAdvisory`/`classifyAssistedStaleAdvisory`
+  // (`connection-health.ts`) only soften stale freshness to `idle` for
+  // manual/assisted-refresh connectors. A plain `background_safe`/
+  // `automatic` connector past its (already cadence-relative, manifest-
+  // declared `maximum_staleness_seconds`) staleness window reaches
+  // `state: "degraded"` instead — that headline state is honest (the system
+  // was supposed to refresh it and did not), but it is still ORDINARY
+  // lateness, not a material block: `rendered-verdict.ts`'s own pill already
+  // reads this exact evidence shape as "Needs refresh"
+  // (`staleFreshnessIsSoleDegradation`), never "Missing data". The fleet
+  // banner must not disagree with the per-connection verdict it summarizes.
+  const lateAutomatic = summary("jellyfin-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle", remote_surface: "none" },
+      conditions: [{ current: true, status: "false", type: "Fresh" } as unknown as ConnectionHealthCondition],
+      forward_disposition: "complete",
+      state: "degraded",
+    },
+  });
+  const result = compose([inventory("jellyfin-a")], [lateAutomatic]);
+  assert.equal(result.state, "unhealthy", "state remains a rich diagnostic signal");
+  assert.deepEqual(
+    result.dimensions.system.degraded_or_broken.map((item) => item.connection_id),
+    ["jellyfin-a"],
+    "degradedOrBroken intentionally stays broad"
+  );
+  assert.equal(
+    result.banner_warranted,
+    false,
+    "ordinary cadence-relative lateness on an automatic connector must not fire the banner"
+  );
+});
+
+test("banner_warranted: a successful current collection cannot be overridden by an older, unrelated false condition", () => {
+  // A connection that just collected successfully (`state: healthy`, fresh)
+  // must never have the global banner overridden by a STALE non-current
+  // condition left over from a prior run — `staleFreshnessIsSoleDegradation`
+  // and every `materiallyBlocked` check here read ONLY `condition.current`
+  // evidence, exactly like the rest of the health model. A `Fresh: false`
+  // row that is not `current` is history, not a live fact.
+  const recoveredThenSucceeded = summary("notion-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "idle", remote_surface: "none" },
+      conditions: [{ current: false, status: "false", type: "Fresh" } as unknown as ConnectionHealthCondition],
+      forward_disposition: "complete",
+      state: "healthy",
+    },
+  });
+  const result = compose([inventory("notion-a")], [recoveredThenSucceeded]);
+  assert.equal(result.state, "healthy");
+  assert.equal(
+    result.banner_warranted,
+    false,
+    "a proven current success is never overridden by stale proof-age evidence"
+  );
+});
+
 test("banner_warranted: a retryable (background-retry) coverage gap cannot fire the global banner", () => {
   const retryable = summary("retry-a", {
     connection_health: {
@@ -800,16 +861,17 @@ test("banner_warranted: a non-retryable terminal coverage gap still fires the ba
   });
   const result = compose([inventory("usaa-a")], [usaa]);
   assert.equal(result.state, "unhealthy");
-  assert.equal(result.banner_warranted, true, "a materially blocked (terminal, non-retryable) gap must fire the banner");
+  assert.equal(
+    result.banner_warranted,
+    true,
+    "a materially blocked (terminal, non-retryable) gap must fire the banner"
+  );
 });
 
 test("banner_warranted: a real runtime outage or stream-health failure still fires the banner", () => {
   const one = summary("one-a");
   assert.equal(compose([inventory("one-a")], [one], { runtime: { ok: false } }).banner_warranted, true);
-  assert.equal(
-    compose([inventory("one-a")], [one], { streamHealth: { status: "fail" } }).banner_warranted,
-    true
-  );
+  assert.equal(compose([inventory("one-a")], [one], { streamHealth: { status: "fail" } }).banner_warranted, true);
 });
 
 test("banner_warranted: a maintainer code-fix (blocked_maintainer) still fires the banner", () => {

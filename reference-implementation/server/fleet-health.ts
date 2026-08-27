@@ -19,6 +19,7 @@ import {
   hasMaintainerCodeFix,
   hasOwnerBlockingAction,
   isPassiveScheduledRecovery,
+  staleFreshnessIsSoleDegradation,
 } from "../runtime/rendered-verdict.ts";
 import type { ConnectorSummary } from "./ref-control.ts";
 
@@ -205,6 +206,7 @@ interface MutableFleetEvidence {
   readonly activeWork: FleetConnectionReference[];
   readonly degradedOrBroken: FleetConnectionReference[];
   readonly freshnessAdvisories: FleetConnectionReference[];
+  readonly manual: FleetConnectionReference[];
   /**
    * The subset of `degradedOrBroken` that is materially blocked for a
    * BANNER-WARRANTING reason — i.e. NOT solely because the connection's
@@ -218,7 +220,6 @@ interface MutableFleetEvidence {
    * doc comment on `FleetHealthVerdict`.
    */
   readonly materiallyBlocked: FleetConnectionReference[];
-  readonly manual: FleetConnectionReference[];
   readonly needsOwner: FleetConnectionReference[];
   readonly paused: FleetConnectionReference[];
   readonly retryable: FleetConnectionReference[];
@@ -402,12 +403,18 @@ function collectSummaryEvidence(summary: FleetSummary, evidence: MutableFleetEvi
     ].some(Boolean),
     ref
   );
-  // Same set as `degradedOrBroken` MINUS the case where a `degraded`/
-  // `unhealthy` headline is explained ENTIRELY by a `retryable_gap` coverage
-  // axis with no other unhealthy evidence — that is background retry, not a
-  // material block. Every other reason `degradedOrBroken` fires (owner
-  // state, remote-surface failure, outbox failure, a maintainer code-fix, a
-  // real runtime/binding condition failure) is unaffected and still material.
+  // Same set as `degradedOrBroken` MINUS two shapes: a `degraded`/
+  // `unhealthy` headline explained ENTIRELY by a `retryable_gap` coverage
+  // axis with no other unhealthy evidence (background retry, not a material
+  // block), and a `degraded` headline explained ENTIRELY by ordinary
+  // cadence-relative staleness (`staleFreshnessIsSoleDegradation` —
+  // `rendered-verdict.ts`'s own pill already reads this exact shape as
+  // "Needs refresh", not "Missing data"; the fleet banner must not disagree
+  // with the per-connection verdict it is summarizing). Every other reason
+  // `degradedOrBroken` fires (owner state, remote-surface failure, outbox
+  // failure, a maintainer code-fix, a real runtime/binding condition
+  // failure) is unaffected and still material.
+  const headlineDegradedOnlyFromStaleFreshness = staleFreshnessIsSoleDegradation(health);
   pushIf(
     evidence.materiallyBlocked,
     [
@@ -419,7 +426,7 @@ function collectSummaryEvidence(summary: FleetSummary, evidence: MutableFleetEvi
       hasMaintainerCodeFix(verdict),
       hasCurrentCondition(health, "RemoteSurfaceAvailable"),
       hasCurrentCondition(health, "RuntimeAvailable"),
-      headlineEvidence === "unhealthy" && coverageEvidence !== "retryable",
+      headlineEvidence === "unhealthy" && coverageEvidence !== "retryable" && !headlineDegradedOnlyFromStaleFreshness,
     ].some(Boolean),
     ref
   );

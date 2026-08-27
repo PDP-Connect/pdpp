@@ -671,6 +671,14 @@ function hasNonOutboxFalseCondition(snapshot: ConnectionHealthSnapshot): boolean
  * every other cause, and blanket-listing it would relabel genuine coverage
  * gaps. Requiring `Fresh` to be the sole current false condition keeps every
  * other degrading cause on "Missing data".
+ *
+ * Exported for `fleet-health.ts`'s `materiallyBlocked` gate (workstream A,
+ * cadence-relative lateness): the SAME evidence-based test that keeps this
+ * module's pill from misreading ordinary lateness as "Missing data" must
+ * also keep the fleet banner from misreading it as a material block — see
+ * `banner_warranted`'s doc comment on `FleetHealthVerdict`, which already
+ * commits to "does NOT fire for ordinary cadence-relative lateness." A
+ * single shared predicate is the only way both surfaces cannot drift apart.
  */
 /**
  * Whether the connection's most recent run failed. This is the `degraded` cause
@@ -684,7 +692,7 @@ function hasFailedCollectionCondition(snapshot: ConnectionHealthSnapshot): boole
   );
 }
 
-function staleFreshnessIsSoleDegradation(snapshot: ConnectionHealthSnapshot): boolean {
+export function staleFreshnessIsSoleDegradation(snapshot: ConnectionHealthSnapshot): boolean {
   if (snapshot.state !== "degraded" || snapshot.axes.freshness !== "stale") {
     return false;
   }
@@ -726,8 +734,7 @@ function amberLabel(
   const stateIsNotActuallyBroken =
     NON_DEGRADING_AMBER_STATES.has(snapshot.state) || staleFreshnessIsSoleDegradation(snapshot);
   const stateIsBroken =
-    !stateIsNotActuallyBroken &&
-    TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
+    !stateIsNotActuallyBroken && TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
   const dispositionIsBroken =
     disposition !== "owner_refresh_due" && TONE_RANK[dispositionTone(disposition)] >= TONE_RANK.amber;
   const hasDegradingAxis = toneInputs.some(
@@ -2362,10 +2369,7 @@ function buildForwardStatement(
  * descending order of how much it should dominate the sentence. Only when all
  * of them are clear is the unconditional all-clear honest.
  */
-function noActionOwedForwardStatement(
-  snapshot: ConnectionHealthSnapshot,
-  streams: readonly StreamRollup[]
-): string {
+function noActionOwedForwardStatement(snapshot: ConnectionHealthSnapshot, streams: readonly StreamRollup[]): string {
   if (snapshot.axes.outbox === "active") {
     return "The local collector is uploading saved records.";
   }
