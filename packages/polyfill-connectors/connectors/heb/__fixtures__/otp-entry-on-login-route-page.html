@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<!--
+  The code-entry step, served on the SAME `/interaction/<id>/login` route as the
+  sign-in form, reduced to the elements that drive surface classification.
+
+  This fixture exists to pin the code-input clause of `countsMatchLoginForm`.
+  H-E-B does not always move to a new route to collect the emailed code: the
+  chooser can advance in place, keeping the login URL and the email input on
+  screen while adding the code field.
+
+  So the route alone cannot decide this page, and neither can the absence of a
+  password input — there is none here either. What separates it from the
+  OTP-only sign-in form is the one thing that matters: this page can ACCEPT a
+  code, and that form cannot.
+
+  Drop the code-input clause and this page classifies as a login form. PDPP
+  would then re-submit the username into a field expecting a 6-digit code
+  instead of prompting the owner for the code H-E-B already sent.
+-->
+<html>
+<body>
+  <main>
+    <img alt="H-E-B logo" src="/logo.svg" />
+    <form novalidate class="relative flex flex-col align-items-start mt-2">
+      <input type="hidden" data-testid="requestId" name="requestId" value="UNSET" />
+      <input type="hidden" name="step" value="2" />
+      <div>
+        <h1 class="text-2xl font-extrabold text-center">Enter your code</h1>
+        <h2 class="text-center mt-4">We sent a one-time code to your email.</h2>
+      </div>
+      <div class="flex flex-col">
+        <div class="form-control-group">
+          <input
+            autocomplete="username webauthn"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
+            aria-hidden="false"
+            enterkeyhint="go"
+            class="form-control bg-transparent rounded-none"
+            type="email"
+            id="email-input"
+            placeholder="Email"
+            aria-label="Email"
+            name="email"
+          />
+        </div>
+        <label class="ml-1 text-xs form-label order-1" for="email-input">Email</label>
+      </div>
+      <div class="flex flex-col">
+        <div class="form-control-group">
+          <input
+            autocomplete="one-time-code"
+            autocapitalize="none"
+            spellcheck="false"
+            autofocus
+            enterkeyhint="go"
+            inputmode="numeric"
+            class="form-control bg-transparent rounded-none"
+            type="text"
+            id="code-input"
+            aria-label="Verification code"
+            name="code"
+          />
+        </div>
+        <label class="ml-1 text-xs form-label order-1" for="code-input">Verification code</label>
+      </div>
+      <div>
+        <button
+          class="w-full rounded-3xl font-extrabold px-2 py-2.5 text-white bg-dark-gray mb-4"
+          type="submit"
+          aria-disabled="false"
+        >
+          Submit
+        </button>
+      </div>
+    </form>
+  </main>
+  <p>Copyright &copy; 2026 H&#8209;E&#8209;B, LP</p>
+</body>
+</html>
