@@ -5622,15 +5622,30 @@ function buildLocalDeviceCollectionEvidence(input: {
 export function projectConnectorSummaryConnectionHealth(input: {
   readonly activeRun?: ActiveRunRecord | null;
   /**
+   * Whether a real terminal run proves this connection's one-time import
+   * actually finished ingesting something — e.g. a `lastSuccessfulRun` with
+   * `finished_at` and `collection_facts`/`records_emitted` present. This
+   * SHALL NOT be derived from `source_kind`/schedule absence alone: a manual
+   * connection that has never run is not "complete," it simply has not run
+   * yet. Passed straight through to `computeConnectionHealth` as
+   * `acquisition.complete`, which governs `CollectionSucceeded`.
+   * `false`/omitted preserves the prior no-run behavior (`CollectionSucceeded`
+   * stays `unknown` until proven).
+   */
+  readonly acquisitionReceiptProven?: boolean;
+  /**
    * Whether this connection's data acquisition is finished BY DESIGN
    * (`instance.sourceKind === "manual"`) rather than recurring. A one-time
-   * import ingests an owner-supplied file and never collects again — it has
-   * no future capture to age, so freshness is a category error for it, not a
-   * pending answer. Passed straight through to `computeConnectionHealth` as
-   * `acquisition`; `null`/omitted preserves the prior behavior for every
-   * recurring source kind (freshness stays `unknown` until proven).
+   * import has no future capture to age, so freshness is a category error
+   * for it, not a pending answer. This is a durable fact about the
+   * connection KIND, safe to derive from the immutable `source_kind` value
+   * alone — it makes no claim that any particular import ever finished.
+   * Passed straight through to `computeConnectionHealth` as
+   * `acquisition.freshnessNotApplicable`; `false`/omitted preserves the
+   * prior behavior for every recurring source kind (freshness stays
+   * `unknown` until proven).
    */
-  readonly acquisitionComplete?: boolean;
+  readonly freshnessNotApplicable?: boolean;
   /**
    * Whether this connection authenticates to a provider at all. `false` only
    * for a file-import connector (manifest `setup.modality =
@@ -5867,7 +5882,13 @@ export function projectConnectorSummaryConnectionHealth(input: {
     unreadable: input.pendingDetailGapsUnreliable === true,
   };
   return computeConnectionHealth({
-    acquisition: input.acquisitionComplete === true ? { complete: true } : null,
+    acquisition:
+      input.acquisitionReceiptProven === true || input.freshnessNotApplicable === true
+        ? {
+            complete: input.acquisitionReceiptProven === true,
+            freshnessNotApplicable: input.freshnessNotApplicable === true,
+          }
+        : null,
     activity: { active: scheduleEvidence.activeRunId !== null },
     attention,
     authentication: input.authenticates === false ? { authenticates: false } : null,
@@ -6680,12 +6701,24 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     refreshPolicy,
   });
   const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    // A real terminal run — `authoritativeLastSuccessfulRun` present with a
+    // `finished_at` timestamp — is positive receipt evidence this specific
+    // import actually finished ingesting something. `source_kind === "manual"`
+    // alone is NOT that evidence: a manual connection that has never run is
+    // not "complete," it has simply not run yet. See the ruling recorded in
+    // openspec/changes/add-coverage-horizon-and-actionability-banner/design.md.
+    acquisitionReceiptProven:
+      instance.sourceKind === "manual" &&
+      authoritativeLastSuccessfulRun !== null &&
+      authoritativeLastSuccessfulRun.finished_at !== null,
     // `manual` is a CHECK-constrained, immutable source_kind written once at
     // creation (ref-manual-upload-draft-connection.ts) — a durable fact about
     // what this connection IS, never an inference from a missing run. A
     // one-time import has no future capture to age, so freshness does not
-    // apply; see design-notes/source-state-truth-2026-08-18.md.
-    acquisitionComplete: instance.sourceKind === "manual",
+    // apply; see design-notes/source-state-truth-2026-08-18.md. This is
+    // deliberately independent of `acquisitionReceiptProven` above — see
+    // `ConnectionAcquisitionEvidence` in connection-health.ts.
+    freshnessNotApplicable: instance.sourceKind === "manual",
     activeRun: authoritativeActiveRun,
     attentionRecords: attention.records,
     // A file-import connector contacts no provider, so `CredentialsValid` has

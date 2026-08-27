@@ -743,7 +743,14 @@ function labelForPill(
   // not_applicable, not because it proved current. "Healthy" implies an
   // ongoing collection loop this source will never run again; "Import
   // complete" names the actual, final state honestly.
-  if (tone === "green" && freshnessNotApplicable(snapshot)) {
+  //
+  // `importCompletionProven` (receipt-gated: `CollectionSucceeded === true`)
+  // is required alongside `freshnessNotApplicable`, not `freshnessNotApplicable`
+  // alone: an `idle` connection with no prior success ALSO tones green (see
+  // `baseStateTone`), so a never-run manual connector — `Fresh: not_applicable`
+  // from source-kind alone, but no receipt ever proving an import finished —
+  // must not be labeled "Import complete".
+  if (tone === "green" && importCompletionProven(snapshot) && freshnessNotApplicable(snapshot)) {
     return "Import complete";
   }
   if (tone === "amber") {
@@ -820,6 +827,32 @@ export function freshnessNotApplicable(snapshot: ConnectionHealthSnapshot): bool
       condition.type === "Fresh" &&
       condition.status === "not_applicable" &&
       condition.reason === CONNECTION_CONDITION_REASONS.FRESHNESS_NOT_APPLICABLE_COMPLETE
+  );
+}
+
+/**
+ * Whether a one-time import has POSITIVE RECEIPT PROOF that it actually
+ * finished ingesting something — i.e. `CollectionSucceeded` settled `true`
+ * via `CONDITION_REASON.COLLECTION_SUCCEEDED_IMPORT_COMPLETE`, which
+ * `collectionSucceededCondition` (`connection-health.ts`) only grants from
+ * `ConnectionAcquisitionEvidence.complete`, which the caller (`ref-control.ts`)
+ * only sets from a real terminal run record — never from `source_kind` alone.
+ *
+ * `freshnessNotApplicable` above answers a NARROWER question ("does the
+ * freshness axis apply to this connection kind at all") and is correctly
+ * `true` even for a manual connection that has never run — that is honest
+ * copy about why there is no freshness timestamp. This function answers the
+ * STRONGER question callers actually mean when they render a completion
+ * claim ("Import complete", `ownerState.resolver === "healthy"`): use this
+ * one, not `freshnessNotApplicable` alone, anywhere the answer feeds an
+ * owner-facing claim that data collection succeeded.
+ */
+export function importCompletionProven(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.type === "CollectionSucceeded" &&
+      condition.status === "true" &&
+      condition.reason === CONNECTION_CONDITION_REASONS.COLLECTION_SUCCEEDED_IMPORT_COMPLETE
   );
 }
 

@@ -1102,7 +1102,8 @@ export interface ConnectionFreshnessEvidence {
 
 /**
  * Acquisition-completeness evidence: whether this connection's data collection
- * is FINISHED by design rather than recurring.
+ * is FINISHED by design rather than recurring, and — independently — whether a
+ * finished-by-design source has actually PROVED it collected something.
  *
  * A one-time import (`source_kind = 'manual'`) ingests a file the owner
  * supplied and then never collects again. Google Maps Timeline Import holds
@@ -1112,18 +1113,48 @@ export interface ConnectionFreshnessEvidence {
  * import is a category error, and the shipped model answers it `unknown`
  * forever, which the owner reads as "broken".
  *
- * `complete: true` makes freshness `not_applicable` (a settled answer) instead
- * of `unknown` (a pending one), and lets the healthy predicate accept the
- * absence of a freshness proof it can never obtain. It deliberately does NOT
- * relax coverage: a completed import must still prove it ingested what it
- * claimed, so a gap or unknown coverage keeps it out of green.
+ * These two facts are DELIBERATELY SEPARATE FIELDS and must never be
+ * collapsed back into one flag:
+ *
+ *   - `freshnessNotApplicable: true` is a durable fact about what KIND of
+ *     source this is (a one-time import has no future capture to age
+ *     against). It is safe to derive from `source_kind` alone — that value
+ *     is an immutable, CHECK-constrained fact written once at creation, not
+ *     an inference from a missing run. It makes freshness `not_applicable`
+ *     (a settled answer) instead of `unknown` (a pending one), and lets the
+ *     healthy predicate accept the absence of a freshness proof it can never
+ *     obtain.
+ *
+ *   - `complete: true` is a claim that THIS SPECIFIC IMPORT ACTUALLY
+ *     FINISHED INGESTING SOMETHING. Being a manual-source-kind connection is
+ *     not evidence of that — a manual connection that has never run at all
+ *     is exactly as "complete" as one is has, under `source_kind` alone. This
+ *     field SHALL be set `true` only from positive receipt evidence: a
+ *     terminal run record showing the import actually succeeded (e.g. a
+ *     `lastSuccessfulRun` with `finished_at` and `collection_facts`/
+ *     `records_emitted` present). The absence of any run history is
+ *     evidence of NOTHING HAVING HAPPENED YET, not of completion, and SHALL
+ *     leave `complete: false`. This governs `CollectionSucceeded`, and it
+ *     deliberately does NOT relax coverage: a completed import must still
+ *     prove it ingested what it claimed, so a gap or unknown coverage keeps
+ *     it out of green regardless of `complete`.
  *
  * Omit/`null` for every recurring source. That preserves the shipped behavior
  * exactly — staleness still degrades a source the system was supposed to
  * refresh and did not.
  */
 export interface ConnectionAcquisitionEvidence {
+  /**
+   * A terminal run record proves this specific import actually finished
+   * ingesting. SHALL NOT be derived from `source_kind`/schedule absence
+   * alone — see the interface doc comment.
+   */
   readonly complete: boolean;
+  /**
+   * This source kind has no recurring capture to age freshness against.
+   * Safe to derive from an immutable `source_kind` fact alone.
+   */
+  readonly freshnessNotApplicable: boolean;
 }
 
 /**
@@ -2261,9 +2292,12 @@ function collectionSucceededCondition(input: ComputeConnectionHealthInput): Conn
     // A completed one-time import writes no spine run either: the owner
     // supplied a file, the ingest finished, and there is nothing to schedule.
     // Its completeness declaration is the collection verdict, exactly as the
-    // local-device verdict is above. Coverage is still proven independently —
-    // the caller only sets `complete` once the import finished ingesting, and
-    // `SourceCoverageComplete` is checked separately by the healthy predicate.
+    // local-device verdict is above. `complete` SHALL be receipt-gated by the
+    // caller (a real terminal run proving the import finished ingesting), not
+    // derived from source_kind/schedule absence alone — see
+    // `ConnectionAcquisitionEvidence`. Coverage is still proven
+    // independently — `SourceCoverageComplete` is checked separately by the
+    // healthy predicate.
     if (input.acquisition?.complete === true) {
       return condition({
         message: "The one-time import finished ingesting.",
@@ -3113,16 +3147,20 @@ export function isAssistedRefresh(refresh: ConnectionRefreshEvidence | null | un
 }
 
 function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
-  // A source whose acquisition is complete by design has no future capture to
-  // age against, so freshness is a question that does not apply here rather
-  // than one awaiting an answer. This branch is first because a completed
-  // import legitimately has no freshness axis at all: it never ran, so the
-  // axis is `unknown`, and that `unknown` is certainty, not doubt.
+  // A source whose KIND has no recurring capture to age against (a one-time
+  // import) makes freshness a question that does not apply here rather than
+  // one awaiting an answer. This is `freshnessNotApplicable`, not `complete`
+  // — it is safe to derive from the immutable source_kind fact alone and
+  // does NOT claim this particular import ever finished ingesting anything;
+  // see `ConnectionAcquisitionEvidence`. This branch is first because a
+  // completed import legitimately has no freshness axis at all: it never
+  // ran, so the axis is `unknown`, and that `unknown` is certainty, not
+  // doubt.
   //
   // Deliberately settled as `not_applicable` rather than `true`: claiming a
   // finished 2023 export is "fresh" would be a second lie replacing the first.
   // The healthy predicate accepts the not-applicable answer instead.
-  if (input.acquisition?.complete === true) {
+  if (input.acquisition?.freshnessNotApplicable === true) {
     return condition({
       message: "This is a one-time import — its data is complete and will not refresh.",
       observedAt: input.run?.lastSuccessAt ?? null,
