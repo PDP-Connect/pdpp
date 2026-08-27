@@ -3147,6 +3147,7 @@ export async function bootstrapPostgresSchema({
     await ensurePostgresLexicalScopedGinIndex(client, log);
     await ensurePostgresRecordsCanonicalCountIndex(client, log);
     await ensurePostgresRecordsInstanceStreamIdIndex(client, log);
+    await ensurePostgresRecordsInstanceDeletedIdIndex(client, log);
     await ensurePostgresConnectorSummarySourceRevisionPrimitive(client);
   } finally {
     try {
@@ -4998,6 +4999,46 @@ async function ensurePostgresRecordsInstanceStreamIdIndex(
          ON records(connector_instance_id, stream, deleted, id)`
     );
     log(`[PDPP] Records migration: keyset index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  });
+}
+
+// The summary-evidence repair scans one connection across every stream. Its
+// keyset predicate cannot use the stream-qualified index above because `stream`
+// is not constrained, so keep the matching access path separate.
+const RECORDS_INSTANCE_DELETED_ID_INDEX_LOCK_ID = "8022352479012004";
+
+async function ensurePostgresRecordsInstanceDeletedIdIndex(
+  client: PoolClient,
+  log: StorageLog = NOOP_STORAGE_LOG
+): Promise<void> {
+  await withPostgresAdvisoryLock(client, RECORDS_INSTANCE_DELETED_ID_INDEX_LOCK_ID, async () => {
+    const existing = await client.query(
+      `SELECT ix.indisvalid AS valid
+         FROM pg_class idx
+         JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+         JOIN pg_index ix ON ix.indexrelid = idx.oid
+        WHERE ns.nspname = current_schema()
+          AND idx.relname = 'idx_pg_records_instance_deleted_id'
+        LIMIT 1`
+    );
+    if ((existing.rowCount ?? 0) > 0 && existing.rows[0]?.valid === true) {
+      return;
+    }
+    if ((existing.rowCount ?? 0) > 0) {
+      log("[PDPP] Records migration: dropping invalid instance/deleted/id index before rebuild");
+      await client.query("DROP INDEX CONCURRENTLY IF EXISTS idx_pg_records_instance_deleted_id");
+    }
+
+    log("[PDPP] Records migration: building keyset index idx_pg_records_instance_deleted_id");
+    const startedAt = Date.now();
+    await client.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_records_instance_deleted_id
+         ON records(connector_instance_id, deleted, id)
+         INCLUDE (stream, emitted_at)`
+    );
+    log(
+      `[PDPP] Records migration: instance/deleted/id keyset index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`
+    );
   });
 }
 

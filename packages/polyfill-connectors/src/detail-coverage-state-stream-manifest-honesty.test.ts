@@ -209,7 +209,6 @@ test("fleet: no manifest state_stream-parented stream constructs a DETAIL_COVERA
     claude_code: ["attachments", "memory_notes", "messages"],
     codex: ["function_calls", "messages"],
     gmail: ["message_bodies"],
-    slack: ["message_attachments", "reactions"],
   };
   for (const [connectorKey, expected] of Object.entries(KNOWN_PARENTED)) {
     const actual = [...(parentedByConnector.get(connectorKey) ?? [])].sort();

@@ -34,7 +34,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -47,6 +47,7 @@ import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
 const SLACK_ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "slack", "index.ts");
+const SLACK_MANIFEST = join(PACKAGE_ROOT, "manifests", "slack.json");
 
 function seedArchiveRoot(artifactRoot: string, workspace: string): string {
   return resolveConnectorArtifactDir("slack", [workspace], {
@@ -98,6 +99,13 @@ function detailCoverageMessages(result: { messages: EmittedMessage[] }) {
   return result.messages.filter(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
   );
+}
+
+async function manifestStream(name: string): Promise<Record<string, unknown>> {
+  const manifest = JSON.parse(await readFile(SLACK_MANIFEST, "utf8")) as { streams: Record<string, unknown>[] };
+  const stream = manifest.streams.find((candidate) => candidate.name === name);
+  assert.ok(stream, `Slack manifest must declare ${name}`);
+  return stream;
 }
 
 test("scoped-archive fold across 2+ archives: each (state_stream, stream) DETAIL_COVERAGE pair emits exactly once, with the summed considered", async () => {
@@ -195,26 +203,15 @@ test("scoped-archive fold across 2+ archives: each (state_stream, stream) DETAIL
       "messages self-coverage must emit exactly once across the base + 2 scoped archives, not once per archive " +
         `(got ${messagesCoverage.length} — this is the duplicate the runtime rejects)`
     );
-    // `reactions` and `message_attachments` are declared `state_stream:
-    // messages` in the manifest, so they are static single-parent detail
-    // streams and MUST emit no DETAIL_COVERAGE at all —
-    // `validateDetailCoverageAgainstManifest` fails the whole run if they do.
-    // This assertion previously required exactly one emission each, which
-    // encoded the defect as the contract: it passed only because the guard was
-    // not yet deployed, and every Slack run failed with `runtime_error` the
-    // moment drain29 shipped it. The counts were fabricated besides — they
-    // mirrored the PARENT messages denominator rather than any per-key tally
-    // of reactions or attachments actually accounted for.
-    assert.deepEqual(
-      reactionsCoverage,
-      [],
-      `reactions is state_stream-parented in the manifest and must emit NO DETAIL_COVERAGE (got ${reactionsCoverage.length})`
+    assert.equal(
+      reactionsCoverage.length,
+      1,
+      "reactions emits one child-owned report across the complete archive fold"
     );
-    assert.deepEqual(
-      attachmentsCoverage,
-      [],
-      "message_attachments is state_stream-parented in the manifest and must emit NO DETAIL_COVERAGE " +
-        `(got ${attachmentsCoverage.length})`
+    assert.equal(
+      attachmentsCoverage.length,
+      1,
+      "message_attachments emits one child-owned report across the complete archive fold"
     );
 
     // The merged denominator: mergeMessagesPassResults sums `considered`
@@ -222,6 +219,20 @@ test("scoped-archive fold across 2+ archives: each (state_stream, stream) DETAIL
     // = 10. A regression that keeps emission single but reverts to only the
     // LAST archive's total (5) or the FIRST call's total (2) must fail here.
     assert.equal(messagesCoverage[0]?.considered, 10, "considered is the SUMMED total across every archive folded");
+    // The fixtures contain ten parent messages and no derived children. A
+    // parent count here would be a fabricated denominator: child coverage is
+    // independently verified empty at 0/0.
+    assert.equal(reactionsCoverage[0]?.considered, 0, "reactions counts reaction records, never message rows");
+    assert.equal(reactionsCoverage[0]?.covered, 0);
+    assert.equal(attachmentsCoverage[0]?.considered, 0, "attachments count attachment records, never message rows");
+    assert.equal(attachmentsCoverage[0]?.covered, 0);
+
+    for (const streamName of ["reactions", "message_attachments"]) {
+      const stream = await manifestStream(streamName);
+      assert.equal(stream.coverage_strategy, "parent_detail_accounting");
+      assert.deepEqual(stream.parent_streams, ["messages"]);
+      assert.equal("state_stream" in stream, false, `${streamName} must not use static state_stream inheritance`);
+    }
   } finally {
     await rm(artifactRoot, { recursive: true, force: true });
   }

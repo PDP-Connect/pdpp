@@ -883,8 +883,8 @@
           "semantic_fields": ["title", "text", "fallback"]
         }
       },
-      "coverage_strategy": "checkpoint_window",
-      "state_stream": "messages",
+      "coverage_strategy": "parent_detail_accounting",
+      "parent_streams": ["messages"],
       "freshness_strategy": "scheduled_window"
     },
     {
@@ -937,8 +937,8 @@
           "cardinality": "has_one"
         }
       ],
-      "coverage_strategy": "checkpoint_window",
-      "state_stream": "messages",
+      "coverage_strategy": "parent_detail_accounting",
+      "parent_streams": ["messages"],
       "freshness_strategy": "scheduled_window"
     },
     {
