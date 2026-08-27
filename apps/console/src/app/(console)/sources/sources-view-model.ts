@@ -532,10 +532,31 @@ function normalizeLabelForContainment(value: string): string {
     .replace(/\s+/g, " ");
 }
 
+/**
+ * Words that identify no connector on their own. "Desktop" appearing in both a
+ * connection name and a kind is a coincidence; "Codex" appearing in both is the
+ * same connector named twice.
+ */
+const GENERIC_KIND_WORDS: ReadonlySet<string> = new Set(["app", "cli", "desktop", "inc", "web"]);
+
 function listKindForDisplayName(displayName: string, kind: string): string | null {
   const display = normalizeLabelForContainment(displayName);
   const kindLabel = normalizeLabelForContainment(kind);
   if (!kindLabel || display.includes(kindLabel)) {
+    return null;
+  }
+  // Whole-label containment alone reads the owner's own name for a connection
+  // as unrelated to the connector whenever the manifest spells the product more
+  // fully than he does. `peregrine Codex` does not contain `OpenAI Codex CLI`,
+  // so /sources rendered "peregrine Codex OpenAI Codex CLI" — the connector
+  // named twice, once in his words and once in the registry's.
+  //
+  // Matching on any MEANINGFUL word fixes that without hiding a kind the name
+  // genuinely omits: `peregrine` shares no word with `Signal Desktop`, so that
+  // connection still gets its kind and stays legible.
+  const displayWords = new Set(display.split(" "));
+  const kindWords = kindLabel.split(" ").filter((word) => word.length > 2 && !GENERIC_KIND_WORDS.has(word));
+  if (kindWords.some((word) => displayWords.has(word))) {
     return null;
   }
   return kind;
