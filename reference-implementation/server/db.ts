@@ -661,6 +661,7 @@ CREATE TABLE IF NOT EXISTS connector_instance_credentials (
   revoked_at            TEXT,
   rejected_at           TEXT,
   rejection_reason      TEXT,
+  state_change_json     TEXT,
   FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
 );
 
@@ -6097,6 +6098,11 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialStatusRejected(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheckAccessTokenApiKey(raw, opts));
+  // NULL preserves the honest "unknown" state for credentials written before
+  // latest-transition provenance existed; no historical actor is invented.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "connector_instance_credentials", "state_change_json", "TEXT")
+  );
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
   // Additive and NULL-tolerant: rows written before this column existed read

@@ -193,6 +193,7 @@ import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lea
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
 import {
+  type CredentialStateChange,
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
 } from "./stores/connector-instance-credential-store.ts";
@@ -2224,6 +2225,7 @@ export function retireExpiredBrowserEnrollmentShellsForMaintenance(
         updatedAt: string;
         revokedAt?: string | null;
         sourceBindingPatch?: Record<string, unknown> | null;
+        credentialStateChange?: CredentialStateChange;
       }
     ) => Promise<unknown> | unknown;
   };

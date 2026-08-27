@@ -10,7 +10,8 @@ SELECT
   rotated_at,
   revoked_at,
   rejected_at,
-  rejection_reason
+  rejection_reason,
+  state_change_json
 FROM connector_instance_credentials
 WHERE connector_instance_id = ?
 LIMIT 1;

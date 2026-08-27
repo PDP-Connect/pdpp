@@ -7261,9 +7261,10 @@ function buildRsApp(opts: ServerOpts = {}) {
   // connector-instance store soft-flip primitive (`updateStatus → 'revoked'`),
   // so it adds NO new destructive semantic; it shares that store primitive under
   // the same owner-bearer auth adapter the run/schedule routes use. Revoke is
-  // zero-cascade (records, spine, device rows, and sibling connections are
-  // untouched) and durable (default-account materialization no longer resurrects
-  // a revoked row). Ownership is enforced by the namespace resolver BEFORE the
+  // connection-local: it also revokes that connection's stored credential, while
+  // records, spine, device rows, and sibling connections are untouched. It is
+  // durable (default-account materialization no longer resurrects a revoked
+  // row). Ownership is enforced by the namespace resolver BEFORE the
   // mutation (foreign connection_id → 404), a repeat revoke returns a typed
   // connector_instance_inactive (400), and the connector-only route
   // auto-selects a single active connection or rejects with a typed
@@ -7431,9 +7432,9 @@ function buildRsApp(opts: ServerOpts = {}) {
   // ONE connection — its records/history/blobs/search/attention and its
   // schedule, the device source-instance back-reference, and the
   // connector_instances row — keyed strictly on one connection_id. An in-flight
-  // run's active-run lease is REFUSED, never erased. Unlike revoke (zero-cascade
-  // soft-flip preserving the past), delete erases the past and removes the
-  // configuration. It PRESERVES the audit spine (appending an
+  // run's active-run lease is REFUSED, never erased. Unlike revoke (a
+  // connection-local soft-flip which also revokes its credential), delete
+  // erases the past and removes the configuration. It PRESERVES the audit spine (appending an
   // owner_agent.connection.delete event), disclosure grants, sibling
   // connections, and the device edge. Ownership is verified in the store BEFORE
   // any mutation (foreign/unknown/repeat → connector_instance_not_found 404, no
@@ -8117,6 +8118,12 @@ export async function startServer(opts: ServerOpts = {}) {
       logger.warn?.(
         { err: err instanceof Error ? err.message : String(err), phase },
         "connector-maintenance sweep phase failed"
+      );
+    },
+    onShellsRetired: ({ cause, connectionIds }) => {
+      logger.info?.(
+        { cause, connectionIds, count: connectionIds.length },
+        "connector-maintenance sweep retired expired browser-enrollment shells"
       );
     },
     runEvidenceSweep: (args) =>
