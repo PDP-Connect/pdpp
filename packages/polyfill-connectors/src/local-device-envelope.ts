@@ -45,6 +45,25 @@ export interface LocalDeviceIngestBatchRequest {
   source_instance_id: string;
 }
 
+export interface CanonicalTerminalFactInput {
+  readonly coverage_statuses: readonly string[];
+  readonly scoped?: boolean;
+  readonly stream: string;
+}
+
+export interface TerminalRunCommitEnvelopeInput {
+  readonly collection_boundary: string;
+  readonly commit_id: string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly device_id: string;
+  readonly run_id: string;
+  readonly source_instance_id: string;
+  readonly state_delta: Readonly<Record<string, unknown>>;
+  readonly terminal_facts: readonly CanonicalTerminalFactInput[];
+  readonly version: 1;
+}
+
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(toCanonicalValue(value));
 }
@@ -104,6 +123,41 @@ export function buildLocalDeviceIngestBatchRequest(
     })),
     source_instance_id: input.sourceInstanceId,
   };
+}
+
+/**
+ * The one hash-authority projection shared by collector and reference server.
+ * Connector identity MUST already be canonical before entry.
+ *
+ * Vendored from `packages/reference-contract/src/common/terminal-run-commit.ts`
+ * (`canonicalTerminalRunCommitEnvelope`) rather than imported: this package is
+ * published to npm and `@pdpp/reference-contract` ships raw, unbuilt
+ * TypeScript with no publishable `main`/`exports` target, so importing it as a
+ * bare specifier produced an undeclared, unresolvable dependency in every
+ * published `@pdpp/local-collector` 1.5.1-1.5.4 tarball. The reference server
+ * computes the same hash via the original reference-contract function, so this
+ * copy MUST stay byte-identical to it — see the parity tests in this module's
+ * test file.
+ */
+export function canonicalTerminalRunCommitEnvelope(input: TerminalRunCommitEnvelopeInput): unknown {
+  return toCanonicalValue({
+    collection_boundary: input.collection_boundary,
+    commit_id: input.commit_id,
+    connector_id: input.connector_id,
+    connector_instance_id: input.connector_instance_id,
+    device_id: input.device_id,
+    run_id: input.run_id,
+    source_instance_id: input.source_instance_id,
+    state_delta: input.state_delta,
+    terminal_facts: input.terminal_facts
+      .map((fact) => ({
+        coverage_statuses: [...new Set(fact.coverage_statuses)].sort(),
+        ...(typeof fact.scoped === "boolean" ? { scoped: fact.scoped } : {}),
+        stream: fact.stream,
+      }))
+      .sort((left, right) => left.stream.localeCompare(right.stream)),
+    version: 1,
+  });
 }
 
 function toCanonicalValue(value: unknown): unknown {
