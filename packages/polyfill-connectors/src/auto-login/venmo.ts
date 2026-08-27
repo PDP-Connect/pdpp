@@ -74,6 +74,12 @@ export const VENMO_ORIGIN_NAVIGATION_FAILED = "venmo_origin_navigation_failed";
  * would read it from the temporal dead zone otherwise.
  */
 export const VENMO_PASSWORD_SCREEN_TIMEOUT = "venmo_password_screen_timeout";
+/** The SMS offer rendered, but its Remember this device control was not usable. */
+export const VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE = "venmo_sms_offer_checkbox_unavailable";
+/** The SMS offer rendered, but its Send code control was not usable. */
+export const VENMO_SMS_OFFER_SEND_CODE_UNAVAILABLE = "venmo_sms_offer_send_code_unavailable";
+/** Venmo accepted Send code but did not render a usable OTP input within the bound. */
+export const VENMO_SMS_OFFER_CODE_INPUT_TIMEOUT = "venmo_sms_offer_code_input_timeout";
 
 /**
  * This connector's classifying fault-class names — single source of truth,
@@ -98,6 +104,9 @@ export const VENMO_DECLARED_REASON_TOKENS: ReadonlySet<string> = new Set([
   VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR,
   VENMO_ORIGIN_NAVIGATION_FAILED,
   VENMO_PASSWORD_SCREEN_TIMEOUT,
+  VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE,
+  VENMO_SMS_OFFER_SEND_CODE_UNAVAILABLE,
+  VENMO_SMS_OFFER_CODE_INPUT_TIMEOUT,
 ]);
 
 const HOME_URL = "https://venmo.com/";
@@ -273,6 +282,19 @@ const CAPTCHA_FRAME_SELECTOR =
   'iframe[src*="recaptcha"], iframe[src*="paypalobjects.com"], iframe[title*="recaptcha" i], div.g-recaptcha';
 const OTP_SELECTOR =
   'input[name="otp"], input[name="code"], input[autocomplete="one-time-code"], input[name="smsCode"]';
+/**
+ * The screen Venmo renders before it has sent an SMS. This is deliberately
+ * distinct from {@link OTP_SELECTOR}: the captured offer has no code input.
+ *
+ * Retained production capture 2026-08-27T03-23-25-318Z:
+ * - `.listHeader`: "To verify it’s you, we’ll text you a code"
+ * - `.venmoRemeberMeDevice input[type="checkbox"]`
+ * - `button[data-testid="button-next"][name="Send code"][type="submit"]`
+ */
+const SMS_OFFER_TEXT_RE = /to verify it.?s you, we.?ll text you a code/i;
+const SMS_OFFER_REMEMBER_DEVICE_SELECTOR = '.venmoRemeberMeDevice input[type="checkbox"]';
+const SMS_OFFER_SEND_CODE_SELECTOR = 'button[data-testid="button-next"][name="Send code"][type="submit"]';
+const SMS_OFFER_CODE_INPUT_TIMEOUT_MS = 15_000;
 const SUBMIT_BUTTON_NAME_RE = /^(log in|sign in|continue|next)$/i;
 /**
  * Copy that ACCOMPANIES a code-entry screen. Necessary but never sufficient:
@@ -689,6 +711,58 @@ async function hasUsableVenmoOtpInput(page: Page): Promise<boolean> {
 }
 
 /**
+ * Wait for the input that makes a dispatched SMS code actionable. The offer is
+ * not an OTP page yet: prompting before this wait would ask the owner for a
+ * code that Venmo has not sent or cannot accept.
+ */
+async function waitForVenmoSmsOfferCodeInput(page: Page): Promise<void> {
+  const inputAppeared = await findVenmoOtpInput(page)
+    .waitFor({ state: "visible", timeout: SMS_OFFER_CODE_INPUT_TIMEOUT_MS })
+    .then((): true => true)
+    .catch((): false => false);
+  if (!(inputAppeared && (await hasUsableVenmoOtpInput(page)))) {
+    throw new Error(
+      `${VENMO_SMS_OFFER_CODE_INPUT_TIMEOUT}: Venmo did not render a usable code input within ${SMS_OFFER_CODE_INPUT_TIMEOUT_MS}ms after Send code`
+    );
+  }
+}
+
+/**
+ * Dispatch Venmo's SMS only after preserving the device-trust choice. The
+ * checkbox is idempotent: the retained capture was already checked, and a
+ * blind click would undo the future unattended-login benefit we need.
+ */
+async function submitVenmoSmsOffer(page: Page): Promise<void> {
+  const rememberDevice = page.locator(SMS_OFFER_REMEMBER_DEVICE_SELECTOR).first();
+  if (!((await locatorIsVisible(rememberDevice)) && (await rememberDevice.isEnabled().catch((): boolean => false)))) {
+    throw new Error(`${VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE}: Remember this device is not usable`);
+  }
+  const remembered = await rememberDevice.isChecked().catch((): null => null);
+  if (remembered === null) {
+    throw new Error(`${VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE}: could not read Remember this device`);
+  }
+  if (!remembered) {
+    await rememberDevice.click().catch((error: unknown): never => {
+      throw new Error(`${VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE}: could not select Remember this device`, {
+        cause: error,
+      });
+    });
+    if (!(await rememberDevice.isChecked().catch((): boolean => false))) {
+      throw new Error(`${VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE}: Remember this device did not stay selected`);
+    }
+  }
+
+  const sendCode = page.locator(SMS_OFFER_SEND_CODE_SELECTOR).first();
+  if (!((await locatorIsVisible(sendCode)) && (await sendCode.isEnabled().catch((): boolean => false)))) {
+    throw new Error(`${VENMO_SMS_OFFER_SEND_CODE_UNAVAILABLE}: Send code is not usable`);
+  }
+  await sendCode.click().catch((error: unknown): never => {
+    throw new Error(`${VENMO_SMS_OFFER_SEND_CODE_UNAVAILABLE}: could not send the code`, { cause: error });
+  });
+  await waitForVenmoSmsOfferCodeInput(page);
+}
+
+/**
  * Click the sign-in form's submit control. Returns `false` when no control
  * could be found — the caller decides whether that is fatal.
  *
@@ -996,10 +1070,11 @@ async function fillVenmoPassword(
 }
 
 /**
- * Handle Venmo's post-submit verification step, if one rendered. Matches on
- * either a known OTP input shape or the page's own prompt copy — never
- * guesses a code the owner never saw. Returns `null` when no verification
- * step was detected (the caller proceeds to the final session probe).
+ * Handle Venmo's post-submit verification step, if one rendered. A usable OTP
+ * input takes the existing interaction path. The prior SMS offer is a distinct
+ * state: it must dispatch the code and wait for that input before it can use
+ * the same interaction path. Returns `null` when no verification step was
+ * detected (the caller proceeds to the final session probe).
  *
  * Only ever called from `loginWithSavedCredentials` AFTER the saved password
  * was already submitted — every probe in this function is `"post_submit"`
@@ -1020,11 +1095,19 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccoun
   // itself visible, so `locatorIsVisible` alone let an inert box demand a code
   // Venmo never sent.
   const usableOtpInput = await hasUsableVenmoOtpInput(page);
-  if (!(usableOtpInput || OTP_PROMPT_TEXT_RE.test(bodyText))) {
+  const smsOfferPresent =
+    SMS_OFFER_TEXT_RE.test(bodyText) && (await locatorIsVisible(page.locator(SMS_OFFER_SEND_CODE_SELECTOR).first()));
+  if (!(usableOtpInput || OTP_PROMPT_TEXT_RE.test(bodyText) || smsOfferPresent)) {
     return null;
   }
   await captureLoginState(capture, page, "venmo-otp-detected");
   if (!usableOtpInput) {
+    if (smsOfferPresent) {
+      await submitVenmoSmsOffer(page);
+      // Re-enter only after a real, usable input arrived. This preserves the
+      // existing OTP interaction, validation, fill, and submit behavior.
+      return await handleVenmoOtpIfPresent(args);
+    }
     // Either the prompt copy matched with no known input shape, or an input
     // rendered that cannot accept a code. Hand off rather than guess a
     // selector for a UI we can't confirm — and never fabricate a code demand.

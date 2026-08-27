@@ -615,6 +615,231 @@ function makeOtpDecisionPage({
   return { page: page as Page };
 }
 
+/**
+ * Models the retained 2026-08-27 Venmo SMS OFFER, not a code-entry page. The
+ * captured offer has the exact header/body copy, `.venmoRemeberMeDevice`
+ * checkbox, and data-testid/name/type Send code button below. Its code input
+ * appears only after that button is clicked.
+ */
+function makeCapturedSmsOfferPage({
+  bodyText = "To verify it’s you, we’ll text you a code Remember this device Send code Go back",
+  codeInputAppearsAfterSend = true,
+  codeInputAppearsDuringWait = true,
+  offerVisible = true,
+  rememberDeviceInitiallyChecked = false,
+}: {
+  bodyText?: string;
+  codeInputAppearsAfterSend?: boolean;
+  codeInputAppearsDuringWait?: boolean;
+  offerVisible?: boolean;
+  rememberDeviceInitiallyChecked?: boolean;
+} = {}): {
+  checkboxClicks: number;
+  isRememberDeviceChecked: () => boolean;
+  markOtpRequested: () => void;
+  page: Page;
+  sendCodeClicks: number;
+} {
+  let checkboxClicks = 0;
+  let otpRequested = false;
+  let rememberDeviceChecked = rememberDeviceInitiallyChecked;
+  let sendCodeClicks = 0;
+  let stage: "code" | "form" | "offer" | "waiting" = "form";
+  let currentUrl = "https://venmo.com/";
+
+  const loginSubmit = makeClickRecordingLocator(() => {
+    stage = "offer";
+  });
+  const rememberDevice: Pick<Locator, "click" | "count" | "first" | "isChecked" | "isEnabled" | "isVisible"> = {
+    click: (): Promise<void> => {
+      checkboxClicks += 1;
+      rememberDeviceChecked = !rememberDeviceChecked;
+      return Promise.resolve();
+    },
+    count: (): Promise<number> => Promise.resolve(stage === "offer" && offerVisible ? 1 : 0),
+    first(): Locator {
+      return rememberDevice as Locator;
+    },
+    isChecked: (): Promise<boolean> => Promise.resolve(rememberDeviceChecked),
+    isEnabled: (): Promise<boolean> => Promise.resolve(stage === "offer" && offerVisible),
+    isVisible: (): Promise<boolean> => Promise.resolve(stage === "offer" && offerVisible),
+  };
+  const sendCode: Pick<Locator, "click" | "count" | "first" | "isEnabled" | "isVisible"> = {
+    click: (): Promise<void> => {
+      sendCodeClicks += 1;
+      if (codeInputAppearsAfterSend) {
+        stage = codeInputAppearsDuringWait ? "waiting" : "code";
+      }
+      return Promise.resolve();
+    },
+    count: (): Promise<number> => Promise.resolve(stage === "offer" && offerVisible ? 1 : 0),
+    first(): Locator {
+      return sendCode as Locator;
+    },
+    isEnabled: (): Promise<boolean> => Promise.resolve(stage === "offer" && offerVisible),
+    isVisible: (): Promise<boolean> => Promise.resolve(stage === "offer" && offerVisible),
+  };
+  const otpInput: Pick<Locator, "count" | "fill" | "first" | "isEnabled" | "isVisible" | "nth" | "waitFor"> = {
+    count: (): Promise<number> => Promise.resolve(stage === "code" ? 1 : 0),
+    fill: (): Promise<void> => Promise.resolve(),
+    first(): Locator {
+      return otpInput as Locator;
+    },
+    isEnabled: (): Promise<boolean> => Promise.resolve(stage === "code"),
+    isVisible: (): Promise<boolean> => Promise.resolve(stage === "code"),
+    nth(): Locator {
+      return otpInput as Locator;
+    },
+    waitFor: (): Promise<void> => {
+      if (stage === "waiting") {
+        stage = "code";
+        return Promise.resolve();
+      }
+      return stage === "code" ? Promise.resolve() : Promise.reject(new Error("Timeout waiting for locator"));
+    },
+  };
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      return otpRequested ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
+    },
+    getByRole: (): Locator => loginSubmit,
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      if (selector === "body") {
+        return makeLocator({ innerText: bodyText });
+      }
+      if (selector.includes("username")) {
+        return makeLocator();
+      }
+      if (selector.includes("password")) {
+        return makeLocator();
+      }
+      if (selector.includes("venmoRemeberMeDevice")) {
+        return rememberDevice as Locator;
+      }
+      if (selector.includes('data-testid="button-next"') && selector.includes('[name="Send code"]')) {
+        return sendCode as Locator;
+      }
+      if (selector.includes("otp") || selector.includes("code")) {
+        return otpInput as Locator;
+      }
+      return makeLocator({ count: 0, visible: false });
+    },
+    url: (): string => currentUrl,
+    waitForLoadState: (): ReturnType<Page["waitForLoadState"]> => Promise.resolve(),
+    waitForTimeout: (): ReturnType<Page["waitForTimeout"]> => Promise.resolve(),
+  };
+  return {
+    get checkboxClicks(): number {
+      return checkboxClicks;
+    },
+    isRememberDeviceChecked: (): boolean => rememberDeviceChecked,
+    markOtpRequested: (): void => {
+      otpRequested = true;
+    },
+    page: page as Page,
+    get sendCodeClicks(): number {
+      return sendCodeClicks;
+    },
+  };
+}
+
+test("ensureVenmoSession: the captured SMS offer selects Remember this device, sends its code, then uses the existing OTP interaction", async () => {
+  await withVenmoCredentials(async () => {
+    const fake = makeCapturedSmsOfferPage();
+    const requests: InteractionRequest[] = [];
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page: fake.page,
+      sendInteraction: (request): Promise<InteractionResponse> => {
+        requests.push(request);
+        fake.markOtpRequested();
+        return Promise.resolve({ request_id: "test_interaction", status: "success", type: "INTERACTION_RESPONSE" });
+      },
+    });
+
+    assert.equal(result.live, true, "the sent code's existing OTP path must be able to establish the session");
+    assert.equal(fake.checkboxClicks, 1, "the unchecked captured control must be selected before code dispatch");
+    assert.equal(fake.isRememberDeviceChecked(), true, "Remember this device must stay selected");
+    assert.equal(fake.sendCodeClicks, 1, "the real captured Send code control must dispatch exactly once");
+    assert.deepEqual(
+      requests.map((request) => request.kind),
+      ["otp"],
+      "only after Venmo renders the OTP input may the existing OTP interaction request a code"
+    );
+  });
+});
+
+test("ensureVenmoSession: the already-checked captured Remember this device control is never clicked off", async () => {
+  await withVenmoCredentials(async () => {
+    const fake = makeCapturedSmsOfferPage({ rememberDeviceInitiallyChecked: true });
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page: fake.page,
+      sendInteraction: (): Promise<InteractionResponse> => {
+        fake.markOtpRequested();
+        return Promise.resolve({ request_id: "test_interaction", status: "success", type: "INTERACTION_RESPONSE" });
+      },
+    });
+
+    assert.equal(result.live, true);
+    assert.equal(fake.checkboxClicks, 0, "a checked Remember this device control must not be clicked back off");
+    assert.equal(fake.isRememberDeviceChecked(), true);
+    assert.equal(fake.sendCodeClicks, 1);
+  });
+});
+
+test("ensureVenmoSession: a Send code button without the captured verification offer copy does not dispatch or fabricate an OTP request", async () => {
+  await withVenmoCredentials(async () => {
+    const fake = makeCapturedSmsOfferPage({ bodyText: "Account settings Send code" });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page: fake.page,
+        sendInteraction,
+      }),
+      /venmo_login_incomplete_after_submit/
+    );
+
+    assert.equal(fake.sendCodeClicks, 0, "a lookalike button is not enough evidence to send a real SMS");
+    assert.deepEqual(
+      requests.filter((request): boolean => request.kind === "otp"),
+      [],
+      "a screen with no verification offer must not fabricate an OTP prompt"
+    );
+  });
+});
+
+test("ensureVenmoSession: a dispatched SMS offer with no rendered code input fails with its named reason and never prompts", async () => {
+  await withVenmoCredentials(async () => {
+    const fake = makeCapturedSmsOfferPage({ codeInputAppearsAfterSend: false });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page: fake.page,
+        sendInteraction,
+      }),
+      /venmo_sms_offer_code_input_timeout/
+    );
+
+    assert.equal(fake.sendCodeClicks, 1, "the failure occurs after exactly one real SMS dispatch attempt");
+    assert.deepEqual(
+      requests.filter((request): boolean => request.kind === "otp"),
+      [],
+      "without a code input, the connector must not ask for a code"
+    );
+  });
+});
+
 test("ensureVenmoSession: a page matching the OTP copy with no code input hands off instead of demanding a code", async () => {
   await withVenmoCredentials(async () => {
     // Matching copy with nothing that can accept a code. Venmo dispatched
