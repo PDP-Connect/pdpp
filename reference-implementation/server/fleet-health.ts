@@ -19,7 +19,7 @@ import {
   hasMaintainerCodeFix,
   hasOwnerBlockingAction,
   isPassiveScheduledRecovery,
-  staleFreshnessIsSoleDegradation,
+  cadenceLatenessIsSoleDegradation,
 } from "../runtime/rendered-verdict.ts";
 import type { ConnectorSummary } from "./ref-control.ts";
 
@@ -388,10 +388,19 @@ function collectSummaryEvidence(summary: FleetSummary, evidence: MutableFleetEvi
     ].some(Boolean),
     ref
   );
+  // Cadence-only lateness is excluded from `degradedOrBroken` itself, not just
+  // from `materiallyBlocked`. Excluding it only downstream left the Sources
+  // grouping quiet while the fleet STATE and its dimensions still called the
+  // same row unhealthy — two surfaces disagreeing about one source, which is
+  // the whole failure this workstream exists to end. A merely-late source
+  // belongs in `freshness_advisories`; genuinely unrelated degradation still
+  // reaches here through every other member below, pinned by the negative
+  // controls in cadence-lateness-cross-surface.test.ts.
+  const cadenceLateOnly = cadenceLatenessIsSoleDegradation(health);
   pushIf(
     evidence.degradedOrBroken,
     [
-      headlineEvidence === "unhealthy",
+      headlineEvidence === "unhealthy" && !cadenceLateOnly,
       coolingOffWithoutPassiveEvidence,
       ownerStateEvidence === "unhealthy",
       coverageEvidence === "unhealthy",
@@ -403,18 +412,24 @@ function collectSummaryEvidence(summary: FleetSummary, evidence: MutableFleetEvi
     ].some(Boolean),
     ref
   );
-  // Same set as `degradedOrBroken` MINUS two shapes: a `degraded`/
-  // `unhealthy` headline explained ENTIRELY by a `retryable_gap` coverage
-  // axis with no other unhealthy evidence (background retry, not a material
-  // block), and a `degraded` headline explained ENTIRELY by ordinary
-  // cadence-relative staleness (`staleFreshnessIsSoleDegradation` —
-  // `rendered-verdict.ts`'s own pill already reads this exact shape as
-  // "Needs refresh", not "Missing data"; the fleet banner must not disagree
-  // with the per-connection verdict it is summarizing). Every other reason
-  // `degradedOrBroken` fires (owner state, remote-surface failure, outbox
-  // failure, a maintainer code-fix, a real runtime/binding condition
-  // failure) is unaffected and still material.
-  const headlineDegradedOnlyFromStaleFreshness = staleFreshnessIsSoleDegradation(health);
+  // Same set as `degradedOrBroken` MINUS two shapes: a `degraded`/`unhealthy`
+  // headline explained ENTIRELY by a `retryable_gap` coverage axis with no
+  // other unhealthy evidence (background retry, not a material block), and one
+  // explained ENTIRELY by cadence lateness.
+  //
+  // The cadence exclusion is `cadenceLatenessIsSoleDegradation` — the SAME
+  // shared predicate `owner-state.ts` uses for its resolver, so the banner and
+  // the Sources grouping cannot disagree about whether a late source is a
+  // system fault. It keys on the explicit `snapshot.lateness` FACT.
+  //
+  // NOT `staleFreshnessIsSoleDegradation`: that one is the broader
+  // label-selection reading, and using it here would let ANY staleness-only
+  // degradation suppress a material block on rendered tone alone — the
+  // tone-as-evidence interpretation this predicate exists to replace. Every
+  // other reason `degradedOrBroken` fires (owner state, remote-surface
+  // failure, outbox failure, a maintainer code-fix, a real runtime/binding
+  // condition failure) is unaffected and still material.
+
   pushIf(
     evidence.materiallyBlocked,
     [
@@ -426,7 +441,7 @@ function collectSummaryEvidence(summary: FleetSummary, evidence: MutableFleetEvi
       hasMaintainerCodeFix(verdict),
       hasCurrentCondition(health, "RemoteSurfaceAvailable"),
       hasCurrentCondition(health, "RuntimeAvailable"),
-      headlineEvidence === "unhealthy" && coverageEvidence !== "retryable" && !headlineDegradedOnlyFromStaleFreshness,
+      headlineEvidence === "unhealthy" && coverageEvidence !== "retryable" && !cadenceLateOnly,
     ].some(Boolean),
     ref
   );

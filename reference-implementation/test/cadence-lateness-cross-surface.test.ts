@@ -171,10 +171,22 @@ test("CROSS-SURFACE: mature overdue is degrading, yet STILL does not banner alon
 test("POSITIVE CONTROL: a real credential block still fires the banner", () => {
   // The discrimination that makes the silence meaningful. Same otherwise-healthy
   // connection; the ONLY change is a genuine owner-actionable credential failure.
-  const blocked = computeConnectionHealth({
-    ...input("late"),
-    authentication: { authenticates: false },
-  });
+  // A REAL credential failure: the latest run failed with a credential reason
+  // code. (`authentication: { authenticates: false }` is a different fact —
+  // "this connector does not authenticate at all", i.e. a file import — and
+  // produces no failing condition, which is why it is not the control here.)
+  const blocked = computeConnectionHealth(
+    healthyConnectionInput({
+      freshness: { axis: "stale" },
+      lateness: { state: "late" },
+      run: {
+        hasDegradingGaps: true,
+        lastSuccessAt: BASELINE_SUCCESS_AT,
+        latestStatus: "failed",
+        reasonCode: "credentials_rejected",
+      },
+    })
+  );
   assert.equal(
     fleetFor(blocked, "creds-x").banner_warranted,
     true,
@@ -199,5 +211,86 @@ test("CROSS-SURFACE: exact neutral copy, pinned against regression into a false 
   assert.ok(
     fresh?.remediation === null || fresh?.remediation === undefined,
     "no remediation — the stale-but-retrying tier is explicitly 'no action needed from you right now'"
+  );
+});
+
+test("NEGATIVE CONTROL: unrelated degradation is NOT softened just because the source is also late", () => {
+  // The over-suppression risk. Each of these is a genuinely broken source that
+  // ALSO happens to be late; the lateness must not launder any of them into a
+  // non-system-issue reading. `cadenceLatenessIsSoleDegradation` requires every
+  // current false condition to be `Fresh`, so one unrelated failure disqualifies
+  // the whole softening.
+  const unrelated: Array<[string, Partial<ComputeConnectionHealthInput>]> = [
+    [
+      "a failed run",
+      {
+        run: {
+          hasDegradingGaps: true,
+          lastSuccessAt: SUCCESS_AT,
+          latestStatus: "failed",
+          reasonCode: "network_timeout",
+        },
+      },
+    ],
+    ["a coverage gap", { coverage: { axis: "partial" } }],
+    ["a stalled outbox", { outbox: { axis: "stalled" } }],
+    ["an unreliable projection", { projection: { unreliableSources: ["records"] } }],
+  ];
+
+  for (const [label, override] of unrelated) {
+    const snapshot = computeConnectionHealth(
+      healthyConnectionInput({ freshness: { axis: "stale" }, lateness: { state: "late" }, ...override })
+    );
+    assert.notEqual(
+      snapshot.state,
+      "healthy",
+      `${label}: the baseline sanity — this override must actually break something`
+    );
+    assert.equal(
+      fleetFor(snapshot, `unrelated-${label.replace(/\W+/g, "-")}`).banner_warranted,
+      true,
+      `${label} must still fire the banner; being late as well cannot suppress a real fault`
+    );
+  }
+});
+
+test("NEGATIVE CONTROL: an UNKNOWN lateness fact softens nothing", () => {
+  // No declared cadence, or never a successful run. A source PDPP cannot judge
+  // for lateness keeps exactly the verdict it would have had.
+  const unknownLate = computeConnectionHealth(
+    healthyConnectionInput({ freshness: { axis: "stale" }, lateness: { state: "unknown" } })
+  );
+  const noLatenessAtAll = computeConnectionHealth(healthyConnectionInput({ freshness: { axis: "stale" } }));
+  assert.equal(
+    workGroupFor(unknownLate),
+    workGroupFor(noLatenessAtAll),
+    "an unknown lateness fact must be indistinguishable from no lateness fact"
+  );
+  assert.equal(
+    fleetFor(unknownLate, "unknown-x").banner_warranted,
+    fleetFor(noLatenessAtAll, "none-x").banner_warranted,
+    "and must not change the banner either"
+  );
+});
+
+test("NEGATIVE CONTROL: an ABSENT lateness fact softens nothing either", () => {
+  // Closes the gap a surviving mutant exposed: relaxing the guard to accept
+  // ANY lateness value — including `unknown` and absent — passed every other
+  // test, because nothing compared a stale source that HAS no lateness fact
+  // against one that does. Without this, the guard could silently degrade into
+  // "stale is enough", which is the tone-as-evidence reading all over again.
+  const withoutFact = computeConnectionHealth(healthyConnectionInput({ freshness: { axis: "stale" } }));
+  const withLateFact = computeConnectionHealth(
+    healthyConnectionInput({ freshness: { axis: "stale" }, lateness: { state: "late" } })
+  );
+  assert.equal(
+    fleetFor(withoutFact, "absent-x").banner_warranted,
+    true,
+    "a stale source PDPP cannot judge for lateness keeps its pre-existing verdict"
+  );
+  assert.equal(
+    fleetFor(withLateFact, "present-x").banner_warranted,
+    false,
+    "and the ONLY difference is the explicit fact — proving the guard reads evidence, not staleness"
   );
 });

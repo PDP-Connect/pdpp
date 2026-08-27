@@ -692,6 +692,50 @@ function hasFailedCollectionCondition(snapshot: ConnectionHealthSnapshot): boole
   );
 }
 
+/**
+ * Whether cadence lateness is the ONLY thing wrong with this connection.
+ *
+ * ONE predicate, shared by `owner-state.ts` (resolver) and `fleet-health.ts`
+ * (material/diagnostic classification), so those two surfaces cannot drift
+ * apart on the same question. `staleFreshnessIsSoleDegradation` above is
+ * retained for LABEL selection, where its broader "any staleness-only
+ * degradation" reading is intentional; this one is narrower and is the only
+ * input permitted to suppress a system-fault classification.
+ *
+ * Keyed on the explicit `snapshot.lateness` FACT, never on the rendered tone. A
+ * merely-late source legitimately earns an amber pill, which made it
+ * indistinguishable from real degradation: ordinary lateness resolved
+ * `system_degraded`, grouped as `system_issue`, and fired the global banner for
+ * a source whose next run simply had not happened yet.
+ *
+ * Fails closed on every axis:
+ *  - requires a POSITIVE lateness fact (`late` or `overdue`). `unknown` — no
+ *    declared cadence, or never a successful run — softens nothing, so a source
+ *    that cannot be judged keeps whatever verdict it had.
+ *  - requires the freshness axis to be `stale`. Lateness explains staleness and
+ *    nothing else.
+ *  - requires EVERY current false condition to be `Fresh`. One unrelated
+ *    failing condition — credentials, runtime, coverage, outbox — and this
+ *    returns false, so a genuinely broken source is never softened by also
+ *    happening to be late.
+ *
+ * `overdue` is included: mature lateness is a real degradation on the ROW (it
+ * keeps `warning` severity and its `degraded` headline) but it is still not a
+ * SYSTEM FAULT, and may not banner without an independently proven
+ * owner-actionable or blocked cause.
+ */
+export function cadenceLatenessIsSoleDegradation(snapshot: ConnectionHealthSnapshot): boolean {
+  const lateness = snapshot.lateness?.state;
+  if (lateness !== "late" && lateness !== "overdue") {
+    return false;
+  }
+  if (snapshot.axes.freshness !== "stale") {
+    return false;
+  }
+  const falseConditions = snapshot.conditions.filter((condition) => condition.current && condition.status === "false");
+  return falseConditions.length > 0 && falseConditions.every((condition) => condition.type === "Fresh");
+}
+
 export function staleFreshnessIsSoleDegradation(snapshot: ConnectionHealthSnapshot): boolean {
   if (snapshot.state !== "degraded" || snapshot.axes.freshness !== "stale") {
     return false;

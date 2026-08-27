@@ -69,6 +69,7 @@
 import { isNullish } from "../lib/nullish.ts";
 import type { ConnectionHealthSnapshot } from "./connection-health.ts";
 import {
+  cadenceLatenessIsSoleDegradation,
   freshnessNotApplicable,
   hasOwnerBlockingAction,
   importCompletionProven,
@@ -449,7 +450,7 @@ function resolveOwnerStateResolver(
     grey: false,
     red: true,
   }[verdict.pill.tone];
-  if (systemDegradedForTone) {
+  if (systemDegradedForTone && !cadenceLatenessIsSoleDegradation(snapshot)) {
     return "system_degraded";
   }
 

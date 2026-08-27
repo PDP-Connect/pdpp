@@ -762,15 +762,28 @@ test("banner_warranted: a schedulable (automatic) connector past its cadence-rel
       axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle", remote_surface: "none" },
       conditions: [{ current: true, status: "false", type: "Fresh" } as unknown as ConnectionHealthCondition],
       forward_disposition: "complete",
+      // Lateness is now an explicit FACT, not inferred from an amber tone. A
+      // fixture that omits it is a source PDPP cannot judge for lateness, and
+      // correctly gets no softening.
+      lateness: { state: "late" },
       state: "degraded",
     },
   });
   const result = compose([inventory("jellyfin-a")], [lateAutomatic]);
-  assert.equal(result.state, "unhealthy", "state remains a rich diagnostic signal");
+  // Cadence-only lateness is now excluded from `degradedOrBroken` itself, not
+  // only from `materiallyBlocked`. Excluding it downstream alone left the
+  // Sources grouping quiet while the fleet STATE and dimensions still called
+  // the same row unhealthy — two surfaces disagreeing about one source. A
+  // merely-late row belongs in `freshness_advisories`.
+  assert.equal(result.state, "healthy_with_advisories", "a merely-late source is an advisory, not a fault");
   assert.deepEqual(
     result.dimensions.system.degraded_or_broken.map((item) => item.connection_id),
-    ["jellyfin-a"],
-    "degradedOrBroken intentionally stays broad"
+    [],
+    "cadence-only lateness is not degradation"
+  );
+  assert.ok(
+    result.dimensions.freshness_advisories.some((ref) => ref.connection_id === "jellyfin-a"),
+    "it is still DISCLOSED — quieting the fault classification must not hide the fact"
   );
   assert.equal(
     result.banner_warranted,
@@ -946,6 +959,9 @@ test("DISCRIMINATION: ordinary lateness and a provider limit stay silent; a cred
     connection_health: {
       ...summary("x").connection_health,
       axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle", remote_surface: "none" },
+      // The explicit lateness FACT: the shared predicate keys on evidence, not
+      // on tone, so a fixture that omits it is a source PDPP cannot judge.
+      lateness: { state: "late" },
       // The Fresh:false CONDITION, not just the stale axis:
       // `staleFreshnessIsSoleDegradation` reads current conditions to decide
       // whether staleness ALONE explains the degradation. Without it the

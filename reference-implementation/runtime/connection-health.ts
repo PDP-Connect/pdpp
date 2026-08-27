@@ -313,6 +313,14 @@ export type CoverageAxis =
  *   - `acknowledged` : owner has seen the prompt
  *   - `in_progress`  : owner is actively responding (e.g. OTP entry)
  */
+/**
+ * Cadence-relative lateness: "did the expected collection happen?", sized
+ * against the source's own interval by `server/cadence-lateness.ts`. Owned here
+ * because this module owns the evidence it rides on; consumers import the type
+ * rather than repeating the union.
+ */
+export type CadenceLatenessState = "late" | "on_time" | "overdue" | "unknown";
+
 export type AttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
 
 /**
@@ -861,6 +869,17 @@ export interface ConnectionHealthSnapshot {
    * `runtime/coverage-horizon.ts`.
    */
   readonly coverage_horizons: readonly ConnectionCoverageHorizon[];
+  /**
+   * Cadence-relative lateness, carried onto the snapshot so downstream
+   * surfaces read the FACT rather than inferring it from a rendered tone.
+   *
+   * `resolveOwnerStateResolver` previously had only `verdict.pill.tone` to work
+   * with, so an amber pill — which a merely-late source legitimately earns —
+   * was indistinguishable from real system degradation, and ordinary lateness
+   * grouped as `system_issue` and fired the global banner. A presentation
+   * value is the wrong input for that decision.
+   */
+  readonly lateness?: { readonly state: CadenceLatenessState } | null;
   /**
    * Additive, nullable source-pressure detail-gap backlog rollup
    * ({@link DetailGapBacklog}). `null` when no backlog evidence was supplied
@@ -1414,7 +1433,7 @@ export interface ComputeConnectionHealthInput {
    * Optional and absent-by-default: a caller that supplies no lateness gets
    * exactly the prior behaviour.
    */
-  readonly lateness?: { readonly state: "late" | "on_time" | "overdue" | "unknown" } | null;
+  readonly lateness?: { readonly state: CadenceLatenessState } | null;
   /**
    * True when this connection collects through an enrolled local-device
    * collector, so the local-device outbox axis is a question this deployment can
@@ -1529,6 +1548,11 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       // it.
       coverageHorizons,
       detailGapBacklog,
+      // Same funnel discipline as `coverageHorizons`: the cadence fact rides
+      // along onto the snapshot so downstream surfaces read EVIDENCE rather
+      // than inferring lateness from a rendered tone. No classification step
+      // can reach it, so it cannot change the headline here.
+      lateness: input.lateness ?? null,
       dominantConditionId,
       ephemeralBrowserRuntime,
       forwardDisposition,
@@ -4001,6 +4025,7 @@ function degradedReasonCode(input: ComputeConnectionHealthInput): string | null 
 // ─── Builders ─────────────────────────────────────────────────────────────
 
 interface SnapshotArgs {
+  readonly lateness?: { readonly state: CadenceLatenessState } | null;
   readonly axes: ConnectionAxes;
   readonly badges: ConnectionBadges;
   readonly collectionRate?: CollectionRateSnapshot | null;
@@ -4028,6 +4053,7 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     collection_rate: args.collectionRate ?? null,
     conditions: args.conditions,
     coverage_horizons: args.coverageHorizons ?? [],
+    lateness: args.lateness ?? null,
     detail_gap_backlog: args.detailGapBacklog ?? null,
     dominant_condition_id: args.dominantConditionId,
     ephemeral_browser_runtime: runtimeAnnotationForSnapshot(args.ephemeralBrowserRuntime),
