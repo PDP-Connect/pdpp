@@ -12,6 +12,7 @@
 // reference implementation exposes for its own dashboard. Clients must
 // not depend on the response shape.
 
+import { isIP } from "node:net";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 import type { RuntimeContinuationFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
@@ -64,6 +65,7 @@ import {
   type OutboxDiagnosticCounts,
   type OutboxStalledCause,
 } from "../runtime/connection-health.ts";
+import { boundConnectorErrorCode, boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
 import {
   buildProgressEvidence,
   progressMode,
@@ -522,6 +524,22 @@ export interface RuntimeCollectionFacts {
   readonly streams: readonly RuntimeCollectionFact[];
 }
 
+interface ConnectorRuntimeFailureCauseSummary {
+  readonly address?: string;
+  readonly code?: string;
+  readonly port?: number;
+  readonly syscall?: string;
+}
+
+/** A bounded owner-facing projection of `run_history.connector_error_json`. */
+export interface ConnectorRunErrorSummary {
+  readonly cause_chain?: readonly ConnectorRuntimeFailureCauseSummary[];
+  readonly code: string | null;
+  readonly message: string | null;
+  readonly origin: "runtime" | null;
+  readonly retryable: boolean | null;
+}
+
 export interface ConnectorRunSummary {
   /**
    * The runtime `collection_facts` block read off this run's terminal event, or
@@ -530,6 +548,7 @@ export interface ConnectorRunSummary {
    * `collection_report`; never final coverage truth.
    */
   readonly collection_facts: RuntimeCollectionFacts | null;
+  readonly connector_error?: ConnectorRunErrorSummary | null;
   readonly event_count: number;
   readonly failure_reason: string | null;
   readonly finished_at: string | null;
@@ -1331,6 +1350,110 @@ function productRunYieldCounts(history: ProductRunHistoryRecord): {
   };
 }
 
+// Runtime diagnostics are written from an arbitrary Error.cause object. Keep
+// this read projection closed as well: historical or manually-written rows
+// must not turn the owner Sources page into a transport for arbitrary strings.
+const OWNER_RUNTIME_ERROR_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "EADDRNOTAVAIL",
+  "EAFNOSUPPORT",
+  "EAI_AGAIN",
+  "EAI_FAIL",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ENOTCONN",
+  "ENOTFOUND",
+  "EPIPE",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "ETIMEDOUT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UND_ERR_ABORTED",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+const OWNER_RUNTIME_SYSCALLS = new Set([
+  "accept",
+  "bind",
+  "connect",
+  "getaddrinfo",
+  "getpeername",
+  "getsockname",
+  "getsockopt",
+  "listen",
+  "read",
+  "setsockopt",
+  "shutdown",
+  "write",
+]);
+function projectRuntimeFailureCode(value: unknown): string | null {
+  return typeof value === "string" && OWNER_RUNTIME_ERROR_CODES.has(value) ? value : null;
+}
+
+function projectConnectorErrorCode(value: unknown): string | null {
+  const connectorCode = boundConnectorErrorCode(value);
+  if (connectorCode) {
+    return connectorCode;
+  }
+  return typeof value === "string" && OWNER_RUNTIME_ERROR_CODES.has(value) ? value : null;
+}
+
+function projectRuntimeFailureCause(value: unknown): ConnectorRuntimeFailureCauseSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const cause = value as Record<string, unknown>;
+  const code = projectRuntimeFailureCode(cause.code);
+  const syscall = typeof cause.syscall === "string" && OWNER_RUNTIME_SYSCALLS.has(cause.syscall) ? cause.syscall : null;
+  const address = typeof cause.address === "string" && isIP(cause.address) !== 0 ? cause.address : null;
+  const port =
+    typeof cause.port === "number" && Number.isInteger(cause.port) && cause.port > 0 && cause.port <= 65_535
+      ? cause.port
+      : null;
+  const projected: ConnectorRuntimeFailureCauseSummary = {
+    ...(address ? { address } : {}),
+    ...(code ? { code } : {}),
+    ...(port ? { port } : {}),
+    ...(syscall ? { syscall } : {}),
+  };
+  return Object.keys(projected).length ? projected : null;
+}
+
+function projectConnectorRunError(value: Record<string, unknown> | null | undefined): ConnectorRunErrorSummary | null {
+  if (!value) {
+    return null;
+  }
+  const causeChain = Array.isArray(value.cause_chain)
+    ? value.cause_chain
+        .slice(0, 4)
+        .map(projectRuntimeFailureCause)
+        .filter((cause): cause is ConnectorRuntimeFailureCauseSummary => cause !== null)
+    : [];
+  const code = projectConnectorErrorCode(value.code);
+  const message = boundConnectorErrorMessage(value.message);
+  const retryable = typeof value.retryable === "boolean" ? value.retryable : null;
+  const origin = value.origin === "runtime" ? "runtime" : null;
+  if (!(causeChain.length || code || message || retryable !== null || origin)) {
+    return null;
+  }
+  return {
+    ...(causeChain.length ? { cause_chain: causeChain } : {}),
+    code,
+    message,
+    origin,
+    retryable,
+  };
+}
+
 /**
  * Product LIST/detail composition (terminal-read-architecture-fable-0730.md
  * §9/R9.2): a `run_history` row for ANY run kind, composed with the
@@ -1371,6 +1494,7 @@ function productRunHistoryToConnectorRunSummary(
       : null;
   return {
     collection_facts: readCollectionFactsFromTerminalData(facts),
+    connector_error: projectConnectorRunError(history.connectorError),
     event_count: 0,
     failure_reason: history.failureReason ?? history.error ?? browserSurfaceFailureReason,
     finished_at: isActiveRunSummaryStatus(status) ? null : history.completedAt,

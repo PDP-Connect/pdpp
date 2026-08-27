@@ -111,6 +111,8 @@ export interface RunConnectorResult {
   readonly records_emitted?: number;
   readonly reported_records_emitted?: number | null;
   readonly run_id?: string | null;
+  /** Runtime-owned network diagnostic verdict, if the connector supplied no error. */
+  readonly runtime_retryable?: boolean | null;
   readonly state?: unknown;
   readonly status: RunStatus;
   readonly terminal_reason?: TerminalReason | null;
