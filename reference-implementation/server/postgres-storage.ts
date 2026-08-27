@@ -1076,11 +1076,17 @@ const REPAIR_REQUIRED_TABLES = [
   "spine_events",
 ] as const;
 
+export const POSTGRES_DETAIL_GAP_REPAIR_REQUIRED_TABLES = ["connector_detail_gaps", "records"] as const;
+
 /**
- * Open only existing correction tables. Absence fails closed; this intentionally
- * never runs application bootstrap, DDL, extensions, migrations, or indexes.
+ * Open only an existing repair schema. Absence of a caller-declared required
+ * table fails closed; this intentionally never runs application bootstrap,
+ * DDL, extensions, migrations, or indexes.
  */
-export async function initExistingPostgresRepairStorage(config: StorageConfig | null | undefined) {
+export async function initExistingPostgresRepairStorage(
+  config: StorageConfig | null | undefined,
+  { requiredTables = REPAIR_REQUIRED_TABLES }: { requiredTables?: readonly string[] } = {}
+) {
   if (config?.backend !== "postgres") {
     throw new Error("existing PostgreSQL repair storage requires a PostgreSQL database URL");
   }
@@ -1095,10 +1101,10 @@ export async function initExistingPostgresRepairStorage(config: StorageConfig | 
   try {
     const result = await pool.query<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name = ANY($1::text[])",
-      [REPAIR_REQUIRED_TABLES]
+      [requiredTables]
     );
     const present = new Set(result.rows.map((row) => row.table_name));
-    const missing = REPAIR_REQUIRED_TABLES.filter((table) => !present.has(table));
+    const missing = requiredTables.filter((table) => !present.has(table));
     if (missing.length) {
       throw new Error(`existing PostgreSQL repair schema is missing required table(s): ${missing.join(", ")}`);
     }

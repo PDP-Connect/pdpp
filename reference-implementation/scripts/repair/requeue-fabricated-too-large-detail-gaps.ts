@@ -98,7 +98,12 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 import { classifyTooLargeProof, readClaimedSizeProof } from "../../server/connector-gap-classification.ts";
-import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../../server/postgres-storage.ts";
+import {
+  closePostgresStorage,
+  initExistingPostgresRepairStorage,
+  POSTGRES_DETAIL_GAP_REPAIR_REQUIRED_TABLES,
+  postgresQuery,
+} from "../../server/postgres-storage.ts";
 
 const TARGET_REASON = "too_large";
 
@@ -309,7 +314,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  await initPostgresStorage({ backend: "postgres", databaseUrl });
+  // This is an online repair against an already-migrated database. Do not run
+  // runtime bootstrap DDL here: it can deadlock with a live records writer.
+  await initExistingPostgresRepairStorage(
+    { backend: "postgres", databaseUrl },
+    { requiredTables: POSTGRES_DETAIL_GAP_REPAIR_REQUIRED_TABLES }
+  );
   try {
     const adjudicated = adjudicateCandidates(
       await loadCandidates(args.connectorId, args.connectorInstanceId, args.stream)
