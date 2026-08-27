@@ -1340,6 +1340,141 @@ test("DOM scope contract rejects unmarked and contradictory source rows", () => 
   assert.deepEqual(contradictory.domAgreement.invalidSourceScopes, ["c1:revoked"]);
 });
 
+test("DOM scope contract accepts paused and rejected lifecycles and fails closed on an unknown status", () => {
+  const active = healthyConnection({
+    owner_state: { resolver: "collecting", owner_of_state: "system", posture: "observed" },
+  });
+  const paused = healthyConnection({ connection_id: "c-paused", status: "paused" });
+  const rejected = healthyConnection({ connection_id: "c-rejected", status: "rejected" });
+  const input = fullyEvidencedInput(active);
+  const agreeing = evaluateStreamHealthAuthority({
+    ...input,
+    connections: [active, paused, rejected],
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1", "c-paused", "c-rejected"],
+      sourceScopes: [
+        { connectionId: "c1", scope: "active" },
+        { connectionId: "c-paused", scope: "paused" },
+        { connectionId: "c-rejected", scope: "rejected" },
+      ],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      selectedConnectionId: "c1",
+      streamKeys: [{ connectionId: "c1", stream: "messages" }],
+      suspense: false,
+    },
+  });
+  assert.equal(agreeing.domAgreement.status, "agree");
+  assert.deepEqual(agreeing.domAgreement.missingSourceScopes, []);
+  assert.deepEqual(agreeing.domAgreement.invalidSourceScopes, []);
+
+  const unknownStatus = healthyConnection({ connection_id: "c-unknown", status: "some_future_status" });
+  const disagreeing = evaluateStreamHealthAuthority({
+    ...input,
+    connections: [active, unknownStatus],
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1", "c-unknown"],
+      sourceScopes: [
+        { connectionId: "c1", scope: "active" },
+        { connectionId: "c-unknown", scope: "active" },
+      ],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      selectedConnectionId: "c1",
+      streamKeys: [{ connectionId: "c1", stream: "messages" }],
+      suspense: false,
+    },
+  });
+  assert.equal(disagreeing.domAgreement.status, "disagree");
+  assert.deepEqual(disagreeing.domAgreement.invalidSourceScopes, ["c-unknown:active"]);
+});
+
+test("a contradictory duplicate connection id in the canonical inventory fails DOM agreement closed", () => {
+  const active = healthyConnection({
+    owner_state: { resolver: "collecting", owner_of_state: "system", posture: "observed" },
+  });
+  const firstDeclaration = healthyConnection({ connection_id: "c-dup", status: "active" });
+  const secondDeclaration = healthyConnection({ connection_id: "c-dup", status: "revoked" });
+  const input = fullyEvidencedInput(active);
+
+  const observedAsRevoked = evaluateStreamHealthAuthority({
+    ...input,
+    connections: [active, firstDeclaration, secondDeclaration],
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1", "c-dup"],
+      sourceScopes: [
+        { connectionId: "c1", scope: "active" },
+        { connectionId: "c-dup", scope: "revoked" },
+      ],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      selectedConnectionId: "c1",
+      streamKeys: [{ connectionId: "c1", stream: "messages" }],
+      suspense: false,
+    },
+  });
+  assert.equal(
+    observedAsRevoked.domAgreement.status,
+    "disagree",
+    "a contradictory canonical lifecycle must not silently collapse to whichever declaration was seen last"
+  );
+  assert.deepEqual(observedAsRevoked.domAgreement.invalidSourceScopes, ["c-dup:revoked"]);
+
+  const observedAsActive = evaluateStreamHealthAuthority({
+    ...input,
+    connections: [active, firstDeclaration, secondDeclaration],
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1", "c-dup"],
+      sourceScopes: [
+        { connectionId: "c1", scope: "active" },
+        { connectionId: "c-dup", scope: "active" },
+      ],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      selectedConnectionId: "c1",
+      streamKeys: [{ connectionId: "c1", stream: "messages" }],
+      suspense: false,
+    },
+  });
+  assert.equal(
+    observedAsActive.domAgreement.status,
+    "disagree",
+    "the contradictory canonical entry must fail closed even when the DOM matches one of the two declared scopes"
+  );
+  assert.deepEqual(observedAsActive.domAgreement.invalidSourceScopes, ["c-dup:active"]);
+});
+
+test("the DOM parser fails closed instead of resolving when a rendered source row omits its lifecycle scope", () => {
+  const missingScope = parseOwnerSourcesDom('<a data-pdpp-source-row="c1" href="/sources/c1">one</a>');
+  assert.equal(missingScope.resolved, false);
+
+  const contradictoryScope = parseOwnerSourcesDom(
+    '<a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a>' +
+      '<a data-pdpp-source-row="c1" data-pdpp-source-scope="revoked" href="/sources/c1">one again</a>'
+  );
+  assert.equal(contradictoryScope.resolved, false);
+
+  const consistentDuplicateRows = parseOwnerSourcesDom(
+    '<a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a>' +
+      '<a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one repeated</a>'
+  );
+  assert.equal(consistentDuplicateRows.resolved, true);
+  assert.deepEqual(consistentDuplicateRows.connectionIds, ["c1"]);
+  assert.deepEqual(consistentDuplicateRows.sourceScopes, [{ connectionId: "c1", scope: "active" }]);
+});
+
 test("the DOM parser recognizes source identities, pagination, empty state, and unresolved auth/loading", () => {
   const resolved = parseOwnerSourcesDom(
     '<a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a><a class="rr-s-stream-row" data-connection-id="c1" data-pdpp-stream-row="true" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages">messages</a><a href="/sources?page_cursor=next">Next</a>'

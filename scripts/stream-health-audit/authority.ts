@@ -1050,7 +1050,9 @@ function checkConnectionVocabulary(connection: JsonObject): string[] {
   return unknown;
 }
 
-function lifecycle(connection: JsonObject): "active" | "draft" | "paused" | "rejected" | "revoked" | "unknown" {
+type LifecycleScope = "active" | "draft" | "paused" | "rejected" | "revoked" | "unknown";
+
+function lifecycle(connection: JsonObject): LifecycleScope {
   if (connection.status === "revoked" || (connection.revoked_at !== null && connection.revoked_at !== undefined)) {
     return "revoked";
   }
@@ -1818,7 +1820,13 @@ export function parseOwnerSourcesDom(html: string): OwnerSourcesDomEvidence {
   const renderedRows = rendered.renderedRows || explicitEmpty;
   const revision = DOM_REVISION_PATTERN.exec(renderedSource)?.[2]?.trim() || null;
   const resolved =
-    !(authFailure || suspense || rendered.malformedStreamRow || rendered.orphanedStreamRow) && renderedRows;
+    !(
+      authFailure ||
+      suspense ||
+      rendered.malformedSourceScope ||
+      rendered.malformedStreamRow ||
+      rendered.orphanedStreamRow
+    ) && renderedRows;
   let reason: string | null = null;
   if (authFailure) {
     reason = "owner authentication was not resolved";
@@ -2001,17 +2009,23 @@ function compareDom(
   counts: Record<StreamHealthClass, number>
 ): StreamHealthAuthorityResult["domAgreement"] {
   const observed = [...new Set(dom.connectionIds.map((id) => id.trim()).filter(Boolean))].sort();
-  const expectedScopes = new Map([
-    ...new Set(
-      connections
-        .filter((connection) => !connectionIsSynthetic(connection, resolveManifest(connection, input)))
-        .map((connection) => {
-          const id = connectionId(connection);
-          return id ? ([id, lifecycle(connection)] as const) : null;
-        })
-        .filter((entry): entry is readonly [string, string] => entry !== null)
-    ),
-  ]);
+  const expectedScopes = new Map<string, LifecycleScope>();
+  const contradictoryExpectedScopes = new Set<string>();
+  for (const connection of connections) {
+    if (connectionIsSynthetic(connection, resolveManifest(connection, input))) {
+      continue;
+    }
+    const id = connectionId(connection);
+    if (!id) {
+      continue;
+    }
+    const scope = lifecycle(connection);
+    const previousScope = expectedScopes.get(id);
+    if (previousScope && previousScope !== scope) {
+      contradictoryExpectedScopes.add(id);
+    }
+    expectedScopes.set(id, scope);
+  }
   const expected = [...expectedScopes.keys()].sort();
   const activeExpected = [...expectedScopes]
     .filter(([, scope]) => scope === "active")
@@ -2065,8 +2079,13 @@ function compareDom(
     .filter((id) => expectedScopes.has(id) && !observedScopeValues.has(id))
     .sort((a, b) => a.localeCompare(b));
   const invalidSourceScopes = [...observedScopeValues]
-    .filter(([id, scope]) => expectedScopes.get(id) !== scope)
+    .filter(([id, scope]) => contradictoryExpectedScopes.has(id) || expectedScopes.get(id) !== scope)
     .map(([id, scope]) => `${id}:${scope}`)
+    .concat(
+      [...contradictoryExpectedScopes]
+        .filter((id) => !observedScopeValues.has(id))
+        .map((id) => `${id}:<contradictory-authority>`)
+    )
     .sort((a, b) => a.localeCompare(b));
   let streamManifestUnavailable = false;
   for (const key of streamValues) {
