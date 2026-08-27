@@ -862,6 +862,18 @@ export interface ClassifiedIngestFailure {
 }
 
 /**
+ * The console level an ingest write failure is logged at.
+ *
+ * Exported as its own function rather than left as an inline ternary so the
+ * RULE is directly testable. A test that asserts `classified.retryable` only
+ * proves the classifier — it passes with the level split reverted, which is a
+ * test that mirrors the contract instead of pinning it.
+ */
+export function ingestFailureLogLevel(classified: ClassifiedIngestFailure): "error" | "warn" {
+  return classified.retryable ? "warn" : "error";
+}
+
+/**
  * Classify a thrown ingest-write error as PERMANENT (per-record data defect,
  * `retryable: false`) or SYSTEMIC (storage/coordination failure, or unknown,
  * `retryable: true`) by its own typed `.code` field ONLY — never by matching
@@ -1941,7 +1953,22 @@ async function ingestRecordsWithinCoordinator(
       // visible NOWHERE — not the client response (redacted by design), not
       // the server log (no statement existed here at all) — leaving every
       // 503 ingest_batch_storage_error undiagnosable from stored evidence.
-      console.error(
+      //
+      // LEVEL follows retryability, because the two say different things to
+      // whoever is reading. A retryable write (`connector_instance_busy` —
+      // writer admission saturated) is BACKPRESSURE the runtime handles by
+      // itself: bounded retry, then success. Logging that at `error` produced
+      // 59 of 82 error lines in a two-hour production window, all from one
+      // connection, none of them an outcome anyone needed to act on. Ordinary
+      // operation printed as failure is the same defect class as a source row
+      // naming a remedy the system will not perform — it teaches the reader to
+      // discount the channel, so the one line that IS a real failure gets
+      // skimmed past with the other fifty-eight.
+      //
+      // Non-retryable keeps `error`: nothing else will fix it, and the comment
+      // above explains why the detail must appear here at all.
+      const logIngestFailure = ingestFailureLogLevel(classified) === "warn" ? console.warn : console.error;
+      logIngestFailure(
         `[records] ingest write failed connector_instance_id=${loggingConnectorInstanceId} run_id=${runId ?? "unknown"} ` +
           `stream=${record.stream} code=${classified.code} retryable=${classified.retryable}: ${classified.message}`
       );
