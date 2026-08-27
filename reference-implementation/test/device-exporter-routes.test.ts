@@ -35,6 +35,8 @@ const DATA_SENTINEL_PATTERN = /private-data-sentinel|key and data disagree/;
 const RESERVATION_SENTINEL_PATTERN = /private-reservation-store-sentinel/;
 const DURABLE_SENTINEL_PATTERN = /private-durable-second-record-sentinel/;
 const BACKEND_SENTINEL_PATTERN = /private-semantic-backend-sentinel/;
+const IDENTITY_DRIFT_MODEL_A_PATTERN = /identity-drift-model-a/;
+const IDENTITY_DRIFT_MODEL_B_PATTERN = /identity-drift-model-b/;
 
 type Row = Record<string, unknown>;
 
@@ -633,6 +635,126 @@ test("device ingest preflight rejects before reservation while an accepted repla
     );
     assert.equal(replay.status, 201);
     assert.equal(bodyOf(replay).status, "accepted");
+  });
+});
+
+test("semantic-capability-identity-only drift (no manifest change) is captured at acceptance and repaired by registration backfill", async () => {
+  // Isolates semantic_capability_identity drift from manifest_fingerprint
+  // drift: only the backend's model() return value changes here, never the
+  // manifest content. compileDeviceAttemptContext derives these two facts
+  // independently (manifestFingerprint from the manifest JSON,
+  // semanticCapabilityIdentity from ctx.getSemanticCapabilityIdentity()), so
+  // this is real, distinct coverage the manifest-drift test above cannot
+  // exercise. Like that test, the drift is applied explicitly BETWEEN calls
+  // — never as an embed-callback side effect racing the same in-flight
+  // attempt — since fire-and-forget derived indexing means an embed-time
+  // side effect can no longer influence whether the durable write that
+  // triggered it has already been acknowledged.
+  let model = "identity-drift-model-a";
+  const backend = deterministicAttemptBackend({
+    document: () => {
+      // No side effects: drift is applied explicitly between calls below.
+    },
+    model: () => model,
+  });
+
+  await withServer({ semanticRetrievalBackend: backend }, async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, "semantic-identity-drift");
+    const manifest = readCodexManifest();
+    const messages = mustExist(
+      manifest.streams.find((stream) => stream.name === "messages"),
+      "messages stream must exist"
+    );
+    messages.query.search.semantic_fields = ["content"];
+    writeCodexManifest(manifest);
+
+    const batch = makeBatch(device, "batch-semantic-identity-drift", "unused");
+    firstRecord(batch).data = {
+      ...firstRecord(batch).data,
+      content: "semantic identity drift content",
+    };
+    batch.body_hash = bodyHash(batch.records);
+    const accepted = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
+      batch,
+      authHeaders(device.device_token)
+    );
+    assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
+    await drainConnectorInstanceIndexWorkForTests();
+    const acceptedRow = selectRow<{ semantic_capability_identity: string; status: string }>(
+      "SELECT status, semantic_capability_identity FROM device_ingest_batch_outcomes WHERE batch_id = ?",
+      "batch-semantic-identity-drift"
+    );
+    assert.equal(acceptedRow.status, "accepted");
+    assert.match(acceptedRow.semantic_capability_identity, IDENTITY_DRIFT_MODEL_A_PATTERN);
+    const vectorBeforeDrift = selectRow<{ scope_key: string }>(
+      `
+      SELECT scope_key FROM semantic_search_blob
+       WHERE connector_instance_id = ? AND scope_key = ? AND record_key = 'same-key'
+      UNION ALL
+      SELECT scope_key FROM semantic_search_rowid
+       WHERE connector_instance_id = ? AND scope_key = ? AND record_key = 'same-key'
+    `,
+      device.connector_instance_id,
+      JSON.stringify(["messages", "content"]),
+      device.connector_instance_id,
+      JSON.stringify(["messages", "content"])
+    );
+    assert.equal(vectorBeforeDrift.scope_key, JSON.stringify(["messages", "content"]));
+
+    // The semantic identity drifts alone; the manifest is re-registered
+    // byte-identical. An already-accepted batch never re-derives attempt
+    // facts on replay, so only registerConnector's synchronous backfill
+    // (unconditional on manifest content actually changing) can observe and
+    // repair the backend-identity mismatch recorded in semantic_search_meta.
+    model = "identity-drift-model-b";
+    const statusBeforeBackfill = mustExist(
+      typedDb()
+        .prepare<[string], { status: string }>("SELECT status FROM device_ingest_batch_outcomes WHERE batch_id = ?")
+        .get("batch-semantic-identity-drift"),
+      "outcome row must exist"
+    ).status;
+    assert.equal(statusBeforeBackfill, "accepted", "registration's backfill runs against an already-accepted batch");
+    await registerConnector(manifest);
+
+    const metaAfterBackfill = selectRow<{ model_id: string }>(
+      "SELECT model_id FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = 'messages'",
+      device.connector_instance_id
+    );
+    assert.match(
+      metaAfterBackfill.model_id,
+      IDENTITY_DRIFT_MODEL_B_PATTERN,
+      "registration backfill repairs semantic_search_meta from the current backend identity alone"
+    );
+    const vectorAfterDrift = selectRow<{ scope_key: string }>(
+      `
+      SELECT scope_key FROM semantic_search_blob
+       WHERE connector_instance_id = ? AND scope_key = ? AND record_key = 'same-key'
+      UNION ALL
+      SELECT scope_key FROM semantic_search_rowid
+       WHERE connector_instance_id = ? AND scope_key = ? AND record_key = 'same-key'
+    `,
+      device.connector_instance_id,
+      JSON.stringify(["messages", "content"]),
+      device.connector_instance_id,
+      JSON.stringify(["messages", "content"])
+    );
+    assert.equal(
+      vectorAfterDrift.scope_key,
+      JSON.stringify(["messages", "content"]),
+      "the vector re-publishes under the drifted backend identity without a manifest edit"
+    );
+
+    // The accepted response is an immutable replay contract even after the
+    // semantic-identity-only drift and its backfill repair.
+    const replay = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
+      batch,
+      authHeaders(device.device_token)
+    );
+    assert.equal(replay.status, 201);
+    assert.equal(bodyOf(replay).status, "accepted");
+    assert.deepEqual(replay.body, accepted.body, "accepted replay returns the stored response unchanged");
   });
 });
 

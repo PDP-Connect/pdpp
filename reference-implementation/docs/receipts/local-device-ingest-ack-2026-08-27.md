@@ -73,6 +73,9 @@ error code through a strict `[a-z0-9_]+` allowlist before it reaches the log.
   claim now goes through `registerConnector`'s synchronous backfill against
   an already-accepted batch, which the test already exercised for other
   fields). Removed the now-unused `ATTEMPT_MODEL_PATTERN` constant.
+  **Follow-up correction (test-only):** added a dedicated
+  semantic-capability-identity-only drift test to close an independent
+  review finding — see "Independent review finding" below.
 - `openspec/changes/correct-local-collector-ingest-throughput/design.md` —
   align the acceptance decision with deferred derived work and dirty
   reconcile.
@@ -91,11 +94,12 @@ variant every oracle also runs:
 ```
 PDPP_TEST_POSTGRES_URL="postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test" \
   node --import tsx --test test/device-ingest-conformance.test.ts
-# tests 22, pass 22, fail 0 (run twice for stability)
+# tests 22, pass 22, fail 0 (run three times across both sessions for stability)
 
 PDPP_TEST_POSTGRES_URL="postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test" \
   node --import tsx --test test/device-exporter-routes.test.ts
-# tests 52, pass 52, fail 0 (run twice for stability)
+# tests 53, pass 53, fail 0 (run three times in the follow-up session for stability;
+# 52/52 in the original session before the follow-up test was added)
 
 npx tsc --noEmit
 # clean
@@ -104,6 +108,12 @@ npx biome check reference-implementation/server/routes/ref-device-exporters.ts \
   reference-implementation/test/device-ingest-conformance.test.ts \
   reference-implementation/test/device-exporter-routes.test.ts
 # clean except two pre-existing, unrelated findings (see Risk)
+
+npx openspec validate correct-local-collector-ingest-throughput --strict
+# "Change 'correct-local-collector-ingest-throughput' is valid"
+
+git diff --check
+# clean
 ```
 
 Both suites were also run once before landing the test rewrites to confirm
@@ -119,9 +129,47 @@ now-deferred index work first; both now drain via
 `waitForDeferredIndexWorkToDrain`/`drainConnectorInstanceIndexWorkForTests`
 before asserting.
 
+In the follow-up session closing the review finding below,
 `openspec validate correct-local-collector-ingest-throughput --strict` was
-not re-run in this session; the openspec diff is unchanged from the prior
-session's edits and was not touched here.
+run and confirmed valid (the openspec diff itself was not touched in either
+session).
+
+## Independent review finding (P2, closed)
+
+An independent review of this change passed on production semantics but
+flagged one attributable test-coverage regression: the original
+`flipSemanticIdentity`/`attempt-model-c` scenario in the "attempt facts
+fence drift" test exercised **semantic-capability-identity-only drift**
+(the backend's model changes, the manifest does not) with assertions on
+`semantic_capability_identity` and an accepted-backfill precondition check.
+When that test was rewritten (see Risk below — the embed-callback-side-
+effect trigger it used is unreachable under the new contract), only
+manifest-fingerprint drift coverage was carried forward; the
+semantic-identity-only case was dropped rather than reconstructed.
+
+Closed by adding
+`reference-implementation/test/device-exporter-routes.test.ts`'s new test
+"semantic-capability-identity-only drift (no manifest change) is captured
+at acceptance and repaired by registration backfill". It isolates the two
+independently-derived attempt facts
+(`compileDeviceAttemptContext`'s `manifestFingerprint` from the manifest
+JSON vs. `semanticCapabilityIdentity` from
+`ctx.getSemanticCapabilityIdentity()`) by changing only the backend's
+`model()` return value between two explicit HTTP calls, with the manifest
+byte-identical throughout — no embed-callback timing dependence, matching
+the pattern already used for manifest-fingerprint drift. It asserts:
+`semantic_capability_identity` on the accepted outcome row reflects the
+pre-drift model; the vector publishes correctly before drift;
+`registerConnector`'s synchronous backfill (unconditional on the manifest
+text actually changing, confirmed by reading `registerConnector` in
+`server/auth.ts`) detects the drifted `model_id` in `semantic_search_meta`
+via `semanticIndexBackfillForManifest`'s independent `backendChanged` check
+(`server/search-semantic.ts` around line 2871:
+`metaRow.model_id !== currentModel`) and republishes the vector under the
+new identity; and the accepted response remains an immutable replay
+contract afterward. The scenario proved genuinely reachable and correctly
+handled by existing, unmodified production code — no defect was found and
+no production file was touched by this correction.
 
 ## Risk
 
