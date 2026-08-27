@@ -8,12 +8,32 @@ import {
   classifyTooLargeProof,
   hasTerminalKnownGap,
   isOwnerRecoverableKnownGap,
+  isProvenPreHorizonGap,
   isProvenUnfillableGap,
   isRetryableKnownGap,
+  isStreamFullyHorizonAccounted,
   isStreamFullyUnfillableAccounted,
   readClaimedSizeProof,
 } from "../server/connector-gap-classification.ts";
 import type { ConnectorRunSummary } from "../server/ref-control.ts";
+import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
+
+function testHorizon(overrides: Partial<ConnectionCoverageHorizon> = {}): ConnectionCoverageHorizon {
+  return {
+    basis: "provider_stated",
+    confirmedAt: "2026-08-01T00:00:00.000Z",
+    confirmedBy: "owner:test-owner",
+    connectorInstanceId: "cin_test",
+    earliestAvailable: "2013-01-01T00:00:00.000Z",
+    horizonId: "covhz_test",
+    note: null,
+    reason: "provider_retention_policy",
+    stream: "group_messages",
+    supersededAt: null,
+    supersededByHorizonId: null,
+    ...overrides,
+  };
+}
 
 test("assistance timeout gaps are owner/session-recoverable, not maintainer-code terminal gaps", () => {
   const gap = {
@@ -183,4 +203,66 @@ test("readClaimedSizeProof: extracts both numbers, and isProvenUnfillableGap sti
   // projection treats as durable proof.
   assert.equal(isProvenUnfillableGap(tooLargeRow(29_830_196)), true);
   assert.equal(isProvenUnfillableGap({ last_error: { message: "attachment exceeds max size: 10 > 20 bytes" } }), false);
+});
+
+// ─── isProvenPreHorizonGap / isStreamFullyHorizonAccounted (GroupMe-shaped) ──
+//
+// Mirrors the too-large-proof discipline above exactly: a connector's own
+// claim (here, a skip reason naming a provider retention boundary) is a
+// HINT, never sufficient alone; only a CURRENT, independently-confirmed
+// `ConnectionCoverageHorizon` for the same stream turns it into proof.
+
+test("GROUPME: a skip reason naming the provider boundary WITH a current matching horizon is a proven pre-horizon gap", () => {
+  const gap = { reason: "history_ended_before_provider_count" };
+  assert.equal(isProvenPreHorizonGap(gap, [testHorizon()], "group_messages"), true);
+});
+
+test("a connection-wide horizon (stream: '*') covers any stream name", () => {
+  const gap = { reason: "history_ended_before_provider_count" };
+  assert.equal(isProvenPreHorizonGap(gap, [testHorizon({ stream: "*" })], "group_messages"), true);
+  assert.equal(isProvenPreHorizonGap(gap, [testHorizon({ stream: "*" })], "any_other_stream"), true);
+});
+
+test("NEGATIVE: the boundary-shaped skip reason alone, with NO horizon on record, is not proof", () => {
+  const gap = { reason: "history_ended_before_provider_count" };
+  assert.equal(isProvenPreHorizonGap(gap, [], "group_messages"), false);
+});
+
+test("NEGATIVE: a confirmed horizon on record does not retroactively prove an ordinary retry-exhausted gap", () => {
+  // The gap's own reason says nothing about a provider boundary (e.g. a
+  // plain rate-limit/transient failure) — a horizon existing elsewhere on
+  // the connection must not launder it.
+  const gap = { reason: "upstream_rate_limited" };
+  assert.equal(isProvenPreHorizonGap(gap, [testHorizon()], "group_messages"), false);
+});
+
+test("NEGATIVE: a SUPERSEDED horizon (no longer current) is not proof, even with a matching reason", () => {
+  const gap = { reason: "history_ended_before_provider_count" };
+  const superseded = testHorizon({ supersededAt: "2026-08-15T00:00:00.000Z", supersededByHorizonId: "covhz_newer" });
+  assert.equal(isProvenPreHorizonGap(gap, [superseded], "group_messages"), false);
+});
+
+test("NEGATIVE: a horizon confirmed for a DIFFERENT stream does not cover this one", () => {
+  const gap = { reason: "history_ended_before_provider_count" };
+  assert.equal(isProvenPreHorizonGap(gap, [testHorizon({ stream: "groups" })], "group_messages"), false);
+});
+
+test("a horizon with earliestAvailable: null (boundary exists, exact edge unknown) still counts as proof", () => {
+  const gap = { reason: "history_ended_before_provider_count" };
+  assert.equal(isProvenPreHorizonGap(gap, [testHorizon({ earliestAvailable: null })], "group_messages"), true);
+});
+
+test("isStreamFullyHorizonAccounted requires EVERY retryable gap to be proven — one unproven gap fails the whole stream", () => {
+  const provenGap = { reason: "history_ended_before_provider_count" };
+  const unprovenGap = { reason: "upstream_rate_limited" };
+  assert.equal(isStreamFullyHorizonAccounted([provenGap], [testHorizon()], "group_messages"), true);
+  assert.equal(
+    isStreamFullyHorizonAccounted([provenGap, unprovenGap], [testHorizon()], "group_messages"),
+    false,
+    "partial proof is not proof"
+  );
+});
+
+test("isStreamFullyHorizonAccounted returns false for an empty gap list — nothing to account for is not the same claim as accounted", () => {
+  assert.equal(isStreamFullyHorizonAccounted([], [testHorizon()], "group_messages"), false);
 });

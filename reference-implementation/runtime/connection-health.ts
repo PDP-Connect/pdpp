@@ -135,6 +135,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_SUCCEEDED: "collection_succeeded",
   COLLECTION_SUCCEEDED_IMPORT_COMPLETE: "collection_succeeded_import_complete",
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
+  COVERAGE_COMPLETE_HORIZON_ACCOUNTED: "coverage_complete_horizon_accounted",
   COVERAGE_COMPLETE_UNFILLABLE_ACCOUNTED: "coverage_complete_unfillable_accounted",
   COVERAGE_UNKNOWN: "coverage_unknown",
   COVERAGE_UNKNOWN_STALE_COLLECTOR: "coverage_unknown_stale_collector",
@@ -1062,6 +1063,32 @@ export interface ConnectionCoverageEvidence {
    * path and a caller has no reason to combine the two.
    */
   readonly unfillableAccounted?: boolean;
+  /**
+   * `true` only when EVERY outstanding gap behind a `retryable_gap` axis
+   * carries BOTH (a) a connector-reported skip reason matching the
+   * provider-retention-boundary pattern (never a bare "we retried and it
+   * failed" signal) AND (b) a CURRENT, non-superseded, positively-confirmed
+   * {@link ConnectionCoverageHorizon} for that stream (or connection-wide)
+   * whose `earliestAvailable` covers the gap. See
+   * `isProvenPreHorizonGap`/`isStreamFullyHorizonAccounted`
+   * (`connector-gap-classification.ts`) — the exact same two-part discipline
+   * `unfillableAccounted` already applies to `terminal_gap`: the connector's
+   * own claim is necessary but never sufficient; an independently-recorded,
+   * reversible confirmation is the actual proof.
+   *
+   * This is DELIBERATELY NOT satisfied by the skip reason alone — a
+   * connector claiming "provider ended history here" is a hint, not
+   * evidence, until an owner/operator has confirmed it via
+   * `ConnectorCoverageHorizonStore.confirmCoverageHorizon`. Before that
+   * confirmation exists, the gap stays `retryable_gap` and degrading exactly
+   * as before — an unproven boundary is never accepted as provider reality
+   * (see `openspec/changes/add-coverage-horizon-and-actionability-banner/design.md`).
+   *
+   * Optional/absent preserves the prior (never-set) behavior — a
+   * `retryable_gap` axis blocks `SourceCoverageComplete` regardless, exactly
+   * as it always has. Ignored for every axis other than `retryable_gap`.
+   */
+  readonly horizonAccountedRetryableGap?: boolean;
   /**
    * `true` when `axis === "unknown"` specifically because a local-device
    * collector's committed coverage snapshot is missing a store the current
@@ -3087,6 +3114,33 @@ function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: Conn
         "Source coverage is complete: every collectible item was collected, and the rest is permanently uncollectable with a recorded reason.",
       origin: "connector",
       reason: CONDITION_REASON.COVERAGE_COMPLETE_UNFILLABLE_ACCOUNTED,
+      severity: "info",
+      status: "true",
+      type: "SourceCoverageComplete",
+    });
+  }
+  // A `retryable_gap` axis whose entire shortfall is a provider-retention
+  // boundary a caller has independently confirmed (never inferred from the
+  // connector's skip claim alone — see `horizonAccountedRetryableGap`'s doc
+  // comment) is coverage the current, in-horizon scope has already fully
+  // satisfied. The unavailable interval before the horizon is out of scope
+  // by definition — the same "provider-servable-now, not all-data-ever"
+  // denominator rule every surveyed product in
+  // `upstream-retention-loss-health-ux-prior-art.md` uses — so retrying it
+  // forever is not a pending task, it is a category error. `requiredButAccepted`
+  // and every other degrading axis are evaluated first and are unaffected —
+  // this branch only ever softens `retryable_gap`, and only with positive,
+  // reversible proof.
+  if (
+    axes.coverage === "retryable_gap" &&
+    input.coverage?.requiredButAccepted !== true &&
+    input.coverage?.horizonAccountedRetryableGap === true
+  ) {
+    return condition({
+      message:
+        "Source coverage is complete for the current, in-horizon scope: the remaining gap is before a confirmed provider retention boundary.",
+      origin: "connector",
+      reason: CONDITION_REASON.COVERAGE_COMPLETE_HORIZON_ACCOUNTED,
       severity: "info",
       status: "true",
       type: "SourceCoverageComplete",

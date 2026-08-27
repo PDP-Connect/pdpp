@@ -67,6 +67,7 @@ import {
 } from "../runtime/connection-health.ts";
 import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 import { boundConnectorErrorCode, boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
+import { getDefaultConnectorCoverageHorizonStore } from "./stores/connector-coverage-horizon-store.ts";
 import {
   buildProgressEvidence,
   progressMode,
@@ -135,6 +136,7 @@ import {
   firstPendingDetailGapReason,
   hasDegradingKnownGap,
   hasTerminalKnownGap,
+  isProvenPreHorizonGap,
   isRetryableKnownGap,
   isStreamFullyUnfillableAccounted,
   type TerminalGapProofRow,
@@ -3068,8 +3070,14 @@ function buildCoverageEvidence(
   lastRun: ConnectorRunSummary | null,
   pendingDetailGaps: readonly PendingDetailGapSummary[],
   manifestStreams: readonly ManifestStream[],
-  localCoverage: LocalCoverageDiagnosticAxis | null = null
-): { axis: CoverageAxis; requiredButAccepted: boolean; unknownStaleCollectorBuild: boolean } {
+  localCoverage: LocalCoverageDiagnosticAxis | null = null,
+  coverageHorizons: readonly ConnectionCoverageHorizon[] = []
+): {
+  axis: CoverageAxis;
+  horizonAccountedRetryableGap: boolean;
+  requiredButAccepted: boolean;
+  unknownStaleCollectorBuild: boolean;
+} {
   const requiredButAccepted = pickRequiredAcceptedCoverage(manifestStreams) !== null;
   // Run-derived coverage is authoritative whenever a terminal spine run exists
   // (scheduler-managed connections) or any gap/contradiction evidence is
@@ -3080,12 +3088,55 @@ function buildCoverageEvidence(
   // the diagnostic-derived axis. This is the only honest signal of local
   // collector completeness: an empty/drained outbox is NOT proof of coverage.
   const runAxis = mapCoverageAxis(lastRun, pendingDetailGaps, manifestStreams);
+  const horizonAccountedRetryableGap =
+    runAxis === "retryable_gap" && computeHorizonAccountedRetryableGap(lastRun, coverageHorizons);
   if (runAxis === "unknown" && localCoverage !== null && localCoverage.axis !== "unknown") {
-    return { axis: localCoverage.axis, requiredButAccepted, unknownStaleCollectorBuild: false };
+    return {
+      axis: localCoverage.axis,
+      horizonAccountedRetryableGap: false,
+      requiredButAccepted,
+      unknownStaleCollectorBuild: false,
+    };
   }
   const unknownStaleCollectorBuild =
     runAxis === "unknown" && localCoverage !== null && localCoverage.unreliableReason === "missing_stores";
-  return { axis: runAxis, requiredButAccepted, unknownStaleCollectorBuild };
+  return { axis: runAxis, horizonAccountedRetryableGap, requiredButAccepted, unknownStaleCollectorBuild };
+}
+
+/**
+ * Whether EVERY retryable known-gap on the run is a proven pre-horizon gap
+ * (§ workstream A / `ConnectionCoverageEvidence.horizonAccountedRetryableGap`
+ * — see its doc comment in `connection-health.ts` for the full rule). A
+ * connection can have retryable gaps across several streams; this rolls up
+ * per-stream via {@link isProvenPreHorizonGap}, requiring EVERY retryable gap
+ * (not just some) to match its stream's confirmed horizon — one genuinely
+ * retryable gap anywhere still keeps the whole axis degrading, exactly as
+ * `isStreamFullyUnfillableAccounted` requires unanimous per-item proof for
+ * `terminal_gap`.
+ *
+ * Reads `known_gaps` only (the run's own reported skips) — pending detail
+ * gaps are a distinct durable retry contract and are deliberately NOT
+ * softened here; a horizon disclosure does not cancel an active retry the
+ * connector itself has queued.
+ */
+function computeHorizonAccountedRetryableGap(
+  lastRun: ConnectorRunSummary | null,
+  horizons: readonly ConnectionCoverageHorizon[]
+): boolean {
+  if (!lastRun || horizons.length === 0) {
+    return false;
+  }
+  const retryableGaps = lastRun.known_gaps.filter((gap) => isRetryableKnownGap(gap));
+  if (retryableGaps.length === 0) {
+    return false;
+  }
+  return retryableGaps.every((gap) => {
+    const stream =
+      gap && typeof gap === "object" && !Array.isArray(gap) ? (gap as { stream?: unknown }).stream : null;
+    return typeof stream === "string" && stream.length > 0
+      ? isProvenPreHorizonGap(gap as { reason?: unknown }, horizons, stream)
+      : false;
+  });
 }
 
 const DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER = ["terminal_gap", "retryable_gap", "gaps", "partial"] as const;
@@ -3399,6 +3450,7 @@ export function refineConnectionHealthWithCollectionReport(
 function applyCoverageOverride(
   resolvedCoverage: {
     axis: CoverageAxis;
+    horizonAccountedRetryableGap?: boolean;
     requiredButAccepted: boolean;
     unfillableAccounted?: boolean;
     unknownStaleCollectorBuild: boolean;
@@ -3413,6 +3465,7 @@ function applyCoverageOverride(
     | undefined
 ): {
   axis: CoverageAxis;
+  horizonAccountedRetryableGap?: boolean;
   requiredButAccepted: boolean;
   unfillableAccounted?: boolean;
   unknownStaleCollectorBuild: boolean;
@@ -3422,6 +3475,12 @@ function applyCoverageOverride(
   }
   return {
     axis: coverageOverride.axis,
+    // Same non-inheritance discipline as `unfillableAccounted` below: an
+    // override that changes the axis away from `retryable_gap` must not
+    // carry forward a horizon proof computed for a DIFFERENT axis/report
+    // pairing. A collection-report override never re-derives the horizon
+    // rollup, so this always resets to `false` across an override.
+    horizonAccountedRetryableGap: false,
     requiredButAccepted: coverageOverride.requiredButAccepted ?? resolvedCoverage.requiredButAccepted,
     // Unlike `requiredButAccepted`, this is NEVER inherited from
     // `resolvedCoverage` when the override is silent about it: an override
@@ -4923,6 +4982,7 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     coverage,
     heartbeats,
     unfillableAccounted,
+    coverageHorizons,
   ] = await Promise.all([
     listRetainedSizeConnectionsByInstanceIds(ids),
     listRetainedSizeStreamsByInstanceIds(ids),
@@ -4951,6 +5011,9 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     readCommittedLocalCoverageDiagnosticsByConnectionIds(ids).catch(() => null),
     listSourceInstanceHeartbeatsByConnectionIds(ids).catch(() => null),
     getUnfillableAccountedByStreamForInstanceIds(detailStore, ids),
+    getDefaultConnectorCoverageHorizonStore()
+      .getCurrentCoverageHorizonsByInstanceIds(ids)
+      .catch(() => null),
   ]);
 
   const connectionsByInstanceId = new Map<string, RetainedSizeConnectionProjectionRow>();
@@ -5016,6 +5079,7 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     product: {
       acquisitionByInstanceId: acquisition as ReadonlyMap<string, readonly AcquisitionBatchRow[]> | null,
       attentionByInstanceId: attention,
+      coverageHorizonsByInstanceId: coverageHorizons,
       credentialMetadataByInstanceId: credentials as ReadonlyMap<string, CredentialStoreMetadata> | null,
       detailGapsByInstanceId,
       localCoverageByInstanceId,
@@ -5865,7 +5929,8 @@ export function projectConnectorSummaryConnectionHealth(input: {
       coverageRunForHealth,
       pendingDetailGaps,
       input.manifestStreams ?? [],
-      input.localCoverage ?? null
+      input.localCoverage ?? null,
+      input.coverageHorizons ?? []
     ),
     input.coverageOverride
   );
@@ -6372,6 +6437,7 @@ interface ConnectorSummaryProjectionDeps {
 interface PageProductEvidence {
   readonly acquisitionByInstanceId: ReadonlyMap<string, readonly AcquisitionBatchRow[]> | null;
   readonly attentionByInstanceId: ReadonlyMap<string, readonly AttentionRecord[]> | null;
+  readonly coverageHorizonsByInstanceId: ReadonlyMap<string, readonly ConnectionCoverageHorizon[]> | null;
   readonly credentialMetadataByInstanceId: ReadonlyMap<string, CredentialStoreMetadata> | null;
   readonly detailGapsByInstanceId: ReadonlyMap<string, DetailGapProjection> | null;
   readonly localCoverageByInstanceId: ReadonlyMap<string, LocalCoverageDiagnosticAxis | null> | null;
@@ -6582,6 +6648,16 @@ interface ConnectorSummarySynthesisInput {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   /**
+   * Provider coverage-horizon/provenance disclosures for this connection,
+   * pre-fetched by the caller via `ConnectorCoverageHorizonStore` (kept out
+   * of this function so it stays a pure projection over already-resolved
+   * inputs, matching {@link credential}). Empty when no horizon has ever
+   * been confirmed for this connection — never fabricated, never inferred
+   * here. See `runtime/coverage-horizon.ts` and
+   * `openspec/changes/add-coverage-horizon-and-actionability-banner/design.md`.
+   */
+  readonly coverageHorizons: readonly ConnectionCoverageHorizon[];
+  /**
    * Durable stored-credential presence evidence for this connection, pre-
    * fetched by the caller (kept out of this function so it stays a pure
    * projection over already-resolved inputs; see
@@ -6750,6 +6826,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     authenticates: connectionAuthenticatesToProvider(manifest),
     browserSessionRepairCapable,
     collectionRate: authoritativeCollectionRate,
+    coverageHorizons: input.coverageHorizons,
     credential,
     ephemeralBrowserRuntime: authoritativeEphemeralBrowserRuntime,
     freshness,
@@ -7003,12 +7080,12 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     connector_display_name: connectorDisplayName,
     connector_id: connectorId,
     connector_instance_id: connectorInstanceId,
-    // Empty by default: `synthesizeConnectorSummary` is not wired to
-    // `ConnectorCoverageHorizonStore` (a separate, deliberately optional
-    // read a caller opts into — see `ConnectorSummary.coverage_horizons`'s
-    // doc comment). A future caller that wants horizons on this summary
-    // reads the store and overrides this field, never the other way.
-    coverage_horizons: [],
+    // Read from `ConnectorCoverageHorizonStore` by the caller
+    // (`projectConnectorSummaryForInstance`/`loadPageProductEvidence`) and
+    // passed straight through — empty only when no horizon has ever been
+    // confirmed for this connection. See `ConnectorSummary.coverage_horizons`'s
+    // doc comment.
+    coverage_horizons: input.coverageHorizons,
     // B8: a source's label must identify WHICH source it is — the device for a
     // device-backed source, the account for an account-backed one. Derived,
     // never stored.
@@ -7594,6 +7671,7 @@ async function projectConnectorSummaryForInstance(
     localCoverage,
     acquisitionCoverage,
     credentialMetadata,
+    coverageHorizons,
   ] = await Promise.all([
     schedulePromise,
     hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId) : Promise.resolve(null),
@@ -7651,6 +7729,11 @@ async function projectConnectorSummaryForInstance(
         )
       : getAcquisitionCoverageSummary(connectorInstanceId),
     credentialMetadataPromise,
+    pageProductEvidence
+      ? Promise.resolve(pageProductEvidence.coverageHorizonsByInstanceId?.get(connectorInstanceId) ?? [])
+      : getDefaultConnectorCoverageHorizonStore()
+          .getCurrentCoverageHorizons(connectorInstanceId)
+          .catch(() => []),
   ]);
   // Connections that are not static-secret-bound (browser-session connections,
   // or non-static-secret connectors): the ternary above resolved
@@ -7696,6 +7779,7 @@ async function projectConnectorSummaryForInstance(
     collectionRate,
     connectorId,
     connectorInstanceId,
+    coverageHorizons,
     credential,
     detailGaps,
     ephemeralBrowserRuntime,

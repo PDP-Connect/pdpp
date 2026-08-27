@@ -11,6 +11,7 @@
 // The run/gap summary shapes are imported type-only (erased at runtime, so no
 // module cycle with ref-control.ts).
 
+import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 import type { ConnectorRunSummary, PendingDetailGapSummary } from "./ref-control.ts";
 
 /**
@@ -413,4 +414,100 @@ export function classifyTooLargeProof(
  */
 export function isStreamFullyUnfillableAccounted(terminalGaps: readonly TerminalGapProofRow[]): boolean {
   return terminalGaps.length > 0 && terminalGaps.every(isProvenUnfillableGap);
+}
+
+// ─── Provider-retention-boundary retryable gap accounting ─────────────────
+//
+// A `retryable_gap` stream whose connector-reported skip reason names a
+// provider retention/history boundary AND whose connection carries a
+// CURRENT, positively-confirmed `ConnectionCoverageHorizon` for that same
+// stream (or connection-wide) is coverage the current, in-horizon scope has
+// already fully accounted for — the exact "provider-servable-now, not
+// all-data-ever" denominator rule from `upstream-retention-loss-health-ux-
+// prior-art.md`. Structurally identical two-part discipline to the
+// unfillable-gap proof above: the connector's own claim (the reason-pattern
+// match) is a HINT, never sufficient alone; the independently-recorded,
+// reversible horizon confirmation is the actual evidence. Neither one alone
+// changes anything — a connector claiming "provider ended history here"
+// with no confirmed horizon stays exactly as retryable/degrading as before,
+// and a confirmed horizon with no matching connector claim does not retag
+// an unrelated gap.
+
+/**
+ * A skip reason a connector might plausibly use to report a permanent
+ * provider retention/history boundary. Deliberately narrow and pattern-based
+ * (mirrors `isSourceUnavailableKnownGap`'s `SOURCE_UNAVAILABLE_GAP_RE`
+ * style) rather than an exact-string allowlist, so any connector's own wording
+ * for "the provider does not go back further than this" is recognized without
+ * RI branching on a connector/provider identity. This is a HINT the gap MIGHT
+ * be horizon-accountable — never proof by itself; see
+ * {@link isProvenPreHorizonGap}.
+ */
+const PROVIDER_RETENTION_BOUNDARY_SKIP_REASON_RE =
+  /(history_ended|before_provider|provider_retention|retention_boundary|retention_policy|provider_history_limit)/;
+
+/** A gap's raw `reason`/`skipped.reason` string, whatever shape the caller holds it in. */
+function gapSkipReasonText(gap: { reason?: unknown } | null | undefined): string {
+  if (!gap || typeof gap !== "object") {
+    return "";
+  }
+  return typeof gap.reason === "string" ? gap.reason.toLowerCase() : "";
+}
+
+/**
+ * A stream's CURRENT (non-superseded) coverage horizon, if any — connection-
+ * wide (`stream: "*"`) or scoped to this exact stream name. Superseded rows
+ * are never consulted: only the live confirmation is evidence.
+ */
+function currentHorizonForStream(
+  horizons: readonly ConnectionCoverageHorizon[],
+  streamName: string
+): ConnectionCoverageHorizon | null {
+  return (
+    horizons.find(
+      (horizon) => horizon.supersededAt === null && (horizon.stream === "*" || horizon.stream === streamName)
+    ) ?? null
+  );
+}
+
+/**
+ * True only when a single retryable gap carries BOTH a connector-reported
+ * provider-retention-boundary skip reason AND a current, positively-
+ * confirmed horizon for its stream. `earliestAvailable: null` on the horizon
+ * (the boundary exists but its exact edge is unknown — e.g. "before this
+ * connection existed") still counts: the horizon's mere current confirmed
+ * existence for this stream is the proof, not a specific date comparison the
+ * gap's own opaque shape usually cannot support. A `null`/absent horizon
+ * (never confirmed, or confirmed then superseded with nothing re-confirmed
+ * after) is NOT proof — the gap stays exactly as retryable as before.
+ */
+export function isProvenPreHorizonGap(
+  gap: { reason?: unknown } | null | undefined,
+  horizons: readonly ConnectionCoverageHorizon[],
+  streamName: string
+): boolean {
+  const reasonText = gapSkipReasonText(gap);
+  if (!reasonText || !PROVIDER_RETENTION_BOUNDARY_SKIP_REASON_RE.test(reasonText)) {
+    return false;
+  }
+  return currentHorizonForStream(horizons, streamName) !== null;
+}
+
+/**
+ * Whether an entire stream's retryable gaps are horizon-accounted: at least
+ * one retryable gap exists AND every single one of them is
+ * {@link isProvenPreHorizonGap}. A stream with even one gap that does not
+ * match the boundary pattern, or has no confirmed horizon, does NOT
+ * qualify — partial proof is not proof, the same rule
+ * {@link isStreamFullyUnfillableAccounted} already enforces for terminal
+ * gaps. Returns `false` for an empty gap list.
+ */
+export function isStreamFullyHorizonAccounted(
+  retryableGaps: readonly { reason?: unknown }[],
+  horizons: readonly ConnectionCoverageHorizon[],
+  streamName: string
+): boolean {
+  return (
+    retryableGaps.length > 0 && retryableGaps.every((gap) => isProvenPreHorizonGap(gap, horizons, streamName))
+  );
 }

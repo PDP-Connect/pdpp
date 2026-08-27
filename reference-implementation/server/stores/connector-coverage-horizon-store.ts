@@ -90,9 +90,38 @@ export interface ConnectorCoverageHorizonStore {
   confirmCoverageHorizon: (input: ConfirmCoverageHorizonInput) => Promise<ConnectionCoverageHorizon>;
   /** Every CURRENT (non-superseded) horizon for a connection, across all streams. */
   getCurrentCoverageHorizons: (connectorInstanceId: string) => Promise<readonly ConnectionCoverageHorizon[]>;
+  /**
+   * Batched form of {@link getCurrentCoverageHorizons} for a page-scoped
+   * fleet read (`/sources`, `loadPageProductEvidence` in `ref-control.ts`) —
+   * one query for every requested connection instead of N. An id with no
+   * current horizon is simply absent from the returned map (never a
+   * fabricated empty-array entry vs. a missing one; the caller reads
+   * `.get(id) ?? []`, matching every other batched-by-ids store in this
+   * file, e.g. `getMetadataByInstanceIds`).
+   */
+  getCurrentCoverageHorizonsByInstanceIds: (
+    connectorInstanceIds: readonly string[]
+  ) => Promise<ReadonlyMap<string, readonly ConnectionCoverageHorizon[]>>;
 }
 
 const MAX_HORIZONS_PER_CONNECTION = 200;
+const SQLITE_INSTANCE_ID_CHUNK_SIZE = 900;
+
+function groupHorizonsByInstance(
+  rows: readonly HorizonRow[]
+): ReadonlyMap<string, readonly ConnectionCoverageHorizon[]> {
+  const result = new Map<string, ConnectionCoverageHorizon[]>();
+  for (const row of rows) {
+    const horizon = rowToHorizon(row);
+    const existing = result.get(horizon.connectorInstanceId);
+    if (existing) {
+      existing.push(horizon);
+    } else {
+      result.set(horizon.connectorInstanceId, [horizon]);
+    }
+  }
+  return result;
+}
 
 export function createSqliteConnectorCoverageHorizonStore(): ConnectorCoverageHorizonStore {
   return {
@@ -169,6 +198,27 @@ export function createSqliteConnectorCoverageHorizonStore(): ConnectorCoverageHo
       ];
       return rows.map(rowToHorizon);
     },
+    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared store contract.
+    async getCurrentCoverageHorizonsByInstanceIds(connectorInstanceIds: readonly string[]) {
+      const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
+      if (ids.length === 0) {
+        return new Map();
+      }
+      const rows: HorizonRow[] = [];
+      for (let start = 0; start < ids.length; start += SQLITE_INSTANCE_ID_CHUNK_SIZE) {
+        const chunk = ids.slice(start, start + SQLITE_INSTANCE_ID_CHUNK_SIZE);
+        rows.push(
+          ...iterateDynamicSqlAcknowledged<HorizonRow>(
+            `SELECT horizon_id, connector_instance_id, stream, earliest_available, confirmed_at, basis, reason, confirmed_by, note, superseded_at, superseded_by_horizon_id
+               FROM connector_coverage_horizons
+              WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")}) AND superseded_at IS NULL
+              ORDER BY connector_instance_id ASC, stream ASC`,
+            chunk
+          )
+        );
+      }
+      return groupHorizonsByInstance(rows);
+    },
   };
 }
 
@@ -239,6 +289,20 @@ export function createPostgresConnectorCoverageHorizonStore(): ConnectorCoverage
         [id, MAX_HORIZONS_PER_CONNECTION]
       );
       return result.rows.map(rowToHorizon);
+    },
+    async getCurrentCoverageHorizonsByInstanceIds(connectorInstanceIds: readonly string[]) {
+      const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
+      if (ids.length === 0) {
+        return new Map();
+      }
+      const result = await postgresQuery<HorizonRow>(
+        `SELECT horizon_id, connector_instance_id, stream, earliest_available, confirmed_at, basis, reason, confirmed_by, note, superseded_at, superseded_by_horizon_id
+           FROM connector_coverage_horizons
+          WHERE connector_instance_id = ANY($1::text[]) AND superseded_at IS NULL
+          ORDER BY connector_instance_id ASC, stream ASC`,
+        [ids]
+      );
+      return groupHorizonsByInstance(result.rows);
     },
   };
 }

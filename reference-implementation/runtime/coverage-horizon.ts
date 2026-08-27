@@ -23,12 +23,24 @@
  *   - A horizon NEVER rewrites or deletes retained records. It is pure
  *     disclosure metadata about a boundary, never a mutation of the records
  *     on either side of that boundary.
- *   - A horizon NEVER by itself marks a connection unhealthy. It carries no
- *     `ConnectionHealthState`, no `ConnectionConditionStatus`, and
- *     participates in NO classification step in `connection-health.ts` — it
- *     is informational disclosure, read only by the owner-facing detail
+ *   - A horizon NEVER by itself marks a connection unhealthy, and never
+ *     directly carries a `ConnectionHealthState`/`ConnectionConditionStatus`
+ *     — it is read as informational disclosure by the owner-facing detail
  *     surface (`rendered-verdict.ts`'s `detail`), never the `pill`/`channel`
- *     tone-bearing surface. See `coverageHorizonDisclosure` below.
+ *     tone-bearing surface (see `coverageHorizonDisclosure` below). It MAY,
+ *     however, narrow the current-run coverage DENOMINATOR: a CURRENT,
+ *     positively-confirmed horizon lets `sourceCoverageCondition`
+ *     (`connection-health.ts`) exclude the pre-horizon interval from an
+ *     otherwise-degrading `retryable_gap` — the "provider-servable-now, not
+ *     all-data-ever" rule every product in
+ *     `upstream-retention-loss-health-ux-prior-art.md` uses — but ONLY when
+ *     the connector's own skip evidence independently corroborates the same
+ *     boundary (`isProvenPreHorizonGap`,
+ *     `connector-gap-classification.ts`); an unconfirmed horizon, or a gap
+ *     with no matching connector-reported boundary claim, changes nothing.
+ *     This is narrowing a scope fact into the coverage math, never
+ *     fabricating health from disclosure alone. See
+ *     `ConnectionCoverageEvidence.horizonAccountedRetryableGap`.
  *   - A later provider contradiction SUPERSEDES the prior record
  *     (`supersededAt`/`supersededByHorizonId`), never silently overwrites
  *     it — provenance (who/when/why) survives every revision.
