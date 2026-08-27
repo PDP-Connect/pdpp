@@ -1402,6 +1402,20 @@ export interface ComputeConnectionHealthInput {
   readonly ephemeralBrowserRuntime?: EphemeralBrowserRuntimeProjection | null | undefined;
   readonly freshness: ConnectionFreshnessEvidence | null;
   /**
+   * Cadence-relative lateness — "did the expected collection happen?" — sized
+   * against this source's own interval by `server/cadence-lateness.ts`.
+   *
+   * Deliberately SEPARATE from `freshness`, which answers "is the retained data
+   * current enough to serve?". A source can be fresh and late (collected
+   * recently, then the scheduler stopped) or stale and on time (a slow cadence
+   * whose data legitimately ages between runs). Collapsing the two is what made
+   * ordinary lateness indistinguishable from a broken source.
+   *
+   * Optional and absent-by-default: a caller that supplies no lateness gets
+   * exactly the prior behaviour.
+   */
+  readonly lateness?: { readonly state: "late" | "on_time" | "overdue" | "unknown" } | null;
+  /**
    * True when this connection collects through an enrolled local-device
    * collector, so the local-device outbox axis is a question this deployment can
    * actually answer. Server-side connectors (a browser-backed Reddit connection,
@@ -3313,6 +3327,51 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
         origin: "connector",
         reason: CONDITION_REASON.STALE_ASSISTED_REFRESH,
         remediation: { action: "retry_by_runtime", label: "Run the connector now", retryable: true, target: "run" },
+        severity: "info",
+        status: "false",
+        type: "Fresh",
+      });
+    }
+    // Cadence hysteresis. Stale data on a source that is NOT yet mature-overdue
+    // against its own interval is ordinary lateness: the run is due or a beat
+    // has been missed, the system keeps retrying, and no owner action exists.
+    // The plan requires that state to be neutral — "crossing one expected
+    // interval produces a neutral Late-equivalent state, not failure" — so it
+    // is emitted at `info`, below the degrading threshold, exactly like the
+    // assisted-refresh advisory above.
+    //
+    // Only MATURE lateness (`overdue`, 3x the interval) falls through to the
+    // degrading `warning`. Even then this is a per-connection severity, not a
+    // banner: `fleet-health.ts` still requires an independently proven
+    // owner-actionable or blocked cause before the global banner fires.
+    //
+    // `unknown` lateness (no declared cadence, or never a successful run)
+    // preserves the prior behaviour: a source with no cadence to be late
+    // against keeps the degrading warning it has always had.
+    // No `remediation` on either branch. The research is explicit that a
+    // stale-but-retrying source "will keep retrying automatically; no action
+    // needed from you right now" — attaching an owner-looking CTA to a state
+    // that needs no owner action is the same false-remedy defect as telling a
+    // suppressed source it refreshes on schedule. The row still shows the age;
+    // it just does not ask for anything.
+    if (input.lateness?.state === "on_time") {
+      // Stale by its freshness policy but NOT late against its own cadence:
+      // a slow-cadence source whose data legitimately ages between runs. Saying
+      // "late" here would be false.
+      return condition({
+        message: "Retained data is older than this connection's freshness policy; its next run is not due yet.",
+        origin: "connector",
+        reason: CONDITION_REASON.STALE,
+        severity: "info",
+        status: "false",
+        type: "Fresh",
+      });
+    }
+    if (input.lateness?.state === "late") {
+      return condition({
+        message: "Retained data is stale; this source is late for its usual schedule and will keep retrying.",
+        origin: "connector",
+        reason: CONDITION_REASON.STALE,
         severity: "info",
         status: "false",
         type: "Fresh",

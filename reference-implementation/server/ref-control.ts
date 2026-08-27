@@ -156,6 +156,7 @@ import {
 import { listConnectorSummaryEvidence } from "./connector-summary-read-model.ts";
 import { filterRunGapsProvenCompleteByReport } from "./continuation-proof.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
+import { deriveCadenceLateness } from "./cadence-lateness.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { readStoredCollectionScope } from "./local-collection-scope.ts";
 import { mapPendingPressureGaps } from "./pending-pressure-gap-map.ts";
@@ -5671,7 +5672,14 @@ interface ConnectionHealthScheduleEvidence {
   readonly humanAttentionNeeded: boolean;
   readonly lastErrorCode: string | null;
   readonly lastSuccessfulAt: string | null;
-  readonly schedule: { readonly enabled: boolean } | null;
+  /**
+   * `intervalSeconds` is the source's OWN declared cadence, carried here so
+   * `deriveCadenceLateness` can size lateness against it rather than against a
+   * global constant. Previously this projection narrowed the schedule row to
+   * `{ enabled }` and discarded the interval, which is why no cadence-relative
+   * judgement was possible downstream.
+   */
+  readonly schedule: { readonly enabled: boolean; readonly intervalSeconds: number | null } | null;
 }
 
 function projectConnectionHealthScheduleEvidence(
@@ -5698,7 +5706,15 @@ function projectConnectionHealthScheduleEvidence(
     humanAttentionNeeded: schedule?.human_attention_needed === true,
     lastErrorCode,
     lastSuccessfulAt,
-    schedule: schedule ? { enabled: schedule.enabled !== false } : null,
+    schedule: schedule
+      ? {
+          enabled: schedule.enabled !== false,
+          intervalSeconds:
+            typeof schedule.interval_seconds === "number" && Number.isFinite(schedule.interval_seconds)
+              ? schedule.interval_seconds
+              : null,
+        }
+      : null,
   };
 }
 
@@ -5961,6 +5977,27 @@ export function projectConnectorSummaryConnectionHealth(input: {
   );
   const outbox = input.outbox ?? { axis: "unknown" };
   const freshnessAxis = mapFreshnessAxis(input.freshness);
+  // Cadence-relative lateness: "did the expected collection happen?", sized
+  // against this source's OWN interval. Distinct from `freshnessAxis`, which
+  // answers "is the retained data current enough to serve?" — a source can be
+  // fresh and late (collected recently, then the scheduler stopped) or stale
+  // and on time (a slow cadence whose data legitimately ages). Only lateness
+  // may gate escalation on age, and only once mature; see cadence-lateness.ts.
+  const cadenceLateness = deriveCadenceLateness({
+    intervalSeconds: scheduleEvidence.schedule?.intervalSeconds ?? null,
+    // The RUN's own terminal timestamp is authoritative: `scheduleEvidence`
+    // carries the scheduler's bookkeeping copy, which is null for any
+    // connection the scheduler has not written (and for every fixture that
+    // drives the projection directly). Fall back to it only if the run has no
+    // timestamp of its own.
+    lastSuccessAtMs: (() => {
+      const fromRun = input.lastSuccessfulRun?.finished_at ?? input.lastSuccessfulRun?.last_at ?? null;
+      const iso = fromRun ?? scheduleEvidence.lastSuccessfulAt;
+      const parsed = iso ? Date.parse(iso) : Number.NaN;
+      return Number.isFinite(parsed) ? parsed : null;
+    })(),
+    nowMs: Date.parse(nowIso),
+  });
   // Local-device collection verdict: a local-device-backed connection whose
   // outbox is idle from trusted heartbeat evidence, whose resolved coverage is
   // `complete`, and whose freshness is genuinely `fresh` has finished a clean,
@@ -6013,6 +6050,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     detailGapBacklog,
     ephemeralBrowserRuntime: authoritativeEphemeralBrowserRuntime,
     freshness: { axis: freshnessAxis },
+    lateness: cadenceLateness,
     localDeviceCollection,
     observedAt: nowIso,
     outbox,
