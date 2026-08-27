@@ -149,6 +149,19 @@ test("ANTI-FALSE-GREEN: a never-run manual connector (source-kind alone, no rece
   const collectionSucceeded = snap.conditions.find((c) => c.type === "CollectionSucceeded");
   assert.notEqual(collectionSucceeded?.status, "true", "no receipt exists to prove collection succeeded");
 
+  // The raw `Fresh` condition message is a THIRD surface (alongside the pill
+  // label and owner-state resolver) that can leak a completion claim: it must
+  // say only that recurring freshness does not apply, never that the data
+  // (or "its data") IS complete — that claim belongs solely to the
+  // receipt-gated `CollectionSucceeded`/`importCompletionProven` path.
+  const fresh = snap.conditions.find((c) => c.type === "Fresh");
+  assert.equal(fresh?.status, "not_applicable", "freshness inapplicability is still a durable source-kind fact");
+  assert.doesNotMatch(
+    fresh?.message ?? "",
+    /is complete|its data is complete/i,
+    "the Fresh condition message must not claim completion without a receipt"
+  );
+
   // Tone stays green: a never-run connector with no prior success is the
   // ordinary "freshly set up, nothing wrong yet" `idle` state, and that has
   // always toned green (see `baseStateTone`) — this test is not about tone.

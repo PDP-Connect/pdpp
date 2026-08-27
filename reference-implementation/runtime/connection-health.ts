@@ -3192,7 +3192,12 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
   // The healthy predicate accepts the not-applicable answer instead.
   if (input.acquisition?.freshnessNotApplicable === true) {
     return condition({
-      message: "This is a one-time import — its data is complete and will not refresh.",
+      // Only a claim about the KIND of source (a one-time import has no
+      // recurring capture to age against, so it will not refresh). Never a
+      // claim that this particular import finished ingesting anything —
+      // that is `complete`, gated on a real receipt, not this flag. See the
+      // `freshnessNotApplicable` doc comment above and `collectionSucceededCondition`.
+      message: "This is a one-time import — recurring freshness does not apply, and it will not refresh.",
       observedAt: input.run?.lastSuccessAt ?? null,
       origin: "connector",
       reason: CONDITION_REASON.FRESHNESS_NOT_APPLICABLE_COMPLETE,
