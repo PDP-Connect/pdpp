@@ -211,6 +211,7 @@ const ASSISTED_REFRESH: ConnectionRefreshEvidence = {
   interactionPosture: "manual_action_likely",
   recommendedMode: "automatic",
 };
+const REFRESHES_ON_SCHEDULE_RE = /refreshes on schedule/i;
 
 // ─── Composite invariant harness (task 4.3) ──────────────────────────────────
 //
@@ -1729,6 +1730,33 @@ test("progress: idle scheduled eligibility (no active run, no committed run) doe
   });
   assert.equal(v.progress.mode, "scheduled");
   assert.equal(v.progress.headline, "Refreshes on schedule.");
+});
+
+test("needs-human scheduled source names the owner action instead of a refresh that cannot run", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { attention: "open", freshness: "stale" },
+      forward_disposition: "awaiting_owner",
+      state: "needs_attention",
+    }),
+    [stream()],
+    ASSISTED_REFRESH,
+    true,
+    {
+      last_refreshed_at: "2026-08-26T12:00:00.000Z",
+      mode: "scheduled",
+      observed_at: "2026-08-27T12:00:00.000Z",
+    },
+    { hasPriorSuccess: true, mode: "scheduled-active" }
+  );
+
+  const freshness = v.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? "";
+  assert.equal(freshness, "Waiting on you before the next run can make progress.");
+  assert.doesNotMatch(freshness, REFRESHES_ON_SCHEDULE_RE);
+  assert.ok(
+    v.required_actions.some((action) => action.audience === "owner" && action.cta === "Complete the requested action"),
+    "the owner receives the existing actionable CTA"
+  );
 });
 
 test("progress: an active scheduled run does say collecting", () => {
