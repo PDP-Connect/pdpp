@@ -240,6 +240,7 @@ function ownerDomFailure({
   return {
     authenticated,
     connectionIds: [],
+    sourceScopes: [],
     nextPageHrefs: [],
     paginationComplete: false,
     renderedRows: false,
@@ -294,6 +295,7 @@ async function fetchOwnerSourcesDom({
   cookie: string;
 }): Promise<OwnerSourcesDomFetchResult> {
   const connectionIds = new Set<string>();
+  const sourceScopes = new Map<string, string>();
   const streamKeys = new Set<string>();
   const revisions: (string | null)[] = [];
   const pending: string[] = [`${base}/sources`];
@@ -391,6 +393,10 @@ async function fetchOwnerSourcesDom({
       for (const id of pageEvidence.connectionIds) {
         connectionIds.add(id);
       }
+      for (const { connectionId, scope } of pageEvidence.sourceScopes) {
+        const previous = sourceScopes.get(connectionId);
+        sourceScopes.set(connectionId, previous && previous !== scope ? "<contradictory>" : scope);
+      }
       for (const key of pageEvidence.streamKeys) {
         streamKeys.add(`${key.connectionId}\u0000${key.stream}`);
       }
@@ -424,6 +430,7 @@ async function fetchOwnerSourcesDom({
     evidence: {
       authenticated,
       connectionIds: [...connectionIds],
+      sourceScopes: [...sourceScopes].map(([connectionId, scope]) => ({ connectionId, scope })),
       nextPageHrefs: [],
       paginationComplete: paginationComplete && baseEvidence.paginationComplete !== false,
       renderedRows,

@@ -7,6 +7,7 @@ import type { FetchImpl } from "../lib/owner-session.ts";
 import { fetchAllConnectorSummaries } from "../lib/ref-connectors-page-follow.ts";
 import {
   evaluateStreamHealthAuthority,
+  type OwnerSourcesDomEvidence,
   parseOwnerSourcesDom,
   type StreamHealthAuthorityInput,
   type StreamHealthAuthorityResult,
@@ -100,6 +101,7 @@ function fullyEvidencedInput(connection: Json, connectorManifest = manifest()): 
     dom: {
       authenticated: true,
       connectionIds: synthetic ? [] : [String(connection.connection_id)],
+      sourceScopes: synthetic ? [] : [{ connectionId: String(connection.connection_id), scope: "active" }],
       nextPageHrefs: [],
       paginationComplete: true,
       renderedRows: true,
@@ -219,7 +221,7 @@ function browserFactoryFromFetch(
 
 test("live DOM acquisition waits for streamed Next.js content to resolve before parsing", async () => {
   const streamed = '<div aria-busy="true"><template><a data-pdpp-source-row="c1"></a></template></div>';
-  const resolved = `<header data-pdpp-reference-revision="${REVISION}"><a data-pdpp-source-row="c1" href="/sources/c1">one</a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a></header>`;
+  const resolved = `<header data-pdpp-reference-revision="${REVISION}"><a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a></header>`;
   assert.equal(parseOwnerSourcesDom(streamed).resolved, false);
   const fetchImpl: FetchImpl = (url) => {
     const path = new URL(url).pathname;
@@ -407,6 +409,10 @@ test("derives an exact green numerator/denominator from active production stream
     dom: {
       authenticated: true,
       connectionIds: ["c1", "c2"],
+      sourceScopes: [
+        { connectionId: "c1", scope: "active" },
+        { connectionId: "c2", scope: "active" },
+      ],
       nextPageHrefs: [],
       paginationComplete: true,
       renderedRows: true,
@@ -1073,6 +1079,7 @@ test("resolved authenticated DOM must agree with every real owner connection", (
     dom: {
       authenticated: true,
       connectionIds: [],
+      sourceScopes: [],
       nextPageHrefs: [],
       paginationComplete: true,
       renderedRows: true,
@@ -1098,6 +1105,7 @@ test("auth, Suspense/loading, unknown vocabulary, and revision disagreement fail
     dom: {
       authenticated: false,
       connectionIds: [],
+      sourceScopes: [],
       nextPageHrefs: [],
       paginationComplete: false,
       renderedRows: false,
@@ -1127,6 +1135,7 @@ test("auth, Suspense/loading, unknown vocabulary, and revision disagreement fail
     dom: {
       authenticated: true,
       connectionIds: [],
+      sourceScopes: [],
       nextPageHrefs: [],
       paginationComplete: true,
       renderedRows: false,
@@ -1146,6 +1155,7 @@ test("auth, Suspense/loading, unknown vocabulary, and revision disagreement fail
     dom: {
       authenticated: true,
       connectionIds: ["c1"],
+      sourceScopes: [{ connectionId: "c1", scope: "active" }],
       nextPageHrefs: [],
       paginationComplete: true,
       renderedRows: false,
@@ -1170,6 +1180,7 @@ test("auth, Suspense/loading, unknown vocabulary, and revision disagreement fail
     dom: {
       authenticated: true,
       connectionIds: ["c1"],
+      sourceScopes: [{ connectionId: "c1", scope: "active" }],
       nextPageHrefs: [],
       paginationComplete: true,
       renderedRows: true,
@@ -1193,6 +1204,7 @@ test("exact revision and SHA receipt is accepted only when summary and authentic
     dom: {
       authenticated: true,
       connectionIds: ["c1"],
+      sourceScopes: [{ connectionId: "c1", scope: "active" }],
       nextPageHrefs: [],
       paginationComplete: true,
       renderedRows: true,
@@ -1236,6 +1248,7 @@ test("stream evidence must be bound to an expected rendered row and manifest str
     dom: {
       authenticated: true,
       connectionIds: ["c1"],
+      sourceScopes: [{ connectionId: "c1", scope: "active" }],
       nextPageHrefs: [],
       paginationComplete: true,
       renderedRows: true,
@@ -1250,12 +1263,90 @@ test("stream evidence must be bound to an expected rendered row and manifest str
   assert.equal(result.status, "fail");
 });
 
+test("DOM scope contract keeps active completeness strict while allowing explicit inactive lifecycles", () => {
+  const active = healthyConnection({
+    owner_state: { resolver: "collecting", owner_of_state: "system", posture: "observed" },
+  });
+  const revoked = healthyConnection({ connection_id: "c-revoked", status: "revoked", revoked_at: EVIDENCE_AT });
+  const draft = healthyConnection({ connection_id: "c-draft", status: "draft" });
+  const input = fullyEvidencedInput(active);
+  const result = evaluateStreamHealthAuthority({
+    ...input,
+    connections: [active, revoked, draft],
+    dom: {
+      authenticated: true,
+      connectionIds: ["c-revoked", "c-draft"],
+      sourceScopes: [
+        { connectionId: "c-revoked", scope: "revoked" },
+        { connectionId: "c-draft", scope: "draft" },
+      ],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      selectedConnectionId: null,
+      streamKeys: [],
+      suspense: false,
+    },
+  });
+  assert.equal(result.domAgreement.status, "disagree");
+  assert.deepEqual(result.domAgreement.missingConnectionIds, ["c1"]);
+  assert.equal(result.domAgreement.extraConnectionIds.length, 0);
+
+  const complete = evaluateStreamHealthAuthority({
+    ...input,
+    connections: [active, revoked, draft],
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1", "c-revoked", "c-draft"],
+      sourceScopes: [
+        { connectionId: "c1", scope: "active" },
+        { connectionId: "c-revoked", scope: "revoked" },
+        { connectionId: "c-draft", scope: "draft" },
+      ],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      selectedConnectionId: "c1",
+      streamKeys: [{ connectionId: "c1", stream: "messages" }],
+      suspense: false,
+    },
+  });
+  assert.equal(complete.domAgreement.status, "agree");
+});
+
+test("DOM scope contract rejects unmarked and contradictory source rows", () => {
+  const base = fullyEvidencedInput(healthyConnection());
+  const unmarked = evaluateStreamHealthAuthority({
+    ...base,
+    dom: {
+      ...(base.dom as OwnerSourcesDomEvidence),
+      connectionIds: ["c1", "c-extra"],
+      sourceScopes: [{ connectionId: "c1", scope: "active" }],
+    },
+  });
+  assert.equal(unmarked.domAgreement.status, "disagree");
+  assert.deepEqual(unmarked.domAgreement.extraConnectionIds, ["c-extra"]);
+
+  const contradictory = evaluateStreamHealthAuthority({
+    ...base,
+    dom: {
+      ...(base.dom as OwnerSourcesDomEvidence),
+      sourceScopes: [{ connectionId: "c1", scope: "revoked" }],
+    },
+  });
+  assert.equal(contradictory.domAgreement.status, "disagree");
+  assert.deepEqual(contradictory.domAgreement.invalidSourceScopes, ["c1:revoked"]);
+});
+
 test("the DOM parser recognizes source identities, pagination, empty state, and unresolved auth/loading", () => {
   const resolved = parseOwnerSourcesDom(
-    '<a data-pdpp-source-row="c1" href="/sources/c1">one</a><a class="rr-s-stream-row" data-connection-id="c1" data-pdpp-stream-row="true" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages">messages</a><a href="/sources?page_cursor=next">Next</a>'
+    '<a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a><a class="rr-s-stream-row" data-connection-id="c1" data-pdpp-stream-row="true" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages">messages</a><a href="/sources?page_cursor=next">Next</a>'
   );
   assert.equal(resolved.resolved, true);
   assert.deepEqual(resolved.connectionIds, ["c1"]);
+  assert.deepEqual(resolved.sourceScopes, [{ connectionId: "c1", scope: "active" }]);
   assert.deepEqual(resolved.streamKeys, [{ connectionId: "c1", stream: "messages" }]);
   assert.deepEqual(resolved.nextPageHrefs, ["/sources?page_cursor=next"]);
 
@@ -1338,6 +1429,7 @@ test("master-detail DOM evidence requires every stream row for the selected sour
     dom: {
       authenticated: true,
       connectionIds: ["c1"],
+      sourceScopes: [{ connectionId: "c1", scope: "active" }],
       nextPageHrefs: [],
       paginationComplete: true,
       renderedRows: true,
@@ -1366,7 +1458,9 @@ test("live authority exhausts summary pages and catches a DOM that hides the sec
       return Promise.resolve(response(manifest()));
     }
     if (parsed.pathname === "/sources") {
-      return Promise.resolve(response('<a data-pdpp-source-row="c1" href="/sources/c1">one</a>'));
+      return Promise.resolve(
+        response('<a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a>')
+      );
     }
     throw new Error(`unexpected test URL ${url}`);
   };
@@ -1397,7 +1491,9 @@ test("live authority does not score a connection when its production manifest is
       return Promise.resolve(response({ error: "not_found" }, 404));
     }
     if (parsed.pathname === "/sources") {
-      return Promise.resolve(response('<a data-pdpp-source-row="c1" href="/sources/c1">one</a>'));
+      return Promise.resolve(
+        response('<a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a>')
+      );
     }
     throw new Error(`unexpected test URL ${url}`);
   };
@@ -1437,7 +1533,7 @@ test("live authority isolates a malformed manifest to its revoked connection", a
     if (parsed.pathname === "/sources") {
       return Promise.resolve(
         response(
-          `<header data-pdpp-reference-revision="${REVISION}"><a data-pdpp-source-row="c1" href="/sources/c1">one</a><a data-pdpp-source-row="c-revoked" href="/sources/c-revoked">revoked</a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a></header>`
+          `<header data-pdpp-reference-revision="${REVISION}"><a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a><a data-pdpp-source-row="c-revoked" data-pdpp-source-scope="revoked" href="/sources/c-revoked">revoked</a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a></header>`
         )
       );
     }
@@ -1578,7 +1674,9 @@ test("DOM pagination follows more than 200 rendered pages and preserves cycle de
       const cursor = parsed.searchParams.get("page_cursor");
       const page = cursor ? Number(cursor.replace("page-", "")) : 1;
       const next = page < pageCount ? `<a href="/sources?page_cursor=page-${page + 1}">Next</a>` : "";
-      return Promise.resolve(response(`<a data-pdpp-source-row="c1" href="/sources/c1">one</a>${next}`));
+      return Promise.resolve(
+        response(`<a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a>${next}`)
+      );
     }
     throw new Error(`unexpected test URL ${url}`);
   };
@@ -1609,7 +1707,7 @@ test("DOM pagination follows more than 200 rendered pages and preserves cycle de
       if (parsed.pathname === "/sources") {
         return Promise.resolve(
           response(
-            '<a data-pdpp-source-row="c1" href="/sources/c1">one</a><a href="/sources?page_cursor=loop">Next</a>'
+            '<a data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a><a href="/sources?page_cursor=loop">Next</a>'
           )
         );
       }

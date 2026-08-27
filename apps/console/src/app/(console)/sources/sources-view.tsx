@@ -448,6 +448,7 @@ function InstanceListItem({
         aria-current={selected ? "page" : undefined}
         className={`${cls} rr-s-item--mobile`}
         data-pdpp-source-row={instance.connectionId ?? instance.id}
+        data-pdpp-source-scope={instance.sourceScope}
         data-source-id={instance.id}
         data-source-label={instance.displayName}
         href={instance.detailHref}
@@ -467,6 +468,7 @@ function InstanceListItem({
           aria-pressed={selected}
           className={`${cls} rr-s-item--desktop`}
           data-pdpp-source-row={instance.connectionId ?? instance.id}
+          data-pdpp-source-scope={instance.sourceScope}
           data-source-id={instance.id}
           data-source-label={instance.displayName}
           onClick={onSelect}

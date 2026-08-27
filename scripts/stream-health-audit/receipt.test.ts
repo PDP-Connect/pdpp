@@ -145,10 +145,16 @@ function fetchImplFor({
     }
     if (parsed.pathname === "/sources") {
       const rows = connections
-        .map(
-          (c) =>
-            `<a data-pdpp-source-row="${c.connection_id}" href="/sources/${c.connection_id}">${c.connection_id}</a>`
-        )
+        .map((c) => {
+          let scope = "active";
+          if (c.status === "revoked") {
+            scope = "revoked";
+          }
+          if (c.status === "draft") {
+            scope = "draft";
+          }
+          return `<a data-pdpp-source-row="${c.connection_id}" data-pdpp-source-scope="${scope}" href="/sources/${c.connection_id}">${c.connection_id}</a>`;
+        })
         .join("");
       return Promise.resolve(response(rows || '<div data-testid="sources-empty">No sources yet</div>'));
     }

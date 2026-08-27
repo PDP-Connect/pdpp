@@ -802,6 +802,7 @@ test("toSourceInstanceView drops blank stream names", () => {
 test("toSourceInstanceView surfaces a revoked instance with a struck status", () => {
   const view = toSourceInstanceView(summary({ revoked_at: "2026-06-01T00:00:00Z", status: "revoked" }));
   assert.equal(view.revoked, true);
+  assert.equal(view.sourceScope, "revoked");
   assert.equal(view.status.kind, "revoked");
 });
 
@@ -928,6 +929,7 @@ test("sourceDetailHrefFor routes a draft connection to /connect/status/:id, not 
 
 test("toSourceInstanceView projects a draft connection as pending, links /connect/status/:id, and offers Continue setup", () => {
   const view = toSourceInstanceView(draftSummary());
+  assert.equal(view.sourceScope, "draft");
   assert.equal(view.detailHref, "/connect/status/conn_1");
   assert.equal(view.status.kind, "pending");
   assert.equal(view.status.label, "Setup in progress");

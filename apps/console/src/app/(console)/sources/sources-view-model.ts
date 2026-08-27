@@ -205,6 +205,8 @@ export interface SourceInstanceView {
    * `setupFailed` is false or the mirror predates `rendered_verdict`.
    */
   setupFailedForwardStatement: string | null;
+  /** Canonical connection lifecycle emitted for acceptance DOM reconciliation. */
+  sourceScope: "active" | "draft" | "paused" | "rejected" | "revoked" | "unknown";
   /** Status flag (dot + Endorse) derived from rendered verdict, with legacy fallback. */
   status: SourceStatusFlag;
   /** Stream manifest rows for the passport table. */
@@ -568,6 +570,19 @@ function listKindForDisplayName(displayName: string, kind: string): string | nul
  * `stream_records` projection; collection facts stay separate because they
  * describe the latest run, not the durable records currently retained.
  */
+function sourceScopeForSummary(summary: RefConnectorSummary, revoked: boolean): SourceInstanceView["sourceScope"] {
+  if (revoked) {
+    return "revoked";
+  }
+  if (summary.status === "draft" || isSetupInProgressConnector(summary)) {
+    return "draft";
+  }
+  if (summary.status === "active" || summary.status === "paused" || summary.status === "rejected") {
+    return summary.status;
+  }
+  return "unknown";
+}
+
 export function toSourceInstanceView(
   summary: RefConnectorSummary,
   options: { fallbackDisambiguator?: string | null; manifests?: readonly SourceManifestLike[] } = {}
@@ -582,6 +597,7 @@ export function toSourceInstanceView(
   // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connectionId ?? connectorInstanceId ?? actionability.routeId;
   const revoked = isRevokedConnector(summary);
+  const sourceScope = sourceScopeForSummary(summary, revoked);
   const archived = isArchivedSource(summary);
   const setupFailed = isSetupFailedSource(summary);
   // Modality is persisted server authority. A missing heartbeat must not
@@ -691,7 +707,6 @@ export function toSourceInstanceView(
         ? summary.total_records.toLocaleString()
         : formatTotalRecordsLabel(summary.total_records, summary.total_records_state, "records"),
     },
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: normalizes first_at's `undefined` (from the optional chain) to `null`, which SourcePassportField's type requires; tsc rejects removing this.
     { k: "added", mono: true, value: summary.last_successful_run?.first_at ?? null },
   ];
 
@@ -704,6 +719,7 @@ export function toSourceInstanceView(
     displayName,
     icon: manifest?.icon ?? null,
     id: routeId,
+    sourceScope,
     isLocalDevicePush,
     isRunning,
     kind,

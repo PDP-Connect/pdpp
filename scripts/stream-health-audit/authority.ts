@@ -371,6 +371,7 @@ const NON_RENDERED_HTML_PATTERN =
 const ATTRIBUTE_PATTERN = /(?:^|\s)([A-Za-z_:][A-Za-z0-9_.:-]*)(?:\s*=\s*(?:(["'])(.*?)\2|([^\s>]+)))?/g;
 const ROW_ATTRIBUTE_NAMES = new Set([
   "data-pdpp-source-row",
+  "data-pdpp-source-scope",
   "data-pdpp-selected-source",
   "data-pdpp-stream-row",
   "data-connection-id",
@@ -388,6 +389,7 @@ export interface OwnerSourcesDomEvidence {
   resolved: boolean;
   revision?: string | null;
   selectedConnectionId?: string | null;
+  sourceScopes: readonly { connectionId: string; scope: string }[];
   streamKeys: readonly { connectionId: string; stream: string }[];
   suspense: boolean;
 }
@@ -433,8 +435,11 @@ export interface StreamHealthAuthorityResult {
     extraConnectionIds: string[];
     extraStreamKeys: string[];
     invalidStreamKeys: string[];
+    invalidSourceScopes: string[];
     missingConnectionIds: string[];
+    missingSourceScopes: string[];
     observedConnectionIds: string[];
+    observedSourceScopes: string[];
     observedStreamKeys: string[];
     resolved: boolean;
     status: "agree" | "disagree" | "inconclusive";
@@ -1647,6 +1652,7 @@ function missingDomEvidence(reason = "owner Sources evidence was not supplied"):
   return {
     authenticated: false,
     connectionIds: [],
+    sourceScopes: [],
     nextPageHrefs: [],
     paginationComplete: false,
     renderedRows: false,
@@ -1678,10 +1684,12 @@ function htmlAttributes(tag: string): Map<string, string> {
 
 interface RenderedRowEvidence {
   connectionIds: Set<string>;
+  malformedSourceScope: boolean;
   malformedStreamRow: boolean;
   orphanedStreamRow: boolean;
   renderedRows: boolean;
   selectedConnectionId: string | null;
+  sourceScopes: Map<string, string>;
   streamKeys: { connectionId: string; stream: string }[];
 }
 
@@ -1716,8 +1724,11 @@ function parseRenderedStreamRow(
   return { key: { connectionId: rowConnectionId, stream }, malformed: false };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: source-row parsing validates identity and lifecycle scope together so contradictory duplicate rows fail closed.
 function parseRenderedRows(source: string): RenderedRowEvidence {
   const connectionIds = new Set<string>();
+  const sourceScopes = new Map<string, string>();
+  let malformedSourceScope = false;
   const streamKeys: { connectionId: string; stream: string }[] = [];
   let malformedStreamRow = false;
   let orphanedStreamRow = false;
@@ -1729,7 +1740,22 @@ function parseRenderedRows(source: string): RenderedRowEvidence {
     const sourceRow = attributes.get("data-pdpp-source-row");
     if (sourceRow) {
       renderedRows = true;
-      connectionIds.add(sourceRow);
+      const rowConnectionId = sourceRow.trim();
+      const scope = attributes.get("data-pdpp-source-scope")?.trim() ?? "";
+      if (rowConnectionId) {
+        connectionIds.add(rowConnectionId);
+      }
+      if (rowConnectionId && scope) {
+        const previousScope = sourceScopes.get(rowConnectionId);
+        if (previousScope && previousScope !== scope) {
+          malformedSourceScope = true;
+          sourceScopes.set(rowConnectionId, "<contradictory>");
+        } else {
+          sourceScopes.set(rowConnectionId, scope);
+        }
+      } else {
+        malformedSourceScope = true;
+      }
     }
     const streamRow = parseRenderedStreamRow(attributes);
     if (!streamRow) {
@@ -1747,7 +1773,16 @@ function parseRenderedRows(source: string): RenderedRowEvidence {
       orphanedStreamRow = true;
     }
   }
-  return { connectionIds, malformedStreamRow, orphanedStreamRow, renderedRows, streamKeys, selectedConnectionId };
+  return {
+    connectionIds,
+    malformedSourceScope,
+    malformedStreamRow,
+    orphanedStreamRow,
+    renderedRows,
+    selectedConnectionId,
+    sourceScopes,
+    streamKeys,
+  };
 }
 
 function parsePageHrefs(source: string): string[] {
@@ -1789,6 +1824,8 @@ export function parseOwnerSourcesDom(html: string): OwnerSourcesDomEvidence {
     reason = "owner authentication was not resolved";
   } else if (suspense) {
     reason = "owner page is still suspended/loading";
+  } else if (rendered.malformedSourceScope) {
+    reason = "a rendered source row did not declare one consistent lifecycle scope";
   } else if (rendered.malformedStreamRow) {
     reason = "a rendered stream row did not bind to its source and Explore route";
   } else if (rendered.orphanedStreamRow) {
@@ -1805,6 +1842,10 @@ export function parseOwnerSourcesDom(html: string): OwnerSourcesDomEvidence {
     revision,
     resolved,
     selectedConnectionId: rendered.selectedConnectionId,
+    sourceScopes: [...rendered.sourceScopes].map(([rowConnectionId, scope]) => ({
+      connectionId: rowConnectionId,
+      scope,
+    })),
     streamKeys: [
       ...new Map(
         rendered.streamKeys.map((key) => [key.connectionId + String.fromCharCode(0) + key.stream, key])
@@ -1960,14 +2001,33 @@ function compareDom(
   counts: Record<StreamHealthClass, number>
 ): StreamHealthAuthorityResult["domAgreement"] {
   const observed = [...new Set(dom.connectionIds.map((id) => id.trim()).filter(Boolean))].sort();
-  const expected = [
+  const expectedScopes = new Map([
     ...new Set(
       connections
         .filter((connection) => !connectionIsSynthetic(connection, resolveManifest(connection, input)))
-        .map(connectionId)
-        .filter((id): id is string => id !== null)
+        .map((connection) => {
+          const id = connectionId(connection);
+          return id ? ([id, lifecycle(connection)] as const) : null;
+        })
+        .filter((entry): entry is readonly [string, string] => entry !== null)
     ),
-  ].sort();
+  ]);
+  const expected = [...expectedScopes.keys()].sort();
+  const activeExpected = [...expectedScopes]
+    .filter(([, scope]) => scope === "active")
+    .map(([id]) => id)
+    .sort((a, b) => a.localeCompare(b));
+  const observedScopeValues = new Map<string, string>();
+  for (const entry of Array.isArray(dom.sourceScopes) ? dom.sourceScopes : []) {
+    const id = asNonEmptyString(entry?.connectionId);
+    const scope = asNonEmptyString(entry?.scope);
+    if (id && scope) {
+      observedScopeValues.set(id, scope);
+    }
+  }
+  const observedSourceScopes = [...observedScopeValues]
+    .map(([id, scope]) => `${id}:${scope}`)
+    .sort((a, b) => a.localeCompare(b));
   const streamValues = Array.isArray(dom.streamKeys)
     ? [
         ...new Map(
@@ -2001,6 +2061,13 @@ function compareDom(
   const extraStreamKeys: string[] = [];
   const invalidStreamKeys: string[] = [];
   const expectedSet = new Set(expected);
+  const missingSourceScopes = observed
+    .filter((id) => expectedScopes.has(id) && !observedScopeValues.has(id))
+    .sort((a, b) => a.localeCompare(b));
+  const invalidSourceScopes = [...observedScopeValues]
+    .filter(([id, scope]) => expectedScopes.get(id) !== scope)
+    .map(([id, scope]) => `${id}:${scope}`)
+    .sort((a, b) => a.localeCompare(b));
   let streamManifestUnavailable = false;
   for (const key of streamValues) {
     const label = `${key.connectionId}:${key.stream}`;
@@ -2017,18 +2084,24 @@ function compareDom(
   }
   const structuralResolved = dom.resolved && dom.renderedRows && Array.isArray(dom.streamKeys);
   const observedSet = new Set(observed);
-  const missingConnectionIds = expected.filter((id) => !observedSet.has(id));
+  const missingConnectionIds = activeExpected.filter((id) => !observedSet.has(id));
   const extraConnectionIds = observed.filter((id) => !expectedSet.has(id));
   if (expected.length === 0 && structuralResolved && dom.authenticated === true && dom.suspense === false) {
     return {
       extraConnectionIds: observed,
       extraStreamKeys,
       invalidStreamKeys,
+      invalidSourceScopes,
       missingConnectionIds: [],
+      missingSourceScopes: [],
       observedConnectionIds: observed,
+      observedSourceScopes,
       observedStreamKeys,
       resolved: true,
-      status: extraConnectionIds.length || extraStreamKeys.length || invalidStreamKeys.length ? "disagree" : "agree",
+      status:
+        extraConnectionIds.length || extraStreamKeys.length || invalidStreamKeys.length || invalidSourceScopes.length
+          ? "disagree"
+          : "agree",
     };
   }
   if (
@@ -2037,18 +2110,24 @@ function compareDom(
     dom.suspense === true ||
     !structuralResolved ||
     (selectedConnectionId === null &&
+      activeExpected.length > 0 &&
       missingConnectionIds.length === 0 &&
       extraConnectionIds.length === 0 &&
       extraStreamKeys.length === 0 &&
-      invalidStreamKeys.length === 0) ||
+      invalidStreamKeys.length === 0 &&
+      missingSourceScopes.length === 0 &&
+      invalidSourceScopes.length === 0) ||
     (selectedConnectionId !== null && expectedSelectedStreams === undefined)
   ) {
     return {
       extraConnectionIds: [],
       extraStreamKeys,
       invalidStreamKeys,
-      missingConnectionIds: expected,
+      invalidSourceScopes,
+      missingConnectionIds: activeExpected,
+      missingSourceScopes,
       observedConnectionIds: observed,
+      observedSourceScopes,
       observedStreamKeys,
       resolved: false,
       status: "inconclusive",
@@ -2056,7 +2135,9 @@ function compareDom(
   }
   if (
     missingConnectionIds.length > 0 ||
+    missingSourceScopes.length > 0 ||
     extraConnectionIds.length > 0 ||
+    invalidSourceScopes.length > 0 ||
     extraStreamKeys.length > 0 ||
     invalidStreamKeys.length > 0 ||
     missingStreamKeys.length > 0 ||
@@ -2067,15 +2148,18 @@ function compareDom(
       connection_id: null,
       connector_id: null,
       denominator: false,
-      reason: `authenticated owner DOM differs from owner inventory (missing=${missingConnectionIds.length}, missing_selected_streams=${missingStreamKeys.length}, extra=${extraConnectionIds.length}, extra_streams=${extraStreamKeys.length}, invalid_streams=${invalidStreamKeys.length})`,
+      reason: `authenticated owner DOM differs from owner inventory (missing=${missingConnectionIds.length}, missing_source_scopes=${missingSourceScopes.length}, invalid_source_scopes=${invalidSourceScopes.length}, missing_selected_streams=${missingStreamKeys.length}, extra=${extraConnectionIds.length}, extra_streams=${extraStreamKeys.length}, invalid_streams=${invalidStreamKeys.length})`,
       stream: "<owner-dom>",
     });
     return {
       extraConnectionIds,
       extraStreamKeys,
       invalidStreamKeys,
+      invalidSourceScopes,
       missingConnectionIds,
+      missingSourceScopes,
       observedConnectionIds: observed,
+      observedSourceScopes,
       observedStreamKeys,
       resolved: true,
       status: "disagree",
@@ -2086,8 +2170,11 @@ function compareDom(
       extraConnectionIds,
       extraStreamKeys,
       invalidStreamKeys,
+      invalidSourceScopes,
       missingConnectionIds,
+      missingSourceScopes,
       observedConnectionIds: observed,
+      observedSourceScopes,
       observedStreamKeys,
       resolved: true,
       status: "inconclusive",
@@ -2097,8 +2184,11 @@ function compareDom(
     extraConnectionIds,
     extraStreamKeys,
     invalidStreamKeys,
+    invalidSourceScopes,
     missingConnectionIds,
+    missingSourceScopes,
     observedConnectionIds: observed,
+    observedSourceScopes,
     observedStreamKeys,
     resolved: true,
     status: "agree",
