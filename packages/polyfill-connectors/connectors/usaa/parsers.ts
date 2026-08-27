@@ -54,8 +54,35 @@ const STMT_LINE_SPLIT_RE = /\r?\n/;
 const MODERN_SECTION_START_RE =
   /^\s*(TRANSACTIONS|ACCOUNT\s+ACTIVITY|DEPOSITS?\s+AND\s+OTHER\s+CREDITS|WITHDRAWALS?\s+AND\s+OTHER\s+DEBITS)\s*$/i;
 const MODERN_SECTION_END_RE = /^\s*(ENDING\s+BALANCE|TOTAL\s+FEES|FEE\s+SUMMARY|DAILY\s+BALANCE\s+SUMMARY)/i;
+// Two live-evidenced sub-shapes share this section-header/date-prefix era:
+//
+//  (a) one signed Amount column: "MM/DD DESC -4.50 95.50" — the amount's own
+//      leading sign or parens is authoritative and there is no interleaved
+//      Check# token.
+//
+//  (b) a Debits | Credits | Balance triple (confirmed from the table's own
+//      column-header row, live evidence, June-August 2026 checking
+//      statements): no column ever carries a minus sign, and the row's
+//      Debit-vs-Credit column position is the only sign signal. Text
+//      extraction flattens both columns onto one line, and a debit row
+//      additionally interleaves the Check# column's value (a literal "0"
+//      when no check was written) between the amount and the balance
+//      ("$346.22 0 $660.70"); a credit row never does ("$10.00 $1,006.92" —
+//      no Check# applies to a credit). 23/23 live wrapped rows followed this
+//      rule with zero exceptions. Group 6 (the interleaved placeholder) is
+//      therefore load-bearing for SIGN in shape (b), not just noise to
+//      consume — see parseModernTxnLine.
 const MODERN_TXN_LINE_RE =
-  /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})(?:\s+(-?\$?[\d,]+\.\d{2}))?\s*$/;
+  /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s+(.+?)\s+(-?\$?\(?[\d,]+\.\d{2}\)?)(?:\s+(--|\d+))?(?:\s+(-?\$?[\d,]+\.\d{2}))?\s*$/;
+/** A logical row's leading date, checked against a whole (possibly
+ *  multi-line-joined) row candidate before attempting the full txn match. */
+const MODERN_ROW_START_RE = /^\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/;
+/** Mid-table pagination furniture: a page-break marker or the repeated
+ *  column-header row a multi-page statement reprints at the top of each new
+ *  page. These end the CURRENT ROW (so its wrapped continuation lines never
+ *  glue onto the next page's furniture) without ending the TABLE the way
+ *  `MODERN_SECTION_END_RE` does — the transaction rows resume right after. */
+const MODERN_ROW_BREAK_RE = /^\s*(Page\s+\d+\s+of\s+\d+|--\s*\d+\s+of\s+\d+\s*--|Date\s+Description\s.*Balance)\s*$/i;
 const WS_RUN_2PLUS_RE = /\s{2,}/g;
 const CREDIT_SECTION_START_RE = /^\s*(TRANSACTIONS|PURCHASES|PAYMENTS\s+AND\s+CREDITS)\s*$/i;
 const CREDIT_SECTION_TOTAL_RE = /^\s*TOTAL/i;
@@ -406,7 +433,7 @@ function parseModernTxnLine(
   if (!m) {
     return null;
   }
-  const [, mmRaw, ddRaw, yRaw, descRaw, amountRaw, balanceRaw] = m;
+  const [, mmRaw, ddRaw, yRaw, descRaw, amountRaw, checkPlaceholderRaw, balanceRaw] = m;
   if (!(mmRaw && ddRaw && descRaw && amountRaw)) {
     return null;
   }
@@ -426,11 +453,19 @@ function parseModernTxnLine(
   if (isStatementSummaryDescription(description)) {
     return null;
   }
-  const amount = currencyToCentsFromStatement(amountRaw);
-  const balance = balanceRaw ? currencyToCentsFromStatement(balanceRaw) : null;
+  let amount = currencyToCentsFromStatement(amountRaw);
   if (amount === null) {
     return null;
   }
+  // Shape (b) (see MODERN_TXN_LINE_RE): the amount column never carries its
+  // own sign, so an interleaved Check# placeholder is the only evidence a
+  // debit-column figure was printed instead of a credit-column one. Shape
+  // (a)'s amount already carries an explicit sign/parens and never has this
+  // placeholder, so `amount` is already correctly signed and untouched here.
+  if (checkPlaceholderRaw && amount > 0) {
+    amount = -amount;
+  }
+  const balance = balanceRaw ? currencyToCentsFromStatement(balanceRaw) : null;
   const tupleKey = `${iso}|${amount}|${description}`;
   const ord = tupleOrd.get(tupleKey) || 0;
   tupleOrd.set(tupleKey, ord + 1);
@@ -438,14 +473,74 @@ function parseModernTxnLine(
 }
 
 /**
- * Era A/B parser: line-by-line scan for rows that start with a date.
+ * Group the lines inside one TRANSACTIONS...ENDING BALANCE section into
+ * logical rows. A wide description cell forces USAA's PDF renderer to wrap
+ * one table row across several physical text lines — e.g. (structure only):
+ *
+ *   08/04 Ach Debit
+ *   VENMO CASHOUT
+ *   ***********1234
+ *   0
+ *   $25.00 $490.76
+ *
+ * `pdf-parse` preserves that visual wrap as separate lines, so a
+ * single-line-only transaction regex matches none of them. This groups every
+ * line from one date-prefixed line up to (but not including) the next
+ * date-prefixed line into one joined row, so a row that was never wrapped
+ * (group size 1) parses identically to before, and a wrapped row now forms
+ * one string for `parseModernTxnLine` to match against.
+ */
+function groupModernRows(lines: readonly string[]): string[] {
+  const rows: string[] = [];
+  let current: string[] | null = null;
+  for (const line of lines) {
+    if (MODERN_ROW_BREAK_RE.test(line)) {
+      // Pagination furniture belongs to no row: it ends whatever row was
+      // accumulating (so page 2's repeated header/next date never glues onto
+      // page 1's last row) without discarding that row itself.
+      if (current) {
+        rows.push(current.join(" "));
+      }
+      current = null;
+      continue;
+    }
+    if (MODERN_ROW_START_RE.test(line)) {
+      if (current) {
+        rows.push(current.join(" "));
+      }
+      current = [line];
+    } else if (current) {
+      current.push(line);
+    }
+    // Lines before the first date-prefixed row (e.g. the table's column
+    // header) are not part of any row and are dropped, exactly as before.
+  }
+  if (current) {
+    rows.push(current.join(" "));
+  }
+  return rows;
+}
+
+/**
+ * Era A/B parser: scans for table rows that start with a date, joining a
+ * row's wrapped continuation lines (see `groupModernRows`) before matching.
  * Handles "MM/DD" (inherits statement year) and "MM/DD/YY" formats.
  */
 export function parseModernCheckingEra(text: string, { closing }: EraParseArgs): ParsedStatementTxn[] {
   const lines = text.split(STMT_LINE_SPLIT_RE);
   const txns: ParsedStatementTxn[] = [];
-  let inTable = false;
   const tupleOrd = new Map<string, number>();
+  let inTable = false;
+  let sectionLines: string[] = [];
+  const flushSection = (): void => {
+    for (const row of groupModernRows(sectionLines)) {
+      const txn = parseModernTxnLine(row, closing, tupleOrd);
+      if (txn) {
+        txns.push(txn);
+      }
+    }
+    sectionLines = [];
+  };
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) {
@@ -456,16 +551,19 @@ export function parseModernCheckingEra(text: string, { closing }: EraParseArgs):
       continue;
     }
     if (MODERN_SECTION_END_RE.test(line)) {
+      if (inTable) {
+        flushSection();
+      }
       inTable = false;
       continue;
     }
     if (!inTable) {
       continue;
     }
-    const txn = parseModernTxnLine(line, closing, tupleOrd);
-    if (txn) {
-      txns.push(txn);
-    }
+    sectionLines.push(line);
+  }
+  if (inTable) {
+    flushSection();
   }
   return txns;
 }
