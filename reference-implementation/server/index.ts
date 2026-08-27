@@ -342,6 +342,7 @@ import {
   mountRefBrowserEnrollmentShell,
   promoteBrowserEnrollmentShellBinding,
 } from "./routes/ref-browser-enrollment-shell.ts";
+import { mountRefConnectionAcknowledgeLoss } from "./routes/ref-connection-acknowledge-loss.ts";
 import { mountRefConnectionPause } from "./routes/ref-connection-pause.ts";
 import { HISTORICAL_ARCHIVE_SOURCE_BINDING_KIND, mountRefConnectionResume } from "./routes/ref-connection-resume.ts";
 import {
@@ -6088,6 +6089,29 @@ export function buildAsApp(opts: ServerOpts = {}) {
         options as Parameters<ReturnType<typeof createRequestConnectorInstanceStore>["updateStatus"]>[1]
       ),
   } as unknown as Parameters<typeof mountRefConnectionPause>[1]);
+
+  // POST /_ref/connections/:connectorInstanceId/acknowledge-loss stamps a
+  // durable, attributed owner acknowledgement of permanent, externally-caused
+  // data loss (`runtime/acknowledged-loss.ts`) via the same generic
+  // `updateSourceBindingPatch` merge-patch primitive the browser-enrollment
+  // shell and static-secret draft routes use, never a status flip.
+  mountRefConnectionAcknowledgeLoss(app, {
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerSubjectId,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateSourceBindingPatch: (connectorInstanceId: string, options: unknown) =>
+      createRequestConnectorInstanceStore().updateSourceBindingPatch(
+        connectorInstanceId,
+        options as Parameters<ReturnType<typeof createRequestConnectorInstanceStore>["updateSourceBindingPatch"]>[1]
+      ),
+  } as unknown as Parameters<typeof mountRefConnectionAcknowledgeLoss>[1]);
 
   mountRefStaticSecretDraftConnection(app, {
     canonicalConnectorKey,
