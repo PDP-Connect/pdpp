@@ -15,7 +15,7 @@
  *   1. Timing. raw/ persists on the volume and is precisely what a diagnostic
  *      agent is pointed at. A later sanitizing pass does not un-write bytes
  *      that already landed. Redaction has to happen before the write.
- *   2. Shape. A credential has no shape. `BG54aFvx` is not an email, an SSN, a
+ *   2. Shape. A credential has no shape. `hunter2-not-real` is not an email, an SSN, a
  *      card, or a labelled name, so every rule in scrub-defaults.ts passes it
  *      through verbatim. Secrets are identified by their POSITION (the value
  *      slot of a secret-ish field) or by IDENTITY (equal to a credential the
@@ -30,8 +30,9 @@
  * against real Playwright output rather than assumed:
  *
  *   ARIA snapshots (page.ariaSnapshot) serialize the live value PROPERTY, so a
- *   password typed by fill() appears in full:
- *       - textbox "Password" [ref=e25]: BG54aFvx
+ *   password typed by fill() appears in full. Depending on the Playwright
+ *   version, the value is either inline after the textbox node or in a nested
+ *   `text:` child beneath it.
  *
  *   DOM dumps (page.content) serialize the value ATTRIBUTE, not the property.
  *   A typed password therefore does NOT appear, but a value="..." present in
@@ -148,8 +149,8 @@ export function redactKnownSecrets(content: string, secrets: readonly string[]):
  * still looks unfilled after redaction.
  */
 export function redactAriaSnapshot(snapshot: string, secrets: readonly string[] = []): string {
-  const lines = snapshot.split("\n").map((line) => redactAriaLine(line));
-  return redactKnownSecrets(lines.join("\n"), secrets);
+  const redactedLines = redactSecretTextboxValues(snapshot.split("\n"));
+  return redactKnownSecrets(redactedLines.join("\n"), secrets);
 }
 
 /**
@@ -184,6 +185,62 @@ function redactAriaLine(line: string): string {
   // the same shape of YAML and a numeric-looking value stays a string.
   const quoted = rawValue.startsWith('"') && rawValue.endsWith('"');
   return `${prefix}${quoted ? `"${REDACTED}"` : REDACTED}`;
+}
+
+const ARIA_NODE_INDENT_RE = /^(\s*)-\s+/;
+const ARIA_SECRET_TEXTBOX_RE = /^\s*-\s+textbox\s+"((?:[^"\\]|\\.)*)"(?:\s+\[[^\]]*\])*\s*:\s*$/i;
+const ARIA_NESTED_TEXT_VALUE_RE = /^(\s*-\s+text:\s*)(.+)$/;
+
+function ariaNodeIndent(line: string): number | undefined {
+  return ARIA_NODE_INDENT_RE.exec(line)?.[1]?.length;
+}
+
+function secretTextboxName(line: string): string | undefined {
+  const name = ARIA_SECRET_TEXTBOX_RE.exec(line)?.[1];
+  return name !== undefined && isSecretFieldName(name) ? name : undefined;
+}
+
+function redactNestedAriaTextValue(line: string): string {
+  const nestedTextValue = ARIA_NESTED_TEXT_VALUE_RE.exec(line);
+  if (nestedTextValue?.[1] === undefined || nestedTextValue[2] === undefined) {
+    return line;
+  }
+  const [, prefix, rawValue] = nestedTextValue;
+  if (prefix === undefined || rawValue === undefined) {
+    return line;
+  }
+  const quoted = rawValue.startsWith('"') && rawValue.endsWith('"');
+  return `${prefix}${quoted ? `"${REDACTED}"` : REDACTED}`;
+}
+
+/**
+ * Redact both Playwright ARIA encodings of a textbox value.
+ *
+ * Most versions put the value on the textbox line. The production capture
+ * shape also puts it in a nested `text:` node under an otherwise empty
+ * secret-named textbox. Track only that textbox subtree; page copy in sibling
+ * `text:` nodes remains available for diagnosis.
+ */
+function redactSecretTextboxValues(lines: readonly string[]): string[] {
+  let secretTextboxIndent: number | null = null;
+
+  return lines.map((line) => {
+    const indent = ariaNodeIndent(line);
+    if (secretTextboxIndent !== null && indent !== undefined && indent <= secretTextboxIndent) {
+      secretTextboxIndent = null;
+    }
+
+    if (secretTextboxName(line) !== undefined) {
+      secretTextboxIndent = indent ?? null;
+      return line;
+    }
+
+    if (secretTextboxIndent !== null && indent !== undefined && indent > secretTextboxIndent) {
+      return redactNestedAriaTextValue(line);
+    }
+
+    return redactAriaLine(line);
+  });
 }
 
 /**
