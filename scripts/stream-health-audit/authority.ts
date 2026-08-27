@@ -92,6 +92,14 @@ const KNOWN_FORWARD_DISPOSITIONS = new Set([
 const KNOWN_PILL_TONES = new Set(["amber", "green", "grey", "red"]);
 const KNOWN_RUN_STATUSES = new Set([
   "abandoned",
+  // The pre-run gate emits `skipped` when an automatic run is withheld
+  // (`runtime/scheduler/pre-run-gate.ts`). KNOWN means "the audit recognises
+  // this value", NOT "this value is green" — `SUCCESSFUL_RUN_STATUSES` is a
+  // separate three-value allowlist (`completed`/`succeeded`/`success`) and
+  // `skipped` is deliberately absent from it. Leaving it unknown made the
+  // audit fail closed on a value the runtime intentionally produces, which
+  // reads as a defect in the connection rather than a gap in the vocabulary.
+  "skipped",
   "active",
   "cancelled",
   "completed",
@@ -211,6 +219,13 @@ const KNOWN_EVIDENCE_REASON_CODES = new Set([
 ]);
 const KNOWN_CONDITION_REASONS = new Set([
   "attention_expired",
+  // `ref-control.ts:5280` emits this on `AttentionClear` when the controller's
+  // needs-human gate is set with no durable attention record behind it. It is
+  // a real runtime value, so the audit must recognise it rather than fail
+  // closed on unknown vocabulary. Recognising a reason says nothing about
+  // health: `AttentionClear` with this reason is still `status: false`, which
+  // is what keeps the row non-green.
+  "needs_human_attention",
   "attention_required",
   "backoff_expired",
   "browser_runtime_not_configured",

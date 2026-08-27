@@ -2349,3 +2349,30 @@ test("owner-auth transport errors return a structured inconclusive result", asyn
   assert.match(result.error ?? "", SOCKET_FAILURE_PATTERN);
   assert.equal(result.gates.auth, "inconclusive");
 });
+
+test("vocabulary: `skipped` is a RECOGNISED run status, and still not green", () => {
+  // `runtime/scheduler/pre-run-gate.ts` emits `status: "skipped"` when an
+  // automatic run is withheld. Leaving it unknown made the strict audit fail
+  // closed on a value the runtime intentionally produces — which reads to the
+  // owner as a broken connection rather than a gap in the audit's vocabulary.
+  const skipped = evaluate(
+    healthyConnection({ last_run: { finished_at: EVIDENCE_AT, run_id: "run-skip", status: "skipped" } })
+  );
+  assert.equal(skipped.perClass.unknown_vocabulary, 0, "the runtime emits it; the audit must recognise it");
+
+  // ...and recognising it must not make it count as success. The row still has
+  // no successful latest run, so it cannot be scored green.
+  assert.notEqual(
+    skipped.status,
+    "pass",
+    "KNOWN means recognised, never green — a withheld run collected nothing"
+  );
+});
+
+test("vocabulary: an UNRECOGNISED run status still fails closed", () => {
+  // The control. Adding two known values must not turn the audit permissive.
+  const invented = evaluate(
+    healthyConnection({ last_run: { finished_at: EVIDENCE_AT, run_id: "run-x", status: "future_status" } })
+  );
+  assert.ok(invented.perClass.unknown_vocabulary > 0, "unknown vocabulary must still be caught");
+});
