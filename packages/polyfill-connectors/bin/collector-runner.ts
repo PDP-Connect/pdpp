@@ -62,6 +62,26 @@
  *     Print the collector runtime's advertised capabilities as JSON.
  *     Useful for operator scripts that want to verify what the runtime
  *     can satisfy before pairing.
+ *
+ *   status  --connection-id <id> [--queue <path>]
+ *     Bounded, read-only inspection of the durable local outbox `run` drains
+ *     — no network call, no connector spawn. Reports the same
+ *     `LocalDeviceOutbox.summary()`/`deadLetterErrorSummary()` counts `run`
+ *     itself acts on, plus a derived `lifecycle_state`
+ *     (`@pdpp/collector-runtime`'s `deriveLocalCollectorLifecycleState`) so
+ *     an operator does not have to infer the situation from raw counts. Safe
+ *     to run at any time, including while a scheduled `run` is in flight
+ *     (SQLite readers do not block the outbox's own writer).
+ *
+ *   recover --connection-id <id> [--queue <path>] [--apply]
+ *     Bounded dead-letter recovery for the SAME durable outbox `run` drains.
+ *     Without `--apply`, previews: reports how many dead-lettered rows would
+ *     be requeued, changes nothing. With `--apply`, requeues them
+ *     (`LocalDeviceOutbox.requeueDeadLetters`) so the next `run` retries
+ *     them. Two-step by design — this mutates durable local state, so a
+ *     dry-run preview is the default. Never replays already-succeeded work
+ *     and never contacts the server; the next `run` invocation does the
+ *     actual re-send.
  */
 
 import { basename, dirname, extname, join } from "node:path";
@@ -69,9 +89,12 @@ import { fileURLToPath } from "node:url";
 import {
   COLLECTOR_RUNTIME_CAPABILITIES,
   type CollectorConnectorSpec,
+  deriveLocalCollectorLifecycleState,
   enrollCollector,
+  LocalDeviceOutbox,
   runCollectorConnector,
 } from "@pdpp/collector-runtime";
+import { LOCAL_COLLECTOR_DEFINITIONS } from "../src/collector-registry.ts";
 import { resolveExecutionRoot } from "../src/execution-root.ts";
 
 const DEFAULT_QUEUE_PATH = join(
@@ -82,10 +105,11 @@ const DEFAULT_QUEUE_PATH = join(
 );
 
 export interface CliOptions {
+  apply?: boolean;
   args?: string[];
   baseUrl: string;
   code?: string;
-  command: "enroll" | "run" | "advertise";
+  command: "enroll" | "run" | "advertise" | "status" | "recover";
   connector?: string;
   deviceId?: string;
   deviceLabel?: string;
@@ -104,58 +128,56 @@ export interface CliOptions {
   streamsToBackfill?: string[];
 }
 
-const KNOWN_CONNECTOR_DEFAULTS: Record<
-  string,
-  {
-    command: string;
-    args: string[];
-    streams: string[];
-    bindings?: Record<string, { required: boolean }>;
-  }
-> = {
-  codex: {
-    command: "tsx",
-    args: ["connectors/codex/index.ts"],
-    streams: [
-      "sessions",
-      "messages",
-      "function_calls",
-      "rules",
-      "prompts",
-      "skills",
-      "history",
-      "session_index",
-      "shell_snapshots",
-      "config_inventory",
-      "cache_inventory",
-      "coverage_diagnostics",
-    ],
-    bindings: { filesystem: { required: true } },
-  },
-  claude_code: {
-    command: "tsx",
-    args: ["connectors/claude_code/index.ts"],
-    streams: [
-      "sessions",
-      "messages",
-      "attachments",
-      "memory_notes",
-      "skills",
-      "slash_commands",
-      "file_history",
-      "cache_inventory",
-      "coverage_diagnostics",
-      "backup_inventory",
-      "config_inventory",
-    ],
-    bindings: { filesystem: { required: true } },
-  },
+interface ConnectorDefaults {
+  args: string[];
+  bindings?: Record<string, { required: boolean }>;
+  command: string;
+  streams: string[];
+}
+
+/**
+ * gmail is network-bound (server-capable), not a filesystem-class local
+ * device collector, so it carries no entry in `LOCAL_COLLECTOR_DEFINITIONS`
+ * (`src/collector-registry.ts`) — that registry is scoped to connectors the
+ * published `@pdpp/local-collector` bundle ships. It keeps its own
+ * hand-declared default here.
+ */
+const NON_LOCAL_DEVICE_CONNECTOR_DEFAULTS: Record<string, ConnectorDefaults> = {
   gmail: {
     command: "tsx",
     args: ["connectors/gmail/index.ts"],
     streams: ["messages", "message_bodies", "attachments", "threads", "labels"],
     bindings: { network: { required: true } },
   },
+};
+
+/**
+ * Every filesystem/local-device connector's CLI defaults, derived from its
+ * own `LocalCollectorDefinition` (`src/collector-registry.ts`) instead of a
+ * second hand-maintained table. `LOCAL_COLLECTOR_DEFINITIONS` is the single
+ * source of truth each connector's collector-definition module already
+ * declares "so it stays connector-agnostic" (see e.g.
+ * `connectors/codex/collector-definition.ts`'s module doc) — this CLI had
+ * drifted from that principle by re-declaring its own copy, which silently
+ * omitted every connector added after `codex`/`claude_code`/`gmail`
+ * (`google_takeout`, `imessage`, `apple_photos`, `google_messages`,
+ * `signal`). A connector missing from this table fails closed with
+ * "run requires --streams" before any spawn — reproduced for `signal` prior
+ * to this fix.
+ */
+const KNOWN_CONNECTOR_DEFAULTS: Record<string, ConnectorDefaults> = {
+  ...NON_LOCAL_DEVICE_CONNECTOR_DEFAULTS,
+  ...Object.fromEntries(
+    LOCAL_COLLECTOR_DEFINITIONS.map((definition) => [
+      definition.connector_id,
+      {
+        command: "tsx",
+        args: [`connectors/${definition.entry}/index.ts`],
+        streams: [...definition.streams],
+        bindings: { ...definition.bindings },
+      },
+    ])
+  ),
 };
 
 async function main(): Promise<void> {
@@ -188,6 +210,23 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (options.command === "status" || options.command === "recover") {
+    if (!options.sourceInstanceId) {
+      throw new Error(`${options.command} requires --connection-id <id>`);
+    }
+    const outboxPath = scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId);
+    process.stdout.write(
+      `${JSON.stringify(
+        options.command === "status"
+          ? readOutboxStatus(outboxPath, options.sourceInstanceId)
+          : recoverDeadLetters(outboxPath, options.sourceInstanceId, options.apply === true),
+        null,
+        2
+      )}\n`
+    );
+    return;
+  }
+
   if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
     throw new Error("run requires --device-id <id>, --device-token <token>, and --connection-id <id>");
   }
@@ -207,6 +246,81 @@ async function main(): Promise<void> {
     sourceInstanceId: options.sourceInstanceId,
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+export interface OutboxStatusReport {
+  connectionId: string;
+  deadLetterErrors: ReturnType<LocalDeviceOutbox["deadLetterErrorSummary"]>;
+  lifecycleState: ReturnType<typeof deriveLocalCollectorLifecycleState>;
+  outboxPath: string;
+  summary: ReturnType<LocalDeviceOutbox["summary"]>;
+}
+
+/**
+ * Bounded, read-only outbox inspection — opens the same durable SQLite file
+ * `run` would, reads its summary/dead-letter counts, and derives the
+ * `lifecycle_state` the published `@pdpp/local-collector`'s `status`/`doctor`
+ * subcommands already document (`docs/reference/local-collector.md`,
+ * `docs/operator/local-collector-runbook.md`). No network call, no connector
+ * spawn — safe to run at any time.
+ *
+ * `coverageObserved` is deliberately `null` here rather than a real scan
+ * result: `hasObservedStream` requires naming one stream, and this command
+ * reports the connection-wide lifecycle, not one stream's coverage. A `null`
+ * `coverageObserved` never yields `deriveLocalCollectorLifecycleState`'s
+ * `coverage_missing` state (that state requires a confirmed `false`), so this
+ * intentionally under-reports rather than guessing — the same fail-closed
+ * discipline `hasObservedStream`'s own bounded-scan-budget `null` uses.
+ */
+export function readOutboxStatus(outboxPath: string, sourceInstanceId: string): OutboxStatusReport {
+  const outbox = new LocalDeviceOutbox({ path: outboxPath });
+  try {
+    const summary = outbox.summary({ sourceInstanceId });
+    const deadLetterErrors = outbox.deadLetterErrorSummary({ sourceInstanceId });
+    const lifecycleState = deriveLocalCollectorLifecycleState({
+      coverageObserved: null,
+      recordBatchCount: outbox.countRecordBatches({ sourceInstanceId }),
+      summary,
+    });
+    return { connectionId: sourceInstanceId, deadLetterErrors, lifecycleState, outboxPath, summary };
+  } finally {
+    outbox.close();
+  }
+}
+
+export interface RecoverDeadLettersReport {
+  applied: boolean;
+  connectionId: string;
+  matched: number;
+  outboxPath: string;
+  requeued: number;
+}
+
+/**
+ * Bounded dead-letter recovery for the same durable outbox. Two-step by
+ * design (`dryRun` default true unless `--apply`): a preview never mutates
+ * durable state, matching the staged-safety precedent the `recover --apply`
+ * flow documents for the published local collector. Never contacts the
+ * server — the requeued rows retry on the connection's next scheduled `run`.
+ */
+export function recoverDeadLetters(
+  outboxPath: string,
+  sourceInstanceId: string,
+  apply: boolean
+): RecoverDeadLettersReport {
+  const outbox = new LocalDeviceOutbox({ path: outboxPath });
+  try {
+    const result = outbox.requeueDeadLetters({ dryRun: !apply, sourceInstanceId });
+    return {
+      applied: apply,
+      connectionId: sourceInstanceId,
+      matched: result.matched,
+      outboxPath,
+      requeued: result.requeued,
+    };
+  } finally {
+    outbox.close();
+  }
 }
 
 export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec {
@@ -231,10 +345,18 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
   };
 }
 
+const BOOLEAN_FLAGS = new Set(["--apply"]);
+
 export function parseArgs(args: string[]): CliOptions {
   const [command, ...rest] = args;
-  if (command !== "enroll" && command !== "run" && command !== "advertise") {
-    throw new Error("usage: collector-runner <enroll|run|advertise> --base-url <url> [options]");
+  if (
+    command !== "enroll" &&
+    command !== "run" &&
+    command !== "advertise" &&
+    command !== "status" &&
+    command !== "recover"
+  ) {
+    throw new Error("usage: collector-runner <enroll|run|advertise|status|recover> --base-url <url> [options]");
   }
   const options: CliOptions = {
     baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:7662",
@@ -262,12 +384,24 @@ export function parseArgs(args: string[]): CliOptions {
     if (!arg) {
       throw new Error("missing option");
     }
+    if (BOOLEAN_FLAGS.has(arg)) {
+      applyBooleanFlag(options, arg);
+      continue;
+    }
     const value = rest[index + 1];
     applyOption(options, arg, value);
     index += 1;
   }
 
   return options;
+}
+
+function applyBooleanFlag(options: CliOptions, arg: string): void {
+  if (arg === "--apply") {
+    options.apply = true;
+    return;
+  }
+  throw new Error(`unknown flag: ${arg}`);
 }
 
 function applyOption(options: CliOptions, arg: string, value: string | undefined): void {
