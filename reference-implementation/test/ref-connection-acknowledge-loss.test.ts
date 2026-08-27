@@ -461,3 +461,175 @@ test("acknowledging a provider loss never turns an unmeasured connection green",
     assert.notEqual(afterPill.tone, "green", "acknowledging a loss must never fabricate a healthy/complete tone");
   });
 });
+
+// ─── POST /_ref/connections/:id/coverage-horizon ──────────────────────────────
+//
+// A DIFFERENT fact in a DIFFERENT store from acknowledge-loss above:
+// acknowledge-loss stamps `source_binding.acknowledged_loss` ("data is gone");
+// this records a `connector_coverage_horizons` row ("the provider never serves
+// anything before <date>"). Tested here so the distinction stays visible.
+//
+// Parser tests are not evidence the WIRING works: these exercise the mounted
+// endpoint — owner auth, namespace resolution, the durable row, the success and
+// failure audit events, and the response body.
+
+function postCoverageHorizon(
+  asUrl: string,
+  cookie: string | null,
+  connectionId: string,
+  body: Record<string, unknown>
+): Promise<JsonResult> {
+  return fetchJson(`${asUrl}/_ref/connections/${encodeURIComponent(connectionId)}/coverage-horizon`, {
+    body: JSON.stringify(body),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    method: "POST",
+  });
+}
+
+const GROUPME_HORIZON_BODY = {
+  basis: "provider_confirmed",
+  earliest_available: "2013-01-01T00:00:00.000Z",
+  note: "GroupMe's own retention page states messages before 2013 are not retained.",
+  reason: "provider_retention_policy",
+  stream: "playlists",
+};
+
+/** Audit events for ONE request, looked up by the trace id it returned. */
+function horizonAuditEvents(resp: JsonResult): Record<string, unknown>[] {
+  const traceId = resp.resp.headers.get("PDPP-Reference-Trace-Id");
+  if (!traceId) {
+    return [];
+  }
+  return listSpineEventsPage("trace", traceId, { limit: 20 }).events.filter(
+    (event) => event.event_type === "owner.connection.confirm_coverage_horizon"
+  ) as unknown as Record<string, unknown>[];
+}
+
+test("coverage-horizon: an owner records a durable horizon and the write is audited", async () => {
+  await withServer(async ({ asUrl }) => {
+    const cookie = await login(asUrl);
+    const connectorKey = await registerConnector(asUrl, loadReferenceManifest("spotify"));
+    const connectorInstanceId = "cin_horizon_route_ok";
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId,
+      displayName: "My GroupMe",
+      sourceBinding: { account_hint: "owner@example.com" },
+      sourceBindingKey: "owner@example.com",
+    });
+
+    const resp = await postCoverageHorizon(asUrl, cookie, connectorInstanceId, GROUPME_HORIZON_BODY);
+    assert.equal(resp.status, 200, JSON.stringify(resp.body));
+    assert.equal(resp.body.object, "owner_connection_coverage_horizon");
+    assert.equal(resp.body.connection_id, connectorInstanceId);
+
+    const horizon = resp.body.coverage_horizon as Record<string, unknown>;
+    assert.equal(horizon.basis, "provider_confirmed");
+    assert.equal(horizon.reason, "provider_retention_policy");
+    assert.equal(horizon.stream, "playlists");
+    assert.equal(
+      horizon.confirmedBy,
+      OWNER_SUBJECT_ID,
+      "the actor is the authenticated session subject, proven end-to-end and not just in the parser"
+    );
+
+    const events = horizonAuditEvents(resp);
+    assert.equal(events.length, 1, "exactly one audit event for one write");
+    assert.equal(events[0]?.status, "succeeded");
+    const data = events[0]?.data as Record<string, unknown>;
+    assert.equal(data.operation, "confirm_coverage_horizon");
+    assert.equal(data.basis, "provider_confirmed");
+    assert.equal(data.connection_id, connectorInstanceId);
+    assert.equal(
+      Object.hasOwn(data, "note"),
+      false,
+      "the owner's free-text note belongs in the durable row, never duplicated into the audit stream"
+    );
+  });
+});
+
+test("coverage-horizon: an invalid body writes NOTHING and still emits a failure audit", async () => {
+  await withServer(async ({ asUrl }) => {
+    const cookie = await login(asUrl);
+    const connectorKey = await registerConnector(asUrl, loadReferenceManifest("spotify"));
+    const connectorInstanceId = "cin_horizon_route_bad";
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId,
+      displayName: "My GroupMe",
+      sourceBinding: { account_hint: "owner@example.com" },
+      sourceBindingKey: "owner@example.com",
+    });
+
+    const resp = await postCoverageHorizon(asUrl, cookie, connectorInstanceId, {
+      ...GROUPME_HORIZON_BODY,
+      basis: "i_reckon",
+    });
+    assert.equal(resp.status, 400);
+    assert.equal(errorOf(resp.body).code, "invalid_request");
+
+    const events = horizonAuditEvents(resp);
+    assert.equal(events.length, 1, "a refused write is still an owner action and must be recorded");
+    assert.equal(events[0]?.status, "failed");
+    const data = events[0]?.data as Record<string, unknown>;
+    assert.equal(data.outcome, "failed");
+    assert.equal(
+      data.basis,
+      null,
+      "a rejected value is never echoed into the audit as though it had been accepted"
+    );
+  });
+});
+
+test("coverage-horizon: a caller-supplied confirmed_by is refused end-to-end", async () => {
+  await withServer(async ({ asUrl }) => {
+    const cookie = await login(asUrl);
+    const connectorKey = await registerConnector(asUrl, loadReferenceManifest("spotify"));
+    const connectorInstanceId = "cin_horizon_route_actor";
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId,
+      displayName: "My GroupMe",
+      sourceBinding: { account_hint: "owner@example.com" },
+      sourceBindingKey: "owner@example.com",
+    });
+
+    const resp = await postCoverageHorizon(asUrl, cookie, connectorInstanceId, {
+      ...GROUPME_HORIZON_BODY,
+      confirmed_by: "somebody_else",
+    });
+    assert.equal(resp.status, 400, "attribution must not be forgeable over the wire");
+    assert.match(String(errorOf(resp.body).message), /confirmed_by is not accepted/);
+  });
+});
+
+test("coverage-horizon: requires an owner session", async () => {
+  await withServer(async ({ asUrl }) => {
+    const resp = await postCoverageHorizon(asUrl, null, "cin_horizon_route_noauth", GROUPME_HORIZON_BODY);
+    assert.notEqual(resp.status, 200, "an unauthenticated caller must never record a horizon");
+    assert.equal(horizonAuditEvents(resp).length, 0);
+  });
+});
+
+test("coverage-horizon: cannot cross owners", async () => {
+  await withServer(async ({ asUrl }) => {
+    const cookie = await login(asUrl);
+    const connectorKey = await registerConnector(asUrl, loadReferenceManifest("spotify"));
+    const connectorInstanceId = "cin_horizon_route_foreign";
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId,
+      displayName: "Someone else's GroupMe",
+      ownerSubjectId: OTHER_SUBJECT_ID,
+      sourceBinding: { account_hint: "other@example.com" },
+      sourceBindingKey: "other@example.com",
+    });
+
+    const resp = await postCoverageHorizon(asUrl, cookie, connectorInstanceId, GROUPME_HORIZON_BODY);
+    assert.notEqual(resp.status, 200, "namespace resolution must refuse another owner's connection");
+  });
+});

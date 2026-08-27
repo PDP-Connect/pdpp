@@ -102,7 +102,12 @@ export interface MountRefConnectionConfirmCoverageHorizonContext {
   readonly resolveOwnerConnectorNamespace: (
     req: RouteRequest,
     res: RouteResponse | null,
-    opts: { readonly connectorInstanceId: string; readonly ownerSubjectId: string | null }
+    opts: {
+      readonly allowDefaultAccount?: boolean;
+      readonly allowStatuses?: readonly string[];
+      readonly connectorInstanceId: string;
+      readonly ownerSubjectId: string | null;
+    }
   ) => Promise<{ readonly connectorId: string; readonly connectorInstanceId: string } | null>;
   readonly setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
@@ -298,7 +303,17 @@ export function mountRefConnectionConfirmCoverageHorizon(
       let parsedStream: string | null = null;
       try {
         ownerSubjectId = ctx.getOwnerSubjectId(req);
-        const namespace = await ctx.resolveOwnerConnectorNamespace(req, res, {
+        // Second argument is `null`, matching acknowledge-loss: passing `res`
+        // here makes the resolver read it as the connector-id argument and
+        // report a mismatch against `[object Object]`.
+        //
+        // No `allowDefaultAccount`, and `active`/`paused` only: a horizon is a
+        // durable fact about what the provider can ever serve, meaningful
+        // whether the connection is currently collecting or paused, and
+        // meaningless once revoked.
+        const namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
+          allowDefaultAccount: false,
+          allowStatuses: ["active", "paused"],
           connectorInstanceId,
           ownerSubjectId,
         });
