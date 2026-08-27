@@ -103,6 +103,10 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   connection_run_active: 409,
   connection_tombstoned: 409,
   connector_instance_busy: 503,
+  // A revision exists but is not in a state the requested transition allows
+  // (e.g. confirming an already-active or superseded revision).
+  connector_instance_config_not_proposed: 409,
+  connector_instance_config_revision_not_found: 404,
   // The caller's `base_revision`/`base_epoch` did not match the connection's
   // current pointer. 409 matches how every other optimistic-concurrency and
   // wrong-state conflict in this table is reported (`approval_conflict`,
@@ -110,10 +114,6 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   // must rebase against the returned current revision and retry — the store
   // never merges and never last-write-wins.
   connector_instance_config_stale_write: 409,
-  // A revision exists but is not in a state the requested transition allows
-  // (e.g. confirming an already-active or superseded revision).
-  connector_instance_config_not_proposed: 409,
-  connector_instance_config_revision_not_found: 404,
   connector_instance_connector_mismatch: 400,
   connector_instance_inactive: 400,
   connector_instance_not_active: 409,
@@ -125,6 +125,12 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   connector_instance_selector_required: 400,
   connector_instance_store_required: 500,
   connector_invalid: 400,
+  // The submitted value cannot be a secret (mask, placeholder, or whitespace
+  // only). Unmapped codes fall through to 500 (`codeToStatus[code] || 500` in
+  // index.ts / request-helpers.ts), which would show the owner an opaque
+  // server error for something he can fix in the form — so it is mapped here
+  // deliberately, alongside its sibling `owner_subject_required: 400`.
+  credential_secret_invalid: 400,
   cursor_expired: 410,
   default_account_delete_unsupported: 409,
   field_not_found: 404,

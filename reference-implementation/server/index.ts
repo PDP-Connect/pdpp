@@ -9143,11 +9143,37 @@ function createReferenceSchedulerManager({
             terminalEvent?.data && typeof terminalEvent.data === "object"
               ? (terminalEvent.data as Record<string, unknown>)
               : ({} as Record<string, unknown>);
+          // The direct controller adapter receives the terminal spine shape,
+          // where connector errors are flattened. Reassemble the scheduler
+          // fields so a connector's retry contract remains authoritative.
+          let connectorError: Record<string, unknown> | null = null;
+          if (terminalData.connector_error && typeof terminalData.connector_error === "object") {
+            connectorError = terminalData.connector_error as Record<string, unknown>;
+          } else if (
+            terminalData.connector_error_code !== undefined ||
+            terminalData.connector_error_message !== undefined ||
+            terminalData.connector_error_retryable !== undefined
+          ) {
+            connectorError = {};
+            if (typeof terminalData.connector_error_message === "string") {
+              connectorError.message = terminalData.connector_error_message;
+            }
+            if (typeof terminalData.connector_error_retryable === "boolean") {
+              connectorError.retryable = terminalData.connector_error_retryable;
+            }
+          }
           return {
-            connector_error: terminalData.connector_error || null,
+            connector_error: connectorError,
             failure_reason: terminalData.reason || null,
             known_gaps: Array.isArray(terminalData.known_gaps) ? terminalData.known_gaps : [],
             run_id: handle.run_id,
+            runtime_retryable:
+              connectorError === null &&
+              terminalData.runtime_failure &&
+              typeof terminalData.runtime_failure === "object" &&
+              typeof (terminalData.runtime_failure as { retryable?: unknown }).retryable === "boolean"
+                ? (terminalData.runtime_failure as { retryable: boolean }).retryable
+                : null,
             status: terminalStatus,
             terminal_reason: terminalData.terminal_reason || null,
             trace_id: handle.trace_id,

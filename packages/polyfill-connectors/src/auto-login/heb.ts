@@ -223,6 +223,20 @@ async function hasUniqueLoginFormRoot(page: Page): Promise<boolean> {
 }
 
 /**
+ * H-E-B's OIDC sign-in route: `/interaction/<id>/login` on accounts.heb.com.
+ *
+ * Sibling routes under the same `/interaction/<id>/` prefix — `forgot-pw`,
+ * `register`, `passkey_registration` — are deliberately excluded by the
+ * trailing anchor, because the whole point of consulting the route is to tell
+ * this form apart from those pages when the body alone cannot.
+ */
+const LOGIN_INTERACTION_URL_RE = /^https:\/\/accounts\.heb\.com\/interaction\/[^/]+\/login\/?(?:[?#]|$)/i;
+
+function isLoginInteractionUrl(url: string): boolean {
+  return LOGIN_INTERACTION_URL_RE.test(url);
+}
+
+/**
  * Whether this form root is H-E-B's login form.
  *
  * The bar is one visible email input and one visible submit control. The
@@ -238,20 +252,34 @@ async function hasUniqueLoginFormRoot(page: Page): Promise<boolean> {
  * "H-E-B did not render the expected login form" while looking at H-E-B's login
  * form. See `connectors/heb/__fixtures__/email-first-login-page.html`.
  *
- * Requiring a password input to EXIST still distinguishes this form from the
- * other single-field pages in the flow (forgot-password, register, the OTP
- * entry screen), none of which carry a password input at all.
- * `submitVerifiedLoginForm` remains responsible for whether the field can
- * actually be FILLED; that is a separate question from what this surface IS,
- * and it fails honestly on its own when the answer is no.
+ * A password input is NOT required to exist, because H-E-B does not always
+ * render one. An account whose only enabled sign-in method is an emailed code
+ * gets the same `/login` route with the password option omitted entirely — no
+ * `input[type="password"]` anywhere in the DOM. Requiring presence rejected
+ * that page too, and the owner of the affected connection was told "PDPP could
+ * not identify what H-E-B is showing … had no password field" for thirty
+ * minutes, twice, while looking at H-E-B's login form. See
+ * `connectors/heb/__fixtures__/otp-only-login-page.html`.
  *
- * The two-clause password rule is deliberate. When a password field IS on
- * screen, exactly one must be — more than one visible password input is
- * genuine ambiguity and stays fail-closed, which is what keeps the
- * hidden-and-disabled-distractor guarantee intact. Only when NONE is visible
- * does mere presence suffice, because that is precisely the email-first state.
+ * What replaces presence is the pair of things that are true of every variant
+ * of this form and false of the pages it must not be confused with: the form
+ * lives on the `/login` interaction route, and it has no code input. That
+ * keeps the old exclusions intact — forgot-password and register are their own
+ * routes, and the OTP ENTRY screen is separated by the code input it carries
+ * and this form never does. Crucially, the no-code-input clause is also what
+ * stops an OTP-only login form from being read as a page that can accept a
+ * code: the radio here only OFFERS to send one, and nothing has been sent yet.
+ *
+ * `submitVerifiedLoginForm` remains responsible for whether a password field
+ * can actually be FILLED; that is a separate question from what this surface
+ * IS, and it fails honestly on its own when the answer is no.
+ *
+ * The visible-password rule is unchanged where it still applies: when password
+ * fields ARE on screen, exactly one must be, because more than one is genuine
+ * ambiguity and stays fail-closed. That preserves the
+ * hidden-and-disabled-distractor guarantee.
  */
-async function countsMatchLoginForm(root: Locator): Promise<boolean> {
+async function countsMatchLoginForm(root: Locator, isLoginRoute: boolean): Promise<boolean> {
   const emailCount = await countUsableCandidates(root.locator(EMAIL_SELECTOR));
   if (emailCount !== 1) {
     return false;
@@ -266,12 +294,22 @@ async function countsMatchLoginForm(root: Locator): Promise<boolean> {
     return visiblePasswordCount === 1;
   }
   const presentPasswordCount = await passwordLocator.count().catch((): number => 0);
-  return presentPasswordCount > 0;
+  if (presentPasswordCount > 0) {
+    return true;
+  }
+  // No password input anywhere. Only the `/login` interaction route may still
+  // be a login form, and only while it cannot accept a code — see above.
+  if (!isLoginRoute) {
+    return false;
+  }
+  const codeCount = await countUsableCandidates(root.locator(VERIFICATION_CODE_SELECTOR));
+  return codeCount === 0;
 }
 
 async function resolveUniqueLoginFormRoot(page: Page): Promise<Locator | null> {
   const forms = page.locator(LOGIN_FORM_SELECTOR);
   const count = await forms.count().catch((): number => 0);
+  const isLoginRoute = isLoginInteractionUrl(page.url());
   let resolved: Locator | null = null;
   let viableRoots = 0;
 
@@ -284,7 +322,7 @@ async function resolveUniqueLoginFormRoot(page: Page): Promise<Locator | null> {
     if (!(visible && enabled)) {
       continue;
     }
-    if (await countsMatchLoginForm(root)) {
+    if (await countsMatchLoginForm(root, isLoginRoute)) {
       viableRoots += 1;
       resolved = root;
       if (viableRoots > 1) {

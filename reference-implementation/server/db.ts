@@ -740,7 +740,12 @@ CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
   -- quarantined: server-detected integrity problem (e.g. an untrusted
   --             direct DB write) -- never runnable, never silently
   --             attributed to an author.
-  status                   TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+  -- rejected:   the OWNER was asked and said no. Distinct from superseded
+  --             (a newer revision won, which says nothing about what he
+  --             wanted) and from quarantined (a server integrity finding,
+  --             not a decision). Terminal: never resurrected, never
+  --             activated; a later change is a NEW revision.
+  status                   TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined', 'rejected')),
   -- The collection-boundary fingerprint this revision's collection_scope
   -- keys resolve to, following the same declassification contract already
   -- proven for START.scope (see local-collection-scope.ts). NULL for a
@@ -2220,6 +2225,33 @@ CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
   generation                   INTEGER NOT NULL DEFAULT 0,
   lease_token                  TEXT,
   lease_expires_at             TEXT
+);
+
+-- Durable per-connection resume state for a canonical-count repair scan that
+-- could not finish inside one bounded admission (a "whale" connection with
+-- millions of live records). Keyed by connector_instance_id, NOT by name
+-- like connector_maintenance_cursor above -- that table models fleet-wide
+-- sweep cursors, a different resource; this one is scoped to exactly the
+-- connection whose own repair is too large for a single statement_timeout
+-- admission. Scheduling/accumulation state only, never evidence about the
+-- owner's data: a row here asserts nothing until the scan completes and
+-- buildRepairedRow's normal upsert publishes it. SQLite has no
+-- statement_timeout to bound against, so this table is exercised by tests
+-- (a chunked scan still shares the one accumulation function both backends
+-- use) but stays empty in production on this backend -- a repair always
+-- completes in the single call that starts it.
+CREATE TABLE IF NOT EXISTS connector_summary_evidence_repair_chunk (
+  connector_instance_id        TEXT PRIMARY KEY,
+  resume_after_id              INTEGER,
+  accumulator_json             TEXT NOT NULL,
+  -- The canonical source_revision this chunk sequence started against. A
+  -- later admission that finds the live source_revision no longer matches
+  -- this receipt must discard the accumulator and restart the scan from the
+  -- beginning -- resuming a partial sum against a revision it was never
+  -- computed against would silently under- or over-count.
+  source_revision               TEXT NOT NULL,
+  started_at                   TEXT NOT NULL,
+  updated_at                   TEXT NOT NULL
 );
 
 -- Explicit provenance for a rejected write against this exact manifest

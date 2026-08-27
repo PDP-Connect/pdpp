@@ -179,7 +179,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 // ─── Mounting / auth wiring ─────────────────────────────────────────────────
 
-test("all four routes mount behind requireToken + requireOwner", () => {
+test("all five routes mount behind requireToken + requireOwner", () => {
   const app = new FakeApp();
   const seen: unknown[][] = [];
   const recording = {
@@ -206,7 +206,9 @@ test("all four routes mount behind requireToken + requireOwner", () => {
     } as never
   );
 
-  assert.equal(seen.length, 4, "propose, confirm, get-active, list-revisions");
+  // reject is the fifth: refusing a proposal is an owner decision and must
+  // sit behind exactly the same authentication as confirming one.
+  assert.equal(seen.length, 5, "propose, confirm, reject, get-active, list-revisions");
   for (const [path, first, second] of seen) {
     assert.equal(first, "requireToken", `${path} must require a token`);
     assert.equal(second, "requireOwner", `${path} must require owner kind`);

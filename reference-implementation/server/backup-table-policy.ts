@@ -117,6 +117,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Summary evidence is a projection rebuilt from records and connector state.",
   },
+  connector_summary_evidence_repair_chunk: {
+    classification: "backup_required",
+    reason:
+      "Chunked whale-repair resume state. A restore that drops it is safe — an absent cursor simply restarts that connection's scan from the beginning — but it is captured like every other table so the inventory stays a complete census rather than a judgement call about which rows matter.",
+  },
   connectors: {
     classification: "backup_required",
     reason: "Connector catalog rows are required to interpret connections and records.",

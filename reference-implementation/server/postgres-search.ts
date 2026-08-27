@@ -567,19 +567,51 @@ export async function postgresCountSemanticIndexByScope({
   return Number(result.rows[0]?.n || 0);
 }
 
-export async function postgresListExistingSemanticKeys({
+/**
+ * Existing semantic keys for a BOUNDED set of record keys — one rebuild page.
+ *
+ * The whole-stream sibling below reads every key a stream has ever indexed.
+ * That is O(stream size) held live in one Set, and on 2026-08-27 it killed
+ * production: 1,515,064 rows for a single claude-code stream materialized as
+ * ~1.5M JSON strings, ~200 MB per pass, heap ceiling reached in ~20 minutes,
+ * repeat forever because the read happens at boot.
+ *
+ * This asks the same question of only the page about to be processed, so peak
+ * retention is O(page) — 500 rows — regardless of how large the stream grows.
+ * The answer is identical: `buildSemanticIndexEntries` only ever tests keys
+ * belonging to rows in its own page, so keys outside it could never be hit.
+ */
+export async function postgresListExistingSemanticKeysForRecords({
   connectorId,
   connectorInstanceId,
-  stream,
-}: Required<ConnectorStreamScope>) {
-  const scopePrefix = `[${JSON.stringify(stream)},`;
+  recordKeys,
+  scopeKeys,
+}: Omit<Required<ConnectorStreamScope>, "stream"> & {
+  recordKeys: readonly string[];
+  scopeKeys: readonly string[];
+}) {
+  if (recordKeys.length === 0 || scopeKeys.length === 0) {
+    return new Set<string>();
+  }
+  // EXACT scope keys, never a prefix match. The primary key is
+  // (connector_instance_id, scope_key, record_key), so a `LIKE 'prefix%'` on
+  // the MIDDLE column cannot serve as an index condition — Postgres drops it
+  // to a filter and index-scans every row belonging to the instance.
+  //
+  // Measured against the live 1,820,100-row table, single-record lookup:
+  //   scope_key LIKE '["messages",%'   -> 5924.509 ms
+  //   scope_key = ANY(exact keys)      ->    0.069 ms
+  // The backfill issues this once per page at boot for every connector, so the
+  // prefix form saturated Postgres and starved concurrent ingest, which
+  // surfaced to connectors as `fetch failed`.
   const result = await postgresQuery(
     `SELECT scope_key, record_key
      FROM semantic_search_blob
      WHERE connector_id = $1
        AND connector_instance_id = $2
-       AND scope_key LIKE $3`,
-    [connectorId, connectorInstanceId, `${scopePrefix}%`]
+       AND scope_key = ANY($3)
+       AND record_key = ANY($4)`,
+    [connectorId, connectorInstanceId, [...scopeKeys], [...recordKeys]]
   );
   return new Set(
     result.rows.map((row) => JSON.stringify([row.scope_key, `${connectorInstanceId}\u0000${row.record_key}`]))

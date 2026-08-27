@@ -517,6 +517,49 @@ function buildConfirmHandler(ctx: MountOwnerConnectionConfigContext): RouteHandl
   };
 }
 
+/**
+ * The owner's refusal. Deliberately a sibling of confirm, not a variant of it:
+ * same authentication, same ownership check, same `proposed`-only precondition,
+ * and the same typed-error classification — so saying no is exactly as
+ * first-class as saying yes.
+ *
+ * Without this route an owner could only accept a proposal or ignore it, and
+ * ignoring is not deciding.
+ */
+function buildRejectHandler(ctx: MountOwnerConnectionConfigContext): RouteHandler {
+  return async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      // The authenticated session is the ONLY source of this identity. The
+      // body is never consulted -- see the file header.
+      const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
+      const revisionNumber = parseRevisionParam(req.params.revision);
+      if (revisionNumber === null) {
+        ctx.pdppError(res, 400, "invalid_request", "revision must be a positive integer");
+        return;
+      }
+      const namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
+        allowDefaultAccount: false,
+        connectorInstanceId: decodeURIComponent(req.params.connectionId as string),
+        ownerSubjectId,
+      });
+      const rejected = await ctx.store.reject({
+        authenticatedOwnerSubjectId: ownerSubjectId,
+        connectorInstanceId: namespace.connectorInstanceId,
+        rejectedAt: (ctx.now?.() ?? new Date()).toISOString(),
+        revision: revisionNumber,
+      });
+      res.json(revisionForWire(rejected));
+    } catch (err) {
+      const classified = classifyStoreError(err);
+      if (classified) {
+        ctx.pdppError(res, classified.status, classified.code, classified.message);
+        return;
+      }
+      ctx.handleError(res, err);
+    }
+  };
+}
+
 export function mountOwnerConnectionConfig(app: AppLike, ctx: MountOwnerConnectionConfigContext): void {
   app.get("/v1/owner/connections/:connectionId/config", ctx.requireToken, ctx.requireOwner, buildGetActiveHandler(ctx));
   app.get(
@@ -536,5 +579,11 @@ export function mountOwnerConnectionConfig(app: AppLike, ctx: MountOwnerConnecti
     ctx.requireToken,
     ctx.requireOwner,
     buildConfirmHandler(ctx)
+  );
+  app.post(
+    "/v1/owner/connections/:connectionId/config/revisions/:revision/reject",
+    ctx.requireToken,
+    ctx.requireOwner,
+    buildRejectHandler(ctx)
   );
 }

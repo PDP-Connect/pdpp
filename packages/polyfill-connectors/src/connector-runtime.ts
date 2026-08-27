@@ -282,6 +282,15 @@ export type NormalizeTerminalError = (error: TerminalErrorDetails) => TerminalEr
 /** Fields shared by browser and non-browser configs. */
 interface BaseRunConnectorConfig {
   auth?: AuthConfig;
+  /**
+   * Opt in to treating a DECLINED `credentials` interaction as "no stored
+   * credential" rather than a run-ending failure. Only for session-first
+   * browser connectors that authenticate primarily through the owner's
+   * browser profile and have an explicit absent-credential path in
+   * `ensureSession`. Leave unset (the default) for anything that cannot
+   * function without its secret — see `resolveCredentials`.
+   */
+  authOptional?: boolean;
   /** Marks a record as a tombstone; runtime strips to { id } + op:'delete'. */
   isTombstone?: (stream: string, data: RecordData) => boolean;
   name: string;
@@ -746,6 +755,7 @@ export function runConnector(config: RunConnectorConfig): void {
     timeRangeField = "date",
     isTombstone,
     auth,
+    authOptional = false,
   } = config;
   // ensureSession/probeSession are only on BrowserConnectorConfig; extract
   // after the browser-narrowing check.
@@ -1019,6 +1029,7 @@ export function runConnector(config: RunConnectorConfig): void {
     const startMsg = await parseStart(readStart);
     const requested = buildRequested(startMsg);
     const credentials = await resolveCredentials(auth, {
+      authOptional,
       sendInteraction,
       connectorName: name,
     });
@@ -1120,12 +1131,47 @@ function buildRequested(startMsg: StartMessage): Map<string, StreamScope> {
   return requested;
 }
 
-/** Resolve credentials via the configured auth strategy. */
-async function resolveCredentials(
+/**
+ * `<connector>_credentials_missing` — the exact message the `env` auth strategy
+ * throws when a `credentials` INTERACTION is declined or times out. Matched by
+ * name rather than by class because the strategy lives in
+ * `@pdpp/connector-protocol` and throws a plain `Error`.
+ */
+function isCredentialsMissingError(connectorName: string, message: string): boolean {
+  return message === `${connectorName}_credentials_missing`;
+}
+
+/**
+ * Resolve credentials via the configured auth strategy.
+ *
+ * When `authOptional` is set, a DECLINED credentials interaction resolves to an
+ * empty credential set instead of failing the run. This is opt-in per connector
+ * and exists for session-first browser connectors whose primary authenticator
+ * is the owner-authenticated browser profile, not a stored secret.
+ *
+ * Root cause it fixes (chatgpt second-account, 2026-08-27): the `env` strategy
+ * prompts for every `required` field it cannot fill from the child env, and a
+ * SCHEDULED run has no owner to answer. The declined interaction threw
+ * `chatgpt_credentials_missing` from `resolveCredentials`, which runs BEFORE
+ * `ensureSession` — so a connection with a perfectly good browser session was
+ * failed in ~0.5s without ever opening a browser, and `ensureChatGptSession`'s
+ * own absent-credential branch (which reuses the live session, and is what the
+ * ChatGPT manifest promises: "scheduled runs reuse current session evidence and
+ * do not prompt for credentials") was unreachable.
+ *
+ * Narrowly scoped on purpose: only a declined/timed-out credentials prompt is
+ * softened, and only for connectors that opt in. Every OTHER auth failure
+ * (`auth_env_required_missing`, `auth_strategy_unknown`, a strategy's own
+ * throw) still fails the run closed, and connectors that never set
+ * `authOptional` — every API connector, e.g. github/ynab/notion — keep the
+ * unchanged fail-closed behavior rather than proceeding token-less.
+ */
+export async function resolveCredentials(
   auth: AuthConfig | undefined,
   ctx: {
     sendInteraction: BaseCollectContext["sendInteraction"];
     connectorName: string;
+    authOptional: boolean;
   }
 ): Promise<Credentials> {
   if (!auth) {
@@ -1135,6 +1181,9 @@ async function resolveCredentials(
     return await resolveAuth(auth, ctx);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (ctx.authOptional && isCredentialsMissingError(ctx.connectorName, message)) {
+      return {};
+    }
     throw new TerminalError(message, { cause: err });
   }
 }

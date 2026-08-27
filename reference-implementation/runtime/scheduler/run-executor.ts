@@ -155,6 +155,7 @@ function describeFailedRunResult(result: RunConnectorResult): RunConnectorError 
     records_emitted: result.records_emitted ?? 0,
     reported_records_emitted: result.reported_records_emitted ?? null,
     run_id: result.run_id || null,
+    runtime_retryable: result.runtime_retryable ?? null,
     terminal_reason: result.terminal_reason || null,
     trace_id: result.trace_id || null,
   };
@@ -1104,6 +1105,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         connector_error: result.connector_error || null,
         failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
         known_gaps: result.known_gaps || null,
+        runtime_retryable: result.runtime_retryable ?? null,
         terminal_reason: result.terminal_reason || null,
       };
 

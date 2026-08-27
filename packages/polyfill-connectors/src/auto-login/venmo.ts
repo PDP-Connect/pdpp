@@ -74,6 +74,28 @@ export const VENMO_ORIGIN_NAVIGATION_FAILED = "venmo_origin_navigation_failed";
  * would read it from the temporal dead zone otherwise.
  */
 export const VENMO_PASSWORD_SCREEN_TIMEOUT = "venmo_password_screen_timeout";
+/** The SMS offer rendered, but its Remember this device control was not usable. */
+export const VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE = "venmo_sms_offer_checkbox_unavailable";
+/** The SMS offer rendered, but its Send code control was not usable. */
+export const VENMO_SMS_OFFER_SEND_CODE_UNAVAILABLE = "venmo_sms_offer_send_code_unavailable";
+/** Venmo accepted Send code but did not render a usable OTP input within the bound. */
+export const VENMO_SMS_OFFER_CODE_INPUT_TIMEOUT = "venmo_sms_offer_code_input_timeout";
+
+/**
+ * Venmo refused the sign-in on an INVISIBLE bot score, not on the credential.
+ *
+ * reCAPTCHA Enterprise v3 renders no widget and no checkbox — it scores the
+ * session and returns a verdict the page acts on silently. So the visible-frame
+ * detector ({@link CAPTCHA_FRAME_SELECTOR}) correctly finds nothing, no error
+ * copy is rendered, and the submit control simply stays in its loading state.
+ * That signature is identical to a slow provider unless it is named.
+ *
+ * Deliberately NOT the ordinary `captcha` handoff vocabulary: that path asks
+ * the owner to solve something. There is nothing to solve here — v3 scores the
+ * browser, so an owner staring at the same automated session changes nothing.
+ * Conflating the two would send them to a challenge that does not exist.
+ */
+export const VENMO_SCORING_CHALLENGE = "venmo_invisible_scoring_challenge";
 
 /**
  * This connector's classifying fault-class names — single source of truth,
@@ -98,6 +120,10 @@ export const VENMO_DECLARED_REASON_TOKENS: ReadonlySet<string> = new Set([
   VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR,
   VENMO_ORIGIN_NAVIGATION_FAILED,
   VENMO_PASSWORD_SCREEN_TIMEOUT,
+  VENMO_SCORING_CHALLENGE,
+  VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE,
+  VENMO_SMS_OFFER_SEND_CODE_UNAVAILABLE,
+  VENMO_SMS_OFFER_CODE_INPUT_TIMEOUT,
 ]);
 
 const HOME_URL = "https://venmo.com/";
@@ -273,6 +299,19 @@ const CAPTCHA_FRAME_SELECTOR =
   'iframe[src*="recaptcha"], iframe[src*="paypalobjects.com"], iframe[title*="recaptcha" i], div.g-recaptcha';
 const OTP_SELECTOR =
   'input[name="otp"], input[name="code"], input[autocomplete="one-time-code"], input[name="smsCode"]';
+/**
+ * The screen Venmo renders before it has sent an SMS. This is deliberately
+ * distinct from {@link OTP_SELECTOR}: the captured offer has no code input.
+ *
+ * Retained production capture 2026-08-27T03-23-25-318Z:
+ * - `.listHeader`: "To verify it’s you, we’ll text you a code"
+ * - `.venmoRemeberMeDevice input[type="checkbox"]`
+ * - `button[data-testid="button-next"][name="Send code"][type="submit"]`
+ */
+const SMS_OFFER_TEXT_RE = /to verify it.?s you, we.?ll text you a code/i;
+const SMS_OFFER_REMEMBER_DEVICE_SELECTOR = '.venmoRemeberMeDevice input[type="checkbox"]';
+const SMS_OFFER_SEND_CODE_SELECTOR = 'button[data-testid="button-next"][name="Send code"][type="submit"]';
+const SMS_OFFER_CODE_INPUT_TIMEOUT_MS = 15_000;
 const SUBMIT_BUTTON_NAME_RE = /^(log in|sign in|continue|next)$/i;
 /**
  * Copy that ACCOMPANIES a code-entry screen. Necessary but never sufficient:
@@ -320,6 +359,17 @@ const HANDOFF_BLANK_SURFACE_SUFFIX =
  * consuming their whole window.
  */
 const HANDOFF_PAINT_TIMEOUT_MS = 15_000;
+
+/**
+ * How long to wait for the submitted login to reach an OBSERVABLE outcome
+ * before calling it incomplete. Not a poll-and-hope: the wait keys on the
+ * submit control leaving its in-flight state, and expiring is reported as
+ * "the login did not complete", never as a credential rejection.
+ */
+const POST_SUBMIT_SETTLE_TIMEOUT_MS = 30_000;
+
+/** Gap between post-submit liveness polls. */
+const POST_SUBMIT_POLL_INTERVAL_MS = 1000;
 
 const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
   {
@@ -510,6 +560,14 @@ interface EnsureVenmoSessionArgs {
    */
   passwordScreenTimeoutMs?: number;
   /**
+   * Overrides how long the post-submit wait polls for the session to go live,
+   * defaulting to {@link POST_SUBMIT_SETTLE_TIMEOUT_MS}. Exposed for the same
+   * reason as `passwordScreenTimeoutMs`: a test must be able to prove the
+   * bound expires — and that expiry is reported as an incomplete login rather
+   * than a rejected credential — without sitting through the production wait.
+   */
+  postSubmitSettleTimeoutMs?: number;
+  /**
    * Emits a `run.progress_reported` spine event. Optional so tests that don't
    * care about the timeline can omit it; production always supplies it (see
    * `connectors/venmo/index.ts`'s `ensureSession`).
@@ -689,6 +747,114 @@ async function hasUsableVenmoOtpInput(page: Page): Promise<boolean> {
 }
 
 /**
+ * Wait for the submitted login to reach an OBSERVABLE outcome, then report
+ * whether the session went live.
+ *
+ * The signal it keys on is the submit control leaving its in-flight state.
+ * Venmo renders a spinner INSIDE that button while the login POST is
+ * outstanding, which replaces its accessible name — so "a button named Log
+ * in / Sign in / Continue is present again, or the button is gone entirely
+ * (navigated away)" is a definite, observable completion signal, not a guess
+ * that enough time has passed.
+ *
+ * Deliberately NOT poll-then-assume. Two distinct outcomes:
+ *   - settled -> probe once and return that verdict, which is now a real
+ *     answer about the session rather than a read taken mid-request;
+ *   - never settled within the bound -> return `settled: false`, so the
+ *     caller can say "the login did not complete" instead of asserting the
+ *     owner's credentials were rejected. A timeout is not a rejection.
+ *
+ * The bound exists because a wait that cannot end is the unbounded-await
+ * defect this codebase has already paid for twice.
+ */
+async function pollForLiveSessionAfterSubmit(
+  page: Page,
+  settleTimeoutMs: number = POST_SUBMIT_SETTLE_TIMEOUT_MS
+): Promise<{ probe: VenmoAccountProbeResult | null; settled: boolean }> {
+  const deadline = Date.now() + settleTimeoutMs;
+  let lastProbe: VenmoAccountProbeResult | null = null;
+  while (Date.now() < deadline) {
+    // The probe itself IS the definite signal — it asks Venmo's own API
+    // whether this browser context is authenticated. A `live` answer is
+    // observable completion; anything else means the outcome is not yet
+    // known, so keep asking until it is or the bound expires.
+    //
+    // Keying on the probe rather than on button pixels is deliberate: the
+    // spinner is a rendering detail that varies by page generation, while
+    // "the API says we are signed in" is the property the caller actually
+    // needs and the same one it already trusted for a single sample.
+    const probe = await probeVenmoAccount(page, "post_submit");
+    if (probe.live) {
+      return { probe, settled: true };
+    }
+    // A transport fault is "could not ask", not "answered no" — retrying is
+    // correct. A clean `dead` this early may still be mid-request, so it also
+    // keeps polling; if it is a genuine rejection the answer stays `dead` and
+    // the bound below reports honestly rather than guessing.
+    lastProbe = probe;
+    await page.waitForTimeout(POST_SUBMIT_POLL_INTERVAL_MS);
+  }
+  // The bound expired with the session never going live. We do NOT know that
+  // the credentials were rejected — we know only that no outcome arrived in
+  // time, which is a different fact and must be reported as itself. The last
+  // probe travels with it as evidence, but `settled: false` is what decides
+  // the caller's wording.
+  return { probe: lastProbe, settled: false };
+}
+
+/**
+ * Wait for the input that makes a dispatched SMS code actionable. The offer is
+ * not an OTP page yet: prompting before this wait would ask the owner for a
+ * code that Venmo has not sent or cannot accept.
+ */
+async function waitForVenmoSmsOfferCodeInput(page: Page): Promise<void> {
+  const inputAppeared = await findVenmoOtpInput(page)
+    .waitFor({ state: "visible", timeout: SMS_OFFER_CODE_INPUT_TIMEOUT_MS })
+    .then((): true => true)
+    .catch((): false => false);
+  if (!(inputAppeared && (await hasUsableVenmoOtpInput(page)))) {
+    throw new Error(
+      `${VENMO_SMS_OFFER_CODE_INPUT_TIMEOUT}: Venmo did not render a usable code input within ${SMS_OFFER_CODE_INPUT_TIMEOUT_MS}ms after Send code`
+    );
+  }
+}
+
+/**
+ * Dispatch Venmo's SMS only after preserving the device-trust choice. The
+ * checkbox is idempotent: the retained capture was already checked, and a
+ * blind click would undo the future unattended-login benefit we need.
+ */
+async function submitVenmoSmsOffer(page: Page): Promise<void> {
+  const rememberDevice = page.locator(SMS_OFFER_REMEMBER_DEVICE_SELECTOR).first();
+  if (!((await locatorIsVisible(rememberDevice)) && (await rememberDevice.isEnabled().catch((): boolean => false)))) {
+    throw new Error(`${VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE}: Remember this device is not usable`);
+  }
+  const remembered = await rememberDevice.isChecked().catch((): null => null);
+  if (remembered === null) {
+    throw new Error(`${VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE}: could not read Remember this device`);
+  }
+  if (!remembered) {
+    await rememberDevice.click().catch((error: unknown): never => {
+      throw new Error(`${VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE}: could not select Remember this device`, {
+        cause: error,
+      });
+    });
+    if (!(await rememberDevice.isChecked().catch((): boolean => false))) {
+      throw new Error(`${VENMO_SMS_OFFER_CHECKBOX_UNAVAILABLE}: Remember this device did not stay selected`);
+    }
+  }
+
+  const sendCode = page.locator(SMS_OFFER_SEND_CODE_SELECTOR).first();
+  if (!((await locatorIsVisible(sendCode)) && (await sendCode.isEnabled().catch((): boolean => false)))) {
+    throw new Error(`${VENMO_SMS_OFFER_SEND_CODE_UNAVAILABLE}: Send code is not usable`);
+  }
+  await sendCode.click().catch((error: unknown): never => {
+    throw new Error(`${VENMO_SMS_OFFER_SEND_CODE_UNAVAILABLE}: could not send the code`, { cause: error });
+  });
+  await waitForVenmoSmsOfferCodeInput(page);
+}
+
+/**
  * Click the sign-in form's submit control. Returns `false` when no control
  * could be found — the caller decides whether that is fatal.
  *
@@ -727,6 +893,28 @@ async function clickVenmoLoginSubmit(page: Page, extraSelectors: readonly string
  */
 async function hasVenmoCaptcha(page: Page): Promise<boolean> {
   return await locatorIsVisible(page.locator(CAPTCHA_FRAME_SELECTOR));
+}
+
+/**
+ * Did this page load reCAPTCHA Enterprise **v3** — the invisible, scoring kind?
+ *
+ * Keys on the SCRIPT, never on visibility, because that is the whole point: v3
+ * renders nothing. Presence alone is not proof the score blocked anything —
+ * Venmo loads this on healthy sign-ins too — so callers must only ask once the
+ * login has ALREADY failed to complete. It answers "here is the mechanism that
+ * best explains this failure", not "a challenge is being shown".
+ *
+ * Matches the enterprise v3 asset paths observed live (`grcenterprise_v3.html`,
+ * `recaptchav3.js`) rather than the bare word "recaptcha", which also matches
+ * the v2 visible widget the sibling {@link hasVenmoCaptcha} already handles.
+ */
+async function pageLoadedInvisibleScoringChallenge(page: Page): Promise<boolean> {
+  return await page
+    .locator('script[src*="recaptchav3"], iframe[src*="grcenterprise_v3"], script[src*="grcenterprise_v3"]')
+    .first()
+    .count()
+    .then((n: number): boolean => n > 0)
+    .catch((): boolean => false);
 }
 
 /**
@@ -996,10 +1184,11 @@ async function fillVenmoPassword(
 }
 
 /**
- * Handle Venmo's post-submit verification step, if one rendered. Matches on
- * either a known OTP input shape or the page's own prompt copy — never
- * guesses a code the owner never saw. Returns `null` when no verification
- * step was detected (the caller proceeds to the final session probe).
+ * Handle Venmo's post-submit verification step, if one rendered. A usable OTP
+ * input takes the existing interaction path. The prior SMS offer is a distinct
+ * state: it must dispatch the code and wait for that input before it can use
+ * the same interaction path. Returns `null` when no verification step was
+ * detected (the caller proceeds to the final session probe).
  *
  * Only ever called from `loginWithSavedCredentials` AFTER the saved password
  * was already submitted — every probe in this function is `"post_submit"`
@@ -1020,11 +1209,19 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccoun
   // itself visible, so `locatorIsVisible` alone let an inert box demand a code
   // Venmo never sent.
   const usableOtpInput = await hasUsableVenmoOtpInput(page);
-  if (!(usableOtpInput || OTP_PROMPT_TEXT_RE.test(bodyText))) {
+  const smsOfferPresent =
+    SMS_OFFER_TEXT_RE.test(bodyText) && (await locatorIsVisible(page.locator(SMS_OFFER_SEND_CODE_SELECTOR).first()));
+  if (!(usableOtpInput || OTP_PROMPT_TEXT_RE.test(bodyText) || smsOfferPresent)) {
     return null;
   }
   await captureLoginState(capture, page, "venmo-otp-detected");
   if (!usableOtpInput) {
+    if (smsOfferPresent) {
+      await submitVenmoSmsOffer(page);
+      // Re-enter only after a real, usable input arrived. This preserves the
+      // existing OTP interaction, validation, fill, and submit behavior.
+      return await handleVenmoOtpIfPresent(args);
+    }
     // Either the prompt copy matched with no known input shape, or an input
     // rendered that cannot accept a code. Hand off rather than guess a
     // selector for a UI we can't confirm — and never fabricate a code demand.
@@ -1081,11 +1278,15 @@ async function loginWithSavedCredentials({
   onCredentialSubmit,
   page,
   passwordScreenTimeoutMs,
+  postSubmitSettleTimeoutMs = POST_SUBMIT_SETTLE_TIMEOUT_MS,
   progress = noopProgress,
   sendInteraction,
   username,
   password,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "passwordScreenTimeoutMs" | "progress" | "sendInteraction"> & {
+}: Pick<
+  EnsureVenmoSessionArgs,
+  "capture" | "page" | "passwordScreenTimeoutMs" | "postSubmitSettleTimeoutMs" | "progress" | "sendInteraction"
+> & {
   checkpoint: SessionCheckpointFn;
   onCredentialSubmit?: () => void;
   password: string;
@@ -1156,8 +1357,52 @@ async function loginWithSavedCredentials({
   // above — see probeVenmoAccount's B4 doc for why a transport fault here
   // must not be classified the same as a fault that happened before any
   // password was ever typed.
-  const finalProbe = await probeVenmoAccount(page, "post_submit");
-  if (finalProbe.live) {
+  //
+  // POLLED, not sampled once. Venmo's sign-in submits over XHR and never
+  // navigates, so the `waitForLoadState("domcontentloaded")` above returns
+  // immediately and guarantees nothing about the login having completed.
+  // A single probe here therefore asks "are we signed in?" while the request
+  // is still in flight, gets `dead` because Venmo has not answered yet, and
+  // throws `venmo_login_incomplete_after_submit` on a login that was about to
+  // succeed.
+  //
+  // Proven from the failed run's retained capture frames (2026-08-26,
+  // run_1787774371364, `fixture-captures/venmo/raw/2026-08-26T19-59-31-630Z/`):
+  // `venmo-login-after-submit.png` shows the password screen reached, the
+  // identifier resolved to the owner's real account, the password field
+  // filled, and the submit button rendering a SPINNER — the POST still in
+  // flight. `session-establish-venmo-final-verify.png`, captured ~1s later, is
+  // pixel-identical: still spinning. The credentials and the flow were both
+  // correct; only the verification was early.
+  //
+  // Same class as the identifier read-back guard added earlier in this file:
+  // verify AFTER the async settles, never during. Bounded by
+  // POST_SUBMIT_SETTLE_TIMEOUT_MS so a genuinely failed login still fails —
+  // a poll that cannot end is the unbounded-await defect wearing a fix's
+  // clothes.
+  const settleOutcome = await pollForLiveSessionAfterSubmit(page, postSubmitSettleTimeoutMs);
+  if (!settleOutcome.settled) {
+    // Never reached an observable outcome. Say THAT — an unsettled login is
+    // not evidence that the owner's password is wrong, and reporting it as a
+    // rejection is how a working credential gets blamed for a slow provider.
+    await captureLoginState(capture, page, "venmo-login-did-not-settle");
+    // An INVISIBLE scoring challenge is the one cause we can name here, and
+    // naming it changes what the owner does about it. reCAPTCHA Enterprise v3
+    // renders no widget and no checkbox — it scores the session silently — so
+    // the visible-frame check above cannot see it and no error copy appears on
+    // the page. Left unnamed, its signature is indistinguishable from a slow
+    // provider, which sends the owner looking for a network problem that is
+    // not there. Proven live on run_1787785348388: `_GRECAPTCHA` was written
+    // one second before the password submit and the request never completed.
+    if (await pageLoadedInvisibleScoringChallenge(page)) {
+      throw new Error(
+        `${VENMO_SCORING_CHALLENGE}: Venmo scored this sign-in with an invisible reCAPTCHA Enterprise v3 check and never completed it within ${postSubmitSettleTimeoutMs}ms. There is no challenge to solve — v3 scores the browser itself, so retrying unattended will not clear it.`
+      );
+    }
+    throw new Error(`venmo_login_did_not_complete: no sign-in outcome within ${postSubmitSettleTimeoutMs}ms`);
+  }
+  const finalProbe = settleOutcome.probe;
+  if (finalProbe?.live) {
     return finalProbe;
   }
   return await requestManualLoginForChallenge({
@@ -1177,6 +1422,7 @@ export async function ensureVenmoSession({
   onCredentialSubmit,
   page,
   passwordScreenTimeoutMs,
+  postSubmitSettleTimeoutMs,
   progress,
   sendInteraction,
 }: EnsureVenmoSessionArgs): Promise<VenmoAccountProbeResult> {
@@ -1204,6 +1450,7 @@ export async function ensureVenmoSession({
     ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
     page,
     ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),
+    ...(postSubmitSettleTimeoutMs === undefined ? {} : { postSubmitSettleTimeoutMs }),
     ...(progress ? { progress } : {}),
     sendInteraction,
     username,

@@ -261,6 +261,69 @@ function assertCaptureArgs({
       "A non-empty secret is required to capture a credential."
     );
   }
+  if (isUnusableSecretShape(secret)) {
+    throw new ConnectorInstanceCredentialError(
+      "credential_secret_invalid",
+      "That value is a mask or placeholder, not a secret. Type the real value, or leave the field alone to keep the stored one."
+    );
+  }
+}
+
+/**
+ * A mask is a RENDERING of a secret, never a secret. Sealing one is the system
+ * lying to itself about holding a credential.
+ *
+ * Reproduced 2026-08-26 against the real store: `"{}"`, `"••••••••"`,
+ * `"unchanged"`, and eight spaces were ALL accepted and sealed, and
+ * `recoverSecret` returned them as the owner's password. The only guard was
+ * `length === 0`, which none of them trip.
+ *
+ * The owner-visible cost of getting this wrong is not an error message. A
+ * login runs with eight spaces as the password, the provider rejects it, the
+ * connection reads as broken credentials, and the owner is asked to re-enter a
+ * password that was never stored — while the real one may still be in the
+ * form, masked. Repeated automated attempts with a junk secret are also how an
+ * account gets locked or rate-limited.
+ *
+ * The rule is deliberately SHAPE-based, not substring-based:
+ *   - whitespace-only, in any combination, is never a secret someone typed;
+ *   - a value made ENTIRELY of mask glyphs is a rendering, not a value;
+ *   - a small set of exact placeholder literals are form/serialization
+ *     artifacts, matched whole and case-insensitively.
+ *
+ * A password that merely CONTAINS one of these (`myUnchangedP@ss`) is a
+ * password someone actually chose and is accepted — refusing it would be a new
+ * defect wearing a fix's clothes. Nothing here trims or rewrites: a value with
+ * real content is stored exactly as typed, so a deliberate trailing space
+ * survives.
+ */
+const MASK_GLYPHS_ONLY = /^[\s*•·●◦∙×xX#?]+$/u;
+const PLACEHOLDER_LITERALS: ReadonlySet<string> = new Set([
+  "{}",
+  "[]",
+  "null",
+  "undefined",
+  "unchanged",
+  "[redacted]",
+  "redacted",
+  "<redacted>",
+  "***",
+]);
+// Deliberately NOT listed: "password", "changeme", and similar weak-but-real
+// values. They are bad passwords, not masks or placeholders — and if that is
+// genuinely what a provider account uses, refusing to store it would lock the
+// owner out of his own data to make a point about password strength. This
+// guard exists to stop the system sealing a value that CANNOT be a credential,
+// not to judge the ones that can.
+
+function isUnusableSecretShape(secret: string): boolean {
+  if (secret.trim().length === 0) {
+    return true;
+  }
+  if (MASK_GLYPHS_ONLY.test(secret)) {
+    return true;
+  }
+  return PLACEHOLDER_LITERALS.has(secret.trim().toLowerCase());
 }
 
 function optionalStateChangeValue(value: unknown): string | undefined {

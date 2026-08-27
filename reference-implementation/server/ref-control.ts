@@ -12,6 +12,7 @@
 // reference implementation exposes for its own dashboard. Clients must
 // not depend on the response shape.
 
+import { isIP } from "node:net";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 import type { RuntimeContinuationFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
@@ -64,6 +65,7 @@ import {
   type OutboxDiagnosticCounts,
   type OutboxStalledCause,
 } from "../runtime/connection-health.ts";
+import { boundConnectorErrorCode, boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
 import {
   buildProgressEvidence,
   progressMode,
@@ -523,6 +525,22 @@ export interface RuntimeCollectionFacts {
   readonly streams: readonly RuntimeCollectionFact[];
 }
 
+interface ConnectorRuntimeFailureCauseSummary {
+  readonly address?: string;
+  readonly code?: string;
+  readonly port?: number;
+  readonly syscall?: string;
+}
+
+/** A bounded owner-facing projection of `run_history.connector_error_json`. */
+export interface ConnectorRunErrorSummary {
+  readonly cause_chain?: readonly ConnectorRuntimeFailureCauseSummary[];
+  readonly code: string | null;
+  readonly message: string | null;
+  readonly origin: "runtime" | null;
+  readonly retryable: boolean | null;
+}
+
 export interface ConnectorRunSummary {
   /**
    * The runtime `collection_facts` block read off this run's terminal event, or
@@ -531,6 +549,7 @@ export interface ConnectorRunSummary {
    * `collection_report`; never final coverage truth.
    */
   readonly collection_facts: RuntimeCollectionFacts | null;
+  readonly connector_error?: ConnectorRunErrorSummary | null;
   readonly event_count: number;
   readonly failure_reason: string | null;
   readonly finished_at: string | null;
@@ -787,6 +806,8 @@ export interface ConnectorSummary {
    * coverage provenance without changing grant-scoped read surfaces.
    */
   readonly acquisition_coverage: AcquisitionCoverageSummary | null;
+  /** Reason recorded by the boot auto-enrollment pass when no schedule exists. */
+  readonly auto_enroll_skip_reason?: string | null;
   /**
    * Per-stream Collection Report derived on read from the latest run's runtime
    * `collection_facts` block plus this connection's freshness / refresh-policy /
@@ -889,8 +910,6 @@ export interface ConnectorSummary {
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   readonly revoked_at: string | null;
   readonly schedule: unknown;
-  /** Reason recorded by the boot auto-enrollment pass when no schedule exists. */
-  readonly auto_enroll_skip_reason?: string | null;
   readonly source_binding_kind: string | null;
   /**
    * The connection's source kind and non-secret source-binding kind. Owner
@@ -1332,6 +1351,110 @@ function productRunYieldCounts(history: ProductRunHistoryRecord): {
   };
 }
 
+// Runtime diagnostics are written from an arbitrary Error.cause object. Keep
+// this read projection closed as well: historical or manually-written rows
+// must not turn the owner Sources page into a transport for arbitrary strings.
+const OWNER_RUNTIME_ERROR_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "EADDRNOTAVAIL",
+  "EAFNOSUPPORT",
+  "EAI_AGAIN",
+  "EAI_FAIL",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ENOTCONN",
+  "ENOTFOUND",
+  "EPIPE",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "ETIMEDOUT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UND_ERR_ABORTED",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+const OWNER_RUNTIME_SYSCALLS = new Set([
+  "accept",
+  "bind",
+  "connect",
+  "getaddrinfo",
+  "getpeername",
+  "getsockname",
+  "getsockopt",
+  "listen",
+  "read",
+  "setsockopt",
+  "shutdown",
+  "write",
+]);
+function projectRuntimeFailureCode(value: unknown): string | null {
+  return typeof value === "string" && OWNER_RUNTIME_ERROR_CODES.has(value) ? value : null;
+}
+
+function projectConnectorErrorCode(value: unknown): string | null {
+  const connectorCode = boundConnectorErrorCode(value);
+  if (connectorCode) {
+    return connectorCode;
+  }
+  return typeof value === "string" && OWNER_RUNTIME_ERROR_CODES.has(value) ? value : null;
+}
+
+function projectRuntimeFailureCause(value: unknown): ConnectorRuntimeFailureCauseSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const cause = value as Record<string, unknown>;
+  const code = projectRuntimeFailureCode(cause.code);
+  const syscall = typeof cause.syscall === "string" && OWNER_RUNTIME_SYSCALLS.has(cause.syscall) ? cause.syscall : null;
+  const address = typeof cause.address === "string" && isIP(cause.address) !== 0 ? cause.address : null;
+  const port =
+    typeof cause.port === "number" && Number.isInteger(cause.port) && cause.port > 0 && cause.port <= 65_535
+      ? cause.port
+      : null;
+  const projected: ConnectorRuntimeFailureCauseSummary = {
+    ...(address ? { address } : {}),
+    ...(code ? { code } : {}),
+    ...(port ? { port } : {}),
+    ...(syscall ? { syscall } : {}),
+  };
+  return Object.keys(projected).length ? projected : null;
+}
+
+function projectConnectorRunError(value: Record<string, unknown> | null | undefined): ConnectorRunErrorSummary | null {
+  if (!value) {
+    return null;
+  }
+  const causeChain = Array.isArray(value.cause_chain)
+    ? value.cause_chain
+        .slice(0, 4)
+        .map(projectRuntimeFailureCause)
+        .filter((cause): cause is ConnectorRuntimeFailureCauseSummary => cause !== null)
+    : [];
+  const code = projectConnectorErrorCode(value.code);
+  const message = boundConnectorErrorMessage(value.message);
+  const retryable = typeof value.retryable === "boolean" ? value.retryable : null;
+  const origin = value.origin === "runtime" ? "runtime" : null;
+  if (!(causeChain.length || code || message || retryable !== null || origin)) {
+    return null;
+  }
+  return {
+    ...(causeChain.length ? { cause_chain: causeChain } : {}),
+    code,
+    message,
+    origin,
+    retryable,
+  };
+}
+
 /**
  * Product LIST/detail composition (terminal-read-architecture-fable-0730.md
  * §9/R9.2): a `run_history` row for ANY run kind, composed with the
@@ -1372,6 +1495,7 @@ function productRunHistoryToConnectorRunSummary(
       : null;
   return {
     collection_facts: readCollectionFactsFromTerminalData(facts),
+    connector_error: projectConnectorRunError(history.connectorError),
     event_count: 0,
     failure_reason: history.failureReason ?? history.error ?? browserSurfaceFailureReason,
     finished_at: isActiveRunSummaryStatus(status) ? null : history.completedAt,
@@ -2231,6 +2355,29 @@ export function retireExpiredBrowserEnrollmentShellsForMaintenance(
   };
   return retireExpiredBrowserEnrollmentShells(
     {
+      // The shells that hold a captured credential. A credential is finished
+      // owner work sitting in the row — he typed his password — so wall-clock
+      // alone must not throw it away (production 2026-08-26: seven venmo
+      // shells retired at their 2h TTL, stranding his real password on revoked
+      // rows). Failure to read this must never CAUSE a revocation, so an error
+      // degrades to "no shell is credentialed", matching the surrounding
+      // `.catch(() => null)` discipline on this path.
+      async listCredentialedInstanceIds() {
+        const shells = await store.listDraftBrowserEnrollmentShells(ownerSubjectId);
+        const ids = shells
+          .map((shell: { connectorInstanceId?: string }) => shell.connectorInstanceId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        if (ids.length === 0) {
+          return [];
+        }
+        const metadata = await getConnectorCredentialStore()
+          .getMetadataByInstanceIds(ids)
+          .catch(() => null);
+        if (!metadata) {
+          return [];
+        }
+        return [...metadata.keys()];
+      },
       // biome-ignore lint/suspicious/noShadow: The local name follows the external payload vocabulary at this boundary.
       async listDraftBrowserEnrollmentShells(ownerSubjectId) {
         return [...(await store.listDraftBrowserEnrollmentShells(ownerSubjectId))];
@@ -3072,6 +3219,32 @@ function capIsoAnchor(anchor: string | null, cap: string | null): string | null 
 }
 
 /**
+ * Whether a run SUCCEEDED recently enough to satisfy the connection's own
+ * staleness window — the affirmative "this source is collecting" fact.
+ *
+ * Deliberately reads the last SUCCESSFUL run, not the last attempt: a failed
+ * attempt proves nothing collected, and `deriveReferenceFreshness` already
+ * stales a connection whose newest attempt failed after its newest success.
+ * `null`/unparseable anchors and an absent window all answer `false`, so this
+ * predicate can only ever WITHHOLD an override, never manufacture one.
+ */
+function hasSucceededWithinStalenessWindow(
+  lastSuccessfulRunAt: string | null,
+  nowIso: string | null,
+  maximumStalenessSeconds: number
+): boolean {
+  if (lastSuccessfulRunAt === null) {
+    return false;
+  }
+  const successTime = Date.parse(lastSuccessfulRunAt);
+  const nowTime = nowIso === null ? Date.now() : Date.parse(nowIso);
+  if (!(Number.isFinite(successTime) && Number.isFinite(nowTime))) {
+    return false;
+  }
+  return nowTime - successTime <= maximumStalenessSeconds * 1000;
+}
+
+/**
  * Proof-age freshness override: the Healthy gate is anchored to the OLDEST
  * required-stream proof, not the newest run. When stored latest-attempt
  * evidence carried an older proof than the classifying run, freshness is
@@ -3080,6 +3253,39 @@ function capIsoAnchor(anchor: string | null, cap: string | null): string | null 
  * injected `nowIso`), never a post-hoc status comparison. Connections with
  * no staleness window (`maximum_staleness_seconds` absent) have no window to
  * age the proof against and keep their computed freshness unchanged.
+ *
+ * THE CRY-WOLF GUARD (live defect 2026-08-26). `apple_contacts`
+ * (`cin_d344ba53d6d95c7dd343393d`) ran SUCCEEDED four times on 2026-08-26 and
+ * rendered "Needs refresh · Last refreshed yesterday. Refreshes on schedule."
+ * Nothing was wrong with it and the owner had nothing to do.
+ *
+ * The cause is one signal counted twice. `apple_contacts` collects contacts by
+ * incremental CardDAV sync, so a no-change run legitimately commits its
+ * checkpoint while carrying no `covered`/`considered` keys. The stream-fact
+ * fold's measured-boundary guard (`mergeEventStreamFacts`,
+ * `connector-summary-read-model.ts`) then — correctly — KEEPS the older, fully
+ * enumerated `contacts` fact rather than letting an unmeasured pass destroy a
+ * genuine proof. That preserved fact keeps its original provenance, so its
+ * `evidence_as_of` is deliberately frozen at the last full enumeration. Feeding
+ * that intentionally-frozen timestamp back in as a FRESHNESS clock re-reads
+ * "we chose not to overwrite this proof" as "this source has not collected",
+ * flipping `freshness` to `stale`. From there the cascade is mechanical: the
+ * `Fresh` condition goes false at `warning` severity -> `state: degraded` ->
+ * amber tone -> `staleFreshnessIsSoleDegradation` -> the "Needs refresh" pill.
+ *
+ * So: when a run SUCCEEDED inside the connection's own staleness window, this
+ * override is withheld. Proof age is still reported — through
+ * `coverage_proven_at`, which renders "Coverage last proven N days ago." beside
+ * a green pill (80872b1fc). That annotation is the honest channel for this
+ * fact: it states the proof's real age without claiming an owner action that
+ * does not exist. "Needs refresh" must mean the owner has something to do; the
+ * clock advancing past a proof the system deliberately preserved is not that.
+ *
+ * The guard is narrow by construction. It requires an affirmative recent
+ * SUCCESS, so a connection that has genuinely stopped collecting — no
+ * successful run inside its window — still ages against the proof anchor and
+ * still stales exactly as before. Silencing a real staleness would be a worse
+ * defect than the false alarm this removes.
  */
 function proofAgeFreshnessOverride(
   healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0],
@@ -3091,6 +3297,15 @@ function proofAgeFreshnessOverride(
   }
   const maximumStalenessSeconds = getMaximumStalenessSeconds(healthInput.refreshPolicy);
   if (maximumStalenessSeconds === null) {
+    return null;
+  }
+  if (
+    hasSucceededWithinStalenessWindow(
+      healthInput.lastSuccessfulRun?.last_at ?? null,
+      healthInput.nowIso ?? null,
+      maximumStalenessSeconds
+    )
+  ) {
     return null;
   }
   const current = healthInput.freshness;
@@ -6726,6 +6941,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   }
   return {
     acquisition_coverage: acquisitionCoverage,
+    auto_enroll_skip_reason: recordedAutoEnrollSkipReason(instance),
     collection_report: collectionReport,
     connection_health: connectionHealth,
     connection_id: connectorInstanceId,
@@ -6772,7 +6988,6 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       : { as_of: null, reason_code: "summary_evidence_unavailable", state: "unobserved" },
     revoked_at: instance.revokedAt ?? null,
     schedule: localDeviceBacked ? null : schedule,
-    auto_enroll_skip_reason: recordedAutoEnrollSkipReason(instance),
     source_binding_kind: connectionBindingKind(instance),
     source_kind: instance.sourceKind,
     source_visibility: sourceVisibility,
@@ -7712,10 +7927,7 @@ async function loadConnectorSummaryProjectionDeps(
     ...(latestSettledRunHistoryRows ?? []),
   ]) {
     if (row.runId && row.connectorInstanceId) {
-      latestRunFactsJsonByRunIdentity.set(
-        runFactsCacheKey(row.runId, row.connectorInstanceId),
-        row.factsJson ?? null
-      );
+      latestRunFactsJsonByRunIdentity.set(runFactsCacheKey(row.runId, row.connectorInstanceId), row.factsJson ?? null);
     }
   }
   const evidenceReadFailed = summaryEvidenceRead.failed;

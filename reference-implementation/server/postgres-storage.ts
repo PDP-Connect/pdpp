@@ -545,6 +545,43 @@ async function ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client: PoolCl
   }
 }
 
+/**
+ * Widen the config-revision status CHECK to admit `'rejected'`.
+ *
+ * An existing deployment carries the four-value constraint, so the owner's
+ * refusal would be rejected by the DATABASE even with the store and route in
+ * place (reproduced 2026-08-26: `CHECK constraint failed: status IN
+ * ('proposed', 'active', 'superseded', 'quarantined')`). Widening only ADDS an
+ * allowed value — no existing row can violate the new constraint, so this is
+ * safe to run against live data and needs no backfill.
+ */
+async function migratePostgresConfigRevisionRejectedStatus(client: PoolClient): Promise<void> {
+  const constraints = await client.query<ConstraintRow>(`
+    SELECT conname, pg_get_constraintdef(oid) AS definition
+    FROM pg_constraint
+    WHERE conrelid = 'connector_instance_config_revisions'::regclass AND contype = 'c'
+      AND conname = 'connector_instance_config_revisions_status_check'
+  `);
+  const definition = constraints.rows[0]?.definition;
+  if (!definition || definition.includes("'rejected'")) {
+    return;
+  }
+  await client.query("BEGIN");
+  try {
+    await client.query(
+      "ALTER TABLE connector_instance_config_revisions DROP CONSTRAINT connector_instance_config_revisions_status_check"
+    );
+    await client.query(
+      `ALTER TABLE connector_instance_config_revisions ADD CONSTRAINT connector_instance_config_revisions_status_check
+       CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined', 'rejected'))`
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
 async function migratePostgresRetainedSizeRejectionColumns(client: PoolClient): Promise<void> {
   const existingColumn = await client.query(
     `SELECT 1 FROM information_schema.columns
@@ -1369,7 +1406,7 @@ export async function bootstrapPostgresSchema({
         option_kind TEXT NOT NULL CHECK (option_kind IN ('collection_scope', 'transport')),
         origin TEXT NOT NULL CHECK (origin IN ('owner', 'agent', 'migration', 'default')),
         is_explicit BOOLEAN NOT NULL,
-        status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+        status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined', 'rejected')),
         collection_boundary_fingerprint TEXT,
         source_of_change TEXT NOT NULL,
         set_by TEXT NOT NULL,
@@ -2749,6 +2786,31 @@ export async function bootstrapPostgresSchema({
         lease_expires_at TEXT
       );
 
+      -- Durable per-connection resume state for a canonical-count repair scan
+      -- that could not finish inside one bounded admission (a "whale"
+      -- connection with millions of live records). Keyed by
+      -- connector_instance_id, NOT by name like connector_maintenance_cursor
+      -- above -- that table models fleet-wide sweep cursors, a different
+      -- resource; this one is scoped to exactly the connection whose own
+      -- repair is too large for a single statement_timeout admission.
+      -- Scheduling/accumulation state only, never evidence about the owner's
+      -- data: a row here asserts nothing until the scan completes and
+      -- buildRepairedRow's normal upsert publishes it.
+      CREATE TABLE IF NOT EXISTS connector_summary_evidence_repair_chunk (
+        connector_instance_id TEXT PRIMARY KEY,
+        resume_after_id BIGINT,
+        accumulator_json JSONB NOT NULL,
+        -- The canonical source_revision this chunk sequence started against.
+        -- A later admission that finds the live source_revision no longer
+        -- matches this receipt must discard the accumulator and restart the
+        -- scan from the beginning -- resuming a partial sum against a
+        -- revision it was never computed against would silently under- or
+        -- over-count.
+        source_revision TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS manifest_write_violations (
         connector_instance_id TEXT NOT NULL,
         stream TEXT NOT NULL,
@@ -3067,6 +3129,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresBrowserSurfaceLeaseLifecycleChecks(client);
     await migratePostgresBrowserSurfaceLeasePriority(client);
     await migratePostgresRecordRejectionBytePayload(client);
+    await migratePostgresConfigRevisionRejectedStatus(client);
     await migratePostgresRetainedSizeRejectionColumns(client);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
@@ -3087,6 +3150,7 @@ export async function bootstrapPostgresSchema({
     await ensurePostgresLexicalScopedGinIndex(client, log);
     await ensurePostgresRecordsCanonicalCountIndex(client, log);
     await ensurePostgresRecordsInstanceStreamIdIndex(client, log);
+    await ensurePostgresRecordsInstanceDeletedIdIndex(client, log);
     await ensurePostgresConnectorSummarySourceRevisionPrimitive(client);
   } finally {
     try {
@@ -4938,6 +5002,46 @@ async function ensurePostgresRecordsInstanceStreamIdIndex(
          ON records(connector_instance_id, stream, deleted, id)`
     );
     log(`[PDPP] Records migration: keyset index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  });
+}
+
+// The summary-evidence repair scans one connection across every stream. Its
+// keyset predicate cannot use the stream-qualified index above because `stream`
+// is not constrained, so keep the matching access path separate.
+const RECORDS_INSTANCE_DELETED_ID_INDEX_LOCK_ID = "8022352479012004";
+
+async function ensurePostgresRecordsInstanceDeletedIdIndex(
+  client: PoolClient,
+  log: StorageLog = NOOP_STORAGE_LOG
+): Promise<void> {
+  await withPostgresAdvisoryLock(client, RECORDS_INSTANCE_DELETED_ID_INDEX_LOCK_ID, async () => {
+    const existing = await client.query(
+      `SELECT ix.indisvalid AS valid
+         FROM pg_class idx
+         JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+         JOIN pg_index ix ON ix.indexrelid = idx.oid
+        WHERE ns.nspname = current_schema()
+          AND idx.relname = 'idx_pg_records_instance_deleted_id'
+        LIMIT 1`
+    );
+    if ((existing.rowCount ?? 0) > 0 && existing.rows[0]?.valid === true) {
+      return;
+    }
+    if ((existing.rowCount ?? 0) > 0) {
+      log("[PDPP] Records migration: dropping invalid instance/deleted/id index before rebuild");
+      await client.query("DROP INDEX CONCURRENTLY IF EXISTS idx_pg_records_instance_deleted_id");
+    }
+
+    log("[PDPP] Records migration: building keyset index idx_pg_records_instance_deleted_id");
+    const startedAt = Date.now();
+    await client.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_records_instance_deleted_id
+         ON records(connector_instance_id, deleted, id)
+         INCLUDE (stream, emitted_at)`
+    );
+    log(
+      `[PDPP] Records migration: instance/deleted/id keyset index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`
+    );
   });
 }
 

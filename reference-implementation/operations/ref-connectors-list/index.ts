@@ -31,6 +31,18 @@ export interface RefConnectorsListFreshness {
 }
 
 export interface RefConnectorsListRunSummary {
+  readonly connector_error?: {
+    readonly cause_chain?: readonly {
+      readonly address?: string;
+      readonly code?: string;
+      readonly port?: number;
+      readonly syscall?: string;
+    }[];
+    readonly code: string | null;
+    readonly message: string | null;
+    readonly origin: "runtime" | null;
+    readonly retryable: boolean | null;
+  } | null;
   readonly event_count: number;
   readonly failure_reason: string | null;
   readonly finished_at: string | null;

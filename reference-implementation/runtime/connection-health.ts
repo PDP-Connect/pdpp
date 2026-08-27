@@ -4083,9 +4083,31 @@ export function deriveOutboxAxisFromHeartbeat(
 
 /**
  * Classifies a `blocked` heartbeat: dead letters -> retry+re-run backlog;
- * none -> either a bounded-debris carve-out (`idle`) or a genuine
- * state-read failure. Extracted from `deriveOutboxAxisFromHeartbeat` to
- * keep that function's cognitive complexity within the repo's lint budget.
+ * none -> a bounded-debris carve-out (`idle`), a collector that stopped
+ * checking in (`stale_heartbeat`), or a genuine state-read failure.
+ * Extracted from `deriveOutboxAxisFromHeartbeat` to keep that function's
+ * cognitive complexity within the repo's lint budget.
+ *
+ * Stale-heartbeat split (owner-reported 2026-08-27, Signal/peregrine): a
+ * `blocked` heartbeat with no dead letters used to classify
+ * `state_read_failed` REGARDLESS of heartbeat age, and that cause renders
+ * "The server cannot read the collector's last state from that host." For
+ * `cin_992b0c94cebeb3066ba42a6e` that sentence was simply false — the server
+ * had read the host's state fine (a `blocked` heartbeat plus 22 outbox rows,
+ * all `succeeded`, 7,780 records accepted across 18 batches at HTTP 201). What
+ * had actually happened is that the collector on that machine stopped checking
+ * in five days earlier, on 2026-08-22T01:00:17Z. The owner was told the SERVER
+ * had a reading problem when the truth was that his own machine's collector
+ * was no longer running — so the one action that would have fixed it (start
+ * the collector on that host) was the one action the copy did not name.
+ *
+ * `stale_heartbeat` already exists for exactly this fact and already renders
+ * "...stopped checking in. Run it again on that host." It was previously
+ * reachable only from the `starting`/`retrying` branch, which a collector that
+ * dies while `blocked` never passes through. Routing the stale case here makes
+ * the cause match the evidence; the fresh case keeps `state_read_failed`
+ * unchanged, since a collector that IS checking in and still reports `blocked`
+ * genuinely does describe an unreadable state.
  */
 function classifyBlockedHeartbeat(
   evidence: HeartbeatOutboxEvidence,
@@ -4103,6 +4125,11 @@ function classifyBlockedHeartbeat(
   }
   if (qualifiesForBoundedDebrisCarveOut(evidence, age)) {
     return { axis: "idle", cause: null, unreliable: false };
+  }
+  // The collector stopped checking in. Naming that is both more accurate than
+  // a server-side read failure and more actionable: the fix is on the host.
+  if (age.heartbeatStale) {
+    return { axis: "stalled", cause: "stale_heartbeat", unreliable: false };
   }
   return { axis: "stalled", cause: "state_read_failed", unreliable: false };
 }

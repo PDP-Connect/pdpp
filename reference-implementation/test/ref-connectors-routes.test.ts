@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { emitSpineEvent } from "../lib/spine.ts";
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
@@ -62,8 +63,15 @@ interface RefErrorEnvelope {
 }
 
 interface RefListEnvelope {
-  readonly data?: unknown[];
+  readonly data?: RefSourceRow[];
   readonly object?: string;
+}
+
+interface RefSourceRow {
+  readonly connector_instance_id?: string;
+  readonly last_run?: {
+    readonly connector_error?: unknown;
+  } | null;
 }
 
 interface RefConnectorDetailEnvelope {
@@ -198,6 +206,48 @@ test("GET /_ref/connectors with limit returns a bounded list envelope", async ()
     assert.equal(status, 200);
     assert.equal(body.object, "list");
     assert.ok(Array.isArray(body.data));
+  });
+});
+
+test("GET /_ref/connectors exposes the bounded runtime connector error on the owner Sources surface", async () => {
+  await withServer(async ({ asUrl }) => {
+    const manifest = await registerSpotifyManifest(asUrl);
+    const connectorId = connectorKeyForManifest(manifest);
+    await seedSpotifyInstance(connectorId);
+    await emitSpineEvent({
+      actor_id: connectorId,
+      actor_type: "runtime",
+      data: {
+        connector_instance_id: SPOTIFY_INSTANCE_ID,
+        failure_message: "fetch failed",
+        failure_origin: "runtime",
+        runtime_failure: {
+          cause_chain: [
+            { address: "203.0.113.8", code: "UND_ERR_CONNECT_TIMEOUT", port: 443, syscall: "connect" },
+            { address: "not-an-ip-address", code: "not_a_runtime_code", syscall: "not_a_syscall" },
+          ],
+          code: "UND_ERR_CONNECT_TIMEOUT",
+          retryable: true,
+        },
+        source: { id: connectorId, kind: "connector" },
+      },
+      event_type: "run.failed",
+      object_id: "run_owner_sources_runtime_error",
+      object_type: "run",
+      run_id: "run_owner_sources_runtime_error",
+      status: "failed",
+    });
+
+    const { status, body } = await fetchJson<RefListEnvelope>(`${asUrl}/_ref/connectors?limit=50`);
+    assert.equal(status, 200);
+    const source = body.data?.find((row) => row.connector_instance_id === SPOTIFY_INSTANCE_ID);
+    assert.deepEqual(source?.last_run?.connector_error, {
+      cause_chain: [{ address: "203.0.113.8", code: "UND_ERR_CONNECT_TIMEOUT", port: 443, syscall: "connect" }],
+      code: "UND_ERR_CONNECT_TIMEOUT",
+      message: "fetch failed",
+      origin: "runtime",
+      retryable: true,
+    });
   });
 });
 

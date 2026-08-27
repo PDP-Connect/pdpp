@@ -72,6 +72,26 @@ const MAX_SOURCE_REVISION = "9223372036854775807";
 const RECONCILE_PAGE_SIZE = 25;
 
 /**
+ * Row page size for the chunked canonical-count scan (see
+ * `scanCanonicalStreamsChunked`). `RECONCILE_PAGE_SIZE` (25) paginates
+ * CONNECTION ids for discovery; this paginates DATA ROWS within a single
+ * whale connection's own `records`, so it is a different resource at a
+ * different scale.
+ *
+ * Chosen so one page — an `id`-ordered index range scan on
+ * `idx_pg_records_instance_stream_id (connector_instance_id, stream,
+ * deleted, id)` — comfortably finishes inside `MIN_STATEMENT_TIMEOUT_MS`
+ * (500ms) even on a cold cache: 20,000 sequential index+heap fetches is a
+ * few hundred thousand rows/sec on ordinary Postgres hardware, an order of
+ * magnitude of margin under 500ms. A whale connection with 2.5M live
+ * records (the case this exists for) then takes on the order of 125 pages
+ * to scan completely, spread across as many admissions as the round's
+ * remaining budget allows per pass — never fewer than one page per
+ * admission, so the backlog always shrinks.
+ */
+const CHUNK_SCAN_PAGE_SIZE = 20_000;
+
+/**
  * Per-unit Postgres statement-timeout floor (design review P1-2): the
  * cooperative `deadline` this module threads through `discoverCandidates`/
  * `repairCandidate` is a PASS ADMISSION deadline, checked only BETWEEN
@@ -1252,17 +1272,26 @@ async function repairCandidate(connectorInstanceId: string, deadline: number | n
     };
   }
   try {
-    if (isPostgresStorageBackend()) {
-      const repaired = await repairCandidatePostgres(connectorInstanceId, deadline);
+    const repaired = isPostgresStorageBackend()
+      ? await repairCandidatePostgres(connectorInstanceId, deadline)
+      : await repairCandidateSqlite(connectorInstanceId);
+    // Clear the back-off ONLY on a real repair. A `deferred` result is not
+    // success: the Postgres branch returns `deferred` for exactly the
+    // statement_timeout case that just armed the back-off, so clearing here
+    // unconditionally would disarm it one frame after it was set and leave
+    // the unit retrying unpaced — the same production defect, relocated.
+    if (!repaired.deferred) {
       repairTimeoutBackoffUntil.delete(connectorInstanceId);
       repairTimeoutStrikes.delete(connectorInstanceId);
-      return repaired;
     }
-    const repaired = await repairCandidateSqlite(connectorInstanceId);
-    repairTimeoutBackoffUntil.delete(connectorInstanceId);
-    repairTimeoutStrikes.delete(connectorInstanceId);
     return repaired;
   } catch (err) {
+    // A `PostgresStatementTimeoutError` does NOT reach this catch on the
+    // Postgres branch — `repairCandidatePostgres` handles and returns it
+    // (that unreachability is why the original wiring never fired). It is
+    // still armed here for the lock-acquisition path and any future branch
+    // that lets the error propagate, so the throttle cannot be lost again
+    // by a change in who catches what.
     if (err instanceof PostgresStatementTimeoutError) {
       noteRepairTimeout(connectorInstanceId);
     }
@@ -1674,6 +1703,194 @@ async function persistFailedEvidencePostgres(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Chunked/resumable canonical-count scan (whale repair)
+//
+// `records WHERE connector_instance_id = ? AND deleted = false GROUP BY
+// stream` is index-covered (`idx_pg_records_canonical_count`) but its cost is
+// still O(live rows for that ONE connection): a connection with millions of
+// live records (Slack 1.57M, a Claude Code connection 2.5M, a Codex
+// connection 1.3M, measured on the owner's instance 2026-08-26) cannot
+// finish that single aggregate inside the `MIN_STATEMENT_TIMEOUT_MS` floor —
+// af114c250 stops the resulting doomed re-admission from starving every
+// other dirty row, but does not make the whale's own row ever converge.
+//
+// The fix scans the same rows via `idx_pg_records_instance_stream_id
+// (connector_instance_id, stream, deleted, id)` as a keyset-paginated `id`
+// range instead of one unbounded aggregate, folding each page into a durable
+// per-stream accumulator (`connector_summary_evidence_repair_chunk`) that
+// resumes across as many admissions as it takes. This is strictly additive
+// bounded progress, never a bigger budget: `CHUNK_SCAN_PAGE_SIZE` is sized to
+// fit inside the EXISTING, unraised `MIN_STATEMENT_TIMEOUT_MS`/2000ms bound.
+// ---------------------------------------------------------------------------
+
+interface StreamAccumulatorEntry {
+  readonly last_updated: string | null;
+  readonly record_count: number;
+}
+
+type StreamAccumulator = Record<string, StreamAccumulatorEntry>;
+
+interface CanonicalScanPageRow {
+  readonly emitted_at: string | null;
+  readonly id: number;
+  readonly stream: string;
+}
+
+/**
+ * Fold exactly one page of raw `records` rows into a running per-stream
+ * accumulator. Pure — no I/O — so both backends share one accumulation
+ * algorithm and cannot silently diverge (the same "shared by both backends"
+ * principle `shouldSkipFailedEvidencePublication` already applies to failure
+ * publication above).
+ */
+function foldCanonicalScanPage(
+  accumulator: StreamAccumulator,
+  page: readonly CanonicalScanPageRow[]
+): StreamAccumulator {
+  const next: StreamAccumulator = { ...accumulator };
+  for (const row of page) {
+    const existing = next[row.stream];
+    const lastUpdated =
+      row.emitted_at && (!existing?.last_updated || row.emitted_at > existing.last_updated)
+        ? row.emitted_at
+        : (existing?.last_updated ?? null);
+    next[row.stream] = {
+      last_updated: lastUpdated,
+      record_count: (existing?.record_count ?? 0) + 1,
+    };
+  }
+  return next;
+}
+
+/** Convert the finished accumulator into the `{stream, record_count, last_updated}` Row shape `buildRepairedRow`'s `canonicalByStream` already expects — no change to `buildRepairedRow` itself. */
+function canonicalByStreamFromAccumulator(accumulator: StreamAccumulator): Map<string, Row> {
+  return new Map(
+    Object.entries(accumulator).map(([stream, entry]) => [
+      stream,
+      { last_updated: entry.last_updated, record_count: entry.record_count, stream },
+    ])
+  );
+}
+
+function readSqliteRepairChunk(db: Db, connectorInstanceId: string): Row | undefined {
+  return db
+    .prepare(
+      "SELECT resume_after_id, accumulator_json, source_revision FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = ?"
+    )
+    .get(connectorInstanceId) as Row | undefined;
+}
+
+function deleteSqliteRepairChunk(db: Db, connectorInstanceId: string): void {
+  db.prepare("DELETE FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = ?").run(
+    connectorInstanceId
+  );
+}
+
+function persistSqliteRepairChunk(
+  connectorInstanceId: string,
+  resumeAfterId: number,
+  accumulator: StreamAccumulator,
+  sourceRevision: string,
+  startedAt: string
+): void {
+  const now = nowIso();
+  execDynamicSqlAcknowledged(
+    `INSERT INTO connector_summary_evidence_repair_chunk(
+       connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at
+     ) VALUES(?, ?, ?, ?, ?, ?)
+     ON CONFLICT(connector_instance_id) DO UPDATE SET
+       resume_after_id = excluded.resume_after_id,
+       accumulator_json = excluded.accumulator_json,
+       source_revision = excluded.source_revision,
+       updated_at = excluded.updated_at`,
+    [connectorInstanceId, resumeAfterId, JSON.stringify(accumulator), sourceRevision, startedAt, now] as BindValue[]
+  );
+}
+
+/**
+ * Test-only override for `CHUNK_SCAN_PAGE_SIZE` on the SQLite path. SQLite
+ * has no `statement_timeout`/`deadline` to force an early return, so a
+ * production SQLite scan always completes in one call regardless of page
+ * size — this exists solely so a test can force MULTIPLE pages (and,
+ * combined with `PDPP_TEST_REPAIR_CANDIDATE_SQLITE_ONE_PAGE_PER_CALL`,
+ * multiple separate admissions) over a small fixture without needing a
+ * literal multi-million-row table to prove resumability. A complete no-op
+ * unless set (never set in production).
+ */
+function sqliteChunkScanPageSize(): number {
+  const raw = process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_CHUNK_PAGE_SIZE;
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : CHUNK_SCAN_PAGE_SIZE;
+}
+
+/**
+ * Test-only: when set, `scanSqliteCanonicalStreams` persists its chunk state
+ * and returns after exactly ONE page instead of looping to completion —
+ * simulating a separate admission/sweep pass the way the Postgres path's
+ * `deadline` naturally does. A complete no-op unless set (never set in
+ * production, where SQLite has no deadline to force early return at all).
+ */
+function sqliteChunkScanOnePagePerCall(): boolean {
+  return process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_ONE_PAGE_PER_CALL === "1";
+}
+
+/**
+ * Scan `records` for one connection in page-size-sized pages, keyed by `id`,
+ * resuming from a durable chunk row when a prior admission left one in
+ * progress for the SAME `sourceRevision`. In production this always
+ * completes in one call — SQLite has no `deadline` to force an early
+ * return — but shares the identical accumulation/persistence primitives the
+ * Postgres path uses so the two backends cannot silently diverge, and a
+ * test-only knob (`sqliteChunkScanOnePagePerCall`) can force the same
+ * multi-admission resumability the Postgres path exercises in production.
+ *
+ * A chunk row for a DIFFERENT `sourceRevision` is stale — new records may
+ * have landed mid-scan — and is discarded rather than resumed, mirroring the
+ * same "never trust a stale receipt" invariant `shouldSkipFailedEvidencePublication`
+ * already applies to failure publication.
+ */
+function scanSqliteCanonicalStreams(
+  db: Db,
+  connectorInstanceId: string,
+  sourceRevision: string
+): { readonly canonicalByStream: Map<string, Row>; readonly complete: boolean } {
+  const pageSize = sqliteChunkScanPageSize();
+  const onePagePerCall = sqliteChunkScanOnePagePerCall();
+  const existingChunk = readSqliteRepairChunk(db, connectorInstanceId);
+  const resumable = existingChunk && sourceRevisionsEqual(existingChunk.source_revision, sourceRevision);
+  let resumeAfterId = resumable ? Number(existingChunk?.resume_after_id ?? 0) : 0;
+  let accumulator: StreamAccumulator = resumable
+    ? parseJsonColumn<StreamAccumulator>(existingChunk?.accumulator_json, {})
+    : {};
+  const startedAt = resumable && typeof existingChunk?.started_at === "string" ? existingChunk.started_at : nowIso();
+
+  for (;;) {
+    const page = db
+      .prepare(
+        `SELECT id, stream, emitted_at FROM records
+          WHERE connector_instance_id = ? AND deleted = 0 AND id > ?
+          ORDER BY id ASC LIMIT ?`
+      )
+      .all(connectorInstanceId, resumeAfterId, pageSize) as CanonicalScanPageRow[];
+    if (page.length === 0) {
+      break;
+    }
+    accumulator = foldCanonicalScanPage(accumulator, page);
+    resumeAfterId = page.at(-1)?.id ?? resumeAfterId;
+    const exhausted = page.length < pageSize;
+    if (exhausted) {
+      break;
+    }
+    if (onePagePerCall) {
+      persistSqliteRepairChunk(connectorInstanceId, resumeAfterId, accumulator, sourceRevision, startedAt);
+      return { canonicalByStream: canonicalByStreamFromAccumulator(accumulator), complete: false };
+    }
+  }
+  deleteSqliteRepairChunk(db, connectorInstanceId);
+  return { canonicalByStream: canonicalByStreamFromAccumulator(accumulator), complete: true };
+}
+
 async function repairCandidateSqlite(connectorInstanceId: string): Promise<RepairedEvidence> {
   const db: Db = getDb();
   let sourceRevisionAtRead: string | null | undefined;
@@ -1716,14 +1933,23 @@ async function repairCandidateSqlite(connectorInstanceId: string): Promise<Repai
         resetGeneration: String(generationRow?.reset_generation ?? "0"),
         streams: streamRows.map((row) => ({ maxVersion: String(row.max_version), stream: String(row.stream) })),
       });
-      const canonicalRows = db
-        .prepare(
-          `SELECT stream, COUNT(*) AS record_count, MAX(emitted_at) AS last_updated
-             FROM records WHERE connector_instance_id = ? AND deleted = 0
-            GROUP BY stream`
-        )
-        .all(connectorInstanceId) as Row[];
-      const canonicalByStream = new Map(canonicalRows.map((row) => [String(row.stream), row]));
+      const canonicalScan = scanSqliteCanonicalStreams(db, connectorInstanceId, sourceRevision);
+      if (!canonicalScan.complete) {
+        // Test-only path (`sqliteChunkScanOnePagePerCall`): this admission's
+        // scan persisted its resume point and stopped short of the keyset —
+        // the SAME "consumed its turn, wrote nothing to evidence, retried
+        // next pass" outcome the Postgres path's `PostgresStatementTimeoutError`
+        // branch returns. Production SQLite never takes this branch (no
+        // deadline forces an early return), so it is unreachable outside
+        // tests.
+        return {
+          deferred: true,
+          failed: false,
+          persisted: true,
+          row: { connector_instance_id: connectorInstanceId },
+        };
+      }
+      const { canonicalByStream } = canonicalScan;
       const retainedByteRow = db
         .prepare("SELECT * FROM retained_size_connection WHERE connector_instance_id = ?")
         .get(connectorInstanceId) as Row | undefined;
@@ -1865,7 +2091,168 @@ function postgresRepairReadQuery<R extends Row = Row>(
   if (budget === 0) {
     throw new PostgresStatementTimeoutError();
   }
-  return postgresQueryBounded<R>(sql, params, budget);
+  return postgresQueryBounded<R>(testOnlySlowRepairRead(sql), params, budget);
+}
+
+/**
+ * Test-only: make a repair unit's own read genuinely slow, so Postgres itself
+ * cancels it under the real per-unit bound. Production is a no-op (the env var
+ * is unset), matching this file's existing seam convention
+ * (`PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS`, `PDPP_TEST_REPAIR_FAILURE_*`).
+ *
+ * This exists because the condition is otherwise unreachable in a test: a
+ * scratch row's repair finishes far inside the 500ms floor, while production
+ * only times out on connections holding ~1.3M records. Faking the error
+ * instead — or mirroring the handler's contract — is what let a back-off ship
+ * wired to an unreachable catch (2026-08-26); the timeout has to be REAL, from
+ * Postgres, on the real call path.
+ *
+ * The sleep runs in a leading CTE so it costs real server time while the
+ * original statement — and therefore the caller's result shape — is returned
+ * completely unchanged.
+ */
+const LEADING_SELECT_PATTERN = /^\s*select\b/i;
+
+function testOnlySlowRepairRead(sql: string): string {
+  const raw = process.env.PDPP_TEST_SLOW_REPAIR_READ_SECONDS;
+  const seconds = raw ? Number.parseFloat(raw) : 0;
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return sql;
+  }
+  // Only the repair unit's own `connector_instances` read is slowed. Wrapping
+  // every statement that flows through here also rewrote the advisory-lock
+  // acquisition query, which recursed in `tryAcquire` — the seam must target
+  // exactly the read whose cancellation this test is about, and leave the
+  // lock/transaction machinery alone.
+  if (!(LEADING_SELECT_PATTERN.test(sql) && sql.includes("FROM connector_instances"))) {
+    return sql;
+  }
+  return `WITH pdpp_test_slow_read AS MATERIALIZED (SELECT pg_sleep(${seconds}) AS slept),
+               pdpp_test_original AS (${sql})
+          SELECT pdpp_test_original.* FROM pdpp_test_original
+          WHERE (SELECT count(*) FROM pdpp_test_slow_read) >= 0`;
+}
+
+async function readPostgresRepairChunk(connectorInstanceId: string): Promise<Row | undefined> {
+  const result = await postgresQuery<Row>(
+    "SELECT resume_after_id, accumulator_json, source_revision FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1",
+    [connectorInstanceId]
+  );
+  return result.rows[0] as Row | undefined;
+}
+
+/**
+ * Persist (or advance) the durable resume position for a chunked canonical
+ * scan that ran out of admission budget before exhausting its connection's
+ * `records`. A small, cheap, fenced write — not the expensive scan itself —
+ * so it fits comfortably even in whatever remains of a round that just spent
+ * its entire allowance on scan pages.
+ */
+async function persistPostgresRepairChunk(
+  connectorInstanceId: string,
+  resumeAfterId: number,
+  accumulator: StreamAccumulator,
+  sourceRevision: string,
+  startedAt: string
+): Promise<void> {
+  await withConnectorInstanceWrite(connectorInstanceId, async () =>
+    withPostgresTransaction(
+      async (client: Db) => {
+        await client.query(
+          `INSERT INTO connector_summary_evidence_repair_chunk(
+             connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at
+           ) VALUES($1, $2, $3::jsonb, $4, $5, $6)
+           ON CONFLICT (connector_instance_id) DO UPDATE SET
+             resume_after_id = EXCLUDED.resume_after_id,
+             accumulator_json = EXCLUDED.accumulator_json,
+             source_revision = EXCLUDED.source_revision,
+             updated_at = EXCLUDED.updated_at`,
+          [connectorInstanceId, resumeAfterId, JSON.stringify(accumulator), sourceRevision, startedAt, nowIso()]
+        );
+      },
+      { lockConnectorInstanceId: connectorInstanceId }
+    )
+  );
+}
+
+async function deletePostgresRepairChunk(connectorInstanceId: string, client?: Db): Promise<void> {
+  const sql = "DELETE FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1";
+  if (client) {
+    await client.query(sql, [connectorInstanceId]);
+    return;
+  }
+  await postgresQuery(sql, [connectorInstanceId]);
+}
+
+/**
+ * Scan `records` for one connection in `CHUNK_SCAN_PAGE_SIZE`-row pages via
+ * `idx_pg_records_instance_stream_id (connector_instance_id, stream,
+ * deleted, id)`, resuming from a durable chunk row when a prior admission
+ * left one in progress for the SAME `sourceRevision`. Each page is bounded
+ * by the caller's existing `postgresRepairReadQuery`/`remainingStatementBudgetMs`
+ * admission allowance — no new bounding mechanism, the identical contract
+ * every other repair read already uses.
+ *
+ * When the loop runs out of admission budget before exhausting the keyset,
+ * `postgresRepairReadQuery` itself throws `PostgresStatementTimeoutError`
+ * (the existing "depleted allowance" contract) on the next page attempt.
+ * This function catches exactly that case to persist the durable resume
+ * point first, then re-throws so `repairCandidatePostgres`'s existing
+ * `PostgresStatementTimeoutError` branch handles it as a deferred (not
+ * failed) unit — the SAME back-off (`noteRepairTimeout`/
+ * `repairTimeoutBackoffUntil`) af114c250 already established for a
+ * cancelled repair applies here without any new competing mechanism.
+ *
+ * A chunk row for a DIFFERENT `sourceRevision` is stale — new records may
+ * have landed mid-scan — and is discarded rather than resumed, mirroring the
+ * "never trust a stale receipt" invariant `shouldSkipFailedEvidencePublication`
+ * already applies to failure publication.
+ */
+async function scanPostgresCanonicalStreamsChunked(
+  connectorInstanceId: string,
+  sourceRevision: string,
+  deadline: number | null
+): Promise<Map<string, Row>> {
+  const existingChunk = await readPostgresRepairChunk(connectorInstanceId);
+  const resumable = existingChunk && sourceRevisionsEqual(existingChunk.source_revision, sourceRevision);
+  let resumeAfterId = resumable ? Number(existingChunk?.resume_after_id ?? 0) : 0;
+  let accumulator: StreamAccumulator = resumable
+    ? parseJsonColumn<StreamAccumulator>(existingChunk?.accumulator_json, {})
+    : {};
+  const startedAt = resumable && typeof existingChunk?.started_at === "string" ? existingChunk.started_at : nowIso();
+
+  for (;;) {
+    let page: readonly CanonicalScanPageRow[];
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: Pages are intentionally sequential — each one's LIMIT/OFFSET position and admission-budget check depends on the previous page's result.
+      const result = await postgresRepairReadQuery(
+        `SELECT id, stream, emitted_at FROM records
+          WHERE connector_instance_id = $1 AND deleted = FALSE AND id > $2
+          ORDER BY id ASC LIMIT $3`,
+        [connectorInstanceId, resumeAfterId, CHUNK_SCAN_PAGE_SIZE],
+        deadline
+      );
+      page = (result.rows as Row[]).map((row) => ({
+        emitted_at: (row.emitted_at as string | null) ?? null,
+        id: Number(row.id),
+        stream: String(row.stream),
+      }));
+    } catch (err) {
+      if (err instanceof PostgresStatementTimeoutError) {
+        await persistPostgresRepairChunk(connectorInstanceId, resumeAfterId, accumulator, sourceRevision, startedAt);
+      }
+      throw err;
+    }
+    if (page.length === 0) {
+      break;
+    }
+    accumulator = foldCanonicalScanPage(accumulator, page);
+    resumeAfterId = page.at(-1)?.id ?? resumeAfterId;
+    if (page.length < CHUNK_SCAN_PAGE_SIZE) {
+      break;
+    }
+  }
+  return canonicalByStreamFromAccumulator(accumulator);
 }
 
 async function repairCandidatePostgres(
@@ -1920,14 +2307,11 @@ async function repairCandidatePostgres(
           stream: String(row.stream),
         })),
       });
-      const canonicalResult = await postgresRepairReadQuery(
-        `SELECT stream, COUNT(*)::int AS record_count, MAX(emitted_at) AS last_updated
-           FROM records WHERE connector_instance_id = $1 AND deleted = FALSE
-          GROUP BY stream`,
-        [connectorInstanceId],
+      const canonicalByStream = await scanPostgresCanonicalStreamsChunked(
+        connectorInstanceId,
+        sourceRevision,
         deadline
       );
-      const canonicalByStream = new Map((canonicalResult.rows as Row[]).map((row) => [String(row.stream), row]));
       const retainedByteResult = await postgresRepairReadQuery(
         "SELECT * FROM retained_size_connection WHERE connector_instance_id = $1",
         [connectorInstanceId],
@@ -1999,6 +2383,12 @@ async function repairCandidatePostgres(
           );
           const currentRow = current.rows[0] as Row | undefined;
           if (!(currentRow && sourceRevisionsEqual(currentRow.source_revision_text, sourceRevision))) {
+            // The canonical revision moved since this repair's fenced read
+            // started — a completed scan's own chunk row (if any, e.g. left
+            // by a losing race with a concurrent repair for the SAME stale
+            // revision) is now for a revision nothing will ever resume
+            // against; drop it rather than leave orphaned scan state behind.
+            await deletePostgresRepairChunk(connectorInstanceId, client);
             return {
               deferred: true,
               failed: false,
@@ -2016,6 +2406,12 @@ async function repairCandidatePostgres(
               ]
             );
           } else {
+            // The scan reached the end of its keyset this admission (the
+            // only way `scanPostgresCanonicalStreamsChunked` returns without
+            // throwing) — its chunk row, if a PRIOR admission left one in
+            // progress for this exact revision, is now finished work and
+            // must not outlive the repair it was for.
+            await deletePostgresRepairChunk(connectorInstanceId, client);
             await upsertPostgresEvidenceRow(client, built);
           }
           return { deferred, failed: false, persisted: true, row: built };
@@ -2036,6 +2432,16 @@ async function repairCandidatePostgres(
       // and defer — the SAME candidate reclassifies and retries on the
       // next observation pass (design.md "Startup is acceleration, not
       // authority": nothing here is ever permanently lost, only deferred).
+      //
+      // Arm the back-off HERE, at the only site this error is actually
+      // handled. It was originally wired into `repairCandidate`'s outer
+      // catch, which this `return` makes unreachable — so the throttle
+      // never fired in production (2026-08-26: codex, 1,311,001 records,
+      // 14 cancelled attempts in 15 minutes, back-off activations 0, row
+      // frozen over an hour). "Retries on the next pass" is only honest
+      // when the retries are paced; unpaced, this unit consumes the round
+      // every pass and the rows behind it never recompute.
+      noteRepairTimeout(connectorInstanceId);
       return {
         deferred: true,
         failed: false,
