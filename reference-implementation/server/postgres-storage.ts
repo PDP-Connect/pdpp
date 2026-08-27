@@ -744,6 +744,14 @@ export class PostgresStatementTimeoutError extends Error {
   }
 }
 
+/** Translate Postgres's SQLSTATE into the bounded-query contract at every client-query seam. */
+export function asPostgresStatementTimeoutError(err: unknown): PostgresStatementTimeoutError | undefined {
+  if ((err as { code?: string } | null)?.code !== POSTGRES_STATEMENT_TIMEOUT_SQLSTATE) {
+    return undefined;
+  }
+  return new PostgresStatementTimeoutError({ cause: err });
+}
+
 /**
  * Runs exactly one statement under a Postgres-ENFORCED, connection-scoped
  * `SET LOCAL statement_timeout` — the per-unit HARD bound design review
@@ -787,9 +795,9 @@ export async function postgresQueryBounded<Row extends QueryResultRow = QueryRes
     } catch {
       // Rollback failure must not hide the original statement/timeout error.
     }
-    if ((err as { code?: string } | null)?.code === POSTGRES_STATEMENT_TIMEOUT_SQLSTATE) {
-      // biome-ignore lint/style/useErrorCause: cause is threaded through PostgresStatementTimeoutError's own constructor (matches NekoSurfaceAllocatorServiceError's identical established pattern) — biome cannot trace it through a custom Error subclass.
-      throw new PostgresStatementTimeoutError({ cause: err });
+    const statementTimeout = asPostgresStatementTimeoutError(err);
+    if (statementTimeout) {
+      throw statementTimeout;
     }
     throw err;
   } finally {
@@ -2828,12 +2836,11 @@ export async function bootstrapPostgresSchema({
         connector_instance_id TEXT PRIMARY KEY,
         resume_after_id BIGINT,
         accumulator_json JSONB NOT NULL,
-        -- The canonical source_revision this chunk sequence started against.
-        -- A later admission that finds the live source_revision no longer
-        -- matches this receipt must discard the accumulator and restart the
-        -- scan from the beginning -- resuming a partial sum against a
-        -- revision it was never computed against would silently under- or
-        -- over-count.
+        -- The source_revision observed while this boundary was advanced. It
+        -- is a diagnostic/final-publication receipt, not resume eligibility:
+        -- records triggers invalidate the chunk only when a mutation touches
+        -- its proven id prefix, so an append above resume_after_id remains
+        -- resumable.
         source_revision TEXT NOT NULL,
         started_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -3276,6 +3283,8 @@ async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: Poo
       DECLARE
         new_id TEXT;
         old_id TEXT;
+        new_record_id BIGINT;
+        old_record_id BIGINT;
         new_row JSONB;
         old_row JSONB;
       BEGIN
@@ -3289,6 +3298,9 @@ async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: Poo
               NULLIF(new_row->'data_json'->>'connection_id', '')
             );
           END IF;
+          IF TG_TABLE_NAME = 'records' THEN
+            new_record_id := NULLIF(new_row->>'id', '')::bigint;
+          END IF;
         END IF;
         IF TG_OP <> 'INSERT' THEN
           old_row := to_jsonb(OLD);
@@ -3300,12 +3312,31 @@ async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: Poo
               NULLIF(old_row->'data_json'->>'connection_id', '')
             );
           END IF;
+          IF TG_TABLE_NAME = 'records' THEN
+            old_record_id := NULLIF(old_row->>'id', '')::bigint;
+          END IF;
         END IF;
         IF new_id IS NOT NULL THEN
           PERFORM pdpp_advance_connector_summary_source_revision(new_id);
         END IF;
         IF old_id IS NOT NULL AND old_id IS DISTINCT FROM new_id THEN
           PERFORM pdpp_advance_connector_summary_source_revision(old_id);
+        END IF;
+        -- A chunk receipt proves only its id prefix. A records append above
+        -- the boundary may advance the broad source_revision but leaves that
+        -- prefix intact; a mutation at or below it must delete the receipt in
+        -- this same writer transaction so the next page restarts from zero.
+        IF TG_TABLE_NAME = 'records' THEN
+          IF new_id IS NOT NULL AND new_record_id IS NOT NULL THEN
+            DELETE FROM connector_summary_evidence_repair_chunk
+             WHERE connector_instance_id = new_id
+               AND new_record_id <= resume_after_id;
+          END IF;
+          IF old_id IS NOT NULL AND old_record_id IS NOT NULL THEN
+            DELETE FROM connector_summary_evidence_repair_chunk
+             WHERE connector_instance_id = old_id
+               AND old_record_id <= resume_after_id;
+          END IF;
         END IF;
         IF TG_OP = 'DELETE' THEN
           RETURN OLD;

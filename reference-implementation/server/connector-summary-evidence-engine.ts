@@ -51,6 +51,7 @@ import {
 } from "./connector-summary-evidence-bounded-reconciliation.ts";
 import { getDb } from "./db.ts";
 import {
+  asPostgresStatementTimeoutError,
   isPostgresStorageBackend,
   PostgresStatementTimeoutError,
   postgresQuery,
@@ -1482,9 +1483,10 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
     .get(connectorInstanceId) as Row | undefined;
   if (!instance) {
     // Deletion wins over a late failure publication. The evidence row is a
-    // disposable orphan and must not be recreated after the canonical row is
-    // gone.
+    // disposable orphan and the saved scan position cannot be resumed after
+    // the canonical row is gone.
     exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [connectorInstanceId]);
+    deleteSqliteRepairChunk(db, connectorInstanceId);
     return;
   }
   const sourceRevision = decimalText(instance.source_revision_text);
@@ -1603,6 +1605,9 @@ async function persistFailedEvidencePostgres(
   const instance = instanceResult.rows[0] as Row | undefined;
   if (!instance) {
     await query("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [connectorInstanceId]);
+    await query("DELETE FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1", [
+      connectorInstanceId,
+    ]);
     return;
   }
   const sourceRevision = decimalText(instance.source_revision_text);
@@ -1838,17 +1843,18 @@ function sqliteChunkScanOnePagePerCall(): boolean {
 /**
  * Scan `records` for one connection in page-size-sized pages, keyed by `id`,
  * resuming from a durable chunk row when a prior admission left one in
- * progress for the SAME `sourceRevision`. In production this always
+ * progress. In production this always
  * completes in one call — SQLite has no `deadline` to force an early
  * return — but shares the identical accumulation/persistence primitives the
  * Postgres path uses so the two backends cannot silently diverge, and a
  * test-only knob (`sqliteChunkScanOnePagePerCall`) can force the same
  * multi-admission resumability the Postgres path exercises in production.
  *
- * A chunk row for a DIFFERENT `sourceRevision` is stale — new records may
- * have landed mid-scan — and is discarded rather than resumed, mirroring the
- * same "never trust a stale receipt" invariant `shouldSkipFailedEvidencePublication`
- * already applies to failure publication.
+ * The receipt's resumability is deliberately independent of the broad
+ * `sourceRevision`: the `records` source-revision triggers delete it when a
+ * mutation touches its proven id prefix, while an append above the boundary
+ * preserves it. That narrower invalidation is what makes append progress
+ * safe without repeatedly restarting a whale scan.
  */
 function scanSqliteCanonicalStreams(
   db: Db,
@@ -1858,7 +1864,7 @@ function scanSqliteCanonicalStreams(
   const pageSize = sqliteChunkScanPageSize();
   const onePagePerCall = sqliteChunkScanOnePagePerCall();
   const existingChunk = readSqliteRepairChunk(db, connectorInstanceId);
-  const resumable = existingChunk && sourceRevisionsEqual(existingChunk.source_revision, sourceRevision);
+  const resumable = existingChunk !== undefined;
   let resumeAfterId = resumable ? Number(existingChunk?.resume_after_id ?? 0) : 0;
   let accumulator: StreamAccumulator = resumable
     ? parseJsonColumn<StreamAccumulator>(existingChunk?.accumulator_json, {})
@@ -2133,45 +2139,63 @@ function testOnlySlowRepairRead(sql: string): string {
           WHERE (SELECT count(*) FROM pdpp_test_slow_read) >= 0`;
 }
 
-async function readPostgresRepairChunk(connectorInstanceId: string): Promise<Row | undefined> {
-  const result = await postgresQuery<Row>(
-    "SELECT resume_after_id, accumulator_json, source_revision FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1",
-    [connectorInstanceId]
-  );
-  return result.rows[0] as Row | undefined;
+/**
+ * Run one page-transaction statement under the existing per-unit statement budget.
+ * `postgresQueryBounded` cannot be used here because it owns a different
+ * transaction; this helper keeps the timeout local to the caller's already
+ * fenced page transaction and preserves the same SQLSTATE-57014 contract.
+ */
+async function postgresRepairTransactionQuery<R extends Row = Row>(
+  client: Db,
+  sql: string,
+  params: unknown[],
+  deadline: number | null
+): Promise<{ rowCount: number | null; rows: R[] }> {
+  try {
+    if (deadline !== null) {
+      const budget = remainingStatementBudgetMs(deadline);
+      if (budget === 0) {
+        throw new PostgresStatementTimeoutError();
+      }
+      if (budget !== null) {
+        await client.query(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(budget))}`);
+      }
+    }
+    const result = (await client.query(testOnlySlowRepairRead(sql), params)) as {
+      rowCount: number | null;
+      rows: R[];
+    };
+    return { rowCount: result.rowCount, rows: result.rows };
+  } catch (err) {
+    const statementTimeout = asPostgresStatementTimeoutError(err);
+    if (statementTimeout) {
+      throw statementTimeout;
+    }
+    throw err;
+  }
 }
 
-/**
- * Persist (or advance) the durable resume position for a chunked canonical
- * scan that ran out of admission budget before exhausting its connection's
- * `records`. A small, cheap, fenced write — not the expensive scan itself —
- * so it fits comfortably even in whatever remains of a round that just spent
- * its entire allowance on scan pages.
- */
-async function persistPostgresRepairChunk(
+async function upsertPostgresRepairChunk(
+  client: Db,
   connectorInstanceId: string,
   resumeAfterId: number,
   accumulator: StreamAccumulator,
   sourceRevision: string,
-  startedAt: string
+  startedAt: string,
+  deadline: number | null
 ): Promise<void> {
-  await withConnectorInstanceWrite(connectorInstanceId, async () =>
-    withPostgresTransaction(
-      async (client: Db) => {
-        await client.query(
-          `INSERT INTO connector_summary_evidence_repair_chunk(
-             connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at
-           ) VALUES($1, $2, $3::jsonb, $4, $5, $6)
-           ON CONFLICT (connector_instance_id) DO UPDATE SET
-             resume_after_id = EXCLUDED.resume_after_id,
-             accumulator_json = EXCLUDED.accumulator_json,
-             source_revision = EXCLUDED.source_revision,
-             updated_at = EXCLUDED.updated_at`,
-          [connectorInstanceId, resumeAfterId, JSON.stringify(accumulator), sourceRevision, startedAt, nowIso()]
-        );
-      },
-      { lockConnectorInstanceId: connectorInstanceId }
-    )
+  await postgresRepairTransactionQuery(
+    client,
+    `INSERT INTO connector_summary_evidence_repair_chunk(
+       connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at
+     ) VALUES($1, $2, $3::jsonb, $4, $5, $6)
+     ON CONFLICT (connector_instance_id) DO UPDATE SET
+       resume_after_id = EXCLUDED.resume_after_id,
+       accumulator_json = EXCLUDED.accumulator_json,
+       source_revision = EXCLUDED.source_revision,
+       updated_at = EXCLUDED.updated_at`,
+    [connectorInstanceId, resumeAfterId, JSON.stringify(accumulator), sourceRevision, startedAt, nowIso()],
+    deadline
   );
 }
 
@@ -2184,75 +2208,129 @@ async function deletePostgresRepairChunk(connectorInstanceId: string, client?: D
   await postgresQuery(sql, [connectorInstanceId]);
 }
 
+type PostgresCanonicalScanPageResult =
+  | {
+      readonly accumulator: StreamAccumulator;
+      readonly complete: boolean;
+      readonly missing: false;
+    }
+  | { readonly missing: true };
+
+async function readAndPersistPostgresCanonicalScanPage(
+  client: Db,
+  connectorInstanceId: string,
+  deadline: number | null
+): Promise<PostgresCanonicalScanPageResult> {
+  const instanceResult = await postgresRepairTransactionQuery(
+    client,
+    "SELECT source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = $1 FOR UPDATE",
+    [connectorInstanceId],
+    deadline
+  );
+  const sourceRevision = decimalText((instanceResult.rows[0] as Row | undefined)?.source_revision_text);
+  if (sourceRevision === null) {
+    await postgresRepairTransactionQuery(
+      client,
+      "DELETE FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1",
+      [connectorInstanceId],
+      deadline
+    );
+    return { missing: true };
+  }
+  const chunkResult = await postgresRepairTransactionQuery(
+    client,
+    "SELECT resume_after_id, accumulator_json, started_at FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = $1",
+    [connectorInstanceId],
+    deadline
+  );
+  const existingChunk = chunkResult.rows[0] as Row | undefined;
+  let resumeAfterId = existingChunk ? Number(existingChunk.resume_after_id ?? 0) : 0;
+  let accumulator: StreamAccumulator = existingChunk
+    ? parseJsonColumn<StreamAccumulator>(existingChunk.accumulator_json, {})
+    : {};
+  const startedAt = existingChunk && typeof existingChunk.started_at === "string" ? existingChunk.started_at : nowIso();
+  const recordsResult = await postgresRepairTransactionQuery(
+    client,
+    `SELECT id, stream, emitted_at FROM records
+      WHERE connector_instance_id = $1 AND deleted = FALSE AND id > $2
+      ORDER BY id ASC LIMIT $3`,
+    [connectorInstanceId, resumeAfterId, CHUNK_SCAN_PAGE_SIZE],
+    deadline
+  );
+  const page = (recordsResult.rows as Row[]).map((row) => ({
+    emitted_at: (row.emitted_at as string | null) ?? null,
+    id: Number(row.id),
+    stream: String(row.stream),
+  }));
+  if (page.length === 0) {
+    return { accumulator, complete: true, missing: false };
+  }
+  accumulator = foldCanonicalScanPage(accumulator, page);
+  resumeAfterId = page.at(-1)?.id ?? resumeAfterId;
+  await upsertPostgresRepairChunk(
+    client,
+    connectorInstanceId,
+    resumeAfterId,
+    accumulator,
+    sourceRevision,
+    startedAt,
+    deadline
+  );
+  return { accumulator, complete: page.length < CHUNK_SCAN_PAGE_SIZE, missing: false };
+}
+
+async function scanPostgresCanonicalStreamsPage(
+  connectorInstanceId: string,
+  deadline: number | null
+): Promise<PostgresCanonicalScanPageResult> {
+  try {
+    return await withConnectorInstanceWrite(connectorInstanceId, async () =>
+      withPostgresTransaction(
+        (client: Db) => readAndPersistPostgresCanonicalScanPage(client, connectorInstanceId, deadline),
+        { lockConnectorInstanceId: connectorInstanceId }
+      )
+    );
+  } catch (err) {
+    // `SET LOCAL statement_timeout` remains active for the receipt upsert
+    // after the bounded page read. Translate a cancellation from any
+    // statement in this transaction, not only from the read helper.
+    const statementTimeout = asPostgresStatementTimeoutError(err);
+    if (statementTimeout) {
+      throw statementTimeout;
+    }
+    throw err;
+  }
+}
+
 /**
  * Scan `records` for one connection in `CHUNK_SCAN_PAGE_SIZE`-row pages via
  * `idx_pg_records_instance_stream_id (connector_instance_id, stream,
  * deleted, id)`, resuming from a durable chunk row when a prior admission
- * left one in progress for the SAME `sourceRevision`. Each page is bounded
- * by the caller's existing `postgresRepairReadQuery`/`remainingStatementBudgetMs`
- * admission allowance — no new bounding mechanism, the identical contract
- * every other repair read already uses.
+ * left one in progress. Each page runs in its own short transaction: it
+ * locks the `connector_instances` row before it reads records, reloads the
+ * chunk under that fence, folds one page, and upserts the new boundary before
+ * releasing the lock. The existing records trigger deletes the chunk only
+ * when a write touches that proven prefix, so an append survives while a
+ * prefix mutation makes the next page restart at zero.
  *
- * When the loop runs out of admission budget before exhausting the keyset,
- * `postgresRepairReadQuery` itself throws `PostgresStatementTimeoutError`
- * (the existing "depleted allowance" contract) on the next page attempt.
- * This function catches exactly that case to persist the durable resume
- * point first, then re-throws so `repairCandidatePostgres`'s existing
- * `PostgresStatementTimeoutError` branch handles it as a deferred (not
- * failed) unit — the SAME back-off (`noteRepairTimeout`/
- * `repairTimeoutBackoffUntil`) af114c250 already established for a
- * cancelled repair applies here without any new competing mechanism.
- *
- * A chunk row for a DIFFERENT `sourceRevision` is stale — new records may
- * have landed mid-scan — and is discarded rather than resumed, mirroring the
- * "never trust a stale receipt" invariant `shouldSkipFailedEvidencePublication`
- * already applies to failure publication.
+ * A page timeout rolls back only its own short transaction. Earlier pages
+ * already committed their receipts, and SQLSTATE 57014 becomes the existing
+ * `PostgresStatementTimeoutError`, preserving deferred-not-failed/backoff.
  */
 async function scanPostgresCanonicalStreamsChunked(
   connectorInstanceId: string,
-  sourceRevision: string,
   deadline: number | null
-): Promise<Map<string, Row>> {
-  const existingChunk = await readPostgresRepairChunk(connectorInstanceId);
-  const resumable = existingChunk && sourceRevisionsEqual(existingChunk.source_revision, sourceRevision);
-  let resumeAfterId = resumable ? Number(existingChunk?.resume_after_id ?? 0) : 0;
-  let accumulator: StreamAccumulator = resumable
-    ? parseJsonColumn<StreamAccumulator>(existingChunk?.accumulator_json, {})
-    : {};
-  const startedAt = resumable && typeof existingChunk?.started_at === "string" ? existingChunk.started_at : nowIso();
-
+): Promise<{ readonly canonicalByStream: Map<string, Row>; readonly missing: false } | { readonly missing: true }> {
   for (;;) {
-    let page: readonly CanonicalScanPageRow[];
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: Pages are intentionally sequential — each one's LIMIT/OFFSET position and admission-budget check depends on the previous page's result.
-      const result = await postgresRepairReadQuery(
-        `SELECT id, stream, emitted_at FROM records
-          WHERE connector_instance_id = $1 AND deleted = FALSE AND id > $2
-          ORDER BY id ASC LIMIT $3`,
-        [connectorInstanceId, resumeAfterId, CHUNK_SCAN_PAGE_SIZE],
-        deadline
-      );
-      page = (result.rows as Row[]).map((row) => ({
-        emitted_at: (row.emitted_at as string | null) ?? null,
-        id: Number(row.id),
-        stream: String(row.stream),
-      }));
-    } catch (err) {
-      if (err instanceof PostgresStatementTimeoutError) {
-        await persistPostgresRepairChunk(connectorInstanceId, resumeAfterId, accumulator, sourceRevision, startedAt);
-      }
-      throw err;
+    // biome-ignore lint/performance/noAwaitInLoops: Pages are intentionally sequential; each commits the durable boundary the next page reloads.
+    const pageResult = await scanPostgresCanonicalStreamsPage(connectorInstanceId, deadline);
+    if (pageResult.missing) {
+      return { missing: true };
     }
-    if (page.length === 0) {
-      break;
-    }
-    accumulator = foldCanonicalScanPage(accumulator, page);
-    resumeAfterId = page.at(-1)?.id ?? resumeAfterId;
-    if (page.length < CHUNK_SCAN_PAGE_SIZE) {
-      break;
+    if (pageResult.complete) {
+      return { canonicalByStream: canonicalByStreamFromAccumulator(pageResult.accumulator), missing: false };
     }
   }
-  return canonicalByStreamFromAccumulator(accumulator);
 }
 
 async function repairCandidatePostgres(
@@ -2307,11 +2385,12 @@ async function repairCandidatePostgres(
           stream: String(row.stream),
         })),
       });
-      const canonicalByStream = await scanPostgresCanonicalStreamsChunked(
-        connectorInstanceId,
-        sourceRevision,
-        deadline
-      );
+      const canonicalScan = await scanPostgresCanonicalStreamsChunked(connectorInstanceId, deadline);
+      if (canonicalScan.missing) {
+        const deleted = await deleteEvidenceIfConnectorInstanceMissing(connectorInstanceId);
+        return missingInstanceRepairResult(connectorInstanceId, deleted);
+      }
+      const { canonicalByStream } = canonicalScan;
       const retainedByteResult = await postgresRepairReadQuery(
         "SELECT * FROM retained_size_connection WHERE connector_instance_id = $1",
         [connectorInstanceId],
@@ -2378,17 +2457,25 @@ async function repairCandidatePostgres(
       withPostgresTransaction(
         async (client: Db) => {
           const current = await client.query(
-            "SELECT source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = $1",
+            "SELECT source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = $1 FOR UPDATE",
             [connectorInstanceId]
           );
           const currentRow = current.rows[0] as Row | undefined;
-          if (!(currentRow && sourceRevisionsEqual(currentRow.source_revision_text, sourceRevision))) {
-            // The canonical revision moved since this repair's fenced read
-            // started — a completed scan's own chunk row (if any, e.g. left
-            // by a losing race with a concurrent repair for the SAME stale
-            // revision) is now for a revision nothing will ever resume
-            // against; drop it rather than leave orphaned scan state behind.
+          if (!currentRow) {
             await deletePostgresRepairChunk(connectorInstanceId, client);
+            return {
+              deferred: true,
+              failed: false,
+              persisted: true,
+              row: { connector_instance_id: connectorInstanceId, dirty: 1, state: "stale" },
+            };
+          }
+          if (!sourceRevisionsEqual(currentRow.source_revision_text, sourceRevision)) {
+            // A later source mutation moved the final publication receipt.
+            // Keep the completed chunk: if its scanned prefix survived the
+            // records trigger, the next admission can fold only the tail and
+            // retry this CAS with a short window. Prefix mutations have
+            // already deleted the chunk in their own writer transaction.
             return {
               deferred: true,
               failed: false,
@@ -2406,11 +2493,9 @@ async function repairCandidatePostgres(
               ]
             );
           } else {
-            // The scan reached the end of its keyset this admission (the
-            // only way `scanPostgresCanonicalStreamsChunked` returns without
-            // throwing) — its chunk row, if a PRIOR admission left one in
-            // progress for this exact revision, is now finished work and
-            // must not outlive the repair it was for.
+            // Successful publication consumes the completed scan receipt in
+            // the SAME transaction. A failed CAS above deliberately retains
+            // it so harmless appends can resume from its boundary.
             await deletePostgresRepairChunk(connectorInstanceId, client);
             await upsertPostgresEvidenceRow(client, built);
           }
@@ -3243,12 +3328,18 @@ async function deleteEvidenceIfConnectorInstanceMissing(connectorInstanceId: str
               [connectorInstanceId]
             );
             if ((live.rowCount ?? 0) !== 0) {
+              // This id was absent from discovery but exists under the exact
+              // fence, so it may have been deleted and recreated. Preserve
+              // its evidence, but never resume scan state from before that
+              // possible identity change.
+              await deletePostgresRepairChunk(connectorInstanceId, client);
               return false;
             }
             const deleted = await client.query(
               "DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1",
               [connectorInstanceId]
             );
+            await deletePostgresRepairChunk(connectorInstanceId, client);
             return (deleted.rowCount ?? 0) > 0;
           },
           { lockConnectorInstanceId: connectorInstanceId }
@@ -3261,11 +3352,13 @@ async function deleteEvidenceIfConnectorInstanceMissing(connectorInstanceId: str
             .prepare("SELECT 1 AS present FROM connector_instances WHERE connector_instance_id = ?")
             .get(connectorInstanceId);
           if (live) {
+            deleteSqliteRepairChunk(db, connectorInstanceId);
             return false;
           }
           const deleted = db
             .prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?")
             .run(connectorInstanceId);
+          deleteSqliteRepairChunk(db, connectorInstanceId);
           return deleted.changes > 0;
         })
       );
