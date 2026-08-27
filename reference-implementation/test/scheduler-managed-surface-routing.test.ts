@@ -270,7 +270,9 @@ test("T2c: scheduled managed connector retries runtime-retryable terminal known 
         controllerCalls.push(Date.now());
         if (controllerCalls.length === 1) {
           return {
-            connector_error: { message: String(runtimeGap.message), retryable: false },
+            // Runtime evidence, not a connector verdict: no connector_error.retryable
+            // marker, so the structured retry_by_runtime known_gap below decides.
+            connector_error: { message: String(runtimeGap.message) },
             known_gaps: [runtimeGap],
             run_id: "run-runtime-race-001",
             status: "failed",
