@@ -230,8 +230,7 @@ baseline / untouched lines):
 
 ## Commit
 
-Commit SHA: `341778dfbef5b5a4fb2db28a90583d09f49884e3` (fix + test rewrites),
-`176588b67c376dc06016cdd2041e2df5cfbfc12e` (receipt SHA follow-up),
-`f521ea41cabfad0eeaa189382258390a610718ef` (test-only follow-up restoring
+Integrated rail commits: `80443ce67` (fix + test rewrites), `92f5285a7`
+(receipt follow-up), and `d055a2085` (test-only follow-up restoring
 semantic-capability-identity-only drift coverage per the independent review
 finding above).
