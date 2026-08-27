@@ -439,6 +439,12 @@ test("accepts canonical RI producer reasons but rejects unknown reasons", () => 
     "interaction_timeout",
     "connector_reported_failed",
     "credentials_required",
+    "collection_succeeded_import_complete",
+    "coverage_complete_unfillable_accounted",
+    "coverage_unknown_stale_collector",
+    "credentials_not_applicable_file_import",
+    "freshness_not_applicable_complete",
+    "projection_superseded_by_definition_change",
   ]) {
     const condition = {
       current: reason === "complete",
@@ -492,6 +498,33 @@ test("accepts canonical RI producer reasons but rejects unknown reasons", () => 
   );
   assert.ok(unknown.perClass.unknown_vocabulary > 0);
   assert.match(streamResult(unknown).reason, FUTURE_PROVIDER_REASON_PATTERN);
+});
+
+test("accepts every closed-vocabulary rendered pill label RI actually serves, but rejects an unlisted label", () => {
+  const baseVerdict = healthyConnection().rendered_verdict as Json;
+  for (const label of [
+    "Archived",
+    "Can't collect",
+    "Checking",
+    "Expired while waiting for you",
+    "Healthy",
+    "Import complete",
+    "Missing data",
+    "Missing optional data",
+    "Needs refresh",
+    "Not measured",
+    "Setup never completed",
+    "Some records stuck",
+    "Syncing",
+  ]) {
+    const result = evaluate(healthyConnection({ rendered_verdict: { ...baseVerdict, pill: { label, tone: "grey" } } }));
+    assert.equal(result.perClass.unknown_vocabulary, 0, label);
+  }
+
+  const unknownLabel = evaluate(
+    healthyConnection({ rendered_verdict: { ...baseVerdict, pill: { label: "Future pill label", tone: "grey" } } })
+  );
+  assert.ok(unknownLabel.perClass.unknown_vocabulary > 0);
 });
 
 test("strategy-specific coverage proves both an empty source and a zero-delta refresh", () => {
