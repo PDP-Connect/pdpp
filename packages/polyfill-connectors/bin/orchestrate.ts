@@ -13,7 +13,7 @@
  */
 
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { config as dotenvConfig } from "dotenv";
 import { isPostgresStorageBackend } from "../../../reference-implementation/server/postgres-storage.ts";
 import {
@@ -114,7 +114,7 @@ async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }>
     const ownerToken = await issueOwnerToken(asUrl, ownerSubjectId);
 
     console.error("[orchestrate] loading prior sync state...");
-    const runtime = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.ts"))) as RuntimeModule;
+    const runtime = (await import(pathToFileURL(join(REFERENCE_IMPL_DIR, "runtime/index.ts")).href)) as RuntimeModule;
     const { runConnector, loadSyncState } = runtime;
     const connectorInstanceStore = isPostgresStorageBackend()
       ? createPostgresConnectorInstanceStore()

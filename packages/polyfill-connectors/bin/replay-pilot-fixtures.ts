@@ -16,7 +16,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, "..");
@@ -36,7 +36,9 @@ async function loadValidator(connector: string): Promise<ValidateRecord | null> 
   if (!existsSync(schemaPath)) {
     return null;
   }
-  const mod = (await import(schemaPath)) as { validateRecord?: ValidateRecord };
+  // pathToFileURL, not the bare path: on Windows "D:\..." parses as a URL with
+  // scheme "d:", which Node's ESM loader rejects (ERR_UNSUPPORTED_ESM_URL_SCHEME).
+  const mod = (await import(pathToFileURL(schemaPath).href)) as { validateRecord?: ValidateRecord };
   return mod.validateRecord ?? null;
 }
 
