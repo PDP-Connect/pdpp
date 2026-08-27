@@ -889,9 +889,10 @@ function dispositionTone(disposition: ForwardDisposition): VerdictTone {
 function terminalAwareTone(
   tone: VerdictTone,
   snapshot: ConnectionHealthSnapshot,
-  disposition: ForwardDisposition
+  disposition: ForwardDisposition,
+  progress: ProgressEvidence | null
 ): VerdictTone {
-  if (tone === "red" && softensTerminalCoverageToDegraded(snapshot, disposition)) {
+  if (tone === "red" && softensTerminalCoverageToDegraded(snapshot, disposition, progress)) {
     return "amber";
   }
   return tone;
@@ -1133,11 +1134,25 @@ function latestCollectionSucceeded(snapshot: ConnectionHealthSnapshot): boolean 
   );
 }
 
+/**
+ * The last successful run is the capability evidence for this source. A newer
+ * failed run or an unrelated projection-read problem may change the health
+ * state, but it cannot turn a source that collected today into one that cannot
+ * collect at all.
+ */
+function collectionSucceededToday(snapshot: ConnectionHealthSnapshot, progress: ProgressEvidence | null): boolean {
+  return (
+    latestCollectionSucceeded(snapshot) ||
+    relativeDayAge(snapshot.last_success_at, progress?.observed_at ?? null) === "today"
+  );
+}
+
 function softensTerminalCoverageToDegraded(
   snapshot: ConnectionHealthSnapshot,
-  disposition: ForwardDisposition
+  disposition: ForwardDisposition,
+  progress: ProgressEvidence | null
 ): boolean {
-  return disposition === "terminal" && snapshot.state === "degraded" && latestCollectionSucceeded(snapshot);
+  return disposition === "terminal" && collectionSucceededToday(snapshot, progress);
 }
 
 /**
@@ -1180,8 +1195,14 @@ const TERMINAL_COVERAGE_CTA = "Missing data needs review";
  * case is a coverage GAP in an otherwise-succeeding run, this one is data that
  * cannot be collected at all, and the sentence beside it says so in full.
  */
-function terminalCoverageCta(snapshot: ConnectionHealthSnapshot, disposition: ForwardDisposition): string {
-  return softensTerminalCoverageToDegraded(snapshot, disposition) ? SOFTENED_COVERAGE_CTA : TERMINAL_COVERAGE_CTA;
+function terminalCoverageCta(
+  snapshot: ConnectionHealthSnapshot,
+  disposition: ForwardDisposition,
+  progress: ProgressEvidence | null
+): string {
+  return softensTerminalCoverageToDegraded(snapshot, disposition, progress)
+    ? SOFTENED_COVERAGE_CTA
+    : TERMINAL_COVERAGE_CTA;
 }
 
 /** Open structured owner attention (the `needs_attention` driver). */
@@ -1683,7 +1704,7 @@ function buildRequiredActions(
     actions.push({
       affects: terminalStreamIds(streams),
       audience: "maintainer",
-      cta: terminalCoverageCta(snapshot, disposition),
+      cta: terminalCoverageCta(snapshot, disposition, progress),
       kind: "code_fix",
       satisfied_when: { kind: "none" },
       surface: { kind: "maintainer" },
@@ -2164,13 +2185,14 @@ function humanizeStreamId(streamId: string): string {
 function terminalForwardStatement(
   primary: RequiredAction | null,
   snapshot: ConnectionHealthSnapshot,
-  disposition: ForwardDisposition
+  disposition: ForwardDisposition,
+  progress: ProgressEvidence | null
 ): string {
   if (primary?.kind === "reauth") {
     return "Reconnect this account before further collection.";
   }
   if (primary?.kind === "code_fix") {
-    if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
+    if (softensTerminalCoverageToDegraded(snapshot, disposition, progress)) {
       return "Latest collection completed with known coverage gaps.";
     }
     return "Some data from this source can't be collected.";
@@ -2207,13 +2229,14 @@ function buildForwardStatement(
   disposition: ForwardDisposition,
   actions: readonly RequiredAction[],
   snapshot: ConnectionHealthSnapshot,
+  progress: ProgressEvidence | null,
   streams: readonly StreamRollup[] = []
 ): string {
   const primary = actions[0] ?? null;
 
   if (disposition === "terminal") {
     // A terminal disposition must never imply recovery.
-    return terminalForwardStatement(primary, snapshot, disposition);
+    return terminalForwardStatement(primary, snapshot, disposition, progress);
   }
 
   if (primary && primary.audience === "owner") {
@@ -2927,8 +2950,8 @@ export function synthesizeRenderedVerdict(
 ): RenderedVerdict {
   // ── tone: worst-wins over base(state) + every axis ──
   const disposition = connectionDisposition(snapshot, streams, refresh, scheduleEvidence);
-  const coverageHealthTone = terminalAwareTone(worstStreamCoverageTone(streams), snapshot, disposition);
-  const dispositionHealthTone = terminalAwareTone(dispositionTone(disposition), snapshot, disposition);
+  const coverageHealthTone = terminalAwareTone(worstStreamCoverageTone(streams), snapshot, disposition, progress);
+  const dispositionHealthTone = terminalAwareTone(dispositionTone(disposition), snapshot, disposition, progress);
   const toneInputs: { axis: string; tone: VerdictTone }[] = [
     { axis: "state", tone: baseStateTone(snapshot.state, snapshot.last_success_at) },
     { axis: "freshness", tone: freshnessHealthTone(snapshot) },
@@ -2992,7 +3015,7 @@ export function synthesizeRenderedVerdict(
   // renderer does not fall back to a generic guess.
   const forwardStatement = acknowledgedLoss
     ? acknowledgedLossStatement(acknowledgedLoss)
-    : buildForwardStatement(disposition, actions, snapshot, streams);
+    : buildForwardStatement(disposition, actions, snapshot, progress, streams);
   const streamRows = buildStreamRows(streams, snapshot, refresh, scheduleEvidence, actions);
   const synthesizedProgress = buildProgress(progress, disposition, actions, snapshot.badges.syncing);
   const renderedProgress = acknowledgedLoss
