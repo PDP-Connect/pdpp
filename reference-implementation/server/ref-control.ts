@@ -134,6 +134,7 @@ import {
   filterRunCoverageEvidence,
   firstDegradingKnownGapReason,
   firstPendingDetailGapReason,
+  hasCompetingOwnerInteractionGap,
   hasDegradingKnownGap,
   hasTerminalKnownGap,
   isProvenPreHorizonGap,
@@ -2808,41 +2809,6 @@ const GENERIC_TERMINAL_FAILURE_REASONS: ReadonlySet<string> = new Set([
   "connector_exited",
   "unknown",
 ]);
-
-// A known-gap recovery-hint action that is a MORE SPECIFIC, connector-emitted
-// classification of "what the owner must do" than a generic credential-reject
-// inference: the connector itself identified this as an interactive/manual
-// step (OTP, a stalled login flow, a captcha) rather than a proven-dead
-// credential. Live evidence (USAA `run_1783787246728`): the SAME run emits
-// BOTH an `interaction_required`/`manual_action_required` gap (self-describing
-// "this exact failure has recurred") AND a generic `run_failed` gap whose
-// message happens to contain "session_failed" and whose recovery_hint is
-// `refresh_credentials` — the two known_gaps disagree about the same failure.
-// `manual_action_required`/`interaction_required` is the connector's own,
-// more-specific read; deferring to it here (rather than manufacturing a
-// `credentials_required`/`session_required` reason from the generic sibling
-// gap) is what stops `credentialsValidCondition` from rendering
-// "Reconnect this account" for a credential that was never actually rejected.
-const OWNER_INTERACTION_RECOVERY_ACTIONS: ReadonlySet<string> = new Set(["manual_action_required"]);
-const OWNER_INTERACTION_GAP_KINDS: ReadonlySet<string> = new Set(["interaction_required"]);
-
-function hasCompetingOwnerInteractionGap(knownGaps: readonly unknown[]): boolean {
-  for (const gap of knownGaps) {
-    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-      continue;
-    }
-    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-    const kind = (gap as { kind?: unknown }).kind;
-    const recoveryAction = (gap as { recovery_hint?: { action?: unknown } }).recovery_hint?.action;
-    if (
-      (typeof kind === "string" && OWNER_INTERACTION_GAP_KINDS.has(kind)) ||
-      (typeof recoveryAction === "string" && OWNER_INTERACTION_RECOVERY_ACTIONS.has(recoveryAction))
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
 
 /**
  * §10-C: recover a credential-specific reason from a run whose top-level

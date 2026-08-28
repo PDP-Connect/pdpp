@@ -3,9 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
+import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 import {
   classifyTooLargeProof,
+  hasCompetingOwnerInteractionGap,
   hasTerminalKnownGap,
   isOwnerRecoverableKnownGap,
   isProvenPreHorizonGap,
@@ -16,7 +17,6 @@ import {
   readClaimedSizeProof,
 } from "../server/connector-gap-classification.ts";
 import type { ConnectorRunSummary } from "../server/ref-control.ts";
-import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 
 function testHorizon(overrides: Partial<ConnectionCoverageHorizon> = {}): ConnectionCoverageHorizon {
   return {
@@ -61,6 +61,107 @@ test("assistance timeout gaps are owner/session-recoverable, not maintainer-code
   assert.equal(isOwnerRecoverableKnownGap(gap), true);
   assert.equal(isRetryableKnownGap(gap), true);
   assert.equal(hasTerminalKnownGap(run), false);
+});
+
+// ─── generic run_failed gap shadowed by a competing owner-interaction gap ──
+//
+// Fixture mirrors the exact production known_gaps shape read live off
+// cin_8997c14400adc5ddba7b36a8 (H-E-B, 2026-08-28): the runtime's generic
+// `run_failed` terminal wrapper (message `heb_login_unexpected_ui`,
+// recovery_hint.action "unknown") shares the run with a specific
+// `interaction_required`/`manual_action_required` gap describing the SAME
+// stalled login. Before this fix, the generic wrapper alone forced
+// `hasTerminalKnownGap` true regardless of the more specific sibling.
+
+function hebUnexpectedUiRun(overrides: Partial<ConnectorRunSummary> = {}): ConnectorRunSummary {
+  return {
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: null,
+    finished_at: "2026-08-22T02:36:45.964Z",
+    first_at: "2026-08-22T02:36:00.000Z",
+    known_gaps: [
+      {
+        kind: "interaction_required",
+        message:
+          "PDPP could not identify what H-E-B is showing. The page at https://accounts.heb.com/interaction/8k87SSs1r3k0H4pPQxNd1/login had no password field and no dialog overlay, which does not match any surface.",
+        reason: "interaction_timeout",
+        recovery_hint: { action: "manual_action_required", retryable: false },
+        severity: "actionable",
+        stream: null,
+      },
+      {
+        kind: "run_failed",
+        message: "heb_session_failed: heb_login_unexpected_ui",
+        reason: "connector_reported_failed",
+        recovery_hint: { action: "unknown", retryable: false },
+        severity: "actionable",
+        stream: null,
+      },
+      {
+        kind: "checkpoint_commit",
+        message: "Staged stream state was not committed",
+        reason: "not_committed",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+        severity: "actionable",
+        stream: null,
+      },
+    ],
+    last_at: "2026-08-22T02:36:45.964Z",
+    recovery_only: false,
+    run_id: "run-heb-1",
+    started_at: "2026-08-22T02:36:00.000Z",
+    status: "failed",
+    terminal_reason: null,
+    ...overrides,
+  };
+}
+
+test("the exact H-E-B production shape: a generic run_failed gap alongside a competing manual_action gap is NOT terminal", () => {
+  const run = hebUnexpectedUiRun();
+  assert.equal(hasCompetingOwnerInteractionGap(run.known_gaps), true);
+  assert.equal(hasTerminalKnownGap(run), false);
+});
+
+test("control: the SAME generic run_failed gap with NO competing owner-interaction sibling stays terminal", () => {
+  const run = hebUnexpectedUiRun({
+    known_gaps: [
+      {
+        kind: "run_failed",
+        message: "heb_session_failed: heb_login_unexpected_ui",
+        reason: "connector_reported_failed",
+        recovery_hint: { action: "unknown", retryable: false },
+        severity: "actionable",
+        stream: null,
+      },
+    ],
+  });
+  assert.equal(hasCompetingOwnerInteractionGap(run.known_gaps), false);
+  assert.equal(hasTerminalKnownGap(run), true);
+});
+
+test("control: a run_failed gap with a SPECIFIC (non-generic) reason is never shadowed, even alongside a competing manual_action gap", () => {
+  const run = hebUnexpectedUiRun({
+    known_gaps: [
+      {
+        kind: "interaction_required",
+        message: "PDPP could not identify what H-E-B is showing.",
+        reason: "interaction_timeout",
+        recovery_hint: { action: "manual_action_required", retryable: false },
+        severity: "actionable",
+        stream: null,
+      },
+      {
+        kind: "run_failed",
+        message: "heb_credential_rejected: invalid_token",
+        reason: "credential_rejected",
+        recovery_hint: { action: "unknown", retryable: false },
+        severity: "actionable",
+        stream: null,
+      },
+    ],
+  });
+  assert.equal(hasTerminalKnownGap(run), true);
 });
 
 // ─── isProvenUnfillableGap / isStreamFullyUnfillableAccounted ─────────────────
