@@ -2190,7 +2190,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/groupme/index.ts",
-    line: 2274,
+    line: 2283,
     column: 29,
     category: "shared_mutable_accumulator",
     note: "collectGroupMessages(): loop body mutates shared considered/nextCursors accumulators the next iteration reads",
