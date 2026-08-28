@@ -261,12 +261,69 @@ const MAX_REPAIR_TIMEOUT_BACKOFF_MS = 30 * 60_000;
 const repairTimeoutBackoffUntil = new Map<string, number>();
 const repairTimeoutStrikes = new Map<string, number>();
 
+/**
+ * Test-only: read the raw `repairTimeoutBackoffUntil` deadline for one row,
+ * without going through the outer `repairCandidate` gate. Lets a
+ * deterministic test assert the SURVIVING window's magnitude (e.g. "still
+ * reflects strike 2's ~120s, not the flat function's own 60s base") directly,
+ * rather than inferring it indirectly from whether a later call was skipped —
+ * which conflates "the gate let this call through" with "the value it wrote
+ * was correct," the exact distinction a de-escalation regression hides
+ * behind.
+ */
+export function __testOnlyReadRepairTimeoutBackoffUntil(connectorInstanceId: string): number | undefined {
+  return repairTimeoutBackoffUntil.get(connectorInstanceId);
+}
+
+/**
+ * Test-only: clear one row's backoff window without waiting for it to
+ * elapse. A test proving strike-ladder preservation needs several
+ * back-to-back admissions of the SAME row within one process's lifetime —
+ * waiting out a real 60s/120s/240s window between them would make the test
+ * itself minutes long. This clears only the scheduling-gate map
+ * (`repairTimeoutBackoffUntil`), never `repairTimeoutStrikes`, so the strike
+ * COUNT a test is asserting against accumulates exactly as production would
+ * accumulate it; only the wait between attempts is skipped.
+ */
+export function __testOnlyClearRepairTimeoutBackoffUntil(connectorInstanceId: string): void {
+  repairTimeoutBackoffUntil.delete(connectorInstanceId);
+}
+
 // Test-only timing seam for the real timeout/retry test. Production keeps the
 // fixed one-minute base unless this explicitly test-named variable is set.
 function repairTimeoutBackoffBaseMs(): number {
   const raw = process.env.PDPP_TEST_REPAIR_TIMEOUT_BACKOFF_BASE_MS;
   const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : REPAIR_TIMEOUT_BACKOFF_BASE_MS;
+}
+
+/**
+ * Test-only: call the real `noteRepairTimeout` directly, bypassing
+ * `repairCandidate`'s outer skip gate.
+ *
+ * The gate (`repairCandidate`, `repairTimeoutBackoffUntil.get(id) < Date.now()`)
+ * is the ONLY caller of either backoff function in this process, and it never
+ * lets a second call through while a prior window is still live — so a live
+ * "genuine strikes still armed, then a completed-scan timeout arrives" race
+ * cannot be constructed by driving `reconcileConnectorSummaryEvidence`
+ * end-to-end: by the time the gate lets a retry through, the previous window
+ * has always already elapsed. Testing `noteRepairTimeoutAfterCompletedScan`'s
+ * `Math.max` contract — which must hold even for a window that has NOT yet
+ * elapsed, since nothing in its own signature enforces that precondition —
+ * requires calling both functions directly against the real, shared,
+ * module-level maps, exactly as production's single call site does.
+ */
+export function __testOnlyNoteRepairTimeout(connectorInstanceId: string): void {
+  noteRepairTimeout(connectorInstanceId);
+}
+
+/**
+ * Test-only: call the real `noteRepairTimeoutAfterCompletedScan` directly,
+ * for the same reason and against the same real maps as
+ * `__testOnlyNoteRepairTimeout` above.
+ */
+export function __testOnlyNoteRepairTimeoutAfterCompletedScan(connectorInstanceId: string): void {
+  noteRepairTimeoutAfterCompletedScan(connectorInstanceId);
 }
 
 function noteRepairTimeout(connectorInstanceId: string): void {
@@ -276,6 +333,56 @@ function noteRepairTimeout(connectorInstanceId: string): void {
   repairTimeoutBackoffUntil.set(connectorInstanceId, Date.now() + delayMs);
   console.error(
     `[connector-summary-evidence] repair for ${connectorInstanceId} has now been cancelled by statement_timeout ${strikes} time(s); backing off ${Math.round(delayMs / 1000)}s so other dirty rows are not starved behind it`
+  );
+}
+
+/**
+ * A `PostgresStatementTimeoutError` that fires AFTER this attempt's canonical
+ * scan already banked a COMPLETE accumulator (see `canonicalScanCompletedThisAttempt`
+ * in `repairCandidatePostgres`) must not pace like a genuine scan timeout.
+ *
+ * `noteRepairTimeout`'s escalating strikes exist because a row whose scan
+ * cannot finish inside the bound keeps re-attempting the SAME doomed work —
+ * unpaced, it starves every other dirty row behind it, so slowing it down is
+ * the correct trade. That reasoning does not hold here: the scan is already
+ * done, so the next attempt's OWN scan resolves in one page query that finds
+ * nothing past its committed boundary — the expensive part is not being
+ * repeated. What failed is a trailing bookkeeping read (manifest, generation,
+ * streams, retained size, terminal/schedule high-water, or the publication
+ * CAS itself), which is cheap and has no reason to keep failing at the same
+ * rate a canonical scan would.
+ *
+ * So this arms a single FLAT delay — not zero (an unpaced retry loop here
+ * would still consume a round every pass under sustained contention, the
+ * exact starvation `noteRepairTimeout` exists to prevent) and not escalating
+ * (this row is not becoming less likely to succeed each time; nothing about
+ * repeating this cheap read gets harder).
+ *
+ * `Math.max` against whatever is already in `repairTimeoutBackoffUntil` is
+ * load-bearing, not defensive: this map is the SAME one `noteRepairTimeout`
+ * writes, so a row that already accumulated genuine strikes (e.g. 5 strikes,
+ * 960s remaining) and THEN has its scan complete before losing a trailing
+ * read must not have that 960s window overwritten down to a flat 60s. An
+ * unconditional `.set` here would let one cheap trailing-read collision
+ * de-escalate a row by up to 30x, and because the scan stays banked, the row
+ * can oscillate between a genuine strike and a flat trailing timeout
+ * indefinitely, pinned at the 60s floor instead of the ladder its own strikes
+ * already earned. Never shortens, only ever holds or extends.
+ *
+ * It deliberately does NOT touch `repairTimeoutStrikes`: this row's strike
+ * count is preserved exactly as it was, so a LATER genuine first-page scan
+ * timeout on this same row (e.g. after a source mutation invalidates the
+ * banked prefix) resumes escalation from strike N+1, not a reset to strike 1
+ * — a completed-scan trailing collision must not erase strikes this row has
+ * already earned, any more than it should erase the backoff window they
+ * bought.
+ */
+function noteRepairTimeoutAfterCompletedScan(connectorInstanceId: string): void {
+  const existingBackoffUntil = repairTimeoutBackoffUntil.get(connectorInstanceId) ?? 0;
+  const flatBackoffUntil = Date.now() + repairTimeoutBackoffBaseMs();
+  repairTimeoutBackoffUntil.set(connectorInstanceId, Math.max(existingBackoffUntil, flatBackoffUntil));
+  console.error(
+    `[connector-summary-evidence] repair for ${connectorInstanceId} completed its canonical scan but a trailing read was then cancelled by statement_timeout; backing off at least ${Math.round(repairTimeoutBackoffBaseMs() / 1000)}s (flat, never escalating further, never shortening an existing window — the expensive scan work is already banked)`
   );
 }
 
@@ -2029,6 +2136,19 @@ async function repairCandidateSqlite(connectorInstanceId: string): Promise<Repai
       deferred = true;
       built = { connector_instance_id: connectorInstanceId, dirty: 1, state: "stale" };
     } else {
+      // Intentionally KEEPS the manifest/generation/streams reads BEFORE the
+      // scan here, unlike `repairCandidatePostgres` (which moved the
+      // equivalent reads to AFTER its scan). That reorder exists solely to
+      // conserve Postgres's per-unit `statement_timeout` admission budget
+      // (`postgresRepairReadQuery`/`remainingStatementBudgetMs`) across a
+      // chunked, multi-admission scan that can itself exhaust it. Neither
+      // condition applies here: `better-sqlite3` is synchronous with no
+      // deadline to conserve (there is no `deadline` parameter on this
+      // function at all), and `scanSqliteCanonicalStreams` runs to completion
+      // in one call — there is no budget to protect and nothing this
+      // ordering could win by moving. Read order therefore stays whichever
+      // one was simplest to write, and this branch is fenced by the exact
+      // same publication CAS (`writeTransaction` below) regardless of order.
       const manifestRow = db
         .prepare("SELECT manifest FROM connectors WHERE connector_id = ?")
         .get(instance.connector_id) as Row | undefined;
@@ -2190,6 +2310,7 @@ function postgresRepairReadQuery<R extends Row = Row>(
   params: unknown[],
   deadline: number | null
 ): Promise<{ rowCount: number | null; rows: R[] }> {
+  testOnlyThrowStatementTimeoutAtStage(sql);
   if (deadline === null) {
     return postgresQuery<R>(sql, params);
   }
@@ -2239,6 +2360,19 @@ let testOnlyCanonicalScanPageCallCount = 0;
  */
 export function __resetTestOnlyCanonicalScanPageCallCountForTest(): void {
   testOnlyCanonicalScanPageCallCount = 0;
+}
+
+/**
+ * Test-only: read the page-call counter without resetting it. Lets a
+ * deterministic ordering test assert the canonical scan actually ran (one or
+ * more `records` page queries were issued) DURING an admission whose
+ * publication was blocked by an unrelated failing read elsewhere in the same
+ * call — a fact that cannot be inferred from the admission's return value or
+ * from durable evidence state alone, since a blocked publication leaves
+ * neither of those changed regardless of whether the scan ran first.
+ */
+export function __testOnlyCanonicalScanPageCallCount(): number {
+  return testOnlyCanonicalScanPageCallCount;
 }
 
 function testOnlySlowRepairRead(sql: string): string {
@@ -2292,21 +2426,85 @@ function testOnlySlowRepairRead(sql: string): string {
   }
   const raw = process.env.PDPP_TEST_SLOW_REPAIR_READ_SECONDS;
   const seconds = raw ? Number.parseFloat(raw) : 0;
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return sql;
-  }
   // Only the repair unit's own `connector_instances` read is slowed. Wrapping
   // every statement that flows through here also rewrote the advisory-lock
   // acquisition query, which recursed in `tryAcquire` — the seam must target
   // exactly the read whose cancellation this test is about, and leave the
   // lock/transaction machinery alone.
-  if (!(LEADING_SELECT_PATTERN.test(sql) && sql.includes("FROM connector_instances"))) {
-    return sql;
-  }
-  return `WITH pdpp_test_slow_read AS MATERIALIZED (SELECT pg_sleep(${seconds}) AS slept),
+  if (
+    Number.isFinite(seconds) &&
+    seconds > 0 &&
+    LEADING_SELECT_PATTERN.test(sql) &&
+    sql.includes("FROM connector_instances")
+  ) {
+    return `WITH pdpp_test_slow_read AS MATERIALIZED (SELECT pg_sleep(${seconds}) AS slept),
                pdpp_test_original AS (${sql})
           SELECT pdpp_test_original.* FROM pdpp_test_original
           WHERE (SELECT count(*) FROM pdpp_test_slow_read) >= 0`;
+  }
+  return sql;
+}
+
+/**
+ * Test-only, deterministic: throw a REAL `PostgresStatementTimeoutError` the
+ * instant a specific named repair-read stage is reached, instead of racing a
+ * real `pg_sleep` against the per-unit deadline.
+ *
+ * `repairCandidatePostgres`'s pre-scan/post-scan ordering and the
+ * completed-scan-vs-not backoff distinction (`canonicalScanCompletedThisAttempt`)
+ * are both about WHICH read fails, not about how long any read takes — a
+ * wall-clock race (`pg_sleep` vs. a short admission window) proves the same
+ * claim only probabilistically, at the mercy of scheduler/network jitter on
+ * ~30-900 sequential real round trips. This seam instead throws synchronously
+ * and unconditionally once the caller-identified stage's query is about to
+ * run, so the same test produces the same outcome on every run.
+ *
+ * `PDPP_TEST_THROW_STATEMENT_TIMEOUT_AT_STAGE` names exactly one stage:
+ *   - `"streams_read"`: the `version_counter` read `repairCandidatePostgres`
+ *     issues to build `checkpoint`. Chosen because it is one of the three
+ *     reads the ordering fix moved (with `connectors`/manifest and
+ *     `connector_instances`/generation) from before the canonical scan to
+ *     after it. Throwing HERE, unconditionally, deterministically proves two
+ *     independent things without any timing dependency:
+ *       (a) whether the canonical scan ran BEFORE this read fires — if the
+ *           read still ran first (pre-fix ordering), the scan never starts
+ *           and no page's boundary is ever banked; if the scan runs first
+ *           (post-fix), its pages commit their durable boundary regardless
+ *           of what this read does afterward.
+ *       (b) once the scan HAS completed, whether the resulting timeout is
+ *           classified as a completed-scan timeout (flat backoff) or a
+ *           from-scratch one (escalating backoff).
+ *   - `"instance_read"`: the VERY FIRST read `repairCandidatePostgres` issues
+ *     (`connector_instances` by id, selecting `source_revision_text`). This
+ *     throw happens before the canonical scan is even reachable — a genuine,
+ *     zero-progress, first-page-equivalent timeout, deterministically arming
+ *     `noteRepairTimeout`'s ESCALATING strikes. Needed to test that a later
+ *     completed-scan timeout (`noteRepairTimeoutAfterCompletedScan`) never
+ *     shortens a backoff window this strike ladder already earned — a claim
+ *     that requires a row with genuine strikes already on it, which
+ *     `"streams_read"` alone cannot produce (it always fires after or in
+ *     place of a completed scan, never as a from-scratch timeout).
+ *
+ * Production is a no-op — the env var is unset — matching this file's other
+ * test-only seams (`PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS`,
+ * `PDPP_TEST_REPAIR_FAILURE_*`).
+ */
+function testOnlyThrowStatementTimeoutAtStage(sql: string): void {
+  const stage = process.env.PDPP_TEST_THROW_STATEMENT_TIMEOUT_AT_STAGE;
+  if (!stage) {
+    return;
+  }
+  const isStreamsRead = LEADING_SELECT_PATTERN.test(sql) && sql.includes("FROM version_counter");
+  if (stage === "streams_read" && isStreamsRead) {
+    throw new PostgresStatementTimeoutError();
+  }
+  const isInstanceRead =
+    LEADING_SELECT_PATTERN.test(sql) &&
+    sql.includes("source_revision_text FROM connector_instances WHERE connector_instance_id = $1") &&
+    !sql.includes("FOR UPDATE");
+  if (stage === "instance_read" && isInstanceRead) {
+    throw new PostgresStatementTimeoutError();
+  }
 }
 
 /**
@@ -2683,6 +2881,15 @@ async function repairCandidatePostgres(
   deadline: number | null = null
 ): Promise<RepairedEvidence> {
   let sourceRevisionAtRead: string | null | undefined;
+  // Set once the canonical scan itself returns a COMPLETE (non-`partial`,
+  // non-`missing`) accumulator in this call. A `PostgresStatementTimeoutError`
+  // from a read AFTER this point (manifest/generation/streams/retained-size/
+  // terminal or schedule high-water/the publication CAS) is a fundamentally
+  // different situation from one before it: the scan already banked its
+  // FULL prefix, so the next attempt's own scan resolves in one cheap
+  // "no rows past the boundary" page instead of re-walking the connection.
+  // See the outer catch below for what this changes.
+  let canonicalScanCompletedThisAttempt = false;
   try {
     const instanceResult = await postgresRepairReadQuery(
       "SELECT *, source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = $1",
@@ -2707,6 +2914,44 @@ async function repairCandidatePostgres(
     if (deferred) {
       built = { connector_instance_id: connectorInstanceId, dirty: 1, state: "stale" };
     } else {
+      // The manifest/generation/streams reads below are consumed only by
+      // `buildRepairedRow`, after the canonical scan succeeds — so they run
+      // AFTER `scanPostgresCanonicalStreamsChunked`, not before it.
+      //
+      // A whale's canonical scan (or even the read immediately above this
+      // comment) is exactly the read most likely to exhaust the per-unit
+      // statement-timeout budget or lose a lock/IO race under contention. Every
+      // attempt that ends in `missing`/`partial`/a rethrown
+      // `PostgresStatementTimeoutError` discards these three reads' results
+      // unused; running them first only spent shared admission budget the
+      // canonical scan needed, and added three more round trips of contention
+      // against `connectors`/`connector_instances`/`version_counter` on every
+      // failed retry with no compensating improvement in the next attempt's
+      // odds. Deferring them until they are actually needed hands that budget
+      // to the read that determines whether this attempt makes progress at
+      // all, on every attempt — not only the one that finally succeeds.
+      const canonicalScan = await scanPostgresCanonicalStreamsChunked(connectorInstanceId, deadline);
+      if (canonicalScan.missing) {
+        const deleted = await deleteEvidenceIfConnectorInstanceMissing(connectorInstanceId);
+        return missingInstanceRepairResult(connectorInstanceId, deleted);
+      }
+      if ("partial" in canonicalScan) {
+        // The scan banked committed page boundaries but ran out of admission
+        // allowance before reaching the end of this connection's records.
+        //
+        // Return here, BEFORE `built` exists. This is deliberately a structural
+        // guarantee rather than a checked one: the partial accumulator is never
+        // bound to a variable in this scope, so there is no value a later edit
+        // could accidentally hand to `buildRepairedRow`, and the publication
+        // CAS below is unreachable on this path. An unfinished accumulator has
+        // seen only a PREFIX of `records`, so folding it would publish a count
+        // strictly LOWER than the connection actually holds — a confident,
+        // durable under-report of the owner's own data, which is precisely the
+        // false-green this subsystem exists to prevent.
+        return deferredNotFailedRepairResult(connectorInstanceId);
+      }
+      const { canonicalByStream } = canonicalScan;
+      canonicalScanCompletedThisAttempt = true;
       const manifestResult = await postgresRepairReadQuery(
         "SELECT manifest::text AS manifest FROM connectors WHERE connector_id = $1",
         [instance.connector_id],
@@ -2730,27 +2975,6 @@ async function repairCandidatePostgres(
           stream: String(row.stream),
         })),
       });
-      const canonicalScan = await scanPostgresCanonicalStreamsChunked(connectorInstanceId, deadline);
-      if (canonicalScan.missing) {
-        const deleted = await deleteEvidenceIfConnectorInstanceMissing(connectorInstanceId);
-        return missingInstanceRepairResult(connectorInstanceId, deleted);
-      }
-      if ("partial" in canonicalScan) {
-        // The scan banked committed page boundaries but ran out of admission
-        // allowance before reaching the end of this connection's records.
-        //
-        // Return here, BEFORE `built` exists. This is deliberately a structural
-        // guarantee rather than a checked one: the partial accumulator is never
-        // bound to a variable in this scope, so there is no value a later edit
-        // could accidentally hand to `buildRepairedRow`, and the publication
-        // CAS below is unreachable on this path. An unfinished accumulator has
-        // seen only a PREFIX of `records`, so folding it would publish a count
-        // strictly LOWER than the connection actually holds — a confident,
-        // durable under-report of the owner's own data, which is precisely the
-        // false-green this subsystem exists to prevent.
-        return deferredNotFailedRepairResult(connectorInstanceId);
-      }
-      const { canonicalByStream } = canonicalScan;
       const retainedByteResult = await postgresRepairReadQuery(
         "SELECT * FROM retained_size_connection WHERE connector_instance_id = $1",
         [connectorInstanceId],
@@ -2886,7 +3110,20 @@ async function repairCandidatePostgres(
       // frozen over an hour). "Retries on the next pass" is only honest
       // when the retries are paced; unpaced, this unit consumes the round
       // every pass and the rows behind it never recompute.
-      noteRepairTimeout(connectorInstanceId);
+      //
+      // BUT a timeout that fires after the canonical scan already completed
+      // in this call is not that situation: the expensive, contention-prone
+      // work is already banked, and only a cheap trailing read (or the
+      // publication CAS) collided. Escalating this row's backoff the same
+      // way a genuine scan timeout does would make its retries rarer while
+      // giving it nothing that makes the next one more likely to succeed —
+      // the exact generic gap this file's fail-before regression test
+      // demonstrates. Pace it flat instead.
+      if (canonicalScanCompletedThisAttempt) {
+        noteRepairTimeoutAfterCompletedScan(connectorInstanceId);
+      } else {
+        noteRepairTimeout(connectorInstanceId);
+      }
       return deferredNotFailedRepairResult(connectorInstanceId);
     }
     const failedRow = buildFailedRow(
@@ -2953,11 +3190,30 @@ function buildRepairedRow(inputs: RepairInputs): Row {
   // The canonical `GROUP BY stream` read is SPARSE: a stream with no live
   // records produces no row at all, so `canonical === undefined` conflates
   // "provably zero" with "never successfully observed". The record-source
-  // checkpoint (`version_counter`, read in the same transaction) is the
-  // orthogonal observation axis that separates them: a checkpoint entry
-  // exists only once ingest allocated a version for that stream, so it is
-  // positive proof that the stream WAS canonically observed. Absent that
-  // proof, an absent canonical row is `unobserved`, never `known_zero`.
+  // checkpoint (`version_counter`) is the orthogonal observation axis that
+  // separates them: a checkpoint entry exists only once ingest allocated a
+  // version for that stream, so it is positive proof that the stream WAS
+  // canonically observed. Absent that proof, an absent canonical row is
+  // `unobserved`, never `known_zero`.
+  //
+  // This read and the canonical scan are NOT in the same transaction — the
+  // scan is many short, independently committed page transactions
+  // (`scanPostgresCanonicalStreamsChunked`), and this checkpoint read now
+  // runs strictly AFTER all of them finish, as its own autocommit statement.
+  // A stream whose version_counter row is allocated by a concurrent ingest
+  // AFTER the scan's last page but BEFORE this read would appear in
+  // `observedStreams` with no matching canonical row — the `known_zero` shape
+  // this axis exists to prevent, not the safe `unobserved` one.
+  //
+  // What actually prevents that from landing is the publication CAS below
+  // (`sourceRevisionsEqual` under `FOR UPDATE`): that same concurrent ingest
+  // bumps `source_revision` via the `version_counter` trigger
+  // (`postgres-storage.ts`'s `sourceTables` list), so the CAS comparing this
+  // attempt's captured `sourceRevisionAtRead` against the current row fails
+  // and `built` — including this observation — is discarded whole, never
+  // published. The CAS is the sole guarantee against this hazard reaching
+  // durable evidence; this read ordering makes that coupling load-bearing
+  // where the pre-fix ordering did not.
   const observedStreams = new Set(checkpoint.streams.map((entry) => entry.stream));
 
   const streamRecords: StreamEvidence[] = [...unionStreams].sort().map((stream) => {
