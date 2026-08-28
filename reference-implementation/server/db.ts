@@ -2284,11 +2284,10 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence_repair_chunk (
   connector_instance_id        TEXT PRIMARY KEY,
   resume_after_id              INTEGER,
   accumulator_json             TEXT NOT NULL,
-  -- The canonical source_revision this chunk sequence started against. A
-  -- later admission that finds the live source_revision no longer matches
-  -- this receipt must discard the accumulator and restart the scan from the
-  -- beginning -- resuming a partial sum against a revision it was never
-  -- computed against would silently under- or over-count.
+  -- The source_revision observed while this boundary was advanced. It is a
+  -- diagnostic/final-publication receipt, not resume eligibility: records
+  -- triggers invalidate the chunk only when a mutation touches its proven
+  -- id prefix, so an append above resume_after_id remains resumable.
   source_revision               TEXT NOT NULL,
   started_at                   TEXT NOT NULL,
   updated_at                   TEXT NOT NULL,
@@ -2896,6 +2895,24 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
            ELSE 9223372036854775807
          END
        WHERE connector_instance_id IN (${newIdentitySql}, ${oldIdentitySql});`;
+  // A chunk receipt proves only the id prefix it folded. Records appended
+  // above its durable boundary leave that proof intact even though the broad
+  // source_revision advances. A record mutation at or below the boundary
+  // destroys the proof, so the records triggers delete exactly that receipt
+  // in the same transaction as the canonical write and receipt advance.
+  const deleteChunkForPrefix = (identitySql: string, recordIdSql: string): string => `
+      DELETE FROM connector_summary_evidence_repair_chunk
+       WHERE connector_instance_id = ${identitySql}
+         AND ${recordIdSql} <= resume_after_id;`;
+  const deleteChunkForEitherPrefix = (
+    newIdentitySql: string,
+    oldIdentitySql: string,
+    newRecordIdSql: string,
+    oldRecordIdSql: string
+  ): string => `
+      DELETE FROM connector_summary_evidence_repair_chunk
+       WHERE (connector_instance_id = ${newIdentitySql} AND ${newRecordIdSql} <= resume_after_id)
+          OR (connector_instance_id = ${oldIdentitySql} AND ${oldRecordIdSql} <= resume_after_id);`;
 
   for (const table of sourceTables) {
     const insertName = `pdpp_source_revision_${table}_insert`;
@@ -2912,6 +2929,16 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
         AFTER UPDATE ON ${table}
         BEGIN
           ${advanceEither(sourceIdentity("NEW", table), sourceIdentity("OLD", table))}
+          ${
+            table === "records"
+              ? deleteChunkForEitherPrefix(
+                  sourceIdentity("NEW", table),
+                  sourceIdentity("OLD", table),
+                  "NEW.id",
+                  "OLD.id"
+                )
+              : ""
+          }
         END;`;
     raw.exec(`
       DROP TRIGGER IF EXISTS ${insertName};
@@ -2921,12 +2948,14 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
         AFTER INSERT ON ${table}
         BEGIN
           ${advance(sourceIdentity("NEW", table))}
+          ${table === "records" ? deleteChunkForPrefix(sourceIdentity("NEW", table), "NEW.id") : ""}
         END;
       ${updateTrigger}
       CREATE TRIGGER ${deleteName}
         AFTER DELETE ON ${table}
         BEGIN
           ${advance(sourceIdentity("OLD", table))}
+          ${table === "records" ? deleteChunkForPrefix(sourceIdentity("OLD", table), "OLD.id") : ""}
         END;
     `);
   }
