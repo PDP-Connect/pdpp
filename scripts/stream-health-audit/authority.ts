@@ -218,7 +218,34 @@ const KNOWN_CONDITION_REASONS = new Set([
   "credentials_not_applicable_file_import",
   "credentials_not_probed",
   "external_tool_unavailable",
+  // Four reasons the runtime genuinely emits that this vocabulary never
+  // learned, so every one of them scored as unknown_vocabulary against a
+  // healthy connection (measured on the deployed projection, 2026-08-28: four
+  // of six live reason codes were absent). Each is SOURCE-PROVEN at its
+  // producer, not adopted from a fixture:
+  //
+  //   history_ended_before_provider_count  groupme/index.ts:2189 SKIP_RESULT —
+  //     the walk reached the oldest message GroupMe will serve while its
+  //     lifetime total still counted more.
+  //   statement_unreconciled               usaa/index.ts:2732 SKIP_RESULT —
+  //     a statement period does not reconcile against its own printed balances.
+  //   interaction_cancelled                a cancelled owner interaction. The
+  //     vocabulary already had `interaction_timeout`; cancelled is a DIFFERENT
+  //     fact and was simply never added.
+  //   connector_child_failure              a child collector failed.
+  //
+  // VOCABULARY ONLY. This changes what the audit RECOGNISES, never what any
+  // reason MEANS: severity stays wherever the health model already puts it, and
+  // `owner-action-gate.ts`'s AUTOMATION_BLOCKING_OWNER_ACTION_KINDS
+  // ({add_info, reauth}) remains the sole arbiter of owner-blocking. Of these
+  // four, only connector_child_failure carries add_info and so stays
+  // owner-blocking; the other three carry wait/code_fix/retry_gap and are
+  // already correctly non-blocking.
+  "connector_child_failure",
+  "history_ended_before_provider_count",
+  "interaction_cancelled",
   "interaction_timeout",
+  "statement_unreconciled",
   "needs_human_attention",
   "connector_reported_failed",
   "credentials_required",

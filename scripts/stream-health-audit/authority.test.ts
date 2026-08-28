@@ -437,6 +437,63 @@ test("derives an exact green numerator/denominator from active production stream
   assert.equal(result.perClass.green, 2);
 });
 
+/**
+ * Four reasons the runtime genuinely emits that this vocabulary never learned.
+ * Measured against the DEPLOYED projection on 2026-08-28: four of six live
+ * reason codes scored as `unknown_vocabulary` on connections that were fine —
+ * the audit was reporting its own ignorance as a finding.
+ *
+ * One case per reason, and each is named with its PRODUCER so a future reader
+ * can re-verify it rather than trust this list. Two were source-proven before
+ * being added; the owner's rule was that a reason present only in a fixture
+ * does not qualify:
+ *
+ *   history_ended_before_provider_count  groupme/index.ts:2189  SKIP_RESULT
+ *   statement_unreconciled               usaa/index.ts:2732     SKIP_RESULT
+ *   interaction_cancelled                cancelled owner interaction — the
+ *                                        vocabulary had `interaction_timeout`
+ *                                        but never its cancelled sibling
+ *   connector_child_failure              a child collector failed
+ *
+ * These pin RECOGNITION only. Severity is not asserted here and is not changed
+ * by the vocabulary: `owner-action-gate.ts`'s
+ * AUTOMATION_BLOCKING_OWNER_ACTION_KINDS ({add_info, reauth}) remains the sole
+ * arbiter of what blocks an owner. Of these four only
+ * `connector_child_failure` carries `add_info`; the others carry
+ * wait/code_fix/retry_gap and stay non-blocking.
+ */
+test("recognises the four live producer reasons that previously scored as unknown vocabulary", () => {
+  const baseHealth = healthyConnection().connection_health as Json;
+  for (const reason of [
+    "connector_child_failure",
+    "history_ended_before_provider_count",
+    "interaction_cancelled",
+    "statement_unreconciled",
+  ]) {
+    const condition = {
+      current: false,
+      expires_at: null,
+      id: `source-coverage-${reason}`,
+      message: "Source coverage status",
+      observed_at: EVIDENCE_AT,
+      origin: "connector",
+      reason,
+      reason_code: null,
+      remediation: null,
+      sensitivity: "public",
+      severity: "blocked",
+      status: "false",
+      type: "SourceCoverageComplete",
+    };
+    const result = evaluate(healthyConnection({ connection_health: { ...baseHealth, conditions: [condition] } }));
+    assert.equal(
+      result.perClass.unknown_vocabulary,
+      0,
+      `${reason} is emitted by a real producer; scoring it unknown reports the audit's ignorance as a defect`
+    );
+  }
+});
+
 test("accepts canonical RI producer reasons but rejects unknown reasons", () => {
   const baseHealth = healthyConnection().connection_health as Json;
   for (const reason of [
