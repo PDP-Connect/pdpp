@@ -2725,58 +2725,11 @@ function healthClassifyingRun(
   if (
     isOwnerCancelledRun(latestSettledRun) ||
     isControllerAbandonedRun(latestSettledRun) ||
-    isSchedulerSkippedRun(latestSettledRun) ||
-    isPreExecutionDeferralRun(latestSettledRun)
+    isSchedulerSkippedRun(latestSettledRun)
   ) {
     return lastSuccessfulRun;
   }
   return latestSettledRun;
-}
-
-/**
- * Whether a terminal `"failed"` run carries generic runtime evidence that
- * collection was never attempted — e.g. a managed browser-surface lease that
- * deferred BEFORE the connector was ever invoked (`runtime/browser-surface/
- * run-coordinator.ts`'s early-return path emits only `run.browser_surface_
- * requested`/`run.browser_surface_deferred`, never a connector-side terminal
- * event, so the run this becomes carries none of the facts a genuine
- * execution — successful or failed — always produces).
- *
- * Treated like the owner-cancel/controller-abandoned/scheduler-skip cases it
- * most resembles: this run carries NO provider or coverage evidence, so
- * health/coverage defer to the last run that actually observed something,
- * rather than manufacturing a `partial` degradation from a run that never
- * reached the connector at all.
- *
- * Fail-closed by construction: EVERY one of these must hold, so any run that
- * reached the connector (even briefly, even to fail immediately) is treated
- * as a real failure, never silently excused.
- *   - `collection_facts === null`: no per-stream inventory block was ever
- *     built (`buildCollectionFacts` only returns null for a `recovery_only`
- *     run or "no in-scope stream universe" — a run that started measuring
- *     always produces one, even with zero-record entries).
- *   - `event_count === 0`: the connector emitted no progress/record events.
- *   - `known_gaps.length === 0`: no gap of any kind (retryable, terminal, or
- *     otherwise) was recorded against this run — a real connector-side
- *     failure almost always leaves at least one.
- *   - `connector_error`/`failure_reason`/`terminal_reason` are all absent: no
- *     text anywhere describes what went wrong, because nothing inside the
- *     connector ran long enough to describe anything.
- *
- * This is connector-agnostic runtime evidence only — no connector/provider
- * identity, no `source_kind`, no manifest read.
- */
-function isPreExecutionDeferralRun(run: ConnectorRunSummary | null): boolean {
-  return Boolean(
-    run &&
-      run.status === "failed" &&
-      run.collection_facts === null &&
-      run.event_count === 0 &&
-      run.known_gaps.length === 0 &&
-      !run.connector_error &&
-      !run.failure_reason &&
-      !run.terminal_reason
-  );
 }
 
 /**

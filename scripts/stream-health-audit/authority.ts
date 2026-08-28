@@ -155,6 +155,19 @@ const FAILED_RUN_STATUSES = new Set([
 const OWNER_CANCEL_TERMINAL_REASONS = new Set(["owner_cancel_forced", "owner_cancelled"]);
 const ACTIVE_RUN_STATUSES = new Set(["active", "in_progress", "leased", "started", "starting_surface"]);
 const ACCEPTED_ABSENCE_POLICIES = new Set(["deferred", "inventory_only", "unavailable", "unsupported"]);
+/**
+ * Deliberately narrower than {@link ACCEPTED_ABSENCE_POLICIES}: the only two
+ * `axes.coverage` values `projectionAgreement` treats as a non-degrading,
+ * accepted terminal label rather than a real disagreement against an
+ * all-complete required report. `unsupported`/`unavailable` are excluded even
+ * though they are accepted-absence *manifest* policies, because
+ * `hasOutstandingGap` (runtime/connection-health.ts) treats them as
+ * outstanding gaps at the connection-health axis level — excusing them here
+ * would put this predicate in disagreement with that in-tree authority.
+ * `inventory_only`/`deferred` are the only two values proven to agree with
+ * `hasOutstandingGap` (absent from its list).
+ */
+const NON_DEGRADING_ACCEPTED_AXES = new Set(["deferred", "inventory_only"]);
 const KNOWN_CONDITION_TYPES = new Set([
   "AttentionClear",
   "BacklogClear",
@@ -1310,44 +1323,25 @@ function projectionAgreement(connection: JsonObject, manifest: ResolvedManifest 
     axes.coverage !== "complete" &&
     reportConditions.length > 0 &&
     reportConditions.every((condition) => condition === "complete") &&
-    // An accepted-absence axis (`inventory_only`/`deferred`/`unavailable`/
-    // `unsupported`) is a manifest-declared, honest terminal label for the
-    // WHOLE connection's accepted policy — e.g. a required diagnostics-only
-    // stream that only ever proves inventory, never full detail. It is not a
-    // degrading condition, so a per-stream report that independently proves
-    // every required stream `complete` does not disagree with it; the two
-    // evidence pipelines are answering different questions (what the
-    // connector accepts collecting vs. what each stream's own facts show).
-    !ACCEPTED_ABSENCE_POLICIES.has(axes.coverage) &&
-    // A connection-wide, non-stream-scoped pending condition (e.g. a local
-    // collector's own process/upload backlog) can legitimately degrade the
-    // connection axis while never entering any single stream's report — see
-    // `isLocalCollectorRunnerGap`/`pending_other` in ref-control.ts. Fail
-    // closed: only excuse the disagreement when the backlog evidence is
-    // itself readable and actually the reason (a positive `pending_other`
-    // count), never when the backlog is unread/unknown.
-    !hasUnscopedPendingBacklog(health)
+    // A narrow accepted-absence axis (`inventory_only`/`deferred` only — NOT
+    // `unavailable`/`unsupported`) is a manifest-declared, honest terminal
+    // label for the WHOLE connection's accepted policy — e.g. a required
+    // diagnostics-only stream that only ever proves inventory, never full
+    // detail. It is not a degrading condition, so a per-stream report that
+    // independently proves every required stream `complete` does not
+    // disagree with it; the two evidence pipelines are answering different
+    // questions (what the connector accepts collecting vs. what each
+    // stream's own facts show). Deliberately narrower than
+    // `ACCEPTED_ABSENCE_POLICIES`: `hasOutstandingGap`
+    // (runtime/connection-health.ts) treats `unsupported`/`unavailable` as
+    // outstanding gaps, so excusing those two here would put this predicate
+    // in disagreement with that in-tree authority. Only the two values this
+    // predicate can prove agree with `hasOutstandingGap` are excused.
+    !NON_DEGRADING_ACCEPTED_AXES.has(axes.coverage)
   ) {
     return "health coverage disagrees with an entirely complete collection report";
   }
   return null;
-}
-
-/**
- * Whether the connection carries a genuine, connection-wide pending
- * detail-gap backlog that is NOT scoped to any required stream
- * (`detail_gap_backlog.pending_other > 0`, e.g. a local-collector process
- * failure or a stalled device-exporter outbox). This backlog can legitimately
- * degrade `axes.coverage` (a real agent-side blocker) while every per-stream
- * `collection_report` entry independently reads `complete`, because the
- * per-stream report's in-scope universe deliberately excludes non-stream
- * process conditions (see `pendingDetailGapCountsByStream` in ref-control.ts).
- * Reads only the generic, connector-agnostic `pending_other` count — never a
- * connector/provider identity.
- */
-function hasUnscopedPendingBacklog(health: JsonObject | null): boolean {
-  const backlog = nestedObject(health, "detail_gap_backlog");
-  return typeof backlog?.pending_other === "number" && backlog.pending_other > 0;
 }
 
 function hasActiveBoundedWork(connection: JsonObject): boolean {

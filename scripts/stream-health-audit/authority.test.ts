@@ -1419,21 +1419,7 @@ test("projection disagreement is visible instead of trusting the connection stre
   assert.match(streamResult(result).reason, DISAGREEMENT_PATTERN);
 });
 
-test("an accepted inventory_only coverage axis does not disagree with an entirely complete required report", () => {
-  const connection = healthyConnection({
-    connection_health: {
-      state: "healthy",
-      axes: { coverage: "inventory_only", freshness: "fresh", attention: "none", outbox: "idle" },
-      conditions: healthyConnection().connection_health.conditions,
-    },
-  });
-  const result = evaluate(connection);
-
-  assert.equal(streamResult(result).class, "green");
-  assert.equal(result.status, "pass");
-});
-
-for (const accepted of ["deferred", "unavailable", "unsupported"]) {
+for (const accepted of ["deferred", "inventory_only"]) {
   test(`an accepted ${accepted} coverage axis does not disagree with an entirely complete required report`, () => {
     const connection = healthyConnection({
       connection_health: {
@@ -1448,10 +1434,37 @@ for (const accepted of ["deferred", "unavailable", "unsupported"]) {
   });
 }
 
+for (const accepted of ["unavailable", "unsupported"]) {
+  test(`an accepted ${accepted} coverage axis still disagrees with an entirely complete required report (excluded from the narrow accepted set)`, () => {
+    // Counterweight: `unavailable`/`unsupported` are accepted-absence
+    // manifest policies too, but `hasOutstandingGap`
+    // (runtime/connection-health.ts:3494-3503) treats BOTH as outstanding
+    // gaps at the connection-health axis level. Excusing them here would put
+    // this predicate in disagreement with that in-tree authority, so the
+    // accepted set stays narrow to `inventory_only`/`deferred` only — this
+    // must still fail.
+    const connection = healthyConnection({
+      connection_health: {
+        state: "degraded",
+        axes: { coverage: accepted, freshness: "fresh", attention: "none", outbox: "idle" },
+        conditions: healthyConnection().connection_health.conditions,
+      },
+      rendered_verdict: { pill: { tone: "amber", label: "Some records stuck" } },
+    });
+    const result = evaluate(connection);
+
+    assert.equal(streamResult(result).class, "projection_disagreement");
+    assert.equal(
+      streamResult(result).reason,
+      "health coverage disagrees with an entirely complete collection report"
+    );
+  });
+}
+
 test("a genuinely degrading coverage axis still disagrees with an entirely complete required report", () => {
   // Counterweight: `retryable_gap` is not in the accepted-absence set, so this
-  // must still fail — proves the new exception is scoped to the accepted-
-  // absence vocabulary, not "any non-complete axis".
+  // must still fail — proves the new exception is scoped to the narrow
+  // accepted vocabulary, not "any non-complete axis".
   const connection = healthyConnection({
     connection_health: {
       state: "degraded",
@@ -1464,57 +1477,6 @@ test("a genuinely degrading coverage axis still disagrees with an entirely compl
 
   assert.equal(streamResult(result).class, "projection_disagreement");
   assert.equal(streamResult(result).reason, "health coverage disagrees with an entirely complete collection report");
-});
-
-test("a connection-wide pending_other backlog does not disagree with an entirely complete required report", () => {
-  const connection = healthyConnection({
-    connection_health: {
-      state: "degraded",
-      axes: { coverage: "retryable_gap", freshness: "fresh", attention: "none", outbox: "stalled" },
-      conditions: healthyConnection().connection_health.conditions,
-      detail_gap_backlog: {
-        max_attempt_count: 0,
-        next_attempt_at: null,
-        pending: 0,
-        pending_is_floor: false,
-        pending_other: 1,
-        pending_other_is_floor: false,
-        recovered: 0,
-        terminal: 0,
-      },
-    },
-    rendered_verdict: { pill: { tone: "amber", label: "Some records stuck" } },
-  });
-  const result = evaluate(connection);
-
-  assert.equal(streamResult(result).class, "green");
-});
-
-test("a zero pending_other backlog still disagrees with a degrading coverage axis", () => {
-  // Counterweight: `pending_other: 0` (readable, but no unscoped backlog) must
-  // not be treated as an excuse — proves the check keys on the backlog's own
-  // positive count, not merely its presence/readability.
-  const connection = healthyConnection({
-    connection_health: {
-      state: "degraded",
-      axes: { coverage: "retryable_gap", freshness: "fresh", attention: "none", outbox: "idle" },
-      conditions: healthyConnection().connection_health.conditions,
-      detail_gap_backlog: {
-        max_attempt_count: 0,
-        next_attempt_at: null,
-        pending: 0,
-        pending_is_floor: false,
-        pending_other: 0,
-        pending_other_is_floor: false,
-        recovered: 0,
-        terminal: 0,
-      },
-    },
-    rendered_verdict: { pill: { tone: "amber", label: "Some records stuck" } },
-  });
-  const result = evaluate(connection);
-
-  assert.equal(streamResult(result).class, "projection_disagreement");
 });
 
 test("malformed owner inventory rows fail closed instead of disappearing from the score", () => {
