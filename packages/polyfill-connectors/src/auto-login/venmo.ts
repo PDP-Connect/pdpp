@@ -457,77 +457,6 @@ const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
  * behavior teaches operators to ignore it, so the family case now re-navigates
  * instead of throwing, while a landing outside the family still fails loudly.
  */
-/**
- * Establish the `venmo.com` origin WITHOUT throwing away work the owner just
- * did by hand.
- *
- * `ensureVenmoOrigin` is correct for a fresh run: the page starts on
- * `about:blank`, a `page.goto` costs nothing, and the CORS precondition has to
- * be met somehow. It is WRONG immediately after an owner assist. Production
- * `run_1787918248525` and `run_1787880617136` both died the same way: the owner
- * cleared a security check, the resume path probed, the probe navigated, and
- * the fresh navigation re-armed the wall the owner had just passed.
- *
- * The landing was a Venmo FAMILY host, not a stranger — provable from the
- * stored message `(landed on [redacted-url])`, because `redactTransportDetail`
- * only substitutes on an ABSOLUTE_URL match and `describeLandedOrigin` emits a
- * `https://` string ONLY on its family branch (the non-family branch emits
- * prose containing no URL). So `ensureVenmoOrigin`'s own one-shot family retry
- * had already fired and been walled too — a second `goto` cannot be the answer.
- *
- * A same-document route reaches `https://venmo.com` from another first-party
- * Venmo page without a network navigation, so the cleared challenge and its
- * cookies survive. If the SPA route does not land (no client router, a hard
- * redirect, an unexpected host), this falls back to `ensureVenmoOrigin` — which
- * either succeeds or throws the SAME named fault as before. The failure
- * surface is unchanged; only the success path is added.
- */
-async function establishOriginPreservingOwnerWork(page: Page, afterOwnerAssist: boolean): Promise<void> {
-  if (!afterOwnerAssist) {
-    await ensureVenmoOrigin(page);
-    return;
-  }
-  let currentUrl: string;
-  try {
-    currentUrl = page.url();
-  } catch {
-    await ensureVenmoOrigin(page);
-    return;
-  }
-  let currentOrigin: string | null = null;
-  try {
-    currentOrigin = new URL(currentUrl).origin;
-  } catch {
-    currentOrigin = null;
-  }
-  if (currentOrigin === VENMO_ORIGIN) {
-    return;
-  }
-  // Only attempt the in-page route from a first-party Venmo page. From
-  // anywhere else there is no same-document path to venmo.com anyway, and
-  // trying would just be a slower way to reach the same fallback.
-  if (isVenmoFamilyUrl(currentUrl)) {
-    await page
-      .evaluate((target: string) => {
-        globalThis.location.assign(target);
-      }, HOME_URL)
-      .catch((): undefined => undefined);
-    await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch((): undefined => undefined);
-    let routedOrigin: string | null = null;
-    try {
-      routedOrigin = new URL(page.url()).origin;
-    } catch {
-      routedOrigin = null;
-    }
-    if (routedOrigin === VENMO_ORIGIN) {
-      return;
-    }
-  }
-  // Fall back to the original guard: it reports the same named fault, so a
-  // genuine inability to reach the origin still fails exactly as it did.
-  await ensureVenmoOrigin(page);
-}
-
 export async function ensureVenmoOrigin(page: Page): Promise<void> {
   let currentOrigin: string | null = null;
   try {
@@ -680,10 +609,7 @@ export type VenmoProbePhase = "post_submit" | "pre_submit";
 export async function probeVenmoAccount(
   page: Page,
   phase: VenmoProbePhase = "pre_submit",
-  {
-    evaluateTimeoutMs = PROBE_EVALUATE_TIMEOUT_MS,
-    afterOwnerAssist = false,
-  }: { readonly evaluateTimeoutMs?: number; readonly afterOwnerAssist?: boolean } = {}
+  { evaluateTimeoutMs = PROBE_EVALUATE_TIMEOUT_MS }: { readonly evaluateTimeoutMs?: number } = {}
 ): Promise<VenmoAccountProbeResult> {
   let outcome: { kind: "dead" } | { kind: "live"; ownerId: string } | { kind: "transport_error"; message: string };
   try {
@@ -692,31 +618,7 @@ export async function probeVenmoAccount(
     // doc) must be classified through the SAME phase-aware transport-error
     // path as a fetch failure, not escape unwrapped and skip the B4
     // post-submit non-retry invariant this function exists to enforce.
-    // After the owner has personally cleared a provider challenge, the page
-    // state HE established is the asset — re-navigating destroys it.
-    //
-    // Production run_1787918248525 (and run_1787880617136, same fault): the
-    // owner cleared the security check, the resume path called this probe,
-    // `ensureVenmoOrigin` issued `page.goto(venmo.com)`, the fresh navigation
-    // re-armed the wall, and the run died with
-    // `venmo_origin_navigation_failed`. The landing was a Venmo FAMILY host —
-    // provable because the message read `(landed on [redacted-url])`, and
-    // `redactTransportDetail` only substitutes on an ABSOLUTE_URL match while
-    // `describeLandedOrigin` emits a `https://` string ONLY on the family
-    // branch (the non-family branch emits prose with no URL). So the guard's
-    // own one-shot family retry had already fired and been walled too.
-    //
-    // The CORS precondition is NOT waived: `api.venmo.com` still only grants a
-    // credentialed fetch from `https://venmo.com`, so this skips the
-    // navigation ONLY when the page is already on that exact origin. A
-    // post-assist page parked anywhere else still goes through the normal
-    // guard — it must, or the probe would read every live session as dead.
-    // The CORS precondition is NOT waived: `api.venmo.com` still only grants a
-    // credentialed fetch from `https://venmo.com`, so the origin must still be
-    // established. What changes on the post-assist path is HOW: a same-document
-    // history/SPA route preserves the session state the owner just created,
-    // where a full `page.goto` discards it and re-arms the challenge.
-    await establishOriginPreservingOwnerWork(page, afterOwnerAssist);
+    await ensureVenmoOrigin(page);
     // Bounded on both layers, for the same reasons as reddit.ts's
     // `isSessionLive`: the in-page `fetch` has no default timeout (an
     // accepted-but-unanswered connection hangs the callback forever, and the
@@ -1204,12 +1106,7 @@ async function waitForManualLogin({
       // correct if the rethrow is ever narrowed, and deliberately NOT relied
       // on. Verified unreachable-with-`true` by tripwire across the suite.
       const submitted = resumeFill ? await resumeFill() : false;
-      // `afterOwnerAssist`: this callback runs ONLY after the owner personally
-      // completed something in the secure browser, so the live page state is
-      // his work and must not be navigated away. See
-      // `establishOriginPreservingOwnerWork` for the two production runs this
-      // closes.
-      return await probeVenmoAccount(page, submitted ? "post_submit" : phase, { afterOwnerAssist: true });
+      return await probeVenmoAccount(page, submitted ? "post_submit" : phase);
     },
     ...(reason ? { reason } : {}),
     sendInteraction,
