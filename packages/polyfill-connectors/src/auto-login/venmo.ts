@@ -984,11 +984,18 @@ async function waitForManualLogin({
   page,
   phase = "pre_submit",
   reason,
+  resumeFill,
   sendInteraction,
 }: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
   readonly message: string;
   readonly phase?: VenmoProbePhase;
   readonly reason?: "captcha";
+  /**
+   * Runs once when the owner responds success, BEFORE the probe. Returning
+   * `true` means the sign-in form was found and filled, so the probe that
+   * follows is checking a submitted login rather than an untouched page.
+   */
+  readonly resumeFill?: () => Promise<boolean>;
 }): Promise<VenmoAccountProbeResult> {
   // Navigate ONLY when the page is not already somewhere the owner can sign in
   // from. The unconditional `goto` this replaces threw away real, load-bearing
@@ -1039,7 +1046,15 @@ async function waitForManualLogin({
     ...(capture ? { capture } : {}),
     message: painted ? message : `${message} ${HANDOFF_BLANK_SURFACE_SUFFIX}`,
     page,
-    probe: () => probeVenmoAccount(page, phase),
+    probe: async () => {
+      // Fill first, probe second. The owner's completion is what MAKES the
+      // form reachable; probing an unfilled form just reports signed-out and
+      // throws away the work he already did (run_1787880916346).
+      if (resumeFill) {
+        await resumeFill().catch((): false => false);
+      }
+      return await probeVenmoAccount(page, phase);
+    },
     ...(reason ? { reason } : {}),
     sendInteraction,
     timeoutSeconds: 1800,
@@ -1069,23 +1084,103 @@ async function ensureManualSessionWithoutCredentials({
   throw new Error("venmo_login_manual_incomplete");
 }
 
+/**
+ * Hand a pre-credential challenge (bot check / CAPTCHA / device approval) to
+ * the owner, then RESUME BY FILLING — not by validating.
+ *
+ * Production run_1787880916346, 2026-08-28: the page at the signin URL was a
+ * DataDome interstitial (`geo.ddc.venmo.com/interstitial/`, only hidden
+ * `adsdd*` inputs — no username or password field anywhere in the DOM). The
+ * username locator never appeared, so this handoff fired BEFORE any credential
+ * was typed. The owner cleared the bot check in the viewer, Venmo then rendered
+ * the real sign-in form — and the resume only PROBED. Nothing filled the form
+ * that had finally appeared, so the probe saw a signed-out page and the run
+ * died `venmo_session_failed` with the owner's work already done.
+ *
+ * The owner cannot finish this alone by design: the system holds the password
+ * and he does not know it. Asking him to "complete sign-in" was asking for the
+ * one step only the automation can take. He does the human-only part (the
+ * challenge); the automation does the credential part, after.
+ *
+ * So on resume: if the sign-in form is now present, fill it and let the normal
+ * flow continue. Only if it is still absent — or the fill itself fails — do we
+ * fall back to validating whatever session the owner may have established by
+ * hand, which is the previous behavior and still correct for an owner who
+ * signed in manually.
+ */
 async function requestManualLoginForChallenge({
   capture,
+  credentials,
   page,
   phase = "pre_submit",
   reason,
   sendInteraction,
 }: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  readonly credentials?: { readonly password: string; readonly username: string };
   readonly phase?: VenmoProbePhase;
   readonly reason: string;
 }): Promise<VenmoAccountProbeResult> {
   return await waitForManualLogin({
     ...(capture ? { capture } : {}),
-    message: `Venmo did not render the expected sign-in form (${reason}). Complete sign-in — including any device approval, CAPTCHA, or verification step — in the secure browser, then respond success.`,
+    message: challengeHandoffMessage(reason, credentials !== undefined),
     page,
     phase,
+    ...(credentials
+      ? {
+          resumeFill: () =>
+            fillSignInAfterChallenge({ ...(capture ? { capture } : {}), credentials, page, sendInteraction }),
+        }
+      : {}),
     sendInteraction,
   });
+}
+
+/**
+ * The owner-facing sentence, split by what the owner can actually do.
+ *
+ * When we hold the credentials, naming "sign in" first is a false ask — see
+ * `login-credentials.ts`'s note on page-shaped messages hiding
+ * credential-shaped truths. Name the challenge, and say the rest is automatic.
+ */
+function challengeHandoffMessage(reason: string, hasCredentials: boolean): string {
+  if (hasCredentials) {
+    return `Venmo is showing a security check instead of the sign-in form (${reason}). Complete the check — CAPTCHA, device approval, or verification — in the secure browser, then respond success. Your stored credentials are entered automatically afterward; you do not need the password.`;
+  }
+  return `Venmo did not render the expected sign-in form (${reason}). Complete sign-in — including any device approval, CAPTCHA, or verification step — in the secure browser, then respond success.`;
+}
+
+/**
+ * Fill the sign-in form the owner's challenge completion revealed.
+ *
+ * Returns `false` when there is nothing to fill — the form still is not there,
+ * or the owner already signed in by hand — so the caller falls back to probing
+ * instead of treating a missing field as a failure.
+ */
+async function fillSignInAfterChallenge({
+  capture,
+  credentials,
+  page,
+  sendInteraction,
+}: ManualHandoff & {
+  readonly credentials: { readonly password: string; readonly username: string };
+}): Promise<boolean> {
+  const userIn = page.locator(USERNAME_SELECTOR).first();
+  const appeared = await userIn
+    .waitFor({ state: "attached", timeout: 10_000 })
+    .then((): true => true)
+    .catch((): false => false);
+  if (!appeared) {
+    return false;
+  }
+  await captureLoginState(capture, page, "venmo-signin-after-challenge");
+  await userIn.fill(credentials.username);
+  await fillVenmoPassword({
+    ...(capture ? { capture } : {}),
+    page,
+    password: credentials.password,
+    sendInteraction,
+  });
+  return true;
 }
 
 type ManualHandoff = Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction">;
@@ -1304,6 +1399,7 @@ async function loginWithSavedCredentials({
   if (!usernameAppeared) {
     return await requestManualLoginForChallenge({
       ...(capture ? { capture } : {}),
+      credentials: { password, username },
       page,
       reason: "sign-in form did not render",
       sendInteraction,
