@@ -1168,3 +1168,32 @@ test("an audit fail the breakdown does not EXPLAIN must fire the banner, not go 
   });
   assert.equal(explained.banner_warranted, false, "an explained owner-only fail must still suppress the banner");
 });
+
+test("intentional_policy.paused reports BOTH paused lifecycles, deduped", () => {
+  // Independent review P2: scoping `paused` to `excluded` made this dimension
+  // structurally dead for the exact rows it is named after. A paused row never
+  // reaches `collectSummaryEvidence`, so the `owner_paused` RESOLVER — its only
+  // previous producer — can no longer see it. The dimension is published in the
+  // reference contract, so an empty list is a broken API contract, not dead
+  // internal state.
+  const lifecyclePaused = summary("archived-a");
+  const resolverPaused = summary("sched-off-a", {
+    owner_state: { ...summary("x").owner_state, resolver: "owner_paused" },
+  });
+  const result = compose(
+    [inventory("archived-a", { status: "paused" }), inventory("sched-off-a")],
+    [lifecyclePaused, resolverPaused]
+  );
+
+  assert.deepEqual(
+    [...result.dimensions.intentional_policy.paused.map((item) => item.connection_id)].sort(),
+    ["archived-a", "sched-off-a"],
+    "a paused LIFECYCLE and an owner_paused RESOLVER are different facts; both belong in this dimension"
+  );
+  assert.deepEqual(
+    result.scope.intentional_exclusions.map((item) => item.connection_id),
+    ["archived-a"],
+    "only the paused lifecycle leaves the denominator; a schedule-disabled ACTIVE row stays assessed"
+  );
+  assert.deepEqual(result.scope.assessed.map((item) => item.connection_id), ["sched-off-a"]);
+});
