@@ -4400,7 +4400,7 @@ async function evaluateOwnerStreamCoverageAuthority({
 }: {
   referenceRevision: string;
   summaries: readonly unknown[];
-}): Promise<Pick<StreamHealthAuthorityResult, "status">> {
+}): Promise<Pick<StreamHealthAuthorityResult, "classCounts" | "status">> {
   const connectorIds = new Set<string>();
   for (const summary of summaries) {
     if (summary && typeof summary === "object" && !Array.isArray(summary)) {
@@ -4436,7 +4436,14 @@ async function evaluateOwnerStreamCoverageAuthority({
       summaries: referenceRevision,
     },
   });
-  return { status: authority.coverageStatus };
+  // `classCounts` is load-bearing, not diagnostic: `composeFleetHealthVerdict`
+  // reads it to tell an audit `fail` caused only by owner-owed rows (an OTP, a
+  // captcha) from one caused by a real system defect. Dropping it here silently
+  // sends the composer down its missing-counts fail-closed branch, so every
+  // owner-owed row keeps firing the global system banner and the owner-vs-system
+  // split becomes dead code. Return the whole shape the composer's contract
+  // asks for.
+  return { classCounts: authority.classCounts, status: authority.coverageStatus };
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
