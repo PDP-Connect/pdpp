@@ -160,6 +160,62 @@ only fires when the child has no runtime fact of its own (or one with
 measurement first and does not fall through to inheritance. A child that
 emits nothing keeps inheriting exactly as it does today.
 
+### Survival of an accepted fact past a later run-level failure or cancel
+
+An accepted `STREAM_EVIDENCE` is folded into that stream's own
+`RuntimeCollectionFact` as soon as it is validated — before the run
+terminates. `buildRunTerminalData` (`runtime/index.ts:3340`, calling
+`buildCollectionFacts` at `:3378`) is invoked from seven call sites, not only
+the succeeded-run path: the generic message-handling failure path, a
+done-message failure branch, timeout, owner cancellation, connector-exit
+close, and close-failure. An accepted `STREAM_EVIDENCE` fact is therefore
+folded into the terminal collection data on every one of those paths, not
+only on success — the same way any other stream's already-accepted
+`RuntimeCollectionFact` is today. This proposal does not change that: it is
+existing, general-purpose terminal-data-assembly behavior, and
+`STREAM_EVIDENCE` participates in it exactly as `DETAIL_COVERAGE`-derived
+facts already do.
+
+**This is deliberately a distinct guarantee from checkpoint-commit
+independence, above.** "No checkpoint commit is gated by `STREAM_EVIDENCE`"
+answers whether accepting the message can hold a cursor hostage; it says
+nothing about whether the resulting fact is safe to read once a run has, in
+the end, not succeeded. The two questions are proved separately because a
+run can fail on a stream other than the one that reported
+`STREAM_EVIDENCE` — the failure is real, but unrelated to the child's own
+coverage.
+
+**The read-model rule:** which run's `RuntimeCollectionFact` values are
+surfaced to the owner is decided entirely by existing, pre-existing,
+general-purpose run-selection logic —
+`coverageClassifyingRun`/`healthClassifyingRun`
+(`reference-implementation/server/ref-control.ts:2786-2807`) — not by
+anything this proposal adds. That selector already excludes an
+intervening failed or owner-cancelled run's facts from being the run whose
+coverage is projected to the owner, falling back to `lastSuccessfulRun`
+(or `unknown` with none). `STREAM_EVIDENCE` introduces no new selection
+path and no new fact source that bypasses `coverageClassifyingRun`: a
+`state_stream` child's `coverageCondition` is read only for whichever run
+`coverageClassifyingRun` already resolves to, exactly as every other
+stream's `coverageCondition` is today. A `STREAM_EVIDENCE` fact accepted
+mid-run and then folded into a terminal failure/cancel record is real data
+— `buildRunTerminalData` does persist it — but it is not surfaced to the
+owner as that stream's current coverage unless `coverageClassifyingRun`
+selects that same run, which it does not do for a run whose overall outcome
+was failure or owner-cancellation while a distinct prior success exists.
+
+This proposal makes no change to `coverageClassifyingRun`,
+`healthClassifyingRun`, or any other run-selection logic, and requires
+none: the existing selector already generalizes correctly to a
+`STREAM_EVIDENCE`-derived fact because it selects by run outcome, not by
+which message types contributed to that run's terminal data. The
+implementing change's task list (`tasks.md` §3) MUST include a regression
+test proving this directly for `STREAM_EVIDENCE`: a run that accepts
+`STREAM_EVIDENCE{considered: n, covered: n}` for a `state_stream` child
+and then fails on an unrelated stream MUST NOT have that child's
+`complete` projection surfaced to the owner in place of the
+`lastSuccessfulRun`'s (or `unknown`, if none) coverage for that stream.
+
 <a id="failure-semantics"></a>
 ### Failure semantics
 
@@ -252,24 +308,46 @@ emits nothing keeps inheriting exactly as it does today.
 
 ## Compatibility and versioning
 
-- `STREAM_EVIDENCE` is a new, additive message type. A runtime that predates
-  this change and receives one from a newer connector treats it as an
-  unrecognized message type under existing message-handling behavior — this
-  proposal does not change how an old runtime handles an unknown message
-  type, and connectors emitting `STREAM_EVIDENCE` MUST remain otherwise
-  fully conformant (RECORD/STATE/DONE) so an old runtime that ignores the
-  new type still gets correct, if less honest (inherited-only), coverage
-  behavior.
+- **`STREAM_EVIDENCE` is a breaking wire addition for an old runtime, not a
+  gracefully-degrading one.** `handleMsg`'s dispatch table
+  (`reference-implementation/runtime/index.ts:5361-5394`) is an explicit
+  allowlist (`ASSISTANCE`, `DETAIL_COVERAGE`, ..., `STATE`); an unrecognized
+  `msg.type` is not ignored — it throws (`Connector emitted unknown message
+  type: ...`), which fails the entire run, for every stream, the moment the
+  message arrives. A runtime that predates this change, paired with a
+  connector build that emits `STREAM_EVIDENCE`, therefore does not degrade to
+  "inherited-only" coverage for one stream; it crashes every run that
+  connector makes.
+- **Coordinated rollout is the compatibility posture.** Because there is no
+  graceful fallback, the runtime that will receive `STREAM_EVIDENCE` MUST be
+  deployed, and MUST have `STREAM_EVIDENCE` present in its `protocolHandlers`
+  allowlist, before any connector build that emits `STREAM_EVIDENCE` is
+  deployed. This is a breaking, coordinated-rollout change at the profile
+  level: runtime-first ordering, not independent connector/runtime
+  versioning. It is deliberately not solved with a version-negotiation or
+  feature-flag handshake — that would add a new capability-exchange
+  mechanism to the protocol to protect a single connector-authored message,
+  which is disproportionate to the problem; ordering the rollout (runtime
+  before connector) is the smaller change and is already how this class of
+  addition is deployed in practice.
 - A new runtime receiving a manifest from an old connector that never emits
   `STREAM_EVIDENCE` is unaffected: the stream falls through to the unchanged
-  inheritance/`unknown` path.
+  inheritance/`unknown` path. This direction (new runtime, old connector) is
+  the only one that degrades gracefully; the reverse (old runtime, new
+  connector) is the breaking one addressed above.
 - This is a profile-level (not core-protocol) addition, versioned alongside
   the Collection Profile's own `protocol_version`. It does not require a
   bump to the core PDPP protocol version, matching how `DETAIL_COVERAGE` and
-  `DETAIL_GAP` were introduced as profile-level additions.
+  `DETAIL_GAP` were introduced as profile-level additions. It is additive to
+  the message vocabulary; it is not additive in deployment ordering, per the
+  above.
 - No manifest schema change accompanies this message. A stream's eligibility
   to emit `STREAM_EVIDENCE` is derived entirely from its existing
   `state_stream` declaration; there is no new manifest field to version.
+- The implementing change's rollout task list MUST include deploying the
+  runtime change before enabling `STREAM_EVIDENCE` emission in any connector
+  build, and MUST NOT describe the connector-side change as safe to ship
+  ahead of or independently from the runtime change.
 
 ## Rejected Alternatives
 

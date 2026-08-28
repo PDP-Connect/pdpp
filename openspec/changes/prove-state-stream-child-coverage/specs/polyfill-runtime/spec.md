@@ -86,6 +86,19 @@ A conformant runtime SHALL reject (fail closed, as a protocol violation) a
 5. A `STREAM_EVIDENCE` was already accepted for the same `stream` in the
    same run.
 
+"Same run" in rule 5 SHALL use the identical run identity
+(`runId`) the runtime already uses for
+`applyStateStreamCheckpointInheritance`'s own single-run scoping
+(`parent.runId === child.runId`); this proposal introduces no new run-
+identity concept. A resumed or retried logical collection that the runtime
+assigns a new `runId` is, by that existing identity, a different run for
+rule 5's purposes: a `STREAM_EVIDENCE` accepted under a prior `runId` does
+not count as "already accepted" against a subsequent `runId`, and does not
+by itself carry forward into the resumed run's own terminal fact. This
+proposal does not change how the runtime assigns or resumes `runId`; it
+only pins `STREAM_EVIDENCE` duplicate-rejection to that existing identity,
+the same way `DETAIL_COVERAGE` duplicate-handling already implicitly does.
+
 A runtime MUST NOT silently drop a rejected `STREAM_EVIDENCE` in a way that
 lets the stream fall through to checkpoint inheritance as if nothing had
 been reported; a connector emitting an invalid `STREAM_EVIDENCE` is a

@@ -83,3 +83,37 @@ declared with manifest `state_stream`
 before this requirement
 **AND** the availability of `STREAM_EVIDENCE` for that stream SHALL NOT
 change that rejection.
+
+### Requirement: An accepted STREAM_EVIDENCE fact folded into a later-failed run SHALL NOT be surfaced to the owner in place of the run-selection rule's chosen run
+
+Terminal collection-fact assembly (`buildRunTerminalData`,
+`buildCollectionFacts`) runs on every run-termination path, including
+failure, timeout, owner-cancellation, and connector-exit-close paths, not
+only the succeeded-run path. An accepted `STREAM_EVIDENCE` fact SHALL be
+folded into that stream's `RuntimeCollectionFact` on all of these paths,
+identically to how any other stream's already-accepted runtime fact is
+folded today; this requirement introduces no exception for
+`STREAM_EVIDENCE`.
+
+Which run's `RuntimeCollectionFact` values are surfaced to the owner as a
+stream's current coverage SHALL continue to be governed entirely by the
+existing, general-purpose run-selection logic
+(`coverageClassifyingRun`/`healthClassifyingRun`), unmodified by this
+requirement. A `state_stream` child's `coverageCondition` SHALL be read
+only for whichever run that selection logic resolves to. Accepting a
+`STREAM_EVIDENCE` message during a run that the overall run-selection logic
+does not select as the classifying run SHALL NOT cause that fact to be
+surfaced in place of the selected run's coverage for that stream.
+
+#### Scenario: STREAM_EVIDENCE accepted before a later run-level failure is not surfaced over the last successful run
+
+**WHEN** a run accepts `STREAM_EVIDENCE{considered: n, covered: n}` for a
+`state_stream`-declared stream early in the run
+**AND** the same run subsequently fails or is cancelled on a different,
+unrelated stream
+**AND** a distinct prior run exists and is the run `coverageClassifyingRun`
+selects as the classifying run for this connection
+**THEN** the owner-facing coverage for the `state_stream`-declared stream
+SHALL reflect the selected run's coverage
+**AND** SHALL NOT reflect the failed run's `complete` `STREAM_EVIDENCE`-
+derived projection in its place.

@@ -37,10 +37,33 @@
       per stream/run).
 - [ ] Add a negative test proving `DETAIL_COVERAGE` naming a `state_stream`
       child is still rejected after this change ships.
+- [ ] Add a test proving `STREAM_EVIDENCE` duplicate-rejection (rule 5) scopes
+      to `runId`, not to a logical/resumed collection spanning multiple
+      `runId`s: a second `STREAM_EVIDENCE` for the same stream under a new
+      `runId` (simulating a resumed or retried run) is accepted, not rejected
+      as a duplicate of the prior `runId`'s accepted fact.
 - [ ] Add a negative test proving no code path lets accepting, rejecting, or
       omitting `STREAM_EVIDENCE` change any checkpoint's commit eligibility
       (assert `missingDetailCoverageReports`/`recordDetailCoverageShortfalls`
       output is unaffected by `STREAM_EVIDENCE` presence).
+- [ ] Add a regression test proving the read-model rule from design.md
+      ("Survival of an accepted fact past a later run-level failure or
+      cancel"): a run that accepts `STREAM_EVIDENCE{considered: n,
+      covered: n}` for a `state_stream` child and then fails or is cancelled
+      on an unrelated stream MUST NOT have that child's `complete`
+      projection surfaced to the owner in place of `lastSuccessfulRun`'s (or
+      `unknown`, if none) coverage for that stream — i.e.
+      `coverageClassifyingRun` selection, not `STREAM_EVIDENCE` acceptance,
+      governs what the owner sees.
+
+## 3a. Rollout ordering (see design.md "Compatibility and versioning")
+
+- [ ] Deploy the runtime change (with `STREAM_EVIDENCE` in `protocolHandlers`)
+      before enabling `STREAM_EVIDENCE` emission in any connector build.
+      Do not describe or schedule the connector-side change as safe to ship
+      ahead of, or independently from, the runtime change — an old runtime
+      receiving `STREAM_EVIDENCE` fails the whole run (fail-closed dispatch),
+      it does not degrade gracefully.
 
 ## 4. Mutation checks (not run in this lane — recorded for the implementing change)
 
