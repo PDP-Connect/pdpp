@@ -178,6 +178,56 @@ export function remainingStatementBudgetMs(deadline: number | null): number | nu
 }
 
 /**
+ * Headroom a chunked canonical scan requires before it will START another page.
+ *
+ * Derived from the real cost of a page, not picked. Measured in production
+ * 2026-08-28 on `cin_2de5ede05c8cc8d45935c414`: one 10,000-row page is an
+ * index-only scan over `idx_pg_records_instance_deleted_id` costing 16.96 ms
+ * (2065 heap fetches). A page must also open its transaction, take the
+ * connector-instance advisory lock, re-read the chunk receipt under that fence,
+ * fold the rows, and upsert the new boundary before committing — so the page
+ * READ is only part of what has to fit.
+ *
+ * 100 ms is roughly six times that measured read and leaves room for the fence
+ * and the boundary commit, while staying far below the 500 ms
+ * `MIN_STATEMENT_TIMEOUT_MS` floor so it never becomes the effective bound. A
+ * page that cannot start inside this headroom is deferred to the next
+ * admission, which resumes from the boundary already committed. Being wrong in
+ * the conservative direction costs one extra pass; being wrong the other way
+ * costs a CANCELLED page, and the whole point of this mechanism is that a
+ * cancelled page throws away its work.
+ */
+const CHUNK_SCAN_PAGE_HEADROOM_MS = 100;
+
+/**
+ * Is there enough ADMISSION allowance left to start another chunk-scan page?
+ *
+ * Deliberately separate from `remainingStatementBudgetMs`, which answers a
+ * different question: what `statement_timeout` should ONE statement get. That
+ * helper floors its answer at `MIN_STATEMENT_TIMEOUT_MS`, so with 100 ms of
+ * real allowance left it reports 500 — a per-statement bound, never a claim
+ * that 500 ms of admission remains. Using `=== 0` as a proxy for "expired"
+ * therefore only fires AFTER the deadline has fully elapsed: with 100-499 ms
+ * left the loop would start one more page believing it had 500 ms, and
+ * Postgres would cancel it mid-page and discard its work — precisely the
+ * failure this yield exists to remove.
+ *
+ * So this reads the raw, unfloored `deadline - Date.now()` and compares it
+ * against the headroom a page actually needs. `null` means "no deadline at
+ * all" (every caller except the maintenance sweep) and must preserve the
+ * original unbounded behaviour, so it is never exhausted.
+ *
+ * This does NOT raise, extend, or reuse the per-unit bound. It only declines
+ * to start a page it has no budget to finish.
+ */
+function admissionAllowanceExhausted(deadline: number | null): boolean {
+  if (deadline === null) {
+    return false;
+  }
+  return deadline - Date.now() < CHUNK_SCAN_PAGE_HEADROOM_MS;
+}
+
+/**
  * Exponential back-off for a repair unit that keeps being cancelled by the
  * per-unit `statement_timeout` bound.
  *
@@ -1259,6 +1309,38 @@ function missingInstanceRepairResult(connectorInstanceId: string, deleted: boole
 }
 
 /**
+ * The DEFERRED-NOT-FAILED outcome: this unit consumed its turn and wrote
+ * nothing.
+ *
+ * The row keeps its existing durable evidence untouched, is NOT marked
+ * `failed`, stays `dirty`, and is retried on a later pass. A deferred result's
+ * `row` is never recorded (`recordRepairOutcome` is skipped for `deferred`), so
+ * the id-only row below asserts nothing about this connection's facts — it is a
+ * shape, not a claim.
+ *
+ * Two callers share this exact contract, and the distinction between them
+ * matters:
+ *
+ *   - a `PostgresStatementTimeoutError`, where the unit was CANCELLED and made
+ *     no progress — that caller additionally arms `noteRepairTimeout`, because
+ *     an un-paced retry of a doomed unit consumes every round.
+ *   - a PARTIAL canonical scan, where the unit yielded with committed page
+ *     boundaries banked. That caller deliberately does NOT arm the back-off:
+ *     this unit achieved real, durable progress, and pacing productive work
+ *     behind an exponential delay (capped at 30 minutes) would stall a whale
+ *     that legitimately needs many passes — reintroducing the same starvation
+ *     in a new form. Nothing was cancelled, so there is no strike to record.
+ */
+function deferredNotFailedRepairResult(connectorInstanceId: string): RepairedEvidence {
+  return {
+    deferred: true,
+    failed: false,
+    persisted: true,
+    row: { connector_instance_id: connectorInstanceId },
+  };
+}
+
+/**
  * Repair exactly one connection's evidence row under the shared
  * connector-instance writer fence: re-read canonical facts fresh (not the
  * pre-lock discovery snapshot) and upsert. On lock/read/write failure,
@@ -1279,16 +1361,8 @@ async function repairCandidate(connectorInstanceId: string, deadline: number | n
   if (backoffUntil !== undefined && Date.now() < backoffUntil) {
     // `deferred` is the established "consumed its turn, wrote nothing" outcome
     // (see `repairCandidates`' attempt-order doc): the fairness cursor advances
-    // past this id and its existing evidence is left exactly as-is. A deferred
-    // result's `row` is never recorded (`recordRepairOutcome` is skipped for
-    // `deferred`), so the id-only row below asserts nothing about this
-    // connection's facts — it is a shape, not a claim.
-    return {
-      deferred: true,
-      failed: false,
-      persisted: true,
-      row: { connector_instance_id: connectorInstanceId },
-    };
+    // past this id and its existing evidence is left exactly as-is.
+    return deferredNotFailedRepairResult(connectorInstanceId);
   }
   try {
     const repaired = isPostgresStorageBackend()
@@ -2456,10 +2530,48 @@ async function scanPostgresCanonicalStreamsPage(
  * already committed their receipts, and SQLSTATE 57014 becomes the existing
  * `PostgresStatementTimeoutError`, preserving deferred-not-failed/backoff.
  */
+/**
+ * YIELD when the admission budget is spent, instead of scanning until killed.
+ *
+ * Each page already commits its own receipt in its own transaction
+ * (`scanPostgresCanonicalStreamsPage`), so the durable-progress primitive was
+ * always here. What was missing is an exit: this loop ran until `complete` or
+ * until Postgres cancelled it, which for a whale is always the latter.
+ *
+ * Measured in production 2026-08-28, connection cin_2de5ede05c8cc8d45935c414:
+ *
+ *     one 10,000-row page          16.96 ms   (index-only scan, 2065 heap fetches)
+ *     rows ahead of its prefix     1,891,516
+ *     pages still required         189  (~3.2 s of query time)
+ *     observed outcome             cancelled 5x, backing off 960s, prefix frozen
+ *
+ * The page is not slow — 17 ms against a 500 ms floor. The unit simply cannot
+ * finish 189 sequential pages inside ONE admission, so it was cancelled
+ * mid-loop every pass. Worse, adaptive shrinking made it WORSE: a smaller page
+ * means MORE pages for the same rows, all still inside one bounded admission.
+ *
+ * Yielding inverts that. Progress banks page by page and the next admission
+ * resumes from the committed boundary, so a 1.89M-row projection converges
+ * across passes instead of restarting. Adaptive paging then helps as intended:
+ * smaller pages fit the bound, and the extra pages are simply spread over more
+ * admissions rather than lost.
+ *
+ * `PARTIAL` is deliberately distinct from `complete`. The caller must NOT
+ * publish a count folded from a partial scan — an unfinished accumulator is not
+ * an answer, and treating it as one is exactly the false-green this subsystem
+ * exists to prevent.
+ *
+ * The per-unit bound is untouched: nothing here raises, extends, or reuses an
+ * allowance. It only declines to start a page it has no budget to finish.
+ */
 async function scanPostgresCanonicalStreamsChunked(
   connectorInstanceId: string,
   deadline: number | null
-): Promise<{ readonly canonicalByStream: Map<string, Row>; readonly missing: false } | { readonly missing: true }> {
+): Promise<
+  | { readonly canonicalByStream: Map<string, Row>; readonly missing: false }
+  | { readonly missing: true }
+  | { readonly missing: false; readonly partial: true }
+> {
   for (;;) {
     // biome-ignore lint/performance/noAwaitInLoops: Pages are intentionally sequential; each commits the durable boundary the next page reloads.
     const pageResult = await scanPostgresCanonicalStreamsPage(connectorInstanceId, deadline);
@@ -2469,9 +2581,23 @@ async function scanPostgresCanonicalStreamsChunked(
     if (pageResult.complete) {
       return { canonicalByStream: canonicalByStreamFromAccumulator(pageResult.accumulator), missing: false };
     }
+    // The page above COMMITTED its boundary. If there is no longer enough
+    // allowance to START another page, stop here with that progress banked
+    // rather than beginning a page that will be cancelled and re-running this
+    // one next pass forever.
+    //
+    // This asks `admissionAllowanceExhausted`, NOT
+    // `remainingStatementBudgetMs(deadline) === 0`. The latter is a
+    // per-statement timeout floored at `MIN_STATEMENT_TIMEOUT_MS`, so it
+    // reports 500 when only 100 ms of admission actually remains and the loop
+    // would start a page it cannot finish.
+    if (admissionAllowanceExhausted(deadline)) {
+      return { missing: false, partial: true };
+    }
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: One ordered repair protocol — read canonical facts, then publish under a single compare-and-set. The early exits (missing instance, deferred source revision, partial scan) are guard clauses that must stay in this scope: each decides whether publication may proceed at all, and hoisting them behind a helper would separate that decision from the fenced transaction it protects.
 async function repairCandidatePostgres(
   connectorInstanceId: string,
   deadline: number | null = null
@@ -2528,6 +2654,21 @@ async function repairCandidatePostgres(
       if (canonicalScan.missing) {
         const deleted = await deleteEvidenceIfConnectorInstanceMissing(connectorInstanceId);
         return missingInstanceRepairResult(connectorInstanceId, deleted);
+      }
+      if ("partial" in canonicalScan) {
+        // The scan banked committed page boundaries but ran out of admission
+        // allowance before reaching the end of this connection's records.
+        //
+        // Return here, BEFORE `built` exists. This is deliberately a structural
+        // guarantee rather than a checked one: the partial accumulator is never
+        // bound to a variable in this scope, so there is no value a later edit
+        // could accidentally hand to `buildRepairedRow`, and the publication
+        // CAS below is unreachable on this path. An unfinished accumulator has
+        // seen only a PREFIX of `records`, so folding it would publish a count
+        // strictly LOWER than the connection actually holds — a confident,
+        // durable under-report of the owner's own data, which is precisely the
+        // false-green this subsystem exists to prevent.
+        return deferredNotFailedRepairResult(connectorInstanceId);
       }
       const { canonicalByStream } = canonicalScan;
       const retainedByteResult = await postgresRepairReadQuery(
@@ -2666,12 +2807,7 @@ async function repairCandidatePostgres(
       // when the retries are paced; unpaced, this unit consumes the round
       // every pass and the rows behind it never recompute.
       noteRepairTimeout(connectorInstanceId);
-      return {
-        deferred: true,
-        failed: false,
-        persisted: true,
-        row: { connector_instance_id: connectorInstanceId },
-      };
+      return deferredNotFailedRepairResult(connectorInstanceId);
     }
     const failedRow = buildFailedRow(
       connectorInstanceId,
