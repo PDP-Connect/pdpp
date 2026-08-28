@@ -1,11 +1,10 @@
 # Vendored cross-repo dependency tarballs (transitional)
 
 `pdpp-connector-protocol-0.0.1.tgz` built via `npm pack` from PDP-Connect/data-connect @
-9155e57ae47ab145214eb10551ed2c2185d7098a (merges pdpp preservation-fixes-0819 port PR #30:
-bare-specifier package validation, iMessage fixture date fix, connector spawn tsx-resolution
-hardening), from inside that repo's workspace so sibling dependencies resolve during the
-prepack build, plus one local, not-yet-upstreamed edit applied directly to that commit's
-worktree before packing: `SKIP_RESULT.boundary_claim` (closed-vocabulary type
+3c8aeb0343dcbcbccb0bba3357f6b6bf543012b1 (branch `fix/skip-result-boundary-claim-0828`,
+pushed, not merged: "fix(connector-protocol): add SkipResultBoundaryClaim to source"), from
+inside that repo's workspace so sibling dependencies resolve during the prepack build.
+`SKIP_RESULT.boundary_claim` (closed-vocabulary type
 `SkipResultBoundaryClaim = "provider_history_boundary"`, exported from both
 `connector-runtime-protocol.ts` and the package barrel) was added to the `EmittedMessage`
 SKIP_RESULT variant so GroupMe's already-shipped `boundary_claim: "provider_history_boundary"`
@@ -14,9 +13,15 @@ vendored package instead of only against `reference-implementation/server/ref-co
 own `RuntimeSkipBoundaryClaim`. Source-of-truth for the literal vocabulary is
 `RuntimeSkipBoundaryClaim` in ref-control.ts; the vendored protocol type mirrors it rather
 than widening to `string`, so an unrecognized literal fails to compile instead of silently
-type-checking and being dropped only at runtime. Re-vendor from upstream once this lands
-there; until then this file's `dist/*.d.ts` carries the delta (`.js` output is unchanged —
-this is a type-only addition).
+type-checking and being dropped only at runtime. The edit is committed source in the repo
+above (no local, not-yet-upstreamed delta) — this tarball is a straight `npm pack` of that
+commit's workspace, with no worktree edits applied afterward. The `dist/*.d.ts` diff versus
+the previous vendored tarball is exactly this addition (`.js` output is unchanged — this is a
+type-only addition); the rest of the byte diff is `package.json`/`README.md` picking up
+`origin/main`'s newer npm-publish-workflow metadata (`repository`, `publishConfig`, package
+`README.md`) added by PR #32 after the old pin point. Re-vendor again once
+`fix/skip-result-boundary-claim-0828` merges to `origin/main`, at which point this same
+content will be reachable from main directly.
 
 `pdpp-collector-runtime-0.0.1.tgz` was resynced on 2026-08-27 via `npm pack` from commit
 `200b26098cb353d7d2fbdc52cc451712a92f6c85` ("fix(local-collector): rebuild rejected terminal
