@@ -2662,7 +2662,11 @@ test("waitForManualLogin: a surface that never paints still reaches the owner, w
  * This pins the fill, not the probe: the assertion is that the credentials
  * reached the fields, which is the step that was missing.
  */
-function makePageWithChallengeThenForm(): {
+function makePageWithChallengeThenForm({
+  transportFaultAfterSubmit = false,
+}: {
+  transportFaultAfterSubmit?: boolean;
+} = {}): {
   fillCalls: Record<string, string>;
   page: Page;
   reveal: () => void;
@@ -2692,7 +2696,15 @@ function makePageWithChallengeThenForm(): {
       probeCount += 1;
       // Signed-out until the credentials are actually submitted. A probe that
       // runs against the unfilled form must NOT report live.
-      return fillCalls.password && probeCount > 1 ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
+      // Review finding 3: a filled password is NOT a submitted one. Gate `live`
+      // on an actual submit click, so a future change that fills without
+      // submitting cannot pass these tests.
+      if (transportFaultAfterSubmit && submitClicks.length > 0) {
+        return { kind: "transport_error", message: "socket hang up" };
+      }
+      return submitClicks.length > 0 && probeCount > 1
+        ? { kind: "live", ownerId: "1234567890123456789" }
+        : { kind: "dead" };
     },
     getByRole(): Locator {
       return submit;
@@ -2820,5 +2832,45 @@ test("the challenge prompt does not ask the owner for a password the system hold
     prompt,
     /automatically|do not need the password/i,
     "the prompt must say the credentials are entered for him; asking a human for a secret only the system holds is the design defect"
+  );
+});
+
+/**
+ * Review finding 2 (HIGH): the resume path must reach `post_submit`.
+ *
+ * `requestManualLoginForChallenge` defaults `phase = "pre_submit"`, and that
+ * value flowed straight into the probe that runs after the resume. Once the
+ * resume actually submits the saved password, a transport fault on that probe
+ * is post-submission BY DEFINITION — but it would still have been thrown as
+ * the retryable `venmo_probe_transport_error`. A retryable terminal re-enters
+ * `ensureVenmoSession` from scratch and re-submits the SAME real password
+ * against Venmo's anti-automation gate, which is the lockout risk the B4
+ * invariant (`probeVenmoAccount`, venmo.ts:666) exists to prevent.
+ *
+ * So this pins classification, not just the click: after the owner clears the
+ * challenge and the replay submits, a transport fault must be the
+ * NON-retryable post-submit name.
+ */
+test("a transport fault after the challenge-resume submit is post_submit, not a retryable pre_submit", async () => {
+  const { page, reveal, submitClicks } = makePageWithChallengeThenForm({ transportFaultAfterSubmit: true });
+  const sendInteraction = (_req: InteractionRequest): Promise<InteractionResponse> => {
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  let thrown: Error | null = null;
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((err: unknown) => {
+    thrown = err as Error;
+  });
+
+  assert.ok(submitClicks.length > 0, "precondition: the replay must have submitted before the fault");
+  assert.match(
+    (thrown as Error | null)?.message ?? "",
+    /venmo_post_submit_probe_transport_error/,
+    "a fault after a real password submit must be NON-retryable — the retryable name re-submits the password on retry"
   );
 });
