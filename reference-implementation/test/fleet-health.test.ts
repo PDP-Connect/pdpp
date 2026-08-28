@@ -1137,3 +1137,34 @@ test("benign classes in classCounts cannot be mistaken for system failures", () 
     "green/optional_unsupported/revoked are not fail-producing classes and must not fire the banner"
   );
 });
+
+test("an audit fail the breakdown does not EXPLAIN must fire the banner, not go quiet", () => {
+  // Found by probing my own predicate before review. The first version asked
+  // only "is there a non-owner fail-producing class?", so a `fail` naming NO
+  // fail-producing class at all answered `false` and SUPPRESSED the banner.
+  // That is strictly worse than the over-firing this change exists to fix: it
+  // hides a defect the composer cannot see, instead of nagging about an
+  // owner-owed one. Suppression now requires the breakdown to positively
+  // explain the fail as owner-owed.
+  const unexplained: ReadonlyArray<readonly [string, Record<string, number>]> = [
+    ["empty classCounts", {}],
+    ["all-zero counts", { failed: 0, owner_interaction: 0 }],
+    ["only benign classes", { green: 9, optional_unsupported: 3, revoked: 2 }],
+  ];
+  for (const [label, classCounts] of unexplained) {
+    const result = compose([inventory("usaa-a")], [summary("usaa-a")], {
+      streamHealth: { classCounts: classCounts as never, status: "fail" },
+    });
+    assert.equal(
+      result.banner_warranted,
+      true,
+      `${label}: a fail with no fail-producing class named is UNEXPLAINED and must fail closed`
+    );
+  }
+
+  // Control: a breakdown that DOES explain the fail as owner-owed still suppresses.
+  const explained = compose([inventory("usaa-a")], [summary("usaa-a")], {
+    streamHealth: { classCounts: { owner_interaction: 3 } as never, status: "fail" },
+  });
+  assert.equal(explained.banner_warranted, false, "an explained owner-only fail must still suppress the banner");
+});

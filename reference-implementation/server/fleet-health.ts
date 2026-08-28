@@ -575,9 +575,23 @@ function streamHealthFailIsSystemCaused(
     return true;
   }
   const ownerCaused = new Set<string>(OWNER_CAUSED_STREAM_HEALTH_CLASSES);
-  return FAIL_PRODUCING_STREAM_HEALTH_CLASSES.some(
-    (className) => !ownerCaused.has(className) && Number(counts[className] ?? 0) > 0
+  const nonZero = (className: string): boolean => Number(counts[className as keyof typeof counts] ?? 0) > 0;
+
+  // Suppress the banner ONLY when the breakdown positively EXPLAINS the fail
+  // as owner-owed. An audit that says `fail` while naming no fail-producing
+  // class at all — an empty `classCounts`, all-zero counts, or only benign
+  // classes like `green`/`revoked` — is unexplained, and an unexplained fail
+  // is a system signal until proven otherwise. Without this, a `fail` whose
+  // cause the composer cannot see would silently go QUIET, which is strictly
+  // worse than the over-firing this change exists to fix: it hides a real
+  // defect from the owner instead of merely nagging about an owner-owed one.
+  const ownerCausedFail = FAIL_PRODUCING_STREAM_HEALTH_CLASSES.some(
+    (className) => ownerCaused.has(className) && nonZero(className)
   );
+  if (!ownerCausedFail) {
+    return true;
+  }
+  return FAIL_PRODUCING_STREAM_HEALTH_CLASSES.some((className) => !ownerCaused.has(className) && nonZero(className));
 }
 
 /** Compose a strict fleet verdict from already-read, typed evidence. */
