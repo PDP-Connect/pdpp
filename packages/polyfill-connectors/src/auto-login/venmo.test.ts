@@ -2644,3 +2644,137 @@ test("waitForManualLogin: a surface that never paints still reaches the owner, w
     "the message must name the blank surface and the action that recovers it"
   );
 });
+
+/**
+ * Production run_1787880916346, 2026-08-28 — the owner's own session.
+ *
+ * Venmo served a DataDome interstitial AT the signin URL (captures:
+ * `venmo-handoff-surface-blank.html`, byte-identical to
+ * `session-establish-venmo-signin-loaded.html`, md5 eb6a30c3...; its only
+ * inputs are hidden `adsdd*` fields — no username, no password). The username
+ * locator never appeared, so the challenge handoff fired BEFORE any credential
+ * was typed.
+ *
+ * The owner cleared the check in the viewer. Venmo then rendered the real
+ * sign-in form. The resume only PROBED — nothing filled the form — so the probe
+ * read signed-out and the run died `venmo_session_failed` with his work spent.
+ *
+ * This pins the fill, not the probe: the assertion is that the credentials
+ * reached the fields, which is the step that was missing.
+ */
+function makePageWithChallengeThenForm(): { fillCalls: Record<string, string>; page: Page; reveal: () => void } {
+  const fillCalls: Record<string, string> = {};
+  let formPresent = false;
+  let probeCount = 0;
+  const username = makeFillRecordingLocator((value) => {
+    fillCalls.username = value;
+  });
+  const password = makeFillRecordingLocator((value) => {
+    fillCalls.password = value;
+  });
+  const absent = makeLocator({ count: 0, visible: false });
+  const submit = makeLocator();
+  let currentUrl = "https://venmo.com/";
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      probeCount += 1;
+      // Signed-out until the credentials are actually submitted. A probe that
+      // runs against the unfilled form must NOT report live.
+      return fillCalls.password && probeCount > 1 ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
+    },
+    getByRole(): Locator {
+      return submit;
+    },
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      // Before the owner clears the interstitial there is no form at all —
+      // exactly what the captured DataDome DOM contains.
+      if (!formPresent) {
+        return absent;
+      }
+      if (selector.includes("username")) {
+        return username;
+      }
+      if (selector.includes("password")) {
+        return password;
+      }
+      return makeLocator({ count: 0, visible: false });
+    },
+    url(): string {
+      return currentUrl;
+    },
+    waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+      return Promise.resolve();
+    },
+    waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+      return Promise.resolve();
+    },
+  };
+  return {
+    fillCalls,
+    page: page as Page,
+    reveal: () => {
+      formPresent = true;
+    },
+  };
+}
+
+test("a bot-check handoff resumes by FILLING the revealed form, not by probing an untouched one", async () => {
+  const { fillCalls, page, reveal } = makePageWithChallengeThenForm();
+  const messages: string[] = [];
+  const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
+    messages.push(String(req.message ?? ""));
+    // The owner completes the challenge in the viewer; Venmo then paints the
+    // real sign-in form. This is the moment run_1787880916346 lost.
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((): undefined => undefined);
+
+  assert.equal(
+    fillCalls.username,
+    "user-stored",
+    "the stored username must be entered after the owner clears the challenge — probing alone loses the run"
+  );
+  assert.equal(fillCalls.password, "pw-stored", "the stored password must be entered too; the owner does not know it");
+});
+
+test("the challenge prompt does not ask the owner for a password the system holds", async () => {
+  const { page, reveal } = makePageWithChallengeThenForm();
+  const messages: string[] = [];
+  const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
+    messages.push(String(req.message ?? ""));
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((): undefined => undefined);
+
+  const prompt = messages[0] ?? "";
+  assert.match(
+    prompt,
+    /security check|CAPTCHA/i,
+    "name the step the owner can actually do — the bot check — not a sign-in he cannot complete"
+  );
+  assert.match(
+    prompt,
+    /automatically|do not need the password/i,
+    "the prompt must say the credentials are entered for him; asking a human for a secret only the system holds is the design defect"
+  );
+});
