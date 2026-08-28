@@ -603,6 +603,20 @@ export interface ConnectorRunSummary {
   readonly recovery_only: boolean;
   readonly reported_records_emitted?: number | null;
   readonly run_id: string | undefined;
+  /**
+   * `run_history.scheduler_managed` for this row. `true` only for a run this
+   * connection's own scheduler produced (or the legacy/back-filled default —
+   * see `db.ts`'s `scheduler_managed` migration). A local-device connection's
+   * `lastRun`/`lastSuccessfulRun`/`latestSettledRun` is normally quarantined
+   * (never authoritative for health) because a local collector's server-side
+   * `run_history` rows are typically foreign/historical artifacts, not this
+   * connection's own evidence. This field is the proof that lets a genuinely
+   * own, current, scheduler-managed run escape that quarantine instead of
+   * being discarded regardless of how proven its evidence is. Optional and
+   * defaults to falsy (still quarantined) so fixtures/readers that predate
+   * this field keep their exact prior behavior.
+   */
+  readonly scheduler_managed?: boolean;
   readonly started_at: string;
   readonly status: string;
   readonly terminal_reason: string | null;
@@ -1547,6 +1561,7 @@ function productRunHistoryToConnectorRunSummary(
     recovery_only: facts?.recovery_only === true,
     reported_records_emitted: yieldCounts.reportedRecordsEmitted,
     run_id: history.runId || undefined,
+    scheduler_managed: history.schedulerManaged === true,
     started_at: history.startedAt,
     status,
     terminal_reason: history.terminalReason ?? null,
@@ -5900,13 +5915,21 @@ export function projectConnectorSummaryConnectionHealth(input: {
 }): ConnectionHealthSnapshot {
   // Persisted source kind decides authority before health derives any scheduler
   // fact. A local device may have historical/foreign server runs, but they are
-  // never evidence for its current device-side collection proof.
+  // never evidence for its current device-side collection proof — UNLESS the
+  // row itself proves it is this connection's own current scheduler-managed
+  // run (`scheduler_managed = true`), not a foreign/stale artifact. A local
+  // device can still be enrolled behind this connection's own scheduler (e.g.
+  // a push-mode collector whose runs the scheduler nonetheless records), and
+  // discarding that proof unconditionally left `axes.coverage` stuck at
+  // `"unknown"` forever even when every required stream's collection report
+  // had already proven `"complete"` from the same run's evidence.
   const localDeviceBacked = input.localDeviceBacked === true;
-  const authoritativeLastRun = localDeviceBacked ? null : input.lastRun;
-  const authoritativeLastSuccessfulRun = localDeviceBacked ? null : input.lastSuccessfulRun;
-  const authoritativeLatestSettledRun = localDeviceBacked
-    ? null
-    : (input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun));
+  const isOwnScopedRun = (run: ConnectorRunSummary | null): boolean =>
+    !localDeviceBacked || run?.scheduler_managed === true;
+  const authoritativeLastRun = isOwnScopedRun(input.lastRun) ? input.lastRun : null;
+  const authoritativeLastSuccessfulRun = isOwnScopedRun(input.lastSuccessfulRun) ? input.lastSuccessfulRun : null;
+  const fallbackSettledRun = input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun);
+  const authoritativeLatestSettledRun = isOwnScopedRun(fallbackSettledRun) ? fallbackSettledRun : null;
   const authoritativeActiveRun = localDeviceBacked ? null : input.activeRun;
   const authoritativeCollectionRate = localDeviceBacked ? null : input.collectionRate;
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : input.ephemeralBrowserRuntime;
@@ -6780,14 +6803,19 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     schedule,
   } = input;
   const localDeviceBacked = instance.sourceKind === "local_device";
+  // See the matching comment in `projectConnectorSummaryConnectionHealth`: a
+  // local device's run evidence is quarantined as foreign/historical UNLESS
+  // the row itself proves it is this connection's own current
+  // scheduler-managed run (`scheduler_managed = true`).
+  const isOwnScopedRun = (run: ConnectorRunSummary | null): boolean =>
+    !localDeviceBacked || run?.scheduler_managed === true;
   const authoritativeActiveRun = localDeviceBacked ? null : activeRun;
   const authoritativeCollectionRate = localDeviceBacked ? null : collectionRate;
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : ephemeralBrowserRuntime;
-  const authoritativeLastRun = localDeviceBacked ? null : lastRun;
-  const authoritativeLastSuccessfulRun = localDeviceBacked ? null : lastSuccessfulRun;
-  const authoritativeLatestSettledRun = localDeviceBacked
-    ? null
-    : (latestSettledRun ?? fallbackLatestSettledRun(lastRun, lastSuccessfulRun));
+  const authoritativeLastRun = isOwnScopedRun(lastRun) ? lastRun : null;
+  const authoritativeLastSuccessfulRun = isOwnScopedRun(lastSuccessfulRun) ? lastSuccessfulRun : null;
+  const fallbackSettledRun = latestSettledRun ?? fallbackLatestSettledRun(lastRun, lastSuccessfulRun);
+  const authoritativeLatestSettledRun = isOwnScopedRun(fallbackSettledRun) ? fallbackSettledRun : null;
   const authoritativeLatestStreamFacts = localDeviceBacked ? null : latestStreamFacts;
   const terminalSetupDisposition =
     instance.status === "draft" && authoritativeLastRun
@@ -7626,12 +7654,20 @@ async function projectConnectorSummaryForInstance(
   const browserSurfaceProfileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
   const activeVisibleConnectionCount = options.activeVisibleConnectionCount ?? 0;
   // Persisted source kind is the authority boundary, not a hint applied after
-  // fetching scheduler history. Local-device connections never hydrate server
-  // runs or schedules into the projection, even if stale rows still exist.
+  // fetching scheduler history. Local-device connections still hydrate their
+  // own run history (so a genuinely own, current, `scheduler_managed = true`
+  // run can be recognized downstream) but never their schedule — a
+  // local-device collector is never scheduler-driven, so a schedule row for
+  // it is always foreign/historical. `synthesizeConnectorSummary` and
+  // `projectConnectorSummaryConnectionHealth` are the actual authority
+  // boundary for run evidence: they quarantine any hydrated run that is not
+  // proven `scheduler_managed`, exactly as before for every other run.
   const localDeviceBacked = instance.sourceKind === "local_device";
-  const hydrateRunSummaries =
-    !localDeviceBacked &&
-    shouldHydrateRunSummariesForInstance(deps.includeRunSummaries, instance, activeVisibleConnectionCount);
+  const hydrateRunSummaries = shouldHydrateRunSummariesForInstance(
+    deps.includeRunSummaries,
+    instance,
+    activeVisibleConnectionCount
+  );
   const live = await getConnectorRecordProjection(
     recordStorageConnectorIdForConnection(instance),
     connectorInstanceId,
