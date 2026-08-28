@@ -54,21 +54,9 @@ function successAt(hoursAgo: number): ConnectorRunSummary {
 /**
  * The live projection, with a stale freshness verdict and a real cadence.
  *
- * `nowIso` is the field the projection actually reads
- * (`const nowIso = input.nowIso ?? new Date().toISOString()`), and it is what
- * `deriveCadenceLateness` is given as `nowMs`. This file previously passed
- * `observedAt`, which is not in the signature at all — `as never` silenced the
- * type error, so the projection fell through to `new Date()` and compared a
- * WALL-CLOCK now against runs pinned to a frozen 2026-08-27T12:00.
- *
- * That made the suite a time bomb rather than a test. Measured at the moment it
- * failed the rail gate, 19.4 real hours had elapsed since the "7h ago" run, so
- * the 7h/6h case sailed past the 3x overdue threshold and projected `warning`
- * instead of `info`. Both failures here were that one substitution; the pure and
- * cross-surface suites passed because they never depended on a frozen clock.
- *
- * A frozen fixture MUST pin the clock explicitly. Anchoring the run timestamps
- * without anchoring `now` is not a fixture, it is a countdown.
+ * `nowIso` is the clock field the projection reads (`input.nowIso ??
+ * new Date()`). It must stay pinned: `as never` hides a wrong name, and an
+ * unpinned clock ages these frozen fixtures until they fail. See CLOCK ORACLE.
  */
 function project(hoursSinceSuccess: number, intervalSeconds: number | null) {
   const run = successAt(hoursSinceSuccess);
@@ -86,39 +74,18 @@ function freshCondition(snap: ReturnType<typeof project>) {
 }
 
 /**
- * CLOCK ORACLE — the guard for the defect this file shipped with.
+ * CLOCK ORACLE — fails iff the projection is reading a wall clock.
  *
- * Every case below anchors its runs to a frozen `NOW`. That is only meaningful
- * if the projection is ALSO anchored; otherwise the fixtures age in real time
- * and the suite decays from green to red on a delay measured in hours. That is
- * exactly what happened: `observedAt` is not a field of
- * `projectConnectorSummaryConnectionHealth`, `as never` hid the mistake, the
- * projection fell back to `new Date()`, and the 7h/6h case had silently become
- * a 19.4h/6h case by the time the rail gate ran it.
- *
- * `as never` is load-bearing here (the input type is large, the fixtures are
- * deliberately partial), so the compiler cannot catch a renamed or dropped
- * clock field. This test is the substitute for that lost type safety.
- *
- * It asserts on `lateness.state`, NOT on severity. An earlier draft of this
- * oracle asserted `severity !== "warning"` for a future-dated run and PASSED
- * under the bug — measured, not assumed: an unpinned future run is `late`, and
- * `late` maps to `info`, so that assertion was vacuous in both directions. The
- * state is the discriminating fact:
- *
- *     run 1 minute AFTER the frozen NOW, 6h cadence
- *       pinned clock   -> lateness.state === "on_time"   (not yet due)
- *       wall clock     -> lateness.state === "late"      (~19h elapsed)
- *
- * So this is false exactly when the clock is unpinned, true otherwise, and
- * independent of when the suite runs.
+ * A run dated AFTER the frozen NOW is `on_time` pinned and `late` unpinned.
+ * Asserts `lateness.state`, not severity: `late` and `on_time` share severity
+ * `info`, so a severity assertion here passes under the bug and proves nothing.
  */
 test("CLOCK ORACLE: the projection honours the frozen clock, so these fixtures cannot decay", () => {
   const snap = project(-1 / 60, SIX_HOURS_S);
   assert.equal(
     (snap as unknown as { lateness?: { state?: string } }).lateness?.state,
     "on_time",
-    "a run dated AFTER the frozen NOW cannot be late — reading `late` here means the projection is on a WALL-CLOCK now, so check that `project()` still passes `nowIso` (not `observedAt`, which the signature lacks and `as never` silently swallows)"
+    "a run dated after NOW cannot be late — the projection is on a wall clock; check `project()` still passes `nowIso`"
   );
 });
 
