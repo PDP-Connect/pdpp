@@ -44,6 +44,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  __resetTestOnlyCanonicalScanPageCallCountForTest,
   reconcileConnectorSummaryEvidence,
   remainingStatementBudgetMs,
 } from "../server/connector-summary-evidence-engine.ts";
@@ -147,6 +148,23 @@ async function readChunkPrefix(): Promise<number | null> {
   );
   const [row] = result.rows;
   return row === undefined ? null : Number(row.resume_after_id);
+}
+
+/**
+ * `records.id` is a BIGSERIAL shared across every row in the table, not
+ * per-connection — a fresh admission's first page does not commit
+ * `resume_after_id = 1`, it commits whatever this connection's OWN lowest id
+ * happens to be, which depends on how many rows other tests/connections
+ * inserted earlier against the same database. Callers that need to assert
+ * "exactly the first page committed" must compare against this, not a
+ * literal.
+ */
+async function minRecordId(): Promise<number> {
+  const result = await postgresQuery<{ min_id: string }>(
+    "SELECT MIN(id) AS min_id FROM records WHERE connector_instance_id = $1",
+    [INSTANCE_ID]
+  );
+  return Number(result.rows[0]?.min_id ?? 0);
 }
 
 /** `total_records` is a Postgres BIGINT and arrives as a string; normalize it. */
@@ -579,4 +597,130 @@ test("PRESERVED BEHAVIOUR: a connection that fits inside one admission still com
   assert.equal(result.failed, 0, "no failure on the ordinary path");
   assert.deepEqual(await readEvidence(), { dirty: 0, state: "fresh", total_records: TOTAL_RECORDS });
   assert.equal(await readChunkPrefix(), null, "a single-pass repair must leave no chunk receipt behind");
+});
+
+/**
+ * FAIL-BEFORE/PASS-AFTER: a page cancelled AFTER an earlier page in the same
+ * admission already banked durable progress must not be treated as zero
+ * progress.
+ *
+ * Measured in production 2026-08-28, `cin_ece4bfe5096b8bf67a1468c2`: a page
+ * committed `resume_after_id=21022443` at 09:39:56.135Z, then the NEXT page
+ * in that same admission was cancelled by Postgres statement_timeout 96 ms
+ * later, and the repair unit armed the full un-paced back-off
+ * (`noteRepairTimeout`) as though it had made no progress at all — the
+ * `admissionAllowanceExhausted` yield only prevents STARTING a page with
+ * insufficient headroom, it cannot stop Postgres from cancelling a page that
+ * WAS started and ran past its own `SET LOCAL statement_timeout`. That
+ * `PostgresStatementTimeoutError` propagated out of
+ * `scanPostgresCanonicalStreamsChunked` (which had no try/catch around the
+ * page call) straight into `repairCandidatePostgres`'s outer catch — the
+ * same site that handles a repair which never scanned anything — so a whale
+ * that banks one page and is then cancelled on the next is throttled for up
+ * to 30 minutes despite genuinely converging.
+ *
+ * This drives the REAL `reconcileConnectorSummaryEvidence` against real
+ * Postgres: page 1 (page size 1, the durable adaptive-shrink shape) commits
+ * normally and fast; page 2 of the SAME admission is forced to overrun the
+ * 500 ms statement-timeout floor via the
+ * `PDPP_TEST_SLOW_CANONICAL_SCAN_AFTER_PAGE_COUNT` seam, so Postgres itself
+ * cancels it — not a simulated or mirrored error.
+ */
+test("FAIL-BEFORE/PASS-AFTER: a page cancelled after an earlier page banks progress must not arm the un-paced back-off", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL not set",
+}, async (t) => {
+  await setUp(t);
+  await seedTinyPageSizeReceipt();
+
+  // The call counter the `AFTER_PAGE_COUNT` seam reads is a module-level
+  // global, incremented by every earlier test in this file that ran a real
+  // canonical scan. Without resetting it here, "page 2" would actually mean
+  // "however many pages into this whole file's cumulative count," which
+  // depends on run order/test selection rather than this test's own fixture.
+  __resetTestOnlyCanonicalScanPageCallCountForTest();
+
+  const previousSlowSeconds = process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS;
+  const previousAfterPageCount = process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_AFTER_PAGE_COUNT;
+  // `remainingStatementBudgetMs` FLOORS at MIN_STATEMENT_TIMEOUT_MS (500 ms) —
+  // it is not capped at any maximum, so a generous admission deadline (the
+  // sibling tests' 4000 ms) grants page 2 a `statement_timeout` close to the
+  // full remaining budget, not 500 ms. A 2-second sleep against THAT budget
+  // never gets cancelled; it just runs to completion (confirmed by driving
+  // this exact construction: 0 cancellations, page 2 committed cleanly).
+  // A short admission deadline keeps the real remaining time small enough
+  // that the floor is what page 2 actually gets, so a 1-second sleep reliably
+  // overruns it.
+  process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS = "1";
+  process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_AFTER_PAGE_COUNT = "1";
+  t.after(() => {
+    if (previousSlowSeconds === undefined) {
+      delete process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS;
+    } else {
+      process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS = previousSlowSeconds;
+    }
+    if (previousAfterPageCount === undefined) {
+      delete process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_AFTER_PAGE_COUNT;
+    } else {
+      process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_AFTER_PAGE_COUNT = previousAfterPageCount;
+    }
+  });
+
+  const originalError = console.error;
+  let backoffLines = 0;
+  console.error = (...args: unknown[]) => {
+    const line = args.map(String).join(" ");
+    if (line.includes("backing off")) {
+      backoffLines += 1;
+    }
+  };
+
+  let result: Awaited<ReturnType<typeof runBoundedAdmission>>;
+  const startedAt = Date.now();
+  try {
+    // Long enough that page 1 (near-instant) commits and
+    // `admissionAllowanceExhausted`'s 100 ms headroom check does not yield
+    // before page 2 starts, so page 2 is genuinely ADMITTED — but short
+    // enough that the remaining budget at page 2's start is still near
+    // `MIN_STATEMENT_TIMEOUT_MS` (500 ms) rather than the full window, so the
+    // 1-second sleep above genuinely overruns Postgres's own
+    // `statement_timeout` instead of just running to completion.
+    result = await runBoundedAdmission(300);
+  } finally {
+    console.error = originalError;
+  }
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(result.failed, 0, "a page cancelled mid-scan is deferred-not-failed, never a failed projection");
+
+  // THE SANITY CHECK: page 2 must have been genuinely CANCELLED by Postgres,
+  // not merely skipped or allowed to run to completion. `logRepairFailure`'s
+  // "cancelled by Postgres statement_timeout" line is NOT a valid signal for
+  // this: this fix's own new catch in `scanPostgresCanonicalStreamsChunked`
+  // intercepts the error before it ever reaches that log site, so the line
+  // is (correctly) silent on the very path under test. The reliable signal
+  // is the elapsed wall-clock time: a page that ran to completion would take
+  // the full ~1-second sleep; a page cancelled by the floored 500 ms
+  // `statement_timeout` returns close to that floor instead.
+  assert.ok(
+    elapsedMs < 900,
+    `expected page 2's 1-second sleep to be cut short by Postgres's own statement_timeout (~500 ms floor), not run to completion; the admission took ${elapsedMs} ms — the test never exercised a genuine cancellation`
+  );
+
+  const prefix = await readChunkPrefix();
+  const expectedFirstPageBoundary = await minRecordId();
+  assert.equal(
+    prefix,
+    expectedFirstPageBoundary,
+    `expected exactly page 1's committed boundary (this connection's lowest record id, ${expectedFirstPageBoundary}) to survive as a durable receipt, proving page 1 committed and page 2 did NOT; saw resume_after_id ${JSON.stringify(prefix)}`
+  );
+
+  // THE CLAIM: durable progress was banked, so the un-paced back-off must
+  // NOT have armed. Before the fix, the page-2 PostgresStatementTimeoutError
+  // propagated to the same outer catch that handles a repair which scanned
+  // nothing, and `noteRepairTimeout` fired unconditionally.
+  assert.equal(
+    backoffLines,
+    0,
+    `a repair unit that banked a durable page boundary before being cancelled must not arm the exponential back-off; saw ${backoffLines} activation(s) and a banked prefix of ${prefix}`
+  );
 });

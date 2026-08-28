@@ -2227,24 +2227,65 @@ function postgresRepairReadQuery<R extends Row = Row>(
  */
 const LEADING_SELECT_PATTERN = /^\s*select\b/i;
 
+// Test-only per-admission call counter for `PDPP_TEST_SLOW_CANONICAL_SCAN_AFTER_PAGE_COUNT`
+// (below). Production never reads it (the env var is unset), matching this
+// file's every other test seam.
+let testOnlyCanonicalScanPageCallCount = 0;
+
+/**
+ * Test-only: reset the page-call counter between admissions so a prior
+ * admission's page count cannot leak into the next one's "after page N"
+ * seam. A complete no-op unless a test imports and calls it directly.
+ */
+export function __resetTestOnlyCanonicalScanPageCallCountForTest(): void {
+  testOnlyCanonicalScanPageCallCount = 0;
+}
+
 function testOnlySlowRepairRead(sql: string): string {
+  const isCanonicalPageQuery =
+    LEADING_SELECT_PATTERN.test(sql) && sql.includes("FROM records") && sql.includes("ORDER BY id ASC LIMIT $3");
+  if (isCanonicalPageQuery) {
+    testOnlyCanonicalScanPageCallCount += 1;
+  }
   const canonicalSecondsRaw = process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_SECONDS;
   const canonicalSeconds = canonicalSecondsRaw ? Number.parseFloat(canonicalSecondsRaw) : 0;
   const canonicalLimitRaw = process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_MIN_LIMIT;
   const canonicalLimit = canonicalLimitRaw ? Number.parseInt(canonicalLimitRaw, 10) : 0;
   if (
+    isCanonicalPageQuery &&
     Number.isFinite(canonicalSeconds) &&
     canonicalSeconds > 0 &&
     Number.isSafeInteger(canonicalLimit) &&
-    canonicalLimit > 0 &&
-    LEADING_SELECT_PATTERN.test(sql) &&
-    sql.includes("FROM records") &&
-    sql.includes("ORDER BY id ASC LIMIT $3")
+    canonicalLimit > 0
   ) {
     return `WITH pdpp_test_slow_read AS MATERIALIZED (
                SELECT pg_sleep(${canonicalSeconds}) AS slept
                 WHERE $3 >= ${canonicalLimit}
              ),
+             pdpp_test_original AS (${sql})
+        SELECT pdpp_test_original.* FROM pdpp_test_original
+         WHERE (SELECT count(*) FROM pdpp_test_slow_read) >= 0`;
+  }
+  // `PDPP_TEST_SLOW_CANONICAL_SCAN_AFTER_PAGE_COUNT`: slows only the page
+  // whose 1-based call count is STRICTLY GREATER than this value, unlike the
+  // `MIN_LIMIT` seam above which keys off the page size and so cannot
+  // discriminate an early page from a later one when the size is constant
+  // across an admission. Needed to reproduce the exact production shape
+  // (2026-08-28, `cin_ece4bfe5096b8bf67a1468c2`): page 1 commits a durable
+  // boundary, then page 2 of the SAME admission is cancelled by Postgres —
+  // proving a timeout after banked progress is possible, not only a timeout
+  // on a call's first page.
+  const afterPageCountRaw = process.env.PDPP_TEST_SLOW_CANONICAL_SCAN_AFTER_PAGE_COUNT;
+  const afterPageCount = afterPageCountRaw ? Number.parseInt(afterPageCountRaw, 10) : Number.NaN;
+  if (
+    isCanonicalPageQuery &&
+    Number.isSafeInteger(afterPageCount) &&
+    afterPageCount > 0 &&
+    testOnlyCanonicalScanPageCallCount > afterPageCount &&
+    Number.isFinite(canonicalSeconds) &&
+    canonicalSeconds > 0
+  ) {
+    return `WITH pdpp_test_slow_read AS MATERIALIZED (SELECT pg_sleep(${canonicalSeconds}) AS slept),
              pdpp_test_original AS (${sql})
         SELECT pdpp_test_original.* FROM pdpp_test_original
          WHERE (SELECT count(*) FROM pdpp_test_slow_read) >= 0`;
@@ -2568,6 +2609,30 @@ async function scanPostgresCanonicalStreamsPage(
  *
  * The per-unit bound is untouched: nothing here raises, extends, or reuses an
  * allowance. It only declines to start a page it has no budget to finish.
+ *
+ * A page that WAS admitted (passed `admissionAllowanceExhausted`'s headroom
+ * check) can still be cancelled by Postgres itself: `admissionAllowanceExhausted`
+ * reads the raw deadline, but the page's own `SET LOCAL statement_timeout`
+ * (`remainingStatementBudgetMs`) is floored at `MIN_STATEMENT_TIMEOUT_MS`, so a
+ * page starting with headroom between the 100 ms admission threshold and the
+ * 500 ms floor is granted the full 500 ms and can still run past the caller's
+ * true remaining time. Measured in production 2026-08-28,
+ * `cin_ece4bfe5096b8bf67a1468c2`: a page committed `resume_after_id=21022443`
+ * at 09:39:56.135Z, then the NEXT page in that same admission was cancelled by
+ * statement_timeout 96 ms later — a genuine `PostgresStatementTimeoutError`,
+ * thrown from a call this loop does not wrap, so it propagated past this
+ * function's `partial` return entirely and reached `repairCandidatePostgres`'s
+ * outer catch, which cannot see that an earlier page already banked real
+ * progress and arms the full un-paced back-off (`noteRepairTimeout`) as if
+ * this unit had achieved nothing. A whale that banks one page and is then
+ * cancelled on the next is throttled for up to 30 minutes despite converging.
+ *
+ * So a timeout on any page AFTER the first is caught here and treated
+ * identically to the clean `admissionAllowanceExhausted` yield: `partial:
+ * true`, durable progress banked, no back-off armed. Only a timeout on the
+ * FIRST page of this call — where nothing in this call committed — still
+ * propagates, because that case genuinely made zero progress and the
+ * existing `noteRepairTimeout` pacing is correct there.
  */
 async function scanPostgresCanonicalStreamsChunked(
   connectorInstanceId: string,
@@ -2577,15 +2642,25 @@ async function scanPostgresCanonicalStreamsChunked(
   | { readonly missing: true }
   | { readonly missing: false; readonly partial: true }
 > {
+  let bankedProgressThisCall = false;
   for (;;) {
-    // biome-ignore lint/performance/noAwaitInLoops: Pages are intentionally sequential; each commits the durable boundary the next page reloads.
-    const pageResult = await scanPostgresCanonicalStreamsPage(connectorInstanceId, deadline);
+    let pageResult: PostgresCanonicalScanPageResult;
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: Pages are intentionally sequential; each commits the durable boundary the next page reloads.
+      pageResult = await scanPostgresCanonicalStreamsPage(connectorInstanceId, deadline);
+    } catch (err) {
+      if (bankedProgressThisCall && err instanceof PostgresStatementTimeoutError) {
+        return { missing: false, partial: true };
+      }
+      throw err;
+    }
     if (pageResult.missing) {
       return { missing: true };
     }
     if (pageResult.complete) {
       return { canonicalByStream: canonicalByStreamFromAccumulator(pageResult.accumulator), missing: false };
     }
+    bankedProgressThisCall = true;
     // The page above COMMITTED its boundary. If there is no longer enough
     // allowance to START another page, stop here with that progress banked
     // rather than beginning a page that will be cancelled and re-running this

@@ -1067,7 +1067,7 @@ test("the memory-default profile declares the exact current skip baseline", asyn
     "dedicated PDPP_TEST_POSTGRES_URL unset": 7,
     "PDPP_TEST_POSTGRES_URL is not set": 6,
     "PDPP_TEST_POSTGRES_URL is required": 3,
-    "PDPP_TEST_POSTGRES_URL not set": 8,
+    "PDPP_TEST_POSTGRES_URL not set": 9,
     "PDPP_TEST_POSTGRES_URL unset or not a dedicated test URL": 2,
     "PDPP_TEST_POSTGRES_URL and PDPP_TEST_POSTGRES_RESTORE_URL are not both set": 1,
   });
